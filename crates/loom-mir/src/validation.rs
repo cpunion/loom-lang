@@ -7,17 +7,19 @@ use std::rc::Rc;
 use loom_core::Span;
 
 use crate::{
-    BinaryOp, Block, Builtin, CallArgument, CallTarget, ConceptDef, ConceptId, Constant,
-    ConstructionMode, Contract, ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr,
-    ExprKind, Function, FunctionId, LocalDecl, LocalId, MatchArm, Pattern, Place, Program,
-    Receiver, RequirementDef, RequirementId, RequirementType, RequirementWitnessParam,
-    ScopedDisposal, Statement, StatementKind, SuspensionPoint, TaskJoinMode, Type, TypeDef,
-    TypeDefKind, UnaryOp, VariantId, Witness, WitnessParam, WitnessRef,
+    BinaryOp, Block, Builtin, CallArgument, CallTarget, ConceptDef, ConceptId, ConceptIdentity,
+    Constant, ConstructionMode, Contract, ContractArm, ContractExpr, ContractExprKind,
+    ContractValue, Expr, ExprKind, Function, FunctionId, LocalDecl, LocalId, MatchArm, Pattern,
+    Place, Program, Receiver, RequirementDef, RequirementId, RequirementType,
+    RequirementWitnessParam, ScopedDisposal, Statement, StatementKind, SuspensionPoint,
+    TaskJoinMode, Type, TypeDef, TypeDefKind, UnaryOp, VariantId, Witness, WitnessParam,
+    WitnessRef,
 };
 
 const MAX_VALIDATION_DEPTH: u16 = 64;
 const MAX_PATTERN_ANALYSIS_STEPS: usize = 4_096;
 const MAX_VALIDATION_TYPE_NODES: usize = 4_096;
+const MUST_SCOPE_MODULE: &str = "standard.resource";
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum MirValidationCode {
@@ -670,8 +672,53 @@ enum RequirementProofs<'proofs> {
     Unavailable,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MustScopeIdentity {
+    Absent,
+    Present(ConceptId),
+    Invalid,
+}
+
+/// Resolves the resource marker only when its compiler-known identity, dense
+/// concept id, prelude pointer, and marker shape agree. Invalid metadata is a
+/// fail-closed state for every obligation walk as well as a validation error.
+fn must_scope_identity(program: &Program) -> MustScopeIdentity {
+    let mut qualified =
+        program.concepts.iter().enumerate().filter(|(_, concept)| {
+            concept.module == MUST_SCOPE_MODULE && concept.name == "MustScope"
+        });
+    let qualified_first = qualified.next();
+    if qualified.next().is_some() {
+        return MustScopeIdentity::Invalid;
+    }
+    let mut tagged = program
+        .concepts
+        .iter()
+        .enumerate()
+        .filter(|(_, concept)| concept.identity == Some(ConceptIdentity::MustScope));
+    let first = tagged.next();
+    if tagged.next().is_some() {
+        return MustScopeIdentity::Invalid;
+    }
+    match (program.prelude.must_scope_concept, qualified_first, first) {
+        (None, None, None) => MustScopeIdentity::Absent,
+        (Some(id), Some((qualified_index, _)), Some((index, concept)))
+            if qualified_index == index
+                && id.0 as usize == index
+                && concept.id == id
+                && !concept.dynamic
+                && concept.associated_types.is_empty()
+                && concept.requirements.is_empty() =>
+        {
+            MustScopeIdentity::Present(id)
+        }
+        _ => MustScopeIdentity::Invalid,
+    }
+}
+
 struct Validator<'program> {
     program: &'program Program,
+    must_scope_identity: MustScopeIdentity,
     errors: Vec<MirValidationError>,
     nesting_failed: bool,
     function_tokens: BTreeSet<u32>,
@@ -684,6 +731,7 @@ impl<'program> Validator<'program> {
     fn new(program: &'program Program) -> Self {
         Self {
             program,
+            must_scope_identity: must_scope_identity(program),
             errors: Vec::new(),
             nesting_failed: false,
             function_tokens: BTreeSet::new(),
@@ -1412,18 +1460,23 @@ impl<'program> Validator<'program> {
                 );
             }
         }
-        for (name, id, path) in [
-            (
-                "MustScope",
-                self.program.prelude.must_scope_concept,
+        if self.must_scope_identity == MustScopeIdentity::Invalid {
+            self.push(
+                MirValidationCode::ConceptShape,
+                "canonical MustScope identity must occur exactly once, match prelude.must_scope_concept, and identify the empty non-dynamic MustScope marker",
+                self.program
+                    .prelude
+                    .must_scope_concept
+                    .and_then(|id| self.program.concept(id))
+                    .map_or_else(Span::default, |concept| concept.span),
                 "prelude.must_scope_concept",
-            ),
-            (
-                "NoSuspend",
-                self.program.prelude.no_suspend_concept,
-                "prelude.no_suspend_concept",
-            ),
-        ] {
+            );
+        }
+        for (name, id, path) in [(
+            "NoSuspend",
+            self.program.prelude.no_suspend_concept,
+            "prelude.no_suspend_concept",
+        )] {
             let Some(id) = id else {
                 continue;
             };
@@ -4439,10 +4492,14 @@ impl<'program> Validator<'program> {
         root: &Type,
         remaining: &mut usize,
     ) -> bool {
-        let Some(marker) = self.program.prelude.must_scope_concept else {
-            // Built-in File/Socket containment remains covered by the
-            // representation-independent ValueObligations analysis.
-            return false;
+        let marker = match self.must_scope_identity {
+            MustScopeIdentity::Present(marker) => marker,
+            MustScopeIdentity::Absent => {
+                // Built-in File/Socket containment remains covered by the
+                // representation-independent ValueObligations analysis.
+                return false;
+            }
+            MustScopeIdentity::Invalid => return true,
         };
         if !self
             .program

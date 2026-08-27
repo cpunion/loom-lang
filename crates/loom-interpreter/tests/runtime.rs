@@ -4,11 +4,11 @@ use loom_core::Span;
 use loom_interpreter::{ContractFaultKind, ExecutionFailure, Interpreter, TestStatus, Value};
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallPlan, CallTarget, CheckedProgram, ConceptDef,
-    ConceptId, Constant, ConstructionMode, Contract, ContractExpr, ContractExprKind, ContractValue,
-    Expr, ExprId, ExprKind, FieldDef, Function, FunctionId, LocalDecl, LocalId, MirValidationCode,
-    Place, PreludeIds, Program, Receiver, RequirementDef, RequirementId, RequirementType,
-    ScopedDisposal, Statement, StatementKind, Type, TypeDef, TypeDefKind, TypeId, VariantDef,
-    VariantId, Witness, WitnessId, WitnessRef,
+    ConceptId, ConceptIdentity, Constant, ConstructionMode, Contract, ContractExpr,
+    ContractExprKind, ContractValue, Expr, ExprId, ExprKind, FieldDef, Function, FunctionId,
+    LocalDecl, LocalId, MirValidationCode, Place, PreludeIds, Program, Receiver, RequirementDef,
+    RequirementId, RequirementType, ScopedDisposal, Statement, StatementKind, Type, TypeDef,
+    TypeDefKind, TypeId, VariantDef, VariantId, Witness, WitnessId, WitnessRef,
 };
 
 fn checked(mut program: Program) -> CheckedProgram {
@@ -242,24 +242,30 @@ fn scoped_cleanup_fault_program(outer_raw: i64, inner_raw: i64) -> CheckedProgra
         concepts: vec![
             ConceptDef {
                 id: ConceptId(0),
+                module: "standard.resource".into(),
                 name: "Dispose".into(),
                 span: span(),
+                identity: None,
                 dynamic: false,
                 associated_types: Vec::new(),
                 requirements: vec![RequirementId(0)],
             },
             ConceptDef {
                 id: ConceptId(1),
+                module: "standard.resource".into(),
                 name: "MustScope".into(),
                 span: span(),
+                identity: Some(ConceptIdentity::MustScope),
                 dynamic: false,
                 associated_types: Vec::new(),
                 requirements: Vec::new(),
             },
             ConceptDef {
                 id: ConceptId(2),
+                module: "standard.resource".into(),
                 name: "NoSuspend".into(),
                 span: span(),
+                identity: None,
                 dynamic: false,
                 associated_types: Vec::new(),
                 requirements: Vec::new(),
@@ -471,8 +477,10 @@ fn double_interface(dynamic: bool) -> (ConceptDef, RequirementDef) {
     (
         ConceptDef {
             id: ConceptId(0),
+            module: "test".into(),
             name: "Double".into(),
             span: span(),
+            identity: None,
             dynamic,
             associated_types: Vec::new(),
             requirements: vec![RequirementId(0)],

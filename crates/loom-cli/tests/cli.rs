@@ -1162,7 +1162,7 @@ fn cache_stat_and_prune_have_stable_json_reports() {
     assert_eq!(stat.status.code(), Some(0));
     let stdout = String::from_utf8(stat.stdout).expect("UTF-8 stat output");
     assert!(stdout.contains("\"category\":\"cache_stat\""), "{stdout}");
-    assert!(stdout.contains("\"schema_version\":2"), "{stdout}");
+    assert!(stdout.contains("\"schema_version\":3"), "{stdout}");
 
     let prune = loomc()
         .args(["--json", "cache", "prune"])
@@ -2727,6 +2727,107 @@ fn core_examples_close_check_build_test_and_run() {
             .expect("run version artifact");
         assert_eq!(run.status.code(), Some(0), "{version} artifact run");
     }
+}
+
+#[test]
+fn must_scope_identity_closes_cached_check_build_test_run_and_artifact_decode() {
+    let project = TestProject::new(
+        r"module standard.resource
+
+concept Dispose {
+    method dispose(mut self) Unit
+}
+
+concept MustScope {}
+
+record Resource {
+    value Int
+}
+
+impl Dispose for Resource {
+    method dispose(mut self) Unit {
+        self.value = 0
+        Unit
+    }
+}
+
+impl MustScope for Resource {}
+
+pub fn main() Unit {
+    scoped resource = Resource { value = 1 }
+    Unit
+}
+
+test fn resource_identity() {
+    scoped resource = Resource { value = 2 }
+    Unit
+}
+",
+    );
+
+    let check = loomc_without_test_runtime()
+        .args(["--json", "--backend", "interpreter", "check"])
+        .arg(&project.0)
+        .output()
+        .expect("check MustScope identity source");
+    assert_eq!(check.status.code(), Some(0), "{check:?}");
+    assert_eq!(
+        cache_status(&check.stdout, "checked_mir").as_deref(),
+        Some("miss")
+    );
+
+    let artifact = project.0.join("resource.loomi");
+    let build = loomc_without_test_runtime()
+        .args(["--json", "--backend", "interpreter", "build", "--output"])
+        .arg(&artifact)
+        .arg(&project.0)
+        .output()
+        .expect("build MustScope identity artifact");
+    assert_eq!(build.status.code(), Some(0), "{build:?}");
+    assert_eq!(
+        cache_status(&build.stdout, "checked_mir").as_deref(),
+        Some("hit")
+    );
+
+    let artifact_json: serde_json::Value =
+        serde_json::from_slice(&fs::read(&artifact).expect("read MustScope identity artifact"))
+            .expect("decode MustScope artifact JSON");
+    let concepts = artifact_json["program"]["concepts"]
+        .as_array()
+        .expect("concept array");
+    let (marker_index, marker) = concepts
+        .iter()
+        .enumerate()
+        .find(|(_, concept)| {
+            concept["module"] == "standard.resource" && concept["name"] == "MustScope"
+        })
+        .expect("canonical MustScope concept");
+    assert_eq!(marker["identity"], "mustScope");
+    assert_eq!(
+        artifact_json["program"]["prelude"]["must_scope_concept"],
+        serde_json::json!(marker_index)
+    );
+
+    for command in ["test", "run"] {
+        let output = loomc_without_test_runtime()
+            .args(["--json", "--backend", "interpreter", command])
+            .arg(&project.0)
+            .output()
+            .expect("execute MustScope identity source");
+        assert_eq!(output.status.code(), Some(0), "{command}: {output:?}");
+        assert_eq!(
+            cache_status(&output.stdout, "checked_mir").as_deref(),
+            Some("hit"),
+            "{command}: {output:?}"
+        );
+    }
+
+    let artifact_run = loomc_without_test_runtime()
+        .args(["--json", "--backend", "interpreter", "run", "--artifact"])
+        .arg(&artifact)
+        .output()
+        .expect("run the checked MustScope artifact");
+    assert_eq!(artifact_run.status.code(), Some(0), "{artifact_run:?}");
 }
 
 #[test]

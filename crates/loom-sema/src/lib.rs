@@ -14,7 +14,7 @@ mod resolver;
 mod side_tables;
 mod ty;
 
-pub use analyze::{Analysis, analyze, analyze_reusing_bodies};
+pub use analyze::{Analysis, CanonicalConcepts, analyze, analyze_reusing_bodies};
 pub use conformance::*;
 pub use def_map::{Binding, DefMap, DefMapBuild, Namespace};
 pub use module_graph::{ImportEdge, ModuleGraph, ModuleGraphBuild};

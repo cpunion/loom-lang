@@ -15,10 +15,16 @@ rather than assuming every build output is executable.
 | Runtime bundle | `runtime pack` or a release archive | target-specific | used by the linker |
 
 The interpreted artifact format is `loom.interpreted-mir`, currently version
-`21`. Portable libraries have format version `1`; their nested checked-MIR
-payload uses version `21`. The compiler does not append
+`22`. Portable libraries have format version `1`; their nested checked-MIR
+payload uses version `22`. The compiler does not append
 the `.loomlib` extension automatically. Both formats also record the Loom
 language version and are fully decoded and MIR-validated before use.
+
+Version 22 records the source-module provenance and compiler-known identity of
+the canonical `standard.resource.MustScope` marker. Decoding rejects missing,
+redirected, duplicated, or shape-inconsistent identity metadata before the
+program can execute. This is structural validation, not publisher
+authentication; artifact provenance still belongs to the distribution layer.
 
 Source-local construction proofs are not portable certificates. `.loomi` and
 `.loomlib` encode them as mandatory predicate/invariant rechecks. A successful

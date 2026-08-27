@@ -48,7 +48,7 @@ larger graph.
 
 ## Persistent layers
 
-The persistent cache schema is `2`. Current layers include source parse,
+The persistent cache schema is `3`. Current layers include source parse,
 module-interface presence, typed module state, complete checked MIR, target
 objects, and portable final artifacts.
 
@@ -62,6 +62,13 @@ not written to disk, and persisted bodies that could eliminate a construction,
 assertion, or contract check are conservatively reanalyzed from source rather
 than trusted for that disposition. This restriction does not apply to reuse
 inside one `AnalysisHost` process.
+
+Compiler-known `MustScope` identity is likewise not accepted from persistent
+typed-state bytes. A compatible state can supply reusable body facts, but
+semantic analysis rederives the canonical module-qualified `DefId` from the
+current HIR. Checked-MIR cache entries carry the resulting concept module and
+identity under artifact version 22 and cross the ordinary MIR validator before
+reuse; inconsistent identity metadata is a cache miss.
 
 The complete compilation key includes the normalized project graph, exact
 sources, language and frontend build identities, embedded standard library,

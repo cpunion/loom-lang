@@ -10,12 +10,13 @@ use loom_hir::{
 };
 use loom_mir::{
     AssociatedTypeDef, BinaryOp, Block, Builtin, CallArgument, CallPlan, CallTarget,
-    CheckedProgram, ConceptDef, ConceptId, Constant, ConstructionMode, Contract, ContractArm,
-    ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, FieldDef, Function, FunctionId,
-    LocalDecl, LocalId, MatchArm, Pattern, PreludeIds, Program, Receiver, RequirementDef,
-    RequirementId, RequirementType, RequirementWitnessParam, ScopedDisposal as MirScopedDisposal,
-    Statement, StatementKind, SuspensionPoint, Type, TypeDef, TypeDefKind, TypeId, UnaryOp,
-    VariantDef, VariantId, Witness, WitnessId, WitnessParam, WitnessRef,
+    CheckedProgram, ConceptDef, ConceptId, ConceptIdentity, Constant, ConstructionMode, Contract,
+    ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, FieldDef, Function,
+    FunctionId, LocalDecl, LocalId, MatchArm, Pattern, PreludeIds, Program, Receiver,
+    RequirementDef, RequirementId, RequirementType, RequirementWitnessParam,
+    ScopedDisposal as MirScopedDisposal, Statement, StatementKind, SuspensionPoint, Type, TypeDef,
+    TypeDefKind, TypeId, UnaryOp, VariantDef, VariantId, Witness, WitnessId, WitnessParam,
+    WitnessRef,
 };
 use loom_sema::{
     Analysis, BodySemantics, BuiltinType, BuiltinValue, CallResolution,
@@ -26,7 +27,6 @@ use loom_sema::{
 
 const RESOURCE_MODULE: &str = "standard.resource";
 const DISPOSE_CONCEPT: &str = "Dispose";
-const MUST_SCOPE_CONCEPT: &str = "MustScope";
 const NO_SUSPEND_CONCEPT: &str = "NoSuspend";
 
 const OPTION_TYPE: TypeId = TypeId(0);
@@ -278,6 +278,18 @@ impl<'a> Compiler<'a> {
 
     fn run(&self) -> LowerResult<Program> {
         let dispose = self.language_concept(DISPOSE_CONCEPT);
+        let must_scope = self
+            .analysis
+            .canonical_concepts
+            .must_scope
+            .map(|definition| {
+                required(
+                    self.indices.concepts.get(&definition).copied(),
+                    "canonical MustScope concept has no MIR id",
+                    definition_span(self.hir, definition),
+                )
+            })
+            .transpose()?;
         let dispose_requirement = dispose.and_then(|definition| {
             let DefinitionKind::Concept(concept) = &self.hir.definitions[definition].kind else {
                 return None;
@@ -324,9 +336,7 @@ impl<'a> Compiler<'a> {
                 log_level: Some(LOG_LEVEL_TYPE),
                 dispose_concept: dispose.and_then(|id| self.indices.concepts.get(&id).copied()),
                 dispose_requirement,
-                must_scope_concept: self
-                    .language_concept(MUST_SCOPE_CONCEPT)
-                    .and_then(|id| self.indices.concepts.get(&id).copied()),
+                must_scope_concept: must_scope,
                 no_suspend_concept: self
                     .language_concept(NO_SUSPEND_CONCEPT)
                     .and_then(|id| self.indices.concepts.get(&id).copied()),
@@ -715,8 +725,11 @@ impl<'a> Compiler<'a> {
             }
             concepts.push(ConceptDef {
                 id,
+                module: self.hir.modules[source.module].name.to_string(),
                 name: definition_name(self.hir, definition)?,
                 span,
+                identity: (self.analysis.canonical_concepts.must_scope == Some(definition))
+                    .then_some(ConceptIdentity::MustScope),
                 dynamic: concept.dyn_capable,
                 associated_types: concept
                     .associated_types

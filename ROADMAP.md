@@ -56,12 +56,6 @@ Move persistent reuse below whole-graph checked MIR where stable identities and
 validation make module- and instance-granular reuse trustworthy. Cache hits and
 cold builds must produce identical diagnostics, reachability, and behavior.
 
-### Make resource obligations independently verifiable
-
-Carry the canonical `MustScope` obligation identity into versioned checked MIR
-so artifact and cache validation can verify it without trusting an earlier
-semantic-analysis process.
-
 ### Expand host parity
 
 Bring the full LLVM backend, linker, runtime I/O, debugger integration, and

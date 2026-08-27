@@ -5,14 +5,15 @@ use std::time::Duration;
 use loom_core::Span;
 use loom_mir::{
     ArtifactError, AssociatedTypeDef, BinaryOp, Block, CallArgument, CallPlan, CallTarget,
-    CheckedProgram, ConceptDef, ConceptId, Constant, ConstructionMode, Contract, ContractArm,
-    ContractExpr, ContractExprKind, ContractValue, Expr, ExprId, ExprKind, FieldDef, Function,
-    FunctionId, INTERPRETED_ARTIFACT_VERSION, LocalDecl, LocalId, MatchArm, MirValidationCode,
-    Pattern, Place, PreludeIds, Program, Receiver, RequirementDef, RequirementId, RequirementType,
-    RequirementWitnessParam, ScopedDisposal, Statement, StatementKind, SuspensionPoint, Type,
-    TypeDef, TypeDefKind, TypeId, VariantDef, VariantId, Witness, WitnessId, WitnessParam,
-    WitnessRef, decode_interpreted_artifact, decode_interpreted_executable_artifact,
-    encode_interpreted_artifact, encode_interpreted_executable_artifact, validate_program,
+    CheckedProgram, ConceptDef, ConceptId, ConceptIdentity, Constant, ConstructionMode, Contract,
+    ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr, ExprId, ExprKind, FieldDef,
+    Function, FunctionId, INTERPRETED_ARTIFACT_VERSION, LocalDecl, LocalId, MatchArm,
+    MirValidationCode, Pattern, Place, PreludeIds, Program, Receiver, RequirementDef,
+    RequirementId, RequirementType, RequirementWitnessParam, ScopedDisposal, Statement,
+    StatementKind, SuspensionPoint, Type, TypeDef, TypeDefKind, TypeId, VariantDef, VariantId,
+    Witness, WitnessId, WitnessParam, WitnessRef, decode_interpreted_artifact,
+    decode_interpreted_executable_artifact, encode_interpreted_artifact,
+    encode_interpreted_executable_artifact, validate_program,
 };
 use wait_timeout::ChildExt as _;
 
@@ -245,24 +246,30 @@ fn resource_program(mut main: Function, mut extra: Vec<Function>, no_suspend: bo
         concepts: vec![
             ConceptDef {
                 id: ConceptId(0),
+                module: "standard.resource".to_owned(),
                 name: "Dispose".to_owned(),
                 span: span(),
+                identity: None,
                 dynamic: false,
                 associated_types: Vec::new(),
                 requirements: vec![RequirementId(0)],
             },
             ConceptDef {
                 id: ConceptId(1),
+                module: "standard.resource".to_owned(),
                 name: "MustScope".to_owned(),
                 span: span(),
+                identity: Some(ConceptIdentity::MustScope),
                 dynamic: false,
                 associated_types: Vec::new(),
                 requirements: Vec::new(),
             },
             ConceptDef {
                 id: ConceptId(2),
+                module: "standard.resource".to_owned(),
                 name: "NoSuspend".to_owned(),
                 span: span(),
+                identity: None,
                 dynamic: false,
                 associated_types: Vec::new(),
                 requirements: Vec::new(),
@@ -320,8 +327,10 @@ fn generic_carrier_type(id: u32) -> TypeDef {
 fn empty_dyn_concept() -> ConceptDef {
     ConceptDef {
         id: ConceptId(0),
+        module: "test".to_owned(),
         name: "Viewable".to_owned(),
         span: span(),
+        identity: None,
         dynamic: true,
         associated_types: Vec::new(),
         requirements: Vec::new(),
@@ -854,8 +863,10 @@ fn obligation_hardening_allows_unit_divergence_and_phantom_parameters() {
 fn checked_boundary_rejects_dynamic_erasure_of_provable_obligations() {
     let concept = ConceptDef {
         id: ConceptId(0),
+        module: "test".to_owned(),
         name: "Display".to_owned(),
         span: span(),
+        identity: None,
         dynamic: true,
         associated_types: Vec::new(),
         requirements: Vec::new(),
@@ -1954,7 +1965,7 @@ fn resource_close_requires_an_inout_place() {
 }
 
 #[test]
-fn scoped_statement_and_canonical_resource_ids_round_trip_in_artifact_twenty_one() {
+fn scoped_statement_and_canonical_resource_identity_round_trips_in_artifact_twenty_two() {
     let main = function(
         1,
         Vec::new(),
@@ -1973,6 +1984,10 @@ fn scoped_statement_and_canonical_resource_ids_round_trip_in_artifact_twenty_one
     let decoded = decode_interpreted_artifact(&encoded).expect("decode scoped artifact");
     assert_eq!(decoded.prelude.dispose_concept, Some(ConceptId(0)));
     assert_eq!(decoded.prelude.must_scope_concept, Some(ConceptId(1)));
+    assert_eq!(
+        decoded.concepts[1].identity,
+        Some(ConceptIdentity::MustScope)
+    );
     assert!(matches!(
         decoded.functions[1].body.statements[0].kind,
         StatementKind::Scoped {
@@ -1993,10 +2008,147 @@ fn artifact_twenty_does_not_cross_the_scoped_mir_boundary() {
     assert!(matches!(
         error,
         ArtifactError::VersionMismatch {
-            expected: 21,
+            expected: 22,
             found: 20
         }
     ));
+}
+
+#[test]
+fn artifact_twenty_one_does_not_cross_the_resource_identity_boundary() {
+    let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
+    let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    value["version"] = serde_json::json!(21);
+    value["program"] = serde_json::json!("artifact 21 has no compiler-known concept identity");
+    let error = decode_interpreted_artifact(&serde_json::to_vec(&value).expect("json"))
+        .expect_err("artifact 21 must fail before its body is decoded");
+    assert!(matches!(
+        error,
+        ArtifactError::VersionMismatch {
+            expected: 22,
+            found: 21
+        }
+    ));
+}
+
+#[test]
+fn forged_must_scope_identities_fail_closed_at_artifact_decode() {
+    let main = function(
+        1,
+        Vec::new(),
+        vec![local(0, resource_type(), true)],
+        Type::Unit,
+        Block {
+            statements: vec![scoped_resource(0, 7)],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+    );
+    let mut program = resource_program(main, Vec::new(), false);
+    program.concepts.push(ConceptDef {
+        id: ConceptId(3),
+        module: "forged.decoy".to_owned(),
+        name: "Decoy".to_owned(),
+        span: span(),
+        identity: None,
+        dynamic: false,
+        associated_types: Vec::new(),
+        requirements: Vec::new(),
+    });
+    let checked = program.into_checked().expect("resource identity fixture");
+    let bytes = encode_interpreted_artifact(&checked).expect("encode resource identity fixture");
+    let original: serde_json::Value = serde_json::from_slice(&bytes).expect("artifact JSON");
+
+    let mut omitted_field = original.clone();
+    omitted_field["program"]["concepts"][1]
+        .as_object_mut()
+        .expect("concept object")
+        .remove("identity");
+    let error = decode_interpreted_artifact(
+        &serde_json::to_vec(&omitted_field).expect("encode missing-field artifact"),
+    )
+    .expect_err("a version-22 concept cannot omit its identity field");
+    assert!(
+        matches!(error, ArtifactError::InvalidProgram(ref errors) if errors.contains(MirValidationCode::ConceptShape)),
+        "{error:?}"
+    );
+
+    let rejects_identity = |label: &str, value: &serde_json::Value| {
+        let error = decode_interpreted_artifact(
+            &serde_json::to_vec(value).expect("encode forged artifact JSON"),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, ArtifactError::InvalidProgram(ref errors) if errors.contains(MirValidationCode::ConceptShape)),
+            "{label}: {error:?}"
+        );
+    };
+
+    let mut missing_tag = original.clone();
+    missing_tag["program"]["concepts"][1]["identity"] = serde_json::Value::Null;
+    rejects_identity("missing tag", &missing_tag);
+
+    let mut missing_prelude = original.clone();
+    missing_prelude["program"]["prelude"]["must_scope_concept"] = serde_json::Value::Null;
+    rejects_identity("missing prelude id", &missing_prelude);
+
+    let mut removed_both = original.clone();
+    removed_both["program"]["concepts"][1]["identity"] = serde_json::Value::Null;
+    removed_both["program"]["prelude"]["must_scope_concept"] = serde_json::Value::Null;
+    rejects_identity("removed tag and prelude id", &removed_both);
+
+    let mut redirected = original.clone();
+    redirected["program"]["prelude"]["must_scope_concept"] = serde_json::json!(3);
+    rejects_identity("redirected prelude id", &redirected);
+
+    let mut duplicate = original.clone();
+    duplicate["program"]["concepts"][3]["identity"] = serde_json::json!("mustScope");
+    rejects_identity("duplicate tag", &duplicate);
+
+    let mut wrong_shape = original;
+    wrong_shape["program"]["concepts"][1]["dynamic"] = serde_json::json!(true);
+    rejects_identity("invalid marker shape", &wrong_shape);
+}
+
+#[test]
+fn same_named_concept_outside_standard_resource_has_no_resource_identity() {
+    let concept = ConceptDef {
+        id: ConceptId(0),
+        module: "application".to_owned(),
+        name: "MustScope".to_owned(),
+        span: span(),
+        identity: None,
+        dynamic: false,
+        associated_types: Vec::new(),
+        requirements: Vec::new(),
+    };
+    let witness = Witness {
+        id: WitnessId(0),
+        concept: ConceptId(0),
+        concrete: Type::Int,
+        methods: BTreeMap::new(),
+        associated: BTreeMap::new(),
+        type_parameters: 0,
+        prerequisites: Vec::new(),
+    };
+    let returns_int = function(
+        0,
+        Vec::new(),
+        Vec::new(),
+        Type::Int,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(constant(Constant::Int(1), Type::Int))),
+            span: span(),
+        },
+    );
+    validate_program(&Program {
+        concepts: vec![concept],
+        functions: vec![returns_int],
+        witnesses: vec![witness],
+        ..Program::default()
+    })
+    .expect("an unqualified same-named concept must remain an ordinary concept");
 }
 
 #[test]
@@ -3162,8 +3314,10 @@ fn portable_mir_rejects_non_place_resource_receiver_roots() {
                 (
                     vec![ConceptDef {
                         id: ConceptId(0),
+                        module: "standard.resource".to_owned(),
                         name: "MustScope".to_owned(),
                         span: span(),
+                        identity: Some(ConceptIdentity::MustScope),
                         dynamic: false,
                         associated_types: Vec::new(),
                         requirements: Vec::new(),
@@ -3541,8 +3695,10 @@ fn canonical_file_obligation_budget_exhaustion_fails_closed_without_marker_proof
         let concepts = with_marker
             .then(|| ConceptDef {
                 id: ConceptId(0),
+                module: "standard.resource".to_owned(),
                 name: "MustScope".to_owned(),
                 span: span(),
+                identity: Some(ConceptIdentity::MustScope),
                 dynamic: false,
                 associated_types: Vec::new(),
                 requirements: Vec::new(),
@@ -3886,7 +4042,7 @@ fn artifact_rejects_pre_witness_segmentation_version_sixteen_before_body_decode(
 
 #[test]
 fn artifact_rejects_raw_wait_version_seventeen_before_body_decode() {
-    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 21);
+    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 22);
     let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
     let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
     value["version"] = serde_json::json!(17);
@@ -6956,8 +7112,10 @@ fn conditional_concept_program() -> Program {
     };
     let concept = ConceptDef {
         id: ConceptId(0),
+        module: "test".to_owned(),
         name: "Equatable".to_owned(),
         span: span(),
+        identity: None,
         dynamic: false,
         associated_types: Vec::new(),
         requirements: vec![RequirementId(0)],
@@ -7166,8 +7324,10 @@ fn dynamic_source_metadata() -> (ConceptDef, RequirementDef) {
     (
         ConceptDef {
             id: ConceptId(0),
+            module: "test".to_owned(),
             name: "Source".to_owned(),
             span: span(),
+            identity: None,
             dynamic: true,
             associated_types: vec![AssociatedTypeDef {
                 name: "Item".to_owned(),
@@ -7405,16 +7565,20 @@ fn method_generics_have_explicit_type_arguments_and_method_proofs() {
     let concepts = vec![
         ConceptDef {
             id: ConceptId(0),
+            module: "test".to_owned(),
             name: "Equal".to_owned(),
             span: span(),
+            identity: None,
             dynamic: false,
             associated_types: Vec::new(),
             requirements: vec![RequirementId(0)],
         },
         ConceptDef {
             id: ConceptId(1),
+            module: "test".to_owned(),
             name: "Echo".to_owned(),
             span: span(),
+            identity: None,
             dynamic: false,
             associated_types: Vec::new(),
             requirements: vec![RequirementId(1)],
@@ -7571,8 +7735,10 @@ fn direct_calls_instantiate_associated_projection_from_resolved_proof() {
     };
     let concept = ConceptDef {
         id: ConceptId(0),
+        module: "test".to_owned(),
         name: "Source".to_owned(),
         span: span(),
+        identity: None,
         dynamic: false,
         associated_types: vec![AssociatedTypeDef {
             name: "Item".to_owned(),
@@ -7651,8 +7817,10 @@ fn parameter_witness_associated_projections_remain_symbolic() {
     };
     let source = ConceptDef {
         id: ConceptId(0),
+        module: "test".to_owned(),
         name: "Source".to_owned(),
         span: span(),
+        identity: None,
         dynamic: false,
         associated_types: vec![AssociatedTypeDef {
             name: "Item".to_owned(),
@@ -7662,8 +7830,10 @@ fn parameter_witness_associated_projections_remain_symbolic() {
     };
     let convert = ConceptDef {
         id: ConceptId(1),
+        module: "test".to_owned(),
         name: "Convert".to_owned(),
         span: span(),
+        identity: None,
         dynamic: false,
         associated_types: Vec::new(),
         requirements: vec![RequirementId(1)],
@@ -8394,8 +8564,10 @@ fn checked_boundary_rejects_uninitialized_double_init_and_use_after_move() {
 fn borrowed_view_carriers_protect_the_owner() {
     let concept = ConceptDef {
         id: ConceptId(0),
+        module: "test".to_owned(),
         name: "Viewable".to_owned(),
         span: span(),
+        identity: None,
         dynamic: true,
         associated_types: Vec::new(),
         requirements: Vec::new(),
@@ -8726,8 +8898,10 @@ fn borrowed_view_dynamic_dispatch_checks_the_witness_target() {
     };
     let concept = ConceptDef {
         id: ConceptId(0),
+        module: "test".to_owned(),
         name: "Viewable".to_owned(),
         span: span(),
+        identity: None,
         dynamic: true,
         associated_types: Vec::new(),
         requirements: vec![RequirementId(0)],
