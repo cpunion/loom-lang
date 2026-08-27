@@ -623,7 +623,7 @@ pub fn lower_typed_artifact(
             let output = substitution
                 .instantiate_type(&source.return_ty)
                 .map_err(|error| instantiation_defect(source.id, None, error))?;
-            let output = required_type(&builder, &output)?;
+            let output = required_type(&builder, &dyn_concepts, &output)?;
             let suspensions = source
                 .suspension_points
                 .iter()
@@ -649,7 +649,7 @@ pub fn lower_typed_artifact(
                             let ty = substitution.instantiate_type(&ty.ty).map_err(|error| {
                                 instantiation_defect(source.id, None, error)
                             })?;
-                            required_type(&builder, &ty)
+                            required_type(&builder, &dyn_concepts, &ty)
                         })
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(CoroutineSuspension::new(point.state, live))
