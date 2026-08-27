@@ -1053,29 +1053,39 @@ pub fn main() Unit {
 }
 
 #[test]
-fn dynamic_concept_calls_still_select_one_atomic_fallback() {
+fn competing_dynamic_concept_witnesses_select_one_atomic_fallback() {
     let LoweringOutcome::Unsupported(report) = lower_run(
         r"module dynamic_stays_erased
 
 dyn concept Truth { method truth(self) Bool }
 record Atom { value Bool }
+record Other { value Bool }
 impl Truth for Atom { method truth(self) Bool { self.value } }
+impl Truth for Other { method truth(self) Bool { self.value } }
+
+fn choose(first Bool) dyn Truth {
+    if first {
+        Atom { value = true }
+    } else {
+        Other { value = false }
+    }
+}
 
 fn erased(value Truth) Bool { value.truth() }
 
 pub fn main() Unit {
-    discard erased(Atom { value = true })
+    discard erased(choose(true))
     Unit
 }
 ",
     ) else {
-        panic!("dynamic dispatch must not be guessed into a static target")
+        panic!("competing dynamic witnesses must not be guessed into a static target")
     };
     assert!(
         report
             .items()
             .iter()
-            .any(|item| item.feature() == UnsupportedFeature::DynamicDispatch),
+            .any(|item| item.feature() == UnsupportedFeature::DynamicWitnessSet),
         "{report:?}"
     );
 }

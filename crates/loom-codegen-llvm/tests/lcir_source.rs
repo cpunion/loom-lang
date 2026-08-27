@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::process::{Command, Output};
 
 use loom_codegen_ir::{
-    CheckedArtifact, Effects, LoweringOutcome, SourceArtifactRequest, TargetLayout, dump_program,
-    lower_typed_artifact,
+    CheckedArtifact, Effects, LoweringOutcome, SourceArtifactRequest, TargetLayout,
+    UnsupportedFeature, dump_program, lower_typed_artifact,
 };
 use loom_codegen_llvm::{
     DebugSource, EmitOptions, NativeObjectOptions, NativeRouteKind, NativeRoutePolicy,
@@ -1219,6 +1219,10 @@ fn immortal_text_uses_one_pointer_and_allocation_free_runtime_abi_on_all_targets
     ] {
         assert!(dump.contains(expected), "missing `{expected}`:\n{dump}");
     }
+    assert!(
+        dump.matches("inout=[0]").count() >= 2,
+        "mutable interface and concrete method must both retain writeback:\n{dump}"
+    );
 
     let native = emit_and_run_lcir(&artifact, "source-immortal-text");
     let legacy = emit_and_run_legacy(&program, "main", "legacy-immortal-text");
@@ -2505,6 +2509,173 @@ fn static_concepts_emit_direct_msvc_object_without_runtime_witnesses() {
     ] {
         assert!(!ir.contains(forbidden), "unexpected `{forbidden}`:\n{ir}");
     }
+}
+
+#[test]
+fn core02_main_devirtualizes_unique_dynamic_witnesses_to_direct_calls() {
+    let source = include_str!("../../../examples/core02/concepts.loom");
+    let program = compile_source(source);
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    for expected in [
+        "example.concepts.label",
+        "example.concepts.format",
+        "example.concepts.next",
+        "example.concepts.static_label",
+        "example.concepts.dynamic_format",
+        "example.concepts.take_one",
+    ] {
+        assert!(dump.contains(expected), "missing `{expected}`:\n{dump}");
+    }
+    for dead in [
+        "example.concepts.erase_label",
+        "example.concepts.forward_label",
+        "example.concepts.erase_source",
+    ] {
+        assert!(!dump.contains(dead), "retained dead `{dead}`:\n{dump}");
+    }
+    assert!(
+        !dump.contains("View["),
+        "dyn representation leaked:\n{dump}"
+    );
+
+    let native = emit_and_run_lcir(&artifact, "source-core02-unique-dyn");
+    let legacy = emit_and_run_legacy(&program, "main", "legacy-core02-unique-dyn");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(native.output.stdout, legacy.stdout);
+    assert_eq!(native.output.stderr, legacy.stderr);
+    assert_no_legacy_surface(&native.ir);
+    assert_no_indirect_calls(&native.ir);
+    for forbidden in ["loom_witness_", "WitnessInstance", "loom_executor_"] {
+        assert!(
+            !native.ir.contains(forbidden),
+            "unexpected `{forbidden}`:\n{}",
+            native.ir
+        );
+    }
+}
+
+#[test]
+fn unique_dynamic_witness_dce_ignores_dead_conformances_and_method_slots() {
+    let source = include_str!("../../../fixtures/lcir-dyn-unique/main.loom");
+    let program = compile_source(source);
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert_eq!(interpreted.len(), 1, "{interpreted:#?}");
+    assert_eq!(
+        interpreted[0].status,
+        TestStatus::Passed,
+        "{interpreted:#?}"
+    );
+    let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("lcir_dyn_unique.read"), "{dump}");
+    assert!(dump.contains("lcir_dyn_unique.measure"), "{dump}");
+    assert!(
+        dump.matches("inout=[0]").count() >= 2,
+        "mutable interface and concrete method must both retain writeback:\n{dump}"
+    );
+    for dead in ["lcir_dyn_unique.cold", "UnusedCounter", "9001", "9002"] {
+        assert!(!dump.contains(dead), "retained dead `{dead}`:\n{dump}");
+    }
+
+    let native = emit_and_run_lcir(&artifact, "source-unique-dyn-dce");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert!(
+        String::from_utf8_lossy(&native.output.stdout)
+            .contains("passed lcir_dyn_unique.uniqueDynamicWitness"),
+        "{:?}",
+        native.output
+    );
+    assert_no_legacy_surface(&native.ir);
+    assert_no_indirect_calls(&native.ir);
+    for forbidden in ["lcir_dyn_unique.cold", "UnusedCounter", "loom_witness_"] {
+        assert!(
+            !native.ir.contains(forbidden),
+            "unexpected `{forbidden}`:\n{}",
+            native.ir
+        );
+    }
+
+    for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
+        let directory = tempfile::tempdir().expect("create dyn target output");
+        let object = directory.path().join(if target.contains("windows") {
+            "unique-dyn.obj"
+        } else {
+            "unique-dyn.o"
+        });
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                optimization: OptimizationProfile::Release,
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit unique dyn object for {target}: {error}"));
+        assert!(object.is_file(), "missing object for {target}");
+    }
+}
+
+#[test]
+fn competing_reachable_dynamic_witnesses_are_structured_unsupported() {
+    let source = r"
+module lcir_dyn_competing
+
+dyn concept Metric {
+    method read(self) Int
+}
+
+record First { value Int }
+record Second { value Int }
+
+impl Metric for First {
+    method read(self) Int { self.value }
+}
+
+impl Metric for Second {
+    method read(self) Int { self.value }
+}
+
+fn choose(first Bool) dyn Metric {
+    if first {
+        First { value = 1 }
+    } else {
+        Second { value = 2 }
+    }
+}
+
+pub fn main() Unit {
+    let metric = choose(true)
+    let measured = metric.read()
+    assert measured == 1
+}
+";
+    let program = compile_source(source);
+    let outcome = lower_typed_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        host_layout(),
+    )
+    .expect("classify competing dynamic witnesses");
+    let LoweringOutcome::Unsupported(report) = outcome else {
+        panic!("competing dynamic witnesses unexpectedly produced typed LCIR");
+    };
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::DynamicWitnessSet),
+        "{report:?}"
+    );
 }
 
 #[test]

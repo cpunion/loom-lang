@@ -175,6 +175,13 @@ domains advance because the planner now normalizes associated projections,
 closes witness-method edges, and rejects open type or proof arguments before a
 checked LCIR program can be emitted.
 
+Closed-world unique-witness dynamic-concept erasure also adds no physical ABI
+or LCIR opcode. A proved view reuses its concrete registered value type and an
+existing direct-call instance; mutable parameters reuse existing typed inout
+writebacks. Because no runtime witness, tag, indirect-call surface, or artifact
+format is added, LCIR dump 17, artifact schema 18, native-object domain v14,
+object-cache domain v19, and native runtime ABI component 14 remain unchanged.
+
 ## Toolchain releases
 
 The repository uses SemVer-shaped Cargo versions. While the toolchain is below

@@ -24,6 +24,7 @@ mod artifact;
 mod artifact_identity;
 mod builder;
 mod dump;
+mod dyn_plan;
 mod ids;
 mod instance;
 mod instance_closure;
