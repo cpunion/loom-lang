@@ -973,6 +973,77 @@ fn typed_async_cleanup_closes_real_check_build_test_and_run_commands() {
 }
 
 #[test]
+fn typed_async_writeback_closes_real_check_build_test_and_run_commands() {
+    let project = TestProject::new(include_str!(
+        "../../../fixtures/lcir-async-writeback/main.loom"
+    ));
+
+    let check = loomc()
+        .args(["--no-cache", "check"])
+        .arg(&project.0)
+        .output()
+        .expect("check async-writeback source through the production CLI");
+    assert_eq!(check.status.code(), Some(0), "{check:?}");
+
+    let object_path = project.0.join("async-writeback.o");
+    let build = loomc()
+        .args(["--no-cache", "build", "--emit", "object", "--output"])
+        .arg(&object_path)
+        .arg(&project.0)
+        .output()
+        .expect("build async-writeback source through the production CLI");
+    assert_eq!(build.status.code(), Some(0), "{build:?}");
+    let object = fs::read(object_path).expect("read async-writeback object");
+    for required in [
+        b"loom.lcir.fn".as_slice(),
+        b"loom.lcir.coroutine.resume",
+        b"loom.lcir.dyn.descriptor",
+        b"loom_task_join_step",
+        b"loom_typed_task_take_result_v1",
+    ] {
+        assert!(
+            contains_bytes(&object, required),
+            "typed async-writeback object omitted `{}`",
+            String::from_utf8_lossy(required)
+        );
+    }
+    for forbidden in [
+        b"loom.fn.".as_slice(),
+        b"loom.Value",
+        b"ValueNode",
+        b"loom_witness_",
+        b"loom_join_create",
+        b"loom_task_write_join_result",
+    ] {
+        assert!(
+            !contains_bytes(&object, forbidden),
+            "typed async-writeback object exposed `{}`",
+            String::from_utf8_lossy(forbidden)
+        );
+    }
+
+    let tests = loomc()
+        .args(["--no-cache", "test"])
+        .arg(&project.0)
+        .output()
+        .expect("test async-writeback source through the production CLI");
+    assert_eq!(tests.status.code(), Some(0), "{tests:?}");
+    assert!(
+        String::from_utf8_lossy(&tests.stdout)
+            .contains("passed lcir_async_writeback.synchronousWritebackInsideCoroutine"),
+        "{tests:?}"
+    );
+
+    let run = loomc()
+        .args(["--no-cache", "run"])
+        .arg(&project.0)
+        .output()
+        .expect("run async-writeback source through the production CLI");
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    assert_eq!(run.stdout, b"Unit\n");
+}
+
+#[test]
 fn generic_native_commands_close_check_build_test_and_run() {
     let project = TestProject::new(include_str!("../../../fixtures/lcir-generics/main.loom"));
 
