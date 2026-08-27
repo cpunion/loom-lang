@@ -1090,10 +1090,6 @@ pub enum TerminatorKind {
 }
 
 impl TerminatorKind {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the closed terminator operand table is intentionally exhaustive in one place"
-    )]
     pub(crate) fn operands(&self) -> Vec<ValueId> {
         match self {
             Self::Jump(target) => target.arguments.to_vec(),

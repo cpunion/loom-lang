@@ -2833,34 +2833,32 @@ fn scan_effect_expr(
             ..
         } => {
             let continues = scan_effect_exprs(program, fields, summary);
-            if continues {
-                if *construction == mir::ConstructionMode::Recheck {
-                    summary.include(Effects::MAY_FAULT);
-                } else if *construction == mir::ConstructionMode::Runtime
-                    && program.type_def(*ty).is_some_and(|definition| {
-                        let mir::TypeDefKind::Record {
-                            invariant: Some(invariant),
-                            ..
-                        } = &definition.kind
-                        else {
-                            return false;
-                        };
-                        contract_expr_may_fault(
-                            program,
-                            &invariant.expression,
-                            &ContractTypeContext {
-                                receiver: Some(Type::Nominal(*ty, Vec::new())),
-                                result: None,
-                                arguments: Vec::new(),
-                                old_receiver: None,
-                                old_arguments: Vec::new(),
-                                bindings: Vec::new(),
-                            },
-                        )
-                    })
-                {
-                    summary.include(Effects::MAY_FAULT);
-                }
+            if continues
+                && (*construction == mir::ConstructionMode::Recheck
+                    || (*construction == mir::ConstructionMode::Runtime
+                        && program.type_def(*ty).is_some_and(|definition| {
+                            let mir::TypeDefKind::Record {
+                                invariant: Some(invariant),
+                                ..
+                            } = &definition.kind
+                            else {
+                                return false;
+                            };
+                            contract_expr_may_fault(
+                                program,
+                                &invariant.expression,
+                                &ContractTypeContext {
+                                    receiver: Some(Type::Nominal(*ty, Vec::new())),
+                                    result: None,
+                                    arguments: Vec::new(),
+                                    old_receiver: None,
+                                    old_arguments: Vec::new(),
+                                    bindings: Vec::new(),
+                                },
+                            )
+                        })))
+            {
+                summary.include(Effects::MAY_FAULT);
             }
             continues
         }
@@ -2872,30 +2870,29 @@ fn scan_effect_expr(
             ..
         } => {
             let continues = scan_effect_expr(program, value, summary);
-            if continues {
-                if *construction == mir::ConstructionMode::Recheck {
-                    summary.include(Effects::MAY_FAULT);
-                } else if *construction == mir::ConstructionMode::Runtime
-                    && program.type_def(*ty).is_some_and(|definition| {
-                        let mir::TypeDefKind::Refined { base, predicate } = &definition.kind else {
-                            return false;
-                        };
-                        contract_expr_may_fault(
-                            program,
-                            &predicate.expression,
-                            &ContractTypeContext {
-                                receiver: Some(base.clone()),
-                                result: None,
-                                arguments: Vec::new(),
-                                old_receiver: None,
-                                old_arguments: Vec::new(),
-                                bindings: Vec::new(),
-                            },
-                        )
-                    })
-                {
-                    summary.include(Effects::MAY_FAULT);
-                }
+            if continues
+                && (*construction == mir::ConstructionMode::Recheck
+                    || (*construction == mir::ConstructionMode::Runtime
+                        && program.type_def(*ty).is_some_and(|definition| {
+                            let mir::TypeDefKind::Refined { base, predicate } = &definition.kind
+                            else {
+                                return false;
+                            };
+                            contract_expr_may_fault(
+                                program,
+                                &predicate.expression,
+                                &ContractTypeContext {
+                                    receiver: Some(base.clone()),
+                                    result: None,
+                                    arguments: Vec::new(),
+                                    old_receiver: None,
+                                    old_arguments: Vec::new(),
+                                    bindings: Vec::new(),
+                                },
+                            )
+                        })))
+            {
+                summary.include(Effects::MAY_FAULT);
             }
             continues
         }
@@ -6252,6 +6249,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "accepted and disclosure-safe rejected record construction share one typed control-flow boundary"
+    )]
     fn lower_runtime_checked_record(
         &mut self,
         mut flow: Flow,
@@ -6393,6 +6394,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         )
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "accepted and disclosure-safe rejected refinement construction share one typed control-flow boundary"
+    )]
     fn lower_runtime_checked_refinement(
         &mut self,
         flow: Flow,
