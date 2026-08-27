@@ -21,7 +21,7 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
 | LLVM object-cache domain | `loom-llvm-object-cache-v11` |
 | Runtime bundle manifest | schema `2` |
-| Native runtime ABI component | `8` |
+| Native runtime ABI component | `9` |
 | Coroutine/Task ABI component | `2` |
 | Wait ABI component | `1` |
 | Standard-library ABI component | `4` |
@@ -32,10 +32,12 @@ bundles compare the whole identity, not only the numeric runtime component.
 
 LCIR's literal-only direct `Text` representation adds a new physical pointer
 ABI and new IR operations. It therefore advances the dump, artifact identity,
-LCIR native-object, and CLI object-cache domains shown above. It reuses the
-existing native text layout descriptor and containment-helper symbols, so the
-native runtime ABI identity and its component versions do not advance for this
-compiler-only coverage change.
+LCIR native-object, and CLI object-cache domains shown above. That literal-only
+compiler change reuses the existing native text layout descriptor and helper
+symbols. The subsequent runtime-only typed moving-GC foundation independently
+advances the native runtime component to `9`, GC identity to `gc-v8`, and adds
+`typed-gc-v1` plus `typed-shadow-stack-v1` identity components. LCIR does not
+yet emit the new allocation or root symbols.
 
 The transitive LCIR effect lattice adds explicit runtime, collection,
 executor, and suspension capability identity even though current typed source

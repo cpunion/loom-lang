@@ -7,17 +7,21 @@
 //! therefore relocate objects without pinning or exposing addresses to source
 //! programs.
 
+use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 use std::cell::{Cell, UnsafeCell};
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
-use std::mem::size_of;
-use std::ptr;
+use std::mem::{align_of, size_of};
+use std::ptr::{self, NonNull};
 use std::sync::atomic::Ordering;
 
 use loom_runtime_abi::{
-    DYN_FLAG_MUTABLE, GC_ABI_MISMATCH, GC_FRAME_ORDER, GC_INVALID_ARGUMENT, GC_OK,
-    GC_ROOT_FRAME_LINKED, GC_ROOT_STACK_NOT_EMPTY, LoomGcRootDescriptor, LoomGcRootFrame,
-    LoomWitnessInstance, SHADOW_STACK_ABI_VERSION, TASK_COMPLETED, VALUE_SLOT_WORDS,
+    DYN_FLAG_MUTABLE, GC_ABI_MISMATCH, GC_DESCRIPTOR_INVALID, GC_FRAME_ORDER, GC_INVALID_ARGUMENT,
+    GC_MAX_OBJECT_ALIGNMENT, GC_MAX_OBJECT_BYTES, GC_MAX_OBJECT_POINTERS, GC_MAX_ROOT_BITMAP_WORDS,
+    GC_MAX_ROOT_DEPTH, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, GC_OK, GC_RESOURCE_LIMIT,
+    GC_ROOT_FRAME_LINKED, GC_ROOT_STACK_NOT_EMPTY, LoomGcObjectDescriptor, LoomGcRootDescriptor,
+    LoomGcRootFrame, LoomGcTypedRootDescriptor, LoomGcTypedRootFrame, LoomWitnessInstance,
+    SHADOW_STACK_ABI_VERSION, TASK_COMPLETED, TYPED_GC_ABI_VERSION, TYPED_SHADOW_STACK_ABI_VERSION,
     VALUE_TAG_CONSTRAINT_ERROR, VALUE_TAG_DYN, VALUE_TAG_ENUM, VALUE_TAG_LIST, VALUE_TAG_RECORD,
     VALUE_TAG_REFINED, VALUE_TAG_TASK_OUTCOME, VALUE_TAG_TEXT, VALUE_TAG_TUPLE, VALUE_WORD_AUX,
     VALUE_WORD_DATA, VALUE_WORD_SCALAR, VALUE_WORD_TAG, VALUE_WORD_WITNESS,
@@ -37,6 +41,68 @@ pub(crate) struct ListNodeIndex {
 
 pub(crate) const MIN_GC_THRESHOLD_BYTES: usize = 64 * 1024;
 
+struct TypedAllocation {
+    pointer: NonNull<u8>,
+    layout: Layout,
+    pointer_offsets: Box<[usize]>,
+}
+
+impl TypedAllocation {
+    fn new(layout: Layout, pointer_offsets: Box<[usize]>) -> Self {
+        // SAFETY: descriptor validation constructed a nonzero, valid Layout.
+        let pointer = unsafe { alloc_zeroed(layout) };
+        let Some(pointer) = NonNull::new(pointer) else {
+            handle_alloc_error(layout);
+        };
+        Self {
+            pointer,
+            layout,
+            pointer_offsets,
+        }
+    }
+
+    fn evacuate(&self) -> Self {
+        let replacement = Self::new(self.layout, self.pointer_offsets.clone());
+        // SAFETY: both allocations have the same non-overlapping valid Layout.
+        unsafe {
+            ptr::copy_nonoverlapping(
+                self.pointer.as_ptr(),
+                replacement.pointer.as_ptr(),
+                self.layout.size(),
+            );
+        }
+        replacement
+    }
+
+    fn address(&self) -> usize {
+        self.pointer.as_ptr() as usize
+    }
+
+    fn pointer(&self) -> *mut c_void {
+        self.pointer.as_ptr().cast()
+    }
+
+    fn allocation_bytes(&self) -> usize {
+        self.layout.size()
+    }
+
+    #[allow(clippy::cast_ptr_alignment)]
+    unsafe fn pointer_cell(&self, offset: usize) -> *mut *mut c_void {
+        debug_assert!(offset + size_of::<*mut c_void>() <= self.layout.size());
+        // Descriptor validation guarantees both the allocation alignment and
+        // the offset's pointer alignment before metadata reaches this object.
+        unsafe { self.pointer.as_ptr().add(offset).cast::<*mut c_void>() }
+    }
+}
+
+impl Drop for TypedAllocation {
+    fn drop(&mut self) {
+        // SAFETY: this allocation was created with the same Layout and remains
+        // uniquely owned by this side table entry.
+        unsafe { dealloc(self.pointer.as_ptr(), self.layout) };
+    }
+}
+
 /// Runtime-owned storage for managed Loom values.
 ///
 /// The heap is deliberately independent from the async reactor and scheduler:
@@ -48,6 +114,9 @@ pub(crate) struct LoomHeap {
     pub(crate) values: Vec<Box<ValueSlot>>,
     pub(crate) nodes: Vec<Box<ValueNode>>,
     pub(crate) sequences: Vec<Box<[u64]>>,
+    /// Precisely described typed objects. Object bytes contain no universal
+    /// tag; the side table owns copied fixed-pointer offsets for tracing.
+    typed_objects: Vec<TypedAllocation>,
     /// Derived, non-owning indexes for native List chains. Collection clears
     /// these before relocating nodes, so they are never roots and never retain
     /// stale pointers across a safepoint.
@@ -76,6 +145,19 @@ pub(crate) struct LoomHeap {
     /// covers runtime helpers which do not issue an explicit safepoint.
     #[cfg(test)]
     pub(crate) collect_before_every_allocation: bool,
+}
+
+impl LoomHeap {
+    pub(crate) fn new() -> Self {
+        Self {
+            next_gc_threshold: MIN_GC_THRESHOLD_BYTES,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn typed_object_count(&self) -> usize {
+        self.typed_objects.len()
+    }
 }
 
 thread_local! {
@@ -198,64 +280,132 @@ pub unsafe extern "C" fn deactivate_runtime_v1(runtime: *mut LoomRuntime) -> i32
     leave_runtime()
 }
 
-unsafe fn validate_root_descriptor(
-    descriptor: *const LoomGcRootDescriptor,
+fn is_aligned_for<T>(pointer: *const T) -> bool {
+    !pointer.is_null() && (pointer as usize).is_multiple_of(align_of::<T>())
+}
+
+struct ValidatedRootShape {
+    slot_count: usize,
+    bitmap_words: usize,
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn validate_root_shape(
+    abi_version: u32,
+    expected_abi_version: u32,
+    flags: u32,
+    slot_count: u64,
+    state_count: u64,
+    live_bitmap_words: u64,
+    live_bitmaps: *const u64,
     validate_every_state: bool,
-) -> i32 {
-    let Some(descriptor) = (unsafe { descriptor.as_ref() }) else {
-        return GC_INVALID_ARGUMENT;
+    invalid_status: i32,
+) -> Result<ValidatedRootShape, i32> {
+    if abi_version != expected_abi_version {
+        return Err(GC_ABI_MISMATCH);
+    }
+    if flags != 0 || slot_count == 0 || state_count == 0 {
+        return Err(invalid_status);
+    }
+    if slot_count > GC_MAX_ROOT_SLOTS || state_count > GC_MAX_ROOT_STATES {
+        return Err(GC_RESOURCE_LIMIT);
+    }
+    let expected_bitmap_words = slot_count.div_ceil(64);
+    if live_bitmap_words != expected_bitmap_words {
+        return Err(invalid_status);
+    }
+    let Some(total_words) = state_count.checked_mul(live_bitmap_words) else {
+        return Err(GC_RESOURCE_LIMIT);
     };
-    if descriptor.abi_version != SHADOW_STACK_ABI_VERSION {
-        return GC_ABI_MISMATCH;
+    if total_words > GC_MAX_ROOT_BITMAP_WORDS {
+        return Err(GC_RESOURCE_LIMIT);
     }
-    if descriptor.flags != 0 {
-        return GC_INVALID_ARGUMENT;
+    if !is_aligned_for(live_bitmaps) {
+        return Err(invalid_status);
     }
-    let (Ok(slot_count), Ok(state_count), Ok(bitmap_words)) = (
-        usize::try_from(descriptor.slot_count),
-        usize::try_from(descriptor.state_count),
-        usize::try_from(descriptor.live_bitmap_words),
+    let (Ok(slot_count), Ok(state_count), Ok(bitmap_words), Ok(total_words)) = (
+        usize::try_from(slot_count),
+        usize::try_from(state_count),
+        usize::try_from(live_bitmap_words),
+        usize::try_from(total_words),
     ) else {
-        return GC_INVALID_ARGUMENT;
-    };
-    if slot_count == 0
-        || state_count == 0
-        || bitmap_words != slot_count.div_ceil(64)
-        || descriptor.live_bitmaps.is_null()
-    {
-        return GC_INVALID_ARGUMENT;
-    }
-    debug_assert_eq!(size_of::<ValueSlot>(), VALUE_SLOT_WORDS * size_of::<u64>());
-    let Some(total_words) = state_count.checked_mul(bitmap_words) else {
-        return GC_INVALID_ARGUMENT;
+        return Err(GC_RESOURCE_LIMIT);
     };
     if total_words > isize::MAX as usize / size_of::<u64>() {
-        return GC_INVALID_ARGUMENT;
+        return Err(GC_RESOURCE_LIMIT);
     }
     let tail_bits = slot_count % 64;
     if validate_every_state && tail_bits != 0 {
         let allowed = (1_u64 << tail_bits) - 1;
         for state in 0..state_count {
-            let Some(index) = state
-                .checked_mul(bitmap_words)
-                .and_then(|row| row.checked_add(bitmap_words - 1))
-            else {
-                return GC_INVALID_ARGUMENT;
-            };
-            // SAFETY: the immutable descriptor contract provides the checked
-            // state_count * live_bitmap_words table for every linked frame.
-            if unsafe { *descriptor.live_bitmaps.add(index) } & !allowed != 0 {
-                return GC_INVALID_ARGUMENT;
+            let index = state * bitmap_words + bitmap_words - 1;
+            // SAFETY: the descriptor contract provides the bounded immutable
+            // state_count * live_bitmap_words table checked above.
+            if unsafe { *live_bitmaps.add(index) } & !allowed != 0 {
+                return Err(invalid_status);
             }
         }
     }
-    GC_OK
+    Ok(ValidatedRootShape {
+        slot_count,
+        bitmap_words,
+    })
+}
+
+unsafe fn validate_root_descriptor(
+    descriptor: *const LoomGcRootDescriptor,
+    validate_every_state: bool,
+) -> Result<ValidatedRootShape, i32> {
+    if !is_aligned_for(descriptor) {
+        return Err(GC_INVALID_ARGUMENT);
+    }
+    // SAFETY: the ABI requires a readable descriptor at this aligned pointer.
+    let descriptor = unsafe { &*descriptor };
+    unsafe {
+        validate_root_shape(
+            descriptor.abi_version,
+            SHADOW_STACK_ABI_VERSION,
+            descriptor.flags,
+            descriptor.slot_count,
+            descriptor.state_count,
+            descriptor.live_bitmap_words,
+            descriptor.live_bitmaps,
+            validate_every_state,
+            GC_INVALID_ARGUMENT,
+        )
+    }
+}
+
+unsafe fn validate_typed_root_descriptor(
+    descriptor: *const LoomGcTypedRootDescriptor,
+    validate_every_state: bool,
+) -> Result<ValidatedRootShape, i32> {
+    if !is_aligned_for(descriptor) {
+        return Err(GC_INVALID_ARGUMENT);
+    }
+    // SAFETY: the ABI requires a readable descriptor at this aligned pointer.
+    let descriptor = unsafe { &*descriptor };
+    unsafe {
+        validate_root_shape(
+            descriptor.abi_version,
+            TYPED_SHADOW_STACK_ABI_VERSION,
+            descriptor.flags,
+            descriptor.slot_count,
+            descriptor.state_count,
+            descriptor.live_bitmap_words,
+            descriptor.live_bitmaps,
+            validate_every_state,
+            GC_DESCRIPTOR_INVALID,
+        )
+    }
 }
 
 unsafe fn validate_root_frame(frame: *const LoomGcRootFrame, linked: bool) -> i32 {
-    let Some(frame) = (unsafe { frame.as_ref() }) else {
+    if !is_aligned_for(frame) {
         return GC_INVALID_ARGUMENT;
-    };
+    }
+    // SAFETY: the ABI requires a readable frame at this aligned pointer.
+    let frame = unsafe { &*frame };
     if frame.abi_version != SHADOW_STACK_ABI_VERSION {
         return GC_ABI_MISMATCH;
     }
@@ -263,39 +413,89 @@ unsafe fn validate_root_frame(frame: *const LoomGcRootFrame, linked: bool) -> i3
     if frame.flags != expected_flags || (!linked && !frame.previous.is_null()) {
         return GC_INVALID_ARGUMENT;
     }
-    let status = unsafe { validate_root_descriptor(frame.descriptor, !linked) };
-    if status != GC_OK {
-        return status;
-    }
+    let shape = match unsafe { validate_root_descriptor(frame.descriptor, !linked) } {
+        Ok(shape) => shape,
+        Err(status) => return status,
+    };
     // SAFETY: descriptor validation established this immutable descriptor.
     let descriptor = unsafe { &*frame.descriptor };
-    if frame.state >= descriptor.state_count || frame.slots.is_null() {
+    if frame.state >= descriptor.state_count || !is_aligned_for(frame.slots) {
         return GC_INVALID_ARGUMENT;
     }
-    let (Ok(slot_count), Ok(bitmap_words), Ok(state)) = (
-        usize::try_from(descriptor.slot_count),
-        usize::try_from(descriptor.live_bitmap_words),
-        usize::try_from(frame.state),
-    ) else {
+    let Ok(state) = usize::try_from(frame.state) else {
         return GC_INVALID_ARGUMENT;
     };
-    let Some(bitmap_row) = state.checked_mul(bitmap_words) else {
-        return GC_INVALID_ARGUMENT;
-    };
-    let tail_bits = slot_count % 64;
+    let bitmap_row = state * shape.bitmap_words;
+    let tail_bits = shape.slot_count % 64;
     if tail_bits != 0 {
         let allowed = (1_u64 << tail_bits) - 1;
-        let tail = unsafe { *descriptor.live_bitmaps.add(bitmap_row + bitmap_words - 1) };
+        let tail = unsafe {
+            *descriptor
+                .live_bitmaps
+                .add(bitmap_row + shape.bitmap_words - 1)
+        };
         if tail & !allowed != 0 {
             return GC_INVALID_ARGUMENT;
         }
     }
     if !linked {
-        for index in 0..slot_count {
+        for index in 0..shape.slot_count {
             // The slot-pointer array is immutable while the frame is linked,
             // so checking every entry once keeps safepoint polling O(depth).
-            if unsafe { (*frame.slots.add(index)).is_null() } {
+            let slot = unsafe { *frame.slots.add(index) };
+            if !is_aligned_for(slot.cast::<ValueSlot>()) {
                 return GC_INVALID_ARGUMENT;
+            }
+        }
+    }
+    GC_OK
+}
+
+unsafe fn validate_typed_root_frame(frame: *const LoomGcTypedRootFrame, linked: bool) -> i32 {
+    if !is_aligned_for(frame) {
+        return GC_INVALID_ARGUMENT;
+    }
+    // SAFETY: the ABI requires a readable frame at this aligned pointer.
+    let frame = unsafe { &*frame };
+    if frame.abi_version != TYPED_SHADOW_STACK_ABI_VERSION {
+        return GC_ABI_MISMATCH;
+    }
+    let expected_flags = if linked { GC_ROOT_FRAME_LINKED } else { 0 };
+    if frame.flags != expected_flags || (!linked && !frame.previous.is_null()) {
+        return GC_DESCRIPTOR_INVALID;
+    }
+    let shape = match unsafe { validate_typed_root_descriptor(frame.descriptor, !linked) } {
+        Ok(shape) => shape,
+        Err(status) => return status,
+    };
+    // SAFETY: descriptor validation established this immutable descriptor.
+    let descriptor = unsafe { &*frame.descriptor };
+    if frame.state >= descriptor.state_count || !is_aligned_for(frame.slots) {
+        return GC_DESCRIPTOR_INVALID;
+    }
+    let Ok(state) = usize::try_from(frame.state) else {
+        return GC_DESCRIPTOR_INVALID;
+    };
+    let bitmap_row = state * shape.bitmap_words;
+    let tail_bits = shape.slot_count % 64;
+    if tail_bits != 0 {
+        let allowed = (1_u64 << tail_bits) - 1;
+        let tail = unsafe {
+            *descriptor
+                .live_bitmaps
+                .add(bitmap_row + shape.bitmap_words - 1)
+        };
+        if tail & !allowed != 0 {
+            return GC_DESCRIPTOR_INVALID;
+        }
+    }
+    if !linked {
+        for index in 0..shape.slot_count {
+            // Typed entries point to writable pointer-sized cells. Validate
+            // each cell once while the array is still unlinked and immutable.
+            let slot = unsafe { *frame.slots.add(index) };
+            if !is_aligned_for(slot.cast::<*mut c_void>()) {
+                return GC_DESCRIPTOR_INVALID;
             }
         }
     }
@@ -310,6 +510,9 @@ unsafe fn visit_sync_roots(
 ) -> i32 {
     if frame.is_null() != (depth == 0) {
         return GC_FRAME_ORDER;
+    }
+    if depth > GC_MAX_ROOT_DEPTH {
+        return GC_RESOURCE_LIMIT;
     }
     let Ok(depth) = usize::try_from(depth) else {
         return GC_FRAME_ORDER;
@@ -352,6 +555,59 @@ unsafe fn visit_sync_roots(
     }
 }
 
+type TypedRootVisitor = unsafe extern "C" fn(*mut *mut c_void, *mut c_void);
+
+unsafe fn visit_typed_roots(
+    mut frame: *mut LoomGcTypedRootFrame,
+    depth: u64,
+    visitor: Option<TypedRootVisitor>,
+    context: *mut c_void,
+) -> i32 {
+    if frame.is_null() != (depth == 0) {
+        return GC_FRAME_ORDER;
+    }
+    if depth > GC_MAX_ROOT_DEPTH {
+        return GC_RESOURCE_LIMIT;
+    }
+    let Ok(depth) = usize::try_from(depth) else {
+        return GC_FRAME_ORDER;
+    };
+    for _ in 0..depth {
+        if frame.is_null() {
+            return GC_FRAME_ORDER;
+        }
+        let status = unsafe { validate_typed_root_frame(frame, true) };
+        if status != GC_OK {
+            return status;
+        }
+        // SAFETY: validation established a live descriptor, bitmap row and
+        // slot-pointer array for this compiler-created typed frame.
+        let frame_ref = unsafe { &*frame };
+        let descriptor = unsafe { &*frame_ref.descriptor };
+        let slot_count = usize::try_from(descriptor.slot_count).unwrap_or_else(|_| unreachable!());
+        let bitmap_words =
+            usize::try_from(descriptor.live_bitmap_words).unwrap_or_else(|_| unreachable!());
+        let state = usize::try_from(frame_ref.state).unwrap_or_else(|_| unreachable!());
+        let bitmap_row = state * bitmap_words;
+        if let Some(visitor) = visitor {
+            for index in 0..slot_count {
+                let word = unsafe { *descriptor.live_bitmaps.add(bitmap_row + index / 64) };
+                if word & (1_u64 << (index % 64)) != 0 {
+                    let root = unsafe { *frame_ref.slots.add(index) };
+                    unsafe { visitor(root.cast(), context) };
+                }
+            }
+        }
+        // SAFETY: a linked frame's previous field is runtime-owned state.
+        frame = unsafe { (*frame).previous };
+    }
+    if frame.is_null() {
+        GC_OK
+    } else {
+        GC_FRAME_ORDER
+    }
+}
+
 /// Links one compiler-described native frame into the active Runtime's precise
 /// shadow stack. Push is allocation-free and collection is never triggered by
 /// this operation.
@@ -369,14 +625,77 @@ pub unsafe extern "C" fn root_push_v1(frame: *mut LoomGcRootFrame) -> i32 {
     // process-local root chain. The validated frame remains live until pop.
     let runtime = unsafe { &mut *runtime };
     let Some(depth) = runtime.sync_root_depth.checked_add(1) else {
-        return GC_INVALID_ARGUMENT;
+        return GC_RESOURCE_LIMIT;
     };
+    if depth > GC_MAX_ROOT_DEPTH {
+        return GC_RESOURCE_LIMIT;
+    }
     unsafe {
         (*frame).previous = runtime.sync_root_top;
         (*frame).flags = GC_ROOT_FRAME_LINKED;
     }
     runtime.sync_root_top = frame;
     runtime.sync_root_depth = depth;
+    GC_OK
+}
+
+/// Links one compiler-described typed frame into the active Runtime's
+/// independent direct-pointer shadow stack. Push cannot collect or allocate.
+#[unsafe(export_name = "loom_gc_typed_root_push_v1")]
+pub unsafe extern "C" fn typed_root_push_v1(frame: *mut LoomGcTypedRootFrame) -> i32 {
+    let runtime = active_runtime_pointer();
+    if runtime.is_null() {
+        return GC_INVALID_ARGUMENT;
+    }
+    let status = unsafe { validate_typed_root_frame(frame, false) };
+    if status != GC_OK {
+        return status;
+    }
+    // SAFETY: ACTIVE_RUNTIME gives exclusive generated-code access to the
+    // independent typed root chain. The frame remains live until pop.
+    let runtime = unsafe { &mut *runtime };
+    let Some(depth) = runtime.typed_root_depth.checked_add(1) else {
+        return GC_RESOURCE_LIMIT;
+    };
+    if depth > GC_MAX_ROOT_DEPTH {
+        return GC_RESOURCE_LIMIT;
+    }
+    unsafe {
+        (*frame).previous = runtime.typed_root_top;
+        (*frame).flags = GC_ROOT_FRAME_LINKED;
+    }
+    runtime.typed_root_top = frame;
+    runtime.typed_root_depth = depth;
+    GC_OK
+}
+
+/// Pops exactly the most recently linked typed direct-pointer root frame.
+#[unsafe(export_name = "loom_gc_typed_root_pop_v1")]
+pub unsafe extern "C" fn typed_root_pop_v1(frame: *mut LoomGcTypedRootFrame) -> i32 {
+    let runtime = active_runtime_pointer();
+    if runtime.is_null() || frame.is_null() {
+        return GC_INVALID_ARGUMENT;
+    }
+    // SAFETY: ACTIVE_RUNTIME serializes typed root-chain mutation.
+    let runtime = unsafe { &mut *runtime };
+    if runtime.typed_root_top != frame || runtime.typed_root_depth == 0 {
+        return GC_FRAME_ORDER;
+    }
+    let status = unsafe { validate_typed_root_frame(frame, true) };
+    if status != GC_OK {
+        return status;
+    }
+    // SAFETY: top identity and linked-frame validation established ownership
+    // of these runtime-maintained fields.
+    runtime.typed_root_top = unsafe { (*frame).previous };
+    runtime.typed_root_depth -= 1;
+    unsafe {
+        (*frame).previous = ptr::null_mut();
+        (*frame).flags = 0;
+    }
+    if runtime.typed_root_top.is_null() != (runtime.typed_root_depth == 0) {
+        std::process::abort();
+    }
     GC_OK
 }
 
@@ -592,6 +911,139 @@ fn managed_allocation_slowpath(runtime: *mut LoomRuntime, incoming: usize) -> i3
     // allocator call. `force` is required because the projected charge, not
     // only the current charge, selected this boundary.
     unsafe { collect_active_runtime(runtime, true) }
+}
+
+struct ValidatedObjectShape {
+    layout: Layout,
+    pointer_offsets: Box<[usize]>,
+}
+
+unsafe fn validate_object_descriptor(
+    descriptor: *const LoomGcObjectDescriptor,
+    allocation_size: u64,
+) -> Result<ValidatedObjectShape, i32> {
+    if !is_aligned_for(descriptor) {
+        return Err(GC_INVALID_ARGUMENT);
+    }
+    // SAFETY: the ABI requires a readable descriptor at this aligned pointer.
+    let descriptor = unsafe { &*descriptor };
+    if descriptor.abi_version != TYPED_GC_ABI_VERSION {
+        return Err(GC_ABI_MISMATCH);
+    }
+    if descriptor.flags != 0
+        || descriptor.fixed_size == 0
+        || descriptor.fixed_size > allocation_size
+        || descriptor.object_align == 0
+        || !descriptor.object_align.is_power_of_two()
+    {
+        return Err(GC_DESCRIPTOR_INVALID);
+    }
+    if allocation_size > GC_MAX_OBJECT_BYTES
+        || descriptor.object_align > GC_MAX_OBJECT_ALIGNMENT
+        || descriptor.pointer_count > GC_MAX_OBJECT_POINTERS
+    {
+        return Err(GC_RESOURCE_LIMIT);
+    }
+    if (descriptor.pointer_count == 0) != descriptor.pointer_offsets.is_null() {
+        return Err(GC_DESCRIPTOR_INVALID);
+    }
+    if descriptor.pointer_count != 0
+        && (!is_aligned_for(descriptor.pointer_offsets)
+            || descriptor.object_align < align_of::<*mut c_void>() as u64)
+    {
+        return Err(GC_DESCRIPTOR_INVALID);
+    }
+    let (Ok(allocation_size), Ok(object_align), Ok(pointer_count), Ok(fixed_size)) = (
+        usize::try_from(allocation_size),
+        usize::try_from(descriptor.object_align),
+        usize::try_from(descriptor.pointer_count),
+        usize::try_from(descriptor.fixed_size),
+    ) else {
+        return Err(GC_RESOURCE_LIMIT);
+    };
+    let Ok(layout) = Layout::from_size_align(allocation_size, object_align) else {
+        return Err(GC_DESCRIPTOR_INVALID);
+    };
+    let mut pointer_offsets = Vec::with_capacity(pointer_count);
+    let mut previous = None;
+    for index in 0..pointer_count {
+        // SAFETY: the descriptor contract supplies the bounded immutable
+        // pointer-offset table checked above.
+        let raw_offset = unsafe { *descriptor.pointer_offsets.add(index) };
+        let Ok(offset) = usize::try_from(raw_offset) else {
+            return Err(GC_DESCRIPTOR_INVALID);
+        };
+        let Some(end) = offset.checked_add(size_of::<*mut c_void>()) else {
+            return Err(GC_DESCRIPTOR_INVALID);
+        };
+        if !offset.is_multiple_of(align_of::<*mut c_void>())
+            || end > fixed_size
+            || previous.is_some_and(|previous| offset <= previous)
+        {
+            return Err(GC_DESCRIPTOR_INVALID);
+        }
+        pointer_offsets.push(offset);
+        previous = Some(offset);
+    }
+    Ok(ValidatedObjectShape {
+        layout,
+        pointer_offsets: pointer_offsets.into_boxed_slice(),
+    })
+}
+
+/// Allocates one zero-initialized precisely described typed object.
+///
+/// The runtime copies all validated pointer offsets before any collection and
+/// never retains either caller metadata pointer. `allocation_size` may exceed
+/// the fixed pointer-bearing prefix only for pointer-free trailing bytes. The
+/// caller-owned output cell must have a stable non-heap address for this whole
+/// call because descriptor validation can be followed by a collection.
+pub(crate) unsafe fn allocate_typed_object(
+    descriptor: *const LoomGcObjectDescriptor,
+    allocation_size: u64,
+    output: *mut *mut c_void,
+) -> i32 {
+    if !is_aligned_for(output) {
+        return GC_INVALID_ARGUMENT;
+    }
+    // Publish null before descriptor validation or a collection boundary so a
+    // live output root can never expose partially initialized object bytes.
+    unsafe { output.write(ptr::null_mut()) };
+    let runtime = active_runtime_pointer();
+    if runtime.is_null() {
+        return GC_INVALID_ARGUMENT;
+    }
+    let shape = match unsafe { validate_object_descriptor(descriptor, allocation_size) } {
+        Ok(shape) => shape,
+        Err(status) => return status,
+    };
+    let status = managed_allocation_slowpath(runtime, shape.layout.size());
+    if status != GC_OK {
+        return status;
+    }
+    let allocation = TypedAllocation::new(shape.layout, shape.pointer_offsets);
+    let pointer = allocation.pointer();
+    // SAFETY: ACTIVE_RUNTIME serializes heap access. Collection completed
+    // before the heap borrow and the fresh zeroed allocation is not published
+    // until its validated metadata is owned by the heap.
+    unsafe {
+        (*runtime).heap.typed_objects.push(allocation);
+        (*runtime).heap.allocation_charge = (*runtime)
+            .heap
+            .allocation_charge
+            .saturating_add(shape.layout.size());
+        output.write(pointer);
+    }
+    GC_OK
+}
+
+#[unsafe(export_name = "loom_gc_typed_alloc_v1")]
+pub unsafe extern "C" fn typed_alloc_v1(
+    descriptor: *const LoomGcObjectDescriptor,
+    allocation_size: u64,
+    output: *mut *mut c_void,
+) -> i32 {
+    unsafe { allocate_typed_object(descriptor, allocation_size, output) }
 }
 
 #[unsafe(export_name = "loom_gc_alloc_value")]
@@ -1461,6 +1913,7 @@ struct HeapIndex {
     values: HashSet<usize>,
     nodes: HashSet<usize>,
     sequences: HashSet<usize>,
+    typed_objects: HashMap<usize, *const TypedAllocation>,
     witnesses: HashSet<usize>,
 }
 
@@ -1482,6 +1935,11 @@ impl HeapIndex {
                 .iter()
                 .map(|sequence| sequence.as_ptr() as usize)
                 .collect(),
+            typed_objects: heap
+                .typed_objects
+                .iter()
+                .map(|object| (object.address(), &raw const *object))
+                .collect(),
             witnesses: heap.witnesses.addresses().collect(),
         }
     }
@@ -1492,6 +1950,7 @@ struct Marks {
     values: HashSet<usize>,
     nodes: HashSet<usize>,
     sequences: HashSet<usize>,
+    typed_objects: HashSet<usize>,
     witnesses: HashSet<usize>,
     invalid_witness: bool,
 }
@@ -1510,6 +1969,66 @@ unsafe extern "C" fn trace_slot(slot: *mut c_void, context: *mut c_void) {
     let index = unsafe { &*context.index };
     let marks = unsafe { &mut *context.marks };
     trace_value(slot.cast::<ValueSlot>(), index, marks, &mut context.work);
+}
+
+struct TypedTraceContext {
+    index: *const HeapIndex,
+    marks: *mut Marks,
+    work: Vec<usize>,
+}
+
+unsafe extern "C" fn trace_typed_slot(slot: *mut *mut c_void, context: *mut c_void) {
+    if slot.is_null() || context.is_null() {
+        return;
+    }
+    let context = unsafe { &mut *context.cast::<TypedTraceContext>() };
+    let index = unsafe { &*context.index };
+    let marks = unsafe { &mut *context.marks };
+    // SAFETY: typed root-frame validation established writable pointer-sized
+    // storage for every live slot.
+    let pointer = unsafe { slot.read() };
+    trace_typed_pointer(pointer, index, marks, &mut context.work);
+}
+
+fn trace_typed_pointer(
+    pointer: *mut c_void,
+    index: &HeapIndex,
+    marks: &mut Marks,
+    work: &mut Vec<usize>,
+) {
+    debug_assert!(work.is_empty());
+    let address = pointer as usize;
+    if pointer.is_null()
+        || !index.typed_objects.contains_key(&address)
+        || !marks.typed_objects.insert(address)
+    {
+        return;
+    }
+    work.push(address);
+    while let Some(address) = work.pop() {
+        let allocation_pointer = index
+            .typed_objects
+            .get(&address)
+            .copied()
+            .unwrap_or_else(|| unreachable!());
+        // SAFETY: HeapIndex was built from the immutable typed-object vector,
+        // which is not swept or moved until tracing completes.
+        let allocation = unsafe { &*allocation_pointer };
+        for &offset in &allocation.pointer_offsets {
+            // SAFETY: descriptor validation proved every copied offset names
+            // an aligned pointer-sized cell inside this allocation.
+            let child = unsafe { allocation.pointer_cell(offset).read() };
+            let child_address = child as usize;
+            // Null and untracked immortal/static pointers are intentionally
+            // ignored. Only exact managed allocation bases enter the worklist.
+            if !child.is_null()
+                && index.typed_objects.contains_key(&child_address)
+                && marks.typed_objects.insert(child_address)
+            {
+                work.push(child_address);
+            }
+        }
+    }
 }
 
 enum TraceItem {
@@ -1689,6 +2208,10 @@ struct RewriteContext<'maps> {
     sequences: &'maps HashMap<usize, *mut c_void>,
 }
 
+struct TypedRewriteContext<'maps> {
+    typed_objects: &'maps HashMap<usize, *mut c_void>,
+}
+
 unsafe extern "C" fn rewrite_slot(slot: *mut c_void, context: *mut c_void) {
     if slot.is_null() || context.is_null() {
         return;
@@ -1700,6 +2223,33 @@ unsafe extern "C" fn rewrite_slot(slot: *mut c_void, context: *mut c_void) {
         context.nodes,
         context.sequences,
     );
+}
+
+unsafe extern "C" fn rewrite_typed_slot(slot: *mut *mut c_void, context: *mut c_void) {
+    if slot.is_null() || context.is_null() {
+        return;
+    }
+    let context = unsafe { &*context.cast::<TypedRewriteContext<'_>>() };
+    // SAFETY: typed root validation established pointer-sized writable storage.
+    let address = unsafe { slot.read() } as usize;
+    if let Some(pointer) = context.typed_objects.get(&address) {
+        unsafe { slot.write(*pointer) };
+    }
+}
+
+fn rewrite_typed_object(
+    allocation: &mut TypedAllocation,
+    typed_objects: &HashMap<usize, *mut c_void>,
+) {
+    for &offset in &allocation.pointer_offsets {
+        // SAFETY: copied descriptor metadata proved this aligned cell is fully
+        // inside the allocation, and collection has exclusive heap access.
+        let slot = unsafe { allocation.pointer_cell(offset) };
+        let address = unsafe { slot.read() } as usize;
+        if let Some(pointer) = typed_objects.get(&address) {
+            unsafe { slot.write(*pointer) };
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1719,6 +2269,8 @@ fn collect_executor(executor: &mut LoomExecutor, force: bool) {
     let runtime_ref = unsafe { &mut *runtime };
     let root_top = runtime_ref.sync_root_top;
     let root_depth = runtime_ref.sync_root_depth;
+    let typed_root_top = runtime_ref.typed_root_top;
+    let typed_root_depth = runtime_ref.typed_root_depth;
     // SAFETY: the attached runtime and executor are separate stable
     // allocations. The scheduler owns `&mut executor` at this safepoint, so
     // no generated code can access the heap while its task roots are traced.
@@ -1728,6 +2280,8 @@ fn collect_executor(executor: &mut LoomExecutor, force: bool) {
             &mut executor.tasks,
             root_top,
             root_depth,
+            typed_root_top,
+            typed_root_depth,
             force,
         )
     };
@@ -1739,9 +2293,10 @@ fn collect_executor(executor: &mut LoomExecutor, force: bool) {
 /// Runs an explicit precise moving collection for the active Runtime.
 ///
 /// Managed allocation slowpaths share this collector but do not call the
-/// exported symbol. The compiler must publish every live native `Value` in a
-/// pushed root frame before calling either this safepoint or a managed
-/// allocator; attached coroutine Task roots are traced in the same collection.
+/// exported symbol. The compiler must publish every live universal `Value` or
+/// typed managed pointer in its matching root chain before calling either this
+/// safepoint or a managed allocator; attached coroutine Task roots are traced
+/// in the same collection.
 #[unsafe(export_name = "loom_gc_safepoint_v1")]
 pub unsafe extern "C" fn safepoint_v1() -> i32 {
     let runtime = active_runtime_pointer();
@@ -1757,6 +2312,8 @@ unsafe fn collect_active_runtime(runtime: *mut LoomRuntime, force: bool) -> i32 
     let runtime_ref = unsafe { &mut *runtime };
     let root_top = runtime_ref.sync_root_top;
     let root_depth = runtime_ref.sync_root_depth;
+    let typed_root_top = runtime_ref.typed_root_top;
+    let typed_root_depth = runtime_ref.typed_root_depth;
     let executor = runtime_ref
         .attached_executor_pointer()
         .cast::<LoomExecutor>();
@@ -1768,6 +2325,8 @@ unsafe fn collect_active_runtime(runtime: *mut LoomRuntime, force: bool) -> i32 
                 &mut no_tasks,
                 root_top,
                 root_depth,
+                typed_root_top,
+                typed_root_depth,
                 force,
             )
         };
@@ -1784,9 +2343,24 @@ unsafe fn collect_active_runtime(runtime: *mut LoomRuntime, force: bool) -> i32 
             &mut executor_ref.tasks,
             root_top,
             root_depth,
+            typed_root_top,
+            typed_root_depth,
             force,
         )
     }
+}
+
+unsafe fn validate_root_chains(
+    root_top: *mut LoomGcRootFrame,
+    root_depth: u64,
+    typed_root_top: *mut LoomGcTypedRootFrame,
+    typed_root_depth: u64,
+) -> i32 {
+    let status = unsafe { visit_sync_roots(root_top, root_depth, None, ptr::null_mut()) };
+    if status != GC_OK {
+        return status;
+    }
+    unsafe { visit_typed_roots(typed_root_top, typed_root_depth, None, ptr::null_mut()) }
 }
 
 unsafe fn collect_heap(
@@ -1794,9 +2368,12 @@ unsafe fn collect_heap(
     tasks: &mut [Box<LoomTask>],
     root_top: *mut LoomGcRootFrame,
     root_depth: u64,
+    typed_root_top: *mut LoomGcTypedRootFrame,
+    typed_root_depth: u64,
     force: bool,
 ) -> i32 {
-    let root_status = unsafe { visit_sync_roots(root_top, root_depth, None, ptr::null_mut()) };
+    let root_status =
+        unsafe { validate_root_chains(root_top, root_depth, typed_root_top, typed_root_depth) };
     if root_status != GC_OK {
         return root_status;
     }
@@ -1814,6 +2391,7 @@ unsafe fn collect_heap(
     if heap.values.is_empty()
         && heap.nodes.is_empty()
         && heap.sequences.is_empty()
+        && heap.typed_objects.is_empty()
         && heap.witnesses.is_empty()
     {
         heap.allocation_charge = 0;
@@ -1823,6 +2401,11 @@ unsafe fn collect_heap(
     let index = HeapIndex::new(heap);
     let mut marks = Marks::default();
     let mut trace_context = TraceContext {
+        index: &raw const index,
+        marks: &raw mut marks,
+        work: Vec::new(),
+    };
+    let mut typed_trace_context = TypedTraceContext {
         index: &raw const index,
         marks: &raw mut marks,
         work: Vec::new(),
@@ -1842,6 +2425,17 @@ unsafe fn collect_heap(
     if root_status != GC_OK {
         return root_status;
     }
+    let root_status = unsafe {
+        visit_typed_roots(
+            typed_root_top,
+            typed_root_depth,
+            Some(trace_typed_slot),
+            (&raw mut typed_trace_context).cast(),
+        )
+    };
+    if root_status != GC_OK {
+        return root_status;
+    }
     if marks.invalid_witness {
         return GC_INVALID_ARGUMENT;
     }
@@ -1851,6 +2445,7 @@ unsafe fn collect_heap(
         .len()
         .saturating_add(heap.nodes.len())
         .saturating_add(heap.sequences.len())
+        .saturating_add(heap.typed_objects.len())
         .saturating_add(heap.witnesses.len());
     heap.values
         .retain(|value| marks.values.contains(&((&raw const **value) as usize)));
@@ -1858,24 +2453,37 @@ unsafe fn collect_heap(
         .retain(|node| marks.nodes.contains(&((&raw const **node) as usize)));
     heap.sequences
         .retain(|sequence| marks.sequences.contains(&(sequence.as_ptr() as usize)));
+    heap.typed_objects
+        .retain(|object| marks.typed_objects.contains(&object.address()));
     heap.witnesses.retain_marked(&marks.witnesses);
     let after = heap
         .values
         .len()
         .saturating_add(heap.nodes.len())
         .saturating_add(heap.sequences.len())
+        .saturating_add(heap.typed_objects.len())
         .saturating_add(heap.witnesses.len());
     heap.reclaimed = heap
         .reclaimed
         .saturating_add((before.saturating_sub(after)) as u64);
 
-    unsafe { relocate_marked_heap(heap, tasks, root_top, root_depth) }
+    unsafe {
+        relocate_marked_heap(
+            heap,
+            tasks,
+            root_top,
+            root_depth,
+            typed_root_top,
+            typed_root_depth,
+        )
+    }
 }
 
 struct FromSpace {
     values: Vec<Box<ValueSlot>>,
     nodes: Vec<Box<ValueNode>>,
     sequences: Vec<Box<[u64]>>,
+    typed_objects: Vec<TypedAllocation>,
 }
 
 struct HeapRelocation {
@@ -1883,6 +2491,7 @@ struct HeapRelocation {
     values: HashMap<usize, *mut ValueSlot>,
     nodes: HashMap<usize, *mut ValueNode>,
     sequences: HashMap<usize, *mut c_void>,
+    typed_objects: HashMap<usize, *mut c_void>,
 }
 
 fn evacuate_marked_heap(heap: &mut LoomHeap) -> HeapRelocation {
@@ -1894,6 +2503,7 @@ fn evacuate_marked_heap(heap: &mut LoomHeap) -> HeapRelocation {
         values: std::mem::take(&mut heap.values),
         nodes: std::mem::take(&mut heap.nodes),
         sequences: std::mem::take(&mut heap.sequences),
+        typed_objects: std::mem::take(&mut heap.typed_objects),
     };
 
     let mut values = Vec::with_capacity(from_space.values.len());
@@ -1926,9 +2536,19 @@ fn evacuate_marked_heap(heap: &mut LoomHeap) -> HeapRelocation {
         sequences.push(replacement);
         sequence_moves.insert(old, new);
     }
+    let mut typed_objects = Vec::with_capacity(from_space.typed_objects.len());
+    let mut typed_object_moves = HashMap::with_capacity(from_space.typed_objects.len());
+    for object in &from_space.typed_objects {
+        let old = object.address();
+        let replacement = object.evacuate();
+        let new = replacement.pointer();
+        typed_objects.push(replacement);
+        typed_object_moves.insert(old, new);
+    }
     heap.values = values;
     heap.nodes = nodes;
     heap.sequences = sequences;
+    heap.typed_objects = typed_objects;
     debug_assert!(
         value_moves
             .values()
@@ -1944,11 +2564,17 @@ fn evacuate_marked_heap(heap: &mut LoomHeap) -> HeapRelocation {
             .values()
             .all(|pointer| !sequence_moves.contains_key(&(*pointer as usize)))
     );
+    debug_assert!(
+        typed_object_moves
+            .values()
+            .all(|pointer| !typed_object_moves.contains_key(&(*pointer as usize)))
+    );
     HeapRelocation {
         from_space,
         values: value_moves,
         nodes: node_moves,
         sequences: sequence_moves,
+        typed_objects: typed_object_moves,
     }
 }
 
@@ -1957,18 +2583,22 @@ unsafe fn relocate_marked_heap(
     tasks: &mut [Box<LoomTask>],
     root_top: *mut LoomGcRootFrame,
     root_depth: u64,
+    typed_root_top: *mut LoomGcTypedRootFrame,
+    typed_root_depth: u64,
 ) -> i32 {
     let HeapRelocation {
         from_space,
         values: value_moves,
         nodes: node_moves,
         sequences: sequence_moves,
+        typed_objects: typed_object_moves,
     } = evacuate_marked_heap(heap);
     heap.relocations = heap.relocations.saturating_add(
         (value_moves
             .len()
             .saturating_add(node_moves.len())
-            .saturating_add(sequence_moves.len())) as u64,
+            .saturating_add(sequence_moves.len())
+            .saturating_add(typed_object_moves.len())) as u64,
     );
 
     let mut rewrite_context = RewriteContext {
@@ -1996,6 +2626,20 @@ unsafe fn relocate_marked_heap(
     if root_status != GC_OK {
         return root_status;
     }
+    let mut typed_rewrite_context = TypedRewriteContext {
+        typed_objects: &typed_object_moves,
+    };
+    let root_status = unsafe {
+        visit_typed_roots(
+            typed_root_top,
+            typed_root_depth,
+            Some(rewrite_typed_slot),
+            (&raw mut typed_rewrite_context).cast(),
+        )
+    };
+    if root_status != GC_OK {
+        return root_status;
+    }
     for value in &mut heap.values {
         rewrite_value(value, &value_moves, &node_moves, &sequence_moves);
     }
@@ -2004,6 +2648,9 @@ unsafe fn relocate_marked_heap(
         if let Some(next) = node_moves.get(&(node.next as usize)) {
             node.next = *next;
         }
+    }
+    for object in &mut heap.typed_objects {
+        rewrite_typed_object(object, &typed_object_moves);
     }
     drop(from_space);
     let live_bytes = heap
@@ -2015,6 +2662,12 @@ unsafe fn relocate_marked_heap(
             heap.sequences
                 .iter()
                 .map(|sequence| sequence.len().saturating_mul(size_of::<u64>()))
+                .fold(0_usize, usize::saturating_add),
+        )
+        .saturating_add(
+            heap.typed_objects
+                .iter()
+                .map(TypedAllocation::allocation_bytes)
                 .fold(0_usize, usize::saturating_add),
         )
         .saturating_add(heap.witnesses.allocation_bytes());
@@ -2088,6 +2741,100 @@ mod tests {
         }
     }
 
+    struct TestTypedRootFrame<const ROOTS: usize> {
+        roots: Box<[*mut c_void; ROOTS]>,
+        slots: Box<[*mut c_void; ROOTS]>,
+        _live_bitmaps: Box<[u64]>,
+        _descriptor: Box<LoomGcTypedRootDescriptor>,
+        header: Box<LoomGcTypedRootFrame>,
+    }
+
+    impl<const ROOTS: usize> TestTypedRootFrame<ROOTS> {
+        fn new(state_count: usize, live_bitmaps: &[u64]) -> Self {
+            assert!(ROOTS > 0 && state_count > 0);
+            let bitmap_words = ROOTS.div_ceil(64);
+            assert_eq!(live_bitmaps.len(), state_count * bitmap_words);
+            let mut roots = Box::new([ptr::null_mut::<c_void>(); ROOTS]);
+            let slots = Box::new(std::array::from_fn(|index| {
+                (&raw mut roots[index]).cast::<c_void>()
+            }));
+            let live_bitmaps = live_bitmaps.to_vec().into_boxed_slice();
+            let descriptor = Box::new(LoomGcTypedRootDescriptor {
+                abi_version: TYPED_SHADOW_STACK_ABI_VERSION,
+                flags: 0,
+                slot_count: ROOTS as u64,
+                state_count: state_count as u64,
+                live_bitmap_words: bitmap_words as u64,
+                live_bitmaps: live_bitmaps.as_ptr(),
+            });
+            let header = Box::new(LoomGcTypedRootFrame {
+                abi_version: TYPED_SHADOW_STACK_ABI_VERSION,
+                flags: 0,
+                state: 0,
+                descriptor: &raw const *descriptor,
+                slots: slots.as_ptr(),
+                previous: ptr::null_mut(),
+            });
+            Self {
+                roots,
+                slots,
+                _live_bitmaps: live_bitmaps,
+                _descriptor: descriptor,
+                header,
+            }
+        }
+
+        fn all_live() -> Self {
+            let bitmap_words = ROOTS.div_ceil(64);
+            let mut bitmaps = vec![u64::MAX; bitmap_words];
+            let tail = ROOTS % 64;
+            if tail != 0 {
+                bitmaps[bitmap_words - 1] = (1_u64 << tail) - 1;
+            }
+            Self::new(1, &bitmaps)
+        }
+
+        fn pointer(&mut self) -> *mut LoomGcTypedRootFrame {
+            &raw mut *self.header
+        }
+    }
+
+    #[repr(C)]
+    struct TestTypedLeaf {
+        marker: u64,
+        checksum: u64,
+    }
+
+    #[repr(C)]
+    struct TestTypedParent {
+        child: *mut c_void,
+        marker: u64,
+    }
+
+    fn typed_leaf_descriptor() -> LoomGcObjectDescriptor {
+        LoomGcObjectDescriptor {
+            abi_version: TYPED_GC_ABI_VERSION,
+            flags: 0,
+            fixed_size: size_of::<TestTypedLeaf>() as u64,
+            object_align: align_of::<TestTypedLeaf>() as u64,
+            pointer_count: 0,
+            pointer_offsets: ptr::null(),
+        }
+    }
+
+    unsafe fn typed_allocate(
+        descriptor: *const LoomGcObjectDescriptor,
+        allocation_size: usize,
+    ) -> *mut c_void {
+        let mut output = ptr::null_mut();
+        assert_eq!(
+            unsafe { typed_alloc_v1(descriptor, allocation_size as u64, &raw mut output) },
+            GC_OK,
+        );
+        assert!(!output.is_null());
+        output
+    }
+
     fn indirect(pointer: *mut ValueSlot) -> ValueSlot {
         let mut value = ValueSlot::default();
         value.words[VALUE_WORD_TAG] = VALUE_TAG_REFINED;
@@ -2133,6 +2880,446 @@ mod tests {
 
     unsafe fn force_next_safepoint(runtime: *mut LoomRuntime) {
         unsafe { (*runtime).heap.next_gc_threshold = 0 };
+    }
+
+    #[test]
+    fn typed_graph_moves_rewrites_aliases_and_reclaims_without_an_executor() {
+        static IMMORTAL_WORD: u64 = 0xdecaf_bad5eed;
+        const TRAILING_BYTES: &[u8] = b"trailing-typed-bytes";
+
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let mut frame = TestTypedRootFrame::<3>::all_live();
+        let leaf_descriptor = typed_leaf_descriptor();
+        let mut parent_offsets = [0_u64];
+        let mut parent_descriptor = LoomGcObjectDescriptor {
+            abi_version: TYPED_GC_ABI_VERSION,
+            flags: 0,
+            fixed_size: size_of::<TestTypedParent>() as u64,
+            object_align: align_of::<TestTypedParent>() as u64,
+            pointer_count: parent_offsets.len() as u64,
+            pointer_offsets: parent_offsets.as_ptr(),
+        };
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            assert!((*runtime).attached_executor_pointer().is_null());
+            assert_eq!(typed_root_push_v1(frame.pointer()), GC_OK);
+
+            let child_allocation_size = size_of::<TestTypedLeaf>() + TRAILING_BYTES.len();
+            let original_child = typed_allocate(&raw const leaf_descriptor, child_allocation_size)
+                .cast::<TestTypedLeaf>();
+            assert_eq!((*original_child).marker, 0);
+            assert_eq!((*original_child).checksum, 0);
+            (*original_child).marker = 41;
+            (*original_child).checksum = 43;
+            ptr::copy_nonoverlapping(
+                TRAILING_BYTES.as_ptr(),
+                original_child.cast::<u8>().add(size_of::<TestTypedLeaf>()),
+                TRAILING_BYTES.len(),
+            );
+            frame.roots[0] = original_child.cast();
+
+            // Exercise the allocation safepoint: the child is direct-pointer
+            // rooted and must be reloaded after the parent allocation.
+            (*runtime).heap.collect_before_every_allocation = true;
+            let parent = typed_allocate(&raw const parent_descriptor, size_of::<TestTypedParent>())
+                .cast::<TestTypedParent>();
+            (*runtime).heap.collect_before_every_allocation = false;
+            assert_ne!(frame.roots[0], original_child.cast());
+            assert_eq!(
+                std::slice::from_raw_parts(
+                    frame.roots[0].cast::<u8>().add(size_of::<TestTypedLeaf>()),
+                    TRAILING_BYTES.len(),
+                ),
+                TRAILING_BYTES,
+            );
+            assert!((*parent).child.is_null());
+            assert_eq!((*parent).marker, 0);
+            (*parent).child = frame.roots[0];
+            (*parent).marker = 47;
+
+            frame.roots[0] = parent.cast();
+            frame.roots[1] = parent.cast();
+            frame.roots[2] = (&raw const IMMORTAL_WORD).cast_mut().cast();
+
+            // Allocation metadata is copied. Mutating caller-owned descriptor
+            // storage after allocation must not change the managed shape.
+            parent_offsets[0] = size_of::<*mut c_void>() as u64;
+            parent_descriptor.pointer_count = 0;
+            parent_descriptor.pointer_offsets = ptr::null();
+            assert_eq!(parent_offsets[0], size_of::<*mut c_void>() as u64);
+            assert_eq!(parent_descriptor.pointer_count, 0);
+            assert!(parent_descriptor.pointer_offsets.is_null());
+
+            let aligned_descriptor = LoomGcObjectDescriptor {
+                object_align: 64,
+                ..leaf_descriptor
+            };
+            let dead = typed_allocate(&raw const aligned_descriptor, size_of::<TestTypedLeaf>())
+                .cast::<TestTypedLeaf>();
+            assert_eq!((dead as usize) % 64, 0);
+            (*dead).marker = 99;
+            let old_parent = frame.roots[0];
+            let old_child = (*parent).child;
+            let immortal = frame.roots[2];
+
+            force_next_safepoint(runtime);
+            assert_eq!(safepoint_v1(), GC_OK);
+            assert_ne!(frame.roots[0], old_parent);
+            assert_eq!(frame.roots[0], frame.roots[1]);
+            assert_eq!(frame.roots[2], immortal);
+            let moved_parent = frame.roots[0].cast::<TestTypedParent>();
+            assert_eq!((*moved_parent).marker, 47);
+            assert_ne!((*moved_parent).child, old_child);
+            let moved_child = (*moved_parent).child.cast::<TestTypedLeaf>();
+            assert_eq!((*moved_child).marker, 41);
+            assert_eq!((*moved_child).checksum, 43);
+            assert_eq!(
+                std::slice::from_raw_parts(
+                    moved_child.cast::<u8>().add(size_of::<TestTypedLeaf>()),
+                    TRAILING_BYTES.len(),
+                ),
+                TRAILING_BYTES,
+            );
+            assert_eq!((*runtime).heap.typed_object_count(), 2);
+            assert_eq!((*runtime).heap.reclaimed, 1);
+            assert!((*runtime).attached_executor_pointer().is_null());
+
+            frame.roots[0] = ptr::null_mut();
+            frame.roots[1] = ptr::null_mut();
+            force_next_safepoint(runtime);
+            assert_eq!(safepoint_v1(), GC_OK);
+            assert_eq!((*runtime).heap.typed_object_count(), 0);
+            assert_eq!(frame.roots[2], immortal);
+
+            assert_eq!(typed_root_pop_v1(frame.pointer()), GC_OK);
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
+
+    #[test]
+    fn typed_cycles_are_traced_and_rewritten() {
+        let runtime = runtime_create_v1();
+        let mut frame = TestTypedRootFrame::<1>::all_live();
+        let pointer_offsets = [0_u64];
+        let descriptor = LoomGcObjectDescriptor {
+            abi_version: TYPED_GC_ABI_VERSION,
+            flags: 0,
+            fixed_size: size_of::<TestTypedParent>() as u64,
+            object_align: align_of::<TestTypedParent>() as u64,
+            pointer_count: 1,
+            pointer_offsets: pointer_offsets.as_ptr(),
+        };
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            assert_eq!(typed_root_push_v1(frame.pointer()), GC_OK);
+            let first = typed_allocate(&raw const descriptor, size_of::<TestTypedParent>())
+                .cast::<TestTypedParent>();
+            frame.roots[0] = first.cast();
+            let second = typed_allocate(&raw const descriptor, size_of::<TestTypedParent>())
+                .cast::<TestTypedParent>();
+            (*first).child = second.cast();
+            (*first).marker = 11;
+            (*second).child = first.cast();
+            (*second).marker = 13;
+
+            force_next_safepoint(runtime);
+            assert_eq!(safepoint_v1(), GC_OK);
+            let moved_first = frame.roots[0].cast::<TestTypedParent>();
+            let moved_second = (*moved_first).child.cast::<TestTypedParent>();
+            assert_ne!(moved_first, first);
+            assert_ne!(moved_second, second);
+            assert_eq!((*moved_first).marker, 11);
+            assert_eq!((*moved_second).marker, 13);
+            assert_eq!((*moved_second).child, moved_first.cast());
+            assert_eq!((*runtime).heap.typed_object_count(), 2);
+
+            frame.roots[0] = ptr::null_mut();
+            force_next_safepoint(runtime);
+            assert_eq!(safepoint_v1(), GC_OK);
+            assert_eq!((*runtime).heap.typed_object_count(), 0);
+            assert_eq!(typed_root_pop_v1(frame.pointer()), GC_OK);
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
+
+    #[test]
+    fn typed_root_state_selects_only_live_cells() {
+        let runtime = runtime_create_v1();
+        let mut frame = TestTypedRootFrame::<2>::new(2, &[0b01, 0b10]);
+        let descriptor = typed_leaf_descriptor();
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            assert_eq!(typed_root_push_v1(frame.pointer()), GC_OK);
+            let first = typed_allocate(&raw const descriptor, size_of::<TestTypedLeaf>());
+            let initially_dead = typed_allocate(&raw const descriptor, size_of::<TestTypedLeaf>());
+            frame.roots[0] = first;
+            frame.roots[1] = initially_dead;
+
+            force_next_safepoint(runtime);
+            assert_eq!(safepoint_v1(), GC_OK);
+            assert_eq!((*runtime).heap.typed_object_count(), 1);
+            assert_ne!(frame.roots[0], first);
+            assert_eq!(frame.roots[1], initially_dead);
+
+            let second = typed_allocate(&raw const descriptor, size_of::<TestTypedLeaf>());
+            frame.roots[1] = second;
+            frame.header.state = 1;
+            force_next_safepoint(runtime);
+            assert_eq!(safepoint_v1(), GC_OK);
+            assert_eq!((*runtime).heap.typed_object_count(), 1);
+            assert_ne!(frame.roots[1], second);
+
+            assert_eq!(typed_root_pop_v1(frame.pointer()), GC_OK);
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
+
+    #[test]
+    fn legacy_and_typed_roots_coexist_and_are_validated_before_collection() {
+        let runtime = runtime_create_v1();
+        let mut legacy = TestRootFrame::<1>::all_live();
+        let mut typed = TestTypedRootFrame::<1>::all_live();
+        let descriptor = typed_leaf_descriptor();
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            assert_eq!(root_push_v1(legacy.pointer()), GC_OK);
+            assert_eq!(typed_root_push_v1(typed.pointer()), GC_OK);
+            let legacy_before = allocate_value().cast::<ValueSlot>();
+            let typed_before = typed_allocate(&raw const descriptor, size_of::<TestTypedLeaf>());
+            legacy.roots[0] = indirect(legacy_before);
+            typed.roots[0] = typed_before;
+
+            force_next_safepoint(runtime);
+            let collections_before = (*runtime).heap.collections;
+            typed.header.state = 1;
+            assert_eq!(safepoint_v1(), GC_DESCRIPTOR_INVALID);
+            assert_eq!((*runtime).heap.collections, collections_before);
+            assert_eq!(legacy.roots[0].words[VALUE_WORD_DATA], legacy_before as u64);
+            assert_eq!(typed.roots[0], typed_before);
+
+            typed.header.state = 0;
+            assert_eq!(safepoint_v1(), GC_OK);
+            assert_ne!(legacy.roots[0].words[VALUE_WORD_DATA], legacy_before as u64);
+            assert_ne!(typed.roots[0], typed_before);
+            assert_eq!((*runtime).heap.values.len(), 1);
+            assert_eq!((*runtime).heap.typed_object_count(), 1);
+
+            // The chains are independent; cross-chain pop order is irrelevant.
+            assert_eq!(root_pop_v1(legacy.pointer()), GC_OK);
+            assert_eq!(deactivate_runtime_v1(runtime), GC_ROOT_STACK_NOT_EMPTY);
+            assert_eq!(typed_root_pop_v1(typed.pointer()), GC_OK);
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
+
+    #[test]
+    fn typed_allocation_descriptors_are_strict() {
+        let runtime = runtime_create_v1();
+        let base = typed_leaf_descriptor();
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            let mut output = ptr::dangling_mut::<c_void>();
+
+            let mut descriptor = base;
+            descriptor.abi_version += 1;
+            assert_eq!(
+                typed_alloc_v1(
+                    &raw const descriptor,
+                    descriptor.fixed_size,
+                    &raw mut output,
+                ),
+                GC_ABI_MISMATCH,
+            );
+            assert!(output.is_null());
+
+            descriptor = base;
+            descriptor.flags = 1;
+            assert_eq!(
+                typed_alloc_v1(
+                    &raw const descriptor,
+                    descriptor.fixed_size,
+                    &raw mut output,
+                ),
+                GC_DESCRIPTOR_INVALID,
+            );
+            descriptor = base;
+            descriptor.object_align = 3;
+            assert_eq!(
+                typed_alloc_v1(
+                    &raw const descriptor,
+                    descriptor.fixed_size,
+                    &raw mut output,
+                ),
+                GC_DESCRIPTOR_INVALID,
+            );
+            descriptor = base;
+            assert_eq!(
+                typed_alloc_v1(
+                    &raw const descriptor,
+                    descriptor.fixed_size - 1,
+                    &raw mut output,
+                ),
+                GC_DESCRIPTOR_INVALID,
+            );
+
+            let unaligned_offsets = [1_u64];
+            descriptor = base;
+            descriptor.pointer_count = 1;
+            descriptor.pointer_offsets = unaligned_offsets.as_ptr();
+            assert_eq!(
+                typed_alloc_v1(
+                    &raw const descriptor,
+                    descriptor.fixed_size,
+                    &raw mut output,
+                ),
+                GC_DESCRIPTOR_INVALID,
+            );
+            let descending_offsets = [8_u64, 0];
+            descriptor.pointer_count = 2;
+            descriptor.pointer_offsets = descending_offsets.as_ptr();
+            assert_eq!(
+                typed_alloc_v1(
+                    &raw const descriptor,
+                    descriptor.fixed_size,
+                    &raw mut output,
+                ),
+                GC_DESCRIPTOR_INVALID,
+            );
+            let outside_offsets = [16_u64];
+            descriptor.pointer_count = 1;
+            descriptor.pointer_offsets = outside_offsets.as_ptr();
+            assert_eq!(
+                typed_alloc_v1(
+                    &raw const descriptor,
+                    descriptor.fixed_size,
+                    &raw mut output,
+                ),
+                GC_DESCRIPTOR_INVALID,
+            );
+
+            assert!(output.is_null());
+            assert_eq!((*runtime).heap.typed_object_count(), 0);
+            assert_eq!((*runtime).heap.collections, 0);
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
+
+    #[test]
+    fn typed_allocation_resource_limits_and_inactive_runtime_are_rejected() {
+        let runtime = runtime_create_v1();
+        let base = typed_leaf_descriptor();
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            let mut output = ptr::dangling_mut::<c_void>();
+            let mut descriptor = base;
+            descriptor.pointer_count = GC_MAX_OBJECT_POINTERS + 1;
+            assert_eq!(
+                typed_alloc_v1(
+                    &raw const descriptor,
+                    descriptor.fixed_size,
+                    &raw mut output,
+                ),
+                GC_RESOURCE_LIMIT,
+            );
+            descriptor = base;
+            descriptor.object_align = GC_MAX_OBJECT_ALIGNMENT * 2;
+            assert_eq!(
+                typed_alloc_v1(
+                    &raw const descriptor,
+                    descriptor.fixed_size,
+                    &raw mut output,
+                ),
+                GC_RESOURCE_LIMIT,
+            );
+            descriptor = base;
+            assert_eq!(
+                typed_alloc_v1(
+                    &raw const descriptor,
+                    GC_MAX_OBJECT_BYTES + 1,
+                    &raw mut output,
+                ),
+                GC_RESOURCE_LIMIT,
+            );
+            assert!(output.is_null());
+            assert_eq!((*runtime).heap.typed_object_count(), 0);
+            assert_eq!((*runtime).heap.collections, 0);
+
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            output = ptr::dangling_mut::<c_void>();
+            assert_eq!(
+                typed_alloc_v1(&raw const base, base.fixed_size, &raw mut output,),
+                GC_INVALID_ARGUMENT,
+            );
+            assert!(output.is_null());
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
+
+    #[test]
+    fn universal_and_typed_root_maps_share_total_resource_bounds() {
+        let runtime = runtime_create_v1();
+        let bitmap = [0_u64];
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+
+            let typed_descriptor = LoomGcTypedRootDescriptor {
+                abi_version: TYPED_SHADOW_STACK_ABI_VERSION,
+                flags: 0,
+                slot_count: GC_MAX_ROOT_SLOTS,
+                state_count: GC_MAX_ROOT_BITMAP_WORDS / GC_MAX_ROOT_SLOTS.div_ceil(64) + 1,
+                live_bitmap_words: GC_MAX_ROOT_SLOTS.div_ceil(64),
+                live_bitmaps: bitmap.as_ptr(),
+            };
+            let mut typed_frame = LoomGcTypedRootFrame {
+                abi_version: TYPED_SHADOW_STACK_ABI_VERSION,
+                flags: 0,
+                state: 0,
+                descriptor: &raw const typed_descriptor,
+                slots: ptr::null(),
+                previous: ptr::null_mut(),
+            };
+            assert_eq!(typed_root_push_v1(&raw mut typed_frame), GC_RESOURCE_LIMIT,);
+
+            let legacy_descriptor = LoomGcRootDescriptor {
+                abi_version: SHADOW_STACK_ABI_VERSION,
+                flags: 0,
+                slot_count: typed_descriptor.slot_count,
+                state_count: typed_descriptor.state_count,
+                live_bitmap_words: typed_descriptor.live_bitmap_words,
+                live_bitmaps: bitmap.as_ptr(),
+            };
+            let mut legacy_frame = LoomGcRootFrame {
+                abi_version: SHADOW_STACK_ABI_VERSION,
+                flags: 0,
+                state: 0,
+                descriptor: &raw const legacy_descriptor,
+                slots: ptr::null(),
+                previous: ptr::null_mut(),
+            };
+            assert_eq!(root_push_v1(&raw mut legacy_frame), GC_RESOURCE_LIMIT);
+
+            let mut malformed = TestTypedRootFrame::<1>::new(1, &[0b10]);
+            assert_eq!(
+                typed_root_push_v1(malformed.pointer()),
+                GC_DESCRIPTOR_INVALID,
+            );
+            let mut bad_slot = TestTypedRootFrame::<1>::all_live();
+            bad_slot.slots[0] = ptr::dangling_mut::<c_void>();
+            bad_slot.header.slots = bad_slot.slots.as_ptr();
+            assert_eq!(
+                typed_root_push_v1(bad_slot.pointer()),
+                GC_DESCRIPTOR_INVALID,
+            );
+
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
     }
 
     #[test]
@@ -2507,16 +3694,21 @@ mod tests {
                 GC_OK,
             );
             assert_ne!(frame.roots[0].words[VALUE_WORD_DATA], inner_before);
-            let built = chain_values(
-                frame.roots[3].words[VALUE_WORD_DATA] as *const ValueNode,
-                inputs.len(),
-            );
-            assert_eq!(
-                built[0].words[VALUE_WORD_DATA],
-                frame.roots[0].words[VALUE_WORD_DATA]
-            );
-            assert_eq!(text::text_value_bytes(&built[1]), Some(&b"moving text"[..]),);
-            assert_eq!(built[2].words[VALUE_WORD_SCALAR], 303);
+            {
+                // This snapshot is valid only until the next managed
+                // allocation. Later assertions reload the rooted chain after
+                // clone_value's forced collection boundaries.
+                let built = chain_values(
+                    frame.roots[3].words[VALUE_WORD_DATA] as *const ValueNode,
+                    inputs.len(),
+                );
+                assert_eq!(
+                    built[0].words[VALUE_WORD_DATA],
+                    frame.roots[0].words[VALUE_WORD_DATA]
+                );
+                assert_eq!(text::text_value_bytes(&built[1]), Some(&b"moving text"[..]),);
+                assert_eq!(built[2].words[VALUE_WORD_SCALAR], 303);
+            }
 
             frame.roots[4].words[VALUE_WORD_TAG] = VALUE_TAG_TUPLE;
             frame.roots[4].words[VALUE_WORD_AUX] = inputs.len() as u64;
@@ -2530,23 +3722,40 @@ mod tests {
                 GC_OK,
             );
             assert!((*runtime).heap.collections >= collections_before + inputs.len() as u64);
+            let source = chain_values(
+                frame.roots[3].words[VALUE_WORD_DATA] as *const ValueNode,
+                inputs.len(),
+            );
             let cloned = chain_values(
                 frame.roots[5].words[VALUE_WORD_DATA] as *const ValueNode,
                 inputs.len(),
             );
+            assert_eq!(
+                source[0].words[VALUE_WORD_DATA],
+                frame.roots[0].words[VALUE_WORD_DATA],
+            );
             assert_eq!(cloned[0].words[VALUE_WORD_TAG], VALUE_TAG_REFINED);
             assert_ne!(
                 cloned[0].words[VALUE_WORD_DATA],
-                built[0].words[VALUE_WORD_DATA],
+                source[0].words[VALUE_WORD_DATA],
+            );
+            assert_eq!(
+                (*(source[0].words[VALUE_WORD_DATA] as *const ValueSlot)).words[VALUE_WORD_SCALAR],
+                101,
             );
             assert_eq!(
                 (*(cloned[0].words[VALUE_WORD_DATA] as *const ValueSlot)).words[VALUE_WORD_SCALAR],
                 101,
             );
             assert_eq!(
+                text::text_value_bytes(&source[1]),
+                Some(&b"moving text"[..])
+            );
+            assert_eq!(
                 text::text_value_bytes(&cloned[1]),
                 Some(&b"moving text"[..])
             );
+            assert_eq!(source[2].words[VALUE_WORD_SCALAR], 303);
             assert_eq!(cloned[2].words[VALUE_WORD_SCALAR], 303);
             (*runtime).heap.collect_before_every_allocation = false;
 

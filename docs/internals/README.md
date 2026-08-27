@@ -19,8 +19,8 @@ The workspace is split into narrow crates:
 | `loom-lowering` | Total lowering from typed HIR to MIR. |
 | `loom-interpreter` | Deterministic execution of validated MIR. |
 | `loom-codegen-ir` | Checked-MIR source roots/reachability plus atomic direct MIR-to-LCIR selection for primitives, literal-proven immortal text, closed products/sums, and established transparent values; typed-SSA builders, validation, artifact roots, and insertion-order dumps. |
-| `loom-runtime-abi` | Shared compiler-private native ABI constants and C-shaped records. |
-| `loom-runtime` | Moving GC, values, cleanup support, scheduler, reactor, and I/O workers. |
+| `loom-runtime-abi` | Shared compiler-private native ABI constants, universal and typed root records, and precise typed object descriptors. |
+| `loom-runtime` | Side-by-side universal/typed moving GC, values, cleanup support, scheduler, reactor, and I/O workers. |
 | `loom-codegen-llvm` | Native layouts, checked-MIR and checked-LCIR object emission, linking, and runtime bundles. |
 | `loom-driver` | Projects, resolution, source snapshots, diagnostics, and persistent cache. |
 | `loom-cli` | `loomc` host boundary and process execution. |

@@ -35,8 +35,9 @@ use loom_mir::{
     StatementKind, TaskJoinMode, Type, TypeDefKind, TypeId, UnaryOp, WitnessId, WitnessRef,
 };
 use loom_runtime_abi::{
-    SHADOW_STACK_ABI_VERSION, TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_BYTE_LENGTH,
-    TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE,
+    GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, SHADOW_STACK_ABI_VERSION,
+    TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES,
+    TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE,
 };
 
 use crate::CodegenError;
@@ -76,6 +77,94 @@ pub(crate) struct Emitter;
 
 const LIKELY_BRANCH_WEIGHT: u64 = 2_000;
 const UNLIKELY_BRANCH_WEIGHT: u64 = 1;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GcRootShape {
+    slot_count: u64,
+    state_count: u64,
+    bitmap_words: u64,
+    bitmap_len: usize,
+    total_bitmap_len: usize,
+}
+
+fn gc_root_shape(slots: usize, states: usize) -> Result<GcRootShape, CodegenError> {
+    let slot_count = u64::try_from(slots)
+        .map_err(|_| CodegenError::new("ProgramTooLarge", "too many GC root slots"))?;
+    let state_count = u64::try_from(states)
+        .map_err(|_| CodegenError::new("ProgramTooLarge", "too many GC root states"))?;
+    if slot_count == 0 || state_count == 0 {
+        return Err(CodegenError::new(
+            "LlvmAbiDefect",
+            "GC root shape must have slots and states",
+        ));
+    }
+    if slot_count > GC_MAX_ROOT_SLOTS {
+        return Err(CodegenError::new(
+            "ProgramTooLarge",
+            "too many GC root slots",
+        ));
+    }
+    if state_count > GC_MAX_ROOT_STATES {
+        return Err(CodegenError::new(
+            "ProgramTooLarge",
+            "too many GC root states",
+        ));
+    }
+    let bitmap_words = slot_count.div_ceil(64);
+    let total_bitmap_words = state_count
+        .checked_mul(bitmap_words)
+        .ok_or_else(|| CodegenError::new("ProgramTooLarge", "GC root bitmap is too large"))?;
+    if total_bitmap_words > GC_MAX_ROOT_BITMAP_WORDS {
+        return Err(CodegenError::new(
+            "ProgramTooLarge",
+            "GC root bitmap is too large",
+        ));
+    }
+    let bitmap_len = usize::try_from(bitmap_words)
+        .map_err(|_| CodegenError::new("ProgramTooLarge", "GC root bitmap is too large"))?;
+    let total_bitmap_len = usize::try_from(total_bitmap_words)
+        .map_err(|_| CodegenError::new("ProgramTooLarge", "GC root bitmap is too large"))?;
+    Ok(GcRootShape {
+        slot_count,
+        state_count,
+        bitmap_words,
+        bitmap_len,
+        total_bitmap_len,
+    })
+}
+
+#[cfg(test)]
+mod gc_root_shape_tests {
+    use super::{GcRootShape, gc_root_shape};
+
+    fn assert_program_too_large(result: Result<GcRootShape, crate::CodegenError>) {
+        let error = result.expect_err("root shape must exceed a compiler/runtime ABI bound");
+        assert_eq!(error.code(), "ProgramTooLarge");
+    }
+
+    #[test]
+    fn slot_and_state_limits_are_exact() {
+        let slots = gc_root_shape(65_536, 1).expect("maximum root slots are accepted");
+        assert_eq!(slots.slot_count, 65_536);
+        assert_eq!(slots.bitmap_words, 1_024);
+        assert_program_too_large(gc_root_shape(65_537, 1));
+
+        let states = gc_root_shape(1, 65_536).expect("maximum root states are accepted");
+        assert_eq!(states.state_count, 65_536);
+        assert_eq!(states.total_bitmap_len, 65_536);
+        assert_program_too_large(gc_root_shape(1, 65_537));
+    }
+
+    #[test]
+    fn total_bitmap_word_limit_is_exact() {
+        let maximum =
+            gc_root_shape(65_536, 1_024).expect("1,024 states by 1,024 row words are accepted");
+        assert_eq!(maximum.bitmap_len, 1_024);
+        assert_eq!(maximum.total_bitmap_len, 1_024 * 1_024);
+
+        assert_program_too_large(gc_root_shape(65_536, 1_025));
+    }
+}
 
 #[derive(Clone, Copy)]
 enum LikelyBranch {
@@ -5587,24 +5676,8 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         slots: usize,
         states: &[Vec<usize>],
     ) -> Result<PointerValue<'ctx>, CodegenError> {
-        let slot_count = u64::try_from(slots)
-            .map_err(|_| CodegenError::new("ProgramTooLarge", "too many GC root slots"))?;
-        let state_count = u64::try_from(states.len())
-            .map_err(|_| CodegenError::new("ProgramTooLarge", "too many GC root states"))?;
-        if state_count == 0 {
-            return Err(CodegenError::new(
-                "LlvmAbiDefect",
-                "allocating function has no GC root states",
-            ));
-        }
-        let bitmap_words = slot_count.div_ceil(64);
-        let bitmap_len = usize::try_from(bitmap_words)
-            .map_err(|_| CodegenError::new("ProgramTooLarge", "GC root bitmap is too large"))?;
-        let total_bitmap_len = states
-            .len()
-            .checked_mul(bitmap_len)
-            .ok_or_else(|| CodegenError::new("ProgramTooLarge", "GC root bitmap is too large"))?;
-        let mut bitmap = vec![0_u64; total_bitmap_len];
+        let shape = gc_root_shape(slots, states.len())?;
+        let mut bitmap = vec![0_u64; shape.total_bitmap_len];
         for (state, roots) in states.iter().enumerate() {
             for root in roots {
                 if *root >= slots {
@@ -5614,7 +5687,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     ));
                 }
                 let word = state
-                    .checked_mul(bitmap_len)
+                    .checked_mul(shape.bitmap_len)
                     .and_then(|row| row.checked_add(root / 64))
                     .ok_or_else(|| {
                         CodegenError::new("ProgramTooLarge", "GC root bitmap is too large")
@@ -5665,9 +5738,18 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     .const_int(u64::from(SHADOW_STACK_ABI_VERSION), false)
                     .into(),
                 self.backend.context.i32_type().const_zero().into(),
-                self.backend.i64_type.const_int(slot_count, false).into(),
-                self.backend.i64_type.const_int(state_count, false).into(),
-                self.backend.i64_type.const_int(bitmap_words, false).into(),
+                self.backend
+                    .i64_type
+                    .const_int(shape.slot_count, false)
+                    .into(),
+                self.backend
+                    .i64_type
+                    .const_int(shape.state_count, false)
+                    .into(),
+                self.backend
+                    .i64_type
+                    .const_int(shape.bitmap_words, false)
+                    .into(),
                 bitmap_global.as_pointer_value().into(),
             ]),
         );

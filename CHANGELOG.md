@@ -22,6 +22,10 @@ artifact, or runtime compatibility.
   exact comparison table and visible runtime-index charts.
 - Explicit, checksummed runtime bundles for native linking, including strict
   target, ABI, archive, and linker validation.
+- A side-by-side typed moving-heap ABI with exact fixed-pointer descriptors,
+  an independent direct-pointer shadow stack, strict shared root limits, and
+  forced-relocation evidence without constructing an executor. Production
+  LCIR does not yet emit the new allocation or root symbols.
 
 ### Changed
 
@@ -70,6 +74,10 @@ artifact, or runtime compatibility.
 - Interpreted MIR version 20 permits projected moves. They return the selected
   leaf and consume the complete aggregate root, preserving a simple initialized
   or moved local state without partial-initialization compatibility.
+- The native runtime ABI component advances to `9`, GC identity to `gc-v8`,
+  and the whole identity gains `typed-gc-v1` and
+  `typed-shadow-stack-v1`. Existing legacy GC symbols and behavior remain
+  available within the new whole-toolchain ABI identity.
 
 No historical release notes have been reconstructed. Future entries should
 describe observable changes, not reproduce the Git commit log.

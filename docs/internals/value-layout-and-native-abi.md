@@ -129,9 +129,10 @@ existing allocation-free containment helper, with equality also requiring
 equal UTF-8 byte lengths. Source equality never compares object pointers. The
 Text operations themselves need no universal `ValueSlot`, GC/shadow-stack
 setup, runtime object, or executor; unrelated fault effects may still need a
-fault context. `concat`, `get`, any moving or dynamic producer, and any aggregate
-containing `Text` remain complete legacy fallback until LCIR has a typed
-shadow-root ABI that the moving collector can update.
+fault context. `concat`, `get`, any moving or dynamic producer, and any
+aggregate containing `Text` remain complete legacy fallback. The runtime now
+exposes a typed moving allocation and shadow-root ABI, but LCIR does not yet
+emit those roots or use the allocator for dynamic `Text`.
 
 The descriptor is runtime trace/layout metadata. It is not a source-visible
 tag and does not make `Text` a dynamic type. LCIR reuses the existing layout
@@ -157,8 +158,30 @@ closed-world.
 
 Managed allocations have static layout metadata sufficient for precise
 tracing. Synchronous native frames publish pointers to live universal slots
-through a versioned shadow-stack descriptor and per-state bitmaps. Coroutine
-descriptors publish live Task-frame slots and captured witnesses.
+through a versioned shadow-stack descriptor and per-state bitmaps. A separate
+typed shadow-stack descriptor uses the same state/bitmap shape but its entries
+point to direct pointer cells; the collector never guesses which slot
+representation is present. Coroutine descriptors continue to publish live
+universal Task-frame slots and captured witnesses. A typed root cell has a
+stable address for its complete linked interval, may not reside in either
+moving heap, and contains only null, an exact typed allocation base, or a
+compiler-proven process-lifetime static/immortal pointer.
+
+Typed managed objects do not carry a universal tag. A
+`LoomGcObjectDescriptor` defines the required fixed prefix, exact allocation
+alignment, and sorted byte offsets of every pointer-sized managed-reference
+cell in that prefix. Pointer-free trailing bytes may extend the allocation.
+The runtime validates and copies this metadata into a side table before an
+allocation can become visible. At a moving collection it follows only those
+cells and rewrites them together with typed root cells. Null and unregistered
+static or immortal pointers remain unchanged. Legacy moving pointers, interior
+pointers, and unregistered finite-lifetime pointers are not legal typed cell
+contents. The typed allocator's output cell likewise has a stable non-heap
+address throughout its call and any collection that call triggers.
+
+The first runtime slice deliberately implements only fixed pointer offsets. A
+future repeated-element container shape must version and bound its descriptor
+instead of smuggling an imprecise scan or universal tag into this ABI.
 
 Witness descriptors emitted by the compiler are immutable process-lifetime
 constants. Dynamically assembled witness instances live in a non-moving proof
