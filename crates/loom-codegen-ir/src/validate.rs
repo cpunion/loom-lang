@@ -3674,6 +3674,13 @@ impl<'a> Validator<'a> {
                     );
                     return;
                 };
+                if callee.coroutine().is_some() {
+                    self.error(
+                        ValidationCode::CallShape,
+                        format!("{path}.callee"),
+                        "direct call cannot target a coroutine constructor; use task.create",
+                    );
+                }
                 if let Some(effects) = self.exact_effect(callee_id) {
                     if effects.contains(Effects::MAY_FAULT) {
                         self.error(
@@ -4210,6 +4217,13 @@ impl<'a> Validator<'a> {
                     }
                 }
                 if let Some(callee) = callee {
+                    if callee.coroutine().is_some() {
+                        self.error(
+                            ValidationCode::CallShape,
+                            format!("{path}.callee"),
+                            "invoke cannot target a coroutine constructor; use task.create",
+                        );
+                    }
                     self.validate_call_arguments(
                         function,
                         arguments,

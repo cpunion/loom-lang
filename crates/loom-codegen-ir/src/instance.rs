@@ -51,10 +51,12 @@ pub struct InstanceKey {
 
 /// The source-contract boundary represented by one callable instance.
 ///
-/// Ordinary closed-world calls target an assumed body after evaluating the
-/// callee's preconditions at their concrete call site. A checked root is a
-/// compiler-generated wrapper used only by an artifact harness, where no
-/// source call expression exists to own precondition blame.
+/// Ordinary synchronous calls target an assumed body after evaluating the
+/// callee's preconditions at their concrete call site. An async assumed body
+/// owns its preconditions because failure belongs to the created child Task;
+/// its coroutine frame still carries exact creation-site blame. A checked root
+/// is a compiler-generated synchronous wrapper used only by an artifact
+/// harness, where no source call expression exists to own precondition blame.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum InstanceRole {
     #[default]

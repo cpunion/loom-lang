@@ -33,9 +33,9 @@ use inkwell::{FloatPredicate as LlvmFloatPredicate, IntPredicate};
 use llvm_sys::debuginfo::LLVMDIBuilderInsertDbgValueRecordBefore;
 use loom_codegen_ir::{
     AwaitMode, BlockId, BlockTarget, BoolPredicate, CheckedArtifact, CheckedIntBinaryOp, Constant,
-    ContractFaultBlame, ContractFaultMetadata, CoroutineSuspension, Effects, FaultCode,
-    FaultMetadata, FloatBinaryOp, FloatPredicate as LcirFloatPredicate, Function, InstanceId,
-    Instruction, InstructionId, InstructionKind, IntPredicate as LcirIntPredicate,
+    ContractFaultBlame, ContractFaultMetadata, CoroutinePlan, CoroutineSuspension, Effects,
+    FaultCode, FaultMetadata, FloatBinaryOp, FloatPredicate as LcirFloatPredicate, Function,
+    InstanceId, Instruction, InstructionId, InstructionKind, IntPredicate as LcirIntPredicate,
     MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE, ManagedRootPlan, ManagedRootProjection,
     ManagedRootSlot, ManagedSafepoint, Origin, Repr, ResourceKind, ResultTarget, ScalarRepr,
     SumRepr, SumTagRepr, TASK_OUTCOME_CANCELLED_VARIANT, TASK_OUTCOME_COMPLETED_VARIANT,
@@ -1852,7 +1852,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                     .collect::<Result<Vec<BasicMetadataTypeEnum<'ctx>>, _>>()?;
                 if source
                     .coroutine()
-                    .is_some_and(|plan| plan.carries_caller_span())
+                    .is_some_and(CoroutinePlan::carries_caller_span)
                 {
                     for _ in 0..3 {
                         params.push(self.context.i64_type().into());
@@ -7716,7 +7716,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 })?;
                 if callee
                     .coroutine()
-                    .is_some_and(|plan| plan.carries_caller_span())
+                    .is_some_and(CoroutinePlan::carries_caller_span)
                 {
                     let span = instruction.origin().span;
                     for coordinate in [span.file.0, span.range.start, span.range.end] {
@@ -12779,7 +12779,7 @@ impl<'ctx> Backend<'ctx, '_> {
         let mut constructor_arguments = Vec::<BasicMetadataValueEnum<'ctx>>::new();
         if source
             .coroutine()
-            .is_some_and(|plan| plan.carries_caller_span())
+            .is_some_and(CoroutinePlan::carries_caller_span)
         {
             let span = source.origin().span;
             for coordinate in [span.file.0, span.range.start, span.range.end] {

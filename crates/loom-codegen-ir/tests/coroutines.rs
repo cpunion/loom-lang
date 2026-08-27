@@ -1810,20 +1810,25 @@ fn cancellation_cleanup_cannot_suspend_again() {
 
 #[test]
 fn cancellation_cleanup_cannot_call_or_invoke_executor_dependent_functions() {
-    for (exit_case, diagnostic) in [
+    for (exit_case, diagnostic, call_shape) in [
         (
             AwaitExitCase::CancelDirectCallsExecutor,
             "cancellation cleanup cannot call an executor-dependent function; it must remain scheduler-topology neutral",
+            "direct call cannot target a coroutine constructor; use task.create",
         ),
         (
             AwaitExitCase::CancelInvokesExecutor,
             "cancellation cleanup cannot invoke an executor-dependent function; it must remain scheduler-topology neutral",
+            "invoke cannot target a coroutine constructor; use task.create",
         ),
     ] {
         let errors = validate_program(&await_tasks_program(false, false, exit_case))
             .expect_err("cancellation cleanup cannot enter executor-dependent code");
         assert!(errors.as_slice().iter().any(|error| {
             error.code() == ValidationCode::InvalidCoroutinePlan && error.message() == diagnostic
+        }));
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::CallShape && error.message() == call_shape
         }));
     }
 }
