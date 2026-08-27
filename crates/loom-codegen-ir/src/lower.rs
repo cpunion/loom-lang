@@ -9512,6 +9512,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         })
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "finite readonly dispatch keeps exact candidate calls and normal/fault joins in one auditable CFG construction"
+    )]
     fn lower_finite_dynamic_call(
         &mut self,
         mut flow: Flow,

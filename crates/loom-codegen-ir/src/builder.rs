@@ -203,6 +203,11 @@ impl ProgramBuilder {
 
     /// Registers one closed first-class dynamic concept as a single managed
     /// pointer with an ordered, artifact-private concrete payload catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BuildError`] if functions already exist or the semantic view
+    /// and candidate types do not form one valid registered closed catalog.
     pub fn add_managed_dynamic_type(
         &mut self,
         semantic: Type,

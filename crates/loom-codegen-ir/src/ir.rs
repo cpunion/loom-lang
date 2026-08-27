@@ -791,9 +791,9 @@ impl InstructionKind {
             | Self::Unrefine { value }
             | Self::BoolNot { value }
             | Self::FloatNegate { value }
-            | Self::FormatFloat { value } => vec![*value],
+            | Self::FormatFloat { value }
+            | Self::DynConstruct { value, .. } => vec![*value],
             Self::SumConstruct { payload, .. } => payload.to_vec(),
-            Self::DynConstruct { value, .. } => vec![*value],
             Self::TextConcat { left, right }
             | Self::TextCompare { left, right, .. }
             | Self::BoolCompare { left, right, .. }
