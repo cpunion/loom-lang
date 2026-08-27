@@ -11,7 +11,7 @@ use std::path::Path;
 #[cfg(target_os = "macos")]
 use std::path::PathBuf;
 
-use crate::CodegenError;
+use crate::{CodegenError, trace_llvm_stage};
 
 // An implicit host target is tuned for the current machine. Supplying any target triple is the
 // explicit opt-in to a portable object, including when that triple happens to name the host.
@@ -113,15 +113,18 @@ pub(crate) struct NativeTargetMachine {
 
 impl NativeTargetMachine {
     pub(crate) fn identity(&self) -> NativeTargetIdentity {
+        trace_llvm_stage("target.identity.begin");
         let data_layout = self.machine.get_target_data().get_data_layout();
-        NativeTargetIdentity {
+        let identity = NativeTargetIdentity {
             triple: self.triple.as_str().to_string_lossy().into_owned(),
             data_layout: data_layout.as_str().to_string_lossy().into_owned(),
             cpu_policy: self.cpu.clone(),
             cpu_features: self.features.clone(),
             optimization: self.optimization.pipeline().to_owned(),
             relocation: RELOCATION_MODE.to_owned(),
-        }
+        };
+        trace_llvm_stage("target.identity.end");
+        identity
     }
 
     pub(crate) const fn optimization(&self) -> OptimizationProfile {
@@ -137,7 +140,9 @@ impl NativeTargetMachine {
     }
 
     pub(crate) fn pointer_bits(&self) -> Result<u32, CodegenError> {
-        self.machine
+        trace_llvm_stage("target.pointer-width.begin");
+        let bits = self
+            .machine
             .get_target_data()
             .get_pointer_byte_size(None)
             .checked_mul(8)
@@ -146,7 +151,9 @@ impl NativeTargetMachine {
                     "NativePointerWidthOverflow",
                     format!("target {} pointer width does not fit u32 bits", self.triple),
                 )
-            })
+            })?;
+        trace_llvm_stage("target.pointer-width.end");
+        Ok(bits)
     }
 
     pub(crate) fn validate_legacy_value_abi(&self) -> Result<(), CodegenError> {
@@ -300,18 +307,25 @@ pub(crate) fn create_llvm_target_machine(
     requested: Option<&str>,
     optimization: OptimizationProfile,
 ) -> Result<NativeTargetMachine, CodegenError> {
+    trace_llvm_stage("target.normalize.begin");
     let host_native = requested.is_none();
     let triple = TargetMachine::normalize_triple(&TargetTriple::create(
         requested.unwrap_or(COMPILER_TARGET),
     ));
+    trace_llvm_stage("target.normalize.end");
+    trace_llvm_stage("target.initialize.begin");
     initialize_configured_targets(host_native, &triple)?;
+    trace_llvm_stage("target.initialize.end");
     let (cpu, features) = if host_native {
         implicit_host_cpu_policy()
     } else {
         (PORTABLE_CPU.to_owned(), PORTABLE_CPU_FEATURES.to_owned())
     };
+    trace_llvm_stage("target.lookup.begin");
     let target = Target::from_triple(&triple)
         .map_err(|message| CodegenError::new("LlvmTargetUnavailable", message.to_string()))?;
+    trace_llvm_stage("target.lookup.end");
+    trace_llvm_stage("target.machine.begin");
     let machine = target
         .create_target_machine(
             &triple,
@@ -327,6 +341,7 @@ pub(crate) fn create_llvm_target_machine(
                 format!("LLVM could not create a target machine for {triple}"),
             )
         })?;
+    trace_llvm_stage("target.machine.end");
     Ok(NativeTargetMachine {
         triple,
         machine,
@@ -497,6 +512,16 @@ mod tests {
 
         assert_eq!(identity.cpu_policy, PORTABLE_CPU);
         assert_eq!(identity.cpu_features, PORTABLE_CPU_FEATURES);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_native_target_machine_constructs_and_reads_layout() {
+        let target = create_llvm_target_machine(None, OptimizationProfile::Development)
+            .expect("construct native Windows target machine");
+
+        assert_eq!(target.pointer_bits().expect("read pointer width"), 64);
+        assert_eq!(target.identity().triple, "x86_64-pc-windows-msvc");
     }
 
     #[test]

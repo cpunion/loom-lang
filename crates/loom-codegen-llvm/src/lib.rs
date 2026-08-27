@@ -4,6 +4,8 @@
 //! checked-MIR boundary remains separate: its erased calls use the
 //! compiler-private `{ data, witness }` ABI described by [`abi`].
 
+use std::sync::OnceLock;
+
 mod abi;
 mod codegen;
 mod emitter;
@@ -50,3 +52,14 @@ pub const BACKEND_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Content identity of the exact backend sources, manifests, Rust cfg, and
 /// linked LLVM build used to emit native objects.
 pub const LLVM_OBJECT_BUILD_FINGERPRINT: &str = env!("LOOM_LLVM_OBJECT_BUILD_FINGERPRINT");
+
+/// Emits a bounded stage marker for diagnosing failures inside LLVM's C API.
+///
+/// Stage names are compiler-owned constants and deliberately exclude source
+/// text, paths, environment values, and target-specific host details.
+pub(crate) fn trace_llvm_stage(stage: &'static str) {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    if *ENABLED.get_or_init(|| std::env::var_os("LOOM_LLVM_TRACE_STAGES").is_some()) {
+        eprintln!("loom LLVM stage: {stage}");
+    }
+}

@@ -47,11 +47,11 @@ use loom_runtime_abi::{
     TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_SHADOW_STACK_ABI_VERSION,
 };
 
-use crate::CodegenError;
 use crate::codegen::{DebugSource, NativeObjectArtifact, NativeObjectOptions};
 use crate::target::{
     NativeTargetMachine, configure_debug_module_flags, create_llvm_target_machine,
 };
+use crate::{CodegenError, trace_llvm_stage};
 
 pub(crate) struct LcirEmitter;
 
@@ -72,7 +72,9 @@ impl LcirEmitter {
         options: &NativeObjectOptions,
         target: &NativeTargetMachine,
     ) -> Result<NativeObjectArtifact, CodegenError> {
+        trace_llvm_stage("lcir.pointer-width.begin");
         let llvm_pointer_bits = target.pointer_bits()?;
+        trace_llvm_stage("lcir.pointer-width.end");
         let lcir_pointer_bits = u32::from(artifact.representations().target().pointer_bits());
         if llvm_pointer_bits != lcir_pointer_bits {
             return Err(CodegenError::new(
@@ -84,11 +86,20 @@ impl LcirEmitter {
             ));
         }
 
+        trace_llvm_stage("lcir.context.begin");
         let context = Context::create();
+        trace_llvm_stage("lcir.context.end");
+        trace_llvm_stage("lcir.backend.begin");
         let backend = Backend::new(&context, artifact, options, target)?;
+        trace_llvm_stage("lcir.backend.end");
+        trace_llvm_stage("lcir.compile.begin");
         backend.compile()?;
         backend.finalize_debug();
+        trace_llvm_stage("lcir.compile.end");
+        trace_llvm_stage("lcir.verify-before-opt.begin");
         verify(&backend.module)?;
+        trace_llvm_stage("lcir.verify-before-opt.end");
+        trace_llvm_stage("lcir.optimize.begin");
         backend
             .module
             .run_passes(
@@ -97,9 +108,13 @@ impl LcirEmitter {
                 PassBuilderOptions::create(),
             )
             .map_err(|message| CodegenError::new("LlvmOptimizationFailed", message.to_string()))?;
+        trace_llvm_stage("lcir.optimize.end");
+        trace_llvm_stage("lcir.verify-after-opt.begin");
         verify(&backend.module)?;
+        trace_llvm_stage("lcir.verify-after-opt.end");
 
         if let Some(ir_path) = &options.emit_ir {
+            trace_llvm_stage("lcir.ir-write.begin");
             create_parent_directory(ir_path)?;
             backend.module.print_to_file(ir_path).map_err(|message| {
                 CodegenError::new(
@@ -107,12 +122,15 @@ impl LcirEmitter {
                     format!("{}: {message}", ir_path.display()),
                 )
             })?;
+            trace_llvm_stage("lcir.ir-write.end");
         }
         create_parent_directory(output)?;
+        trace_llvm_stage("lcir.object-write.begin");
         target
             .machine
             .write_to_file(&backend.module, FileType::Object, output)
             .map_err(|message| CodegenError::new("LlvmObjectWriteFailed", message.to_string()))?;
+        trace_llvm_stage("lcir.object-write.end");
 
         Ok(NativeObjectArtifact {
             object: output.to_path_buf(),
