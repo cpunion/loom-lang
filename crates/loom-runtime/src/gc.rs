@@ -17,14 +17,16 @@ use std::sync::atomic::Ordering;
 
 use loom_runtime_abi::{
     DYN_FLAG_MUTABLE, GC_ABI_MISMATCH, GC_DESCRIPTOR_INVALID, GC_FRAME_ORDER, GC_INVALID_ARGUMENT,
-    GC_MAX_OBJECT_ALIGNMENT, GC_MAX_OBJECT_BYTES, GC_MAX_OBJECT_POINTERS, GC_MAX_ROOT_BITMAP_WORDS,
-    GC_MAX_ROOT_DEPTH, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, GC_OK, GC_RESOURCE_LIMIT,
-    GC_ROOT_FRAME_LINKED, GC_ROOT_STACK_NOT_EMPTY, LoomGcObjectDescriptor, LoomGcRootDescriptor,
-    LoomGcRootFrame, LoomGcTypedRootDescriptor, LoomGcTypedRootFrame, LoomWitnessInstance,
-    SHADOW_STACK_ABI_VERSION, TASK_COMPLETED, TYPED_GC_ABI_VERSION, TYPED_SHADOW_STACK_ABI_VERSION,
-    VALUE_TAG_CONSTRAINT_ERROR, VALUE_TAG_DYN, VALUE_TAG_ENUM, VALUE_TAG_LIST, VALUE_TAG_RECORD,
-    VALUE_TAG_REFINED, VALUE_TAG_TASK_OUTCOME, VALUE_TAG_TEXT, VALUE_TAG_TUPLE, VALUE_WORD_AUX,
-    VALUE_WORD_DATA, VALUE_WORD_SCALAR, VALUE_WORD_TAG, VALUE_WORD_WITNESS,
+    GC_MAX_OBJECT_ALIGNMENT, GC_MAX_OBJECT_BYTES, GC_MAX_OBJECT_POINTERS,
+    GC_MAX_REPEATED_POINTER_CELLS, GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_DEPTH, GC_MAX_ROOT_SLOTS,
+    GC_MAX_ROOT_STATES, GC_OK, GC_RESOURCE_LIMIT, GC_ROOT_FRAME_LINKED, GC_ROOT_STACK_NOT_EMPTY,
+    LoomGcObjectDescriptor, LoomGcRepeatedObjectDescriptor, LoomGcRootDescriptor, LoomGcRootFrame,
+    LoomGcTypedRootDescriptor, LoomGcTypedRootFrame, LoomWitnessInstance, SHADOW_STACK_ABI_VERSION,
+    TASK_COMPLETED, TYPED_GC_ABI_VERSION, TYPED_GC_REPEATED_ABI_VERSION,
+    TYPED_SHADOW_STACK_ABI_VERSION, VALUE_TAG_CONSTRAINT_ERROR, VALUE_TAG_DYN, VALUE_TAG_ENUM,
+    VALUE_TAG_LIST, VALUE_TAG_RECORD, VALUE_TAG_REFINED, VALUE_TAG_TASK_OUTCOME, VALUE_TAG_TEXT,
+    VALUE_TAG_TUPLE, VALUE_WORD_AUX, VALUE_WORD_DATA, VALUE_WORD_SCALAR, VALUE_WORD_TAG,
+    VALUE_WORD_WITNESS,
 };
 
 use crate::reactor::LoomExecutor;
@@ -46,11 +48,11 @@ pub(crate) const MIN_GC_THRESHOLD_BYTES: usize = 64 * 1024;
 struct TypedAllocation {
     pointer: NonNull<u8>,
     layout: Layout,
-    pointer_offsets: Box<[usize]>,
+    trace: TypedTraceShape,
 }
 
 impl TypedAllocation {
-    fn new(layout: Layout, pointer_offsets: Box<[usize]>) -> Self {
+    fn new(layout: Layout, trace: TypedTraceShape) -> Self {
         // SAFETY: descriptor validation constructed a nonzero, valid Layout.
         let pointer = unsafe { alloc_zeroed(layout) };
         let Some(pointer) = NonNull::new(pointer) else {
@@ -59,12 +61,12 @@ impl TypedAllocation {
         Self {
             pointer,
             layout,
-            pointer_offsets,
+            trace,
         }
     }
 
     fn evacuate(&self) -> Self {
-        let replacement = Self::new(self.layout, self.pointer_offsets.clone());
+        let replacement = Self::new(self.layout, self.trace.clone());
         // SAFETY: both allocations have the same non-overlapping valid Layout.
         unsafe {
             ptr::copy_nonoverlapping(
@@ -95,6 +97,45 @@ impl TypedAllocation {
         // the offset's pointer alignment before metadata reaches this object.
         unsafe { self.pointer.as_ptr().add(offset).cast::<*mut c_void>() }
     }
+
+    fn visit_pointer_offsets(&self, mut visit: impl FnMut(usize)) {
+        for &offset in &self.trace.fixed_pointer_offsets {
+            visit(offset);
+        }
+        let Some(repeated) = &self.trace.repeated else {
+            return;
+        };
+        for element in 0..repeated.element_count {
+            let base = repeated
+                .start
+                .checked_add(
+                    element
+                        .checked_mul(repeated.stride)
+                        .unwrap_or_else(|| unreachable!("validated repeated stride overflowed")),
+                )
+                .unwrap_or_else(|| unreachable!("validated repeated shape overflowed"));
+            for &offset in &repeated.pointer_offsets {
+                visit(
+                    base.checked_add(offset)
+                        .unwrap_or_else(|| unreachable!("validated element offset overflowed")),
+                );
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct TypedTraceShape {
+    fixed_pointer_offsets: Box<[usize]>,
+    repeated: Option<RepeatedTraceShape>,
+}
+
+#[derive(Clone)]
+struct RepeatedTraceShape {
+    start: usize,
+    stride: usize,
+    element_count: usize,
+    pointer_offsets: Box<[usize]>,
 }
 
 impl Drop for TypedAllocation {
@@ -1117,7 +1158,47 @@ fn managed_allocation_slowpath(runtime: *mut LoomRuntime, incoming: usize) -> i3
 
 struct ValidatedObjectShape {
     layout: Layout,
-    pointer_offsets: Box<[usize]>,
+    trace: TypedTraceShape,
+}
+
+unsafe fn copy_validated_pointer_offsets(
+    pointer_offsets: *const u64,
+    pointer_count: u64,
+    region_size: usize,
+) -> Result<Box<[usize]>, i32> {
+    if pointer_count > GC_MAX_OBJECT_POINTERS {
+        return Err(GC_RESOURCE_LIMIT);
+    }
+    if (pointer_count == 0) != pointer_offsets.is_null() {
+        return Err(GC_DESCRIPTOR_INVALID);
+    }
+    if pointer_count != 0 && !is_aligned_for(pointer_offsets) {
+        return Err(GC_DESCRIPTOR_INVALID);
+    }
+    let Ok(pointer_count) = usize::try_from(pointer_count) else {
+        return Err(GC_RESOURCE_LIMIT);
+    };
+    let mut copied = Vec::with_capacity(pointer_count);
+    let mut previous = None;
+    for index in 0..pointer_count {
+        // SAFETY: callers provide the bounded immutable descriptor table.
+        let raw_offset = unsafe { *pointer_offsets.add(index) };
+        let Ok(offset) = usize::try_from(raw_offset) else {
+            return Err(GC_DESCRIPTOR_INVALID);
+        };
+        let Some(end) = offset.checked_add(size_of::<*mut c_void>()) else {
+            return Err(GC_DESCRIPTOR_INVALID);
+        };
+        if !offset.is_multiple_of(align_of::<*mut c_void>())
+            || end > region_size
+            || previous.is_some_and(|previous| offset <= previous)
+        {
+            return Err(GC_DESCRIPTOR_INVALID);
+        }
+        copied.push(offset);
+        previous = Some(offset);
+    }
+    Ok(copied.into_boxed_slice())
 }
 
 unsafe fn validate_object_descriptor(
@@ -1140,25 +1221,15 @@ unsafe fn validate_object_descriptor(
     {
         return Err(GC_DESCRIPTOR_INVALID);
     }
-    if allocation_size > GC_MAX_OBJECT_BYTES
-        || descriptor.object_align > GC_MAX_OBJECT_ALIGNMENT
-        || descriptor.pointer_count > GC_MAX_OBJECT_POINTERS
-    {
+    if allocation_size > GC_MAX_OBJECT_BYTES || descriptor.object_align > GC_MAX_OBJECT_ALIGNMENT {
         return Err(GC_RESOURCE_LIMIT);
     }
-    if (descriptor.pointer_count == 0) != descriptor.pointer_offsets.is_null() {
+    if descriptor.pointer_count != 0 && descriptor.object_align < align_of::<*mut c_void>() as u64 {
         return Err(GC_DESCRIPTOR_INVALID);
     }
-    if descriptor.pointer_count != 0
-        && (!is_aligned_for(descriptor.pointer_offsets)
-            || descriptor.object_align < align_of::<*mut c_void>() as u64)
-    {
-        return Err(GC_DESCRIPTOR_INVALID);
-    }
-    let (Ok(allocation_size), Ok(object_align), Ok(pointer_count), Ok(fixed_size)) = (
+    let (Ok(allocation_size), Ok(object_align), Ok(fixed_size)) = (
         usize::try_from(allocation_size),
         usize::try_from(descriptor.object_align),
-        usize::try_from(descriptor.pointer_count),
         usize::try_from(descriptor.fixed_size),
     ) else {
         return Err(GC_RESOURCE_LIMIT);
@@ -1166,30 +1237,122 @@ unsafe fn validate_object_descriptor(
     let Ok(layout) = Layout::from_size_align(allocation_size, object_align) else {
         return Err(GC_DESCRIPTOR_INVALID);
     };
-    let mut pointer_offsets = Vec::with_capacity(pointer_count);
-    let mut previous = None;
-    for index in 0..pointer_count {
-        // SAFETY: the descriptor contract supplies the bounded immutable
-        // pointer-offset table checked above.
-        let raw_offset = unsafe { *descriptor.pointer_offsets.add(index) };
-        let Ok(offset) = usize::try_from(raw_offset) else {
-            return Err(GC_DESCRIPTOR_INVALID);
-        };
-        let Some(end) = offset.checked_add(size_of::<*mut c_void>()) else {
-            return Err(GC_DESCRIPTOR_INVALID);
-        };
-        if !offset.is_multiple_of(align_of::<*mut c_void>())
-            || end > fixed_size
-            || previous.is_some_and(|previous| offset <= previous)
-        {
-            return Err(GC_DESCRIPTOR_INVALID);
-        }
-        pointer_offsets.push(offset);
-        previous = Some(offset);
-    }
+    let pointer_offsets = unsafe {
+        copy_validated_pointer_offsets(
+            descriptor.pointer_offsets,
+            descriptor.pointer_count,
+            fixed_size,
+        )?
+    };
     Ok(ValidatedObjectShape {
         layout,
-        pointer_offsets: pointer_offsets.into_boxed_slice(),
+        trace: TypedTraceShape {
+            fixed_pointer_offsets: pointer_offsets,
+            repeated: None,
+        },
+    })
+}
+
+unsafe fn validate_repeated_object_descriptor(
+    descriptor: *const LoomGcRepeatedObjectDescriptor,
+    capacity: u64,
+) -> Result<ValidatedObjectShape, i32> {
+    if !is_aligned_for(descriptor) {
+        return Err(GC_INVALID_ARGUMENT);
+    }
+    // SAFETY: the ABI requires a readable descriptor at this aligned pointer.
+    let descriptor = unsafe { &*descriptor };
+    if descriptor.abi_version != TYPED_GC_REPEATED_ABI_VERSION {
+        return Err(GC_ABI_MISMATCH);
+    }
+    if descriptor.flags != 0
+        || descriptor.fixed_size == 0
+        || descriptor.element_stride == 0
+        || descriptor.object_align == 0
+        || !descriptor.object_align.is_power_of_two()
+    {
+        return Err(GC_DESCRIPTOR_INVALID);
+    }
+    if descriptor.object_align > GC_MAX_OBJECT_ALIGNMENT
+        || descriptor.fixed_pointer_count > GC_MAX_OBJECT_POINTERS
+        || descriptor.element_pointer_count > GC_MAX_OBJECT_POINTERS
+    {
+        return Err(GC_RESOURCE_LIMIT);
+    }
+    let has_pointers = descriptor.fixed_pointer_count != 0 || descriptor.element_pointer_count != 0;
+    if has_pointers && descriptor.object_align < align_of::<*mut c_void>() as u64 {
+        return Err(GC_DESCRIPTOR_INVALID);
+    }
+    let repeated_pointer_cells = descriptor
+        .element_pointer_count
+        .checked_mul(capacity)
+        .and_then(|count| count.checked_add(descriptor.fixed_pointer_count))
+        .ok_or(GC_RESOURCE_LIMIT)?;
+    if repeated_pointer_cells > GC_MAX_REPEATED_POINTER_CELLS {
+        return Err(GC_RESOURCE_LIMIT);
+    }
+    let allocation_size = descriptor
+        .element_stride
+        .checked_mul(capacity)
+        .and_then(|bytes| bytes.checked_add(descriptor.fixed_size))
+        .ok_or(GC_RESOURCE_LIMIT)?;
+    if allocation_size > GC_MAX_OBJECT_BYTES {
+        return Err(GC_RESOURCE_LIMIT);
+    }
+    let (
+        Ok(allocation_size),
+        Ok(object_align),
+        Ok(fixed_size),
+        Ok(element_stride),
+        Ok(element_count),
+    ) = (
+        usize::try_from(allocation_size),
+        usize::try_from(descriptor.object_align),
+        usize::try_from(descriptor.fixed_size),
+        usize::try_from(descriptor.element_stride),
+        usize::try_from(capacity),
+    )
+    else {
+        return Err(GC_RESOURCE_LIMIT);
+    };
+    let Ok(layout) = Layout::from_size_align(allocation_size, object_align) else {
+        return Err(GC_DESCRIPTOR_INVALID);
+    };
+
+    let fixed_pointer_offsets = unsafe {
+        copy_validated_pointer_offsets(
+            descriptor.fixed_pointer_offsets,
+            descriptor.fixed_pointer_count,
+            fixed_size,
+        )?
+    };
+
+    let pointer_align = align_of::<*mut c_void>();
+    if descriptor.element_pointer_count != 0
+        && (!fixed_size.is_multiple_of(pointer_align)
+            || !element_stride.is_multiple_of(pointer_align))
+    {
+        return Err(GC_DESCRIPTOR_INVALID);
+    }
+    let element_pointer_offsets = unsafe {
+        copy_validated_pointer_offsets(
+            descriptor.element_pointer_offsets,
+            descriptor.element_pointer_count,
+            element_stride,
+        )?
+    };
+
+    Ok(ValidatedObjectShape {
+        layout,
+        trace: TypedTraceShape {
+            fixed_pointer_offsets,
+            repeated: Some(RepeatedTraceShape {
+                start: fixed_size,
+                stride: element_stride,
+                element_count,
+                pointer_offsets: element_pointer_offsets,
+            }),
+        },
     })
 }
 
@@ -1223,7 +1386,7 @@ pub(crate) unsafe fn allocate_typed_object(
     if status != GC_OK {
         return status;
     }
-    let allocation = TypedAllocation::new(shape.layout, shape.pointer_offsets);
+    let allocation = TypedAllocation::new(shape.layout, shape.trace);
     let pointer = allocation.pointer();
     // SAFETY: ACTIVE_RUNTIME serializes heap access. Collection completed
     // before the heap borrow and the fresh zeroed allocation is not published
@@ -1237,6 +1400,57 @@ pub(crate) unsafe fn allocate_typed_object(
         output.write(pointer);
     }
     GC_OK
+}
+
+/// Allocates one zero-initialized fixed-header plus repeated-element object.
+///
+/// Capacity is runtime-owned trace metadata derived from this call, never from
+/// mutable object bytes. The complete capacity is scanned exactly; unused
+/// managed cells therefore have to retain the allocator's zero value.
+pub(crate) unsafe fn allocate_typed_repeated_object(
+    descriptor: *const LoomGcRepeatedObjectDescriptor,
+    capacity: u64,
+    output: *mut *mut c_void,
+) -> i32 {
+    if !is_aligned_for(output) {
+        return GC_INVALID_ARGUMENT;
+    }
+    // Publish null before reading caller metadata or crossing a safepoint.
+    unsafe { output.write(ptr::null_mut()) };
+    let runtime = active_runtime_pointer();
+    if runtime.is_null() {
+        return GC_INVALID_ARGUMENT;
+    }
+    let shape = match unsafe { validate_repeated_object_descriptor(descriptor, capacity) } {
+        Ok(shape) => shape,
+        Err(status) => return status,
+    };
+    let status = managed_allocation_slowpath(runtime, shape.layout.size());
+    if status != GC_OK {
+        return status;
+    }
+    let allocation = TypedAllocation::new(shape.layout, shape.trace);
+    let pointer = allocation.pointer();
+    // SAFETY: ACTIVE_RUNTIME serializes heap access and the fresh allocation
+    // is not published until both its bytes and copied trace plan are owned.
+    unsafe {
+        (*runtime).heap.typed_objects.push(allocation);
+        (*runtime).heap.allocation_charge = (*runtime)
+            .heap
+            .allocation_charge
+            .saturating_add(shape.layout.size());
+        output.write(pointer);
+    }
+    GC_OK
+}
+
+#[unsafe(export_name = "loom_gc_typed_repeated_alloc_v1")]
+pub unsafe extern "C" fn typed_repeated_alloc_v1(
+    descriptor: *const LoomGcRepeatedObjectDescriptor,
+    capacity: u64,
+    output: *mut *mut c_void,
+) -> i32 {
+    unsafe { allocate_typed_repeated_object(descriptor, capacity, output) }
 }
 
 #[unsafe(export_name = "loom_gc_typed_alloc_v1")]
@@ -2216,7 +2430,7 @@ fn trace_typed_pointer(
         // SAFETY: HeapIndex was built from the immutable typed-object vector,
         // which is not swept or moved until tracing completes.
         let allocation = unsafe { &*allocation_pointer };
-        for &offset in &allocation.pointer_offsets {
+        allocation.visit_pointer_offsets(|offset| {
             // SAFETY: descriptor validation proved every copied offset names
             // an aligned pointer-sized cell inside this allocation.
             let child = unsafe { allocation.pointer_cell(offset).read() };
@@ -2229,7 +2443,7 @@ fn trace_typed_pointer(
             {
                 work.push(child_address);
             }
-        }
+        });
     }
 }
 
@@ -2443,7 +2657,7 @@ fn rewrite_typed_object(
     allocation: &mut TypedAllocation,
     typed_objects: &HashMap<usize, *mut c_void>,
 ) {
-    for &offset in &allocation.pointer_offsets {
+    allocation.visit_pointer_offsets(|offset| {
         // SAFETY: copied descriptor metadata proved this aligned cell is fully
         // inside the allocation, and collection has exclusive heap access.
         let slot = unsafe { allocation.pointer_cell(offset) };
@@ -2451,7 +2665,7 @@ fn rewrite_typed_object(
         if let Some(pointer) = typed_objects.get(&address) {
             unsafe { slot.write(*pointer) };
         }
-    }
+    });
 }
 
 #[cfg(test)]
@@ -3037,6 +3251,20 @@ mod tests {
         marker: u64,
     }
 
+    #[repr(C)]
+    struct TestRepeatedHeader {
+        fixed_child: *mut c_void,
+        length: u64,
+        capacity: u64,
+    }
+
+    #[repr(C)]
+    struct TestRepeatedElement {
+        first: *mut c_void,
+        marker: u64,
+        second: *mut c_void,
+    }
+
     fn typed_leaf_descriptor() -> LoomGcObjectDescriptor {
         LoomGcObjectDescriptor {
             abi_version: TYPED_GC_ABI_VERSION,
@@ -3059,6 +3287,42 @@ mod tests {
         );
         assert!(!output.is_null());
         output
+    }
+
+    unsafe fn typed_repeated_allocate(
+        descriptor: *const LoomGcRepeatedObjectDescriptor,
+        capacity: usize,
+    ) -> *mut c_void {
+        let mut output = ptr::null_mut();
+        assert_eq!(
+            unsafe { typed_repeated_alloc_v1(descriptor, capacity as u64, &raw mut output) },
+            GC_OK,
+        );
+        assert!(!output.is_null());
+        output
+    }
+
+    unsafe fn repeated_element(object: *mut c_void, index: usize) -> *mut TestRepeatedElement {
+        unsafe {
+            object
+                .cast::<u8>()
+                .add(size_of::<TestRepeatedHeader>() + index * size_of::<TestRepeatedElement>())
+                .cast()
+        }
+    }
+
+    fn repeated_descriptor(offsets: &[u64]) -> LoomGcRepeatedObjectDescriptor {
+        LoomGcRepeatedObjectDescriptor {
+            abi_version: TYPED_GC_REPEATED_ABI_VERSION,
+            flags: 0,
+            fixed_size: 16,
+            object_align: align_of::<*mut c_void>() as u64,
+            fixed_pointer_count: 0,
+            fixed_pointer_offsets: ptr::null(),
+            element_stride: 16,
+            element_pointer_count: offsets.len() as u64,
+            element_pointer_offsets: offsets.as_ptr(),
+        }
     }
 
     fn indirect(pointer: *mut ValueSlot) -> ValueSlot {
@@ -3220,6 +3484,209 @@ mod tests {
 
             assert_eq!(typed_root_pop_v1(frame.pointer()), GC_OK);
             assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
+
+    #[test]
+    fn repeated_typed_graph_moves_exact_cells_and_preserves_zeroed_unused_capacity() {
+        const CAPACITY: usize = 5;
+        let runtime = runtime_create_v1();
+        let mut frame = TestTypedRootFrame::<4>::all_live();
+        let leaf_descriptor = typed_leaf_descriptor();
+        let mut fixed_offsets = [0_u64];
+        let mut element_offsets = [0_u64, 16_u64];
+        let mut descriptor = LoomGcRepeatedObjectDescriptor {
+            abi_version: TYPED_GC_REPEATED_ABI_VERSION,
+            flags: 0,
+            fixed_size: size_of::<TestRepeatedHeader>() as u64,
+            object_align: align_of::<TestRepeatedElement>() as u64,
+            fixed_pointer_count: fixed_offsets.len() as u64,
+            fixed_pointer_offsets: fixed_offsets.as_ptr(),
+            element_stride: size_of::<TestRepeatedElement>() as u64,
+            element_pointer_count: element_offsets.len() as u64,
+            element_pointer_offsets: element_offsets.as_ptr(),
+        };
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            assert_eq!(typed_root_push_v1(frame.pointer()), GC_OK);
+            for root in &mut frame.roots[1..] {
+                *root = typed_allocate(&raw const leaf_descriptor, size_of::<TestTypedLeaf>());
+            }
+            for (index, root) in frame.roots[1..].iter().enumerate() {
+                let leaf = root.cast::<TestTypedLeaf>();
+                (*leaf).marker = 100 + index as u64;
+            }
+
+            // Allocation is a safepoint, so every child is reloaded from its
+            // exact typed root before the new repeated object is initialized.
+            (*runtime).heap.collect_before_every_allocation = true;
+            let object = typed_repeated_allocate(&raw const descriptor, CAPACITY);
+            (*runtime).heap.collect_before_every_allocation = false;
+            frame.roots[0] = object;
+            let header = object.cast::<TestRepeatedHeader>();
+            (*header).fixed_child = frame.roots[1];
+            (*header).length = 2;
+            (*header).capacity = CAPACITY as u64;
+            let first = repeated_element(object, 0);
+            let second = repeated_element(object, 1);
+            (*first).first = frame.roots[2];
+            (*first).marker = 7;
+            (*first).second = frame.roots[1];
+            (*second).first = object;
+            (*second).marker = 11;
+            (*second).second = frame.roots[3];
+            for index in 2..CAPACITY {
+                let unused = repeated_element(object, index);
+                assert!((*unused).first.is_null());
+                assert_eq!((*unused).marker, 0);
+                assert!((*unused).second.is_null());
+            }
+
+            // Caller-owned metadata is copied before publication.
+            fixed_offsets[0] = 8;
+            element_offsets.fill(8);
+            descriptor.fixed_pointer_count = 0;
+            descriptor.fixed_pointer_offsets = ptr::null();
+            descriptor.element_pointer_count = 0;
+            descriptor.element_pointer_offsets = ptr::null();
+
+            let old_object = object;
+            let old_children = [frame.roots[1], frame.roots[2], frame.roots[3]];
+            frame.roots[1..].fill(ptr::null_mut());
+            force_next_safepoint(runtime);
+            assert_eq!(safepoint_v1(), GC_OK);
+
+            let moved_object = frame.roots[0];
+            assert_ne!(moved_object, old_object);
+            let moved_header = moved_object.cast::<TestRepeatedHeader>();
+            assert_eq!((*moved_header).length, 2);
+            assert_eq!((*moved_header).capacity, CAPACITY as u64);
+            assert_ne!((*moved_header).fixed_child, old_children[0]);
+            let moved_first = repeated_element(moved_object, 0);
+            let moved_second = repeated_element(moved_object, 1);
+            assert_eq!((*moved_first).marker, 7);
+            assert_eq!((*moved_second).marker, 11);
+            assert_eq!((*moved_first).second, (*moved_header).fixed_child);
+            assert_ne!((*moved_first).first, old_children[1]);
+            assert_eq!((*moved_second).first, moved_object);
+            assert_ne!((*moved_second).second, old_children[2]);
+            assert_eq!((*runtime).heap.typed_object_count(), 4);
+            for index in 2..CAPACITY {
+                let unused = repeated_element(moved_object, index);
+                assert!((*unused).first.is_null());
+                assert!((*unused).second.is_null());
+            }
+
+            frame.roots[0] = ptr::null_mut();
+            force_next_safepoint(runtime);
+            assert_eq!(safepoint_v1(), GC_OK);
+            assert_eq!((*runtime).heap.typed_object_count(), 0);
+            assert_eq!(typed_root_pop_v1(frame.pointer()), GC_OK);
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
+
+    #[test]
+    fn repeated_typed_descriptor_validation_is_fail_closed_and_bounded() {
+        let runtime = runtime_create_v1();
+        let offsets = [0_u64];
+        let base = repeated_descriptor(&offsets);
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            let mut output = ptr::dangling_mut::<c_void>();
+
+            let mut descriptor = base;
+            descriptor.abi_version += 1;
+            assert_eq!(
+                typed_repeated_alloc_v1(&raw const descriptor, 1, &raw mut output),
+                GC_ABI_MISMATCH,
+            );
+            assert!(output.is_null());
+
+            for malformed in [
+                LoomGcRepeatedObjectDescriptor { flags: 1, ..base },
+                LoomGcRepeatedObjectDescriptor {
+                    fixed_size: 0,
+                    ..base
+                },
+                LoomGcRepeatedObjectDescriptor {
+                    object_align: 3,
+                    ..base
+                },
+                LoomGcRepeatedObjectDescriptor {
+                    element_stride: 0,
+                    ..base
+                },
+                LoomGcRepeatedObjectDescriptor {
+                    element_pointer_count: 0,
+                    ..base
+                },
+            ] {
+                output = ptr::dangling_mut();
+                assert_eq!(
+                    typed_repeated_alloc_v1(&raw const malformed, 1, &raw mut output),
+                    GC_DESCRIPTOR_INVALID,
+                );
+                assert!(output.is_null());
+            }
+
+            let unaligned = [1_u64];
+            let outside = [16_u64];
+            let descending = [8_u64, 0_u64];
+            for (table, count) in [
+                (unaligned.as_slice(), 1_u64),
+                (outside.as_slice(), 1_u64),
+                (descending.as_slice(), 2_u64),
+            ] {
+                descriptor = LoomGcRepeatedObjectDescriptor {
+                    element_pointer_count: count,
+                    element_pointer_offsets: table.as_ptr(),
+                    ..base
+                };
+                output = ptr::dangling_mut();
+                assert_eq!(
+                    typed_repeated_alloc_v1(&raw const descriptor, 1, &raw mut output),
+                    GC_DESCRIPTOR_INVALID,
+                );
+                assert!(output.is_null());
+            }
+
+            descriptor = LoomGcRepeatedObjectDescriptor {
+                element_pointer_count: GC_MAX_OBJECT_POINTERS + 1,
+                ..base
+            };
+            assert_eq!(
+                typed_repeated_alloc_v1(&raw const descriptor, 1, &raw mut output),
+                GC_RESOURCE_LIMIT,
+            );
+            descriptor = base;
+            assert_eq!(
+                typed_repeated_alloc_v1(
+                    &raw const descriptor,
+                    GC_MAX_REPEATED_POINTER_CELLS + 1,
+                    &raw mut output,
+                ),
+                GC_RESOURCE_LIMIT,
+            );
+            descriptor.element_pointer_count = 0;
+            descriptor.element_pointer_offsets = ptr::null();
+            descriptor.element_stride = GC_MAX_OBJECT_BYTES;
+            assert_eq!(
+                typed_repeated_alloc_v1(&raw const descriptor, 2, &raw mut output),
+                GC_RESOURCE_LIMIT,
+            );
+
+            assert_eq!((*runtime).heap.typed_object_count(), 0);
+            assert_eq!((*runtime).heap.collections, 0);
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            output = ptr::dangling_mut();
+            assert_eq!(
+                typed_repeated_alloc_v1(&raw const base, 1, &raw mut output),
+                GC_INVALID_ARGUMENT,
+            );
+            assert!(output.is_null());
             assert_eq!(runtime_destroy_v1(runtime), GC_OK);
         }
     }

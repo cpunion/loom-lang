@@ -337,6 +337,10 @@ did not advance runtime ABI component 11 or `runtime-v5`. Typed File/Socket
 close now adds `typed-resource-v1` and advances the current runtime ABI
 component to 12 with `runtime-v6`; deferred and static-concept cleanup adds no
 runtime ABI.
+The current runtime bundle also exports the additive
+`loom_gc_typed_repeated_alloc_v1` boundary. It advances the native component to
+13 with `runtime-v7`, `gc-v9`, and `typed-repeated-v1`; existing emitted fixed
+typed allocations remain on their unchanged v1 symbol.
 
 They also encode closed static-witness method selection and normalized
 associated types. Those proofs are absent from the machine ABI: LLVM receives

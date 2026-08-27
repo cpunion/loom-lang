@@ -87,6 +87,7 @@ static/immortal restriction as a typed root.
 The version-one symbols are:
 
 - `loom_gc_typed_alloc_v1(descriptor, allocation_size, output)`;
+- `loom_gc_typed_repeated_alloc_v1(descriptor, capacity, output)`;
 - `loom_gc_typed_root_push_v1(frame)`;
 - `loom_gc_typed_root_pop_v1(frame)`;
 - the shared `loom_gc_safepoint_v1()`.
@@ -106,14 +107,24 @@ address to `output`. A runtime helper may stage source data, allocate into a
 stable private out-cell, initialize without another safepoint, and publish its
 final language result last.
 
+`LoomGcRepeatedObjectDescriptor` adds a fixed header followed by elements of a
+constant stride. It carries exact pointer offsets for the header and for one
+element. The repeated allocator derives size from its capacity argument,
+copies both bounded tables, and stores capacity in private side metadata; the
+collector never trusts a mutable object length or capacity field. The complete
+allocation is zeroed and unused element cells stay null, so scanning capacity
+is exact rather than conservative. Each table is capped at 4,096 entries and
+one allocation may describe at most 16,777,216 pointer cells.
+
 ## Moving collection
 
 The collector traces live universal values, managed nodes and sequences, text
 objects, typed objects, Task frames, and witness instances. It builds
 replacement allocations, updates every precise root and internal managed
-pointer, then releases dead old storage. Typed tracing follows only the copied
-fixed-pointer offsets. Parent-to-child graphs and cycles are marked without
-recursion; relocation rewrites both typed root cells and typed object fields.
+pointer, then releases dead old storage. Typed tracing follows only copied
+fixed or repeated pointer offsets. Parent-to-child graphs and cycles are marked
+without recursion; relocation rewrites both typed root cells and typed object
+fields.
 
 Runtime clone and aggregate-building helpers use an explicit non-recursive work
 stack. This avoids host stack overflow on deeply nested but valid managed
