@@ -67,11 +67,11 @@ fn host_io_pool() -> &'static mpsc::SyncSender<HostIoJob> {
 mod task_all_cancellation_tests {
     use super::*;
 
-    fn task_id(value: Value) -> u64 {
+    fn task_id(value: &Value) -> u64 {
         let Value::Task { id } = value else {
             panic!("fixture must create a Task")
         };
-        id
+        *id
     }
 
     #[test]
@@ -82,12 +82,12 @@ mod task_all_cancellation_tests {
         let mut interpreter = Interpreter::new(&program);
         let span = Span::default();
         let first = task_id(
-            interpreter
+            &interpreter
                 .spawn_terminal_task(Ok(Value::Int { value: 1 }), span)
                 .expect("spawn first child"),
         );
         let cancelled = task_id(
-            interpreter
+            &interpreter
                 .spawn_terminal_task(Ok(Value::Int { value: 2 }), span)
                 .expect("spawn cancelled child"),
         );
@@ -97,7 +97,7 @@ mod task_all_cancellation_tests {
             .expect("cancelled child exists")
             .status = TaskStatus::Cancelled;
         let parent = task_id(
-            interpreter
+            &interpreter
                 .spawn_terminal_task(Ok(Value::Unit), span)
                 .expect("spawn parent"),
         );
