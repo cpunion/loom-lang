@@ -6,22 +6,24 @@ use loom_codegen_ir::{
 use loom_mir::{FunctionId, Type, TypeId};
 
 #[test]
-fn validator_accepts_a_fallible_coroutine_with_a_pointer_free_sum_result() {
+fn validator_accepts_a_fallible_coroutine_with_a_managed_sum_result() {
     let origin = Origin::synthetic(FunctionId(0));
     let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
     let boolean = builder.type_id(&Type::Bool).expect("Bool");
-    let integer = builder.type_id(&Type::Int).expect("Int");
+    let text = builder
+        .add_managed_text_type()
+        .expect("register managed Text");
     let result = builder
         .add_sum_type(
             Type::Nominal(TypeId(20), Vec::new()),
-            &[Box::from([Type::Int]), Box::new([])],
+            &[Box::from([Type::Text]), Box::new([])],
         )
-        .expect("pointer-free result sum");
+        .expect("managed result sum");
     let root = builder
         .declare_function(
             origin,
             "coroutine.fallible_result",
-            Signature::new([], result),
+            Signature::new([text], result),
             Effects::MAY_FAULT
                 .union(Effects::NEEDS_EXECUTOR)
                 .with_implications(),
@@ -36,6 +38,9 @@ fn validator_accepts_a_fallible_coroutine_with_a_pointer_free_sum_result() {
         let success = function.create_block().expect("success");
         let failure = function.create_block().expect("failure");
         function.set_entry(entry).expect("set entry");
+        let value = function
+            .append_block_parameter(entry, text)
+            .expect("Text parameter");
         let condition = function
             .append_instruction(
                 entry,
@@ -57,14 +62,6 @@ fn validator_accepts_a_fallible_coroutine_with_a_pointer_free_sum_result() {
                 ),
             )
             .expect("branch");
-        let value = function
-            .append_instruction(
-                success,
-                InstructionKind::Constant(Constant::Int(7)),
-                &[integer],
-                origin,
-            )
-            .expect("Int")[0];
         let result = function
             .append_instruction(
                 success,
@@ -95,7 +92,7 @@ fn validator_accepts_a_fallible_coroutine_with_a_pointer_free_sum_result() {
             .expect("fault");
     }
 
-    validate_program(&builder.finish()).expect("fallible pointer-free Result coroutine is valid");
+    validate_program(&builder.finish()).expect("fallible managed Result coroutine is valid");
 }
 
 #[test]

@@ -15,11 +15,11 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `23` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `3` |
-| LCIR textual dump | version `22` |
-| LCIR artifact identity | schema `23` |
-| LCIR native-object domain | `loom-lcir-native-object-v19` |
+| LCIR textual dump | version `23` |
+| LCIR artifact identity | schema `24` |
+| LCIR native-object domain | `loom-lcir-native-object-v20` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v24` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v25` |
 | Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
 | Native runtime ABI component | `15` |
@@ -191,6 +191,14 @@ Text, and GC wires are reused, so native runtime ABI component 15 does not
 change. Canonical Json is admitted through its List/TextMap cycle breakers and
 remains 24 bytes on supported 64-bit targets. Json equality and typed
 parse/format are separate versioning decisions.
+
+Managed closed sums in checked coroutine frames and typed Task results advance
+the LCIR dump to 23, artifact schema to 24, native-object domain to v20, and
+LLVM object-cache domain to v25. Coroutine descriptors reuse the generic
+carrier's exact static pointer offsets and per-state bitmaps; inactive pointer
+lanes remain zero. Fallible completion still publishes an ordinary typed
+`Result`, while Task fault and cancellation remain distinct scheduler states.
+No typed-task or native runtime ABI component changes.
 
 Structural equality adds no LCIR opcode or runtime entry point. Products,
 refined values, sums, and finite List-backed graphs expand into the existing

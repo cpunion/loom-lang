@@ -1627,11 +1627,6 @@ impl<'a> Validator<'a> {
                     pending.extend(product.fields().iter().copied().map(|field| (field, false)));
                 }
                 Some(Repr::Sum(sum)) => {
-                    if representation_pointer_kinds(&self.program.representations, ty)
-                        .is_none_or(|(_, managed)| managed)
-                    {
-                        return false;
-                    }
                     let Some(sum) = self.program.representations.sum(*sum) else {
                         return false;
                     };

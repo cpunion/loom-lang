@@ -1380,15 +1380,13 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             program: &mir::Program,
             ty: &Type,
             allow_task_handle: bool,
-            inside_sum: bool,
             active: &mut BTreeSet<Type>,
         ) -> bool {
             match ty {
-                Type::Unit | Type::Bool | Type::Int | Type::Float => true,
-                Type::Text => !inside_sum,
+                Type::Unit | Type::Bool | Type::Int | Type::Float | Type::Text => true,
                 Type::Tuple(elements) => elements
                     .iter()
-                    .all(|element| visit(program, element, false, inside_sum, active)),
+                    .all(|element| visit(program, element, false, active)),
                 Type::Task(_) => allow_task_handle,
                 Type::Nominal(_, _) => {
                     if !active.insert(ty.clone()) {
@@ -1397,14 +1395,14 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     let supported = if let Some(fields) = concrete_any_record_fields(program, ty) {
                         fields
                             .iter()
-                            .all(|field| visit(program, field, false, inside_sum, active))
+                            .all(|field| visit(program, field, false, active))
                     } else if let Some(base) = concrete_refined_base(program, ty) {
-                        visit(program, &base, false, inside_sum, active)
+                        visit(program, &base, false, active)
                     } else if let Some(variants) = closed_enum_variants(program, ty) {
                         variants.iter().all(|variant| {
                             variant
                                 .iter()
-                                .all(|payload| visit(program, payload, false, true, active))
+                                .all(|payload| visit(program, payload, false, active))
                         })
                     } else {
                         false
@@ -1422,13 +1420,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             }
         }
 
-        visit(
-            self.program,
-            ty,
-            allow_task_handle,
-            false,
-            &mut BTreeSet::new(),
-        )
+        visit(self.program, ty, allow_task_handle, &mut BTreeSet::new())
     }
 
     fn supported_record_type(&mut self, ty: &Type) -> bool {

@@ -6270,6 +6270,11 @@ fn fallible_typed_async_results_and_faults_close_the_native_route() {
         .iter()
         .find(|function| function.name().ends_with("checkedAnswer"))
         .expect("checkedAnswer coroutine");
+    let outcome = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("outcome"))
+        .expect("managed Result coroutine");
     let verify = artifact
         .functions()
         .iter()
@@ -6277,6 +6282,16 @@ fn fallible_typed_async_results_and_faults_close_the_native_route() {
         .expect("verify coroutine");
     assert!(checked_answer.coroutine().is_some());
     assert!(checked_answer.effects().contains(Effects::MAY_FAULT));
+    assert!(outcome.effects().contains(Effects::MAY_COLLECT));
+    let outcome_plan = outcome.coroutine().expect("managed Result coroutine plan");
+    assert!(outcome_plan.suspensions().is_empty());
+    assert!(matches!(
+        artifact
+            .representations()
+            .value_type(outcome_plan.output())
+            .and_then(|value| artifact.representations().repr(value.repr())),
+        Some(Repr::Sum(_))
+    ));
     let verify_plan = verify.coroutine().expect("verify coroutine plan");
     assert_eq!(
         verify_plan
@@ -6284,23 +6299,35 @@ fn fallible_typed_async_results_and_faults_close_the_native_route() {
             .iter()
             .map(loom_codegen_ir::CoroutineSuspension::state)
             .collect::<Vec<_>>(),
-        [1, 2, 3]
+        [1, 2, 3, 4]
     );
     assert!(verify.effects().contains(Effects::MAY_FAULT));
-    assert!(verify_plan.suspensions()[2].live().iter().any(|ty| {
-        artifact
-            .representations()
-            .value_type(*ty)
-            .and_then(|value| artifact.representations().repr(value.repr()))
-            .is_some_and(|repr| matches!(repr, Repr::Sum(_)))
-    }));
-    assert!(verify_plan.suspensions()[2].live().iter().any(|ty| {
-        artifact
-            .representations()
-            .value_type(*ty)
-            .and_then(|value| artifact.representations().repr(value.repr()))
-            == Some(&Repr::ManagedPointer)
-    }));
+    let final_live_reprs = verify_plan.suspensions()[3]
+        .live()
+        .iter()
+        .filter_map(|ty| {
+            artifact
+                .representations()
+                .value_type(*ty)
+                .and_then(|value| artifact.representations().repr(value.repr()))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        final_live_reprs
+            .iter()
+            .filter(|repr| matches!(repr, Repr::Sum(_)))
+            .count(),
+        2,
+        "both completed Result values must stay live across allocation pressure"
+    );
+    assert_eq!(
+        final_live_reprs
+            .iter()
+            .filter(|repr| ***repr == Repr::ManagedPointer)
+            .count(),
+        1,
+        "the source Text must stay live beside both Result carriers"
+    );
 
     let dump = dump_program(artifact.program());
     for required in [
@@ -6335,6 +6362,61 @@ fn fallible_typed_async_results_and_faults_close_the_native_route() {
             lcir.ir.contains(required),
             "missing `{required}`:\n{}",
             lcir.ir
+        );
+    }
+    let outcome_offsets = format!(
+        "@loom.lcir.coroutine.root_offsets.{} = private unnamed_addr constant [2 x i64] [i64 8, i64 32]",
+        outcome.id().raw()
+    );
+    let outcome_bitmaps = format!(
+        "@loom.lcir.coroutine.live_bitmaps.{} = private unnamed_addr constant [2 x i64] [i64 1, i64 2]",
+        outcome.id().raw()
+    );
+    assert!(
+        lcir.ir.contains(&outcome_offsets),
+        "managed Result frame must expose exactly the parameter root at offset 8 and completed carrier root at offset 32:\n{}",
+        lcir.ir
+    );
+    assert!(
+        lcir.ir.contains(&outcome_bitmaps),
+        "managed Result frame must switch exactly from its parameter root to its completed carrier root:\n{}",
+        lcir.ir
+    );
+    let verify_offsets = format!(
+        "@loom.lcir.coroutine.root_offsets.{} = private unnamed_addr constant [9 x i64] [i64 16, i64 48, i64 72, i64 88, i64 104, i64 120, i64 136, i64 152, i64 168]",
+        verify.id().raw()
+    );
+    let verify_bitmaps = format!(
+        "@loom.lcir.coroutine.live_bitmaps.{} = private unnamed_addr constant [6 x i64] [i64 0, i64 1, i64 6, i64 56, i64 448, i64 0]",
+        verify.id().raw()
+    );
+    assert!(
+        lcir.ir.contains(&verify_offsets),
+        "parent frame managed-root offsets changed unexpectedly:\n{}",
+        lcir.ir
+    );
+    assert!(
+        lcir.ir.contains(&verify_bitmaps),
+        "the fourth suspension must expose exactly one Text and two Result carrier roots:\n{}",
+        lcir.ir
+    );
+    let outcome_callback_name = format!("@loom.lcir.coroutine.resume.{}(", outcome.id().raw());
+    let outcome_callback = lcir
+        .ir
+        .split("\ndefine ")
+        .find(|function| function.contains(&outcome_callback_name))
+        .expect("managed Result coroutine callback IR");
+    for required in [
+        "managed.root.sum.variant.active",
+        "managed.root.active.pointer = select",
+        "managed.root.sum.safe.carrier",
+        "managed.root.rebuild.sum.safe.carrier",
+        "managed.root.rebuild.active.sum",
+        "zeroinitializer",
+    ] {
+        assert!(
+            outcome_callback.contains(required),
+            "managed Result callback omitted `{required}`:\n{outcome_callback}"
         );
     }
     let mut rooted_callbacks = 0_usize;

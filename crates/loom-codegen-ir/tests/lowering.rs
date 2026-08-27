@@ -237,12 +237,12 @@ pub async fn main() Unit
 }
 
 #[test]
-fn managed_sum_coroutine_frames_fail_closed() {
+fn managed_sum_coroutine_frames_lower_with_exact_direct_types() {
     let source = r#"module managed_result_async
 
 enum Problem { Wrong }
 
-async fn child() Result[Text, Problem] { Ok("managed") }
+async fn child() Result[Text, Problem] { Ok("man".concat("aged")) }
 
 pub async fn main() Unit {
     match child().await {
@@ -255,16 +255,19 @@ pub async fn main() Unit {
     Unit
 }
 "#;
-    let LoweringOutcome::Unsupported(report) = lower_run(source) else {
-        panic!("managed sum coroutine frame must fail closed")
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("collision-free managed sum coroutine frame must lower atomically")
     };
-    assert!(
-        report.items().iter().any(|item| matches!(
-            item.feature(),
-            UnsupportedFeature::SignatureType | UnsupportedFeature::Suspension
-        )),
-        "{report:#?}"
-    );
+    let child = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("child"))
+        .expect("managed Result child instance");
+    let plan = child.coroutine().expect("managed Result coroutine plan");
+    assert_eq!(plan.output(), child.signature().result());
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("managed_ptr"), "{dump}");
+    assert!(dump.contains("sum"), "{dump}");
 }
 
 #[test]

@@ -2141,9 +2141,24 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         base: u64,
         offsets: &mut BTreeSet<u64>,
     ) -> Result<(), CodegenError> {
-        let mut pending = vec![(root, base, 0_usize, false)];
+        if !self.coroutine_frame_contains_managed_pointer(root)? {
+            return Ok(());
+        }
+        for offset in self.managed_element_offsets(root)? {
+            offsets.insert(base.checked_add(offset).ok_or_else(|| {
+                CodegenError::new("ProgramTooLarge", "typed coroutine root offset overflowed")
+            })?);
+        }
+        Ok(())
+    }
+
+    fn coroutine_frame_contains_managed_pointer(
+        &self,
+        root: ValueTypeId,
+    ) -> Result<bool, CodegenError> {
+        let mut pending = vec![(root, 0_usize)];
         let mut visited = 0_usize;
-        while let Some((ty, base, depth, inside_sum)) = pending.pop() {
+        while let Some((ty, depth)) = pending.pop() {
             visited = visited.saturating_add(1);
             if visited > MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE
                 || depth > MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE
@@ -2154,17 +2169,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                 ));
             }
             match self.coroutine_frame_repr(ty)? {
-                Repr::ManagedPointer => {
-                    if inside_sum {
-                        return Err(CodegenError::new(
-                            "LlvmAbiDefect",
-                            format!(
-                                "managed sum {root} reached typed coroutine emission after classification"
-                            ),
-                        ));
-                    }
-                    offsets.insert(base);
-                }
+                Repr::ManagedPointer => return Ok(true),
                 Repr::Product(product) => {
                     let fields = self
                         .artifact
@@ -2177,35 +2182,12 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                             )
                         })?
                         .fields();
-                    let physical = self.llvm_type(ty)?.into_struct_type();
-                    for (index, field) in fields.iter().copied().enumerate().rev() {
-                        let index = u32::try_from(index).map_err(|_| {
-                            CodegenError::new(
-                                "ProgramTooLarge",
-                                "too many coroutine product fields",
-                            )
-                        })?;
-                        let field_offset = self
-                            .target_data
-                            .offset_of_element(&physical, index)
-                            .ok_or_else(|| {
-                                CodegenError::new(
-                                    "LlvmAbiDefect",
-                                    "coroutine product field has no target offset",
-                                )
-                            })?;
-                        pending.push((
-                            field,
-                            base.checked_add(field_offset).ok_or_else(|| {
-                                CodegenError::new(
-                                    "ProgramTooLarge",
-                                    "typed coroutine root offset overflowed",
-                                )
-                            })?,
-                            depth.saturating_add(1),
-                            inside_sum,
-                        ));
-                    }
+                    pending.extend(
+                        fields
+                            .iter()
+                            .copied()
+                            .map(|field| (field, depth.saturating_add(1))),
+                    );
                 }
                 Repr::Sum(sum) => {
                     let sum = self.artifact.representations().sum(sum).ok_or_else(|| {
@@ -2219,7 +2201,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                         .iter()
                         .flat_map(|variant| variant.fields().iter().copied())
                     {
-                        pending.push((field, base, depth.saturating_add(1), true));
+                        pending.push((field, depth.saturating_add(1)));
                     }
                 }
                 Repr::Zst | Repr::Scalar(_) | Repr::ImmortalText | Repr::TaskHandle => {}
@@ -2231,7 +2213,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                 }
             }
         }
-        Ok(())
+        Ok(false)
     }
 
     fn coroutine_frame_repr(&self, ty: ValueTypeId) -> Result<Repr, CodegenError> {

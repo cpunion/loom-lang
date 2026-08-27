@@ -39,16 +39,20 @@ exact result, and destroy the executor.
 
 Current typed coverage includes cleanup-free, non-inout coroutines with direct
 scalar/refined/product/Text parameters, results, and live values, plus
-pointer-free closed sums. A fallible callback creates one activation-local
-fault context attached to its executor. Checked arithmetic, assertions,
-ordinary fallible invokes, caller-side preconditions, and callee-side
-postconditions record only the first fault on the active Task. Await propagates
-the child's `Faulted` or `Cancelled` state; it never converts either state into
-a source `Result`. Task handles may be live only as suspension bookkeeping.
+closed sums whose payload graph uses those shapes. The collision-free carrier
+gives managed sums one static union of exact pointer offsets, and pack leaves
+inactive pointer lanes zero. This applies equally to coroutine parameters,
+suspension rows, and completed Task results without changing typed-task v1. A
+fallible callback creates one activation-local fault context attached to its
+executor. Checked arithmetic, assertions, ordinary fallible invokes,
+caller-side preconditions, and callee-side postconditions record only the first
+fault on the active Task. Await propagates the child's `Faulted` or `Cancelled`
+state; it never converts either state into a source `Result`. Task handles may
+be live only as suspension bookkeeping.
 
 Selected async roots with `requires`, async inout/writeback, lexical cleanup
-across suspension, timers/readiness, Task combinators, managed-sum/List/TextMap
-frame values, and dynamic concepts still select the complete legacy route.
+across suspension, timers/readiness, Task combinators, List/TextMap frame
+values, and dynamic concepts still select the complete legacy route.
 
 ## Runtime and executor
 
