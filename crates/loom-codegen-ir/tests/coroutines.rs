@@ -696,6 +696,302 @@ fn task_ownership_rejects_aliases_hidden_behind_distinct_block_parameters() {
     }));
 }
 
+#[derive(Clone, Copy)]
+enum TaskOwnershipCfgCase {
+    ExclusiveBranch,
+    PartialBranchConsumption,
+    LoopCarried,
+    InvokeReuse,
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "one raw LCIR fixture keeps the ownership-only CFG variations directly comparable"
+)]
+fn task_ownership_cfg_program(case: TaskOwnershipCfgCase) -> loom_codegen_ir::Program {
+    let origin = Origin::synthetic(FunctionId(0));
+    let sink_origin = Origin::synthetic(FunctionId(1));
+    let fallible_origin = Origin::synthetic(FunctionId(2));
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let boolean = builder.type_id(&Type::Bool).expect("Bool");
+    let task_int = builder
+        .add_task_handle_type(Type::Task(Box::new(Type::Int)))
+        .expect("Task[Int]");
+
+    let sink = builder
+        .declare_function(
+            sink_origin,
+            "ownership.sink",
+            Signature::new([task_int], task_int),
+            Effects::NONE,
+        )
+        .expect("sink");
+    {
+        let mut function = builder.function(sink).expect("sink builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("entry");
+        let task = function
+            .append_block_parameter(entry, task_int)
+            .expect("owned Task[Int]");
+        function
+            .terminate(
+                entry,
+                Terminator::new(TerminatorKind::Return(task), sink_origin),
+            )
+            .expect("return");
+    }
+
+    let fallible_sink = builder
+        .declare_function(
+            fallible_origin,
+            "ownership.fallible_sink",
+            Signature::new([task_int], task_int),
+            Effects::MAY_FAULT.with_implications(),
+        )
+        .expect("fallible sink");
+    {
+        let mut function = builder
+            .function(fallible_sink)
+            .expect("fallible sink builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("entry");
+        function
+            .append_block_parameter(entry, task_int)
+            .expect("owned Task[Int]");
+        function
+            .terminate(
+                entry,
+                Terminator::new(
+                    TerminatorKind::Fault {
+                        metadata: FaultMetadata::runtime(FaultCode::IntegerOverflow),
+                    },
+                    fallible_origin,
+                ),
+            )
+            .expect("fault");
+    }
+
+    let effects = if matches!(case, TaskOwnershipCfgCase::InvokeReuse) {
+        Effects::MAY_FAULT.with_implications()
+    } else {
+        Effects::NONE
+    };
+    let root = builder
+        .declare_function(
+            origin,
+            "ownership.cfg",
+            Signature::new([task_int, boolean], task_int),
+            effects,
+        )
+        .expect("root");
+    {
+        let mut function = builder.function(root).expect("root builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("entry");
+        let task = function
+            .append_block_parameter(entry, task_int)
+            .expect("Task[Int]");
+        let condition = function
+            .append_block_parameter(entry, boolean)
+            .expect("condition");
+
+        match case {
+            TaskOwnershipCfgCase::ExclusiveBranch => {
+                let then_block = function.create_block().expect("then");
+                let else_block = function.create_block().expect("else");
+                let then_task = function
+                    .append_block_parameter(then_block, task_int)
+                    .expect("then Task[Int]");
+                let else_task = function
+                    .append_block_parameter(else_block, task_int)
+                    .expect("else Task[Int]");
+                function
+                    .terminate(
+                        entry,
+                        Terminator::new(
+                            TerminatorKind::Branch {
+                                condition,
+                                then_target: BlockTarget::new(then_block, [task]),
+                                else_target: BlockTarget::new(else_block, [task]),
+                            },
+                            origin,
+                        ),
+                    )
+                    .expect("branch");
+                function
+                    .terminate(
+                        then_block,
+                        Terminator::new(TerminatorKind::Return(then_task), origin),
+                    )
+                    .expect("then return");
+                function
+                    .terminate(
+                        else_block,
+                        Terminator::new(TerminatorKind::Return(else_task), origin),
+                    )
+                    .expect("else return");
+            }
+            TaskOwnershipCfgCase::PartialBranchConsumption => {
+                let consumed = function.create_block().expect("consumed");
+                let skipped = function.create_block().expect("skipped");
+                let merge = function.create_block().expect("merge");
+                function
+                    .terminate(
+                        entry,
+                        Terminator::new(
+                            TerminatorKind::Branch {
+                                condition,
+                                then_target: BlockTarget::new(consumed, []),
+                                else_target: BlockTarget::new(skipped, []),
+                            },
+                            origin,
+                        ),
+                    )
+                    .expect("branch");
+                function
+                    .append_instruction(
+                        consumed,
+                        InstructionKind::DirectCall {
+                            callee: sink,
+                            arguments: Box::from([task]),
+                        },
+                        &[task_int],
+                        origin,
+                    )
+                    .expect("consume Task");
+                function
+                    .terminate(
+                        consumed,
+                        Terminator::new(TerminatorKind::Jump(BlockTarget::new(merge, [])), origin),
+                    )
+                    .expect("consumed merge");
+                function
+                    .terminate(
+                        skipped,
+                        Terminator::new(TerminatorKind::Jump(BlockTarget::new(merge, [])), origin),
+                    )
+                    .expect("skipped merge");
+                function
+                    .terminate(merge, Terminator::new(TerminatorKind::Return(task), origin))
+                    .expect("reuse after merge");
+            }
+            TaskOwnershipCfgCase::LoopCarried => {
+                let header = function.create_block().expect("header");
+                let exit = function.create_block().expect("exit");
+                let carried = function
+                    .append_block_parameter(header, task_int)
+                    .expect("carried Task[Int]");
+                let exit_task = function
+                    .append_block_parameter(exit, task_int)
+                    .expect("exit Task[Int]");
+                function
+                    .terminate(
+                        entry,
+                        Terminator::new(
+                            TerminatorKind::Jump(BlockTarget::new(header, [task])),
+                            origin,
+                        ),
+                    )
+                    .expect("enter loop");
+                function
+                    .terminate(
+                        header,
+                        Terminator::new(
+                            TerminatorKind::Branch {
+                                condition,
+                                then_target: BlockTarget::new(header, [carried]),
+                                else_target: BlockTarget::new(exit, [carried]),
+                            },
+                            origin,
+                        ),
+                    )
+                    .expect("loop or exit");
+                function
+                    .terminate(
+                        exit,
+                        Terminator::new(TerminatorKind::Return(exit_task), origin),
+                    )
+                    .expect("return carried Task");
+            }
+            TaskOwnershipCfgCase::InvokeReuse => {
+                let normal = function.create_block().expect("normal");
+                let unwind = function.create_block().expect("unwind");
+                function
+                    .append_block_parameter(normal, task_int)
+                    .expect("invoke result");
+                function
+                    .terminate(
+                        entry,
+                        Terminator::new(
+                            TerminatorKind::Invoke {
+                                callee: fallible_sink,
+                                arguments: Box::from([task]),
+                                normal: ResultTarget::new(normal, []),
+                                unwind: UnwindTarget::new(unwind, []),
+                            },
+                            origin,
+                        ),
+                    )
+                    .expect("invoke");
+                function
+                    .terminate(
+                        normal,
+                        Terminator::new(TerminatorKind::Return(task), origin),
+                    )
+                    .expect("reuse invoke argument");
+                function
+                    .terminate(unwind, Terminator::new(TerminatorKind::ResumeFault, origin))
+                    .expect("resume fault");
+            }
+        }
+    }
+    builder.finish()
+}
+
+#[test]
+fn task_ownership_allows_mutually_exclusive_branch_moves() {
+    validate_program(&task_ownership_cfg_program(
+        TaskOwnershipCfgCase::ExclusiveBranch,
+    ))
+    .expect("one Task may move along either mutually exclusive branch");
+}
+
+#[test]
+fn task_ownership_rejects_consumption_on_only_one_incoming_path() {
+    let errors = validate_program(&task_ownership_cfg_program(
+        TaskOwnershipCfgCase::PartialBranchConsumption,
+    ))
+    .expect_err("a merged Task must be available on every incoming path");
+    assert!(
+        errors
+            .as_slice()
+            .iter()
+            .all(|error| error.code() == ValidationCode::InvalidTaskOwnership)
+    );
+}
+
+#[test]
+fn task_ownership_allows_loop_carried_moves_before_exit() {
+    validate_program(&task_ownership_cfg_program(
+        TaskOwnershipCfgCase::LoopCarried,
+    ))
+    .expect("a Task may be rebound through a loop parameter before its exit move");
+}
+
+#[test]
+fn task_ownership_rejects_reusing_an_invoke_argument() {
+    let errors = validate_program(&task_ownership_cfg_program(
+        TaskOwnershipCfgCase::InvokeReuse,
+    ))
+    .expect_err("Invoke transfers its Task arguments on both continuations");
+    assert!(
+        errors
+            .as_slice()
+            .iter()
+            .all(|error| error.code() == ValidationCode::InvalidTaskOwnership)
+    );
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "the malformed-program matrix keeps coroutine plans and heterogeneous await edges together"
