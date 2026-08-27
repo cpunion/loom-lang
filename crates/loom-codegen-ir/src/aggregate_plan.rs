@@ -19,24 +19,81 @@ const fn is_direct_product_leaf(ty: &Type) -> bool {
 pub(crate) const DIRECT_AGGREGATE_MAX_TYPE_NODES: usize =
     crate::repr::DIRECT_PRODUCT_MAX_STRUCTURAL_NODES;
 
-pub(crate) fn closed_record_fields<'program>(
-    program: &'program mir::Program,
-    ty: &Type,
-) -> Option<&'program [mir::FieldDef]> {
+/// Resolves one concrete record instantiation into ordered, substituted field
+/// types. `TextMap` remains opaque because its raw field is a runtime handle,
+/// not the source value's product representation.
+pub(crate) fn concrete_record_fields(program: &mir::Program, ty: &Type) -> Option<Box<[Type]>> {
     let Type::Nominal(id, arguments) = ty else {
         return None;
     };
-    if !arguments.is_empty() {
+    if program.prelude.text_map == Some(*id) {
         return None;
     }
     let definition = program.type_def(*id)?;
-    if definition.type_parameters != 0 {
+    if usize::try_from(definition.type_parameters).ok()? != arguments.len() {
         return None;
     }
     let mir::TypeDefKind::Record { fields, invariant } = &definition.kind else {
         return None;
     };
-    invariant.is_none().then_some(fields)
+    if invariant.is_some() {
+        return None;
+    }
+    substitute_fields(fields, arguments)
+}
+
+/// Resolves fields for either a plain or invariant concrete record.
+pub(crate) fn concrete_any_record_fields(program: &mir::Program, ty: &Type) -> Option<Box<[Type]>> {
+    let Type::Nominal(id, arguments) = ty else {
+        return None;
+    };
+    if program.prelude.text_map == Some(*id) {
+        return None;
+    }
+    let definition = program.type_def(*id)?;
+    if usize::try_from(definition.type_parameters).ok()? != arguments.len() {
+        return None;
+    }
+    let mir::TypeDefKind::Record { fields, .. } = &definition.kind else {
+        return None;
+    };
+    substitute_fields(fields, arguments)
+}
+
+/// Resolves the transparent payload of a concrete refined instantiation.
+pub(crate) fn concrete_refined_base(program: &mir::Program, ty: &Type) -> Option<Type> {
+    let Type::Nominal(id, arguments) = ty else {
+        return None;
+    };
+    let definition = program.type_def(*id)?;
+    if usize::try_from(definition.type_parameters).ok()? != arguments.len() {
+        return None;
+    }
+    let mir::TypeDefKind::Refined { base, .. } = &definition.kind else {
+        return None;
+    };
+    concrete_type_node_count(ty)?;
+    substituted_type_node_count(base, arguments, DIRECT_AGGREGATE_MAX_TYPE_NODES)?;
+    substitute_type(base, arguments, 1)
+}
+
+fn substitute_fields(fields: &[mir::FieldDef], arguments: &[Type]) -> Option<Box<[Type]>> {
+    DIRECT_AGGREGATE_MAX_TYPE_NODES.checked_sub(fields.len())?;
+    if arguments
+        .iter()
+        .any(|argument| concrete_type_node_count(argument).is_none())
+    {
+        return None;
+    }
+    let mut type_nodes = 0_usize;
+    let mut concrete = Vec::with_capacity(fields.len());
+    for field in fields {
+        let remaining = DIRECT_AGGREGATE_MAX_TYPE_NODES.checked_sub(type_nodes)?;
+        let cost = substituted_type_node_count(&field.ty, arguments, remaining)?;
+        type_nodes = type_nodes.checked_add(cost)?;
+        concrete.push(substitute_type(&field.ty, arguments, 1)?);
+    }
+    Some(concrete.into_boxed_slice())
 }
 
 /// Resolves one fully concrete enum instantiation into ordered, substituted
@@ -303,40 +360,23 @@ fn direct_aggregate_shape(program: &mir::Program, ty: &Type) -> Option<Aggregate
     concrete_type_node_count(ty)?;
     match ty {
         Type::Tuple(elements) => Some(AggregateShape::Product(elements.clone().into_boxed_slice())),
-        Type::Nominal(id, arguments) => {
+        Type::Nominal(id, _) => {
             let definition = program.type_def(*id)?;
             match &definition.kind {
                 mir::TypeDefKind::Enum { .. } => {
                     closed_enum_variants(program, ty).map(AggregateShape::Sum)
                 }
-                mir::TypeDefKind::Record { fields, invariant }
-                    if arguments.is_empty() && definition.type_parameters == 0 =>
-                {
-                    let mut nodes = 0_usize;
-                    for field in fields {
-                        nodes = nodes.checked_add(concrete_type_node_count(&field.ty)?)?;
-                        if nodes > DIRECT_AGGREGATE_MAX_TYPE_NODES {
-                            return None;
-                        }
-                    }
-                    let fields = fields
-                        .iter()
-                        .map(|field| field.ty.clone())
-                        .collect::<Vec<_>>()
-                        .into_boxed_slice();
+                mir::TypeDefKind::Record { invariant, .. } => {
+                    let fields = concrete_any_record_fields(program, ty)?;
                     Some(if invariant.is_some() {
                         AggregateShape::InvariantProduct(fields)
                     } else {
                         AggregateShape::Product(fields)
                     })
                 }
-                mir::TypeDefKind::Refined { base, .. }
-                    if arguments.is_empty() && definition.type_parameters == 0 =>
-                {
-                    concrete_type_node_count(base)?;
-                    Some(AggregateShape::Transparent(base.clone()))
+                mir::TypeDefKind::Refined { .. } => {
+                    concrete_refined_base(program, ty).map(AggregateShape::Transparent)
                 }
-                mir::TypeDefKind::Record { .. } | mir::TypeDefKind::Refined { .. } => None,
             }
         }
         Type::Never
@@ -679,19 +719,13 @@ impl AggregatePlan {
                 (Type::Tuple(elements), AggregateShape::Product(_)) => {
                     builder.add_tuple_type(elements)
                 }
-                (Type::Nominal(_, arguments), AggregateShape::Product(fields))
-                    if arguments.is_empty() =>
-                {
+                (Type::Nominal(_, _), AggregateShape::Product(fields)) => {
                     builder.add_pod_record_type(semantic.clone(), fields)
                 }
-                (Type::Nominal(_, arguments), AggregateShape::InvariantProduct(fields))
-                    if arguments.is_empty() =>
-                {
+                (Type::Nominal(_, _), AggregateShape::InvariantProduct(fields)) => {
                     builder.add_invariant_record_type(semantic.clone(), fields)
                 }
-                (Type::Nominal(_, arguments), AggregateShape::Transparent(base))
-                    if arguments.is_empty() =>
-                {
+                (Type::Nominal(_, _), AggregateShape::Transparent(base)) => {
                     builder.add_transparent_type(semantic.clone(), base)
                 }
                 (Type::Nominal(_, _), AggregateShape::Sum(variants)) => {
@@ -731,7 +765,10 @@ impl AggregatePlan {
 #[cfg(test)]
 mod tests {
     use loom_core::Span;
-    use loom_mir::{Program, TypeDef, TypeDefKind, VariantDef, VariantId};
+    use loom_mir::{
+        Constant, Contract, ContractExpr, ContractExprKind, FieldDef, PreludeIds, Program, TypeDef,
+        TypeDefKind, VariantDef, VariantId,
+    };
 
     use super::*;
 
@@ -861,5 +898,130 @@ mod tests {
             .register(&mut builder)
             .unwrap_or_else(|_| panic!("nested Option plan must register"));
         assert!(builder.type_id(&outer).is_some());
+    }
+
+    fn generic_product_program() -> Program {
+        let span = Span::default();
+        let boxed = TypeId(0);
+        let guarded = TypeId(1);
+        let refined = TypeId(2);
+        let text_map = TypeId(3);
+        let true_contract = || Contract {
+            code: "true".into(),
+            span,
+            expression: ContractExpr {
+                kind: ContractExprKind::Constant(Constant::Bool(true)),
+                span,
+            },
+        };
+        Program {
+            types: vec![
+                TypeDef {
+                    id: boxed,
+                    name: "Boxed".into(),
+                    span,
+                    type_parameters: 1,
+                    kind: TypeDefKind::Record {
+                        fields: vec![FieldDef {
+                            name: "value".into(),
+                            ty: Type::Parameter(0),
+                            span,
+                        }],
+                        invariant: None,
+                    },
+                },
+                TypeDef {
+                    id: guarded,
+                    name: "Guarded".into(),
+                    span,
+                    type_parameters: 1,
+                    kind: TypeDefKind::Record {
+                        fields: vec![
+                            FieldDef {
+                                name: "value".into(),
+                                ty: Type::Parameter(0),
+                                span,
+                            },
+                            FieldDef {
+                                name: "marker".into(),
+                                ty: Type::Int,
+                                span,
+                            },
+                        ],
+                        invariant: Some(true_contract()),
+                    },
+                },
+                TypeDef {
+                    id: refined,
+                    name: "RefinedBox".into(),
+                    span,
+                    type_parameters: 0,
+                    kind: TypeDefKind::Refined {
+                        base: Type::Nominal(boxed, vec![Type::Int]),
+                        predicate: true_contract(),
+                    },
+                },
+                TypeDef {
+                    id: text_map,
+                    name: "TextMap".into(),
+                    span,
+                    type_parameters: 1,
+                    kind: TypeDefKind::Record {
+                        fields: vec![FieldDef {
+                            name: "raw".into(),
+                            ty: Type::Int,
+                            span,
+                        }],
+                        invariant: None,
+                    },
+                },
+            ],
+            prelude: PreludeIds {
+                text_map: Some(text_map),
+                ..PreludeIds::default()
+            },
+            ..Program::default()
+        }
+    }
+
+    #[test]
+    fn concrete_generic_products_and_refinements_register_but_text_map_stays_opaque() {
+        let program = generic_product_program();
+        let boxed = TypeId(0);
+        let guarded = TypeId(1);
+        let refined = TypeId(2);
+        let text_map = TypeId(3);
+        let boxed_int = Type::Nominal(boxed, vec![Type::Int]);
+        let guarded_text = Type::Nominal(guarded, vec![Type::Text]);
+        let refined_int = Type::Nominal(refined, Vec::new());
+        let map_int = Type::Nominal(text_map, vec![Type::Int]);
+
+        assert_eq!(
+            concrete_record_fields(&program, &boxed_int).as_deref(),
+            Some([Type::Int].as_slice())
+        );
+        assert_eq!(
+            concrete_refined_base(&program, &refined_int),
+            Some(boxed_int.clone())
+        );
+        assert!(concrete_record_fields(&program, &map_int).is_none());
+
+        let mut planner = AggregatePlanner::new(&program, true);
+        assert!(planner.supports_value_type(&boxed_int));
+        assert!(planner.supports_value_type(&guarded_text));
+        assert!(planner.supports_value_type(&refined_int));
+        assert!(!planner.supports_value_type(&map_int));
+        let mut builder = ProgramBuilder::new(crate::TargetLayout::new(64).expect("target"));
+        builder
+            .add_managed_text_type()
+            .expect("register managed Text before products");
+        planner
+            .finish()
+            .register(&mut builder)
+            .unwrap_or_else(|_| panic!("concrete generic products must register"));
+        assert!(builder.type_id(&boxed_int).is_some());
+        assert!(builder.type_id(&guarded_text).is_some());
+        assert!(builder.type_id(&refined_int).is_some());
+        assert!(builder.type_id(&map_int).is_none());
     }
 }

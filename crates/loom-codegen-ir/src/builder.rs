@@ -144,7 +144,7 @@ impl ProgramBuilder {
         })
     }
 
-    /// Adds one monomorphic record whose fields already have canonical direct
+    /// Adds one concrete record instantiation whose fields have canonical direct
     /// representations. Nested products must therefore be registered before
     /// their containing products. Product types must be registered before
     /// declaring functions so every signature is fixed before CFG construction.
@@ -169,12 +169,12 @@ impl ProgramBuilder {
             .ok_or_else(|| {
                 BuildError::new(
                     BuildErrorCode::InvalidProductType,
-                    "LCIR POD record requires one unique monomorphic nominal type whose fields already have direct representations",
+                    "LCIR POD record requires one unique concrete nominal type whose fields already have direct representations",
                 )
             })
     }
 
-    /// Adds a monomorphic record whose invariant has already been proved by
+    /// Adds a concrete record instantiation whose invariant has been proved by
     /// semantic analysis. Its physical layout is an ordinary direct product,
     /// but independent validation prevents the ordinary product-construction
     /// instruction from creating values of this type.
@@ -199,7 +199,7 @@ impl ProgramBuilder {
             .ok_or_else(|| {
                 BuildError::new(
                     BuildErrorCode::InvalidProductType,
-                    "LCIR invariant record requires one unique monomorphic nominal type whose fields already have direct representations",
+                    "LCIR invariant record requires one unique concrete nominal type whose fields already have direct representations",
                 )
             })
     }
@@ -228,7 +228,7 @@ impl ProgramBuilder {
             .ok_or_else(|| {
                 BuildError::new(
                     BuildErrorCode::InvalidValueType,
-                    "LCIR transparent type requires one unique monomorphic nominal type and an already-registered inhabited base",
+                    "LCIR transparent type requires one unique concrete nominal type and an already-registered inhabited base",
                 )
             })
     }

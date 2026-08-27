@@ -496,10 +496,7 @@ impl<'a> Validator<'a> {
                             && base.index() < index
                             && base_type.semantic() != value_type.semantic()
                             && base_type.repr() == value_type.repr()
-                            && matches!(
-                                value_type.semantic(),
-                                Type::Nominal(_, arguments) if arguments.is_empty()
-                            )
+                            && crate::repr::is_concrete_nominal_type(value_type.semantic())
                     });
                     if !valid {
                         self.error(
@@ -510,17 +507,16 @@ impl<'a> Validator<'a> {
                     }
                 }
                 ValueTypeKind::InvariantProduct => {
-                    if !matches!(
-                        value_type.semantic(),
-                        Type::Nominal(_, arguments) if arguments.is_empty()
-                    ) || !matches!(
-                        representations.repr(value_type.repr()),
-                        Some(Repr::Product(_))
-                    ) {
+                    if !crate::repr::is_concrete_nominal_type(value_type.semantic())
+                        || !matches!(
+                            representations.repr(value_type.repr()),
+                            Some(Repr::Product(_))
+                        )
+                    {
                         self.error(
                             ValidationCode::RepresentationPlan,
                             format!("representations.type[{index}].invariant_product"),
-                            "invariant-product type must be a monomorphic nominal value backed by a product representation",
+                            "invariant-product type must be a concrete nominal value backed by a product representation",
                         );
                     }
                 }
@@ -568,7 +564,7 @@ impl<'a> Validator<'a> {
             match representations.repr(value_type.repr()).copied() {
                 Some(Repr::Product(product)) => {
                     match value_type.semantic() {
-                        Type::Nominal(_, arguments) if arguments.is_empty() => {}
+                        semantic if crate::repr::is_concrete_nominal_type(semantic) => {}
                         Type::Tuple(elements) => {
                             if let Some(fields) = representations
                                 .product(product)
@@ -603,7 +599,7 @@ impl<'a> Validator<'a> {
                             self.error(
                                 ValidationCode::RepresentationPlan,
                                 format!("representations.type[{index}]"),
-                                "direct product value types require a structural tuple or monomorphic nominal semantic type",
+                                "direct product value types require a structural tuple or concrete nominal semantic type",
                             );
                         }
                     }

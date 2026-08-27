@@ -42,6 +42,15 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- Typed LCIR now monomorphizes fully concrete generic records, invariant
+  records, and refined wrappers into their exact direct product or transparent
+  representations. Generic field projection, contract evaluation, calls,
+  returns, and managed `Text` leaves remain typed SSA; compiler-private
+  `TextMap[V]` stays opaque. The new `lcir-generic-products` fixture closes real
+  `check/build/test/run`, host execution, legacy differential, and Linux/MSVC
+  object evidence without a universal value or executor. Existing LCIR,
+  artifact, object, cache, and runtime ABI versions are unchanged because this
+  extends accepted source coverage without changing their formats.
 - Typed LCIR now places source contracts at explicit checked boundaries.
   Closed-world calls evaluate every argument before checking `requires` with
   exact call-expression blame, then enter an assumed body whose receiver

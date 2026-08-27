@@ -621,9 +621,8 @@ pub fn main() Unit {
 }
 
 #[test]
-fn generic_invariant_and_refined_record_instantiations_remain_atomic_fallback() {
-    let program = compile(
-        r"module generic_proof_fallback
+fn generic_invariant_and_refined_record_instantiations_lower_directly() {
+    let source = r"module generic_products
 
 record Boxed[T] {
     value T
@@ -650,8 +649,8 @@ pub fn main() Unit {
     discard established_invariant()
     Unit
 }
-",
-    );
+";
+    let program = compile(source);
     let mir_debug = format!("{program:#?}");
     assert!(
         mir_debug.contains("type_arguments: [\n") && mir_debug.contains("Int,"),
@@ -664,19 +663,16 @@ pub fn main() Unit {
         },
         TargetLayout::new(64).expect("test target"),
     )
-    .expect("classify generic proof-bearing values");
-    let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("generic invariant/refined records must select whole-artifact fallback")
+    .expect("lower generic proof-bearing values");
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("generic invariant/refined records must use typed LCIR")
     };
-    assert!(report.items().iter().any(|item| {
-        matches!(
-            item.feature(),
-            UnsupportedFeature::SignatureType
-                | UnsupportedFeature::ExpressionType
-                | UnsupportedFeature::NominalValue
-                | UnsupportedFeature::RefinedValue
-        )
-    }));
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("Nominal#"), "{dump}");
+    assert!(dump.contains("[Int]"), "{dump}");
+    assert!(dump.contains("product.construct"), "{dump}");
+    assert!(dump.contains("invariant_record.proven"), "{dump}");
+    assert!(dump.contains("refine.proven"), "{dump}");
 }
 
 #[test]

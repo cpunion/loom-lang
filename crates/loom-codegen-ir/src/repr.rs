@@ -10,6 +10,56 @@ use crate::{ProductReprId, ReprId, SumReprId, ValueTypeId};
 pub(crate) const DIRECT_PRODUCT_MAX_NESTING_DEPTH: usize = 256;
 pub(crate) const DIRECT_PRODUCT_MAX_STRUCTURAL_NODES: usize = 256;
 
+/// Returns whether a nominal semantic identity is fully instantiated and
+/// small enough to retain in the direct representation catalog.
+pub(crate) fn is_concrete_nominal_type(root: &Type) -> bool {
+    if !matches!(root, Type::Nominal(_, _)) {
+        return false;
+    }
+    let mut pending = vec![root];
+    let mut visited = 0_usize;
+    while let Some(ty) = pending.pop() {
+        visited = visited.saturating_add(1);
+        if visited > DIRECT_PRODUCT_MAX_STRUCTURAL_NODES {
+            return false;
+        }
+        match ty {
+            Type::Tuple(elements) | Type::Nominal(_, elements) => {
+                if visited
+                    .checked_add(pending.len())
+                    .and_then(|nodes| nodes.checked_add(elements.len()))
+                    .is_none_or(|nodes| nodes > DIRECT_PRODUCT_MAX_STRUCTURAL_NODES)
+                {
+                    return false;
+                }
+                pending.extend(elements);
+            }
+            Type::List(element) | Type::Task(element) | Type::TaskOutcome(element) => {
+                if visited
+                    .checked_add(pending.len())
+                    .is_none_or(|nodes| nodes >= DIRECT_PRODUCT_MAX_STRUCTURAL_NODES)
+                {
+                    return false;
+                }
+                pending.push(element);
+            }
+            Type::View { bindings, .. } => {
+                if visited
+                    .checked_add(pending.len())
+                    .and_then(|nodes| nodes.checked_add(bindings.len()))
+                    .is_none_or(|nodes| nodes > DIRECT_PRODUCT_MAX_STRUCTURAL_NODES)
+                {
+                    return false;
+                }
+                pending.extend(bindings.values());
+            }
+            Type::Parameter(_) | Type::AssociatedProjection { .. } | Type::Error => return false,
+            Type::Never | Type::Unit | Type::Bool | Type::Int | Type::Float | Type::Text => {}
+        }
+    }
+    true
+}
+
 /// Target facts used by the direct LCIR foundation.
 ///
 /// Optimization policy and CPU tuning deliberately do not belong here. They
@@ -471,7 +521,7 @@ impl RepresentationPlan {
         semantic: Type,
         fields: &[Type],
     ) -> Option<ValueTypeId> {
-        if !matches!(&semantic, Type::Nominal(_, arguments) if arguments.is_empty()) {
+        if !is_concrete_nominal_type(&semantic) {
             return None;
         }
         self.add_product(semantic, fields, ValueTypeKind::Direct)
@@ -522,7 +572,7 @@ impl RepresentationPlan {
         semantic: Type,
         fields: &[Type],
     ) -> Option<ValueTypeId> {
-        if !matches!(&semantic, Type::Nominal(_, arguments) if arguments.is_empty()) {
+        if !is_concrete_nominal_type(&semantic) {
             return None;
         }
         self.add_product(semantic, fields, ValueTypeKind::InvariantProduct)
@@ -537,9 +587,7 @@ impl RepresentationPlan {
     }
 
     pub(crate) fn add_transparent(&mut self, semantic: Type, base: &Type) -> Option<ValueTypeId> {
-        if self.type_id(&semantic).is_some()
-            || !matches!(&semantic, Type::Nominal(_, arguments) if arguments.is_empty())
-        {
+        if self.type_id(&semantic).is_some() || !is_concrete_nominal_type(&semantic) {
             return None;
         }
         let base = self.type_id(base)?;
