@@ -39,7 +39,12 @@ loom-runtime-abi = { path = "crates/loom-runtime-abi" }
 loom-runtime = { path = "crates/loom-runtime" }
 loom-codegen-llvm = { path = "crates/loom-codegen-llvm" }
 loom-driver = { path = "crates/loom-driver" }
-inkwell = { version = "0.10.0", features = ["llvm19-1-prefer-dynamic"] }
+inkwell = { version = "0.10.0", default-features = false, features = [
+    "llvm19-1-prefer-dynamic",
+    "target-aarch64",
+    "target-arm",
+    "target-x86",
+] }
 llvm-sys = { version = "191.1.0", features = ["prefer-dynamic"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

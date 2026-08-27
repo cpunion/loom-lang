@@ -329,38 +329,10 @@ fn initialize_configured_targets() {
     let config = InitializationConfig::default();
     #[cfg(loom_llvm_target_aarch64)]
     Target::initialize_aarch64(&config);
-    #[cfg(loom_llvm_target_amdgpu)]
-    Target::initialize_amd_gpu(&config);
     #[cfg(loom_llvm_target_arm)]
     Target::initialize_arm(&config);
-    #[cfg(loom_llvm_target_bpf)]
-    Target::initialize_bpf(&config);
-    #[cfg(loom_llvm_target_hexagon)]
-    Target::initialize_hexagon(&config);
-    #[cfg(loom_llvm_target_lanai)]
-    Target::initialize_lanai(&config);
-    #[cfg(loom_llvm_target_loongarch)]
-    Target::initialize_loongarch(&config);
-    #[cfg(loom_llvm_target_mips)]
-    Target::initialize_mips(&config);
-    #[cfg(loom_llvm_target_msp430)]
-    Target::initialize_msp430(&config);
-    #[cfg(loom_llvm_target_nvptx)]
-    Target::initialize_nvptx(&config);
-    #[cfg(loom_llvm_target_powerpc)]
-    Target::initialize_power_pc(&config);
-    #[cfg(loom_llvm_target_riscv)]
-    Target::initialize_riscv(&config);
-    #[cfg(loom_llvm_target_sparc)]
-    Target::initialize_sparc(&config);
-    #[cfg(loom_llvm_target_systemz)]
-    Target::initialize_system_z(&config);
-    #[cfg(loom_llvm_target_webassembly)]
-    Target::initialize_webassembly(&config);
     #[cfg(loom_llvm_target_x86)]
     Target::initialize_x86(&config);
-    #[cfg(loom_llvm_target_xcore)]
-    Target::initialize_x_core(&config);
 }
 
 /// Reports whether an explicit triple normalizes to the current host triple.

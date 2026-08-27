@@ -57,8 +57,11 @@ Loom also compiles target initialization from the exact
 `llvm-config --targets-built` set. A complete LLVM installation keeps the
 single all-target initializer; a release package containing only a subset,
 such as LLVM's Windows archive, references and initializes only the target
-libraries it actually ships. This prevents an otherwise valid host compiler
-from acquiring unresolved symbols for omitted cross targets.
+libraries it actually ships. Inkwell's default all-target feature is disabled;
+its AArch64, ARM, and X86 initializers are the bounded partial-package set used
+by Loom's supported hosts and cross-object tests. This prevents an otherwise
+valid host compiler from acquiring unresolved symbols for omitted cross
+targets.
 
 ## First build
 

@@ -294,6 +294,11 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $version -ne "19.1.7") {
             throw "unexpected llvm-config version: $version"
           }
+          $targetsBuilt = (& "$llvmRoot\bin\llvm-config.exe" --targets-built).Trim() -split '\s+' | Sort-Object -Unique
+          $expectedTargets = @("AArch64", "ARM", "X86")
+          if ($LASTEXITCODE -ne 0 -or @(Compare-Object -ReferenceObject $expectedTargets -DifferenceObject $targetsBuilt).Count -ne 0) {
+            throw "unexpected LLVM target-library set: $($targetsBuilt -join ' ')"
+          }
           & "$llvmRoot\bin\clang.exe" --version
           $llvmLibraries = (& "$llvmRoot\bin\llvm-config.exe" --link-static --libfiles).Trim()
           if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($llvmLibraries) -or -not (Test-Path "$llvmRoot\include\llvm-c\Core.h" -PathType Leaf)) {

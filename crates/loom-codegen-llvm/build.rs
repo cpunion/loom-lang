@@ -44,22 +44,8 @@ const LLVM_19_TARGETS: &[&str] = &[
 
 const INKWELL_TARGET_CFGS: &[(&str, &str)] = &[
     ("AArch64", "loom_llvm_target_aarch64"),
-    ("AMDGPU", "loom_llvm_target_amdgpu"),
     ("ARM", "loom_llvm_target_arm"),
-    ("BPF", "loom_llvm_target_bpf"),
-    ("Hexagon", "loom_llvm_target_hexagon"),
-    ("Lanai", "loom_llvm_target_lanai"),
-    ("LoongArch", "loom_llvm_target_loongarch"),
-    ("Mips", "loom_llvm_target_mips"),
-    ("MSP430", "loom_llvm_target_msp430"),
-    ("NVPTX", "loom_llvm_target_nvptx"),
-    ("PowerPC", "loom_llvm_target_powerpc"),
-    ("RISCV", "loom_llvm_target_riscv"),
-    ("Sparc", "loom_llvm_target_sparc"),
-    ("SystemZ", "loom_llvm_target_systemz"),
-    ("WebAssembly", "loom_llvm_target_webassembly"),
     ("X86", "loom_llvm_target_x86"),
-    ("XCore", "loom_llvm_target_xcore"),
 ];
 
 fn main() {
@@ -232,10 +218,17 @@ fn emit_llvm_target_configuration(output: &[u8]) {
         println!("cargo:rustc-cfg=loom_llvm_complete_target_set");
         return;
     }
-    for (target, cfg) in INKWELL_TARGET_CFGS {
-        if built.contains(target) {
-            println!("cargo:rustc-cfg={cfg}");
-        }
+    let missing = INKWELL_TARGET_CFGS
+        .iter()
+        .filter_map(|(target, _)| (!built.contains(target)).then_some(*target))
+        .collect::<Vec<_>>();
+    assert!(
+        missing.is_empty(),
+        "partial LLVM installations must provide Loom's AArch64, ARM, and X86 target set; missing {}",
+        missing.join(", ")
+    );
+    for (_, cfg) in INKWELL_TARGET_CFGS {
+        println!("cargo:rustc-cfg={cfg}");
     }
 }
 
