@@ -141,7 +141,7 @@ fn canonical_dump_distinguishes_immediate_and_stored_task_all() {
         "{direct_dump}"
     );
     assert_eq!(
-        direct_dump.matches("await_tasks state ").count(),
+        direct_dump.matches("await_tasks all state ").count(),
         1,
         "{direct_dump}"
     );
@@ -151,7 +151,7 @@ fn canonical_dump_distinguishes_immediate_and_stored_task_all() {
         "{stored_dump}"
     );
     assert_eq!(
-        stored_dump.matches("await_tasks state ").count(),
+        stored_dump.matches("await_tasks all state ").count(),
         1,
         "{stored_dump}"
     );

@@ -6,7 +6,7 @@ use loom_mir::Type;
 
 use crate::ids::ProgramBrand;
 use crate::{
-    CheckedProgram, Function, InstanceId, InstructionKind, Program, RepresentationPlan,
+    AwaitMode, CheckedProgram, Function, InstanceId, InstructionKind, Program, RepresentationPlan,
     TerminatorKind, ValueDefinition, ValueTypeId,
 };
 
@@ -726,6 +726,7 @@ impl ArtifactValidator<'_> {
                         );
                     }
                     TerminatorKind::AwaitTasks {
+                        mode,
                         tasks,
                         normal,
                         fault,
@@ -739,10 +740,15 @@ impl ArtifactValidator<'_> {
                                 .is_some_and(|task| {
                                     matches!(task.semantic(), Type::Task(output) if output.as_ref() == &Type::Text)
                                 });
+                            let result_index = match mode {
+                                AwaitMode::All => Some(index),
+                                AwaitMode::Any => (index == 0).then_some(0),
+                            };
                             if output_is_text
+                                && let Some(result_index) = result_index
                                 && let Some(parameter) = function
                                     .block(normal.block)
-                                    .and_then(|block| block.params().get(index))
+                                    .and_then(|block| block.params().get(result_index))
                             {
                                 mark_text_value(&mut supplied, *parameter);
                             }
@@ -753,7 +759,10 @@ impl ArtifactValidator<'_> {
                             &mut supplied,
                             normal.block,
                             &normal.arguments,
-                            tasks.len(),
+                            match mode {
+                                AwaitMode::All => tasks.len(),
+                                AwaitMode::Any => 1,
+                            },
                         );
                         mark_text_target(
                             function,

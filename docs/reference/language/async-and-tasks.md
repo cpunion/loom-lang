@@ -127,7 +127,7 @@ code is not yet a cross-backend compatibility guarantee.
 | --- | --- | --- |
 | `Task.all` | all tasks complete successfully | a failure cancels unfinished siblings |
 | `Task.settled` | every task reaches a terminal state | a child failure does not cancel siblings |
-| `Task.any` | first successful value | success cancels unfinished siblings; all failures fault the combined task |
+| `Task.any` | first successful value | success cancels unfinished siblings; no success raises `TaskAnyFailed` |
 | `Task.race` | first success, fault, or cancellation | unfinished siblings are cancelled |
 
 A join does not return until cleanup for siblings it cancelled has completed.

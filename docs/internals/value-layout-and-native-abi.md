@@ -138,8 +138,12 @@ target-laid-out heterogeneous result tuple. The `TaskJoinAll` result is still a
 single opaque handle; identical tuple shapes may share the immutable descriptor
 and callback. A one-child fixed join retains a one-field tuple result rather
 than collapsing its type. No universal `ValueSlot` or runtime-described join
-result participates in either path. Dynamically sized joins and
-`Task.settled`/`Task.any`/`Task.race` remain complete fallback.
+result participates in either path. A nonempty, immediately awaited,
+fixed-arity homogeneous `Task.any` also uses the suspension row directly. The
+row retains every child handle and exact output type, while the normal edge takes
+only the winner's statically known output from the original winner field.
+Dynamically sized joins, `Task.settled`, `Task.race`, and `Task.any` whose result
+is stored or otherwise used first-class remain complete fallback.
 
 ## `Text`
 
@@ -313,6 +317,13 @@ therefore preserves the original ownership and ready-queue state. This advances
 the native runtime component to 17 with `typed-task-adopt-v1` and
 `runtime-v11`; `typed-task-v1`, `typed-timer-v1`, `wait-v1`, and `gc-v9` remain
 unchanged.
+
+Direct fixed `Task.any` reuses the same opaque handles, frames, and typed result
+take. The existing join-step entry additionally finalizes completed loser
+results and retires losers before returning the observable step. This adds no
+symbol or source-value layout, but advances the exact native runtime identity to
+component 18 with `typed-task-any-finalize-v1` and `runtime-v12`. Typed-task v1,
+coroutine v2, wait v1, and GC v9 remain unchanged.
 
 Witness descriptors emitted by the compiler are immutable process-lifetime
 constants. Dynamically assembled witness instances live in a non-moving proof

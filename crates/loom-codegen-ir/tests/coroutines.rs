@@ -1,7 +1,7 @@
 use loom_codegen_ir::{
-    BlockTarget, Constant, CoroutinePlan, CoroutineSuspension, Effects, FaultCode, FaultMetadata,
-    InstructionKind, Origin, ProgramBuilder, ResultTarget, Signature, TargetLayout, Terminator,
-    TerminatorKind, UnwindTarget, ValidationCode, validate_program,
+    AwaitMode, BlockTarget, Constant, CoroutinePlan, CoroutineSuspension, Effects, FaultCode,
+    FaultMetadata, InstructionKind, Origin, ProgramBuilder, ResultTarget, Signature, TargetLayout,
+    Terminator, TerminatorKind, UnwindTarget, ValidationCode, validate_program,
 };
 use loom_mir::{FunctionId, Type, TypeId};
 
@@ -113,7 +113,7 @@ fn validator_rejects_a_coroutine_row_without_an_await_edge() {
         function
             .set_coroutine_plan(CoroutinePlan::new(
                 unit,
-                [CoroutineSuspension::new(1, [unit], [])],
+                [CoroutineSuspension::new(1, AwaitMode::All, [unit], [])],
             ))
             .expect("unchecked coroutine plan");
         let entry = function.create_block().expect("entry");
@@ -561,8 +561,14 @@ fn invalid_task_ownership_program(
         .expect("root");
     {
         let mut function = builder.function(root).expect("root builder");
-        let suspensions =
-            await_children.then(|| vec![CoroutineSuspension::new(1, [integer, integer], [])]);
+        let suspensions = await_children.then(|| {
+            vec![CoroutineSuspension::new(
+                1,
+                AwaitMode::All,
+                [integer, integer],
+                [],
+            )]
+        });
         function
             .set_coroutine_plan(CoroutinePlan::new(unit, suspensions.unwrap_or_default()))
             .expect("root coroutine");
@@ -627,6 +633,7 @@ fn invalid_task_ownership_program(
                     Terminator::new(
                         TerminatorKind::AwaitTasks {
                             state: 1,
+                            mode: AwaitMode::All,
                             tasks: Box::from([first, second]),
                             normal: ResultTarget::new(normal, []),
                             fault: UnwindTarget::new(fault, []),
@@ -1005,14 +1012,23 @@ fn task_ownership_rejects_reusing_an_invoke_argument() {
     );
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "the malformed-program matrix keeps coroutine plans and heterogeneous await edges together"
-)]
 fn await_tasks_program(
     duplicate: bool,
     swap_plan: bool,
     exit_case: AwaitExitCase,
+) -> loom_codegen_ir::Program {
+    await_tasks_program_with_mode(duplicate, swap_plan, exit_case, AwaitMode::All)
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the malformed-program matrix keeps coroutine plans and heterogeneous await edges together"
+)]
+fn await_tasks_program_with_mode(
+    duplicate: bool,
+    swap_plan: bool,
+    exit_case: AwaitExitCase,
+    mode: AwaitMode,
 ) -> loom_codegen_ir::Program {
     let origin = Origin::synthetic(FunctionId(0));
     let int_origin = Origin::synthetic(FunctionId(1));
@@ -1150,12 +1166,12 @@ fn await_tasks_program(
         } else {
             vec![integer, boolean]
         };
-        let mut suspensions = vec![CoroutineSuspension::new(1, awaited, [integer])];
+        let mut suspensions = vec![CoroutineSuspension::new(1, mode, awaited, [integer])];
         if matches!(
             exit_case,
             AwaitExitCase::CancelSuspends | AwaitExitCase::FaultSuspends
         ) {
-            suspensions.push(CoroutineSuspension::new(2, [integer], []));
+            suspensions.push(CoroutineSuspension::new(2, AwaitMode::All, [integer], []));
         }
         function
             .set_coroutine_plan(CoroutinePlan::new(unit, suspensions))
@@ -1206,9 +1222,11 @@ fn await_tasks_program(
         function
             .append_block_parameter(normal, integer)
             .expect("Int result");
-        function
-            .append_block_parameter(normal, boolean)
-            .expect("Bool result");
+        if mode == AwaitMode::All {
+            function
+                .append_block_parameter(normal, boolean)
+                .expect("Bool result");
+        }
         function
             .append_block_parameter(normal, integer)
             .expect("normal live Int");
@@ -1234,6 +1252,7 @@ fn await_tasks_program(
                 Terminator::new(
                     TerminatorKind::AwaitTasks {
                         state: 1,
+                        mode,
                         tasks: if duplicate {
                             Box::from([first, first])
                         } else {
@@ -1273,6 +1292,7 @@ fn await_tasks_program(
                     Terminator::new(
                         TerminatorKind::AwaitTasks {
                             state: 2,
+                            mode: AwaitMode::All,
                             tasks: Box::from([cleanup_task]),
                             normal: ResultTarget::new(resumed, []),
                             fault: UnwindTarget::new(cleanup_fault, []),
@@ -1329,6 +1349,7 @@ fn await_tasks_program(
                     Terminator::new(
                         TerminatorKind::AwaitTasks {
                             state: 2,
+                            mode: AwaitMode::All,
                             tasks: Box::from([cleanup_task]),
                             normal: ResultTarget::new(resumed, []),
                             fault: UnwindTarget::new(cleanup_fault, []),
@@ -1566,6 +1587,23 @@ fn await_tasks_requires_unique_children_and_exact_planned_result_slots() {
             && error
                 .message()
                 .contains("does not match its child Task output")
+    }));
+}
+
+#[test]
+fn await_tasks_any_requires_one_homogeneous_winner_result() {
+    let errors = validate_program(&await_tasks_program_with_mode(
+        false,
+        false,
+        AwaitExitCase::Canonical,
+        AwaitMode::Any,
+    ))
+    .expect_err("Task.any cannot combine heterogeneous child outputs");
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code() == ValidationCode::TypeMismatch
+            && error
+                .message()
+                .contains("every child Task to have the same output type")
     }));
 }
 

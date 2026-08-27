@@ -417,8 +417,17 @@ component 17 with `typed-task-adopt-v1` and `runtime-v11`.
 Static cleanup and cancellation exits for suspension then advance the artifact
 identity to schema 28, the dump to `lcir 27`, the LCIR native-object domain to
 `loom-lcir-native-object-v24`, and the CLI object-cache domain to
-`loom-llvm-object-cache-v29`. They reuse native runtime component 17 and
-`runtime-v11`; no runtime cleanup stack, symbol, or ABI component is added.
+`loom-llvm-object-cache-v29`. That slice leaves the native runtime at component
+17 with `runtime-v11`; no runtime cleanup stack, symbol, or ABI component is
+added.
+
+An explicit `AwaitMode` and direct fixed `Task.any` then advance the artifact
+identity to schema 29, the dump to `lcir 28`, the LCIR native-object domain to
+`loom-lcir-native-object-v25`, and the CLI object-cache domain to
+`loom-llvm-object-cache-v30`. Finalizing typed losers changes the semantics of
+the existing join-step entry without changing its wire signature, so the native
+runtime advances to component 18 with `typed-task-any-finalize-v1` and
+`runtime-v12`; typed-task v1 and coroutine v2 remain unchanged.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
@@ -626,28 +635,31 @@ global layout registry.
 
 An admitted async function carries a checked `CoroutinePlan` in addition to its
 ordinary LCIR signature and CFG. The plan fixes the output type and the dense
-resume-state sequence `1..n`. Each row records the ordered exact child-result
-types followed by, in deterministic MIR-local order, the exact LCIR types
-forwarded across that suspension. Independent validation matches every row to
-exactly one `AwaitTasks` terminator, checks all child Tasks, continuation
-parameters, and forwarded values, rejects duplicate child handles, and rejects
-a Task edge without an active coroutine plan. It also requires each await's
-normal, fault, and cancellation edges to carry the identical exact live row;
-only the normal edge has leading child results. `TaskCancelled` is valid only on
-a checked cancellation path and no cancellation path may suspend. The canonical
-dump includes the complete plan, so it is also an artifact-identity and
-object-cache input.
+resume-state sequence `1..n`. Each row records an `AwaitMode` and one ordered
+exact output type for every child, followed by, in deterministic MIR-local
+order, the exact LCIR types forwarded across that suspension. The child-output
+row always retains its full arity: `all` derives one normal result per child,
+whereas `any` derives one result of the common child type. Independent
+validation matches every row to exactly one mode-identical `AwaitTasks`
+terminator, checks all child Tasks, continuation parameters, and forwarded
+values, rejects duplicate child handles, and rejects a Task edge without an
+active coroutine plan. It also requires each await's normal, fault, and
+cancellation edges to carry the identical exact live row; only the normal edge
+has leading mode-derived results. `TaskCancelled` is valid only on a checked
+cancellation path and no cancellation path may suspend. The canonical dump
+includes the complete plan, so it is also an artifact-identity and object-cache
+input.
 
 `TaskCreate` constructs a scheduler-owned `Task[T]` for one exact coroutine
 instance. The handle is a stable opaque pointer, not a moving object and not a
 Promise or universal value. The hidden executor comes only from the active
 coroutine callback or the async root harness. `AwaitTasks` stores all ordered
-children and the row's live values, prepares one structured `all` join,
+children and the row's live values, prepares one structured mode-specific join,
 publishes the frame/root state, and exposes explicit normal, child-fault, and
 cancellation edges: `normal` is a `ResultTarget`, `fault` is an `UnwindTarget`,
-and `cancel` is a `BlockTarget`. The exact child results exist only on the
-normal resume edge; all three edges receive the same exact live row. A
-single-child await is the same operation with one child.
+and `cancel` is a `BlockTarget`. Exact mode-derived results exist only on the
+normal resume edge; all three edges receive the same exact live row. An ordinary
+single-child await is the same operation as one-child `all`.
 A join-suspend status of one returns `pending`; zero means the child was already
 terminal, so the runtime removes the redundant wake-up, keeps the active parent
 `Running`, and enters the same checked result/reload edge in the current
@@ -673,6 +685,16 @@ that static shape. Runtime adoption validates the complete ordered child set
 before transferring it from the current parent and publishing the composite;
 the legacy universal join-result path is never called.
 
+A nonempty, immediately awaited, fixed-arity `Task.any` also lowers directly to
+`AwaitTasks` when every child has the same exact output type. The plan and frame
+retain all child entries, but the normal continuation receives only one implicit
+winner result. The runtime finalizes and retires losers before the callback
+observes the completed step. Generated code then switches on the original winner
+ordinal, loads that exact child pointer from its static frame field, and takes
+the result. A loser-disposal fault enters the await fault edge with that fault
+active; if no child succeeds, generated code raises canonical `TaskAnyFailed` at
+the await origin before static coroutine cleanup.
+
 LLVM derives a target-laid-out frame containing state, parameters, one ordered
 child-pointer row plus one live-value row per suspension, and the typed result.
 The coroutine result must use the semantic type's canonical LCIR
@@ -684,11 +706,12 @@ generated resume callback is also its descriptor cancel callback. It reads the
 cancel-request bit before dispatching by frame state: ordinary state zero enters
 the LCIR entry, ordinary nonzero states use the existing join-step ABI, and a
 cancel request enters the corresponding checked cancellation state. A normal
-join takes every exact child result in source order; a fault activates source
-fault state; cancellation leaves source fault inactive. Every nonzero path
-reloads the same exact live row before entering LCIR. Normal return publishes
-the exact typed result and completion; cleanup-expanded child-fault and cancel
-paths end in `ResumeFault` and `TaskCancelled`, respectively.
+`all` join takes every exact child result in source order; a normal `any` join
+takes only its selected exact result. A fault activates source fault state;
+cancellation leaves source fault inactive. Every nonzero path reloads the same
+exact live row before entering LCIR. Normal return publishes the exact typed
+result and completion; cleanup-expanded child-fault and cancel paths end in
+`ResumeFault` and `TaskCancelled`, respectively.
 The run/test harness creates an executor for the root Task, runs it to a
 terminal state, takes the exact result, reports a root fault if one is exposed
 by a later slice, and destroys the executor.
@@ -710,8 +733,10 @@ locations. The recursive frame walk consumes one shared bounded structural
 budget, so cyclic or non-regular generic expansion fails closed instead of
 growing the compiler stack. List, TextMap, finite-catalog or open
 dynamic-concept frame values, raw readiness, dynamic Task collections,
-non-`all` join modes, and cancellation sources remain atomic whole-artifact
-fallback.
+`Task.any` whose result is stored or otherwise used first-class,
+`Task.settled`, `Task.race`, and cancellation sources remain atomic
+whole-artifact fallback. Fixed `Task.any` is admitted only in the nonempty
+homogeneous form immediately consumed by `.await`.
 Because this slice does not add a hidden executor to synchronous function ABIs,
 any reachable synchronous function that calls an async callee also selects that
 fallback before emitter selection, including a synchronous helper reached from
@@ -1050,12 +1075,12 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 27` text includes
+text even when the graphs are otherwise equivalent. The `lcir 28` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys including their contract-boundary role, every function's
 selected entry block and ordered effect set,
 typed coroutine plans and Task control flow, including fallible `task.sleep`,
-explicit await normal/fault/cancel targets, and `task.cancelled`,
+explicit await modes and normal/fault/cancel targets, and `task.cancelled`,
 typed runtime/contract fault identity including proof-replay and Duration
 guards, closed parse operations, and managed Float formatting,
 managed-pointer representations, finite dynamic candidate catalogs,

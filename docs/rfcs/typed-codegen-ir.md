@@ -252,7 +252,7 @@ task.create coroutine(arguments...) -> Task[T]
 
 task.join_all(tasks...) -> Task[(T0, ..., Tn)]
 
-await_tasks state, (task0, ..., taskN)
+await_tasks all state, (task0, ..., taskN)
     normal target(result0, ..., resultN; exact_live_values...)
     fault target(exact_live_values...)
     cancel target(exact_live_values...)
@@ -379,16 +379,18 @@ creates one executor, constructs the root Task, runs it to a terminal state,
 takes its exact typed result, and destroys the executor.
 
 Each admitted async instance has a checked `CoroutinePlan` with an exact output
-type and dense resume states. Every state records the exact child-result types
-in task order followed by the live value types forwarded to its continuation.
+type and dense resume states. Every state records an `AwaitMode`, the exact
+output type of every child in task order, and the live value types forwarded to
+its continuation. The complete child-output row is independent of the normal
+result arity: `all` injects every output, while homogeneous `any` injects one.
 LLVM target data shapes a frame containing state, parameters, one ordered
 child/live row per suspension, and result. An immutable typed-task descriptor
-publishes exact managed-leaf byte offsets and per-state bitmaps. The callback
-is used for both the source coroutine's descriptor resume and cancel entries.
-It checks the Task cancel request before state dispatch: ordinary state zero
-enters the LCIR entry, later ordinary states use the structured join-step ABI,
-and cancellation enters the corresponding state-specific cancel edge. Normal
-join completion takes each typed child result into the leading continuation
+publishes exact managed-leaf byte offsets and per-state bitmaps. The callback is
+used for both the source coroutine's descriptor resume and cancel entries. It
+checks the Task cancel request before state dispatch: ordinary state zero enters
+the LCIR entry, later ordinary states use the structured join-step ABI, and
+cancellation enters the corresponding state-specific cancel edge. Normal join
+completion takes the mode-derived typed results into the leading continuation
 parameters; child fault and cancellation forward only the identical exact live
 row. Completion is published through typed-task v1. `TaskSleep` accepts
 normalized `Int` milliseconds only inside that checked coroutine boundary,
@@ -422,10 +424,23 @@ immutable descriptor, and callback per distinct static result shape. The
 callback uses the existing structured `all` join-step protocol, takes exact
 child results in order, and publishes the tuple without a universal envelope.
 
+A nonempty, immediately awaited, fixed-arity `Task.any` also lowers directly to
+one `AwaitTasks` when every child has the same exact output type. The runtime
+keeps the winner's original input ordinal, drains all children, then finalizes
+and retires losers exactly once when generated code consumes the valid join
+completion. LLVM selects the winner from the original static child fields in the
+coroutine frame and performs one exact typed take. A completed loser's disposal
+fault reaches the await fault edge before static coroutine cleanup. If no child
+succeeds, generated code records canonical `TaskAnyFailed` at the await origin.
+Cancellation uses the checked cancel edge instead and does not synthesize that
+fault.
+
 The remaining fallback boundary includes explicit mutable coroutine
 parameters, Lists, TextMaps, finite-catalog or open dynamic-concept frame values,
-raw readiness, dynamically sized Task joins, and every `Task.settled`,
-`Task.any`, or `Task.race` form.
+raw readiness, dynamically sized Task joins, every `Task.settled` and
+`Task.race`, and `Task.any` whose result is stored or otherwise used first-class.
+Fixed `Task.any` is admitted only when a nonempty homogeneous argument row is
+consumed immediately by `.await`.
 
 Managed Text concat calls
 `loom_runtime_text_concat_typed_v1(left, right, output)`. The helper must stage
@@ -499,8 +514,16 @@ artifact identity to schema 27, the LCIR native-object domain to
 `loom-lcir-native-object-v23`, and the CLI object-cache domain to
 `loom-llvm-object-cache-v28`. Explicit async cleanup and cancellation exits then
 advance those compiler-private boundaries to `lcir 27`, schema 28,
-`loom-lcir-native-object-v24`, and `loom-llvm-object-cache-v29`. The runtime
-remains native component 17 with `runtime-v11`.
+`loom-lcir-native-object-v24`, and `loom-llvm-object-cache-v29`. That slice
+leaves the runtime at native component 17 with `runtime-v11`.
+
+Direct fixed `Task.any` advances the canonical dump to `lcir 28`, the artifact
+identity to schema 29, the LCIR native-object domain to
+`loom-lcir-native-object-v25`, and the CLI object-cache domain to
+`loom-llvm-object-cache-v30`. It adds no symbol and does not revise the typed-task
+or coroutine wire, but consuming `loom_task_join_step` now finalizes typed losers
+before exposing the step. The exact native runtime identity therefore advances
+to component 18 with `typed-task-any-finalize-v1` and `runtime-v12`.
 
 Calls to the C process entry, libc, and versioned Loom runtime functions are
 explicit external boundaries. They do not permit two source-function ABIs in

@@ -1579,8 +1579,8 @@ impl<'program> Interpreter<'program> {
                 } else {
                     Ok(AwaitPoll::Failed(
                         self.runtime_fault(
-                            "TaskAnyFailed",
-                            "Task.any completed without a successful task",
+                            loom_core::runtime_fault::TASK_ANY_FAILED_FAULT_CODE,
+                            loom_core::runtime_fault::TASK_ANY_FAILED_FAULT_MESSAGE,
                             awaited.span,
                         )
                         .into(),

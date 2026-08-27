@@ -1,9 +1,9 @@
 use std::{collections::BTreeMap, fmt::Write as _, process::Command, time::Duration};
 
 use loom_codegen_ir::{
-    CheckedIntBinaryOp, Effects, InstanceKey, InstructionKind, InvalidRootCode, LoweringErrorCode,
-    LoweringOutcome, ResourceLimitCode, SourceArtifactRequest, TargetLayout, TerminatorKind,
-    UnsupportedFeature, artifact_identity, dump_program, lower_typed_artifact,
+    AwaitMode, CheckedIntBinaryOp, Effects, InstanceKey, InstructionKind, InvalidRootCode,
+    LoweringErrorCode, LoweringOutcome, ResourceLimitCode, SourceArtifactRequest, TargetLayout,
+    TerminatorKind, UnsupportedFeature, artifact_identity, dump_program, lower_typed_artifact,
 };
 use loom_core::{FileId, Span};
 use loom_hir::{SourceUnit, lower_files};
@@ -104,7 +104,7 @@ fn async_scalar_call_and_await_lower_to_a_checked_coroutine_plan() {
     assert!(main_plan.suspensions()[0].live().is_empty());
     let dump = dump_program(artifact.program());
     let encoded_plan = format!(
-        "coroutine output={} states=[1 awaited=({}) live=()]",
+        "coroutine output={} states=[1 all awaited=({}) live=()]",
         main_plan.output(),
         main_plan.suspensions()[0].awaited()[0]
     );
@@ -333,13 +333,99 @@ fn static_heterogeneous_task_all_uses_direct_and_first_class_checked_shapes() {
 
     let dump = dump_program(artifact.program());
     assert!(dump.contains("task.join_all("), "{dump}");
-    assert!(dump.contains("await_tasks state 1, ("), "{dump}");
+    assert!(dump.contains("await_tasks all state 1, ("), "{dump}");
     assert!(dump.contains("awaited=("), "{dump}");
     assert!(artifact_identity(&artifact).contains("task.join_all("));
 }
 
 #[test]
-fn dynamic_and_non_all_task_joins_remain_atomic_unsupported() {
+#[expect(
+    clippy::too_many_lines,
+    reason = "one route-selection matrix pins fixed, generic, stored, dynamic, and unsupported join modes together"
+)]
+fn immediately_awaited_fixed_task_any_lowers_but_stored_and_dynamic_joins_fall_back() {
+    let fixed = r"module fixed_task_any
+
+async fn child(value Int) Int { value }
+
+pub async fn main() Unit {
+    discard Task.any(child(1), child(2)).await
+}
+";
+    let LoweringOutcome::Complete(fixed) = lower_run(fixed) else {
+        panic!("immediately awaited fixed homogeneous Task.any must lower through typed LCIR")
+    };
+    let main = fixed
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("main instance");
+    let any = main
+        .blocks()
+        .iter()
+        .find_map(
+            |block| match block.terminator().map(loom_codegen_ir::Terminator::kind) {
+                Some(TerminatorKind::AwaitTasks {
+                    mode: AwaitMode::Any,
+                    tasks,
+                    normal,
+                    ..
+                }) => Some((tasks, normal)),
+                _ => None,
+            },
+        )
+        .expect("typed Task.any await");
+    assert_eq!(any.0.len(), 2);
+    assert_eq!(
+        main.block(any.1.block)
+            .expect("normal block")
+            .params()
+            .len(),
+        1,
+        "Task.any injects only the winning result"
+    );
+    assert_eq!(
+        main.coroutine().unwrap().suspensions()[0].mode(),
+        AwaitMode::Any
+    );
+    assert!(dump_program(fixed.program()).contains("await_tasks any state 1"));
+
+    let generic = r"module generic_task_any
+
+async fn child[T](value T) T { value }
+
+async fn choose[T](first T, second T) T {
+    Task.any(child(first), child(second)).await
+}
+
+pub async fn main() Unit {
+    discard choose(1, 2).await
+}
+";
+    let LoweringOutcome::Complete(generic) = lower_run(generic) else {
+        panic!("a concrete generic Task.any instance must compare substituted child outputs")
+    };
+    assert!(dump_program(generic.program()).contains("await_tasks any"));
+
+    let stored = r"module stored_task_any
+
+async fn child(value Int) Int { value }
+
+pub async fn main() Unit {
+    let pending = Task.any(child(1), child(2))
+    discard pending.await
+}
+";
+    let LoweringOutcome::Unsupported(stored) = lower_run(stored) else {
+        panic!("stored Task.any must remain one whole-artifact fallback")
+    };
+    assert!(
+        stored
+            .items()
+            .iter()
+            .any(|item| { item.feature() == UnsupportedFeature::TaskOperation })
+    );
+
     let dynamic = r"module dynamic_task_all
 
 async fn child(value Int) Int { value }

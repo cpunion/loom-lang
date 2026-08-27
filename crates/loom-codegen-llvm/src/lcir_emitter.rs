@@ -32,7 +32,7 @@ use inkwell::values::{
 use inkwell::{FloatPredicate as LlvmFloatPredicate, IntPredicate};
 use llvm_sys::debuginfo::LLVMDIBuilderInsertDbgValueRecordBefore;
 use loom_codegen_ir::{
-    BlockId, BlockTarget, BoolPredicate, CheckedArtifact, CheckedIntBinaryOp, Constant,
+    AwaitMode, BlockId, BlockTarget, BoolPredicate, CheckedArtifact, CheckedIntBinaryOp, Constant,
     ContractFaultMetadata, CoroutineSuspension, Effects, FaultCode, FaultMetadata, FloatBinaryOp,
     FloatPredicate as LcirFloatPredicate, Function, InstanceId, Instruction, InstructionId,
     InstructionKind, IntPredicate as LcirIntPredicate, MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE,
@@ -49,6 +49,7 @@ use loom_core::runtime_fault::{
 use loom_core::runtime_fault::{
     INVALID_SLEEP_DURATION_FAULT_CODE, INVALID_SLEEP_DURATION_FAULT_MESSAGE,
     SLEEP_DURATION_OVERFLOW_FAULT_CODE, SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE,
+    TASK_ANY_FAILED_FAULT_CODE, TASK_ANY_FAILED_FAULT_MESSAGE,
 };
 use loom_mir::Type;
 use loom_runtime_abi::{
@@ -56,15 +57,15 @@ use loom_runtime_abi::{
     GC_MAX_OBJECT_POINTERS, GC_MAX_REPEATED_POINTER_CELLS, GC_MAX_ROOT_BITMAP_WORDS,
     GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, PARSE_FLOAT_SYMBOL, PARSE_INT_SYMBOL,
     PARSE_STATUS_INVALID_SYNTAX, PARSE_STATUS_OK, PARSE_STATUS_OUT_OF_RANGE, TASK_CANCELLED,
-    TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL, TASK_PENDING, TEXT_CONCAT_TYPED_SYMBOL,
-    TEXT_CONTAINS_SYMBOL, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_MISSING, TEXT_GET_TYPED_SYMBOL,
-    TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_BYTE_LENGTH,
-    TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE,
-    TYPED_GC_ABI_VERSION, TYPED_GC_ALLOC_SYMBOL, TYPED_GC_REPEATED_ABI_VERSION,
-    TYPED_GC_REPEATED_ALLOC_SYMBOL, TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL,
-    TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET,
-    TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION, TYPED_TASK_PUBLISH_ADOPTING_SYMBOL,
-    TYPED_TIMER_TASK_CREATE_SYMBOL,
+    TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL, TASK_JOIN_ANY, TASK_PENDING,
+    TEXT_CONCAT_TYPED_SYMBOL, TEXT_CONTAINS_SYMBOL, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_MISSING,
+    TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT,
+    TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH,
+    TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION, TYPED_GC_ALLOC_SYMBOL,
+    TYPED_GC_REPEATED_ABI_VERSION, TYPED_GC_REPEATED_ALLOC_SYMBOL, TYPED_GC_ROOT_POP_SYMBOL,
+    TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE,
+    TYPED_RESOURCE_KIND_SOCKET, TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION,
+    TYPED_TASK_PUBLISH_ADOPTING_SYMBOL, TYPED_TIMER_TASK_CREATE_SYMBOL,
 };
 
 use crate::codegen::{DebugSource, NativeObjectArtifact, NativeObjectOptions};
@@ -4661,6 +4662,20 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         self.task_status_function("loom_task_join_step")
     }
 
+    fn task_join_winner(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function("loom_task_join_winner")
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    "loom_task_join_winner",
+                    self.context
+                        .i64_type()
+                        .fn_type(&[self.ptr_type.into()], false),
+                    None,
+                )
+            })
+    }
+
     fn executor_create_for_runtime(&self) -> FunctionValue<'ctx> {
         self.module
             .get_function("loom_executor_create_for_runtime_v1")
@@ -4960,6 +4975,8 @@ struct CoroutineEmission<'ctx> {
 }
 
 struct AwaitExitTargets {
+    mode: AwaitMode,
+    origin: Origin,
     normal: ResultTarget,
     fault: UnwindTarget,
     cancel: BlockTarget,
@@ -6516,6 +6533,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             if layout_row.state != plan_row.state()
                 || layout_row.child_fields.len() != plan_row.awaited().len()
                 || layout_row.live_fields.len() != plan_row.live().len()
+                || targets.mode != plan_row.mode()
             {
                 return Err(CodegenError::new(
                     "LlvmAbiDefect",
@@ -6532,6 +6550,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 &targets.normal,
                 &targets.fault,
                 &targets.cancel,
+                targets.origin,
             )?;
 
             self.backend.builder.position_at_end(*cancel_resume);
@@ -6562,6 +6581,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         normal: &ResultTarget,
         fault: &UnwindTarget,
         cancel: &BlockTarget,
+        origin: Origin,
     ) -> Result<(), CodegenError> {
         let coroutine = self.coroutine.as_ref().ok_or_else(|| {
             CodegenError::new("LlvmAbiDefect", "coroutine resume has no active frame")
@@ -6632,7 +6652,10 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .map_err(builder_error)?;
 
         self.backend.builder.position_at_end(faulted);
-        self.activate_coroutine_fault()?;
+        match plan_row.mode() {
+            AwaitMode::All => self.activate_coroutine_fault()?,
+            AwaitMode::Any => self.activate_coroutine_any_fault(origin)?,
+        }
         self.emit_coroutine_live_branch(
             plan_row,
             layout_row,
@@ -6650,6 +6673,9 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         self.emit_coroutine_step_return(TASK_FAULTED)?;
 
         self.backend.builder.position_at_end(completed);
+        if plan_row.mode() == AwaitMode::Any {
+            return self.emit_coroutine_any_result(plan_row, layout_row, normal);
+        }
         let mut values = Vec::with_capacity(
             layout_row
                 .child_fields
@@ -6699,6 +6725,106 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         Ok(())
     }
 
+    fn emit_coroutine_any_result(
+        &self,
+        plan_row: &CoroutineSuspension,
+        layout_row: &CoroutineSuspensionLayout,
+        normal: &ResultTarget,
+    ) -> Result<(), CodegenError> {
+        let coroutine = self.coroutine.as_ref().ok_or_else(|| {
+            CodegenError::new("LlvmAbiDefect", "Task.any resume has no active frame")
+        })?;
+        if plan_row.mode() != AwaitMode::Any
+            || plan_row.awaited().is_empty()
+            || layout_row.child_fields.len() != plan_row.awaited().len()
+            || plan_row
+                .awaited()
+                .iter()
+                .any(|output| output != &plan_row.awaited()[0])
+        {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!(
+                    "Task.any state {} has an invalid checked child row",
+                    plan_row.state()
+                ),
+            ));
+        }
+        let winner = call_int(
+            &self.backend.builder,
+            self.backend.task_join_winner(),
+            &[coroutine.task.into()],
+            "task.await.any.winner",
+        )?;
+        let invalid = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.await.any.invalid_winner");
+        let cases = layout_row
+            .child_fields
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                let index = u64::try_from(index).map_err(|_| {
+                    CodegenError::new("ProgramTooLarge", "Task.any has too many fixed children")
+                })?;
+                Ok((
+                    self.backend.context.i64_type().const_int(index, false),
+                    self.backend
+                        .context
+                        .append_basic_block(self.function, &format!("task.await.any.{index}")),
+                ))
+            })
+            .collect::<Result<Vec<_>, CodegenError>>()?;
+        self.backend
+            .builder
+            .build_switch(winner, invalid, &cases)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(invalid);
+        self.emit_coroutine_step_return(TASK_FAULTED)?;
+
+        for ((field, output), (_, case)) in layout_row
+            .child_fields
+            .iter()
+            .copied()
+            .zip(plan_row.awaited().iter().copied())
+            .zip(cases)
+        {
+            self.backend.builder.position_at_end(case);
+            let child_pointer = self
+                .backend
+                .builder
+                .build_struct_gep(
+                    coroutine.layout.frame,
+                    coroutine.frame,
+                    field,
+                    "task.await.any.child.pointer",
+                )
+                .map_err(builder_error)?;
+            let child = self
+                .backend
+                .builder
+                .build_load(self.backend.ptr_type, child_pointer, "task.await.any.child")
+                .map_err(builder_error)?
+                .into_pointer_value();
+            let mut values = Vec::with_capacity(1 + layout_row.live_fields.len());
+            values.push(self.take_typed_task_result(child, output, "task.await.any.result")?);
+            values.extend(self.load_coroutine_live_values(
+                plan_row,
+                layout_row,
+                "task.await.any.live",
+            )?);
+            let predecessor = self.current_block()?;
+            self.add_basic_incoming(normal.block, &values, predecessor)?;
+            self.backend
+                .builder
+                .build_unconditional_branch(self.block(normal.block)?)
+                .map_err(builder_error)?;
+        }
+        Ok(())
+    }
+
     fn activate_coroutine_fault(&self) -> Result<(), CodegenError> {
         let context = self.fault_context.ok_or_else(|| {
             CodegenError::new(
@@ -6720,6 +6846,60 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .builder
             .build_store(active, self.backend.context.bool_type().const_int(1, false))
             .map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn activate_coroutine_any_fault(&self, origin: Origin) -> Result<(), CodegenError> {
+        let coroutine = self.coroutine.as_ref().ok_or_else(|| {
+            CodegenError::new("LlvmAbiDefect", "Task.any fault has no active coroutine")
+        })?;
+        let winner = call_int(
+            &self.backend.builder,
+            self.backend.task_join_winner(),
+            &[coroutine.task.into()],
+            "task.await.any.fault.winner",
+        )?;
+        let all_failed = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                winner,
+                self.backend.context.i64_type().const_all_ones(),
+                "task.await.any.all_failed",
+            )
+            .map_err(builder_error)?;
+        let report = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.await.any.report_failed");
+        let inherit = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.await.any.inherit_cleanup_fault");
+        let continuation = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.await.any.fault_ready");
+        self.backend
+            .builder
+            .build_conditional_branch(all_failed, report, inherit)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(report);
+        self.emit_source_fault(FaultCode::TaskAnyFailed, origin)?;
+        self.backend
+            .builder
+            .build_unconditional_branch(continuation)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(inherit);
+        self.activate_coroutine_fault()?;
+        self.backend
+            .builder
+            .build_unconditional_branch(continuation)
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(continuation);
         Ok(())
     }
 
@@ -6791,19 +6971,25 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         self.source
             .blocks()
             .iter()
-            .find_map(|block| match block.terminator().map(Terminator::kind) {
-                Some(TerminatorKind::AwaitTasks {
-                    state: candidate,
-                    tasks: _,
-                    normal,
-                    fault,
-                    cancel,
-                }) if *candidate == state => Some(AwaitExitTargets {
-                    normal: normal.clone(),
-                    fault: fault.clone(),
-                    cancel: cancel.clone(),
-                }),
-                _ => None,
+            .find_map(|block| {
+                let terminator = block.terminator()?;
+                match terminator.kind() {
+                    TerminatorKind::AwaitTasks {
+                        state: candidate,
+                        mode,
+                        normal,
+                        fault,
+                        cancel,
+                        ..
+                    } if *candidate == state => Some(AwaitExitTargets {
+                        mode: *mode,
+                        origin: terminator.origin(),
+                        normal: normal.clone(),
+                        fault: fault.clone(),
+                        cancel: cancel.clone(),
+                    }),
+                    _ => None,
+                }
             })
             .ok_or_else(|| {
                 CodegenError::new(
@@ -10016,11 +10202,20 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             } => self.emit_task_sleep(*milliseconds, terminator.origin(), normal, fault),
             TerminatorKind::AwaitTasks {
                 state,
+                mode,
                 tasks,
                 normal,
                 fault,
                 cancel,
-            } => self.emit_await_tasks(*state, tasks, normal, fault, cancel),
+            } => self.emit_await_tasks(
+                *state,
+                *mode,
+                tasks,
+                terminator.origin(),
+                normal,
+                fault,
+                cancel,
+            ),
             TerminatorKind::CheckedIntNegate {
                 value,
                 normal,
@@ -10485,13 +10680,16 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
     }
 
     #[expect(
+        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "one await edge atomically stores its child and exact live row, registers the structured join, publishes the frame state, and returns pending"
     )]
     fn emit_await_tasks(
         &self,
         state: u32,
+        mode: AwaitMode,
         tasks: &[ValueId],
+        origin: Origin,
         normal: &ResultTarget,
         fault: &UnwindTarget,
         cancel: &BlockTarget,
@@ -10528,6 +10726,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         if suspension.child_fields.len() != tasks.len()
             || suspension.child_fields.len() != plan_row.awaited().len()
             || suspension.live_fields.len() != normal.arguments.len()
+            || plan_row.mode() != mode
             || normal.arguments.as_ref() != fault.arguments.as_ref()
             || normal.arguments.as_ref() != cancel.arguments.as_ref()
         {
@@ -10586,6 +10785,10 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 .map_err(builder_error)?;
         }
 
+        let runtime_mode = match mode {
+            AwaitMode::All => TASK_JOIN_ALL,
+            AwaitMode::Any => TASK_JOIN_ANY,
+        };
         let prepared = call_int(
             &self.backend.builder,
             self.backend.task_prepare_join(),
@@ -10595,7 +10798,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 self.backend
                     .context
                     .i32_type()
-                    .const_int(u64::from(TASK_JOIN_ALL), false)
+                    .const_int(u64::from(runtime_mode), false)
                     .into(),
             ],
             "task.await.prepare",
@@ -10687,7 +10890,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         self.backend.builder.position_at_end(invalid);
         self.emit_coroutine_step_return(TASK_FAULTED)?;
         self.backend.builder.position_at_end(ready);
-        self.emit_coroutine_resume_state(plan_row, &suspension, normal, fault, cancel)
+        self.emit_coroutine_resume_state(plan_row, &suspension, normal, fault, cancel, origin)
     }
 
     #[expect(
@@ -12453,6 +12656,7 @@ impl<'ctx> Backend<'ctx, '_> {
                 | FaultCode::InvalidDuration
                 | FaultCode::InvalidSleepDuration
                 | FaultCode::SleepDurationOverflow
+                | FaultCode::TaskAnyFailed
         ) {
             serde_json::json!({
                 "channel": "runtime",
@@ -12647,6 +12851,7 @@ fn fault_properties(code: FaultCode) -> (&'static str, &'static str) {
             SLEEP_DURATION_OVERFLOW_FAULT_CODE,
             SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE,
         ),
+        FaultCode::TaskAnyFailed => (TASK_ANY_FAILED_FAULT_CODE, TASK_ANY_FAILED_FAULT_MESSAGE),
         FaultCode::ResourceClose => ("ResourceCloseFault", "resource close failed"),
     }
 }

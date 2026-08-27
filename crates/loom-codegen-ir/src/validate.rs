@@ -5,10 +5,10 @@ use std::fmt;
 use loom_mir::Type;
 
 use crate::{
-    BlockId, Constant, Effects, Function, InstanceId, Instruction, InstructionId, InstructionKind,
-    ProductReprId, Program, Repr, RepresentationPlan, ResultTarget, SumReprId, SumTagRepr,
-    Terminator, TerminatorKind, UnwindTarget, Value, ValueDefinition, ValueId, ValueTypeId,
-    ValueTypeKind,
+    AwaitMode, BlockId, Constant, Effects, Function, InstanceId, Instruction, InstructionId,
+    InstructionKind, ProductReprId, Program, Repr, RepresentationPlan, ResultTarget, SumReprId,
+    SumTagRepr, Terminator, TerminatorKind, UnwindTarget, Value, ValueDefinition, ValueId,
+    ValueTypeId, ValueTypeKind,
 };
 
 fn representation_pointer_kinds(
@@ -1702,6 +1702,7 @@ impl<'a> Validator<'a> {
         let mut await_states = BTreeMap::<
             u32,
             (
+                AwaitMode,
                 &ResultTarget,
                 &UnwindTarget,
                 &crate::BlockTarget,
@@ -1711,13 +1712,14 @@ impl<'a> Validator<'a> {
         for block in function.blocks() {
             if let Some(TerminatorKind::AwaitTasks {
                 state,
+                mode,
                 tasks,
                 normal,
                 fault,
                 cancel,
             }) = block.terminator().map(crate::Terminator::kind)
                 && await_states
-                    .insert(*state, (normal, fault, cancel, tasks))
+                    .insert(*state, (*mode, normal, fault, cancel, tasks))
                     .is_some()
             {
                 self.error(
@@ -1771,7 +1773,8 @@ impl<'a> Validator<'a> {
                     );
                 }
             }
-            let Some((normal, fault, cancel, tasks)) = await_states.remove(&suspension.state())
+            let Some((mode, normal, fault, cancel, tasks)) =
+                await_states.remove(&suspension.state())
             else {
                 self.error(
                     ValidationCode::InvalidCoroutinePlan,
@@ -1780,6 +1783,13 @@ impl<'a> Validator<'a> {
                 );
                 continue;
             };
+            if mode != suspension.mode() {
+                self.error(
+                    ValidationCode::InvalidCoroutinePlan,
+                    format!("{base}.coroutine.suspension[{index}].mode"),
+                    "coroutine plan join mode does not match its await_tasks terminator",
+                );
+            }
             if tasks.len() != suspension.awaited().len() {
                 self.error(
                     ValidationCode::InvalidCoroutinePlan,
@@ -3676,6 +3686,7 @@ impl<'a> Validator<'a> {
             }
             TerminatorKind::AwaitTasks {
                 state,
+                mode,
                 tasks,
                 normal,
                 fault,
@@ -3719,7 +3730,31 @@ impl<'a> Validator<'a> {
                         output
                     })
                     .collect::<Vec<_>>();
-                self.validate_result_target(function, normal, &outputs, &format!("{path}.normal"));
+                let result_outputs = match mode {
+                    AwaitMode::All => outputs.clone(),
+                    AwaitMode::Any => {
+                        let first = outputs.first().copied().flatten();
+                        if outputs
+                            .iter()
+                            .copied()
+                            .flatten()
+                            .any(|output| Some(output) != first)
+                        {
+                            self.error(
+                                ValidationCode::TypeMismatch,
+                                format!("{path}.tasks"),
+                                "await_tasks any requires every child Task to have the same output type",
+                            );
+                        }
+                        vec![first]
+                    }
+                };
+                self.validate_result_target(
+                    function,
+                    normal,
+                    &result_outputs,
+                    &format!("{path}.normal"),
+                );
                 self.validate_unwind_target(function, fault, &[], &format!("{path}.fault"));
                 self.validate_target(function, cancel, format!("{path}.cancel"));
                 if normal.arguments.as_ref() != fault.arguments.as_ref()

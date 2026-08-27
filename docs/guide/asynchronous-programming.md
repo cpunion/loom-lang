@@ -114,7 +114,7 @@ task is explicitly awaited.
 | --- | --- | --- | --- |
 | `Task.all` | `Task[(A, B, ...)]` | `Task[List[T]]` | All tasks complete with values; a task fault/cancellation cancels and drains siblings |
 | `Task.settled` | `Task[(TaskOutcome[A], ...)]` | `Task[List[TaskOutcome[T]]]` | Every task reaches a terminal state; one failure does not cancel the others |
-| `Task.any` | `Task[T]` for one common `T` | `Task[T]` | First value completion wins; losers are cancelled and drained; no success is a composite failure |
+| `Task.any` | `Task[T]` for one common `T` | `Task[T]` | First value completion wins; losers are cancelled and drained; no success raises `TaskAnyFailed` |
 | `Task.race` | `Task[TaskOutcome[T]]` for one common `T` | `Task[TaskOutcome[T]]` | First terminal state wins; losers are cancelled and drained |
 
 `TaskOutcome[T]` is a closed enum with these variants:
