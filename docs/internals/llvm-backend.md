@@ -465,6 +465,16 @@ uniqueness certificates, lexical cleanup, and checked coroutine plans with
 typed Task creation, suspension edges, and exact frame-root rows, plus
 artifact-closed finite dynamic catalogs with candidate-specific precise boxes
 and direct tag-switch dispatch.
+For a `MAY_FAULT` coroutine, each resume callback creates an activation-local
+fault context whose validated context pointer is the attached executor. The
+existing context-raise ABI records the first source/runtime/contract fault on
+the active Task. Normal return still publishes the exact typed value, including
+a managed `Result`; fault and cancellation return distinct scheduler step codes
+and never pack a source sum. The general collision-free sum carrier gives
+coroutine parameters, live rows, and completed results one static union of
+managed-pointer offsets whose inactive lanes are zero. Callback-local typed
+shadow roots are popped once on every completed, pending, faulted, cancelled,
+or invalid-state exit. This adds no runtime symbol or typed-task ABI revision.
 The first two changes add no physical runtime boundary. Dynamic concat does:
 the runtime ABI component is 10, with `text-v2` and `runtime-v4` identity
 components while GC remains `gc-v8`.
