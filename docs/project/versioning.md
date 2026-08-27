@@ -15,11 +15,11 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `23` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `3` |
-| LCIR textual dump | version `20` |
-| LCIR artifact identity | schema `21` |
-| LCIR native-object domain | `loom-lcir-native-object-v17` |
+| LCIR textual dump | version `21` |
+| LCIR artifact identity | schema `22` |
+| LCIR native-object domain | `loom-lcir-native-object-v18` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v22` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v23` |
 | Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
 | Native runtime ABI component | `15` |
@@ -85,6 +85,13 @@ target-laid-out frame and root-map changes invalidate cached objects. TextMap
 reuses `typed-repeated-v1`; typed coroutines reuse typed-task v1 and the
 existing scheduler/join ABI. Native runtime component 15, `runtime-v9`,
 `text-v3`, and `gc-v9` remain unchanged.
+
+Artifact-closed finite dynamic catalogs then advance the LCIR dump to 21,
+artifact schema to 22, native-object domain to v18, and LLVM object-cache
+domain to v23. Candidate order, exact payload types, managed descriptors,
+construction, and direct finite dispatch are therefore cache identity inputs.
+The existing typed fixed-object allocator is reused, so native runtime
+component 15, `runtime-v9`, and `gc-v9` remain unchanged.
 
 LCIR's literal-only direct `Text` representation first added the physical
 pointer ABI and allocation-free operations. The subsequent typed moving-GC
@@ -192,6 +199,18 @@ already-versioned concrete aggregate types and repeated descriptors. Because
 no runtime witness, tag, indirect-call surface, or artifact format is added,
 LCIR dump 19, artifact schema 20, native-object domain v16, object-cache domain
 v21, and native runtime ABI component 15 remain unchanged.
+
+Artifact-closed finite dynamic catalogs advance the LCIR dump to 21, artifact
+schema to 22, native-object domain to v18, and LLVM object-cache domain to
+v23. A catalog with two or more exact closed nongeneric conformances records
+its deterministic candidate order in checked LCIR. Each value is one managed
+pointer to a candidate-specific box containing a compiler-private ordinal tag
+and the exact concrete payload. The backend emits one precise fixed-object
+descriptor per candidate and a finite tag switch whose arms make ordinary
+direct calls. Mutable calls return the updated concrete receiver and allocate
+a fresh box on both normal and fault writeback paths. This reuses
+`loom_gc_typed_alloc_v1`; the native runtime ABI component remains 15. The
+catalog is compiler-private and does not define a cross-artifact dynamic ABI.
 
 ## Toolchain releases
 

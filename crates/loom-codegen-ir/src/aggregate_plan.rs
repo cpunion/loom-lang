@@ -10,7 +10,7 @@ pub(crate) const fn is_direct_scalar(ty: &Type) -> bool {
 }
 
 const fn is_direct_product_leaf(ty: &Type) -> bool {
-    is_direct_scalar(ty) || matches!(ty, Type::Text)
+    is_direct_scalar(ty) || matches!(ty, Type::Text | Type::View { .. })
 }
 
 /// Upper bound for every semantic-type tree copied into the direct aggregate
@@ -333,6 +333,7 @@ enum AggregateShape {
     Sum(Box<[Box<[Type]>]>),
     ManagedList(Type),
     ManagedTextMap(Type),
+    ManagedDynamic(Box<[Type]>),
 }
 
 impl AggregateShape {
@@ -344,6 +345,7 @@ impl AggregateShape {
             // A List is one pointer in its containing value. Its element graph
             // is checked independently, not as a by-value registration edge.
             Self::ManagedList(_) | Self::ManagedTextMap(_) => Box::new(std::iter::empty()),
+            Self::ManagedDynamic(candidates) => Box::new(candidates.iter()),
         }
     }
 
@@ -358,7 +360,7 @@ impl AggregateShape {
                 .try_fold(1_usize.checked_add(variants.len())?, |nodes, variant| {
                     nodes.checked_add(variant.len())
                 }),
-            Self::ManagedList(_) | Self::ManagedTextMap(_) => Some(1),
+            Self::ManagedList(_) | Self::ManagedTextMap(_) | Self::ManagedDynamic(_) => Some(1),
         }
     }
 }
@@ -416,6 +418,15 @@ fn direct_aggregate_shape(
             }
         }
         Type::List(element) => Some(AggregateShape::ManagedList((**element).clone())),
+        Type::View { .. } => Some(AggregateShape::ManagedDynamic(
+            dyn_concepts
+                .finite(ty)?
+                .candidates()
+                .iter()
+                .map(|candidate| dyn_concepts.physical_type(candidate.concrete()))
+                .collect::<Option<Vec<_>>>()?
+                .into_boxed_slice(),
+        )),
         Type::Never
         | Type::Unit
         | Type::Bool
@@ -426,7 +437,6 @@ fn direct_aggregate_shape(
         | Type::AssociatedProjection { .. }
         | Type::Task(_)
         | Type::TaskOutcome(_)
-        | Type::View { .. }
         | Type::Error => None,
     }
 }
@@ -714,6 +724,16 @@ impl<'program, 'plan> AggregatePlanner<'program, 'plan> {
                     visiting.remove(&semantic);
                     continue;
                 }
+                if let AggregateShape::ManagedDynamic(candidates) = &shape {
+                    if !managed_path || !self.supports_managed_text {
+                        supported = false;
+                        break;
+                    }
+                    semantic_roots.extend(candidates.iter().cloned());
+                    discovered.entry(semantic.clone()).or_insert(shape);
+                    visiting.remove(&semantic);
+                    continue;
+                }
                 let child_managed_path = managed_path
                     && matches!(
                         shape,
@@ -816,6 +836,15 @@ impl AggregatePlan {
                     "managed TextMap {semantic:?} has an unplanned value type"
                 )));
             }
+            if let AggregateShape::ManagedDynamic(candidates) = shape
+                && candidates.iter().any(|candidate| {
+                    !is_direct_product_leaf(candidate) && !self.entries.contains_key(candidate)
+                })
+            {
+                return Err(AggregateRegistrationError::Inconsistent(format!(
+                    "managed dynamic View {semantic:?} has an unplanned candidate value type"
+                )));
+            }
             if shape
                 .dependencies()
                 .any(|field| !is_direct_product_leaf(field) && !self.entries.contains_key(field))
@@ -873,6 +902,9 @@ impl AggregatePlan {
                     if arguments.as_slice() == std::slice::from_ref(planned) =>
                 {
                     builder.add_managed_text_map_type(semantic.clone())
+                }
+                (Type::View { .. }, AggregateShape::ManagedDynamic(candidates)) => {
+                    builder.add_managed_dynamic_type(semantic.clone(), candidates)
                 }
                 _ => {
                     return Err(AggregateRegistrationError::Inconsistent(format!(

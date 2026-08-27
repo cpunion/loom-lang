@@ -19,6 +19,52 @@ pub(crate) struct DevirtualizedView {
     concrete: Type,
 }
 
+/// One member of an artifact-closed competing dynamic witness set. Candidate
+/// order is deterministic witness-id order and becomes the private tag order
+/// recorded in checked LCIR.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DynamicCandidate {
+    witness: WitnessId,
+    concrete: Type,
+}
+
+impl DynamicCandidate {
+    pub(crate) const fn witness(&self) -> WitnessId {
+        self.witness
+    }
+
+    pub(crate) const fn concrete(&self) -> &Type {
+        &self.concrete
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct FiniteDynamicView {
+    candidates: Box<[DynamicCandidate]>,
+}
+
+impl FiniteDynamicView {
+    pub(crate) const fn candidates(&self) -> &[DynamicCandidate] {
+        &self.candidates
+    }
+
+    pub(crate) fn candidate(&self, witness: WitnessId) -> Option<(u32, &DynamicCandidate)> {
+        self.candidates
+            .iter()
+            .enumerate()
+            .find(|(_, candidate)| candidate.witness == witness)
+            .and_then(|(index, candidate)| {
+                u32::try_from(index).ok().map(|index| (index, candidate))
+            })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum DynConceptChoice {
+    Unique(DevirtualizedView),
+    Finite(FiniteDynamicView),
+}
+
 impl DevirtualizedView {
     pub(crate) const fn witness(&self) -> WitnessId {
         self.witness
@@ -32,13 +78,15 @@ impl DevirtualizedView {
 /// Artifact-wide checked representation choices for the first `dyn` LCIR
 /// slice.
 ///
-/// A view is admitted only when the reachable witness set contains one exact,
-/// non-generic conformance whose associated bindings match the view. Missing,
-/// open, or competing proofs remain absent and therefore select structured
+/// A view is admitted only when the artifact-closed reachable witness set
+/// contains exact, non-generic conformances whose associated bindings match
+/// the view. One candidate is erased completely; two or more candidates form
+/// a checked finite dynamic catalog. Missing, open, generic, or
+/// prerequisite-dependent proof sets remain absent and select structured
 /// unsupported classification before LCIR construction.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct DynConceptPlan {
-    choices: BTreeMap<Type, DevirtualizedView>,
+    choices: BTreeMap<Type, DynConceptChoice>,
 }
 
 impl DynConceptPlan {
@@ -67,35 +115,58 @@ impl DynConceptPlan {
                 else {
                     return None;
                 };
-                let mut matches = graph
+                let matches = graph
                     .witnesses
                     .iter()
                     .filter_map(|witness| program.witness(*witness))
                     .filter(|witness| {
                         witness.concept == *concept && witness.associated == *bindings
-                    });
-                let selected = matches.next()?;
-                if matches.next().is_some()
-                    || selected.type_parameters != 0
-                    || !selected.prerequisites.is_empty()
-                    || !is_closed_type(&selected.concrete)
+                    })
+                    .collect::<Vec<_>>();
+                if matches.is_empty()
+                    || matches.iter().any(|selected| {
+                        selected.type_parameters != 0
+                            || !selected.prerequisites.is_empty()
+                            || !is_closed_type(&selected.concrete)
+                    })
                 {
                     return None;
                 }
-                Some((
-                    view,
-                    DevirtualizedView {
+                let candidates = matches
+                    .into_iter()
+                    .map(|selected| DynamicCandidate {
                         witness: selected.id,
                         concrete: selected.concrete.clone(),
-                    },
-                ))
+                    })
+                    .collect::<Vec<_>>();
+                let choice = if let [selected] = candidates.as_slice() {
+                    DynConceptChoice::Unique(DevirtualizedView {
+                        witness: selected.witness,
+                        concrete: selected.concrete.clone(),
+                    })
+                } else {
+                    DynConceptChoice::Finite(FiniteDynamicView {
+                        candidates: candidates.into_boxed_slice(),
+                    })
+                };
+                Some((view, choice))
             })
             .collect();
         Self { choices }
     }
 
     pub(crate) fn choice(&self, view: &Type) -> Option<&DevirtualizedView> {
-        self.choices.get(view)
+        match self.choices.get(view)? {
+            DynConceptChoice::Unique(choice) => Some(choice),
+            DynConceptChoice::Finite(_) => None,
+        }
+    }
+
+    pub(crate) fn finite(&self, view: &Type) -> Option<&FiniteDynamicView> {
+        match self.choices.get(view)? {
+            DynConceptChoice::Unique(_) => None,
+            DynConceptChoice::Finite(choice) => Some(choice),
+        }
     }
 
     /// Returns the exact LCIR semantic type after closed-world erasure,
@@ -110,8 +181,13 @@ impl DynConceptPlan {
         *remaining = remaining.checked_sub(1)?;
         Some(match ty {
             Type::View { .. } => {
-                let concrete = self.choice(ty)?.concrete();
-                self.physical_type_bounded(concrete, remaining)?
+                if let Some(concrete) = self.choice(ty).map(DevirtualizedView::concrete) {
+                    self.physical_type_bounded(concrete, remaining)?
+                } else if self.finite(ty).is_some() {
+                    ty.clone()
+                } else {
+                    return None;
+                }
             }
             Type::Tuple(elements) => Type::Tuple(
                 elements

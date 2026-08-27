@@ -332,6 +332,7 @@ fn collect_safepoint_values(
                 instruction.kind(),
                 InstructionKind::ListConstruct { elements } if !elements.is_empty()
             );
+            let dyn_allocation = matches!(instruction.kind(), InstructionKind::DynConstruct { .. });
             let collecting = matches!(
                 instruction.kind(),
                 InstructionKind::TextConcat { .. }
@@ -339,6 +340,7 @@ fn collect_safepoint_values(
                     | InstructionKind::FormatFloat { .. }
                     | InstructionKind::TextMapInsert { .. }
             ) || list_allocation
+                || dyn_allocation
                 || matches!(
                     instruction.kind(),
                     InstructionKind::DirectCall { callee, .. }
@@ -353,6 +355,7 @@ fn collect_safepoint_values(
                 // dead after the instruction.
                 if list_allocation
                     || matches!(instruction.kind(), InstructionKind::TextMapInsert { .. })
+                    || dyn_allocation
                 {
                     add_managed(&mut live, instruction.kind().operands(), managed);
                 }
@@ -462,7 +465,9 @@ fn successors(kind: &TerminatorKind) -> Vec<BlockId> {
             else_target,
             ..
         } => vec![then_target.block, else_target.block],
-        TerminatorKind::SumSwitch { cases, .. } => cases.iter().map(|case| case.block).collect(),
+        TerminatorKind::SumSwitch { cases, .. } | TerminatorKind::DynSwitch { cases, .. } => {
+            cases.iter().map(|case| case.block).collect()
+        }
         TerminatorKind::CheckedIntNegate { normal, fault, .. }
         | TerminatorKind::CheckedIntBinary { normal, fault, .. }
         | TerminatorKind::ResourceClose { normal, fault, .. } => {
@@ -504,6 +509,7 @@ fn add_terminator_local_uses(
             vec![*condition]
         }
         TerminatorKind::SumSwitch { scrutinee, .. }
+        | TerminatorKind::DynSwitch { scrutinee, .. }
         | TerminatorKind::Return(scrutinee)
         | TerminatorKind::CheckedIntNegate {
             value: scrutinee, ..
@@ -535,7 +541,7 @@ fn edge_live_values(
             (then_target.block, then_target.arguments.as_ref()),
             (else_target.block, else_target.arguments.as_ref()),
         ],
-        TerminatorKind::SumSwitch { cases, .. } => cases
+        TerminatorKind::SumSwitch { cases, .. } | TerminatorKind::DynSwitch { cases, .. } => cases
             .iter()
             .map(|case| (case.block, case.arguments.as_ref()))
             .collect(),

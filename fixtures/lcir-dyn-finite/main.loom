@@ -1,0 +1,131 @@
+module lcir_dyn_finite
+
+dyn concept Metric {
+    method read(self) Int
+    method cold(self) Int
+}
+
+dyn concept Advance {
+    method advance(mut self) Int
+}
+
+record Counter {
+    value Int
+    label Text
+}
+
+record Offset {
+    value Int
+}
+
+impl Metric for Counter {
+    method read(self) Int { self.value }
+    method cold(self) Int { 7001 }
+}
+
+impl Advance for Counter {
+    method advance(mut self) Int {
+        self.value = self.value + 1
+        self.value
+    }
+}
+
+impl Metric for Offset {
+    method read(self) Int { self.value + 100 }
+    method cold(self) Int { 7002 }
+}
+
+impl Advance for Offset {
+    method advance(mut self) Int {
+        self.value = self.value + 2
+        self.value
+    }
+}
+
+record Holder {
+    item dyn Metric
+}
+
+fn measure(metric Metric) Int {
+    metric.read()
+}
+
+fn eraseCounter(value Counter) dyn Metric {
+    value
+}
+
+fn eraseOffset(value Offset) dyn Metric {
+    value
+}
+
+fn eraseCounterAdvance(value Counter) dyn Advance {
+    value
+}
+
+fn eraseOffsetAdvance(value Offset) dyn Advance {
+    value
+}
+
+fn advanceOne(value Advance) Int {
+    value.advance()
+}
+
+fn forceRelocation() Unit {
+    for index in 0..5000 {
+        discard eraseCounter(Counter { value = index, label = "pressure" })
+        Unit
+    }
+}
+
+fn verify() Unit {
+    let first = Counter { value = 41, label = "first" }
+    let second = Offset { value = 1 }
+    let firstValue = measure(first)
+    let secondValue = measure(second)
+    assert firstValue == 41
+    assert secondValue == 101
+
+    let held = Holder { item = first }
+    let heldValue = held.item.read()
+    assert heldValue == 41
+
+    let values = [
+        eraseCounter(first),
+        eraseOffset(second),
+    ]
+    let length = values.length()
+    assert length == 2
+    match values.get(0) {
+        Some(value) => {
+            let read = value.read()
+            assert read == 41
+            Unit
+        }
+        None => {
+            assert false
+            Unit
+        }
+    }
+
+    var source = eraseCounterAdvance(Counter { value = 0, label = "source" })
+    var copied = source
+    forceRelocation()
+    let copiedFirst = advanceOne(copied)
+    let copiedSecond = advanceOne(copied)
+    let sourceFirst = advanceOne(source)
+    assert copiedFirst == 1
+    assert copiedSecond == 2
+    assert sourceFirst == 1
+
+    var offset = eraseOffsetAdvance(Offset { value = 100 })
+    let offsetFirst = advanceOne(offset)
+    assert offsetFirst == 102
+}
+
+pub fn main() Unit {
+    verify()
+}
+
+test fn finiteDynamicWitnesses() {
+    verify()
+}

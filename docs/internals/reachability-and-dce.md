@@ -97,24 +97,27 @@ budgets. This rejection occurs during planning, before any partial LCIR is
 allocated. A generic function that is not reached cannot consume those budgets
 or change direct-versus-legacy route selection.
 
-For a concrete `dyn C` view, LCIR additionally groups the reachable witnesses
-by the exact concept and associated-type bindings. If that set contains one
-closed nongeneric conformance, the instance traversal resolves every dynamic
-requirement through that witness and records the resulting ordinary direct
-method edge. The view itself uses the concrete value representation, so LLVM
-receives no dispatch table, indirect call, type tag, or witness pointer. A
-missing, open, or competing witness set is a structured unsupported site; the
-compiler never guesses a target or consults all declared conformances.
+For a concrete `dyn C` view, LCIR additionally groups artifact-reachable
+witnesses by the exact concept and associated-type bindings. One closed
+nongeneric conformance is erased to its concrete representation and every used
+requirement contributes one ordinary direct method edge. Two or more exact
+closed nongeneric conformances form an ordered finite catalog. The traversal
+then contributes one direct method edge per candidate for each requirement
+slot that is actually called; unused slots and unrelated conformances remain
+dead. LLVM receives a compiler-private finite tag switch, not an indirect call
+or witness table. A missing, open, generic, prerequisite-dependent, or
+otherwise incomplete set is a structured unsupported site; the compiler never
+guesses a target or consults all declared conformances.
 
 View discovery walks both reachable expression/signature types and their
-bounded concrete record, enum, and refined schemas. The selected concrete type
-is substituted recursively through product fields, sum payloads, generic
+bounded concrete record, enum, and refined schemas. A unique candidate is
+substituted recursively through product fields, sum payloads, generic
 arguments, and List elements before the direct aggregate closure is planned.
-This catches a view stored but never projected, keeps the List repeated
-descriptor identical to its concrete element descriptor, and re-runs ordinary
-by-value cycle rejection after erasure. Raw concrete and erased uses converge
-on the same canonical LCIR value type rather than creating layout-compatible
-duplicates.
+A finite catalog instead remains one managed leaf in those shapes, and a List
+descriptor records one managed pointer per element. Both paths discover views
+that are stored but never projected and re-run ordinary by-value cycle checks.
+Raw concrete and uniquely erased uses converge on the same canonical LCIR
+value type rather than creating layout-compatible duplicates.
 
 ## Why unused conformances stay dead
 

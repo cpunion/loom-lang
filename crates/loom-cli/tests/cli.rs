@@ -1120,6 +1120,73 @@ fn unique_dynamic_concepts_close_real_check_build_test_and_run_commands() {
 }
 
 #[test]
+fn finite_dynamic_concepts_close_real_check_build_test_and_run_commands() {
+    let project = TestProject::new(include_str!("../../../fixtures/lcir-dyn-finite/main.loom"));
+
+    let check = loomc()
+        .args(["--no-cache", "check"])
+        .arg(&project.0)
+        .output()
+        .expect("check finite-dyn source through the production CLI");
+    assert_eq!(check.status.code(), Some(0), "{check:?}");
+
+    let object_path = project.0.join("finite-dyn.o");
+    let build = loomc()
+        .args(["--no-cache", "build", "--emit", "object", "--output"])
+        .arg(&object_path)
+        .arg(&project.0)
+        .output()
+        .expect("build finite-dyn source through the production CLI");
+    assert_eq!(build.status.code(), Some(0), "{build:?}");
+    let object = fs::read(object_path).expect("read finite-dyn object");
+    for required in [
+        b"loom.lcir.fn".as_slice(),
+        b"loom.lcir.dyn.descriptor".as_slice(),
+        b"loom_gc_typed_alloc_v1".as_slice(),
+    ] {
+        assert!(
+            contains_bytes(&object, required),
+            "finite dyn object omitted `{}`",
+            String::from_utf8_lossy(required)
+        );
+    }
+    for forbidden in [
+        b"loom.fn.".as_slice(),
+        b"loom.Value",
+        b"ValueNode",
+        b"loom_executor_",
+        b"loom_witness_",
+        b"WitnessInstance",
+    ] {
+        assert!(
+            !contains_bytes(&object, forbidden),
+            "finite dyn object exposed `{}`",
+            String::from_utf8_lossy(forbidden)
+        );
+    }
+
+    let tests = loomc()
+        .args(["--no-cache", "test"])
+        .arg(&project.0)
+        .output()
+        .expect("test finite-dyn source through the production CLI");
+    assert_eq!(tests.status.code(), Some(0), "{tests:?}");
+    assert!(
+        String::from_utf8_lossy(&tests.stdout)
+            .contains("passed lcir_dyn_finite.finiteDynamicWitnesses"),
+        "{tests:?}"
+    );
+
+    let run = loomc()
+        .args(["--no-cache", "run"])
+        .arg(&project.0)
+        .output()
+        .expect("run finite-dyn source through the production CLI");
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    assert_eq!(run.stdout, b"Unit\n");
+}
+
+#[test]
 fn core02_main_and_tests_use_the_unique_witness_lcir_route() {
     let project = TestProject::new(include_str!("../../../examples/core02/concepts.loom"));
     let object_path = project.0.join("core02-unique-dyn.o");

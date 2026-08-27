@@ -99,13 +99,28 @@ artifact, or runtime compatibility.
   element layout and repeated pointer map; field projection, sum matching,
   checked List reads, forwarding, and logical copies remain ordinary typed
   value operations. Dead conformances or unused method slots never reach LLVM.
-  Missing, competing, or open witness sets remain structured whole-artifact
-  fallback; no runtime tag, witness pointer, conformance registry, universal
-  value, or indirect call was added. The `lcir-dyn-unique` fixture and both
+  Missing or open witness sets remain structured whole-artifact fallback; no
+  runtime tag, witness pointer, conformance registry, universal value, or
+  indirect call was added. The `lcir-dyn-unique` fixture and both
   Core02 main and test routes provide real CLI, host, legacy-differential,
   forced-relocation, copy-independence, and Linux/MSVC object evidence.
   Existing LCIR, artifact, object, cache, and runtime ABI versions are
   unchanged.
+- Typed LCIR now closes a competing finite reachable witness set into a
+  compiler-private one-pointer dynamic catalog. Every candidate has its own
+  exact box layout, ordinal tag, and precise fixed-object GC descriptor;
+  dispatch is a finite switch to direct methods, and DCE retains only called
+  requirement slots. Readonly copies may share immutable boxes. Mutable calls
+  allocate a fresh candidate box and write it back on both normal and fault
+  exits, so aliases remain independent under forced moving collection. The
+  `lcir-dyn-finite` fixture closes interpreter/legacy/typed differential
+  execution, real CLI check/build/test/run, Linux/MSVC objects, and 32-bit
+  fail-close without a fat pointer, witness table, registry, universal value,
+  or indirect call. Missing witnesses and open, generic,
+  prerequisite-dependent, or otherwise incomplete sets still select one
+  structured fallback. The LCIR dump advances to 20, artifact schema to 21,
+  native-object domain to v17, and object-cache domain to v22; runtime ABI
+  component 15 is unchanged.
 - Typed LCIR now lowers compiler-private concrete closed `TextMap[V]` values on
   64-bit targets as one managed pointer to exact typed repeated entries.
   Construction, functional insert/replacement, length, and exact

@@ -211,6 +211,29 @@ pub struct SumRepr {
     variants: Box<[SumVariantRepr]>,
 }
 
+/// Closed compiler-private payload catalog for one first-class dynamic
+/// concept value. The value itself is one managed object pointer. Each
+/// allocation stores a private ordinal tag followed by exactly one candidate
+/// payload, and the backend emits a distinct precise GC descriptor for every
+/// candidate layout.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DynamicRepr {
+    view: ValueTypeId,
+    candidates: Box<[ValueTypeId]>,
+}
+
+impl DynamicRepr {
+    #[must_use]
+    pub const fn view(&self) -> ValueTypeId {
+        self.view
+    }
+
+    #[must_use]
+    pub const fn candidates(&self) -> &[ValueTypeId] {
+        &self.candidates
+    }
+}
+
 impl SumRepr {
     #[must_use]
     pub const fn tag(&self) -> SumTagRepr {
@@ -319,6 +342,7 @@ pub struct RepresentationPlan {
     reprs: Vec<Repr>,
     products: Vec<ProductRepr>,
     sums: Vec<SumRepr>,
+    dynamics: Vec<DynamicRepr>,
     types: Vec<ValueType>,
     registrations: Vec<TypeRegistration>,
     canonical_types: BTreeMap<Type, ValueTypeId>,
@@ -373,6 +397,7 @@ impl RepresentationPlan {
             reprs,
             products: Vec::new(),
             sums: Vec::new(),
+            dynamics: Vec::new(),
             types,
             registrations,
             canonical_types,
@@ -397,6 +422,16 @@ impl RepresentationPlan {
     #[must_use]
     pub fn sums(&self) -> &[SumRepr] {
         &self.sums
+    }
+
+    #[must_use]
+    pub fn dynamics(&self) -> &[DynamicRepr] {
+        &self.dynamics
+    }
+
+    #[must_use]
+    pub fn dynamic(&self, view: ValueTypeId) -> Option<&DynamicRepr> {
+        self.dynamics.iter().find(|dynamic| dynamic.view == view)
     }
 
     #[must_use]
@@ -626,6 +661,55 @@ impl RepresentationPlan {
             value_type: ty,
         });
         self.canonical_types.insert(semantic, ty);
+        Some(ty)
+    }
+
+    pub(crate) fn add_managed_dynamic(
+        &mut self,
+        semantic: Type,
+        candidates: &[Type],
+    ) -> Option<ValueTypeId> {
+        if self.target.pointer_bits() != 64
+            || self.type_id(&semantic).is_some()
+            || !matches!(semantic, Type::View { .. })
+            || candidates.len() < 2
+        {
+            return None;
+        }
+        let candidates = candidates
+            .iter()
+            .map(|candidate| self.type_id(candidate))
+            .collect::<Option<Vec<_>>>()?;
+        if candidates.iter().copied().collect::<BTreeSet<_>>().len() != candidates.len()
+            || candidates.iter().any(|candidate| {
+                self.value_type(*candidate).is_none_or(|value_type| {
+                    value_type.semantic() == &Type::Never
+                        || matches!(self.repr(value_type.repr()), Some(Repr::Uninhabited))
+                        || self
+                            .pointer_kinds(*candidate)
+                            .is_none_or(|(immortal, _)| immortal)
+                })
+            })
+        {
+            return None;
+        }
+        let repr = ReprId::from_index(self.brand, self.reprs.len())?;
+        let ty = ValueTypeId::from_index(self.brand, self.types.len())?;
+        self.reprs.push(Repr::ManagedPointer);
+        self.types.push(ValueType {
+            semantic: semantic.clone(),
+            repr,
+            kind: ValueTypeKind::Direct,
+        });
+        self.registrations.push(TypeRegistration {
+            semantic: semantic.clone(),
+            value_type: ty,
+        });
+        self.canonical_types.insert(semantic, ty);
+        self.dynamics.push(DynamicRepr {
+            view: ty,
+            candidates: candidates.into_boxed_slice(),
+        });
         Some(ty)
     }
 

@@ -4,9 +4,9 @@
 selects checked-MIR function roots and computes the closed-world source graph
 used by production native compilation. Separately, its LCIR foundation
 provides target-aware scalar, direct Text, closed-product, closed-sum,
-transparent nominal, managed List, compiler-private typed TextMap, and typed
-Task-handle
-representations, whole-artifact
+transparent nominal, managed List, compiler-private typed TextMap and typed
+Task-handle representations, plus compiler-private finite dynamic catalogs,
+whole-artifact
 checked-MIR lowering, typed SSA data structures, builders, independent program
 and artifact-root validators, and a textual dump for tests and review.
 
@@ -66,6 +66,8 @@ explicit byte or address-space layout must add its deciding facts here. The cano
 | concrete closed `List[T]` on a 64-bit target | `ManagedPointer`, one opaque pointer to typed repeated storage |
 | concrete closed `TextMap[V]` on a 64-bit target | `ManagedPointer`, one opaque pointer to typed repeated entry storage |
 | concrete `Task[T]` in the checked async slice | `TaskHandle`, one stable scheduler-owned opaque pointer excluded from moving-GC maps |
+| `dyn C` with one exact artifact-reachable witness | the witness's concrete value representation |
+| `dyn C` with a finite closed set of two or more exact witnesses | `ManagedPointer`, one opaque pointer to a candidate-specific tagged box |
 
 `Uninhabited` is catalog vocabulary only. The validator rejects it in function
 signatures and SSA values. Products and sums are immutable register aggregates.
@@ -77,8 +79,8 @@ Concrete instantiations of generic enums, including `Result[Unit, E]`, are
 eligible after payload substitution. Proven monomorphic refined values and
 closed records with statically proven invariants may appear as product fields
 or sum payloads. Fully concrete generic records use the same plan.
-Runtime-checked constructions, recursive sums, general Task storage, dynamic
-witnesses, and uninhabited fields are not selected. A
+Runtime-checked constructions, recursive sums, general Task storage, incomplete
+dynamic witness sets, and uninhabited fields are not selected. A
 concrete List or TextMap breaks by-value aggregate recursion and may contain any
 registered closed direct scalar, Text, product, sum, List, or TextMap value.
 Every TextMap also has managed Text keys. Managed Text is admitted through
@@ -360,6 +362,15 @@ directly in the dump. TextMap reuses `typed-repeated-v1`; coroutines reuse
 typed-task v1 and the existing scheduler/join ABI. Native runtime component 15,
 `runtime-v9`, `text-v3`, and `gc-v9` therefore remain unchanged.
 
+Artifact-closed finite dynamic catalogs then advance the artifact identity to
+schema 22, the dump to `lcir 21`, the LCIR native-object domain to
+`loom-lcir-native-object-v18`, and the CLI object-cache domain to
+`loom-llvm-object-cache-v23`. `dyn.construct` allocates one candidate-specific
+exact box through the existing typed fixed-object allocator. `dyn.switch`
+validates and branches over the complete ordered candidate catalog, with one
+exact concrete payload block parameter per arm. The runtime ABI remains
+component 15.
+
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
 test roots, validates their source reachability, then closes exact concrete
@@ -376,9 +387,11 @@ signatures, plus infallible async signatures and suspension frames limited to
 direct scalar/refined/product/Text shapes. It includes bounded direct generic
 calls whose concrete types use those representations. Concrete static concept
 calls use the selected witness method directly, including conditional proof
-applications and normalized associated bindings. Dynamic dispatch remains a
-whole-artifact fallback. It
-covers constants, locals and assignment, tuple construction
+applications and normalized associated bindings. A unique closed dynamic
+witness is erased to its concrete type. Two or more artifact-closed exact
+witnesses use checked `dyn.construct` and `dyn.switch` operations backed by one
+managed pointer and direct candidate calls. It covers constants, locals and
+assignment, tuple construction
 and immutable `let` destructuring, blocks and conditionals,
 short-circuit Boolean operations, integer ranges, pure scalar operations,
 checked integer arithmetic, and direct/readonly-inherent calls including
@@ -669,9 +682,11 @@ The resulting LCIR functions and LLVM calls use the instantiated direct
 signature. Compile-time witness arguments remain in `InstanceKey` and artifact
 identity but consume no runtime argument. Static concept-method dispatch is an
 ordinary direct call after closure, and associated projections do not survive
-in a completed key or physical representation. Dynamic dispatch still selects
-complete legacy lowering rather than introducing a universal value or witness
-ABI into this slice.
+in a completed key or physical representation. Dynamic instance closure erases
+a unique witness or retains only the called requirement slot for every member
+of a finite closed candidate catalog. Missing, open, generic, and
+prerequisite-dependent candidate sets still select complete legacy lowering;
+no universal value, runtime registry, or witness ABI enters typed LCIR.
 
 One public `INSTANCE_KEY_STRUCTURE_BUDGET` limits the combined nested type and
 witness structure of a key to 256 nodes. Builders report
@@ -739,10 +754,10 @@ an active unwind edge so remaining cleanup can run. This is the LCIR form of
 the language's deterministic cleanup policy, not a choice left to LLVM.
 
 Managed values outside the admitted Text, List, and TextMap graphs, open or
-recursive enums, generic or unsupported-shape runtime
-construction and proof replay, unsupported dynamic dispatch, contracts over
-unsupported value shapes, and coroutine forms outside the bounded typed slice
-are not implemented. Nongeneric
+recursive enums, generic or unsupported-shape runtime construction and proof
+replay, incomplete dynamic witness catalogs, derived dynamic proof conversion,
+contracts over unsupported value shapes, and coroutine forms outside the
+bounded typed slice are not implemented. Nongeneric
 refined and invariant runtime construction is direct typed CFG returning the
 exact `Result[..., ConstraintError]`; portable nongeneric proof replay uses a
 canonical runtime-fault assertion before nominal publication. The current CFG
@@ -856,14 +871,15 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 20` text includes
+text even when the graphs are otherwise equivalent. The `lcir 21` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys including their contract-boundary role, every function's
 selected entry block and ordered effect set,
 typed coroutine plans and Task control flow, typed runtime/contract fault
 identity including proof-replay and Duration guards, closed parse operations,
 and managed Float formatting,
-managed-pointer representations and
+managed-pointer representations, finite dynamic candidate catalogs,
+`dyn.construct`, `dyn.switch`, and
 `text.concat`, `text.get`, typed resource-close edges, transient
 protected-receiver updates, and the checked value type of every block parameter
 and instruction result. Representation semantic

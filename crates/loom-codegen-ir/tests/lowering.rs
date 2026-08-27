@@ -1173,8 +1173,8 @@ pub fn main() Unit {
 }
 
 #[test]
-fn competing_dynamic_concept_witnesses_select_one_atomic_fallback() {
-    let LoweringOutcome::Unsupported(report) = lower_run(
+fn competing_closed_dynamic_witnesses_form_one_managed_catalog() {
+    let LoweringOutcome::Complete(artifact) = lower_run(
         r"module dynamic_stays_erased
 
 dyn concept Truth { method truth(self) Bool }
@@ -1199,14 +1199,41 @@ pub fn main() Unit {
 }
 ",
     ) else {
-        panic!("competing dynamic witnesses must not be guessed into a static target")
+        panic!("a finite closed dynamic witness set must lower as typed LCIR")
     };
-    assert!(
-        report
-            .items()
+    let representations = artifact.representations();
+    let [dynamic] = representations.dynamics() else {
+        panic!("one source view must produce one finite dynamic catalog")
+    };
+    assert_eq!(dynamic.candidates().len(), 2);
+    assert_eq!(
+        representations
+            .value_type(dynamic.view())
+            .and_then(|ty| representations.repr(ty.repr())),
+        Some(&loom_codegen_ir::Repr::ManagedPointer)
+    );
+    assert!(artifact.functions().iter().any(|function| {
+        function
+            .instructions()
             .iter()
-            .any(|item| item.feature() == UnsupportedFeature::DynamicWitnessSet),
-        "{report:?}"
+            .any(|instruction| matches!(instruction.kind(), InstructionKind::DynConstruct { .. }))
+    }));
+    assert!(artifact.functions().iter().any(|function| {
+        function.blocks().iter().any(|block| {
+            matches!(
+                block.terminator().map(loom_codegen_ir::Terminator::kind),
+                Some(TerminatorKind::DynSwitch { cases, .. }) if cases.len() == 2
+            )
+        })
+    }));
+    assert!(
+        artifact.functions().iter().any(|function| {
+            function
+                .instructions()
+                .iter()
+                .any(|instruction| matches!(instruction.kind(), InstructionKind::DirectCall { .. }))
+        }),
+        "finite dynamic dispatch must end in direct candidate calls"
     );
 }
 
@@ -1226,6 +1253,42 @@ pub fn main() Unit {
 ",
     ) else {
         panic!("a missing dynamic witness must not acquire a guessed representation")
+    };
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::DynamicWitnessSet),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn generic_conditional_dynamic_witness_set_selects_one_atomic_fallback() {
+    let LoweringOutcome::Unsupported(report) = lower_run(
+        r"module dynamic_conditional_witness
+
+dyn concept Truth { method truth(self) Bool }
+record Atom { value Bool }
+record Wrapped[T] { value T }
+
+impl Truth for Atom {
+    method truth(self) Bool { self.value }
+}
+
+impl[T: Truth] Truth for Wrapped[T] {
+    method truth(self) Bool { self.value.truth() }
+}
+
+fn erase(value Wrapped[Atom]) dyn Truth { value }
+
+pub fn main() Unit {
+    discard erase(Wrapped { value = Atom { value = true } }).truth()
+    Unit
+}
+",
+    ) else {
+        panic!("a generic prerequisite-dependent dynamic catalog must fail closed")
     };
     assert!(
         report

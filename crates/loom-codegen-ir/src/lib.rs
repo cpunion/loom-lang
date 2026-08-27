@@ -74,8 +74,8 @@ pub use managed_roots::{
     ManagedRootSlot, ManagedSafepoint, plan_managed_roots,
 };
 pub use repr::{
-    ProductRepr, Repr, RepresentationPlan, ScalarRepr, SumRepr, SumTagRepr, SumVariantRepr,
-    TargetLayout, TargetLayoutError, TypeRegistration, ValueType, ValueTypeKind,
+    DynamicRepr, ProductRepr, Repr, RepresentationPlan, ScalarRepr, SumRepr, SumTagRepr,
+    SumVariantRepr, TargetLayout, TargetLayoutError, TypeRegistration, ValueType, ValueTypeKind,
 };
 pub use source_graph::{
     GraphError, GraphErrorCode, ReachableSourceGraph, SourceRoots, analyze_source_reachability,

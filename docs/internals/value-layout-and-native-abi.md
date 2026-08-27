@@ -169,21 +169,31 @@ fold a witness into static code when that is unobservable. The semantic
 requirement is selected conformance and value behavior, not a permanently
 fixed two-word fat pointer.
 
-The first typed-LCIR dynamic slice takes the strongest closed-world form. When
-one exact concept-and-binding view has exactly one reachable closed nongeneric
-witness, the view is represented by its concrete value alone and every used
-requirement becomes a direct call. Mutable interface parameters reuse LCIR's
-typed inout result edges, so normal and fault exits write the updated logical
-value back without an owner pointer hidden in the dynamic representation.
-Copies remain ordinary concrete value copies. The same checked substitution is
-recursive: product fields and closed-sum payloads store the concrete value,
-while `List[dyn C]` uses the concrete element stride, alignment, and exact
-managed-pointer offsets in its typed repeated descriptor. Construction,
-forwarding, field extraction, sum matching, List reads, and mutable copies add
-no view wrapper. Raw concrete and erased values share one canonical physical
-type. Missing, competing, or open witness sets do not receive a runtime tag
-layout yet; they select structured unsupported classification for the whole
-artifact.
+Typed LCIR first tries the strongest closed-world form. When one exact
+concept-and-binding view has exactly one reachable closed nongeneric witness,
+the view is represented by its concrete value alone and every used requirement
+becomes a direct call. Products, sums, and `List[dyn C]` use the concrete
+layout recursively, so raw and erased values share one canonical physical
+type.
+
+When the artifact instead proves a finite set of two or more such witnesses,
+the view has a compiler-private single-managed-pointer representation. Each
+candidate is allocated in its own exact box layout: an ordinal tag followed by
+that candidate's concrete payload. Candidate order is deterministic checked
+artifact data, not runtime type identity. Each allocation uses a distinct
+precise fixed-object GC descriptor, and dispatch switches on the finite tag
+before making an ordinary direct typed call. A record, sum, or List stores only
+that pointer; no witness pointer, fat pointer, universal value, or runtime
+registry is present.
+
+Readonly copies may share an immutable published box because object identity
+and address are not observable. A `mut self` dispatch calls the concrete method
+through its ordinary inout ABI, then allocates and writes back a fresh exact box
+on both normal and fault exits. The old box is never modified, so independently
+copied dynamic values retain logical value semantics across moving collection.
+Missing witnesses and open, generic, prerequisite-dependent, or otherwise
+incomplete sets still select structured unsupported classification for the
+whole artifact.
 
 Loom does not support runtime conversion from an untyped universal value to
 `dyn C` by searching every conformance. This keeps witness reachability

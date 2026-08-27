@@ -252,3 +252,24 @@ before the concrete obligation could be lost.
 
 Programs can observe only the value, dispatch, mutation, and fault behavior of
 `dyn C` described above. Its representation has no source-level identity.
+
+## Current compiler representation
+
+The native compiler closes each dynamic view over witnesses reachable from the
+artifact being built. A single exact closed nongeneric witness is erased to
+its concrete value and all calls are direct. A finite set of two or more exact
+closed nongeneric witnesses uses one managed pointer to a compiler-private
+candidate box. The box has a private ordinal tag and that candidate's exact
+payload; dispatch is a finite switch to direct methods. Records, enums, tuples,
+and Lists store that one pointer.
+
+Readonly copies may share the immutable box. A mutable call never changes a
+published box in place: it receives the concrete method writeback, creates a
+fresh box, and updates only the selected `var` place. This preserves the value
+copy rule above even when the collector moves objects.
+
+This representation is not a stable cross-artifact ABI. It contains no witness
+pointer, universal value, runtime conformance registry, or source-visible type
+tag. Missing witnesses and open, generic, prerequisite-dependent, or otherwise
+incomplete candidate sets currently fail closed for typed LCIR and may select
+the complete legacy native route; the compiler never guesses a finite catalog.

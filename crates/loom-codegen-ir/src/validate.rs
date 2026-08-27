@@ -704,13 +704,19 @@ impl<'a> Validator<'a> {
                                 })
                             })
                         }
+                        Type::View { .. } => representations
+                            .dynamic(
+                                ValueTypeId::from_index(self.program.brand, index)
+                                    .unwrap_or_else(|| unreachable!("validated table index fits")),
+                            )
+                            .is_some(),
                         _ => false,
                     };
                     if !valid_semantic || representations.target().pointer_bits() != 64 {
                         self.error(
                             ValidationCode::RepresentationPlan,
                             format!("representations.type[{index}].managed_pointer"),
-                            "managed pointers must be direct Text, concrete closed List, or compiler-private closed TextMap values on a 64-bit target",
+                            "managed pointers must be direct Text, concrete closed List, compiler-private closed TextMap, or cataloged closed dynamic View values on a 64-bit target",
                         );
                     }
                 }
@@ -749,6 +755,57 @@ impl<'a> Validator<'a> {
                             "Text, List, Task, and managed TextMap values must use their canonical pointer representations",
                         );
                     }
+                }
+            }
+        }
+
+        let mut dynamic_views = BTreeSet::new();
+        for (index, dynamic) in representations.dynamics().iter().enumerate() {
+            let valid_view = representations
+                .value_type(dynamic.view())
+                .is_some_and(|view| {
+                    matches!(view.semantic(), Type::View { .. })
+                        && view.kind() == ValueTypeKind::Direct
+                        && matches!(
+                            representations.repr(view.repr()),
+                            Some(Repr::ManagedPointer)
+                        )
+                        && representations.type_id(view.semantic()) == Some(dynamic.view())
+                });
+            if !valid_view || !dynamic_views.insert(dynamic.view()) {
+                self.error(
+                    ValidationCode::RepresentationPlan,
+                    format!("representations.dynamic[{index}].view"),
+                    "dynamic catalog must name one unique canonical direct managed View",
+                );
+            }
+            if dynamic.candidates().len() < 2 {
+                self.error(
+                    ValidationCode::RepresentationPlan,
+                    format!("representations.dynamic[{index}].candidates"),
+                    "dynamic catalog requires at least two concrete candidates",
+                );
+            }
+            let mut candidates = BTreeSet::new();
+            for (candidate_index, candidate) in dynamic.candidates().iter().copied().enumerate() {
+                let valid = candidates.insert(candidate)
+                    && representations
+                        .value_type(candidate)
+                        .is_some_and(|candidate_type| {
+                            candidate_type.semantic() != &Type::Never
+                                && !matches!(
+                                    representations.repr(candidate_type.repr()),
+                                    Some(Repr::Uninhabited)
+                                )
+                                && representation_pointer_kinds(&representations, candidate)
+                                    .is_some_and(|(immortal, _)| !immortal)
+                        });
+                if !valid {
+                    self.error(
+                        ValidationCode::RepresentationPlan,
+                        format!("representations.dynamic[{index}].candidate[{candidate_index}]"),
+                        "dynamic candidate must be distinct, inhabited, registered, and contain no immortal-only pointer leaf",
+                    );
                 }
             }
         }
@@ -1384,11 +1441,15 @@ impl<'a> Validator<'a> {
                 );
                 continue;
             };
-            if self.product_fields(ty).is_none() {
+            if self.product_fields(ty).is_none()
+                && self.program.representations.dynamic(ty).is_none()
+            {
                 self.error(
                     ValidationCode::InOutShape,
                     format!("{base}.signature.inout[{writeback_index}]"),
-                    format!("inout parameter {parameter} must use a direct product value type"),
+                    format!(
+                        "inout parameter {parameter} must use a direct product or closed dynamic value type"
+                    ),
                 );
             }
         }
@@ -2404,6 +2465,42 @@ impl<'a> Validator<'a> {
                     );
                 }
             }
+            InstructionKind::DynConstruct { variant, value } => {
+                self.require_results(function, instruction, &[None], &path);
+                let result_type = instruction
+                    .results
+                    .first()
+                    .and_then(|result| function.value(*result))
+                    .map(|result| result.ty);
+                let candidates = result_type
+                    .and_then(|ty| self.program.representations.dynamic(ty))
+                    .map(crate::DynamicRepr::candidates);
+                if result_type.is_some() && candidates.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.result[0]"),
+                        "dynamic construction result must use a cataloged managed View representation",
+                    );
+                }
+                let expected = usize::try_from(*variant)
+                    .ok()
+                    .and_then(|index| candidates.and_then(|values| values.get(index)))
+                    .copied();
+                if candidates.is_some() && expected.is_none() {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        format!("{path}.variant"),
+                        format!("dynamic candidate index {variant} is out of range"),
+                    );
+                }
+                self.require_known_value_type(
+                    function,
+                    *value,
+                    expected,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.value"),
+                );
+            }
             InstructionKind::ListConstruct { elements } => {
                 self.require_results(function, instruction, &[None], &path);
                 let result_type = instruction
@@ -3016,6 +3113,66 @@ impl<'a> Validator<'a> {
                         index,
                         &format!("{path}.case[{index}]"),
                     );
+                }
+            }
+            TerminatorKind::DynSwitch { scrutinee, cases } => {
+                let scrutinee_type = function.value(*scrutinee).map(|value| value.ty);
+                let candidates = scrutinee_type
+                    .and_then(|ty| self.program.representations.dynamic(ty))
+                    .map(crate::DynamicRepr::candidates);
+                if scrutinee_type.is_some() && candidates.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.scrutinee"),
+                        "dynamic switch scrutinee must use a cataloged managed View representation",
+                    );
+                }
+                let Some(candidates) = candidates else {
+                    return;
+                };
+                if cases.len() != candidates.len() {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        format!("{path}.cases"),
+                        format!(
+                            "dynamic switch has {} case(s), catalog requires {}",
+                            cases.len(),
+                            candidates.len()
+                        ),
+                    );
+                }
+                for (index, (case, candidate)) in
+                    cases.iter().zip(candidates.iter().copied()).enumerate()
+                {
+                    if usize::try_from(case.variant).ok() != Some(index) {
+                        self.error(
+                            ValidationCode::InstructionShape,
+                            format!("{path}.case[{index}].variant"),
+                            format!(
+                                "dynamic switch cases must be ordered 0..n, found variant {}",
+                                case.variant
+                            ),
+                        );
+                    }
+                    self.validate_forwarded_target_shape(
+                        function,
+                        case.block,
+                        &case.arguments,
+                        1,
+                        format!("{path}.case[{index}]"),
+                    );
+                    if let Some(parameter) = function
+                        .block(case.block)
+                        .and_then(|block| block.params().first())
+                    {
+                        self.require_value_type(
+                            function,
+                            *parameter,
+                            candidate,
+                            ValidationCode::BlockArgument,
+                            format!("{path}.case[{index}].payload[0]"),
+                        );
+                    }
                 }
             }
             TerminatorKind::Return(value) => {
@@ -4394,7 +4551,8 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                 ) || matches!(
                     instruction.kind(),
                     InstructionKind::ListConstruct { elements } if !elements.is_empty()
-                ) {
+                ) || matches!(instruction.kind(), InstructionKind::DynConstruct { .. })
+                {
                     effects[caller] = effects[caller].union(Effects::MAY_COLLECT);
                 }
                 if let InstructionKind::TaskCreate { .. } = instruction.kind() {
@@ -4449,6 +4607,7 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                 | TerminatorKind::Jump(_)
                 | TerminatorKind::Branch { .. }
                 | TerminatorKind::SumSwitch { .. }
+                | TerminatorKind::DynSwitch { .. }
                 | TerminatorKind::Return(_)
                 // Propagation cannot seed the least effect fixed point.
                 | TerminatorKind::ResumeFault => {}
@@ -4834,7 +4993,7 @@ fn forwarded_list_edges(kind: &TerminatorKind) -> Vec<(BlockId, &[ValueId])> {
             (then_target.block, &then_target.arguments),
             (else_target.block, &else_target.arguments),
         ],
-        TerminatorKind::SumSwitch { cases, .. } => cases
+        TerminatorKind::SumSwitch { cases, .. } | TerminatorKind::DynSwitch { cases, .. } => cases
             .iter()
             .map(|case| (case.block, case.arguments.as_ref()))
             .collect(),

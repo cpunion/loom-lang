@@ -52,7 +52,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 20")?;
+    writeln!(output, "lcir 21")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -82,6 +82,16 @@ pub fn write_program_with_options(
         write!(output, "registration k{index} = ")?;
         write_type_identity(output, registration.semantic())?;
         writeln!(output, " => {}", registration.value_type())?;
+    }
+    for (index, dynamic) in representations.dynamics().iter().enumerate() {
+        write!(output, "dynamic d{index} = {} candidates=[", dynamic.view())?;
+        for (candidate_index, candidate) in dynamic.candidates().iter().enumerate() {
+            if candidate_index != 0 {
+                write!(output, ", ")?;
+            }
+            write!(output, "{candidate}")?;
+        }
+        writeln!(output, "]")?;
     }
 
     for instance in program.instances().entries() {
@@ -293,6 +303,9 @@ fn write_instruction(
             write_arguments(output, payload)?;
             write!(output, ")")
         }
+        InstructionKind::DynConstruct { variant, value } => {
+            write!(output, "dyn.construct variant {variant} %{value}")
+        }
         InstructionKind::ListConstruct { elements } => {
             write!(output, "list.construct (")?;
             write_arguments(output, elements)?;
@@ -443,6 +456,26 @@ fn write_terminator(
                 }
                 if payload_count != 0 && !case.arguments.is_empty() {
                     write!(output, "; ")?;
+                }
+                write_arguments(output, &case.arguments)?;
+                write!(output, ")")?;
+            }
+            Ok(())
+        }
+        TerminatorKind::DynSwitch { scrutinee, cases } => {
+            write!(output, "dyn.switch %{scrutinee}")?;
+            let candidates = program
+                .function(scrutinee.owner())
+                .and_then(|function| function.value(*scrutinee))
+                .and_then(|value| program.representations().dynamic(value.ty()))
+                .map(crate::DynamicRepr::candidates);
+            for (index, case) in cases.iter().enumerate() {
+                write!(output, ", case {} => {}(", case.variant, case.block)?;
+                if candidates.and_then(|values| values.get(index)).is_some() {
+                    write!(output, "<payload>")?;
+                    if !case.arguments.is_empty() {
+                        write!(output, ", ")?;
+                    }
                 }
                 write_arguments(output, &case.arguments)?;
                 write!(output, ")")?;

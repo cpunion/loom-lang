@@ -1320,17 +1320,17 @@ fn scan_expr(
                     return Ok(false);
                 }
             }
-            let key = match target {
-                CallTarget::Direct(callee) | CallTarget::Inherent(callee) => Some(
+            let keys = match target {
+                CallTarget::Direct(callee) | CallTarget::Inherent(callee) => vec![
                     substitution
                         .call_key(*callee, type_arguments, witnesses)
                         .map_err(|error| instantiation_issue(function, expression, path, error))?,
-                ),
+                ],
                 CallTarget::StaticConcept {
                     requirement,
                     witness,
                     dispatch_type,
-                } => Some(
+                } => vec![
                     substitution
                         .static_call_key(
                             *requirement,
@@ -1340,7 +1340,7 @@ fn scan_expr(
                             witnesses,
                         )
                         .map_err(|error| instantiation_issue(function, expression, path, error))?,
-                ),
+                ],
                 CallTarget::Dynamic { requirement } => {
                     let receiver_ty = arguments
                         .first()
@@ -1348,24 +1348,48 @@ fn scan_expr(
                         .transpose()
                         .map_err(|error| instantiation_issue(function, expression, path, error))?
                         .flatten();
-                    receiver_ty
-                        .as_ref()
-                        .and_then(|receiver_ty| calls.dyn_concepts.choice(receiver_ty))
-                        .map(|choice| {
-                            substitution.static_call_key(
-                                *requirement,
-                                &WitnessRef::Concrete(choice.witness()),
-                                choice.concrete(),
-                                &[],
-                                &[],
-                            )
-                        })
-                        .transpose()
-                        .map_err(|error| instantiation_issue(function, expression, path, error))?
+                    let Some(receiver_ty) = receiver_ty.as_ref() else {
+                        return Ok(expression.ty != Type::Never);
+                    };
+                    if let Some(choice) = calls.dyn_concepts.choice(receiver_ty) {
+                        vec![
+                            substitution
+                                .static_call_key(
+                                    *requirement,
+                                    &WitnessRef::Concrete(choice.witness()),
+                                    choice.concrete(),
+                                    &[],
+                                    &[],
+                                )
+                                .map_err(|error| {
+                                    instantiation_issue(function, expression, path, error)
+                                })?,
+                        ]
+                    } else if let Some(finite) = calls.dyn_concepts.finite(receiver_ty) {
+                        finite
+                            .candidates()
+                            .iter()
+                            .map(|candidate| {
+                                substitution
+                                    .static_call_key(
+                                        *requirement,
+                                        &WitnessRef::Concrete(candidate.witness()),
+                                        candidate.concrete(),
+                                        &[],
+                                        &[],
+                                    )
+                                    .map_err(|error| {
+                                        instantiation_issue(function, expression, path, error)
+                                    })
+                            })
+                            .collect::<Result<Vec<_>, _>>()?
+                    } else {
+                        Vec::new()
+                    }
                 }
-                CallTarget::Builtin(_) => None,
+                CallTarget::Builtin(_) => Vec::new(),
             };
-            if let Some(key) = key {
+            for key in keys {
                 calls.reserve(function, expression, path)?;
                 calls.calls.push(CallSite {
                     key,
