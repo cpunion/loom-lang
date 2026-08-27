@@ -102,8 +102,7 @@ jobs:
         with:
           path: |
             ${{ runner.temp }}/clang+llvm-19.1.7-x86_64-pc-windows-msvc.tar.xz
-            ${{ runner.temp }}/libxml2-v2.9.12.tar.gz
-          key: windows-llvm-19.1.7-b4557b4f012161f5-libxml-2.9.12-98bfa7a9a5e2a756
+          key: windows-llvm-c-19.1.7-b4557b4f012161f5
       - name: Verify and unpack LLVM 19 on Windows
         if: runner.os == 'Windows'
         shell: pwsh
@@ -234,6 +233,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path $staging | Out-Null
           Copy-Item -LiteralPath target/release/loomc.exe -Destination $staging
           Copy-Item -LiteralPath target/release/loom-lsp.exe -Destination $staging
+          Copy-Item -LiteralPath (Join-Path $env:LLVM_PATH "bin\LLVM-C.dll") -Destination $staging
+          Copy-Item -LiteralPath (Join-Path $env:LLVM_PATH "LICENSE.TXT") -Destination (Join-Path $staging "LLVM-LICENSE.txt")
           foreach ($document in @(
             "README.md", "LICENSE", "CHANGELOG.md", "ROADMAP.md",
             "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "SECURITY.md",
@@ -244,6 +245,8 @@ jobs:
           Copy-Item -LiteralPath docs -Destination (Join-Path $staging "docs") -Recurse
           Copy-Item -LiteralPath $env:LOOM_RUNTIME_BUNDLE -Destination (Join-Path $staging "runtime") -Recurse
           Remove-Item Env:LOOM_RUNTIME_BUNDLE
+          $llvmBin = Join-Path $env:LLVM_PATH "bin"
+          $env:PATH = (($env:PATH -split ';') | Where-Object { $_ -ne $llvmBin }) -join ';'
           & "$staging/loomc.exe" --no-cache build --output target/release-bundle-smoke examples/core01
           if ($LASTEXITCODE -ne 0) {
             throw "the staged Windows compiler could not discover its adjacent runtime bundle"

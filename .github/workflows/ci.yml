@@ -262,8 +262,7 @@ jobs:
         with:
           path: |
             ${{ runner.temp }}/clang+llvm-19.1.7-x86_64-pc-windows-msvc.tar.xz
-            ${{ runner.temp }}/libxml2-v2.9.12.tar.gz
-          key: windows-llvm-19.1.7-b4557b4f012161f5-libxml-2.9.12-98bfa7a9a5e2a756
+          key: windows-llvm-c-19.1.7-b4557b4f012161f5
       - name: Verify and unpack LLVM development toolchain
         shell: pwsh
         run: |
@@ -293,6 +292,25 @@ jobs:
             --output "$runtime_bundle"
           export LOOM_RUNTIME_BUNDLE="$runtime_bundle"
           echo "LOOM_RUNTIME_BUNDLE=$LOOM_RUNTIME_BUNDLE" >> "$GITHUB_ENV"
+      - name: Verify the staged Windows LLVM-C dependency
+        shell: pwsh
+        run: |
+          $compiler = Join-Path $PWD "target\debug\loomc.exe"
+          $imports = & (Join-Path $env:LLVM_PATH "bin\llvm-readobj.exe") --coff-imports $compiler
+          $importsText = $imports -join "`n"
+          if ($LASTEXITCODE -ne 0 -or $importsText -notmatch "Name: LLVM-C.dll") {
+            throw "loomc.exe does not import the pinned LLVM-C.dll"
+          }
+          $staging = Join-Path $env:RUNNER_TEMP "loom-llvm-c-smoke-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+          Copy-Item -LiteralPath $compiler -Destination $staging
+          Copy-Item -LiteralPath (Join-Path $env:LLVM_PATH "bin\LLVM-C.dll") -Destination $staging
+          $llvmBin = Join-Path $env:LLVM_PATH "bin"
+          $env:PATH = (($env:PATH -split ';') | Where-Object { $_ -ne $llvmBin }) -join ';'
+          & (Join-Path $staging "loomc.exe") --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "the staged compiler could not load its adjacent LLVM-C.dll"
+          }
       - name: Trace Windows LLVM C API and target-machine construction
         shell: bash
         env:

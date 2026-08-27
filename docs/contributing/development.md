@@ -46,14 +46,13 @@ or release evidence.
 
 Both Windows CI and release jobs use
 `.github/scripts/bootstrap-windows-llvm.ps1`. The pinned LLVM 19.1.7 Windows
-development archive advertises
-`libxml2s.lib` in its static system-library closure but does not contain that
-archive. The Windows job therefore builds libxml2 2.9.12 from its
-SHA-256-pinned source using the options in LLVM's 19.1.7 release script and
-places the resulting static library beside LLVM's component libraries. Loom's
-object-build fingerprint includes both `llvm-config --system-libs` and every
-reported dependency supplied by the LLVM prefix, so changing this companion
-library invalidates native object-cache entries.
+development archive contains `LLVM-C.dll` and its `LLVM-C.lib` import library.
+MSVC builds use that supported C ABI rather than LLVM's static component
+closure. This keeps LLVM's C++ and C-runtime implementation behind one DLL
+boundary and removes the archive's omitted static `libxml2s.lib` dependency.
+The bootstrap verifies both DLL files, and Loom's object-build fingerprint
+includes their exact bytes, so replacing either one invalidates native object
+cache entries.
 
 Loom also compiles target initialization from the exact
 `llvm-config --targets-built` set. A complete LLVM installation keeps the
@@ -67,10 +66,9 @@ by Loom's supported hosts and cross-object tests. This prevents an otherwise
 valid host compiler from acquiring unresolved symbols for omitted cross
 targets, and it keeps unrelated packaged backends out of native emission.
 
-The statically linked LLVM 19 MSVC distribution is not asked to discover host
-CPU strings. Windows host codegen uses the generic x86-64 baseline with no
-extra features, which is also the required runtime-archive policy. Linux and
-macOS retain native host tuning.
+The LLVM 19 MSVC C ABI is not asked to discover host CPU strings. Windows host
+codegen uses the generic x86-64 baseline with no extra features, which is also
+the required runtime-archive policy. Linux and macOS retain native host tuning.
 
 Windows `runtime pack` also avoids creating an LLVM target machine solely to
 recover the compiler's immutable host identity. The x86-64 MSVC target triple
@@ -80,9 +78,9 @@ cross-target regression test checking the layout against the pinned LLVM.
 The Windows native gate executes target-machine construction and the first
 LCIR object emission as separate single-test processes before the workspace
 suite. `LOOM_LLVM_TRACE_STAGES=1` prints only compiler-owned LLVM boundary
-names, never source text, paths, environment values, or host details. This
-keeps access violations inside a statically linked LLVM library attributable
-to one target, module, optimization, or object-writer boundary.
+names, never source text, paths, environment values, or host details. The
+preceding linkage probes independently cover version reporting, LLVM-owned
+messages, target-triple normalization, and target-machine construction.
 
 ## First build
 

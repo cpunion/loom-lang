@@ -107,15 +107,56 @@ fn emit_object_build_fingerprint() {
     );
 }
 
+fn target_uses_msvc_llvm_c() -> bool {
+    env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
+}
+
+fn declared_llvm_paths() -> (PathBuf, PathBuf) {
+    if target_uses_msvc_llvm_c() {
+        const PREFIX: &str = "LLVM_SYS_191_PREFIX";
+        println!("cargo:rerun-if-env-changed={PREFIX}");
+        let prefix = PathBuf::from(
+            env::var_os(PREFIX).expect("MSVC LLVM-C linking requires an exact LLVM_SYS_191_PREFIX"),
+        );
+        assert!(
+            prefix.is_absolute(),
+            "MSVC LLVM_SYS_191_PREFIX must be absolute: {}",
+            prefix.display()
+        );
+        return (
+            prefix.join("lib"),
+            prefix.join("bin").join("llvm-config.exe"),
+        );
+    }
+
+    (
+        PathBuf::from(
+            env::var_os("DEP_LLVM_19_LIBDIR")
+                .expect("direct llvm-sys dependency must provide DEP_LLVM_19_LIBDIR"),
+        ),
+        PathBuf::from(
+            env::var_os("DEP_LLVM_19_CONFIG_PATH")
+                .expect("direct llvm-sys dependency must provide DEP_LLVM_19_CONFIG_PATH"),
+        ),
+    )
+}
+
+fn add_msvc_llvm_c_identity(identity: &mut BuildFingerprint, libdir: &Path) {
+    let prefix = libdir
+        .parent()
+        .expect("LLVM libdir must have an installation prefix");
+    let import_library = libdir.join("LLVM-C.lib");
+    let runtime_library = prefix.join("bin").join("LLVM-C.dll");
+    println!("cargo:rustc-link-search=native={}", libdir.display());
+    println!("cargo:rustc-link-lib=dylib=LLVM-C");
+    identity.field("llvm-link-mode", b"windows-llvm-c-dylib");
+    identity.field("llvm-libnames", b"LLVM-C.lib LLVM-C.dll");
+    add_external_file(identity, "llvm-c-import-library", &import_library);
+    add_external_file(identity, "llvm-c-runtime-library", &runtime_library);
+}
+
 fn add_llvm_toolchain_identity(identity: &mut BuildFingerprint) {
-    let declared_libdir = PathBuf::from(
-        env::var_os("DEP_LLVM_19_LIBDIR")
-            .expect("direct llvm-sys dependency must provide DEP_LLVM_19_LIBDIR"),
-    );
-    let declared_config = PathBuf::from(
-        env::var_os("DEP_LLVM_19_CONFIG_PATH")
-            .expect("direct llvm-sys dependency must provide DEP_LLVM_19_CONFIG_PATH"),
-    );
+    let (declared_libdir, declared_config) = declared_llvm_paths();
     let config = if declared_config.is_absolute() {
         declared_config
     } else if declared_config.components().count() == 1 {
@@ -160,8 +201,13 @@ fn add_llvm_toolchain_identity(identity: &mut BuildFingerprint) {
     });
     assert_eq!(
         declared_libdir, reported_libdir,
-        "llvm-sys metadata and its exact llvm-config disagree on libdir"
+        "the declared LLVM prefix and its exact llvm-config disagree on libdir"
     );
+
+    if target_uses_msvc_llvm_c() {
+        add_msvc_llvm_c_identity(identity, &declared_libdir);
+        return;
+    }
 
     let (link_mode, names_output) = select_llvm_link_mode(&config);
     identity.field("llvm-link-mode", link_mode.as_bytes());
@@ -237,13 +283,9 @@ fn llvm_config(config: &Path, option: &str) -> Vec<u8> {
 }
 
 fn select_llvm_link_mode(config: &Path) -> (&'static str, Vec<u8>) {
-    let modes: &[&str] = if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
-        &["--link-static"]
-    } else {
-        &["--link-shared", "--link-static"]
-    };
+    let modes = ["--link-shared", "--link-static"];
     let mut failures = Vec::new();
-    for &mode in modes {
+    for mode in modes {
         match try_llvm_config(config, &["--libnames", mode]) {
             Ok(output) => return (mode, output),
             Err(error) => failures.push(error),

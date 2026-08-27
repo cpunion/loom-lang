@@ -7,17 +7,36 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-inkwell.workspace = true
 loom-codegen-ir.workspace = true
 loom-core.workspace = true
 loom-mir.workspace = true
 loom-runtime-abi.workspace = true
-llvm-sys.workspace = true
 same-file.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
+
+[target.'cfg(target_env = "msvc")'.dependencies]
+# The official LLVM Windows archive is built as static component libraries but
+# also ships its supported C ABI as LLVM-C.dll. Rust uses the DLL import
+# library to avoid mixing LLVM's static MSVC runtime closure into loomc.
+inkwell = { workspace = true, features = [
+    "llvm19-1-no-llvm-linking",
+    "target-aarch64",
+    "target-arm",
+    "target-x86",
+] }
+llvm-sys = { workspace = true, features = ["no-llvm-linking"] }
+
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+inkwell = { workspace = true, features = [
+    "llvm19-1-prefer-dynamic",
+    "target-aarch64",
+    "target-arm",
+    "target-x86",
+] }
+llvm-sys = { workspace = true, features = ["prefer-dynamic"] }
 
 [build-dependencies]
 sha2.workspace = true

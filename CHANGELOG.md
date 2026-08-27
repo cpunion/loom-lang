@@ -29,7 +29,7 @@ artifact, or runtime compatibility.
 ### Changed
 
 - Windows host codegen now uses LLVM's deterministic generic x86-64 policy
-  instead of entering the statically linked LLVM 19 host-feature probe. This
+  instead of entering LLVM 19's host-feature probe. This
   also aligns compiler and runtime-bundle CPU policy during `runtime pack`.
 - Windows x86-64 `runtime pack` now obtains its canonical compiler-target
   identity without constructing an otherwise unused LLVM target machine; the
@@ -41,6 +41,11 @@ artifact, or runtime compatibility.
 - The Windows native gate now isolates target-machine construction from first
   object emission and emits bounded, non-sensitive LLVM stage markers, so a
   process-level LLVM failure identifies its exact compiler boundary.
+- Windows compiler binaries now link the official LLVM 19 `LLVM-C.dll`
+  import library instead of LLVM's static MSVC component closure. This removes
+  the private static `libxml2s.lib` rebuild, keeps LLVM allocation and target
+  APIs behind one runtime boundary, and packages the required DLL beside the
+  release compiler.
 - Native `build`, `run`, `test`, and `debug` no longer obtain a runtime archive
   from the compiler build. Source builds must create a portable runtime archive
   and pack it beside `loomc`, or select a validated bundle explicitly.

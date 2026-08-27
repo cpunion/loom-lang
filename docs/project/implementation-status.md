@@ -21,11 +21,11 @@ loops on both backends. Native builds additionally require the expected `.exe`
 and `.pdb` outputs, parse the PDB, and inspect a compiler-emitted COFF object for
 CodeView sections before executing the artifact. The release job reuses the
 same pinned LLVM bootstrap and is configured to stage `loomc.exe`,
-`loom-lsp.exe`, and `loom_runtime.lib`, execute Core, C3, standard-library, and
-adjacent-runtime gates, and hash a `.zip`. These configurations become Windows
-toolchain and archive claims only after successful Windows runner evidence;
-source-level cross-checks on another host are not described as Windows
-execution.
+`loom-lsp.exe`, the compiler's `LLVM-C.dll`, and `loom_runtime.lib`, execute
+Core, C3, standard-library, and adjacent-runtime gates, and hash a `.zip`.
+These configurations become Windows toolchain and archive claims only after
+successful Windows runner evidence; source-level cross-checks on another host
+are not described as Windows execution.
 
 Linux, macOS, and the configured Windows job build the complete Cargo workspace
 with Rust 1.88 and LLVM 19 and execute native/runtime integration gates. Linux

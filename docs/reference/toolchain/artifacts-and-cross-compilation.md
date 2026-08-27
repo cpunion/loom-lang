@@ -138,8 +138,10 @@ a `.zip` rather than a `.tar.gz`. That entry is not yet runner-verified release
 evidence and must not be treated as current artifact availability.
 
 Each archive includes `loomc`, `loom-lsp`, the project README, and a matching
-runtime bundle. It is accompanied by a SHA-256 file, and tagged releases also
-publish an aggregate `SHA256SUMS`.
+runtime bundle. The Windows archive additionally carries the pinned
+`LLVM-C.dll` required by its compiler binaries and its LLVM license. Every
+archive is accompanied by a SHA-256 file, and tagged releases also publish an
+aggregate `SHA256SUMS`.
 
 Windows is not yet a verified release-artifact platform. A configured workflow
 entry, or LLVM recognizing a Windows triple, must not be represented as a
