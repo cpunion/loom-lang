@@ -202,6 +202,12 @@ representation precise and tagless. This additive boundary is
 `typed-repeated-v1`; it advances the collector identity to `gc-v9` and the
 native runtime component to 13 with `runtime-v7`.
 
+The additive `loom_runtime_text_get_typed_v1` helper returns found, missing,
+or invalid status and publishes a newly allocated one-scalar direct Text only
+for found indices. It copies the scalar before collection, so source relocation
+cannot invalidate the read. This advances Text identity to `text-v3` and the
+native runtime component to 14 with `runtime-v8`; GC remains `gc-v9`.
+
 Witness descriptors emitted by the compiler are immutable process-lifetime
 constants. Dynamically assembled witness instances live in a non-moving proof
 arena because generated hidden arguments can retain their address across a

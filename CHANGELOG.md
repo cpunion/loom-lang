@@ -31,6 +31,11 @@ artifact, or runtime compatibility.
   managed cells. This advances the collector identity to `gc-v9` and native
   runtime ABI to component 13 with `runtime-v7` while retaining the fixed
   `typed-gc-v1` wire.
+- A typed `Text.get` runtime boundary which stages one Unicode scalar before
+  its allocation safepoint, returns missing indices without allocating, and
+  publishes a direct managed Text pointer without a universal `Value`. This
+  advances Text identity to `text-v3` and native runtime ABI to component 14
+  with `runtime-v8`; the collector remains `gc-v9`.
 
 ### Changed
 

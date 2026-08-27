@@ -274,6 +274,10 @@ value and typed product/sum path. Publication conjoins every enclosing tag,
 writes null for inactive variants, and reload reconstructs only the active
 payload from target-layout byte offsets. This reuses typed-shadow-stack v1 and
 does not change native runtime component 13, `runtime-v7`, or `gc-v9`.
+Typed scalar selection then adds `loom_runtime_text_get_typed_v1`, advancing
+Text to `text-v3` and the native component to 14 with `runtime-v8` while
+leaving `gc-v9` unchanged. LCIR consumption lands with managed-sum `Option`
+lowering.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered

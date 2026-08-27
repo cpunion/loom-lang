@@ -4,7 +4,7 @@
 //! values crossing the runtime boundary are defined here once and consumed by
 //! both generated-code declarations and the Rust runtime implementation.
 
-pub const RUNTIME_ABI_VERSION: u32 = 13;
+pub const RUNTIME_ABI_VERSION: u32 = 14;
 pub const COROUTINE_ABI_VERSION: u32 = 2;
 pub const TYPED_TASK_ABI_VERSION: u32 = 1;
 pub const WAIT_ABI_VERSION: u32 = 1;
@@ -15,7 +15,7 @@ pub const TYPED_GC_ABI_VERSION: u32 = 1;
 pub const TYPED_GC_REPEATED_ABI_VERSION: u32 = 1;
 pub const TYPED_SHADOW_STACK_ABI_VERSION: u32 = 1;
 pub const WITNESS_ABI_VERSION: u32 = 1;
-pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v2/wait-v1/task-v2/typed-task-v1/typed-resource-v1/runtime-v7/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4";
+pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-resource-v1/runtime-v8/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4";
 
 pub const GC_OK: i32 = 0;
 pub const GC_INVALID_ARGUMENT: i32 = 1;
@@ -58,6 +58,11 @@ pub const TYPED_GC_ROOT_POP_SYMBOL: &str = "loom_gc_typed_root_pop_v1";
 /// Stages two complete Text payloads before its typed allocation safepoint and
 /// publishes the initialized managed leaf through its output cell.
 pub const TEXT_CONCAT_TYPED_SYMBOL: &str = "loom_runtime_text_concat_typed_v1";
+/// Reads one Unicode scalar and returns a freshly allocated direct Text.
+pub const TEXT_GET_TYPED_SYMBOL: &str = "loom_runtime_text_get_typed_v1";
+pub const TEXT_GET_TYPED_INVALID: i32 = -1;
+pub const TEXT_GET_TYPED_MISSING: i32 = 0;
+pub const TEXT_GET_TYPED_FOUND: i32 = 1;
 /// Direct File/Socket cleanup taking `(runtime, kind, inout handle)`.
 ///
 /// This compiler-private boundary never constructs a universal `Value`,
@@ -435,21 +440,22 @@ mod tests {
         LoomTypedCoroutineDescriptor, LoomTypedTaskFaultView, LoomWitnessDescriptor,
         LoomWitnessInstance, NATIVE_RUNTIME_ABI_IDENTITY, RUNTIME_ABI_VERSION,
         SHADOW_STACK_ABI_VERSION, STANDARD_LIBRARY_ABI_VERSION, TEXT_CONTAINS_SYMBOL,
-        TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_ALLOCATION_SIZE,
-        TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_LAYOUT,
-        TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION,
-        TYPED_GC_ALLOC_SYMBOL, TYPED_GC_REPEATED_ABI_VERSION, TYPED_GC_REPEATED_ALLOC_SYMBOL,
-        TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_RESOURCE_CLOSE_FAILED,
-        TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT, TYPED_RESOURCE_CLOSE_OK,
-        TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET,
-        TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION, TYPED_TASK_CLEANUP_FAULTED,
-        TYPED_TASK_INVALID_ARGUMENT, TYPED_TASK_MAX_FAULT_TEXT_BYTES, TYPED_TASK_NO_MEMORY,
-        TYPED_TASK_OK, TYPED_TASK_STATUS_INVALID, WITNESS_ABI_VERSION,
+        TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_INVALID, TEXT_GET_TYPED_MISSING,
+        TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT,
+        TEXT_OBJECT_FIELD_ALLOCATION_SIZE, TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES,
+        TEXT_OBJECT_FIELD_LAYOUT, TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE,
+        TYPED_GC_ABI_VERSION, TYPED_GC_ALLOC_SYMBOL, TYPED_GC_REPEATED_ABI_VERSION,
+        TYPED_GC_REPEATED_ALLOC_SYMBOL, TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL,
+        TYPED_RESOURCE_CLOSE_FAILED, TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT,
+        TYPED_RESOURCE_CLOSE_OK, TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE,
+        TYPED_RESOURCE_KIND_SOCKET, TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION,
+        TYPED_TASK_CLEANUP_FAULTED, TYPED_TASK_INVALID_ARGUMENT, TYPED_TASK_MAX_FAULT_TEXT_BYTES,
+        TYPED_TASK_NO_MEMORY, TYPED_TASK_OK, TYPED_TASK_STATUS_INVALID, WITNESS_ABI_VERSION,
     };
 
     #[test]
     fn native_runtime_identity_is_pinned() {
-        assert_eq!(RUNTIME_ABI_VERSION, 13);
+        assert_eq!(RUNTIME_ABI_VERSION, 14);
         assert_eq!(COROUTINE_ABI_VERSION, 2);
         assert_eq!(TYPED_TASK_ABI_VERSION, 1);
         assert_eq!(LAYOUT_ABI_VERSION, 1);
@@ -464,6 +470,10 @@ mod tests {
         );
         assert_eq!(TYPED_GC_ROOT_PUSH_SYMBOL, "loom_gc_typed_root_push_v1");
         assert_eq!(TYPED_GC_ROOT_POP_SYMBOL, "loom_gc_typed_root_pop_v1");
+        assert_eq!(TEXT_GET_TYPED_SYMBOL, "loom_runtime_text_get_typed_v1");
+        assert_eq!(TEXT_GET_TYPED_INVALID, -1);
+        assert_eq!(TEXT_GET_TYPED_MISSING, 0);
+        assert_eq!(TEXT_GET_TYPED_FOUND, 1);
         assert_eq!(
             TYPED_RESOURCE_CLOSE_SYMBOL,
             "loom_runtime_resource_close_typed_v1"
@@ -477,7 +487,7 @@ mod tests {
         assert_eq!(STANDARD_LIBRARY_ABI_VERSION, 4);
         assert_eq!(
             NATIVE_RUNTIME_ABI_IDENTITY,
-            "loom-value-v2/layout-v1/text-v2/wait-v1/task-v2/typed-task-v1/typed-resource-v1/runtime-v7/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4",
+            "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-resource-v1/runtime-v8/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4",
         );
     }
 

@@ -179,6 +179,12 @@ tracing. This changes the collector identity to `gc-v9` and advances the native
 runtime ABI component to 13 with `runtime-v7`. The fixed-offset
 `typed-gc-v1` symbols remain unchanged.
 
+The typed Text scalar-selection helper adds a direct pointer output and a
+three-value found/missing/invalid status boundary without using the universal
+envelope. It advances Text identity to `text-v3` and the native runtime ABI
+component to 14 with `runtime-v8`; `gc-v9` and both typed allocation wires are
+unchanged.
+
 ## Reproducibility and rollback
 
 Commit `loom.lock` for reproducible applications. Build with `--locked` and the
