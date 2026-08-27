@@ -156,8 +156,12 @@ pub async fn faultWritebackMain() Unit {
     Unit
 }
 
+async fn completesOnce() Unit {
+    Unit
+}
+
 async fn failsAfterSuspension() Unit {
-    Task.sleep(1).await
+    completesOnce().await
     assert false
     Unit
 }
@@ -171,13 +175,13 @@ async fn waitsAfterWriteback() Unit {
         assert cleaned == "ready cancellation"
         Unit
     }
-    Task.sleep(100).await
+    completesOnce().await
 }
 
 pub async fn cancellationAfterWritebackMain() Unit {
-    let waited, failed = Task.all(waitsAfterWriteback(), failsAfterSuspension()).await
-    discard waited
+    let failed, waited = Task.all(failsAfterSuspension(), waitsAfterWriteback()).await
     discard failed
+    discard waited
     Unit
 }
 
