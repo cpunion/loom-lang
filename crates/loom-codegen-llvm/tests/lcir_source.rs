@@ -466,6 +466,83 @@ pub fn main() Unit {
 }
 
 #[test]
+fn generic_instances_use_direct_host_and_msvc_target_abis() {
+    let source = include_str!("../../../fixtures/lcir-generics/main.loom");
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    for expected in [
+        "source=f0 types=[Bool] witnesses=[]",
+        "source=f0 types=[Float] witnesses=[]",
+        "source=f0 types=[Int] witnesses=[]",
+        "source=f1 types=[Int] witnesses=[Concrete#0]",
+    ] {
+        assert!(dump.contains(expected), "missing `{expected}`:\n{dump}");
+    }
+
+    let native = emit_and_run_lcir_with_options(
+        &artifact,
+        "source-generics",
+        NativeObjectOptions {
+            optimization: OptimizationProfile::Development,
+            ..NativeObjectOptions::default()
+        },
+    );
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert_eq!(native.output.stdout, b"Unit\n");
+    for signature in [
+        "define internal i1 @loom.lcir.fn.0(i1",
+        "define internal double @loom.lcir.fn.1(double",
+        "define internal i64 @loom.lcir.fn.2(i64",
+        "define internal i64 @loom.lcir.fn.3(i64",
+    ] {
+        assert!(
+            native.ir.contains(signature),
+            "missing `{signature}`:\n{}",
+            native.ir
+        );
+    }
+    assert_pure_surface(&native.ir);
+
+    let legacy = emit_and_run_legacy(&program, "main", "source-generics-legacy");
+    assert_eq!(legacy.status.success(), native.output.status.success());
+    assert_eq!(legacy.stdout, native.output.stdout);
+    assert_eq!(legacy.stderr, native.output.stderr);
+
+    let directory = tempfile::tempdir().expect("create MSVC generic output directory");
+    let object = directory.path().join("generic.obj");
+    let ir_path = directory.path().join("generic-msvc.ll");
+    emit_lcir_native_object(
+        &artifact,
+        &object,
+        &NativeObjectOptions {
+            optimization: OptimizationProfile::Development,
+            target_triple: Some("x86_64-pc-windows-msvc".to_owned()),
+            emit_ir: Some(ir_path.clone()),
+            ..NativeObjectOptions::default()
+        },
+    )
+    .expect("emit direct generic MSVC object");
+    assert!(object.is_file());
+    let msvc_ir = std::fs::read_to_string(ir_path).expect("read generic MSVC IR");
+    assert!(
+        msvc_ir.contains("target triple = \"x86_64-pc-windows-msvc\""),
+        "{msvc_ir}"
+    );
+    assert!(
+        msvc_ir.contains("define internal i64 @loom.lcir.fn.2(i64"),
+        "{msvc_ir}"
+    );
+    assert_pure_surface(&msvc_ir);
+}
+
+#[test]
 fn source_ranges_emit_proved_nsw_successors_without_fault_abi() {
     let source = r"module lcir_source_proved_ranges
 

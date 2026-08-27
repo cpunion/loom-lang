@@ -1,0 +1,21 @@
+module lcir_generics
+
+concept Marker {}
+impl Marker for Int {}
+
+fn identity[T](value T) T { value }
+
+fn preserve[T: Marker](value T) T { value }
+
+pub fn main() Unit {
+    discard identity(true)
+    discard identity(41)
+    discard identity(1.5)
+    discard preserve(7)
+    Unit
+}
+
+test fn identityInstance() Unit {
+    discard identity(9)
+    Unit
+}

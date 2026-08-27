@@ -745,6 +745,49 @@ fn ordinary_native_commands_use_the_atomic_automatic_route() {
 }
 
 #[test]
+fn generic_native_commands_close_check_build_test_and_run() {
+    let project = TestProject::new(include_str!("../../../fixtures/lcir-generics/main.loom"));
+
+    let check = loomc()
+        .args(["--no-cache", "check"])
+        .arg(&project.0)
+        .output()
+        .expect("check the generic fixture through the production CLI");
+    assert_eq!(check.status.code(), Some(0), "{check:?}");
+
+    let object_path = project.0.join("generics.o");
+    let build = loomc()
+        .args(["--no-cache", "build", "--emit", "object", "--output"])
+        .arg(&object_path)
+        .arg(&project.0)
+        .output()
+        .expect("build the generic fixture through the production CLI");
+    assert_eq!(build.status.code(), Some(0), "{build:?}");
+    let object = fs::read(&object_path).expect("read generic object");
+    assert!(contains_bytes(&object, b"loom.lcir.fn"));
+    assert!(!contains_bytes(&object, b"loom.fn."));
+
+    let tests = loomc()
+        .args(["--no-cache", "test"])
+        .arg(&project.0)
+        .output()
+        .expect("test the generic fixture through the production CLI");
+    assert_eq!(tests.status.code(), Some(0), "{tests:?}");
+    assert!(
+        String::from_utf8_lossy(&tests.stdout).contains("identityInstance"),
+        "{tests:?}"
+    );
+
+    let run = loomc()
+        .args(["--no-cache", "run"])
+        .arg(&project.0)
+        .output()
+        .expect("run the generic fixture through the production CLI");
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    assert_eq!(run.stdout, b"Unit\n");
+}
+
+#[test]
 fn cache_stat_and_prune_have_stable_json_reports() {
     let project = TestProject::new("module demo\n\npub fn main() Unit { Unit }\n");
     let check = loomc()

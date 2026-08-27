@@ -1,6 +1,7 @@
 use loom_codegen_ir::{
     InstanceKey, InstructionKind, InvalidRootCode, LoweringErrorCode, LoweringOutcome,
-    SourceArtifactRequest, TargetLayout, UnsupportedFeature, dump_program, lower_typed_artifact,
+    SourceArtifactRequest, TargetLayout, UnsupportedFeature, artifact_identity, dump_program,
+    lower_typed_artifact,
 };
 use loom_core::FileId;
 use loom_hir::{SourceUnit, lower_files};
@@ -338,6 +339,192 @@ pub fn main() Unit {
         "{dump}"
     );
     assert!(dump.contains("call i0"), "{dump}");
+}
+
+#[test]
+fn regular_generic_recursion_deduplicates_each_exact_instantiation() {
+    let source = r"module generic_recursion
+
+fn repeat[T](value T, remaining Int) T {
+    if remaining == 0 {
+        value
+    } else {
+        repeat(value, remaining - 1)
+    }
+}
+
+pub fn main() Unit {
+    discard repeat(7, 2)
+    discard repeat(8, 1)
+    discard repeat(true, 1)
+    Unit
+}
+";
+    let first = complete_dump(source);
+    let second = complete_dump(source);
+    assert_eq!(first, second);
+    let lower = || {
+        let mir = compile(source);
+        let LoweringOutcome::Complete(artifact) = lower_typed_artifact(
+            &mir,
+            &SourceArtifactRequest::Run {
+                entry: "main".into(),
+            },
+            TargetLayout::new(64).expect("test target"),
+        )
+        .expect("lower reproducible generic artifact") else {
+            panic!("regular generic recursion must be supported")
+        };
+        artifact
+    };
+    assert_eq!(artifact_identity(&lower()), artifact_identity(&lower()));
+    assert_eq!(first.matches("source=f0 types=[Int]").count(), 1, "{first}");
+    assert_eq!(
+        first.matches("source=f0 types=[Bool]").count(),
+        1,
+        "{first}"
+    );
+    assert_eq!(first.matches("source=f1 types=[]").count(), 1, "{first}");
+    assert!(first.contains("invoke i0"), "{first}");
+    assert!(first.contains("invoke i1"), "{first}");
+}
+
+#[test]
+fn erased_generic_proofs_remain_part_of_static_instance_identity() {
+    let outcome = lower_run(
+        r"module witnessed_instance
+
+concept Marker {}
+impl Marker for Int {}
+
+fn preserve[T: Marker](value T) T { value }
+
+pub fn main() Unit {
+    discard preserve(7)
+    Unit
+}
+",
+    );
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("a compile-time-only proof must not force legacy lowering")
+    };
+    let instance = artifact
+        .program()
+        .as_program()
+        .instances()
+        .entries()
+        .iter()
+        .find(|instance| !instance.key().witness_arguments().is_empty())
+        .expect("witnessed generic instance");
+    assert_eq!(instance.key().type_arguments(), &[loom_mir::Type::Int]);
+    assert!(
+        matches!(
+            instance.key().witness_arguments(),
+            [loom_codegen_ir::InstanceWitnessArgument::Concrete(_)]
+        ),
+        "{:?}",
+        instance.key()
+    );
+}
+
+#[test]
+fn test_roots_share_one_reachable_generic_instance() {
+    let mir = compile(
+        r"module generic_tests
+
+fn identity[T](value T) T { value }
+
+test fn first() Unit {
+    discard identity(1)
+    Unit
+}
+
+test fn second() Unit {
+    discard identity(2)
+    Unit
+}
+",
+    );
+    let outcome = lower_typed_artifact(
+        &mir,
+        &SourceArtifactRequest::Tests,
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("lower generic test artifact");
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("generic test roots should lower completely")
+    };
+    assert_eq!(artifact.test_roots().expect("test roots").len(), 2);
+    assert_eq!(
+        artifact
+            .program()
+            .as_program()
+            .instances()
+            .entries()
+            .iter()
+            .filter(|instance| instance.key().type_arguments() == [loom_mir::Type::Int])
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn unreachable_generic_definitions_do_not_change_the_complete_route() {
+    let dump = complete_dump(
+        r"module unreachable_generic
+
+fn spiral[T](value T) Unit {
+    spiral((value, value))
+}
+
+pub fn main() Unit { Unit }
+",
+    );
+    assert_eq!(dump.matches("instance ").count(), 1, "{dump}");
+    assert!(!dump.contains("source=f0"), "{dump}");
+}
+
+#[test]
+fn nonregular_generic_recursion_selects_atomic_unsupported() {
+    let outcome = lower_run(
+        r"module nonregular_generic
+
+fn spiral[T](value T) Unit {
+    spiral((value, value))
+}
+
+pub fn main() Unit {
+    spiral(1)
+}
+",
+    );
+    let LoweringOutcome::Unsupported(report) = outcome else {
+        panic!("nonregular generic recursion must select whole-artifact fallback")
+    };
+    assert_eq!(report.len(), 1, "{report:?}");
+    assert_eq!(
+        report.items()[0].feature(),
+        UnsupportedFeature::NonRegularGenericRecursion
+    );
+}
+
+#[test]
+fn oversized_generic_call_key_is_rejected_before_lcir_allocation() {
+    let values = std::iter::repeat_n("value", 256)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source = format!(
+        "module generic_budget\n\nfn expand[T](value T) Unit {{\n    expand(({values}))\n}}\n\npub fn main() Unit {{\n    expand(1)\n}}\n"
+    );
+    let outcome = lower_run(&source);
+    let LoweringOutcome::Unsupported(report) = outcome else {
+        panic!("oversized concrete instance key must select atomic fallback")
+    };
+    assert_eq!(report.len(), 1, "{report:?}");
+    assert_eq!(
+        report.items()[0].feature(),
+        UnsupportedFeature::GenericInstanceBudget
+    );
 }
 
 #[test]
