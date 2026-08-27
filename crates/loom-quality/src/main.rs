@@ -50,7 +50,7 @@ const CORE03_LEGACY_ROUTE: NativeRouteExpectation = NativeRouteExpectation::Lega
 };
 const ASYNC_GENERIC_LEGACY_ROUTE: NativeRouteExpectation = NativeRouteExpectation::LegacyAllowed {
     name: "async-generic-contract-runtime",
-    reason: "join/cancellation combinators, generic coroutine frames/contracts, and async inout/writeback are not yet complete in typed LCIR",
+    reason: "Task.settled, Task.any, and TaskFault inspection are not yet represented in typed LCIR",
 };
 const STANDARD_LIBRARY_LEGACY_ROUTE: NativeRouteExpectation =
     NativeRouteExpectation::LegacyAllowed {
