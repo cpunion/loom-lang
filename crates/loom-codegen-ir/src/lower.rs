@@ -3186,6 +3186,30 @@ fn summarize_effects(
     }) {
         summary.include(Effects::MAY_COLLECT);
     }
+    if function.exprs_preorder().any(|expression| {
+        let ExprKind::Call {
+            target: CallTarget::Dynamic { requirement },
+            arguments,
+            ..
+        } = &expression.kind
+        else {
+            return false;
+        };
+        program
+            .requirement(*requirement)
+            .is_some_and(|requirement| requirement.receiver == Some(mir::Receiver::Mutable))
+            && arguments.first().is_some_and(|receiver| {
+                let CallArgument::Value(receiver) = receiver else {
+                    return false;
+                };
+                substitution
+                    .instantiate_type(&receiver.ty)
+                    .ok()
+                    .is_some_and(|ty| dyn_concepts.finite(&ty).is_some())
+            })
+    }) {
+        summary.include(Effects::MAY_COLLECT);
+    }
     // Preconditions execute at each concrete caller boundary. They make the
     // caller's operation fallible, never the assumed callee body by itself.
     if calls.iter().any(|callee| {
@@ -9482,6 +9506,19 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         expression: &mir::Expr,
         receiver_ty: &Type,
     ) -> Result<EvalFlow, LoweringError> {
+        if self
+            .program
+            .requirement(requirement)
+            .is_some_and(|requirement| requirement.receiver == Some(mir::Receiver::Mutable))
+        {
+            return self.lower_finite_dynamic_mut_call(
+                flow,
+                requirement,
+                arguments,
+                expression,
+                receiver_ty,
+            );
+        }
         let candidates = self
             .dyn_concepts
             .finite(receiver_ty)
@@ -9628,6 +9665,297 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             },
             value: result,
         })
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "finite mutable dispatch keeps candidate-specific inout calls, normal/fault fresh boxing, and owner writeback in one auditable CFG construction"
+    )]
+    fn lower_finite_dynamic_mut_call(
+        &mut self,
+        flow: Flow,
+        requirement: mir::RequirementId,
+        arguments: &[CallArgument],
+        expression: &mir::Expr,
+        receiver_ty: &Type,
+    ) -> Result<EvalFlow, LoweringError> {
+        let candidates = self
+            .dyn_concepts
+            .finite(receiver_ty)
+            .ok_or_else(|| self.unsupported_reached("open mutable dynamic witness set"))?
+            .candidates()
+            .to_vec();
+        let receiver = arguments
+            .first()
+            .ok_or_else(|| self.unsupported_reached("mutable dynamic call without receiver"))?;
+        let CallArgument::Value(receiver) = receiver else {
+            return Err(self.unsupported_reached("mutable dynamic inout argument"));
+        };
+        let ExprKind::ReborrowView {
+            owner,
+            mutable: true,
+            ..
+        } = &receiver.kind
+        else {
+            return Err(self.unsupported_reached(
+                "mutable finite dynamic receiver without first-class owner storage",
+            ));
+        };
+        let owner = self.place_plan(owner, PlaceUse::InOut)?;
+        let owner_semantic = self
+            .builder
+            .representations()
+            .value_type(owner.leaf_type())
+            .ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    "mutable dynamic owner type disappeared",
+                )
+            })?
+            .semantic();
+        let owner_candidates = self
+            .dyn_concepts
+            .finite(owner_semantic)
+            .ok_or_else(|| self.unsupported_reached("mutable dynamic owner is not finite"))?;
+        if owner_candidates.candidates() != candidates.as_slice() {
+            return Err(
+                self.unsupported_reached("mutable dynamic reborrow changes its candidate catalog")
+            );
+        }
+        let origin = self.expression_origin(expression);
+        let EvalFlow::Continue {
+            mut flow,
+            value: receiver,
+        } = self.read_place(flow, &owner, origin)?
+        else {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::Builder,
+                "mutable dynamic owner read unexpectedly terminated",
+            ));
+        };
+        let base_environment = flow.env;
+        let mut values = vec![receiver];
+        for argument in arguments.iter().skip(1) {
+            let CallArgument::Value(argument) = argument else {
+                return Err(self.unsupported_reached(
+                    "finite dynamic method has an additional inout argument",
+                ));
+            };
+            let EvalFlow::Continue {
+                flow: next_flow,
+                value,
+            } = self.lower_expr(flow, argument)?
+            else {
+                return Ok(EvalFlow::Terminated);
+            };
+            flow = next_flow;
+            values.push(value);
+        }
+
+        let mut cases = Vec::with_capacity(candidates.len());
+        let mut plans = Vec::with_capacity(candidates.len());
+        let substitution = InstanceSubstitution::new(self.program, self.key);
+        for (variant, candidate) in candidates.iter().enumerate() {
+            let variant = u32::try_from(variant).map_err(|_| LoweringError::ResourceLimit {
+                code: ResourceLimitCode::ProgramTooLarge,
+                message: "dynamic candidate set exceeds u32".to_owned(),
+            })?;
+            let key = substitution
+                .static_call_key(
+                    requirement,
+                    &mir::WitnessRef::Concrete(candidate.witness()),
+                    candidate.concrete(),
+                    &[],
+                    &[],
+                )
+                .map_err(|error| {
+                    instantiation_defect(self.source.id, Some(expression.id), error)
+                })?;
+            let callee_source = self.program.function(key.source()).ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    "finite mutable dynamic method disappeared",
+                )
+            })?;
+            if !callee_source.call_plan.requires.is_empty() {
+                return Err(
+                    self.unsupported_reached("preconditioned finite mutable dynamic dispatch")
+                );
+            }
+            let instance = self.instances.get(&key).ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!(
+                        "finite mutable dynamic method {} has no LCIR instance",
+                        key.source().0
+                    ),
+                )
+            })?;
+            let block = self.create_block()?;
+            let payload = self
+                .builder
+                .append_block_parameter(block, self.type_id(candidate.concrete())?)
+                .map_err(LoweringError::from)?;
+            cases.push(crate::SumCase::new(variant, block, []));
+            plans.push((variant, block, payload, instance));
+        }
+        self.terminate(
+            flow.block,
+            TerminatorKind::DynSwitch {
+                scrutinee: receiver,
+                cases: cases.into_boxed_slice(),
+            },
+            origin,
+        )?;
+
+        let result_type = self.type_id(&expression.ty)?;
+        let mut continuations = Vec::with_capacity(plans.len());
+        for (variant, block, payload, instance) in plans {
+            let candidate_type = self.builder.value_type(payload).ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    "finite mutable payload type disappeared",
+                )
+            })?;
+            let mut branch_arguments = Vec::with_capacity(values.len());
+            branch_arguments.push(payload);
+            branch_arguments.extend(values.iter().copied().skip(1));
+            let effect = effect_for(self.effects, instance)?;
+            if effect.contains(Effects::MAY_FAULT) {
+                let normal = self.create_block()?;
+                let result = self
+                    .builder
+                    .append_block_parameter(normal, result_type)
+                    .map_err(LoweringError::from)?;
+                let normal_writeback = self
+                    .builder
+                    .append_block_parameter(normal, candidate_type)
+                    .map_err(LoweringError::from)?;
+                let fault = self.create_block()?;
+                let fault_writeback = self
+                    .builder
+                    .append_block_parameter(fault, candidate_type)
+                    .map_err(LoweringError::from)?;
+                self.terminate(
+                    block,
+                    TerminatorKind::Invoke {
+                        callee: instance,
+                        arguments: branch_arguments.into_boxed_slice(),
+                        normal: ResultTarget::new(normal, []),
+                        unwind: UnwindTarget::new(fault, []),
+                    },
+                    origin,
+                )?;
+
+                let fault_flow = Flow {
+                    block: fault,
+                    env: base_environment,
+                };
+                let EvalFlow::Continue {
+                    flow: fault_flow,
+                    value: fault_box,
+                } = self.one_instruction(
+                    fault_flow,
+                    InstructionKind::DynConstruct {
+                        variant,
+                        value: fault_writeback,
+                    },
+                    owner.leaf_type(),
+                    origin,
+                )?
+                else {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::Builder,
+                        "fault-edge dynamic boxing unexpectedly terminated",
+                    ));
+                };
+                let fault_flow = self.write_place(fault_flow, &owner, fault_box, origin)?;
+                let propagation = self.fault_target(fault_flow)?;
+                self.terminate(
+                    fault_flow.block,
+                    TerminatorKind::Jump(BlockTarget::new(
+                        propagation.block,
+                        propagation.arguments,
+                    )),
+                    origin,
+                )?;
+
+                let normal_flow = Flow {
+                    block: normal,
+                    env: base_environment,
+                };
+                let EvalFlow::Continue {
+                    flow: normal_flow,
+                    value: normal_box,
+                } = self.one_instruction(
+                    normal_flow,
+                    InstructionKind::DynConstruct {
+                        variant,
+                        value: normal_writeback,
+                    },
+                    owner.leaf_type(),
+                    origin,
+                )?
+                else {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::Builder,
+                        "normal-edge dynamic boxing unexpectedly terminated",
+                    ));
+                };
+                let normal_flow = self.write_place(normal_flow, &owner, normal_box, origin)?;
+                continuations.push(EvalFlow::Continue {
+                    flow: normal_flow,
+                    value: result,
+                });
+            } else {
+                let results = self
+                    .builder
+                    .append_instruction(
+                        block,
+                        InstructionKind::DirectCall {
+                            callee: instance,
+                            arguments: branch_arguments.into_boxed_slice(),
+                        },
+                        &[result_type, candidate_type],
+                        origin,
+                    )
+                    .map_err(LoweringError::from)?;
+                let [result, writeback] = results.as_ref() else {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::Builder,
+                        "finite mutable call did not return result and receiver writeback",
+                    ));
+                };
+                let branch_flow = Flow {
+                    block,
+                    env: base_environment,
+                };
+                let EvalFlow::Continue {
+                    flow: branch_flow,
+                    value: boxed,
+                } = self.one_instruction(
+                    branch_flow,
+                    InstructionKind::DynConstruct {
+                        variant,
+                        value: *writeback,
+                    },
+                    owner.leaf_type(),
+                    origin,
+                )?
+                else {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::Builder,
+                        "dynamic writeback boxing unexpectedly terminated",
+                    ));
+                };
+                let branch_flow = self.write_place(branch_flow, &owner, boxed, origin)?;
+                continuations.push(EvalFlow::Continue {
+                    flow: branch_flow,
+                    value: *result,
+                });
+            }
+        }
+        self.merge_evaluations(continuations, base_environment, &expression.ty, origin)
     }
 
     fn dynamic_receiver_type(

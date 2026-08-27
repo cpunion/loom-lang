@@ -5,8 +5,13 @@ dyn concept Metric {
     method cold(self) Int
 }
 
+dyn concept Advance {
+    method advance(mut self) Int
+}
+
 record Counter {
     value Int
+    label Text
 }
 
 record Offset {
@@ -18,9 +23,23 @@ impl Metric for Counter {
     method cold(self) Int { 7001 }
 }
 
+impl Advance for Counter {
+    method advance(mut self) Int {
+        self.value = self.value + 1
+        self.value
+    }
+}
+
 impl Metric for Offset {
     method read(self) Int { self.value + 100 }
     method cold(self) Int { 7002 }
+}
+
+impl Advance for Offset {
+    method advance(mut self) Int {
+        self.value = self.value + 2
+        self.value
+    }
 }
 
 record Holder {
@@ -39,8 +58,27 @@ fn eraseOffset(value Offset) dyn Metric {
     value
 }
 
+fn eraseCounterAdvance(value Counter) dyn Advance {
+    value
+}
+
+fn eraseOffsetAdvance(value Offset) dyn Advance {
+    value
+}
+
+fn advanceOne(value Advance) Int {
+    value.advance()
+}
+
+fn forceRelocation() Unit {
+    for index in 0..5000 {
+        discard eraseCounter(Counter { value = index, label = "pressure" })
+        Unit
+    }
+}
+
 fn verify() Unit {
-    let first = Counter { value = 41 }
+    let first = Counter { value = 41, label = "first" }
     let second = Offset { value = 1 }
     let firstValue = measure(first)
     let secondValue = measure(second)
@@ -68,6 +106,20 @@ fn verify() Unit {
             Unit
         }
     }
+
+    var source = eraseCounterAdvance(Counter { value = 0, label = "source" })
+    var copied = source
+    forceRelocation()
+    let copiedFirst = advanceOne(copied)
+    let copiedSecond = advanceOne(copied)
+    let sourceFirst = advanceOne(source)
+    assert copiedFirst == 1
+    assert copiedSecond == 2
+    assert sourceFirst == 1
+
+    var offset = eraseOffsetAdvance(Offset { value = 100 })
+    let offsetFirst = advanceOne(offset)
+    assert offsetFirst == 102
 }
 
 pub fn main() Unit {
