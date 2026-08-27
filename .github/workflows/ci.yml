@@ -293,14 +293,30 @@ jobs:
             --output "$runtime_bundle"
           export LOOM_RUNTIME_BUNDLE="$runtime_bundle"
           echo "LOOM_RUNTIME_BUNDLE=$LOOM_RUNTIME_BUNDLE" >> "$GITHUB_ENV"
-      - name: Trace Windows LLVM target-machine construction
+      - name: Trace Windows LLVM C API and target-machine construction
         shell: bash
         env:
           LOOM_LLVM_TRACE_STAGES: "1"
         run: |
-          cargo test --locked -p loom-codegen-llvm --lib \
-            target::tests::windows_native_target_machine_constructs_and_reads_layout -- \
-            --exact --nocapture --test-threads=1
+          set +e
+          failed=0
+          for test_name in \
+            windows_llvm_c_api_reports_the_linked_version \
+            windows_llvm_c_api_message_round_trip_is_sound \
+            windows_llvm_c_api_normalizes_a_static_triple \
+            windows_native_target_machine_constructs_and_reads_layout
+          do
+            cargo test --locked -p loom-codegen-llvm --lib \
+              "target::tests::$test_name" -- \
+              --exact --nocapture --test-threads=1
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              echo "LLVM probe $test_name failed with status $status" >&2
+              failed=1
+            fi
+          done
+          set -e
+          exit "$failed"
       - name: Trace the first Windows LLVM object emission
         shell: bash
         env:

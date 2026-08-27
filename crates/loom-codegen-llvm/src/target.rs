@@ -516,6 +516,47 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
+    fn windows_llvm_c_api_reports_the_linked_version() {
+        let (mut major, mut minor, mut patch) = (0, 0, 0);
+        // SAFETY: all three outputs are live, aligned integers owned by this
+        // call. This is the smallest state-free LLVM C API linkage probe.
+        unsafe { llvm_sys::core::LLVMGetVersion(&raw mut major, &raw mut minor, &raw mut patch) };
+
+        assert_eq!((major, minor, patch), (19, 1, 7));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_llvm_c_api_message_round_trip_is_sound() {
+        // SAFETY: the input is a static NUL-terminated string. LLVM owns the
+        // returned copy until the matching disposal below.
+        let message = unsafe { llvm_sys::core::LLVMCreateMessage(c"loom-llvm-probe".as_ptr()) };
+        assert!(!message.is_null());
+        // SAFETY: a successful LLVMCreateMessage call returns a valid C string.
+        let copied = unsafe { std::ffi::CStr::from_ptr(message) };
+        assert_eq!(copied, c"loom-llvm-probe");
+        // SAFETY: `message` is the still-owned pointer returned above.
+        unsafe { llvm_sys::core::LLVMDisposeMessage(message) };
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_llvm_c_api_normalizes_a_static_triple() {
+        // SAFETY: the input is a static NUL-terminated target triple. LLVM
+        // returns an owned message which is disposed before this test exits.
+        let normalized = unsafe {
+            llvm_sys::target_machine::LLVMNormalizeTargetTriple(c"x86_64-pc-windows-msvc".as_ptr())
+        };
+        assert!(!normalized.is_null());
+        // SAFETY: a non-null normalized triple is a valid LLVM-owned C string.
+        let normalized_text = unsafe { std::ffi::CStr::from_ptr(normalized) };
+        assert_eq!(normalized_text, c"x86_64-pc-windows-msvc");
+        // SAFETY: `normalized` is the still-owned pointer returned above.
+        unsafe { llvm_sys::core::LLVMDisposeMessage(normalized) };
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
     fn windows_native_target_machine_constructs_and_reads_layout() {
         let target = create_llvm_target_machine(None, OptimizationProfile::Development)
             .expect("construct native Windows target machine");
