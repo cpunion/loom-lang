@@ -2080,9 +2080,9 @@ fn artifact_rejects_raw_wait_version_seventeen_before_body_decode() {
     assert!(matches!(
         error,
         ArtifactError::VersionMismatch {
-            expected: 19,
+            expected,
             found: 17
-        }
+        } if expected == INTERPRETED_ARTIFACT_VERSION
     ));
 }
 
@@ -2096,9 +2096,9 @@ fn artifact_rejects_pre_proof_provenance_version_eighteen() {
     assert!(matches!(
         error,
         ArtifactError::VersionMismatch {
-            expected: 19,
+            expected,
             found: 18
-        }
+        } if expected == INTERPRETED_ARTIFACT_VERSION
     ));
 }
 
