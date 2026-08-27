@@ -2743,7 +2743,8 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         .function(callee_key.source())
                         .is_some_and(|callee| {
                             callee.is_async
-                                && (callee.params.iter().any(|parameter| parameter.mutable)
+                                && (!function.is_async
+                                    || callee.params.iter().any(|parameter| parameter.mutable)
                                     || !callee.call_plan.requires.is_empty())
                         })
                 }) {

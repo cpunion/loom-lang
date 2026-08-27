@@ -143,6 +143,47 @@ fn typed_task_handles_fail_closed_on_a_32_bit_target() {
 }
 
 #[test]
+fn task_creation_in_sync_functions_fails_closed_before_emission() {
+    for source in [
+        r"module sync_task_create
+
+async fn child() Int { 1 }
+
+fn helper() Task[Int] { child() }
+
+pub async fn main() Unit {
+    discard helper().await
+    Unit
+}
+",
+        r"module nested_sync_task_create
+
+async fn child() Int { 1 }
+
+fn inner() Task[Int] { child() }
+
+fn helper() Task[Int] { inner() }
+
+pub async fn main() Unit {
+    discard helper().await
+    Unit
+}
+",
+    ] {
+        let LoweringOutcome::Unsupported(report) = lower_run(source) else {
+            panic!("a sync function cannot receive an implicit coroutine executor")
+        };
+        assert!(
+            report
+                .items()
+                .iter()
+                .any(|item| item.feature() == UnsupportedFeature::AsyncFunction),
+            "{report:#?}"
+        );
+    }
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "the hand-built canonical File fixture keeps MIR identity and cleanup-edge evidence local"

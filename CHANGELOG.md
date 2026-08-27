@@ -52,10 +52,13 @@ artifact, or runtime compatibility.
   and test roots own a real executor for the root Task lifecycle. The
   `lcir-typed-async` fixture closes real `check/build/test/run`,
   interpreter/legacy/typed differential execution, Linux/MSVC object emission,
-  multiple awaits, and forced moving-GC relocation of a parent Text root while
-  its child runs. Fallible async, cleanup across suspension, sleep/readiness,
-  Task joins, sum/List/TextMap frame values, and dynamic concepts remain the
-  reviewed Core03 legacy allowance. Together with the previously deferred
+  multiple awaits, deterministic immediate-ready completion of a pre-created
+  second child, and forced moving-GC relocation of a parent Text root while its
+  child runs. A zero join-suspend result now preserves the current `Running`
+  activation and removes its redundant ready-queue entry before inline result
+  taking. Fallible async, cleanup across suspension, sleep/readiness, Task
+  joins, sum/List/TextMap frame values, and dynamic concepts remain the reviewed
+  Core03 legacy allowance. Together with the previously deferred
   typed-TextMap vocabulary, this advances the LCIR dump to 20, artifact
   identity to schema 21, native-object domain to v17, and LLVM object-cache
   domain to v22. The existing typed-task v1 and native runtime ABI are

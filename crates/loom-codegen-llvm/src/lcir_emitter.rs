@@ -33,7 +33,7 @@ use inkwell::{FloatPredicate as LlvmFloatPredicate, IntPredicate};
 use llvm_sys::debuginfo::LLVMDIBuilderInsertDbgValueRecordBefore;
 use loom_codegen_ir::{
     BlockId, BlockTarget, BoolPredicate, CheckedArtifact, CheckedIntBinaryOp, Constant,
-    ContractFaultMetadata, Effects, FaultCode, FaultMetadata, FloatBinaryOp,
+    ContractFaultMetadata, CoroutineSuspension, Effects, FaultCode, FaultMetadata, FloatBinaryOp,
     FloatPredicate as LcirFloatPredicate, Function, InstanceId, Instruction, InstructionId,
     InstructionKind, IntPredicate as LcirIntPredicate, MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE,
     ManagedRootPlan, ManagedRootProjection, ManagedRootSlot, ManagedSafepoint, Origin, Repr,
@@ -4909,10 +4909,6 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         Ok(())
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "resume-state dispatch keeps the checked frame row, child terminal state, exact typed result, live-slot reloads, and LCIR continuation edge together"
-    )]
     fn emit_coroutine_resume_blocks(&self) -> Result<(), CodegenError> {
         let Some(coroutine) = &self.coroutine else {
             return Ok(());
@@ -4948,126 +4944,154 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 ));
             }
             self.backend.builder.position_at_end(*resume);
-            let step = call_int(
-                &self.backend.builder,
-                self.backend.task_join_step(),
-                &[coroutine.task.into()],
-                "task.await.step",
-            )?;
-            let completed = self
-                .backend
-                .context
-                .append_basic_block(self.function, "task.await.completed");
-            let faulted = self
-                .backend
-                .context
-                .append_basic_block(self.function, "task.await.faulted");
-            let cancelled = self
-                .backend
-                .context
-                .append_basic_block(self.function, "task.await.cancelled");
-            let invalid = self
-                .backend
-                .context
-                .append_basic_block(self.function, "task.await.invalid_step");
-            self.backend
-                .builder
-                .build_switch(
-                    step,
-                    invalid,
-                    &[
-                        (
-                            self.backend
-                                .context
-                                .i32_type()
-                                .const_int(TASK_COMPLETED as u64, false),
-                            completed,
-                        ),
-                        (
-                            self.backend
-                                .context
-                                .i32_type()
-                                .const_int(TASK_FAULTED as u64, false),
-                            faulted,
-                        ),
-                        (
-                            self.backend
-                                .context
-                                .i32_type()
-                                .const_int(TASK_CANCELLED as u64, false),
-                            cancelled,
-                        ),
-                    ],
-                )
-                .map_err(builder_error)?;
-
-            self.backend.builder.position_at_end(faulted);
-            self.emit_coroutine_step_return(TASK_FAULTED)?;
-            self.backend.builder.position_at_end(cancelled);
-            self.emit_coroutine_step_return(TASK_CANCELLED)?;
-            self.backend.builder.position_at_end(invalid);
-            self.emit_coroutine_step_return(TASK_FAULTED)?;
-
-            self.backend.builder.position_at_end(completed);
-            let child_pointer = self
-                .backend
-                .builder
-                .build_struct_gep(
-                    coroutine.layout.frame,
-                    coroutine.frame,
-                    layout_row.child_field,
-                    "task.await.child.pointer",
-                )
-                .map_err(builder_error)?;
-            let child = self
-                .backend
-                .builder
-                .build_load(self.backend.ptr_type, child_pointer, "task.await.child")
-                .map_err(builder_error)?
-                .into_pointer_value();
-            let output = self.take_typed_task_result(child, normal.block)?;
-            let mut values = Vec::with_capacity(1 + layout_row.live_fields.len());
-            values.push(output);
-            for ((ty, field), index) in plan_row
-                .live()
-                .iter()
-                .copied()
-                .zip(layout_row.live_fields.iter().copied())
-                .zip(0_u32..)
-            {
-                let pointer = self
-                    .backend
-                    .builder
-                    .build_struct_gep(
-                        coroutine.layout.frame,
-                        coroutine.frame,
-                        field,
-                        &format!("task.await.live.{index}.pointer"),
-                    )
-                    .map_err(builder_error)?;
-                values.push(
-                    self.backend
-                        .builder
-                        .build_load(
-                            self.backend.llvm_type(ty)?,
-                            pointer,
-                            &format!("task.await.live.{index}"),
-                        )
-                        .map_err(builder_error)?,
-                );
-            }
-            let predecessor = self.current_block()?;
-            self.add_basic_incoming(normal.block, &values, predecessor)?;
-            self.backend
-                .builder
-                .build_unconditional_branch(self.block(normal.block)?)
-                .map_err(builder_error)?;
+            self.emit_coroutine_resume_state(plan_row, layout_row, &normal)?;
         }
 
         self.backend
             .builder
             .position_at_end(coroutine.invalid_state);
         self.emit_coroutine_step_return(TASK_FAULTED)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one shared resume edge keeps scheduled and immediate-ready await completion on the same checked frame/result path"
+    )]
+    fn emit_coroutine_resume_state(
+        &self,
+        plan_row: &CoroutineSuspension,
+        layout_row: &CoroutineSuspensionLayout,
+        normal: &ResultTarget,
+    ) -> Result<(), CodegenError> {
+        let coroutine = self.coroutine.as_ref().ok_or_else(|| {
+            CodegenError::new("LlvmAbiDefect", "coroutine resume has no active frame")
+        })?;
+        if layout_row.state != plan_row.state()
+            || layout_row.live_fields.len() != plan_row.live().len()
+        {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!(
+                    "coroutine state {} disagrees with its frame layout",
+                    plan_row.state()
+                ),
+            ));
+        }
+        let step = call_int(
+            &self.backend.builder,
+            self.backend.task_join_step(),
+            &[coroutine.task.into()],
+            "task.await.step",
+        )?;
+        let completed = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.await.completed");
+        let faulted = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.await.faulted");
+        let cancelled = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.await.cancelled");
+        let invalid = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.await.invalid_step");
+        self.backend
+            .builder
+            .build_switch(
+                step,
+                invalid,
+                &[
+                    (
+                        self.backend
+                            .context
+                            .i32_type()
+                            .const_int(TASK_COMPLETED as u64, false),
+                        completed,
+                    ),
+                    (
+                        self.backend
+                            .context
+                            .i32_type()
+                            .const_int(TASK_FAULTED as u64, false),
+                        faulted,
+                    ),
+                    (
+                        self.backend
+                            .context
+                            .i32_type()
+                            .const_int(TASK_CANCELLED as u64, false),
+                        cancelled,
+                    ),
+                ],
+            )
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(faulted);
+        self.emit_coroutine_step_return(TASK_FAULTED)?;
+        self.backend.builder.position_at_end(cancelled);
+        self.emit_coroutine_step_return(TASK_CANCELLED)?;
+        self.backend.builder.position_at_end(invalid);
+        self.emit_coroutine_step_return(TASK_FAULTED)?;
+
+        self.backend.builder.position_at_end(completed);
+        let child_pointer = self
+            .backend
+            .builder
+            .build_struct_gep(
+                coroutine.layout.frame,
+                coroutine.frame,
+                layout_row.child_field,
+                "task.await.child.pointer",
+            )
+            .map_err(builder_error)?;
+        let child = self
+            .backend
+            .builder
+            .build_load(self.backend.ptr_type, child_pointer, "task.await.child")
+            .map_err(builder_error)?
+            .into_pointer_value();
+        let output = self.take_typed_task_result(child, normal.block)?;
+        let mut values = Vec::with_capacity(1 + layout_row.live_fields.len());
+        values.push(output);
+        for ((ty, field), index) in plan_row
+            .live()
+            .iter()
+            .copied()
+            .zip(layout_row.live_fields.iter().copied())
+            .zip(0_u32..)
+        {
+            let pointer = self
+                .backend
+                .builder
+                .build_struct_gep(
+                    coroutine.layout.frame,
+                    coroutine.frame,
+                    field,
+                    &format!("task.await.live.{index}.pointer"),
+                )
+                .map_err(builder_error)?;
+            values.push(
+                self.backend
+                    .builder
+                    .build_load(
+                        self.backend.llvm_type(ty)?,
+                        pointer,
+                        &format!("task.await.live.{index}"),
+                    )
+                    .map_err(builder_error)?,
+            );
+        }
+        let predecessor = self.current_block()?;
+        self.add_basic_incoming(normal.block, &values, predecessor)?;
+        self.backend
+            .builder
+            .build_unconditional_branch(self.block(normal.block)?)
+            .map_err(builder_error)?;
+        Ok(())
     }
 
     fn await_for_state(&self, state: u32) -> Result<(ValueId, ResultTarget), CodegenError> {
@@ -8048,6 +8072,20 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     format!("await state {state} has no physical frame row"),
                 )
             })?;
+        let plan_row = self
+            .source
+            .coroutine()
+            .and_then(|plan| {
+                plan.suspensions()
+                    .iter()
+                    .find(|suspension| suspension.state() == state)
+            })
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("await state {state} has no checked coroutine row"),
+                )
+            })?;
         if suspension.live_fields.len() != normal.arguments.len() {
             return Err(CodegenError::new(
                 "LlvmAbiDefect",
@@ -8163,9 +8201,36 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             &[coroutine.executor.into(), coroutine.task.into()],
             "task.await.suspend",
         )?;
+        let pending = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.await.return.pending");
+        let ready = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.await.immediate.ready");
+        let invalid = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.await.invalid.suspend");
         self.backend
-            .require_exact_status(suspended, 1, "task.await.suspend")?;
-        self.emit_coroutine_step_return(TASK_PENDING)
+            .builder
+            .build_switch(
+                suspended,
+                invalid,
+                &[
+                    (self.backend.context.i32_type().const_zero(), ready),
+                    (self.backend.context.i32_type().const_int(1, false), pending),
+                ],
+            )
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(pending);
+        self.emit_coroutine_step_return(TASK_PENDING)?;
+        self.backend.builder.position_at_end(invalid);
+        self.emit_coroutine_step_return(TASK_FAULTED)?;
+        self.backend.builder.position_at_end(ready);
+        self.emit_coroutine_resume_state(plan_row, &suspension, normal)
     }
 
     #[expect(

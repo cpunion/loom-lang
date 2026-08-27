@@ -5464,6 +5464,11 @@ fn typed_async_state_machines_survive_forced_relocation_on_all_targets() {
         .iter()
         .find(|function| function.name().ends_with("allocationPressure"))
         .expect("typed allocation-pressure child instance");
+    let precreated = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("precreatedChildren"))
+        .expect("typed pre-created-child coroutine instance");
     assert!(pressure.coroutine().is_some());
     assert!(pressure.effects().contains(Effects::MAY_COLLECT));
     let plan = main.coroutine().expect("typed async main coroutine plan");
@@ -5472,7 +5477,7 @@ fn typed_async_state_machines_survive_forced_relocation_on_all_targets() {
             .iter()
             .map(loom_codegen_ir::CoroutineSuspension::state)
             .collect::<Vec<_>>(),
-        [1, 2, 3]
+        [1, 2, 3, 4]
     );
     assert!(plan.suspensions()[0].live().iter().any(|ty| {
         artifact
@@ -5480,6 +5485,24 @@ fn typed_async_state_machines_survive_forced_relocation_on_all_targets() {
             .value_type(*ty)
             .and_then(|value| artifact.representations().repr(value.repr()))
             == Some(&loom_codegen_ir::Repr::ManagedPointer)
+    }));
+    let precreated_plan = precreated
+        .coroutine()
+        .expect("pre-created children use a checked coroutine plan");
+    assert_eq!(
+        precreated_plan
+            .suspensions()
+            .iter()
+            .map(loom_codegen_ir::CoroutineSuspension::state)
+            .collect::<Vec<_>>(),
+        [1, 2]
+    );
+    assert!(precreated_plan.suspensions()[0].live().iter().any(|ty| {
+        artifact
+            .representations()
+            .value_type(*ty)
+            .and_then(|value| artifact.representations().repr(value.repr()))
+            == Some(&loom_codegen_ir::Repr::TaskHandle)
     }));
 
     let lcir = emit_and_run_lcir(&artifact, "source-typed-async");
@@ -5507,6 +5530,11 @@ fn typed_async_state_machines_survive_forced_relocation_on_all_targets() {
             lcir.ir
         );
     }
+    assert!(
+        lcir.ir.contains("task.await.immediate.ready"),
+        "{}",
+        lcir.ir
+    );
     assert!(
         lcir.ir.matches("task.await.state.pointer").count() >= 6,
         "{}",

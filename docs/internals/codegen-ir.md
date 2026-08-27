@@ -533,9 +533,12 @@ instance. The handle is a stable opaque pointer, not a moving object and not a
 Promise or universal value. The hidden executor comes only from the active
 coroutine callback or the async root harness. `AwaitTask` stores the child and
 the row's live values, prepares a structured one-child `all` join, publishes
-the frame/root state, suspends, and makes the child result exist only on the
-resume edge. Ordinary expression evaluation never creates or runs a
-synchronous executor.
+the frame/root state, and makes the child result exist only on the resume edge.
+A join-suspend status of one returns `pending`; zero means the child was already
+terminal, so the runtime removes the redundant wake-up, keeps the active parent
+`Running`, and enters the same checked result/reload edge in the current
+callback. Any other status is a runtime/compiler defect. Ordinary expression
+evaluation never creates or runs a synchronous executor.
 
 LLVM derives a target-laid-out frame containing state, parameters, one
 child/live row per suspension, and the typed result. It emits one immutable
@@ -554,6 +557,10 @@ and live frame values are limited to direct scalar/refined/product/Text shapes,
 with Task handles additionally allowed only in suspension-live rows. Sum,
 List, TextMap, dynamic-concept, sleep/readiness, Task-join, cancellation-source,
 and cleanup-crossing suspension forms remain atomic whole-artifact fallback.
+Because this slice does not add a hidden executor to synchronous function ABIs,
+any reachable synchronous function that calls an async callee also selects that
+fallback before emitter selection, including a synchronous helper reached from
+an async caller.
 The callback already forwards child fault/cancel terminal states without
 turning them into source `Result` values, but source programs cannot reach
 those paths until the corresponding checked control-flow slice exists.
@@ -894,11 +901,12 @@ omission, host execution, Linux/MSVC object
 emission, and atomic fallback for unsupported dynamic Text producers or
 transparent/refined managed carriers.
 Coroutine regressions cover malformed plan rows, canonical plan identity,
-typed Task construction, three ordered suspension states, scalar/Text/product
-results, exact managed frame bitmaps, parent Text relocation while a child
-allocates beyond the initial 64 KiB collection threshold, run/test root
-lifecycle, interpreter/legacy/typed differential execution, and Linux/MSVC
-objects.
+typed Task construction, four ordered root suspension states, a nested
+two-state coroutine with a live Task handle and deterministic immediate-ready
+second child, scalar/Text/product results, exact managed frame bitmaps, parent
+Text relocation while a child allocates beyond the initial 64 KiB collection
+threshold, run/test root lifecycle, interpreter/legacy/typed differential
+execution, and Linux/MSVC objects.
 Malformed-LCIR tests
 prove that ordinary products cannot forge an invariant and that refinement
 cannot accept a merely layout-compatible, non-base value.

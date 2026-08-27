@@ -26,11 +26,24 @@ async fn echoEnvelope(value Envelope) Envelope {
     value
 }
 
+async fn echoInt(value Int) Int {
+    value
+}
+
+async fn precreatedChildren() Bool {
+    let first = echoInt(20)
+    let second = echoInt(22)
+    let left = first.await
+    let right = second.await
+    left == 20 && right == 22
+}
+
 pub async fn main() {
     let marker = "typed ".concat("root")
     let observed = allocationPressure().await
+    let immediateReady = precreatedChildren().await
     let echoed = echoText(marker).await
-    let envelope = echoEnvelope(Envelope { text = echoed, flag = observed }).await
+    let envelope = echoEnvelope(Envelope { text = echoed, flag = observed && immediateReady }).await
     if envelope.flag && envelope.text == "typed root" {
         Unit
     } else {
@@ -41,8 +54,9 @@ pub async fn main() {
 test async fn awaitsScalar() {
     let marker = "typed ".concat("root")
     let observed = allocationPressure().await
+    let immediateReady = precreatedChildren().await
     let echoed = echoText(marker).await
-    let envelope = echoEnvelope(Envelope { text = echoed, flag = observed }).await
+    let envelope = echoEnvelope(Envelope { text = echoed, flag = observed && immediateReady }).await
     if envelope.flag && envelope.text == "typed root" {
         Unit
     } else {

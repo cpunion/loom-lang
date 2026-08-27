@@ -4138,7 +4138,50 @@ pub unsafe extern "C" fn task_suspend_join(
         (*parent).status = TaskStatus::Waiting;
         update_join(executor_ref, parent);
     }
-    i32::from(unsafe { (*parent).status } != TaskStatus::Runnable)
+    if unsafe { (*parent).status } != TaskStatus::Runnable {
+        return 1;
+    }
+
+    // `update_join` uses the ordinary wake-up path even when every child was
+    // already terminal. A zero return means the active callback never yielded,
+    // so reclaim that queued wake-up and restore its Running activation before
+    // generated code takes the result or starts another structured join.
+    let Some(queued_index) = executor_ref
+        .runnable
+        .iter()
+        .position(|candidate| *candidate == parent)
+    else {
+        unsafe {
+            record_typed_runtime_defect(
+                parent,
+                "LOOM_RUNTIME_JOIN_READY_QUEUE",
+                "an immediate join wake-up was missing from the ready queue",
+            );
+        }
+        return -WAIT_INVALID_ARGUMENT;
+    };
+    if !unsafe { (*parent).queued }
+        || executor_ref
+            .runnable
+            .iter()
+            .skip(queued_index.saturating_add(1))
+            .any(|candidate| *candidate == parent)
+        || executor_ref.runnable.remove(queued_index) != Some(parent)
+    {
+        unsafe {
+            record_typed_runtime_defect(
+                parent,
+                "LOOM_RUNTIME_JOIN_READY_QUEUE",
+                "an immediate join wake-up disagreed with its queued state",
+            );
+        }
+        return -WAIT_INVALID_ARGUMENT;
+    }
+    unsafe {
+        (*parent).queued = false;
+        (*parent).status = TaskStatus::Running;
+    }
+    0
 }
 
 #[unsafe(export_name = "loom_task_join_count")]
@@ -5586,6 +5629,199 @@ mod typed_task_tests {
             typed.result_initialized = true;
             typed.root_state = typed.completed_root_state;
             (*task).status = TaskStatus::Completed;
+        }
+    }
+
+    unsafe fn activate_test_task(executor: *mut LoomExecutor, task: *mut LoomTask) {
+        let positions = unsafe {
+            (*executor)
+                .runnable
+                .iter()
+                .enumerate()
+                .filter_map(|(index, candidate)| (*candidate == task).then_some(index))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            positions.len(),
+            1,
+            "test task must have one ready-queue entry"
+        );
+        assert_eq!(
+            unsafe { (*executor).runnable.remove(positions[0]) },
+            Some(task)
+        );
+        unsafe {
+            (*task).queued = false;
+            (*task).status = TaskStatus::Running;
+            (*executor).active_task = task;
+        }
+    }
+
+    unsafe fn create_typed_u64_child(
+        executor: *mut LoomExecutor,
+        descriptor: &LoomTypedCoroutineDescriptor,
+    ) -> *mut LoomTask {
+        let child = unsafe { typed_task_create_v1(executor, descriptor) };
+        assert!(!child.is_null());
+        assert_eq!(unsafe { typed_task_initialize_v1(child, 0) }, TYPED_TASK_OK);
+        assert_eq!(
+            unsafe { typed_task_publish_v1(executor, child) },
+            TYPED_TASK_OK
+        );
+        child
+    }
+
+    unsafe extern "C" fn legacy_complete(
+        _task: *mut LoomTask,
+        _executor: *mut LoomExecutor,
+    ) -> i32 {
+        TASK_COMPLETED
+    }
+
+    #[test]
+    fn immediate_join_keeps_the_active_callback_running_and_supports_another_join() {
+        let (runtime, executor) = runtime_and_executor();
+        let descriptor = descriptor(complete_u64, cancel_noop);
+        unsafe {
+            let parent = typed_task_create_v1(executor, &raw const descriptor);
+            assert_eq!(typed_task_initialize_v1(parent, 0), TYPED_TASK_OK);
+            assert_eq!(typed_task_publish_v1(executor, parent), TYPED_TASK_OK);
+            activate_test_task(executor, parent);
+            enter_executor(executor);
+
+            let first = create_typed_u64_child(executor, &descriptor);
+            complete_typed_u64_for_test(first, 20);
+            assert_eq!(task_prepare_join(executor, parent, TASK_JOIN_ALL), WAIT_OK);
+            assert_eq!(task_add_join_child(executor, parent, first), WAIT_OK);
+            assert_eq!(task_suspend_join(executor, parent), 0);
+            assert!((*parent).status == TaskStatus::Running);
+            assert!(!(*parent).queued);
+            assert!(
+                !(*executor)
+                    .runnable
+                    .iter()
+                    .any(|candidate| *candidate == parent)
+            );
+            let mut first_result = 0_u64;
+            assert_eq!(
+                typed_task_take_result_v1(
+                    first,
+                    (&raw mut first_result).cast(),
+                    size_of::<u64>() as u64,
+                    align_of::<u64>() as u64,
+                ),
+                TYPED_TASK_OK
+            );
+            assert_eq!(first_result, 20);
+
+            // A zero suspension result did not end this activation: generated
+            // code may construct another structured child and await it.
+            let second = create_typed_u64_child(executor, &descriptor);
+            complete_typed_u64_for_test(second, 22);
+            assert_eq!(task_prepare_join(executor, parent, TASK_JOIN_ALL), WAIT_OK);
+            assert_eq!(task_add_join_child(executor, parent, second), WAIT_OK);
+            assert_eq!(task_suspend_join(executor, parent), 0);
+            assert!((*parent).status == TaskStatus::Running);
+            assert!(!(*parent).queued);
+            assert!(
+                !(*executor)
+                    .runnable
+                    .iter()
+                    .any(|candidate| *candidate == parent)
+            );
+            let mut second_result = 0_u64;
+            assert_eq!(
+                typed_task_take_result_v1(
+                    second,
+                    (&raw mut second_result).cast(),
+                    size_of::<u64>() as u64,
+                    align_of::<u64>() as u64,
+                ),
+                TYPED_TASK_OK
+            );
+            assert_eq!(second_result, 22);
+
+            let frame = (*parent)
+                .typed
+                .as_ref()
+                .expect("typed parent")
+                .frame_pointer()
+                .cast::<u64>();
+            frame.write(first_result + second_result);
+            assert_eq!(typed_task_publish_result_v1(parent), TYPED_TASK_OK);
+            leave_executor();
+            (*executor).active_task = ptr::null_mut();
+            complete_terminal(&mut *executor, parent, TASK_COMPLETED);
+            assert!((*parent).status == TaskStatus::Completed);
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn pending_join_keeps_the_parent_waiting_and_out_of_the_ready_queue() {
+        let (runtime, executor) = runtime_and_executor();
+        let descriptor = descriptor(complete_u64, cancel_noop);
+        unsafe {
+            let parent = typed_task_create_v1(executor, &raw const descriptor);
+            assert_eq!(typed_task_initialize_v1(parent, 0), TYPED_TASK_OK);
+            assert_eq!(typed_task_publish_v1(executor, parent), TYPED_TASK_OK);
+            activate_test_task(executor, parent);
+            enter_executor(executor);
+            let child = create_typed_u64_child(executor, &descriptor);
+            assert_eq!(task_prepare_join(executor, parent, TASK_JOIN_ALL), WAIT_OK);
+            assert_eq!(task_add_join_child(executor, parent, child), WAIT_OK);
+            assert_eq!(task_suspend_join(executor, parent), 1);
+            assert!((*parent).status == TaskStatus::Waiting);
+            assert!(!(*parent).queued);
+            assert!(
+                !(*executor)
+                    .runnable
+                    .iter()
+                    .any(|candidate| *candidate == parent)
+            );
+            assert!((*child).queued);
+            assert!(
+                (*executor)
+                    .runnable
+                    .iter()
+                    .any(|candidate| *candidate == child)
+            );
+            leave_executor();
+            (*executor).active_task = ptr::null_mut();
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn legacy_composite_consumes_an_already_completed_child_inline() {
+        let (runtime, executor) = runtime_and_executor();
+        unsafe {
+            let owner = task_spawn(executor, Some(legacy_complete), 1, 0);
+            activate_test_task(executor, owner);
+            let child = task_spawn(executor, Some(legacy_complete), 1, 0);
+            (*child).status = TaskStatus::Completed;
+            let join = join_create(executor, TASK_JOIN_ALL, 0);
+            assert!(!join.is_null());
+            assert_eq!(join_add_task(join, child), WAIT_OK);
+            let composite = join_task(join);
+            assert!(!composite.is_null());
+            (*executor).active_task = ptr::null_mut();
+            activate_test_task(executor, composite);
+            enter_executor(executor);
+            assert_eq!(resume_composite(composite, executor), TASK_COMPLETED);
+            assert!((*composite).status == TaskStatus::Running);
+            assert!(!(*composite).queued);
+            assert!(
+                !(*executor)
+                    .runnable
+                    .iter()
+                    .any(|candidate| *candidate == composite)
+            );
+            leave_executor();
+            (*executor).active_task = ptr::null_mut();
+            (*composite).status = TaskStatus::Completed;
+            (*owner).status = TaskStatus::Completed;
+            destroy(runtime, executor);
         }
     }
 
