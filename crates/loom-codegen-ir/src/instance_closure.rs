@@ -34,7 +34,7 @@ pub(crate) struct InstanceClosureUnsupported {
     pub(crate) path: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum InstanceClosureError {
     MissingFunction(FunctionId),
     InvalidInstanceArity {
@@ -271,7 +271,8 @@ impl<'key> InstanceSubstitution<'key> {
         let mut work = roots.iter().rev().map(Node::Source).collect::<Vec<_>>();
         while let Some(node) = work.pop() {
             match node {
-                Node::Source(WitnessRef::Concrete(_)) => {}
+                Node::Source(WitnessRef::Concrete(_))
+                | Node::Concrete(InstanceWitnessArgument::Concrete(_)) => {}
                 Node::Source(WitnessRef::Parameter(index)) => {
                     let argument = self
                         .key
@@ -290,7 +291,6 @@ impl<'key> InstanceSubstitution<'key> {
                         arguments.iter().rev().map(Node::Source),
                     )?;
                 }
-                Node::Concrete(InstanceWitnessArgument::Concrete(_)) => {}
                 Node::Concrete(InstanceWitnessArgument::Parameter(_)) => {
                     return Err(InstantiationError::UnboundWitnessParameter);
                 }
@@ -468,35 +468,17 @@ pub(crate) fn plan_instance_closure(
                     ));
                 }
                 if entries.len() >= INSTANCE_CLOSURE_MAX_INSTANCES {
-                    let (function, expression, span, path) = site.map_or_else(
-                        || {
-                            let function = program
-                                .function(key.source())
-                                .expect("root function existence is checked below");
-                            (
-                                function.id,
-                                None,
-                                function.span,
-                                "artifact.roots".to_owned(),
-                            )
-                        },
-                        |site| (site.function, Some(site.expression), site.span, site.path),
-                    );
-                    return Ok(InstanceClosureOutcome::Unsupported(
-                        InstanceClosureUnsupported {
-                            kind: InstanceClosureUnsupportedKind::InstanceBudget,
-                            function,
-                            expression,
-                            span,
-                            path,
-                        },
-                    ));
+                    return Ok(InstanceClosureOutcome::Unsupported(instance_budget_issue(
+                        program,
+                        &key,
+                        site.as_ref(),
+                    )?));
                 }
                 let function = program
                     .function(key.source())
                     .ok_or(InstanceClosureError::MissingFunction(key.source()))?;
                 require_instance_arity(function, &key)?;
-                let calls = match collect_instance_calls(function, &key, remaining_call_edges)? {
+                let calls = match collect_instance_calls(function, &key, remaining_call_edges) {
                     Ok(calls) => calls,
                     Err(issue) => return Ok(InstanceClosureOutcome::Unsupported(issue)),
                 };
@@ -535,6 +517,38 @@ pub(crate) fn plan_instance_closure(
     }))
 }
 
+fn instance_budget_issue(
+    program: &mir::Program,
+    key: &InstanceKey,
+    site: Option<&CallSite>,
+) -> Result<InstanceClosureUnsupported, InstanceClosureError> {
+    let (function, expression, span, path) = if let Some(site) = site {
+        (
+            site.function,
+            Some(site.expression),
+            site.span,
+            site.path.clone(),
+        )
+    } else {
+        let function = program
+            .function(key.source())
+            .ok_or(InstanceClosureError::MissingFunction(key.source()))?;
+        (
+            function.id,
+            None,
+            function.span,
+            "artifact.roots".to_owned(),
+        )
+    };
+    Ok(InstanceClosureUnsupported {
+        kind: InstanceClosureUnsupportedKind::InstanceBudget,
+        function,
+        expression,
+        span,
+        path,
+    })
+}
+
 fn require_instance_arity(
     function: &mir::Function,
     key: &InstanceKey,
@@ -559,7 +573,7 @@ fn collect_instance_calls(
     function: &mir::Function,
     key: &InstanceKey,
     remaining: usize,
-) -> Result<Result<Vec<CallSite>, InstanceClosureUnsupported>, InstanceClosureError> {
+) -> Result<Vec<CallSite>, InstanceClosureUnsupported> {
     let mut collector = CallCollector {
         remaining,
         calls: Vec::new(),
@@ -572,7 +586,7 @@ fn collect_instance_calls(
         &substitution,
         &mut collector,
     );
-    Ok(result.map(|_| collector.calls))
+    result.map(|_| collector.calls)
 }
 
 fn instantiation_issue(
@@ -707,9 +721,7 @@ fn scan_expr(
             milliseconds: value,
         } => scan_expr(function, value, path, substitution, calls)?,
         ExprKind::Binary(operator, left, right) => {
-            if !scan_expr(function, left, &format!("{path}.left"), substitution, calls)? {
-                false
-            } else {
+            if scan_expr(function, left, &format!("{path}.left"), substitution, calls)? {
                 let right = scan_expr(
                     function,
                     right,
@@ -718,6 +730,8 @@ fn scan_expr(
                     calls,
                 )?;
                 right || matches!(operator, mir::BinaryOp::And | mir::BinaryOp::Or)
+            } else {
+                false
             }
         }
         ExprKind::Block(block) => scan_block(
@@ -732,15 +746,13 @@ fn scan_expr(
             then_branch,
             else_branch,
         } => {
-            if !scan_expr(
+            if scan_expr(
                 function,
                 condition,
                 &format!("{path}.condition"),
                 substitution,
                 calls,
             )? {
-                false
-            } else {
                 let then_continues = scan_block(
                     function,
                     then_branch,
@@ -756,18 +768,18 @@ fn scan_expr(
                     calls,
                 )?;
                 then_continues || else_continues
+            } else {
+                false
             }
         }
         ExprKind::Match { scrutinee, arms } => {
-            if !scan_expr(
+            if scan_expr(
                 function,
                 scrutinee,
                 &format!("{path}.scrutinee"),
                 substitution,
                 calls,
             )? {
-                false
-            } else {
                 let mut continues = false;
                 for (index, arm) in arms.iter().enumerate() {
                     continues |= scan_expr(
@@ -779,6 +791,8 @@ fn scan_expr(
                     )?;
                 }
                 continues
+            } else {
+                false
             }
         }
         ExprKind::Call {

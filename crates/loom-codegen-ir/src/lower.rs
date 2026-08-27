@@ -782,19 +782,17 @@ impl<'program> Classifier<'program> {
         span: Span,
         path: &str,
     ) -> Option<Type> {
-        match InstanceSubstitution::new(key).instantiate_type(ty) {
-            Ok(ty) => Some(ty),
-            Err(_) => {
-                self.item(
-                    UnsupportedFeature::UnresolvedGenericInstantiation,
-                    function.id,
-                    expression.map(|expression| expression.id),
-                    span,
-                    path.to_owned(),
-                );
-                None
-            }
-        }
+        let Ok(ty) = InstanceSubstitution::new(key).instantiate_type(ty) else {
+            self.item(
+                UnsupportedFeature::UnresolvedGenericInstantiation,
+                function.id,
+                expression.map(|expression| expression.id),
+                span,
+                path.to_owned(),
+            );
+            return None;
+        };
+        Some(ty)
     }
 
     fn supported_projected_place(
