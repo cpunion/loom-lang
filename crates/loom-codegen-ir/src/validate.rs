@@ -11,7 +11,7 @@ use crate::{
     ValueTypeKind,
 };
 
-fn representation_text_pointer_kinds(
+fn representation_pointer_kinds(
     representations: &RepresentationPlan,
     root: ValueTypeId,
 ) -> Option<(bool, bool)> {
@@ -553,7 +553,7 @@ impl<'a> Validator<'a> {
                 );
             }
             if let ValueTypeKind::Transparent { base } = value_type.kind()
-                && representation_text_pointer_kinds(&representations, base) != Some((false, false))
+                && representation_pointer_kinds(&representations, base) != Some((false, false))
             {
                 self.error(
                     ValidationCode::RepresentationPlan,
@@ -619,7 +619,7 @@ impl<'a> Validator<'a> {
                         *uses = uses.saturating_add(1);
                     }
                 }
-                Some(Repr::ImmortalText | Repr::ManagedPointer) => {
+                Some(Repr::ImmortalText) => {
                     if value_type.semantic() != &Type::Text
                         || value_type.kind() != ValueTypeKind::Direct
                         || representations.target().pointer_bits() != 64
@@ -627,16 +627,58 @@ impl<'a> Validator<'a> {
                         self.error(
                             ValidationCode::RepresentationPlan,
                             format!("representations.type[{index}].text_pointer"),
-                            "Text pointers must be the direct Text semantic type on a 64-bit target",
+                            "immortal Text pointers must be the direct Text semantic type on a 64-bit target",
+                        );
+                    }
+                }
+                Some(Repr::ManagedPointer) => {
+                    let valid_semantic = match value_type.semantic() {
+                        Type::Text => true,
+                        Type::List(element) => {
+                            representations.type_id(element).is_some_and(|element_id| {
+                                representations
+                                    .value_type(element_id)
+                                    .is_some_and(|element| {
+                                        element.semantic() != &Type::Never
+                                            && matches!(
+                                                representations.repr(element.repr()),
+                                                Some(
+                                                    Repr::Zst
+                                                        | Repr::Scalar(_)
+                                                        | Repr::ManagedPointer
+                                                        | Repr::Product(_)
+                                                        | Repr::Sum(_)
+                                                )
+                                            )
+                                            && representation_pointer_kinds(
+                                                &representations,
+                                                element_id,
+                                            )
+                                            .is_some_and(|(immortal, _)| !immortal)
+                                    })
+                            })
+                        }
+                        _ => false,
+                    };
+                    if !valid_semantic
+                        || value_type.kind() != ValueTypeKind::Direct
+                        || representations.target().pointer_bits() != 64
+                    {
+                        self.error(
+                            ValidationCode::RepresentationPlan,
+                            format!("representations.type[{index}].managed_pointer"),
+                            "managed pointers must be direct Text or concrete closed List values on a 64-bit target",
                         );
                     }
                 }
                 Some(Repr::Uninhabited | Repr::Zst | Repr::Scalar(_)) | None => {
-                    if value_type.semantic() == &Type::Text {
+                    if value_type.semantic() == &Type::Text
+                        || matches!(value_type.semantic(), Type::List(_))
+                    {
                         self.error(
                             ValidationCode::RepresentationPlan,
                             format!("representations.type[{index}]"),
-                            "Text semantic values must use one canonical Text pointer representation",
+                            "Text and List semantic values must use their canonical pointer representations",
                         );
                     }
                 }
@@ -683,7 +725,7 @@ impl<'a> Validator<'a> {
         };
         let supported_sum_field = |field: ValueTypeId| {
             supported_product_field(field)
-                && representation_text_pointer_kinds(&representations, field)
+                && representation_pointer_kinds(&representations, field)
                     .is_some_and(|(immortal, _)| !immortal)
         };
         for (index, product) in representations.products().iter().enumerate() {
@@ -1945,6 +1987,117 @@ impl<'a> Validator<'a> {
                         expected,
                         ValidationCode::TypeMismatch,
                         format!("{path}.payload[{index}]"),
+                    );
+                }
+            }
+            InstructionKind::ListConstruct { elements } => {
+                self.require_results(function, instruction, &[None], &path);
+                let result_type = instruction
+                    .results
+                    .first()
+                    .and_then(|result| function.value(*result))
+                    .map(|result| result.ty);
+                let element_type = result_type.and_then(|ty| self.list_element(ty));
+                if result_type.is_some() && element_type.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.result[0]"),
+                        "list construction result must be a canonical concrete List value",
+                    );
+                }
+                if elements.len() > crate::LIST_LITERAL_MAX_ELEMENTS {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        format!("{path}.elements"),
+                        format!(
+                            "list construction has {} elements, exceeding the {}-element budget",
+                            elements.len(),
+                            crate::LIST_LITERAL_MAX_ELEMENTS
+                        ),
+                    );
+                }
+                for (index, element) in elements
+                    .iter()
+                    .copied()
+                    .take(crate::LIST_LITERAL_MAX_ELEMENTS)
+                    .enumerate()
+                {
+                    self.require_known_value_type(
+                        function,
+                        element,
+                        element_type,
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.element[{index}]"),
+                    );
+                }
+            }
+            InstructionKind::ListAppend { list, value } => {
+                let list_type = function.value(*list).map(|value| value.ty);
+                let element_type = list_type.and_then(|ty| self.list_element(ty));
+                if list_type.is_some() && element_type.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.list"),
+                        "list append receiver must be a canonical concrete List value",
+                    );
+                }
+                self.require_known_value_type(
+                    function,
+                    *value,
+                    element_type,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.value"),
+                );
+                self.require_results(function, instruction, &[list_type], &path);
+            }
+            InstructionKind::ListLength { list } => {
+                let list_type = function.value(*list).map(|value| value.ty);
+                if list_type.is_some_and(|ty| self.list_element(ty).is_none()) {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.list"),
+                        "list length receiver must be a canonical concrete List value",
+                    );
+                }
+                self.require_results(function, instruction, &[integer], &path);
+            }
+            InstructionKind::ListGet { list, index } => {
+                let list_element = function
+                    .value(*list)
+                    .map(|value| value.ty)
+                    .and_then(|ty| self.list_element(ty));
+                if function.value(*list).is_some() && list_element.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.list"),
+                        "list get receiver must be a canonical concrete List value",
+                    );
+                }
+                self.require_known_value_type(
+                    function,
+                    *index,
+                    integer,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.index"),
+                );
+                self.require_results(function, instruction, &[None], &path);
+                let result_type = instruction
+                    .results
+                    .first()
+                    .and_then(|result| function.value(*result))
+                    .map(|result| result.ty);
+                let option_element = result_type.and_then(|ty| self.option_element(ty));
+                if result_type.is_some() && option_element.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.result[0]"),
+                        "list get result must be the canonical two-variant Option[element] sum shape",
+                    );
+                } else if list_element.is_some() && option_element != list_element {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.result[0]"),
+                        "list get Option payload must exactly match the receiver element type",
                     );
                 }
             }
@@ -3218,6 +3371,36 @@ impl<'a> Validator<'a> {
         self.program.representations.sum(sum).map(|_| sum)
     }
 
+    fn list_element(&self, ty: ValueTypeId) -> Option<ValueTypeId> {
+        let value_type = self.program.representations.value_type(ty)?;
+        if value_type.kind() != ValueTypeKind::Direct
+            || self.program.representations.repr(value_type.repr()) != Some(&Repr::ManagedPointer)
+        {
+            return None;
+        }
+        let Type::List(element) = value_type.semantic() else {
+            return None;
+        };
+        self.program.representations.type_id(element)
+    }
+
+    fn option_element(&self, ty: ValueTypeId) -> Option<ValueTypeId> {
+        let value_type = self.program.representations.value_type(ty)?;
+        let Type::Nominal(_, arguments) = value_type.semantic() else {
+            return None;
+        };
+        let [element] = arguments.as_slice() else {
+            return None;
+        };
+        let element = self.program.representations.type_id(element)?;
+        let sum = self.sum_repr(ty)?;
+        let variants = self.program.representations.sum(sum)?.variants();
+        (variants.len() == 2
+            && variants[0].fields().is_empty()
+            && variants[1].fields() == [element])
+        .then_some(element)
+    }
+
     fn sum_variant_field_count(&self, sum: SumReprId, variant: usize) -> Option<usize> {
         self.program
             .representations
@@ -3359,7 +3542,12 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                 };
                 if matches!(
                     instruction.kind(),
-                    InstructionKind::TextConcat { .. } | InstructionKind::TextGet { .. }
+                    InstructionKind::TextConcat { .. }
+                        | InstructionKind::TextGet { .. }
+                        | InstructionKind::ListAppend { .. }
+                ) || matches!(
+                    instruction.kind(),
+                    InstructionKind::ListConstruct { elements } if !elements.is_empty()
                 ) {
                     effects[caller] = effects[caller].union(Effects::MAY_COLLECT);
                 }

@@ -321,17 +321,30 @@ fn collect_safepoint_values(
             for result in instruction.results() {
                 live.remove(result);
             }
+            let list_allocation = matches!(instruction.kind(), InstructionKind::ListAppend { .. })
+                || matches!(
+                    instruction.kind(),
+                    InstructionKind::ListConstruct { elements } if !elements.is_empty()
+                );
             let collecting = matches!(
                 instruction.kind(),
                 InstructionKind::TextConcat { .. } | InstructionKind::TextGet { .. }
-            ) || matches!(
-                instruction.kind(),
-                InstructionKind::DirectCall { callee, .. }
-                    if program.function(*callee).is_some_and(|callee| {
-                        callee.effects().contains(Effects::MAY_COLLECT)
-                    })
-            );
+            ) || list_allocation
+                || matches!(
+                    instruction.kind(),
+                    InstructionKind::DirectCall { callee, .. }
+                        if program.function(*callee).is_some_and(|callee| {
+                            callee.effects().contains(Effects::MAY_COLLECT)
+                        })
+                );
             if collecting {
+                // Unlike Text helpers and ordinary calls, typed repeated List
+                // allocation copies its operands only after the collector can
+                // relocate them. They therefore belong to this row even when
+                // dead after the instruction.
+                if list_allocation {
+                    add_managed(&mut live, instruction.kind().operands(), managed);
+                }
                 site_values.insert(
                     ManagedSafepoint::Instruction(instruction.id()),
                     live.clone(),
@@ -565,6 +578,8 @@ fn add_edge_live(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use loom_mir::{FunctionId as MirFunctionId, Type};
 
     use super::{
@@ -572,9 +587,141 @@ mod tests {
         plan_managed_roots_with_work,
     };
     use crate::{
-        BlockTarget, Constant, Effects, InstructionKind, Origin, ProgramBuilder, Signature,
-        TargetLayout, Terminator, TerminatorKind,
+        BlockTarget, Constant, Effects, InstructionKind, ManagedSafepoint, Origin, ProgramBuilder,
+        Signature, TargetLayout, Terminator, TerminatorKind,
     };
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the root-row regression needs two allocation sites and their exact SSA definitions in one minimal checked function"
+    )]
+    fn list_allocation_roots_dead_operands_but_not_its_undefined_result() {
+        let origin = Origin::synthetic(MirFunctionId(0));
+        let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        let text = builder
+            .add_managed_text_type()
+            .expect("register managed Text");
+        let list = builder
+            .add_managed_list_type(Type::List(Box::new(Type::Text)))
+            .expect("register managed List");
+        let unit = builder.type_id(&Type::Unit).expect("Unit");
+        let root = builder
+            .declare_function(
+                origin,
+                "list_roots",
+                Signature::new([], unit),
+                Effects::MAY_COLLECT.with_implications(),
+            )
+            .expect("declare function");
+        let (text_value, empty, constructed, appended) = {
+            let mut function = builder.function(root).expect("function builder");
+            let entry = function.create_block().expect("entry");
+            function.set_entry(entry).expect("set entry");
+            let text_value = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::TextLiteral { utf8: "x".into() },
+                    &[text],
+                    origin,
+                )
+                .expect("Text literal")[0];
+            let empty = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::ListConstruct {
+                        elements: Box::new([]),
+                    },
+                    &[list],
+                    origin,
+                )
+                .expect("empty List")[0];
+            let construct = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::ListConstruct {
+                        elements: Box::new([text_value]),
+                    },
+                    &[list],
+                    origin,
+                )
+                .expect("List literal");
+            let append = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::ListAppend {
+                        list: empty,
+                        value: text_value,
+                    },
+                    &[list],
+                    origin,
+                )
+                .expect("List append");
+            let result = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::Constant(Constant::Unit),
+                    &[unit],
+                    origin,
+                )
+                .expect("result")[0];
+            function
+                .terminate(
+                    entry,
+                    Terminator::new(TerminatorKind::Return(result), origin),
+                )
+                .expect("return");
+            (text_value, empty, construct[0], append[0])
+        };
+        let program = builder.finish_checked().expect("checked program");
+        let function = program
+            .as_program()
+            .function(root)
+            .expect("checked function");
+        let instruction_of =
+            |value| match function.value(value).expect("checked value").definition() {
+                crate::ValueDefinition::InstructionResult { instruction, .. } => instruction,
+                crate::ValueDefinition::BlockParameter { .. } => {
+                    panic!("expected instruction result")
+                }
+            };
+        let construct_id = instruction_of(constructed);
+        let append_id = instruction_of(appended);
+        let plan = super::plan_managed_roots(&program, root).expect("managed-root plan");
+        let construct_state = plan
+            .state(ManagedSafepoint::Instruction(construct_id))
+            .expect("construct state");
+        let append_state = plan
+            .state(ManagedSafepoint::Instruction(append_id))
+            .expect("append state");
+        let live_values = |state: u64| {
+            let state = usize::try_from(state).expect("state index");
+            let row = &plan.bitmaps()[state * plan.bitmap_words()..][..plan.bitmap_words()];
+            plan.slots()
+                .iter()
+                .enumerate()
+                .filter_map(|(index, slot)| {
+                    ((row[index / 64] & (1_u64 << (index % 64))) != 0).then_some(slot.value())
+                })
+                .collect::<BTreeSet<_>>()
+        };
+        // `empty` is also live through the later append, independently of the
+        // construct operand that allocation itself requires.
+        assert_eq!(
+            live_values(construct_state),
+            BTreeSet::from([text_value, empty])
+        );
+        assert_eq!(
+            live_values(append_state),
+            BTreeSet::from([text_value, empty])
+        );
+        assert!(
+            !plan
+                .slots()
+                .iter()
+                .any(|slot| { slot.value() == constructed || slot.value() == appended })
+        );
+    }
 
     #[test]
     fn candidate_catalog_accepts_its_exact_limit_and_rejects_one_more() {

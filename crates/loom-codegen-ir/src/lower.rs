@@ -1669,7 +1669,9 @@ impl<'program> Classifier<'program> {
                 if !self.visit_exprs(function, key, elements, &format!("{path}.elements")) {
                     return false;
                 }
-                self.expression_item(UnsupportedFeature::ListValue, function, expression, path);
+                if elements.len() > crate::LIST_LITERAL_MAX_ELEMENTS {
+                    self.expression_item(UnsupportedFeature::ListValue, function, expression, path);
+                }
                 expression.ty != Type::Never
             }
             ExprKind::Copy(place) | ExprKind::Move(place) => {
@@ -2069,13 +2071,22 @@ impl<'program> Classifier<'program> {
                                 PlaceSite::expression(expression),
                                 &format!("{path}.arguments[{index}].place"),
                             );
-                            let allowed = index == 0
-                                && mutable_receiver.as_ref() == place_type.as_ref()
-                                && place_type.as_ref().is_some_and(|ty| {
-                                    self.supported_record_type(ty)
-                                        || (is_invariant_record_type(self.program, ty)
-                                            && self.aggregates.supports_value_type(ty))
-                                });
+                            let allowed =
+                                if matches!(target, CallTarget::Builtin(mir::Builtin::ListAdd)) {
+                                    index == 0
+                                        && place_type.as_ref().is_some_and(|ty| {
+                                            matches!(ty, Type::List(_))
+                                                && self.supported_value_type(ty)
+                                        })
+                                } else {
+                                    index == 0
+                                        && mutable_receiver.as_ref() == place_type.as_ref()
+                                        && place_type.as_ref().is_some_and(|ty| {
+                                            self.supported_record_type(ty)
+                                                || (is_invariant_record_type(self.program, ty)
+                                                    && self.aggregates.supports_value_type(ty))
+                                        })
+                                };
                             if !allowed {
                                 self.expression_item(
                                     UnsupportedFeature::InOutArgument,
@@ -2096,7 +2107,10 @@ impl<'program> Classifier<'program> {
                         mir::Builtin::TextLength
                         | mir::Builtin::TextContains
                         | mir::Builtin::TextGet
-                        | mir::Builtin::TextConcat,
+                        | mir::Builtin::TextConcat
+                        | mir::Builtin::ListAdd
+                        | mir::Builtin::ListLength
+                        | mir::Builtin::ListGet,
                     ) => {
                         if matches!(
                             target,
@@ -2373,7 +2387,14 @@ fn scan_effect_expr(expression: &mir::Expr, summary: &mut EffectSummary) -> bool
         | ExprKind::Copy(_)
         | ExprKind::Move(_)
         | ExprKind::ReborrowView { .. } => true,
-        ExprKind::Tuple(values) | ExprKind::List(values) => scan_effect_exprs(values, summary),
+        ExprKind::Tuple(values) => scan_effect_exprs(values, summary),
+        ExprKind::List(values) => {
+            let continues = scan_effect_exprs(values, summary);
+            if continues && !values.is_empty() {
+                summary.include(Effects::MAY_COLLECT);
+            }
+            continues
+        }
         ExprKind::Unary(operator, operand) => {
             if !scan_effect_expr(operand, summary) {
                 return false;
@@ -2436,7 +2457,11 @@ fn scan_effect_expr(expression: &mir::Expr, summary: &mut EffectSummary) -> bool
                 summary.calls.insert(*callee);
             } else if matches!(
                 target,
-                CallTarget::Builtin(mir::Builtin::TextConcat | mir::Builtin::TextGet)
+                CallTarget::Builtin(
+                    mir::Builtin::TextConcat
+                        | mir::Builtin::TextGet
+                        | mir::Builtin::ListAdd
+                )
             ) {
                 summary.include(Effects::MAY_COLLECT);
             }
@@ -5333,7 +5358,29 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             ExprKind::Tuple(values) => {
                 self.lower_product_values(flow, values, expression, ProductConstruction::Plain)
             }
-            ExprKind::List(values) => self.lower_unsupported_values(flow, values, "list value"),
+            ExprKind::List(values) => {
+                let mut flow = flow;
+                let mut elements = Vec::with_capacity(values.len());
+                for value in values {
+                    let EvalFlow::Continue {
+                        flow: next_flow,
+                        value,
+                    } = self.lower_expr(flow, value)?
+                    else {
+                        return Ok(EvalFlow::Terminated);
+                    };
+                    flow = next_flow;
+                    elements.push(value);
+                }
+                self.one_instruction(
+                    flow,
+                    InstructionKind::ListConstruct {
+                        elements: elements.into_boxed_slice(),
+                    },
+                    self.type_id(&expression.ty)?,
+                    origin,
+                )
+            }
             ExprKind::Match { scrutinee, arms } => {
                 self.lower_match(flow, scrutinee, arms, expression)
             }
@@ -6475,7 +6522,17 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         expression: &mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
         if let CallTarget::Builtin(builtin) = target {
-            return self.lower_text_builtin(flow, *builtin, arguments, expression);
+            return match builtin {
+                mir::Builtin::TextLength
+                | mir::Builtin::TextConcat
+                | mir::Builtin::TextContains => {
+                    self.lower_text_builtin(flow, *builtin, arguments, expression)
+                }
+                mir::Builtin::ListAdd | mir::Builtin::ListLength | mir::Builtin::ListGet => {
+                    self.lower_list_builtin(flow, *builtin, arguments, expression)
+                }
+                _ => Err(self.unsupported_reached("builtin call")),
+            };
         }
         let mut lowered_arguments = Vec::with_capacity(arguments.len());
         let substitution = InstanceSubstitution::new(self.program, self.key);
@@ -6756,6 +6813,87 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             self.type_id(&expression.ty)?,
             self.expression_origin(expression),
         )
+    }
+
+    fn lower_list_builtin(
+        &mut self,
+        mut flow: Flow,
+        builtin: mir::Builtin,
+        arguments: &[CallArgument],
+        expression: &mir::Expr,
+    ) -> Result<EvalFlow, LoweringError> {
+        let origin = self.expression_origin(expression);
+        if builtin == mir::Builtin::ListAdd {
+            let [CallArgument::InOut(receiver), CallArgument::Value(value)] = arguments else {
+                return Err(self.unsupported_reached("List.add argument shape"));
+            };
+            let receiver = self.place_plan(receiver)?;
+            let EvalFlow::Continue {
+                flow: next_flow,
+                value: list,
+            } = self.read_place(flow, &receiver, origin)?
+            else {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::Builder,
+                    "typed List.add receiver read unexpectedly terminated",
+                ));
+            };
+            let EvalFlow::Continue {
+                flow: next_flow,
+                value,
+            } = self.lower_expr(next_flow, value)?
+            else {
+                return Ok(EvalFlow::Terminated);
+            };
+            let EvalFlow::Continue {
+                flow: next_flow,
+                value: appended,
+            } = self.one_instruction(
+                next_flow,
+                InstructionKind::ListAppend { list, value },
+                receiver.leaf_type(),
+                origin,
+            )?
+            else {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::Builder,
+                    "typed List.append unexpectedly terminated",
+                ));
+            };
+            flow = self.write_place(next_flow, &receiver, appended, origin)?;
+            return self.constant(flow, Constant::Unit, &Type::Unit, origin);
+        }
+
+        let values = arguments
+            .iter()
+            .map(|argument| match argument {
+                CallArgument::Value(value) => Ok(value),
+                CallArgument::InOut(_) => {
+                    Err(self.unsupported_reached("List builtin inout argument"))
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut lowered = Vec::with_capacity(values.len());
+        for value in values {
+            let EvalFlow::Continue {
+                flow: next_flow,
+                value,
+            } = self.lower_expr(flow, value)?
+            else {
+                return Ok(EvalFlow::Terminated);
+            };
+            flow = next_flow;
+            lowered.push(value);
+        }
+        let kind = match (builtin, lowered.as_slice()) {
+            (mir::Builtin::ListLength, [list]) => InstructionKind::ListLength { list: *list },
+            (mir::Builtin::ListGet, [list, index]) => InstructionKind::ListGet {
+                list: *list,
+                index: *index,
+            },
+            _ => return Err(self.unsupported_reached("unsupported List builtin")),
+        };
+        self.one_instruction(flow, kind, self.type_id(&expression.ty)?, origin)
     }
 
     fn unsupported_reached(&self, what: &str) -> LoweringError {

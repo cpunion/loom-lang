@@ -330,6 +330,7 @@ enum AggregateShape {
     InvariantProduct(Box<[Type]>),
     Transparent(Type),
     Sum(Box<[Box<[Type]>]>),
+    ManagedList(Type),
 }
 
 impl AggregateShape {
@@ -338,6 +339,9 @@ impl AggregateShape {
             Self::Product(fields) | Self::InvariantProduct(fields) => Box::new(fields.iter()),
             Self::Transparent(base) => Box::new(std::iter::once(base)),
             Self::Sum(variants) => Box::new(variants.iter().flat_map(|variant| variant.iter())),
+            // A List is one pointer in its containing value. Its element graph
+            // is checked independently, not as a by-value registration edge.
+            Self::ManagedList(_) => Box::new(std::iter::empty()),
         }
     }
 
@@ -352,6 +356,7 @@ impl AggregateShape {
                 .try_fold(1_usize.checked_add(variants.len())?, |nodes, variant| {
                     nodes.checked_add(variant.len())
                 }),
+            Self::ManagedList(_) => Some(1),
         }
     }
 }
@@ -379,13 +384,13 @@ fn direct_aggregate_shape(program: &mir::Program, ty: &Type) -> Option<Aggregate
                 }
             }
         }
+        Type::List(element) => Some(AggregateShape::ManagedList((**element).clone())),
         Type::Never
         | Type::Unit
         | Type::Bool
         | Type::Int
         | Type::Float
         | Type::Text
-        | Type::List(_)
         | Type::Parameter(_)
         | Type::AssociatedProjection { .. }
         | Type::Task(_)
@@ -545,6 +550,10 @@ impl<'program> AggregatePlanner<'program> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the bounded worklist keeps List cycle breaking and every direct aggregate eligibility rule in one auditable traversal"
+    )]
     pub(crate) fn supports_value_type(&mut self, ty: &Type) -> bool {
         if is_direct_scalar(ty) {
             return true;
@@ -562,82 +571,130 @@ impl<'program> AggregatePlanner<'program> {
             return false;
         }
 
-        // Exit frames keep cycle detection path-local. Repeated children are
-        // expanded because validator budgets count occurrences, not identities.
-        let mut pending = vec![(ty.clone(), 1_usize, false, true)];
-        let mut visiting = BTreeSet::new();
+        // List edges are physical cycle breakers, but their element values are
+        // still checked as independent closed roots. Sharing discoveries across
+        // those roots makes mutually recursive records connected only through
+        // Lists finite without admitting a by-value cycle.
+        let mut semantic_roots = vec![ty.clone()];
         let mut discovered = BTreeMap::new();
         let mut structural_nodes = 0_usize;
         let mut uses_text_aggregate_leaf = false;
         let mut supported = true;
-        while let Some((semantic, depth, exiting, text_aggregate_path)) = pending.pop() {
-            if exiting {
-                visiting.remove(&semantic);
+        while let Some(root) = semantic_roots.pop() {
+            if is_direct_scalar(&root)
+                || self.planned.contains_key(&root)
+                || discovered.contains_key(&root)
+            {
                 continue;
             }
-            if depth > crate::repr::DIRECT_PRODUCT_MAX_NESTING_DEPTH
-                || !visiting.insert(semantic.clone())
-            {
+            if root == Type::Text {
+                if self.supports_managed_text {
+                    uses_text_aggregate_leaf = true;
+                } else {
+                    supported = false;
+                }
+                continue;
+            }
+            if concrete_type_node_count(&root).is_none() {
                 supported = false;
                 break;
             }
-            if let Type::Nominal(id, _) = &semantic
-                && !self.supports_nominal_schema(*id)
-            {
-                supported = false;
-                break;
-            }
-            let Some(shape) = direct_aggregate_shape(self.program, &semantic) else {
-                supported = false;
-                break;
-            };
-            let Some(next_structural_nodes) = shape
-                .structural_cost()
-                .and_then(|cost| structural_nodes.checked_add(cost))
-            else {
-                supported = false;
-                break;
-            };
-            if next_structural_nodes > crate::repr::DIRECT_PRODUCT_MAX_STRUCTURAL_NODES {
-                supported = false;
-                break;
-            }
-            structural_nodes = next_structural_nodes;
-            let child_text_aggregate_path = text_aggregate_path
-                && matches!(
-                    shape,
-                    AggregateShape::Product(_)
-                        | AggregateShape::InvariantProduct(_)
-                        | AggregateShape::Sum(_)
-                );
-            let mut children = Vec::new();
-            for field in shape.dependencies() {
-                if is_direct_scalar(field) {
+            // Exit frames keep ordinary by-value cycle detection path-local.
+            // List elements are queued above as fresh semantic roots instead.
+            let mut pending = vec![(root, 1_usize, false, true)];
+            let mut visiting = BTreeSet::new();
+            while let Some((semantic, depth, exiting, managed_path)) = pending.pop() {
+                if exiting {
+                    visiting.remove(&semantic);
                     continue;
                 }
-                if field == &Type::Text {
-                    if !child_text_aggregate_path || !self.supports_managed_text {
+                if depth > crate::repr::DIRECT_PRODUCT_MAX_NESTING_DEPTH
+                    || !visiting.insert(semantic.clone())
+                {
+                    supported = false;
+                    break;
+                }
+                if self.planned.contains_key(&semantic) || discovered.contains_key(&semantic) {
+                    visiting.remove(&semantic);
+                    continue;
+                }
+                if let Type::Nominal(id, _) = &semantic
+                    && !self.supports_nominal_schema(*id)
+                {
+                    supported = false;
+                    break;
+                }
+                let Some(shape) = direct_aggregate_shape(self.program, &semantic) else {
+                    supported = false;
+                    break;
+                };
+                let Some(next_structural_nodes) = shape
+                    .structural_cost()
+                    .and_then(|cost| structural_nodes.checked_add(cost))
+                else {
+                    supported = false;
+                    break;
+                };
+                if next_structural_nodes > crate::repr::DIRECT_PRODUCT_MAX_STRUCTURAL_NODES {
+                    supported = false;
+                    break;
+                }
+                structural_nodes = next_structural_nodes;
+                if let AggregateShape::ManagedList(element) = &shape {
+                    if !managed_path || !self.supports_managed_text {
                         supported = false;
                         break;
                     }
-                    uses_text_aggregate_leaf = true;
+                    if element == &Type::Text {
+                        if !self.supports_managed_text {
+                            supported = false;
+                            break;
+                        }
+                        uses_text_aggregate_leaf = true;
+                    } else if !is_direct_scalar(element) {
+                        semantic_roots.push(element.clone());
+                    }
+                    discovered.entry(semantic.clone()).or_insert(shape);
+                    visiting.remove(&semantic);
                     continue;
                 }
-                children.push(field.clone());
+                let child_managed_path = managed_path
+                    && matches!(
+                        shape,
+                        AggregateShape::Product(_)
+                            | AggregateShape::InvariantProduct(_)
+                            | AggregateShape::Sum(_)
+                    );
+                let mut children = Vec::new();
+                for field in shape.dependencies() {
+                    if is_direct_scalar(field) {
+                        continue;
+                    }
+                    if field == &Type::Text {
+                        if !child_managed_path || !self.supports_managed_text {
+                            supported = false;
+                            break;
+                        }
+                        uses_text_aggregate_leaf = true;
+                        continue;
+                    }
+                    children.push(field.clone());
+                }
+                if !supported {
+                    break;
+                }
+                discovered.entry(semantic.clone()).or_insert(shape);
+                pending.push((semantic, depth, true, managed_path));
+                pending.extend(
+                    children
+                        .into_iter()
+                        .rev()
+                        .map(|child| (child, depth.saturating_add(1), false, child_managed_path)),
+                );
             }
             if !supported {
                 break;
             }
-            discovered.entry(semantic.clone()).or_insert(shape);
-            pending.push((semantic, depth, true, text_aggregate_path));
-            pending.extend(children.into_iter().rev().map(|child| {
-                (
-                    child,
-                    depth.saturating_add(1),
-                    false,
-                    child_text_aggregate_path,
-                )
-            }));
         }
 
         if supported {
@@ -667,6 +724,10 @@ pub(crate) struct AggregatePlan {
 }
 
 impl AggregatePlan {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "registration preserves one explicit dependency order across List pointers, products, sums, and transparent aliases"
+    )]
     pub(crate) fn register(
         self,
         builder: &mut ProgramBuilder,
@@ -681,6 +742,14 @@ impl AggregatePlan {
             {
                 return Err(AggregateRegistrationError::Inconsistent(format!(
                     "tuple plan {semantic:?} does not match its element types"
+                )));
+            }
+            if let AggregateShape::ManagedList(element) = shape
+                && !is_direct_product_leaf(element)
+                && !self.entries.contains_key(element)
+            {
+                return Err(AggregateRegistrationError::Inconsistent(format!(
+                    "managed List {semantic:?} has an unplanned element value type"
                 )));
             }
             if shape
@@ -731,6 +800,11 @@ impl AggregatePlan {
                 (Type::Nominal(_, _), AggregateShape::Sum(variants)) => {
                     builder.add_sum_type(semantic.clone(), variants)
                 }
+                (Type::List(element), AggregateShape::ManagedList(planned))
+                    if element.as_ref() == planned =>
+                {
+                    builder.add_managed_list_type(semantic.clone())
+                }
                 _ => {
                     return Err(AggregateRegistrationError::Inconsistent(format!(
                         "direct-type plan contains invalid semantic type {semantic:?}"
@@ -771,6 +845,47 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn managed_list_breaks_by_value_recursion_but_checks_its_element_graph() {
+        let node = TypeId(0);
+        let node_type = Type::Nominal(node, Vec::new());
+        let list_type = Type::List(Box::new(node_type.clone()));
+        let program = Program {
+            types: vec![TypeDef {
+                id: node,
+                name: "Node".into(),
+                span: Span::default(),
+                type_parameters: 0,
+                kind: TypeDefKind::Record {
+                    fields: vec![loom_mir::FieldDef {
+                        name: "children".into(),
+                        ty: list_type.clone(),
+                        span: Span::default(),
+                    }],
+                    invariant: None,
+                },
+            }],
+            ..Program::default()
+        };
+        let mut planner = AggregatePlanner::new(&program, true);
+        assert!(planner.supports_value_type(&node_type));
+        assert!(planner.supports_value_type(&list_type));
+        assert!(
+            !planner.supports_value_type(&Type::List(Box::new(Type::Task(Box::new(Type::Int),))))
+        );
+
+        let mut builder = ProgramBuilder::new(crate::TargetLayout::new(64).expect("target"));
+        planner
+            .finish()
+            .register(&mut builder)
+            .unwrap_or_else(|_| panic!("register recursive List-broken plan"));
+        assert!(builder.type_id(&node_type).is_some());
+        assert!(builder.type_id(&list_type).is_some());
+
+        let mut unsupported_target = AggregatePlanner::new(&program, false);
+        assert!(!unsupported_target.supports_value_type(&list_type));
+    }
 
     #[test]
     fn non_regular_generic_recursion_is_rejected_before_substitution_growth() {

@@ -253,6 +253,18 @@ fn write_instruction(
             write_arguments(output, payload)?;
             write!(output, ")")
         }
+        InstructionKind::ListConstruct { elements } => {
+            write!(output, "list.construct (")?;
+            write_arguments(output, elements)?;
+            write!(output, ")")
+        }
+        InstructionKind::ListAppend { list, value } => {
+            write!(output, "list.append %{list}, %{value}")
+        }
+        InstructionKind::ListLength { list } => write!(output, "list.length %{list}"),
+        InstructionKind::ListGet { list, index } => {
+            write!(output, "list.get %{list}, %{index}")
+        }
         InstructionKind::BoolNot { value } => write!(output, "bool.not %{value}"),
         InstructionKind::BoolCompare {
             predicate,

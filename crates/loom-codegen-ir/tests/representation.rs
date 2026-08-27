@@ -65,6 +65,47 @@ fn target_pointer_width_is_validated_at_the_boundary() {
 }
 
 #[test]
+fn managed_lists_are_distinct_direct_pointers_and_64_bit_only() {
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let integers = Type::List(Box::new(Type::Int));
+    let nested = Type::List(Box::new(integers.clone()));
+    let integer_list = builder
+        .add_managed_list_type(integers.clone())
+        .expect("List[Int]");
+    let nested_list = builder
+        .add_managed_list_type(nested.clone())
+        .expect("List[List[Int]]");
+    assert_ne!(integer_list, nested_list);
+    for (semantic, ty) in [(integers, integer_list), (nested, nested_list)] {
+        let value = builder
+            .representations()
+            .value_type(ty)
+            .expect("List value type");
+        assert_eq!(value.semantic(), &semantic);
+        assert_eq!(
+            builder.representations().repr(value.repr()),
+            Some(&Repr::ManagedPointer)
+        );
+    }
+    assert_eq!(
+        builder
+            .add_managed_list_type(Type::List(Box::new(Type::Int)))
+            .expect_err("duplicate List registration")
+            .code(),
+        BuildErrorCode::InvalidListType
+    );
+
+    let mut narrow = ProgramBuilder::new(TargetLayout::new(32).expect("target"));
+    assert_eq!(
+        narrow
+            .add_managed_list_type(Type::List(Box::new(Type::Int)))
+            .expect_err("32-bit List must fail closed")
+            .code(),
+        BuildErrorCode::InvalidListType
+    );
+}
+
+#[test]
 fn immortal_text_is_explicit_64_bit_only_and_not_a_product_leaf() {
     let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
     assert_eq!(builder.type_id(&Type::Text), None);

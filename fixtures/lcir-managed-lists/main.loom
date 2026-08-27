@@ -1,0 +1,117 @@
+module lcir_managed_lists
+
+enum Problem { WrongValue }
+
+record Pair {
+    left Text
+    right Text
+}
+
+enum Choice {
+    Missing
+    Textual(Text)
+    Pairing(Pair)
+    Nested(List[Option[Text]])
+}
+
+record Holder { values List[Text] }
+
+record Node {
+    label Text
+    children List[Node]
+}
+
+fn join(left Text, right Text) Text { left.concat(right) }
+
+fn retain(values List[Text], takeValues Bool) List[Text] {
+    let fallback = ["Fallback"]
+    if takeValues { values } else { fallback }
+}
+
+fn firstText(values List[Text]) Text {
+    match values.get(0) {
+        Some(value) => value
+        None => "Missing"
+    }
+}
+
+fn choiceText(values List[Choice], index Int) Text {
+    match values.get(index) {
+        Some(Choice.Textual(value)) => value
+        Some(Choice.Pairing(pair)) => pair.left
+        Some(Choice.Nested(nested)) => match nested.get(0) {
+            Some(Some(value)) => value
+            Some(None) => "None"
+            None => "Missing"
+        }
+        Some(Choice.Missing) => "Missing"
+        None => "Missing"
+    }
+}
+
+impl Holder {
+    method append(mut self, value Text) Unit {
+        self.values.add(value)
+        Unit
+    }
+}
+
+fn verdict(condition Bool) Result[Unit, Problem] {
+    if condition { Ok(Unit) } else { Err(Problem.WrongValue) }
+}
+
+fn verify() Result[Unit, Problem] {
+    var integers = [1, 2]
+    let integerAlias = integers
+    integers.add(3)
+
+    let kept = join("K", "eep")
+    var texts = [kept, "Second"]
+    let textAlias = texts
+    texts.add(join("Th", "ird"))
+    let retained = retain(texts, true)
+
+    let options = [Some(kept), None]
+    let pairs = [Pair { left = kept, right = kept }]
+    let choices = [
+        Choice.Missing,
+        Choice.Textual(kept),
+        Choice.Pairing(Pair { left = kept, right = kept }),
+        Choice.Nested(options),
+    ]
+    let nested = [texts, textAlias]
+    let empty = List[Text]()
+    var holder = Holder { values = textAlias }
+    holder.append(kept)
+    let leaf = Node { label = kept, children = List[Node]() }
+    let nodes = [leaf]
+
+    verdict(
+        integers.length() == 3
+        && integerAlias.length() == 2
+        && match integers.get(2) { Some(value) => value == 3, None => false }
+        && texts.length() == 3
+        && textAlias.length() == 2
+        && firstText(retained) == "Keep"
+        && match options.get(0) { Some(Some(value)) => value == "Keep", _ => false }
+        && match pairs.get(0) { Some(pair) => pair.right == "Keep", None => false }
+        && choiceText(choices, 1) == "Keep"
+        && choiceText(choices, 2) == "Keep"
+        && choiceText(choices, 3) == "Keep"
+        && match nested.get(0) { Some(inner) => inner.length() == 3, None => false }
+        && empty.length() == 0
+        && match empty.get(0) { None => true, Some(_) => false }
+        && match texts.get(-1) { None => true, Some(_) => false }
+        && match texts.get(99) { None => true, Some(_) => false }
+        && holder.values.length() == 3
+        && textAlias.length() == 2
+        && match nodes.get(0) { Some(node) => node.label == "Keep" && node.children.length() == 0, None => false }
+    )
+}
+
+pub fn main() Unit {
+    discard verify()
+    Unit
+}
+
+test fn managedLists() Result[Unit, Problem] { verify() }

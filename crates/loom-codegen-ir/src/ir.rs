@@ -451,6 +451,11 @@ pub enum FloatPredicate {
     OrderedGreaterEqual,
 }
 
+/// Maximum operands copied into one typed List-construction instruction.
+/// Runtime byte limits are validated independently from this hostile-artifact
+/// structural bound.
+pub const LIST_LITERAL_MAX_ELEMENTS: usize = 4096;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InstructionKind {
     Constant(Constant),
@@ -547,6 +552,30 @@ pub enum InstructionKind {
         variant: u32,
         payload: Box<[ValueId]>,
     },
+    /// Constructs one immutable concrete List. Empty construction yields the
+    /// canonical null value and does not collect; nonempty construction is a
+    /// typed repeated-allocation safepoint.
+    ListConstruct {
+        elements: Box<[ValueId]>,
+    },
+    /// Produces a new immutable List containing all old elements followed by
+    /// `value`. Both operands remain independently usable and must be rooted
+    /// across the typed repeated-allocation safepoint.
+    ListAppend {
+        list: ValueId,
+        value: ValueId,
+    },
+    /// Returns zero for the canonical null empty List, otherwise its checked
+    /// nonnegative element count. This operation cannot collect.
+    ListLength {
+        list: ValueId,
+    },
+    /// Performs a checked read and returns the canonical Option[element]
+    /// closed sum. Null, negative, and out-of-bounds indexes produce None.
+    ListGet {
+        list: ValueId,
+        index: ValueId,
+    },
     BoolNot {
         value: ValueId,
     },
@@ -601,6 +630,8 @@ impl InstructionKind {
             Self::Constant(_) | Self::TextLiteral { .. } => Vec::new(),
             Self::TextLength { text } => vec![*text],
             Self::TextGet { text, index, .. } => vec![*text, *index],
+            Self::ListConstruct { elements } => elements.to_vec(),
+            Self::ListLength { list } => vec![*list],
             Self::TextContains { text, needle } => vec![*text, *needle],
             Self::ProductConstruct { fields } | Self::InvariantRecordProven { fields } => {
                 fields.to_vec()
@@ -623,6 +654,8 @@ impl InstructionKind {
             | Self::FloatBinary { left, right, .. }
             | Self::IntCompare { left, right, .. }
             | Self::FloatCompare { left, right, .. } => vec![*left, *right],
+            Self::ListAppend { list, value } => vec![*list, *value],
+            Self::ListGet { list, index } => vec![*list, *index],
             Self::IntSuccessorBelow {
                 value,
                 upper_bound,
