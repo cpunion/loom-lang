@@ -6575,8 +6575,8 @@ fn typed_static_task_all_uses_exact_direct_and_first_class_codegen() {
                 line.starts_with("@loom.lcir.task_join_all.") && line.contains(".descriptor =")
             })
             .count(),
-        1,
-        "the two identical first-class Task.all sites must share one descriptor:\n{}",
+        2,
+        "two identical sites must share one descriptor while a distinct shape gets another:\n{}",
         lcir.ir
     );
     assert_eq!(
@@ -6587,8 +6587,22 @@ fn typed_static_task_all_uses_exact_direct_and_first_class_codegen() {
                     && line.contains(" i32 @loom.lcir.task_join_all.resume.")
             })
             .count(),
-        1,
-        "the two identical first-class Task.all sites must share one callback:\n{}",
+        2,
+        "two identical sites must share one callback while a distinct shape gets another:\n{}",
+        lcir.ir
+    );
+    assert!(
+        lcir.ir.contains(
+            "@loom.lcir.task_join_all.0.root_offsets = private unnamed_addr constant [1 x i64] [i64 32]"
+        ),
+        "the Text-bearing composite must expose its exact completed-result root offset:\n{}",
+        lcir.ir
+    );
+    assert!(
+        lcir.ir.contains(
+            "@loom.lcir.task_join_all.0.live_bitmaps = private unnamed_addr constant [3 x i64] [i64 0, i64 0, i64 1]"
+        ),
+        "only the completed composite state may root its initialized Text result:\n{}",
         lcir.ir
     );
     for forbidden in [

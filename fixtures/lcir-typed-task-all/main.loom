@@ -14,6 +14,14 @@ async fn unitChild() Unit {
     Task.sleep(1).await
 }
 
+async fn immediateNumber(value Int) Int {
+    value + 1
+}
+
+async fn immediateFlag() Bool {
+    true
+}
+
 async fn allocationPressure() Bool {
     Task.sleep(2).await
     var allocated = "x"
@@ -37,6 +45,7 @@ async fn exerciseJoins() Unit {
 
     let combined = Task.all(textChild("stored"), numberChild(22), unitChild())
     let repeated = Task.all(textChild("reused"), numberChild(23), unitChild())
+    let alreadyReady = Task.all(immediateNumber(46), immediateFlag())
     let pressure = allocationPressure()
     let survived = pressure.await
     let storedText, storedNumber, storedUnit = combined.await
@@ -48,6 +57,9 @@ async fn exerciseJoins() Unit {
     assert repeatedText == "reused child"
     assert repeatedNumber == 46
     discard repeatedUnit
+    let readyNumber, readyFlag = alreadyReady.await
+    assert readyNumber == 47
+    assert readyFlag
     Unit
 }
 
