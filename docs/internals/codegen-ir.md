@@ -94,6 +94,16 @@ coverage and selects the atomic legacy route; it is not a lowering defect and
 cannot consume the compiler's call stack. Independent LCIR validation enforces
 the same limits for explicit builder clients.
 
+Projected-place preflight is independently bounded. One place may cross at
+most 64 record fields, and the complete artifact may request at most 65,536
+units of aggregate extraction/reconstruction work. Reads and moves charge one
+unit per field, writes charge the forward extraction plus reverse insertion,
+and inout calls reserve reconstruction on both normal and fault edges. An
+invalid field path, a path through a protected or managed parent, excessive
+depth, or exhausted work budget produces `Unsupported(ProjectedPlace)` during
+classification. The whole artifact then selects the legacy route before any
+LCIR value or block is allocated.
+
 `ValueType` entries are representation alternatives, not a global uniqueness
 claim for a semantic type. A separate canonical registration table selects the
 ordinary SSA value representation used by this plan. This permits later plans
@@ -186,9 +196,8 @@ LCIR are structured `LoweringError` values and never select fallback.
 The current lowering coverage is synchronous scalar, structural tuple,
 closed-record, concrete closed-enum, and established refined signatures,
 including bounded direct generic calls whose concrete types use those
-representations. It covers
-constants, locals and assignment,
-tuple construction and immutable `let` destructuring, blocks and conditionals,
+representations. It covers constants, locals and assignment, tuple construction
+and immutable `let` destructuring, blocks and conditionals,
 short-circuit Boolean operations, integer ranges, pure scalar operations,
 checked integer arithmetic, and direct/readonly-inherent calls including
 recursion. Plain record construction, whole-value copy and move, nested field
@@ -216,12 +225,40 @@ and the complete match may require at most 1,024 CFG blocks including its join.
 All limits are checked before the lowerer allocates any match LCIR; exceeding a
 limit selects whole-artifact fallback. A mutable inherent
 receiver is a functional inout parameter:
-the callee returns its current product on both normal and fault exits. Only a
-whole local may cross that boundary; projected inout selects atomic fallback.
+the callee returns its current product on both normal and fault exits. A direct
+mutable inherent call may also borrow an invariant-free record at a projected
+place when the leaf has the exact receiver type. Its leaf writeback is rebuilt
+into the current aggregate root on both exits; unsupported receiver shapes
+select atomic fallback.
 A dense reverse-call worklist computes the least fault-effect fixed
 point in linear time and chooses direct calls versus fallible invokes. Cleanup
 registration and assertions are conservatively unsupported together until
 their complete normal/return/fault ladders can be emitted.
+
+## Typed projected places
+
+Lowering turns each admitted MIR `Place` into a `PlacePlan`. The plan records
+the root local, root and leaf `ValueTypeId`/`ReprId` pairs, and the exact
+semantic and physical identity of every parent and field step. It contains no
+address, executor value, universal `Value`, or runtime callback. Independent
+LCIR validation still checks the resulting ordinary product instructions and
+their exact types.
+
+`Copy` and `Move` read a projected leaf with a forward `ProductExtract` chain.
+A projected `Move` also consumes the complete MIR root; Loom does not create a
+partially initialized aggregate. Assignment extracts the required parents and
+rebuilds them in reverse with `ProductInsert`. The reconstruction always begins
+from the latest root in the SSA environment, not the snapshot used to evaluate
+an earlier receiver. A later argument may therefore update a disjoint sibling
+without that update being overwritten when the receiver writeback returns.
+
+Projected inout evaluation extracts the receiver at its source argument
+position. An infallible call returns the leaf writeback directly. A fallible
+call gives both its normal block and a dedicated fault bridge the same typed
+leaf writeback; each edge reconstructs the complete root before continuing or
+requesting the enclosing fault target. This ordering keeps the SSA environment
+ready for cleanup observation even though cleanup lowering itself remains a
+separate unsupported slice.
 
 Lowering constructs canonical SSA directly: a single continuing branch does
 not gain a join, values already dominating every predecessor do not gain

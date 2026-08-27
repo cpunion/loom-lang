@@ -152,9 +152,13 @@ infallible call with source result `T` and ordered writebacks `W...` returns
 `{ T, W... }`. A fallible call returns `{ i32 status, T, W... }` and receives
 the usual fault-context pointer. Both normal and fault exits carry the current
 receiver value, so a mutation completed before a later fault remains visible
-to the caller. Only whole-local inout arguments are in this slice; projected
-inout, contracts, managed fields, and runtime-checked construction select
-atomic whole-artifact fallback.
+to the caller. An admitted projected receiver is passed as the same direct leaf
+product. Its returned leaf is inserted through the statically typed field path
+on the normal edge and before fault propagation on the unwind edge. LLVM sees
+only `extractvalue`, `insertvalue`, direct aggregate values, and the existing
+functional return ABI; no proxy allocation, universal value, or runtime
+writeback helper is introduced. Protected/managed projections, contracts, and
+runtime-checked construction still select atomic whole-artifact fallback.
 
 Fresh-source proven record invariants and refined predicates do not add an LLVM
 wrapper or check. LCIR retains their distinct semantic types and proof opcodes,

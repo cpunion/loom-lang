@@ -39,6 +39,9 @@ artifact, or runtime compatibility.
 - Eligible closed enums and exhaustive matches now use bounded typed LCIR
   lowering with direct native sum layouts. Float patterns follow IEEE ordered
   equality, including equal signed zeros and non-matching NaNs.
+- Typed LCIR now lowers bounded nested record places through exact product SSA.
+  Projected mutable receivers reconstruct the latest aggregate root on normal
+  and fault edges without universal values, proxy storage, or runtime helpers.
 - Interpreted MIR version 20 permits projected moves. They return the selected
   leaf and consume the complete aggregate root, preserving a simple initialized
   or moved local state without partial-initialization compatibility.
