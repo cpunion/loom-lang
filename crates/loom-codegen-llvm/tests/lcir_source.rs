@@ -14,7 +14,11 @@ use loom_codegen_llvm::{
 };
 use loom_core::{
     Span,
-    runtime_fault::{INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE},
+    runtime_fault::{
+        INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE,
+        INVALID_SLEEP_DURATION_FAULT_CODE, INVALID_SLEEP_DURATION_FAULT_MESSAGE,
+        SLEEP_DURATION_OVERFLOW_FAULT_CODE, SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE,
+    },
 };
 use loom_driver::AnalysisHost;
 use loom_interpreter::{ExecutionFailure, Interpreter, TestStatus, Value};
@@ -6312,6 +6316,171 @@ fn typed_async_state_machines_survive_forced_relocation_on_all_targets() {
         )
         .unwrap_or_else(|error| panic!("emit typed async object for {target}: {error}"));
         assert!(object.is_file(), "missing typed async object for {target}");
+    }
+}
+
+#[test]
+fn typed_sleep_uses_checked_lcir_and_the_narrow_timer_runtime_abi() {
+    let source = include_str!("../../../fixtures/lcir-typed-sleep/main.loom");
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let prepared = prepare_native_object(
+        &program,
+        EmitOptions::run("main"),
+        NativeRoutePolicy::Automatic,
+    )
+    .expect("prepare automatic typed-sleep route");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+
+    let unsupported = lower_typed_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(32).expect("32-bit target layout"),
+    )
+    .expect("classify typed sleep for a 32-bit target");
+    assert!(
+        matches!(unsupported, LoweringOutcome::Unsupported(_)),
+        "typed timer Task handles must fail closed outside the pinned 64-bit ABI: {unsupported:?}"
+    );
+
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("product.extract"), "{dump}");
+    assert_eq!(dump.matches("task.sleep").count(), 3, "{dump}");
+    for suffix in ["main", "waitInt", "waitDuration"] {
+        let function = artifact
+            .functions()
+            .iter()
+            .find(|function| function.name().ends_with(suffix))
+            .unwrap_or_else(|| panic!("missing typed-sleep function `{suffix}`"));
+        assert!(
+            function.effects().contains(Effects::MAY_FAULT)
+                && function.effects().contains(Effects::NEEDS_EXECUTOR),
+            "{suffix}: {dump}"
+        );
+    }
+
+    let lcir = emit_and_run_lcir_with_options(
+        &artifact,
+        "source-typed-sleep-release",
+        NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
+    );
+    let legacy = emit_and_run_legacy(&program, "main", "legacy-typed-sleep");
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(lcir.output.stdout, b"Unit\n");
+    assert_eq!(lcir.output.stdout, legacy.stdout);
+    assert_eq!(lcir.output.stderr, legacy.stderr);
+    for required in [
+        "llvm.smul.with.overflow.i64",
+        "llvm.uadd.with.overflow.i64",
+        "loom_wait_now_ns",
+        "loom_typed_timer_task_create_v1",
+    ] {
+        assert!(
+            lcir.ir.contains(required),
+            "missing `{required}` from typed timer release IR:\n{}",
+            lcir.ir
+        );
+    }
+    for forbidden in ["loom_task_from_wait_source", "%loom.Value", "loom.Value"] {
+        assert!(
+            !lcir.ir.contains(forbidden),
+            "unexpected `{forbidden}` in typed timer release IR:\n{}",
+            lcir.ir
+        );
+    }
+
+    for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
+        let directory = tempfile::tempdir().expect("create typed-sleep target output");
+        let object = directory.path().join(if target.contains("windows") {
+            "typed-sleep.obj"
+        } else {
+            "typed-sleep.o"
+        });
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit typed sleep object for {target}: {error}"));
+        assert!(object.is_file(), "missing typed sleep object for {target}");
+    }
+}
+
+#[test]
+fn typed_sleep_source_faults_match_interpreter_and_legacy_codegen() {
+    let source = r"module lcir_typed_sleep_faults
+
+pub async fn negativeMain() Unit {
+    let timer = Task.sleep(-1)
+    timer.await
+    Unit
+}
+
+pub async fn overflowMain() Unit {
+    let timer = Task.sleep(9223372036854775807)
+    timer.await
+    Unit
+}
+";
+    let program = compile_source(source);
+    for (entry, code, message) in [
+        (
+            "negativeMain",
+            INVALID_SLEEP_DURATION_FAULT_CODE,
+            INVALID_SLEEP_DURATION_FAULT_MESSAGE,
+        ),
+        (
+            "overflowMain",
+            SLEEP_DURATION_OVERFLOW_FAULT_CODE,
+            SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE,
+        ),
+    ] {
+        let expected = serde_json::to_value(
+            interpret_run(&program, entry).expect_err("Task.sleep construction must fault"),
+        )
+        .expect("serialize interpreter sleep fault");
+        assert_eq!(expected["fault"]["code"], code, "interpreter {entry}");
+        assert_eq!(expected["fault"]["message"], message, "interpreter {entry}");
+        let artifact = lower_source_artifact(
+            &program,
+            &SourceArtifactRequest::Run {
+                entry: entry.into(),
+            },
+        );
+        let lcir = emit_and_run_lcir_machine_fault(&artifact, &format!("lcir-sleep-{entry}"));
+        let legacy =
+            emit_and_run_legacy_machine_fault(&program, entry, &format!("legacy-sleep-{entry}"));
+        assert!(!lcir.output.status.success(), "{entry}: {:?}", lcir.output);
+        assert!(!legacy.status.success(), "{entry}: {legacy:?}");
+        assert_eq!(machine_fault(&lcir.output), expected, "LCIR {entry}");
+        let legacy_fault = machine_fault(&legacy);
+        // The frozen legacy emitter attributes this constructor fault to the
+        // whole async function. Keep its pre-existing coarse-span debt out of
+        // the checked-LCIR slice while pinning every observable fault field.
+        assert_eq!(
+            legacy_fault["channel"], expected["channel"],
+            "legacy {entry}"
+        );
+        assert_eq!(
+            legacy_fault["fault"]["code"], expected["fault"]["code"],
+            "legacy {entry}"
+        );
+        assert_eq!(
+            legacy_fault["fault"]["message"], expected["fault"]["message"],
+            "legacy {entry}"
+        );
     }
 }
 

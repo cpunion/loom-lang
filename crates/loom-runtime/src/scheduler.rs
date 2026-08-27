@@ -1539,7 +1539,7 @@ const TYPED_TIMER_REGISTRATION_FAULT_CODE: &str = "TimerRegistrationFault";
 const TYPED_TIMER_REGISTRATION_FAULT_MESSAGE: &str = "could not register timer wait";
 
 /// Runtime-owned callback for the narrow typed `Task[Unit]` timer factory.
-/// The absolute deadline lives in the scheduler's existing copied WaitSource;
+/// The absolute deadline lives in the scheduler's existing copied `WaitSource`;
 /// the one-byte typed frame is intentionally rootless and carries no source
 /// value or legacy universal envelope.
 unsafe extern "C" fn resume_typed_timer(
@@ -2502,7 +2502,7 @@ pub unsafe extern "C" fn typed_task_abort_unpublished_v1(
 }
 
 /// Creates and publishes a zero-root typed `Task[Unit]` backed by the existing
-/// platform-neutral timer WaitSource and executor reactor.
+/// platform-neutral timer `WaitSource` and executor reactor.
 #[unsafe(export_name = "loom_typed_timer_task_create_v1")]
 pub unsafe extern "C" fn typed_timer_task_create_v1(
     executor: *mut LoomExecutor,

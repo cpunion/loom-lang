@@ -126,6 +126,62 @@ fn async_scalar_call_and_await_lower_to_a_checked_coroutine_plan() {
 }
 
 #[test]
+fn task_sleep_normalizes_duration_and_preserves_first_class_task_flow() {
+    let source = r"module lcir_typed_sleep
+
+import standard.time.milliseconds
+
+pub async fn main() Unit {
+    let delay = milliseconds(0)
+    let timer = Task.sleep(delay)
+    let marker = 42
+    timer.await
+    assert marker == 42
+    Unit
+}
+";
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("first-class typed timer Task must lower completely")
+    };
+    let main = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("main instance");
+    assert!(main.effects().contains(loom_codegen_ir::Effects::MAY_FAULT));
+    assert!(
+        main.effects()
+            .contains(loom_codegen_ir::Effects::NEEDS_EXECUTOR)
+    );
+    assert_eq!(
+        main.coroutine()
+            .expect("main coroutine")
+            .suspensions()
+            .len(),
+        1
+    );
+    assert!(main.instructions().iter().any(|instruction| matches!(
+        instruction.kind(),
+        InstructionKind::ProductExtract { field: 0, .. }
+    )));
+    assert!(main.blocks().iter().any(|block| matches!(
+        block.terminator().map(loom_codegen_ir::Terminator::kind),
+        Some(TerminatorKind::TaskSleep { .. })
+    )));
+    let dump = dump_program(artifact.program());
+    let extract = dump.find("product.extract").expect("Duration extraction");
+    let sleep = dump.find("task.sleep").expect("typed timer terminator");
+    let await_task = dump.find("task.await").expect("later first-class await");
+    assert!(extract < sleep && sleep < await_task, "{dump}");
+    let identity = artifact_identity(&artifact);
+    assert!(identity.contains("task.sleep"), "{identity}");
+    assert!(
+        dump.contains("effects=may_fault+needs_runtime+needs_executor+may_suspend"),
+        "{dump}"
+    );
+}
+
+#[test]
 fn typed_task_handles_fail_closed_on_a_32_bit_target() {
     let mir = compile(TYPED_ASYNC_SOURCE);
     let outcome = lower_typed_artifact(
@@ -324,15 +380,24 @@ pub async fn main() Unit {
     Unit
 }
 ",
+        r"module sync_task_sleep
+
+fn helper() Task[Unit] { Task.sleep(0) }
+
+pub async fn main() Unit {
+    helper().await
+    Unit
+}
+",
     ] {
         let LoweringOutcome::Unsupported(report) = lower_run(source) else {
             panic!("a sync function cannot receive an implicit coroutine executor")
         };
         assert!(
-            report
-                .items()
-                .iter()
-                .any(|item| item.feature() == UnsupportedFeature::AsyncFunction),
+            report.items().iter().any(|item| matches!(
+                item.feature(),
+                UnsupportedFeature::AsyncFunction | UnsupportedFeature::TaskOperation
+            )),
             "{report:#?}"
         );
     }

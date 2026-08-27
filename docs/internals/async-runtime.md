@@ -29,13 +29,13 @@ offsets, and one live bitmap per resume state plus completed-result state.
 root. No universal value slot, witness arena, runtime type tag, or synchronous
 expression executor is introduced by this route.
 
-LCIR has explicit `task.create` and `task.await` control flow. Await stores the
-checked live row, registers a structured one-child join, publishes its state,
-and returns pending. A completion notification puts the parent back in the
-ready queue; the callback takes the child's exact typed result, reloads live
-values, and enters the checked continuation. Typed async run/test harnesses
-create one executor for the root Task, drive it to a terminal state, take the
-exact result, and destroy the executor.
+LCIR has explicit `task.create`, `task.sleep`, and `task.await` control flow.
+Await stores the checked live row, registers a structured one-child join,
+publishes its state, and returns pending. A completion notification puts the
+parent back in the ready queue; the callback takes the child's exact typed
+result, reloads live values, and enters the checked continuation. Typed async
+run/test harnesses create one executor for the root Task, drive it to a terminal
+state, take the exact result, and destroy the executor.
 
 Current typed coverage includes cleanup-free, non-inout coroutines with direct
 scalar/refined/product/Text parameters, results, and live values, plus
@@ -51,8 +51,8 @@ state; it never converts either state into a source `Result`. Task handles may
 be live only as suspension bookkeeping.
 
 Selected async roots with `requires`, async inout/writeback, lexical cleanup
-across suspension, timers/readiness, Task combinators, List/TextMap frame
-values, and dynamic concepts still select the complete legacy route.
+across suspension, raw readiness, Task combinators, List/TextMap frame values,
+and dynamic concepts still select the complete legacy route.
 
 ## Runtime and executor
 
@@ -100,6 +100,31 @@ The public safe `WaitSet` utility duplicates registered I/O handles, so a
 caller closing or reusing its source cannot invalidate the registration.
 Compiler-generated resource tasks likewise retain or duplicate the native
 resource according to the scoped operation's ownership contract.
+
+## Typed timer tasks
+
+Checked `Task.sleep` is admitted only inside an async function. The LCIR
+terminator consumes canonical `Int` milliseconds; lowering extracts the single
+field from a source `Duration` before reaching that boundary. It has explicit
+normal and fault edges and contributes `MAY_FAULT` plus `NEEDS_EXECUTOR`, but it
+does not suspend or collect. A negative input raises `InvalidSleepDuration`.
+Signed millisecond-to-nanosecond multiplication and unsigned monotonic-deadline
+addition are checked separately; either overflow raises
+`SleepDurationOverflow`.
+
+On the normal edge LLVM calls
+`loom_typed_timer_task_create_v1(executor, deadline_ns)`. This narrow factory
+creates and publishes a zero-root, zero-sized-result typed `Task[Unit]`. Its
+runtime-owned callback registers the existing timer `WaitSource`, returns
+pending, and publishes Unit when the one-shot notification resumes it. A
+registration failure records `TimerRegistrationFault` as the Task's primary
+fault. Cancellation removes an outstanding registration, and its generation
+prevents a stale ready notification from re-enqueuing the cancelled Task.
+
+The additive factory advances the native runtime ABI to component 16 and adds
+`typed-timer-v1` plus `runtime-v10` to the exact identity. The typed-task and
+wait wires remain version 1; the timer carries no universal value, moving-GC
+root, or new scheduler protocol.
 
 ## Blocking I/O
 

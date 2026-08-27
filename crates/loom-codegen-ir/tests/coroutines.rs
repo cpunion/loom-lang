@@ -1,7 +1,7 @@
 use loom_codegen_ir::{
     BlockTarget, Constant, CoroutinePlan, CoroutineSuspension, Effects, FaultCode, FaultMetadata,
-    InstructionKind, Origin, ProgramBuilder, Signature, TargetLayout, Terminator, TerminatorKind,
-    ValidationCode, validate_program,
+    InstructionKind, Origin, ProgramBuilder, ResultTarget, Signature, TargetLayout, Terminator,
+    TerminatorKind, UnwindTarget, ValidationCode, validate_program,
 };
 use loom_mir::{FunctionId, Type, TypeId};
 
@@ -136,4 +136,142 @@ fn validator_rejects_a_coroutine_row_without_an_await_edge() {
         error.code() == ValidationCode::InvalidCoroutinePlan
             && error.message().contains("no matching await_task")
     }));
+}
+
+fn task_sleep_program(
+    coroutine: bool,
+    effects: Effects,
+    wrong_result: bool,
+    wrong_milliseconds: bool,
+) -> loom_codegen_ir::Program {
+    let origin = Origin::synthetic(FunctionId(0));
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let unit = builder.type_id(&Type::Unit).expect("Unit");
+    let integer = builder.type_id(&Type::Int).expect("Int");
+    let boolean = builder.type_id(&Type::Bool).expect("Bool");
+    let task_unit = builder
+        .add_task_handle_type(Type::Task(Box::new(Type::Unit)))
+        .expect("Task[Unit]");
+    let task_bool = builder
+        .add_task_handle_type(Type::Task(Box::new(Type::Bool)))
+        .expect("Task[Bool]");
+    let root = builder
+        .declare_function(origin, "coroutine.sleep", Signature::new([], unit), effects)
+        .expect("function");
+    {
+        let mut function = builder.function(root).expect("function builder");
+        if coroutine {
+            function
+                .set_coroutine_plan(CoroutinePlan::new(unit, []))
+                .expect("coroutine plan");
+        }
+        let entry = function.create_block().expect("entry");
+        let normal = function.create_block().expect("normal");
+        let fault = function.create_block().expect("fault");
+        function.set_entry(entry).expect("set entry");
+        let milliseconds = function
+            .append_instruction(
+                entry,
+                if wrong_milliseconds {
+                    InstructionKind::Constant(Constant::Bool(false))
+                } else {
+                    InstructionKind::Constant(Constant::Int(0))
+                },
+                &[if wrong_milliseconds { boolean } else { integer }],
+                origin,
+            )
+            .expect("milliseconds")[0];
+        function
+            .append_block_parameter(normal, if wrong_result { task_bool } else { task_unit })
+            .expect("sleep result");
+        function
+            .terminate(
+                entry,
+                Terminator::new(
+                    TerminatorKind::TaskSleep {
+                        milliseconds,
+                        normal: ResultTarget::new(normal, []),
+                        fault: UnwindTarget::new(fault, []),
+                    },
+                    origin,
+                ),
+            )
+            .expect("task.sleep");
+        let result = function
+            .append_instruction(
+                normal,
+                InstructionKind::Constant(Constant::Unit),
+                &[unit],
+                origin,
+            )
+            .expect("Unit")[0];
+        function
+            .terminate(
+                normal,
+                Terminator::new(TerminatorKind::Return(result), origin),
+            )
+            .expect("return");
+        function
+            .terminate(fault, Terminator::new(TerminatorKind::ResumeFault, origin))
+            .expect("resume fault");
+    }
+    builder.finish()
+}
+
+#[test]
+fn task_sleep_requires_exact_coroutine_effects_and_task_unit_result() {
+    let effects = Effects::MAY_FAULT
+        .union(Effects::NEEDS_EXECUTOR)
+        .with_implications();
+    validate_program(&task_sleep_program(true, effects, false, false))
+        .expect("canonical task.sleep must validate");
+
+    let no_coroutine = validate_program(&task_sleep_program(false, effects, false, false))
+        .expect_err("task.sleep outside a coroutine must fail");
+    assert!(no_coroutine.as_slice().iter().any(|error| {
+        error.code() == ValidationCode::InvalidCoroutinePlan
+            && error
+                .message()
+                .contains("only valid in a checked coroutine")
+    }));
+
+    let wrong_effects = validate_program(&task_sleep_program(
+        true,
+        Effects::NEEDS_EXECUTOR.with_implications(),
+        false,
+        false,
+    ))
+    .expect_err("task.sleep cannot omit MAY_FAULT");
+    assert!(wrong_effects.as_slice().iter().any(|error| {
+        error.code() == ValidationCode::EffectMismatch && error.message().contains("MAY_FAULT")
+    }));
+
+    let missing_executor = validate_program(&task_sleep_program(
+        true,
+        Effects::MAY_FAULT.with_implications(),
+        false,
+        false,
+    ))
+    .expect_err("task.sleep cannot omit NEEDS_EXECUTOR");
+    assert!(missing_executor.as_slice().iter().any(|error| {
+        error.code() == ValidationCode::EffectMismatch && error.message().contains("NEEDS_EXECUTOR")
+    }));
+
+    let wrong_result = validate_program(&task_sleep_program(true, effects, true, false))
+        .expect_err("task.sleep cannot forge Task[Bool] as Task[Unit]");
+    assert!(
+        wrong_result
+            .as_slice()
+            .iter()
+            .any(|error| error.code() == ValidationCode::BlockArgument)
+    );
+
+    let wrong_milliseconds = validate_program(&task_sleep_program(true, effects, false, true))
+        .expect_err("task.sleep milliseconds must be Int");
+    assert!(
+        wrong_milliseconds
+            .as_slice()
+            .iter()
+            .any(|error| error.code() == ValidationCode::TypeMismatch)
+    );
 }

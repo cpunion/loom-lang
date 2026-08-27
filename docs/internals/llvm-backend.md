@@ -450,7 +450,7 @@ is correct.
 
 Object identities are route-separated:
 
-- `loom-lcir-native-object-v21` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v22` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -462,7 +462,7 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v26` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v27` and never suppresses fingerprint
 errors.
 
 The current LCIR domains encode the explicit transitive effect lattice,
@@ -472,7 +472,8 @@ Text semantics, managed leaves inside unboxed products and closed sums,
 monomorphized managed Lists, compiler-private concrete TextMaps, the generic
 collision-free closed-sum carrier, the canonical recursive Json graph, List
 uniqueness certificates, lexical cleanup, and checked coroutine plans with
-typed Task creation, suspension edges, and exact frame-root rows, plus
+typed Task creation, fallible timer construction, suspension edges, and exact
+frame-root rows, plus
 artifact-closed finite dynamic catalogs with candidate-specific precise boxes
 and direct tag-switch dispatch.
 For a `MAY_FAULT` coroutine, each resume callback creates an activation-local
@@ -505,6 +506,14 @@ The additive `loom_runtime_format_float_typed_v1(value, out_cell)` boundary
 publishes canonical Float text through a direct managed pointer. It advances
 the native component to 15 with `format-float-v1` and `runtime-v9`; the
 existing `text-v3` layout, `gc-v9`, and typed allocation wires do not change.
+The additive `loom_typed_timer_task_create_v1(executor, deadline_ns)` boundary
+creates a zero-root typed `Task[Unit]` over the existing timer `WaitSource`.
+The direct emitter uses `llvm.smul.with.overflow.i64`, calls
+`loom_wait_now_ns`, and uses `llvm.uadd.with.overflow.i64` before the factory,
+so the runtime receives an absolute deadline. It does not route through
+`loom_task_from_wait_source` or a universal value. This advances the native
+component to 16 with `typed-timer-v1` and `runtime-v10`; typed-task v1, wait v1,
+`text-v3`, and `gc-v9` remain unchanged.
 
 They also encode closed static-witness method selection and normalized
 associated types. Those proofs are absent from the machine ABI: LLVM receives

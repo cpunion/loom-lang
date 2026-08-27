@@ -38,16 +38,17 @@ const ASYNC_GENERIC_FIXTURE: &str = "fixtures/async-generic-contracts";
 const STANDARD_LIBRARY_FIXTURE: &str = "fixtures/standard-library/main.loom";
 const TYPED_LCIR_FIXTURE: &str = "fixtures/typed-lcir";
 const TYPED_ASYNC_FIXTURE: &str = "fixtures/lcir-typed-async";
+const TYPED_SLEEP_FIXTURE: &str = "fixtures/lcir-typed-sleep";
 const FALLIBLE_TYPED_ASYNC_FIXTURE: &str = "fixtures/lcir-fallible-async";
 const QUALITY_EVIDENCE_SCHEMA_VERSION: u32 = 2;
 
 const CORE03_LEGACY_ROUTE: NativeRouteExpectation = NativeRouteExpectation::LegacyAllowed {
     name: "core03-async-tasks",
-    reason: "Task.sleep, static/dynamic joins, async cleanup, and dynamic concept frames are not yet represented in typed LCIR",
+    reason: "static/dynamic joins, async cleanup, and dynamic concept frames are not yet represented in typed LCIR",
 };
 const ASYNC_GENERIC_LEGACY_ROUTE: NativeRouteExpectation = NativeRouteExpectation::LegacyAllowed {
     name: "async-generic-contract-runtime",
-    reason: "Task.sleep, join/cancellation combinators, generic coroutine frames/contracts, and async cleanup are not yet complete in typed LCIR",
+    reason: "join/cancellation combinators, generic coroutine frames/contracts, and async cleanup are not yet complete in typed LCIR",
 };
 const STANDARD_LIBRARY_LEGACY_ROUTE: NativeRouteExpectation =
     NativeRouteExpectation::LegacyAllowed {
@@ -386,6 +387,16 @@ fn main() {
         report
             .failures
             .push(format!("fallible-typed-async: {error}"));
+    }
+    if let Err(error) = typed_async_gate(
+        &workspace,
+        &runtime,
+        &mut report.gates,
+        &mut report.native_routes,
+        TYPED_SLEEP_FIXTURE,
+        "typed-sleep",
+    ) {
+        report.failures.push(format!("typed-sleep: {error}"));
     }
     match run_c3_repository(
         &workspace,
