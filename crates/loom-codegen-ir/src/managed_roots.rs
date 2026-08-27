@@ -321,14 +321,16 @@ fn collect_safepoint_values(
             for result in instruction.results() {
                 live.remove(result);
             }
-            let collecting = matches!(instruction.kind(), InstructionKind::TextConcat { .. })
-                || matches!(
-                    instruction.kind(),
-                    InstructionKind::DirectCall { callee, .. }
-                        if program.function(*callee).is_some_and(|callee| {
-                            callee.effects().contains(Effects::MAY_COLLECT)
-                        })
-                );
+            let collecting = matches!(
+                instruction.kind(),
+                InstructionKind::TextConcat { .. } | InstructionKind::TextGet { .. }
+            ) || matches!(
+                instruction.kind(),
+                InstructionKind::DirectCall { callee, .. }
+                    if program.function(*callee).is_some_and(|callee| {
+                        callee.effects().contains(Effects::MAY_COLLECT)
+                    })
+            );
             if collecting {
                 site_values.insert(
                     ManagedSafepoint::Instruction(instruction.id()),

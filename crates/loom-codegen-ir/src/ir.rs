@@ -469,6 +469,16 @@ pub enum InstructionKind {
         left: ValueId,
         right: ValueId,
     },
+    /// Selects one Unicode scalar by signed scalar index. The result is the
+    /// canonical closed `Option[Text]` sum: `missing_variant` has no payload
+    /// and `found_variant` carries one managed Text. Missing selection does
+    /// not allocate; successful selection is a moving-GC safepoint.
+    TextGet {
+        text: ValueId,
+        index: ValueId,
+        missing_variant: u32,
+        found_variant: u32,
+    },
     /// Reads the cached Unicode scalar length from a canonical Text object,
     /// whether its checked representation is immortal or managed.
     TextLength {
@@ -581,6 +591,7 @@ impl InstructionKind {
         match self {
             Self::Constant(_) | Self::TextLiteral { .. } => Vec::new(),
             Self::TextLength { text } => vec![*text],
+            Self::TextGet { text, index, .. } => vec![*text, *index],
             Self::TextContains { text, needle } => vec![*text, *needle],
             Self::ProductConstruct { fields } | Self::InvariantRecordProven { fields } => {
                 fields.to_vec()

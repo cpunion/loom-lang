@@ -52,7 +52,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 14")?;
+    writeln!(output, "lcir 15")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -195,6 +195,15 @@ fn write_instruction(
         InstructionKind::TextConcat { left, right } => {
             write!(output, "text.concat %{left}, %{right}")
         }
+        InstructionKind::TextGet {
+            text,
+            index,
+            missing_variant,
+            found_variant,
+        } => write!(
+            output,
+            "text.get %{text}, %{index}, missing {missing_variant}, found {found_variant}"
+        ),
         InstructionKind::TextLength { text } => write!(output, "text.length %{text}"),
         InstructionKind::TextContains { text, needle } => {
             write!(output, "text.contains %{text}, %{needle}")

@@ -52,15 +52,27 @@ pub fn main() Unit {
     )
 }
 
-fn derived_text_program() -> CheckedProgram {
+fn text_get_program() -> CheckedProgram {
     compile_source(
-        r#"module prepared_derived_text
+        r#"module prepared_text_get
 
 pub fn main() Unit {
     discard "value".get(0)
     Unit
 }
 "#,
+    )
+}
+
+fn unsupported_list_program() -> CheckedProgram {
+    compile_source(
+        r"module prepared_list
+
+pub fn main() Unit {
+    discard [1, 2, 3]
+    Unit
+}
+",
     )
 }
 
@@ -82,6 +94,15 @@ fn automatic_route_is_atomic_over_the_reachable_artifact() {
         NativeRoutePolicy::Automatic,
     )
     .expect("prepare managed Text artifact");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+
+    let text_get = text_get_program();
+    let prepared = prepare_native_object(
+        &text_get,
+        EmitOptions::run("main"),
+        NativeRoutePolicy::LcirOnly,
+    )
+    .expect("prepare typed Text.get artifact");
     assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
 
     let managed_tuple = compile_source(
@@ -144,17 +165,17 @@ fn dead() Text { "unreachable" }
 }
 
 #[test]
-fn one_unsupported_test_selects_legacy_for_the_ordered_test_artifact() {
+fn one_unsupported_list_test_selects_legacy_for_the_ordered_test_artifact() {
     let program = compile_source(
-        r#"module prepared_tests
+        r"module prepared_tests
 
 test fn scalar() Unit { Unit }
 
 test fn text() Unit {
-    discard "value".get(0)
+    discard [1, 2, 3]
     Unit
 }
-"#,
+",
     );
     let prepared =
         prepare_native_object(&program, EmitOptions::tests(), NativeRoutePolicy::Automatic)
@@ -208,7 +229,7 @@ fn lcir_only_accepts_a_complete_typed_artifact() {
 
 #[test]
 fn lcir_only_preserves_a_deterministic_structured_support_report() {
-    let program = derived_text_program();
+    let program = unsupported_list_program();
     let prepare = || {
         prepare_native_object(
             &program,
@@ -232,10 +253,10 @@ fn lcir_only_preserves_a_deterministic_structured_support_report() {
         report
             .items()
             .iter()
-            .any(|item| item.feature() == UnsupportedFeature::BuiltinCall),
+            .any(|item| item.feature() == UnsupportedFeature::ListValue),
         "{report:#?}"
     );
-    assert!(first.message().contains("BuiltinCall"), "{first}");
+    assert!(first.message().contains("ListValue"), "{first}");
     assert!(
         first.message().contains(report.items()[0].path()),
         "{first}"
@@ -270,17 +291,17 @@ fn selected_emitters_publish_disjoint_llvm_surfaces() {
     assert!(scalar_ir.contains("loom.lcir.fn"), "{scalar_ir}");
     assert!(!scalar_ir.contains("%loom.Value"), "{scalar_ir}");
 
-    let text = derived_text_program();
-    let text_ir = directory.path().join("text.ll");
-    let mut text_options = EmitOptions::run("main");
-    text_options.emit_ir = Some(text_ir.clone());
-    let text_prepared = prepare_native_object(&text, text_options, NativeRoutePolicy::Automatic)
-        .expect("prepare derived Text artifact");
-    emit_prepared_native_object(&text_prepared, &directory.path().join("text.o"))
+    let list = unsupported_list_program();
+    let list_ir = directory.path().join("list.ll");
+    let mut list_options = EmitOptions::run("main");
+    list_options.emit_ir = Some(list_ir.clone());
+    let list_prepared = prepare_native_object(&list, list_options, NativeRoutePolicy::Automatic)
+        .expect("prepare unsupported List artifact");
+    emit_prepared_native_object(&list_prepared, &directory.path().join("list.o"))
         .expect("emit legacy MIR");
-    let text_ir = std::fs::read_to_string(text_ir).expect("read legacy IR");
-    assert!(text_ir.contains("%loom.Value"), "{text_ir}");
-    assert!(!text_ir.contains("loom.lcir.fn"), "{text_ir}");
+    let list_ir = std::fs::read_to_string(list_ir).expect("read legacy IR");
+    assert!(list_ir.contains("%loom.Value"), "{list_ir}");
+    assert!(!list_ir.contains("loom.lcir.fn"), "{list_ir}");
 }
 
 #[test]

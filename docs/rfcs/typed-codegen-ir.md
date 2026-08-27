@@ -17,10 +17,11 @@ artifact format, an ownership system, or a public FFI ABI.
 The direct foundation and its first production route are described in the
 current [Code generation IR internals](../internals/codegen-ir.md). Ordinary
 native build, run, and test preparation now selects complete supported
-primitive, direct literal/concat-text, structural-tuple, closed-record, and
+primitive, direct literal/concat/get Text, structural-tuple, closed-record, and
 compile-time-established refined artifacts, plus bounded concrete direct
 generic instances over those representations and eligible concrete
-closed-enum artifacts, into typed LCIR and falls back atomically for reachable
+closed-enum artifacts including managed Text payloads, into typed LCIR and
+falls back atomically for reachable
 unsupported features. The broader
 representation migration and legacy deletion gates in this record are not
 complete.
@@ -30,7 +31,7 @@ complete.
 The production LLVM backend still lowers artifacts outside current direct LCIR
 coverage through a universal value implementation and several closed-world
 native specializations. Managed values other than direct Text values and
-Text-bearing products,
+Text-bearing products/sums,
 unsupported or recursive enums,
 runtime-checked constraints, concepts, contracts,
 cleanup shapes outside the direct lexical slice, async, and private-list paths
@@ -127,9 +128,9 @@ vocabulary is:
 
 Products and sums are immutable register aggregates. Tuples and records may
 contain one another and managed Text leaves when the resulting by-value graph is
-acyclic. `ManagedPointer` is the artifact-wide Text provenance mode; a product
-containing such a leaf remains an unboxed exact aggregate. Sums and
-transparent/refined carriers remain pointer-free in this slice. Each
+acyclic. `ManagedPointer` is the artifact-wide Text provenance mode; products
+and closed sums containing such leaves remain unboxed exact aggregates.
+Transparent/refined carriers remain pointer-free in this slice. Each
 representation plan has an explicit canonical
 registration key for semantic-type lookup; value-representation alternatives
 are not required to be globally unique by semantic type. General managed,
@@ -140,15 +141,15 @@ universal tag.
 
 The direct text slice supports allocation-free length, containment, and
 content equality or inequality; equality is never pointer equality. It also
-supports concat through a specialized typed helper. Any concat or Text-bearing
-product selects `ManagedPointer` for every Text in the complete artifact;
-concat additionally adds `MAY_COLLECT`. Exact backwards SSA liveness expands a
-live product to deterministic projected leaf cells and a deduplicated bitmap
-state for every collecting site. Values are live after the call, so its
+supports concat and Unicode-scalar selection through specialized typed helpers.
+Any concat, selection, or Text-bearing product/sum selects `ManagedPointer` for
+every Text in the complete artifact; concat and selection add `MAY_COLLECT`.
+Exact backwards SSA liveness expands a live aggregate to deterministic guarded
+leaf cells and a deduplicated bitmap state for every collecting site. Values are live after the call, so its
 not-yet-defined result is excluded; explicit edge arguments map only to live
-explicit destination parameters. Empty plans emit no frame. `get`, other
-dynamic producers, Text inside sums or transparent/refined carriers, and
-managed lists remain whole-artifact fallback. Literal planning is bounded to
+explicit destination parameters. Empty plans emit no frame. Other dynamic
+producers, Text inside transparent/refined carriers, and managed lists remain
+whole-artifact fallback. Literal planning is bounded to
 1 MiB of UTF-8 for one literal and 16 MiB across one LCIR artifact.
 
 Transparent representation reuse is not an arbitrary layout cast. The plan
@@ -291,8 +292,8 @@ single fallibility flag. `MAY_FAULT` remains independent; checked scalar faults
 do not require an active Loom runtime. `MAY_COLLECT` implies `NEEDS_RUNTIME`,
 and `MAY_SUSPEND` implies `NEEDS_EXECUTOR`, which implies `NEEDS_RUNTIME`.
 Lowering and independent validation separately compute the least transitive
-closure over direct and invoke call edges. `TextConcat` is the current
-collecting opcode. The typed operation set still has no executor or suspending
+closure over direct and invoke call edges. `TextConcat` and `TextGet` are the
+current collecting opcodes. The typed operation set still has no executor or suspending
 opcode.
 
 All functions are declared before bodies are emitted, so direct and mutually
@@ -348,8 +349,10 @@ existing v1 allocator wire.
 A following additive Text helper stages one selected scalar before allocating
 its direct result. `loom_runtime_text_get_typed_v1` advances Text identity to
 `text-v3` and native component 14 (`runtime-v8`) while retaining `gc-v9`.
-Managed `Option[Text]` lowering can consume its found/missing status without a
-universal envelope.
+Managed `Option[Text]` lowering consumes its found/missing status without a
+universal envelope. Missing selection constructs a zero carrier and performs
+no allocation; found selection uses the staged direct Text pointer, and an
+invalid status traps as an ABI defect.
 
 Calls to the C process entry, libc, and versioned Loom runtime functions are
 explicit external boundaries. They do not permit two source-function ABIs in

@@ -7,7 +7,8 @@ use loom_mir::Type;
 use crate::{
     BlockId, Constant, Effects, Function, InstanceId, Instruction, InstructionId, InstructionKind,
     ProductReprId, Program, Repr, RepresentationPlan, ResultTarget, SumReprId, SumTagRepr,
-    Terminator, TerminatorKind, UnwindTarget, ValueDefinition, ValueId, ValueTypeId, ValueTypeKind,
+    Terminator, TerminatorKind, UnwindTarget, Value, ValueDefinition, ValueId, ValueTypeId,
+    ValueTypeKind,
 };
 
 fn representation_text_pointer_kinds(
@@ -1484,6 +1485,109 @@ impl<'a> Validator<'a> {
                     format!("{path}.right"),
                 );
                 self.require_results(function, instruction, &[text], &path);
+            }
+            InstructionKind::TextGet {
+                text: value,
+                index,
+                missing_variant,
+                found_variant,
+            } => {
+                if !text_is_managed {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.result[0]"),
+                        "Text selection requires the canonical managed Text representation",
+                    );
+                }
+                self.require_known_value_type(
+                    function,
+                    *value,
+                    text,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.text"),
+                );
+                self.require_known_value_type(
+                    function,
+                    *index,
+                    integer,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.index"),
+                );
+                self.require_results(function, instruction, &[None], &path);
+
+                if missing_variant == found_variant {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        format!("{path}.variants"),
+                        "Text selection requires distinct missing and found variants",
+                    );
+                }
+                if let Some(result) = instruction.results.first().copied()
+                    && let Some(result_ty) = function.value(result).map(Value::ty)
+                {
+                    let semantic_is_option_text = self
+                        .program
+                        .representations
+                        .value_type(result_ty)
+                        .is_some_and(|value_type| {
+                            matches!(
+                                value_type.semantic(),
+                                Type::Nominal(_, arguments)
+                                    if arguments.as_slice() == [Type::Text]
+                            )
+                        });
+                    if !semantic_is_option_text {
+                        self.error(
+                            ValidationCode::TypeMismatch,
+                            format!("{path}.result[0]"),
+                            "Text selection result must be a nominal Option[Text]",
+                        );
+                    }
+                    let Some(sum) = self.sum_repr(result_ty) else {
+                        self.error(
+                            ValidationCode::TypeMismatch,
+                            format!("{path}.result[0]"),
+                            "Text selection result must use a closed sum representation",
+                        );
+                        return;
+                    };
+                    let variant_count = self
+                        .program
+                        .representations
+                        .sum(sum)
+                        .map_or(0, |sum| sum.variants().len());
+                    if variant_count != 2 {
+                        self.error(
+                            ValidationCode::InstructionShape,
+                            format!("{path}.result[0]"),
+                            "Text selection Option must contain exactly two variants",
+                        );
+                    }
+                    let missing = usize::try_from(*missing_variant).ok();
+                    let found = usize::try_from(*found_variant).ok();
+                    if missing.and_then(|variant| self.sum_variant_field_count(sum, variant))
+                        != Some(0)
+                    {
+                        self.error(
+                            ValidationCode::InstructionShape,
+                            format!("{path}.missing_variant"),
+                            "Text selection missing variant must exist and carry no payload",
+                        );
+                    }
+                    let found_shape = found.map(|variant| {
+                        (
+                            self.sum_variant_field_count(sum, variant),
+                            self.sum_variant_field(sum, variant, 0),
+                        )
+                    });
+                    if found_shape != Some((Some(1), text)) {
+                        self.error(
+                            ValidationCode::InstructionShape,
+                            format!("{path}.found_variant"),
+                            "Text selection found variant must exist and carry exactly one Text",
+                        );
+                    }
+                }
             }
             InstructionKind::TextLength { text: value } => {
                 if text.is_none() {
@@ -3225,7 +3329,10 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                 let Some(instruction) = function.instruction(instruction_id) else {
                     continue;
                 };
-                if matches!(instruction.kind(), InstructionKind::TextConcat { .. }) {
+                if matches!(
+                    instruction.kind(),
+                    InstructionKind::TextConcat { .. } | InstructionKind::TextGet { .. }
+                ) {
                     effects[caller] = effects[caller].union(Effects::MAY_COLLECT);
                 }
                 if let InstructionKind::DirectCall { callee, .. } = instruction.kind()

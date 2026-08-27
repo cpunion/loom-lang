@@ -386,29 +386,48 @@ pub fn main() Unit {
 }
 
 #[test]
-fn derived_text_operations_still_select_one_atomic_fallback() {
+fn text_selection_lowers_to_one_managed_collecting_instruction() {
     let outcome = lower_run(
-        r#"module lcir_text_fallback
+        r#"module lcir_text_get
 
 pub fn main() Unit {
-    discard "left".concat("right")
-    discard "value".get(0)
+    discard "a界🙂".get(1)
+    discard "value".get(-1)
     Unit
 }
 "#,
     );
-    let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("derived Text operations must keep the complete artifact on fallback")
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("Text selection must lower through complete typed LCIR")
     };
-    assert!(
-        report
-            .items()
-            .iter()
-            .filter(|item| { item.feature() == UnsupportedFeature::BuiltinCall })
-            .count()
-            >= 1,
-        "{report:?}"
+    let text = artifact
+        .representations()
+        .type_id(&loom_mir::Type::Text)
+        .expect("Text type");
+    assert_eq!(
+        artifact
+            .representations()
+            .value_type(text)
+            .and_then(|ty| artifact.representations().repr(ty.repr())),
+        Some(&loom_codegen_ir::Repr::ManagedPointer)
     );
+    assert!(artifact.functions().iter().all(|function| {
+        function
+            .effects()
+            .contains(loom_codegen_ir::Effects::MAY_COLLECT)
+    }));
+    assert!(artifact.functions().iter().any(|function| {
+        function.instructions().iter().any(|instruction| {
+            matches!(
+                instruction.kind(),
+                InstructionKind::TextGet {
+                    missing_variant: 0,
+                    found_variant: 1,
+                    ..
+                }
+            )
+        })
+    }));
 }
 
 #[test]
