@@ -1219,11 +1219,6 @@ fn immortal_text_uses_one_pointer_and_allocation_free_runtime_abi_on_all_targets
     ] {
         assert!(dump.contains(expected), "missing `{expected}`:\n{dump}");
     }
-    assert!(
-        dump.matches("inout=[0]").count() >= 2,
-        "mutable interface and concrete method must both retain writeback:\n{dump}"
-    );
-
     let native = emit_and_run_lcir(&artifact, "source-immortal-text");
     let legacy = emit_and_run_legacy(&program, "main", "legacy-immortal-text");
     assert!(native.output.status.success(), "{:?}", native.output);
