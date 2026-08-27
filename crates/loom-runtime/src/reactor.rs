@@ -10,7 +10,9 @@ use polling::{Event, Events, Poller};
 
 use crate::platform::{OwnedWaitHandle, raw_poll_source, wait_handle_bits};
 use crate::runtime::LoomRuntime;
-use crate::scheduler::{LoomJoinSpec, LoomTask, WorkerCompletion};
+use crate::scheduler::{
+    LoomJoinSpec, LoomTask, WorkerCompletion, retire_typed_frames_before_executor_drop,
+};
 use crate::{
     READY_COMPLETED, READY_READABLE, READY_TIMER, READY_WRITABLE, WAIT_ABI_VERSION,
     WAIT_DUPLICATE_SOURCE, WAIT_INFINITE, WAIT_INVALID_ARGUMENT, WAIT_NO_MEMORY, WAIT_OK,
@@ -94,6 +96,10 @@ pub struct LoomExecutor {
     pub(crate) retired_tasks: Vec<*mut LoomTask>,
     pub(crate) runnable: VecDeque<*mut LoomTask>,
     pub(crate) active_task: *mut LoomTask,
+    /// Nested non-suspending cancellation/result-disposal callbacks. These
+    /// callbacks may report faults and use GC roots, but must not re-enter
+    /// scheduler or reactor operations which create work or change topology.
+    pub(crate) cleanup_depth: u32,
     pub(crate) join_specs: Vec<Box<LoomJoinSpec>>,
     pub(crate) tasks_reclaimed: u64,
     /// The worker mailbox is needed only by blocking file/socket operations.
@@ -173,6 +179,7 @@ impl LoomExecutor {
             retired_tasks: Vec::new(),
             runnable: VecDeque::new(),
             active_task: ptr::null_mut(),
+            cleanup_depth: 0,
             join_specs: Vec::new(),
             tasks_reclaimed: 0,
             worker: None,
@@ -195,6 +202,23 @@ impl LoomExecutor {
 
     pub(crate) fn runtime_pointer(&self) -> *mut LoomRuntime {
         self.runtime.as_ptr()
+    }
+
+    pub(crate) const fn cleanup_active(&self) -> bool {
+        self.cleanup_depth != 0
+    }
+
+    pub(crate) fn enter_cleanup(&mut self) -> bool {
+        let Some(depth) = self.cleanup_depth.checked_add(1) else {
+            return false;
+        };
+        self.cleanup_depth = depth;
+        true
+    }
+
+    pub(crate) fn leave_cleanup(&mut self) {
+        debug_assert_ne!(self.cleanup_depth, 0);
+        self.cleanup_depth = self.cleanup_depth.saturating_sub(1);
     }
 
     pub(crate) fn heap(&self) -> &crate::gc::LoomHeap {
@@ -238,6 +262,9 @@ impl Drop for LoomExecutor {
         if !self.attached_to_runtime {
             return;
         }
+        // SAFETY: executor destruction owns every remaining Task and runs
+        // before detaching the Runtime required by typed result cleanup.
+        unsafe { retire_typed_frames_before_executor_drop(self) };
         let executor = (&raw mut *self).cast::<c_void>();
         // SAFETY: the ABI requires the explicitly managed runtime to outlive
         // its borrowed executor.
@@ -545,7 +572,7 @@ pub unsafe extern "C" fn executor_create_for_runtime_v1(
 
 #[unsafe(export_name = "loom_executor_destroy")]
 pub unsafe extern "C" fn executor_destroy(executor: *mut LoomExecutor) {
-    if !executor.is_null() {
+    if !executor.is_null() && !unsafe { (*executor).cleanup_active() } {
         // SAFETY: ownership of this pointer was returned by
         // executor_create_for_runtime_v1 and the ABI requires exactly one
         // matching destroy call before destroying the attached runtime.
@@ -573,6 +600,9 @@ pub unsafe extern "C" fn executor_register(
     }
     // SAFETY: all pointers were checked and are borrowed only for this call.
     let executor = unsafe { &mut *executor };
+    if executor.cleanup_active() {
+        return WAIT_INVALID_ARGUMENT;
+    }
     let source = unsafe { *source };
     if !valid_source(&source) {
         return WAIT_INVALID_ARGUMENT;
@@ -635,6 +665,9 @@ pub unsafe extern "C" fn executor_cancel(
     }
     // SAFETY: pointers were checked and remain borrowed for this call only.
     let executor = unsafe { &mut *executor };
+    if executor.cleanup_active() {
+        return WAIT_INVALID_ARGUMENT;
+    }
     let registration = unsafe { *registration };
     let Some(reactor) = executor.reactor.as_mut() else {
         return WAIT_STALE_REGISTRATION;
@@ -658,6 +691,9 @@ pub unsafe extern "C" fn executor_notify_completion(
     }
     // SAFETY: pointers were checked and remain borrowed for this call only.
     let executor = unsafe { &mut *executor };
+    if executor.cleanup_active() {
+        return WAIT_INVALID_ARGUMENT;
+    }
     let registration = unsafe { *registration };
     let Some(reactor) = executor.reactor.as_mut() else {
         return WAIT_STALE_REGISTRATION;
@@ -684,6 +720,9 @@ pub unsafe extern "C" fn executor_wait(
     }
     // SAFETY: pointers were checked and remain borrowed for this call only.
     let executor = unsafe { &mut *executor };
+    if executor.cleanup_active() {
+        return WAIT_INVALID_ARGUMENT;
+    }
     let Ok(reactor) = executor.ensure_reactor() else {
         return WAIT_SYSTEM_ERROR;
     };
@@ -730,6 +769,9 @@ pub unsafe extern "C" fn executor_pop_ready(
     }
     // SAFETY: pointers were checked and remain borrowed for this call only.
     let executor = unsafe { &mut *executor };
+    if executor.cleanup_active() {
+        return -WAIT_INVALID_ARGUMENT;
+    }
     let Some(reactor) = executor.reactor.as_mut() else {
         return 0;
     };
