@@ -2031,6 +2031,46 @@ impl<'a> Validator<'a> {
         }
     }
 
+    /// Keeps terminal child ownership linear at the settled/race resume
+    /// boundary. The leading implicit normal parameters are runtime-owned
+    /// terminal capabilities, whereas every following parameter is an ordinary
+    /// forwarded live value. Requiring the takes as an ordered instruction
+    /// prefix makes it impossible for checked LCIR to drop a terminal child,
+    /// delay its retirement, or clear it from a later join row before capture.
+    fn validate_terminal_task_take_prefix(
+        &mut self,
+        function: &Function,
+        mode: AwaitMode,
+        implicit_results: usize,
+        normal: &ResultTarget,
+        path: &str,
+    ) {
+        if !matches!(mode, AwaitMode::Settled | AwaitMode::Race) {
+            return;
+        }
+        let Some(block) = function.block(normal.block) else {
+            return;
+        };
+        for index in 0..implicit_results {
+            let expected = block.params().get(index).copied();
+            let actual = block
+                .instructions()
+                .get(index)
+                .and_then(|instruction| function.instruction(*instruction))
+                .and_then(|instruction| match instruction.kind() {
+                    InstructionKind::TaskOutcomeTake { task } => Some(*task),
+                    _ => None,
+                });
+            if expected.is_none() || actual != expected {
+                self.error(
+                    ValidationCode::InvalidTaskOwnership,
+                    format!("{path}.normal.take[{index}]"),
+                    "settled/race normal blocks must begin with one task.outcome_take for every terminal Task result in exact parameter order",
+                );
+            }
+        }
+    }
+
     /// Proves the capability carried by the otherwise ordinary `Task[T]`
     /// operand. Exactly one incoming edge must define the parameter, that edge
     /// must be the normal edge of `settled` or `race`, and the take must remain
@@ -4007,6 +4047,13 @@ impl<'a> Validator<'a> {
                     normal,
                     &result_outputs,
                     &format!("{path}.normal"),
+                );
+                self.validate_terminal_task_take_prefix(
+                    function,
+                    *mode,
+                    result_outputs.len(),
+                    normal,
+                    &path,
                 );
                 self.validate_unwind_target(function, fault, &[], &format!("{path}.fault"));
                 self.validate_target(function, cancel, format!("{path}.cancel"));

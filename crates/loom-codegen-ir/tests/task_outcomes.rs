@@ -30,6 +30,15 @@ enum TakeSource {
     Forwarded,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum TakePrefix {
+    Complete,
+    Missing,
+    Partial,
+    Reversed,
+    NonPrefix,
+}
+
 struct OutcomeProgram {
     program: Program,
     root: InstanceId,
@@ -284,6 +293,225 @@ fn canonical_program(source: TakeSource) -> OutcomeProgram {
     outcome_program(FaultShape::Canonical, OutcomeShape::Canonical, source, true)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the hostile raw builder keeps terminal-result width, forwarded live parameters, and instruction order independently forgeable"
+)]
+fn terminal_prefix_program(mode: AwaitMode, prefix: TakePrefix) -> Program {
+    let root_origin = Origin::synthetic(FunctionId(0));
+    let child_origin = Origin::synthetic(FunctionId(1));
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let unit = builder.type_id(&Type::Unit).expect("Unit");
+    let integer = builder.type_id(&Type::Int).expect("Int");
+    let text = builder
+        .add_managed_text_type()
+        .expect("canonical managed Text");
+    let fault_semantic = Type::Nominal(TASK_FAULT_TYPE_ID, Vec::new());
+    builder
+        .add_pod_record_type(fault_semantic.clone(), &[Type::Text, Type::Text])
+        .expect("TaskFault product");
+    let outcome_semantic = Type::Nominal(TASK_OUTCOME_TYPE_ID, vec![Type::Int]);
+    let outcome = builder
+        .add_sum_type(
+            outcome_semantic,
+            &[
+                Box::from([Type::Int]),
+                Box::from([fault_semantic]),
+                Box::new([]),
+            ],
+        )
+        .expect("TaskOutcome sum");
+    let task_int = builder
+        .add_task_handle_type(Type::Task(Box::new(Type::Int)))
+        .expect("Task[Int]");
+
+    let child = builder
+        .declare_function(
+            child_origin,
+            "prefix.child",
+            Signature::new([], integer),
+            Effects::NEEDS_EXECUTOR.with_implications(),
+        )
+        .expect("child coroutine");
+    {
+        let mut function = builder.function(child).expect("child builder");
+        function
+            .set_coroutine_plan(CoroutinePlan::new(integer, []))
+            .expect("child plan");
+        let entry = function.create_block().expect("child entry");
+        function.set_entry(entry).expect("child entry");
+        let value = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(loom_codegen_ir::Constant::Int(7)),
+                &[integer],
+                child_origin,
+            )
+            .expect("Int")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(TerminatorKind::Return(value), child_origin),
+            )
+            .expect("child return");
+    }
+
+    let root = builder
+        .declare_function(
+            root_origin,
+            "prefix.root",
+            Signature::new([text], unit),
+            Effects::NEEDS_EXECUTOR
+                .union(Effects::MAY_COLLECT)
+                .union(Effects::MAY_FAULT)
+                .union(Effects::MAY_SUSPEND)
+                .with_implications(),
+        )
+        .expect("root coroutine");
+    {
+        let mut function = builder.function(root).expect("root builder");
+        function
+            .set_coroutine_plan(CoroutinePlan::new(
+                unit,
+                [CoroutineSuspension::new(
+                    1,
+                    mode,
+                    [integer, integer],
+                    [text],
+                )],
+            ))
+            .expect("root plan");
+        let entry = function.create_block().expect("entry");
+        let normal = function.create_block().expect("normal");
+        let fault = function.create_block().expect("fault");
+        let cancel = function.create_block().expect("cancel");
+        function.set_entry(entry).expect("entry");
+        let input_text = function
+            .append_block_parameter(entry, text)
+            .expect("entry Text");
+        let tasks = (0..2)
+            .map(|_| {
+                function
+                    .append_instruction(
+                        entry,
+                        InstructionKind::TaskCreate {
+                            coroutine: child,
+                            arguments: Box::new([]),
+                        },
+                        &[task_int],
+                        root_origin,
+                    )
+                    .expect("Task[Int]")[0]
+            })
+            .collect::<Vec<_>>();
+        let implicit_results = match mode {
+            AwaitMode::Settled => 2,
+            AwaitMode::Race => 1,
+            AwaitMode::All | AwaitMode::Any => panic!("terminal prefix fixture needs settled/race"),
+        };
+        let terminal_tasks = (0..implicit_results)
+            .map(|_| {
+                function
+                    .append_block_parameter(normal, task_int)
+                    .expect("terminal Task[Int]")
+            })
+            .collect::<Vec<_>>();
+        let live_text = function
+            .append_block_parameter(normal, text)
+            .expect("normal live Text");
+        function
+            .append_block_parameter(fault, text)
+            .expect("fault live Text");
+        function
+            .append_block_parameter(cancel, text)
+            .expect("cancel live Text");
+        function
+            .terminate(
+                entry,
+                Terminator::new(
+                    TerminatorKind::AwaitTasks {
+                        state: 1,
+                        mode,
+                        tasks: tasks.into_boxed_slice(),
+                        normal: ResultTarget::new(normal, [input_text]),
+                        fault: UnwindTarget::new(fault, [input_text]),
+                        cancel: BlockTarget::new(cancel, [input_text]),
+                    },
+                    root_origin,
+                ),
+            )
+            .expect("await terminal children");
+        function
+            .terminate(
+                fault,
+                Terminator::new(TerminatorKind::ResumeFault, root_origin),
+            )
+            .expect("resume fault");
+        function
+            .terminate(
+                cancel,
+                Terminator::new(TerminatorKind::TaskCancelled, root_origin),
+            )
+            .expect("cancel");
+
+        if matches!(prefix, TakePrefix::NonPrefix) {
+            function
+                .append_instruction(
+                    normal,
+                    InstructionKind::TextLength { text: live_text },
+                    &[integer],
+                    root_origin,
+                )
+                .expect("non-prefix instruction");
+        }
+        let take_order = match prefix {
+            TakePrefix::Complete | TakePrefix::NonPrefix => {
+                (0..terminal_tasks.len()).collect::<Vec<_>>()
+            }
+            TakePrefix::Missing => Vec::new(),
+            TakePrefix::Partial => vec![0],
+            TakePrefix::Reversed => (0..terminal_tasks.len()).rev().collect(),
+        };
+        for index in take_order {
+            function
+                .append_instruction(
+                    normal,
+                    InstructionKind::TaskOutcomeTake {
+                        task: terminal_tasks[index],
+                    },
+                    &[outcome],
+                    root_origin,
+                )
+                .expect("TaskOutcome");
+        }
+        if !matches!(prefix, TakePrefix::NonPrefix) {
+            function
+                .append_instruction(
+                    normal,
+                    InstructionKind::TextLength { text: live_text },
+                    &[integer],
+                    root_origin,
+                )
+                .expect("post-prefix live Text use");
+        }
+        let result = function
+            .append_instruction(
+                normal,
+                InstructionKind::Constant(loom_codegen_ir::Constant::Unit),
+                &[unit],
+                root_origin,
+            )
+            .expect("Unit")[0];
+        function
+            .terminate(
+                normal,
+                Terminator::new(TerminatorKind::Return(result), root_origin),
+            )
+            .expect("return");
+    }
+    builder.finish()
+}
+
 #[test]
 fn settled_and_race_terminal_handles_validate_and_dump_explicit_outcome_takes() {
     for (source, mode) in [(TakeSource::Settled, "settled"), (TakeSource::Race, "race")] {
@@ -296,6 +524,49 @@ fn settled_and_race_terminal_handles_validate_and_dump_explicit_outcome_takes() 
             "{dump}"
         );
         assert!(dump.contains("task.outcome_take %"), "{dump}");
+    }
+}
+
+#[test]
+fn terminal_task_take_prefix_accepts_complete_settled_and_race_rows_before_live_work() {
+    for mode in [AwaitMode::Settled, AwaitMode::Race] {
+        check_program(terminal_prefix_program(mode, TakePrefix::Complete))
+            .unwrap_or_else(|errors| panic!("valid {mode:?} take prefix failed: {errors:?}"));
+    }
+}
+
+#[test]
+fn settled_terminal_task_takes_reject_missing_partial_reversed_and_non_prefix_rows() {
+    for prefix in [
+        TakePrefix::Missing,
+        TakePrefix::Partial,
+        TakePrefix::Reversed,
+        TakePrefix::NonPrefix,
+    ] {
+        let errors = validate_program(&terminal_prefix_program(AwaitMode::Settled, prefix))
+            .expect_err("hostile settled prefix must fail");
+        assert!(
+            errors.as_slice().iter().any(|error| {
+                error.code() == ValidationCode::InvalidTaskOwnership
+                    && error.message().contains("exact parameter order")
+            }),
+            "missing ordered-prefix diagnostic for {prefix:?}: {errors:?}"
+        );
+    }
+}
+
+#[test]
+fn race_terminal_task_takes_reject_missing_and_non_prefix_rows() {
+    for prefix in [TakePrefix::Missing, TakePrefix::NonPrefix] {
+        let errors = validate_program(&terminal_prefix_program(AwaitMode::Race, prefix))
+            .expect_err("hostile race prefix must fail");
+        assert!(
+            errors.as_slice().iter().any(|error| {
+                error.code() == ValidationCode::InvalidTaskOwnership
+                    && error.message().contains("exact parameter order")
+            }),
+            "missing ordered-prefix diagnostic for {prefix:?}: {errors:?}"
+        );
     }
 }
 
