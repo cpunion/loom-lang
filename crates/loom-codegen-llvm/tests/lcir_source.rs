@@ -5,8 +5,8 @@ use std::fmt::Write as _;
 use std::process::{Command, Output};
 
 use loom_codegen_ir::{
-    CheckedArtifact, Effects, LoweringOutcome, Repr, SourceArtifactRequest, TargetLayout,
-    UnsupportedFeature, dump_program, lower_typed_artifact,
+    CheckedArtifact, Effects, InstructionKind, LoweringOutcome, Repr, SourceArtifactRequest,
+    TargetLayout, UnsupportedFeature, dump_program, lower_typed_artifact,
 };
 use loom_codegen_llvm::{
     DebugSource, EmitOptions, NativeObjectOptions, NativeRouteKind, NativeRoutePolicy,
@@ -307,12 +307,9 @@ fn typed_async_callers_reuse_synchronous_functional_writeback() {
     );
 
     let lcir = emit_and_run_lcir_machine_fault(&artifact, "lcir-async-writeback-normal");
-    let legacy =
-        emit_and_run_legacy_machine_fault(&program, "main", "legacy-async-writeback-normal");
     assert!(lcir.output.status.success(), "{:?}", lcir.output);
-    assert!(legacy.status.success(), "{legacy:?}");
-    assert_eq!(lcir.output.stdout, legacy.stdout);
-    assert_eq!(lcir.output.stderr, legacy.stderr);
+    assert_eq!(lcir.output.stdout, b"Unit\n");
+    assert!(lcir.output.stderr.is_empty(), "{:?}", lcir.output);
     assert!(!lcir.ir.contains("loom.Value"), "{}", lcir.ir);
     assert_no_indirect_calls(&lcir.ir);
 
@@ -333,20 +330,12 @@ fn typed_async_callers_reuse_synchronous_functional_writeback() {
         "fault-edge receiver writeback must precede coroutine cleanup:\n{fault_dump}"
     );
     let faulted = emit_and_run_lcir_machine_fault(&fault_artifact, "lcir-async-writeback-fault");
-    let legacy_faulted = emit_and_run_legacy_machine_fault(
-        &program,
-        "faultWritebackMain",
-        "legacy-async-writeback-fault",
-    );
     assert!(!faulted.output.status.success(), "{:?}", faulted.output);
-    assert!(!legacy_faulted.status.success(), "{legacy_faulted:?}");
     let expected_code = expected_fault["fault"]["code"]
         .as_str()
         .expect("interpreter fault code");
     let lcir_fault = machine_fault(&faulted.output);
-    let legacy_fault = machine_fault(&legacy_faulted);
     assert_eq!(lcir_fault["code"].as_str(), Some(expected_code));
-    assert_eq!(legacy_fault["fault"]["code"].as_str(), Some(expected_code));
 
     let expected_cancellation = serde_json::to_value(
         interpret_run(&program, "cancellationAfterWritebackMain")
@@ -359,26 +348,55 @@ fn typed_async_callers_reuse_synchronous_functional_writeback() {
             entry: "cancellationAfterWritebackMain".into(),
         },
     );
-    let cancellation_dump = dump_program(cancellation_artifact.program());
+    let append = cancellation_artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("append"))
+        .expect("managed writeback callee");
+    let waiting = cancellation_artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("waitsAfterWriteback"))
+        .expect("writeback-bearing cancelled sibling");
     assert!(
-        cancellation_dump.contains("writebacks("),
-        "cancelled coroutine omitted receiver writeback:\n{cancellation_dump}"
+        waiting.instructions().iter().any(|instruction| matches!(
+            instruction.kind(),
+            InstructionKind::DirectCall { callee, .. }
+                if callee == &append.id() && instruction.results().len() == 2
+        )),
+        "cancelled coroutine omitted the exact receiver writeback"
+    );
+    let waiting_plan = waiting
+        .coroutine()
+        .expect("writeback-bearing sibling remains a coroutine");
+    assert_eq!(waiting_plan.suspensions().len(), 1);
+    assert!(
+        waiting_plan.suspensions()[0]
+            .live()
+            .iter()
+            .any(|ty| matches!(
+                cancellation_artifact
+                    .representations()
+                    .value_type(*ty)
+                    .and_then(|value| cancellation_artifact.representations().repr(value.repr())),
+                Some(Repr::Product(_))
+            )),
+        "the cancellation row must retain the updated managed record"
     );
     let cancelled = emit_and_run_lcir_machine_fault(
         &cancellation_artifact,
         "lcir-async-writeback-cancellation",
     );
-    let legacy_cancelled = emit_and_run_legacy_machine_fault(
-        &program,
-        "cancellationAfterWritebackMain",
-        "legacy-async-writeback-cancellation",
-    );
     assert!(!cancelled.output.status.success(), "{:?}", cancelled.output);
-    assert!(!legacy_cancelled.status.success(), "{legacy_cancelled:?}");
     assert_eq!(machine_fault(&cancelled.output), expected_cancellation);
-    assert_eq!(machine_fault(&legacy_cancelled), expected_cancellation);
+    let callback_name = format!("@loom.lcir.coroutine.resume.{}", waiting.id().raw());
+    let waiting_callback = cancelled
+        .ir
+        .split("\ndefine ")
+        .find(|function| function.contains(&format!("{callback_name}(")))
+        .expect("writeback-bearing cancellation callback");
     assert!(
-        cancelled.ir.contains("coroutine.cancel.live")
+        waiting_callback.contains("coroutine.cancel.live")
             && !diagnostic_text(&cancelled.output).contains("LOOM_RUNTIME_TYPED_"),
         "managed writeback violated cancellation cleanup: {:?}",
         cancelled.output
