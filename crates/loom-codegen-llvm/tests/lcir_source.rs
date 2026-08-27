@@ -2264,7 +2264,10 @@ fn typed_text_maps_are_direct_exact_and_survive_forced_relocation() {
         "text_map.construct",
         "text_map.insert",
         "text_map.length",
+        "text_map.contains",
         "text_map.get",
+        "text_map.remove",
+        "text_map.entry_get",
         "list.construct",
         "list.get",
         "sum.switch",
@@ -2291,6 +2294,8 @@ fn typed_text_maps_are_direct_exact_and_survive_forced_relocation() {
         "managed.root.reload",
         "llvm.memcpy",
         "text_map.lookup",
+        "text_map.remove.source",
+        "text_map.entry_get",
         "memcmp",
     ] {
         assert!(
@@ -2303,6 +2308,7 @@ fn typed_text_maps_are_direct_exact_and_survive_forced_relocation() {
         "%loom.Value",
         "loom_runtime_text_map_get",
         "loom_runtime_text_map_insert",
+        "loom_runtime_text_map_remove",
         "ValueNode",
         "loom_executor_",
         "loom_gc_root_push_v1",
@@ -2316,10 +2322,14 @@ fn typed_text_maps_are_direct_exact_and_survive_forced_relocation() {
 
     let verify = emitted_lcir_function(&native_tests.ir, &tests_artifact, "verify");
     assert!(verify.contains("text_map.insert.copy_source"), "{verify}");
+    assert!(verify.contains("text_map.remove.source"), "{verify}");
+    assert!(verify.contains("text_map.remove.prefix_bytes"), "{verify}");
+    assert!(verify.contains("text_map.remove.suffix_count"), "{verify}");
+    assert!(verify.contains("text_map.entry_get"), "{verify}");
     assert!(verify.contains("managed.root.reload"), "{verify}");
     assert!(
-        verify.matches("@loom_gc_typed_repeated_alloc_v1").count() >= 10,
-        "every source insert site must retain an exact typed allocation:\n{verify}"
+        verify.matches("@loom_gc_typed_repeated_alloc_v1").count() >= 15,
+        "every insert/remove source site must retain an exact typed allocation:\n{verify}"
     );
 
     let legacy_tests = emit_and_run_legacy_tests(&program, "legacy-typed-text-maps-tests");
@@ -2351,6 +2361,45 @@ fn typed_text_maps_are_direct_exact_and_survive_forced_relocation() {
     assert_eq!(legacy_run.stdout, native_run.output.stdout);
     assert_eq!(legacy_run.stderr, native_run.output.stderr);
 
+    let release_directory = tempfile::tempdir().expect("create release TextMap directory");
+    let release_object = release_directory.path().join("typed-text-map-release.o");
+    let release_ir_path = release_directory.path().join("typed-text-map-release.ll");
+    emit_lcir_native_object(
+        &tests_artifact,
+        &release_object,
+        &NativeObjectOptions {
+            emit_ir: Some(release_ir_path.clone()),
+            optimization: OptimizationProfile::Release,
+            ..NativeObjectOptions::default()
+        },
+    )
+    .expect("emit release typed-TextMap object");
+    let release_ir =
+        std::fs::read_to_string(release_ir_path).expect("read release typed-TextMap IR");
+    assert!(
+        release_ir.contains("@loom_gc_typed_repeated_alloc_v1"),
+        "release removal lost its conditional exact allocator:\n{release_ir}"
+    );
+    assert!(
+        release_ir.contains("@llvm.memcpy"),
+        "release removal lost its exact prefix/suffix copies:\n{release_ir}"
+    );
+    assert!(
+        release_ir.contains("text_map.remove."),
+        "release IR lost every remove-specific control/data-flow marker:\n{release_ir}"
+    );
+    for forbidden in [
+        "%loom.Value",
+        "loom_runtime_text_map_",
+        "ValueNode",
+        "loom_executor_",
+    ] {
+        assert!(
+            !release_ir.contains(forbidden),
+            "release TextMap IR exposed `{forbidden}`:\n{release_ir}"
+        );
+    }
+
     for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
         let directory = tempfile::tempdir().expect("create typed TextMap target directory");
         let object = directory.path().join("typed-text-map.o");
@@ -2372,6 +2421,8 @@ fn typed_text_maps_are_direct_exact_and_survive_forced_relocation() {
             "loom.lcir.text_map.descriptor",
             "managed.root.reload",
             "llvm.memcpy",
+            "text_map.remove.source",
+            "text_map.entry_get",
             "memcmp",
         ] {
             assert!(
@@ -2380,8 +2431,33 @@ fn typed_text_maps_are_direct_exact_and_survive_forced_relocation() {
             );
         }
         assert!(!ir.contains("%loom.Value"), "{ir}");
+        assert!(!ir.contains("loom_runtime_text_map_"), "{ir}");
         assert!(!ir.contains("loom_executor_"), "{ir}");
     }
+}
+
+#[test]
+fn standard_library_text_map_segment_classifies_through_direct_lcir() {
+    let source = include_str!("../../../fixtures/standard-library/main.loom")
+        .replace("__LOOPBACK_PORT__", "1")
+        .replace("__READ_LOOPBACK_PORT__", "1");
+    let program = compile_source(&source);
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "typed_text_map_segment".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    for required in [
+        "text_map.contains",
+        "text_map.remove",
+        "text_map.entry_get",
+        "text.compare.equal",
+    ] {
+        assert!(dump.contains(required), "missing `{required}`:\n{dump}");
+    }
+    assert!(!dump.contains("unsupported"), "{dump}");
 }
 
 #[test]
@@ -2810,7 +2886,7 @@ fn repeated_wide_sum_packing_shares_one_bounded_ir_emission_budget() {
 #[test]
 fn typed_text_map_source_is_direct_on_64_bit_and_fails_closed_on_32_bit() {
     let program = compile_source(
-        "module text_map_target\npub fn main() Unit {\n    let values = TextMap[Int]().insert(\"answer\", 42)\n    discard values.get(\"answer\")\n    Unit\n}\n",
+        "module text_map_target\npub fn main() Unit {\n    let values = TextMap[Int]().insert(\"answer\", 42)\n    let same = TextMap[Int]().insert(\"answer\", 42)\n    discard values.contains(\"answer\")\n    discard values.remove(\"missing\")\n    discard values.get(\"answer\")\n    discard values == same\n    Unit\n}\n",
     );
     let request = SourceArtifactRequest::Run {
         entry: "main".into(),
@@ -2820,10 +2896,18 @@ fn typed_text_map_source_is_direct_on_64_bit_and_fails_closed_on_32_bit() {
         &request,
         TargetLayout::new(64).expect("64-bit target"),
     );
-    assert!(
-        dump_program(artifact.program()).contains("text_map.insert"),
-        "64-bit TextMap[Int] must remain direct LCIR"
-    );
+    let dump = dump_program(artifact.program());
+    for required in [
+        "text_map.insert",
+        "text_map.contains",
+        "text_map.remove",
+        "text_map.entry_get",
+    ] {
+        assert!(
+            dump.contains(required),
+            "64-bit TextMap[Int] omitted `{required}`:\n{dump}"
+        );
+    }
     match lower_typed_artifact(
         &program,
         &request,

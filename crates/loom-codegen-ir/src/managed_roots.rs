@@ -339,6 +339,7 @@ fn collect_safepoint_values(
                     | InstructionKind::TextGet { .. }
                     | InstructionKind::FormatFloat { .. }
                     | InstructionKind::TextMapInsert { .. }
+                    | InstructionKind::TextMapRemove { .. }
             ) || list_allocation
                 || dyn_allocation
                 || matches!(
@@ -358,6 +359,11 @@ fn collect_safepoint_values(
                     || dyn_allocation
                 {
                     add_managed(&mut live, instruction.kind().operands(), managed);
+                } else if let InstructionKind::TextMapRemove { map, .. } = instruction.kind() {
+                    // Removal needs only the immutable source backing after
+                    // its conditional allocation. The lookup key has already
+                    // been consumed before that safepoint.
+                    add_managed(&mut live, [*map], managed);
                 }
                 site_values.insert(
                     ManagedSafepoint::Instruction(instruction.id()),

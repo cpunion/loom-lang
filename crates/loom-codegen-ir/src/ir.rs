@@ -705,11 +705,31 @@ pub enum InstructionKind {
     TextMapLength {
         map: ValueId,
     },
+    /// Tests whether the canonical sorted map contains `key` without loading
+    /// or erasing its exact value type. This operation cannot allocate.
+    TextMapContains {
+        map: ValueId,
+        key: ValueId,
+    },
     /// Looks up a Text key without allocation and returns the canonical exact
     /// `Option[V]` selected by the result type.
     TextMapGet {
         map: ValueId,
         key: ValueId,
+    },
+    /// Produces a new immutable map without `key`. A missing key returns the
+    /// original logical value; an existing key allocates and copies exact
+    /// typed repeated storage without mutating aliases.
+    TextMapRemove {
+        map: ValueId,
+        key: ValueId,
+    },
+    /// Reads one canonical sorted entry for compiler-generated structural
+    /// equality. The exact result is `Option[(Text, V)]`; negative and
+    /// out-of-bounds indexes produce None without allocation.
+    TextMapEntryGet {
+        map: ValueId,
+        index: ValueId,
     },
     /// Allocates, initializes, and publishes one structured typed Task for a
     /// checked coroutine instance. The hidden executor comes from the active
@@ -806,7 +826,10 @@ impl InstructionKind {
             Self::ListGet { list, index } => vec![*list, *index],
             Self::TextMapInsert { map, key, value } => vec![*map, *key, *value],
             Self::TextMapLength { map } => vec![*map],
-            Self::TextMapGet { map, key } => vec![*map, *key],
+            Self::TextMapContains { map, key }
+            | Self::TextMapGet { map, key }
+            | Self::TextMapRemove { map, key } => vec![*map, *key],
+            Self::TextMapEntryGet { map, index } => vec![*map, *index],
             Self::TaskCreate { arguments, .. } | Self::DirectCall { arguments, .. } => {
                 arguments.to_vec()
             }

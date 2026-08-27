@@ -497,12 +497,22 @@ impl<'a> Validator<'a> {
                         && matches!(
                             representations.repr(value_type.repr()),
                             Some(Repr::ManagedPointer)
-                        );
+                        )
+                        && representations.type_id(&Type::Text).is_some_and(|text| {
+                            representations.value_type(text).is_some_and(|text| {
+                                text.semantic() == &Type::Text
+                                    && text.kind() == ValueTypeKind::Direct
+                                    && matches!(
+                                        representations.repr(text.repr()),
+                                        Some(Repr::ManagedPointer)
+                                    )
+                            })
+                        });
                     if !valid {
                         self.error(
                             ValidationCode::RepresentationPlan,
                             format!("representations.type[{index}].managed_text_map"),
-                            "managed TextMap must be a unary nominal value backed by one managed pointer",
+                            "managed TextMap must be a unary nominal value backed by one managed pointer with canonical managed Text keys",
                         );
                     }
                 }
@@ -2669,6 +2679,24 @@ impl<'a> Validator<'a> {
                 }
                 self.require_results(function, instruction, &[integer], &path);
             }
+            InstructionKind::TextMapContains { map, key } => {
+                let map_type = function.value(*map).map(|value| value.ty);
+                if map_type.is_some_and(|ty| self.text_map_value(ty).is_none()) {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.map"),
+                        "TextMap contains receiver must be a canonical closed TextMap value",
+                    );
+                }
+                self.require_known_value_type(
+                    function,
+                    *key,
+                    text,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.key"),
+                );
+                self.require_results(function, instruction, &[boolean], &path);
+            }
             InstructionKind::TextMapGet { map, key } => {
                 let map_value = function
                     .value(*map)
@@ -2706,6 +2734,62 @@ impl<'a> Validator<'a> {
                         ValidationCode::TypeMismatch,
                         format!("{path}.result[0]"),
                         "TextMap get Option payload must exactly match the receiver value type",
+                    );
+                }
+            }
+            InstructionKind::TextMapRemove { map, key } => {
+                let map_type = function.value(*map).map(|value| value.ty);
+                if map_type.is_some_and(|ty| self.text_map_value(ty).is_none()) {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.map"),
+                        "TextMap remove receiver must be a canonical closed TextMap value",
+                    );
+                }
+                self.require_known_value_type(
+                    function,
+                    *key,
+                    text,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.key"),
+                );
+                self.require_results(function, instruction, &[map_type], &path);
+            }
+            InstructionKind::TextMapEntryGet { map, index } => {
+                let map_type = function.value(*map).map(|value| value.ty);
+                let entry_type = map_type.and_then(|ty| self.text_map_entry(ty));
+                if map_type.is_some() && entry_type.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.map"),
+                        "TextMap entry read receiver must be a canonical closed TextMap value with an exact (Text, V) entry product",
+                    );
+                }
+                self.require_known_value_type(
+                    function,
+                    *index,
+                    integer,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.index"),
+                );
+                self.require_results(function, instruction, &[None], &path);
+                let result_type = instruction
+                    .results
+                    .first()
+                    .and_then(|result| function.value(*result))
+                    .map(|result| result.ty);
+                let option_entry = result_type.and_then(|ty| self.option_element(ty));
+                if result_type.is_some() && option_entry.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.result[0]"),
+                        "TextMap entry read result must be the canonical Option[(Text, V)] sum shape",
+                    );
+                } else if entry_type.is_some() && option_entry != entry_type {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.result[0]"),
+                        "TextMap entry read Option payload must exactly match the receiver (Text, V) entry type",
                     );
                 }
             }
@@ -4191,6 +4275,14 @@ impl<'a> Validator<'a> {
         self.program.representations.type_id(value)
     }
 
+    fn text_map_entry(&self, ty: ValueTypeId) -> Option<ValueTypeId> {
+        let value = self.text_map_value(ty)?;
+        let value = self.program.representations.value_type(value)?;
+        self.program
+            .representations
+            .type_id(&Type::Tuple(vec![Type::Text, value.semantic().clone()]))
+    }
+
     fn option_element(&self, ty: ValueTypeId) -> Option<ValueTypeId> {
         let value_type = self.program.representations.value_type(ty)?;
         let Type::Nominal(_, arguments) = value_type.semantic() else {
@@ -4542,6 +4634,7 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                         | InstructionKind::ListAppend { .. }
                         | InstructionKind::ListAppendUnique { .. }
                         | InstructionKind::TextMapInsert { .. }
+                        | InstructionKind::TextMapRemove { .. }
                 ) || matches!(
                     instruction.kind(),
                     InstructionKind::ListConstruct { elements } if !elements.is_empty()

@@ -142,20 +142,22 @@ never reads inactive carrier bytes. Inequality negates the complete equality
 result rather than changing component semantics. The same expansion is used
 for ordinary expressions and checked `requires`/`ensures` expressions.
 
-A concrete `List[T]` first compares lengths, then walks equal-length inputs by
-an Int index. Each iteration uses existing nonallocating `ListGet` operations
-and compares their canonical `Option[T]` results structurally. The loop
-backedge uses `IntSuccessorBelow` with the exact `index < length` true-edge
-proof, so it adds neither a checked-overflow fault nor a runtime helper. Reads
-create no alias-visible mutation and cross no collection safepoint; List value
+A concrete `List[T]` or `TextMap[V]` first compares lengths, then walks
+equal-length inputs by an Int index. List iterations use nonallocating `ListGet`
+operations and compare canonical `Option[T]` results. TextMap iterations read
+canonical sorted entries through the compiler-private nonallocating indexed
+operation and compare exact `Option[(Text, V)]` results. The loop backedge uses
+`IntSuccessorBelow` with the exact `index < length` true-edge proof, so it adds
+neither a checked-overflow fault nor a runtime helper. Reads create no
+alias-visible mutation and cross no collection safepoint; List and TextMap value
 semantics and typed GC roots are unchanged.
 
 Planning bounds the expanded equality CFG to 4,096 structural units and
-registers every implicit `Option[T]` before LCIR construction. Re-entering one
-nominal type through a List remains whole-artifact unsupported: inlining that
-coinductive semantic equality would make an unbounded CFG. A future reusable
-recursive comparison-instance plan can close that case without changing the
-source equality rule.
+registers every implicit `Option[T]` or `Option[(Text, V)]` before LCIR
+construction. Re-entering one nominal type through a List or TextMap remains
+whole-artifact unsupported: inlining that coinductive semantic equality would
+make an unbounded CFG. A future reusable recursive comparison-instance plan can
+close that case without changing the source equality rule.
 
 The representation-only recursive `Json` slice therefore supports
 construction, exhaustive matching, List/TextMap storage, copying, and precise
@@ -549,17 +551,30 @@ greatest-fixed-point `Unique` ownership fact across CFG edges and loop phis;
 entry values, copies, calls, aggregate embedding, projections, and ambiguous
 joins are `Shared`. Raw LCIR builders cannot forge this certificate.
 
-`TextMapConstruct`, immutable `TextMapInsert`, `TextMapLength`, and `TextMapGet`
-are likewise first-class typed instructions. The semantic value argument is
-part of the concrete map type, and `get` must return the exact canonical
-`Option[V]`; validation independently rejects an erased value or mismatched
-option. Construct uses the null empty representation. Insert always performs a
-functional copy in this slice, so aliases keep their previous logical value;
-future in-place update requires a checked-MIR-only uniqueness proof rather than
-an address or reference-count observation. The collecting insertion roots and
-reloads the old map, Text key, and every managed leaf of `V`. Length and lookup
-do not allocate. The compiler emits no universal map value, runtime type tag,
-executor, or global layout registry.
+`TextMapConstruct`, immutable `TextMapInsert`, `TextMapLength`,
+`TextMapContains`, `TextMapGet`, and immutable `TextMapRemove` are likewise
+first-class typed instructions. The semantic value argument is part of the
+concrete map type, `get` must return the exact canonical `Option[V]`, and
+independent validation requires canonical managed `Text` keys. Construct uses
+the null empty representation. Insert and successful multi-entry removal
+perform functional copies, so aliases keep their previous logical value; a
+missing removal reuses the original pointer and removing the final entry
+returns the canonical null value. Future in-place update requires a
+checked-MIR-only uniqueness proof rather than an address or reference-count
+observation.
+
+Insertion roots and reloads the old map, Text key, and every managed leaf of
+`V`. Removal locates and consumes its key before allocation, roots exactly the
+source map, reloads it after possible relocation, and copies the entry ranges
+on either side of the removed position. Length, containment, lookup, and the
+compiler-private indexed entry read do not allocate. Structural equality first
+compares lengths and then walks the canonical sorted entries as exact
+`Option[(Text, V)]` values; it therefore ignores insertion history while
+recursively preserving the normal scalar, product, sum, List, and TextMap
+equality rules. A nominal cycle reached again through List or TextMap remains a
+whole-artifact fallback rather than generating an unbounded comparison graph.
+The compiler emits no universal map value, runtime type tag, executor, or
+global layout registry.
 
 ## Typed stackless coroutines
 
@@ -929,7 +944,7 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 23` text includes
+text even when the graphs are otherwise equivalent. The `lcir 24` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys including their contract-boundary role, every function's
 selected entry block and ordered effect set,
@@ -939,8 +954,9 @@ and managed Float formatting,
 managed-pointer representations, finite dynamic candidate catalogs,
 `dyn.construct`, `dyn.switch`, and
 `text.concat`, `text.get`, typed resource-close edges, transient
-protected-receiver updates, and the checked value type of every block parameter
-and instruction result. Representation semantic
+protected-receiver updates, typed TextMap containment/removal/indexed-entry
+operations, and the checked value type of every block parameter and instruction
+result. Representation semantic
 types and instance-key arguments use the same complete, iterative type
 encoder; no type is represented by a catch-all placeholder. It is
 compiler-private and has no compatibility or serialization guarantee.

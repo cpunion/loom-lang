@@ -6406,6 +6406,9 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 .emit_text_map_insert(instruction, *map, *key, *value)?
                 .into()),
             InstructionKind::TextMapLength { map } => one(self.emit_text_map_length(*map)?.into()),
+            InstructionKind::TextMapContains { map, key } => {
+                one(self.emit_text_map_contains(*map, *key)?.into())
+            }
             InstructionKind::TextMapGet { map, key } => {
                 let result = instruction.results().first().copied().ok_or_else(|| {
                     CodegenError::new("LlvmAbiDefect", "TextMap.get has no result")
@@ -6418,6 +6421,22 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     })?
                     .ty();
                 one(self.emit_text_map_get(*map, *key, result_ty)?)
+            }
+            InstructionKind::TextMapRemove { map, key } => {
+                one(self.emit_text_map_remove(instruction, *map, *key)?.into())
+            }
+            InstructionKind::TextMapEntryGet { map, index } => {
+                let result = instruction.results().first().copied().ok_or_else(|| {
+                    CodegenError::new("LlvmAbiDefect", "TextMap entry read has no result")
+                })?;
+                let result_ty = self
+                    .source
+                    .value(result)
+                    .ok_or_else(|| {
+                        CodegenError::new("LlvmAbiDefect", "TextMap entry read result is missing")
+                    })?
+                    .ty();
+                one(self.emit_text_map_entry_get(*map, *index, result_ty)?)
             }
             InstructionKind::BoolNot { value } => one(self
                 .backend
@@ -7869,13 +7888,14 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         capacity: IntValue<'ctx>,
         result: ValueId,
         site: ManagedSafepoint,
+        name: &str,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
         let output = if let Some(cell) = self.direct_root_cell(result)? {
             cell
         } else {
             self.backend
                 .builder
-                .build_alloca(self.backend.ptr_type, "text_map.insert.output")
+                .build_alloca(self.backend.ptr_type, &format!("{name}.output"))
                 .map_err(builder_error)?
         };
         self.backend
@@ -7888,13 +7908,12 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             &self.backend.builder,
             self.backend.typed_repeated_alloc(),
             &[descriptor.into(), capacity.into(), output.into()],
-            "text_map.insert.status",
+            &format!("{name}.status"),
         )?;
-        self.backend
-            .require_zero_status(status, "text_map.insert")?;
+        self.backend.require_zero_status(status, name)?;
         self.backend
             .builder
-            .build_load(self.backend.ptr_type, output, "text_map.insert.result")
+            .build_load(self.backend.ptr_type, output, &format!("{name}.result"))
             .map_err(builder_error)
             .map(BasicValueEnum::into_pointer_value)
     }
@@ -7979,6 +7998,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             new_length,
             result,
             ManagedSafepoint::Instruction(instruction.id()),
+            "text_map.insert",
         )?;
         let length_pointer =
             self.text_map_field_pointer(&layout, object, 0, "text_map.insert.length.pointer")?;
@@ -8103,6 +8123,25 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         self.load_text_map_length(&layout, object, "text_map.length")
     }
 
+    fn emit_text_map_contains(
+        &self,
+        map: ValueId,
+        key: ValueId,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        let ty = self.text_map_type_of_value(map)?;
+        let layout = self.backend.text_map_layout(ty)?;
+        let object = self.value(map)?.into_pointer_value();
+        let length = self.load_text_map_length(&layout, object, "text_map.contains")?;
+        self.locate_text_map_key(
+            &layout,
+            object,
+            length,
+            self.value(key)?.into_pointer_value(),
+            "text_map.contains.locate",
+        )
+        .map(|(_, found)| found)
+    }
+
     fn emit_text_map_get(
         &self,
         map: ValueId,
@@ -8180,6 +8219,314 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .backend
             .builder
             .build_phi(self.backend.llvm_type(result_ty)?, "text_map.get.result")
+            .map_err(builder_error)?;
+        phi.add_incoming(&[(&none_value, none), (&some_value, some)]);
+        Ok(phi.as_basic_value())
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "functional removal keeps its conditional allocation, relocated source, and two exact typed copies in one auditable boundary"
+    )]
+    fn emit_text_map_remove(
+        &self,
+        instruction: &Instruction,
+        map: ValueId,
+        key: ValueId,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let result =
+            instruction.results().first().copied().ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "TextMap remove has no result")
+            })?;
+        let ty = self.text_map_type_of_value(result)?;
+        let layout = self.backend.text_map_layout(ty)?;
+        let old_object = self.value(map)?.into_pointer_value();
+        let old_length = self.load_text_map_length(&layout, old_object, "text_map.remove.old")?;
+        let (position, found) = self.locate_text_map_key(
+            &layout,
+            old_object,
+            old_length,
+            self.value(key)?.into_pointer_value(),
+            "text_map.remove.locate",
+        )?;
+        let source = self.current_block()?;
+        let function = source.get_parent().ok_or_else(|| {
+            CodegenError::new("LlvmBuilderFailed", "TextMap.remove has no function")
+        })?;
+        let absent = self
+            .backend
+            .context
+            .append_basic_block(function, "text_map.remove.absent");
+        let present = self
+            .backend
+            .context
+            .append_basic_block(function, "text_map.remove.present");
+        let empty = self
+            .backend
+            .context
+            .append_basic_block(function, "text_map.remove.empty");
+        let allocate = self
+            .backend
+            .context
+            .append_basic_block(function, "text_map.remove.allocate");
+        let merge = self
+            .backend
+            .context
+            .append_basic_block(function, "text_map.remove.merge");
+        self.backend
+            .builder
+            .build_conditional_branch(found, present, absent)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(absent);
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(present);
+        let one = self.backend.context.i64_type().const_int(1, false);
+        let new_length = self
+            .backend
+            .builder
+            .build_int_sub(old_length, one, "text_map.remove.new_length")
+            .map_err(builder_error)?;
+        let becomes_empty = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                new_length,
+                self.backend.context.i64_type().const_zero(),
+                "text_map.remove.becomes_empty",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(becomes_empty, empty, allocate)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(empty);
+        let empty_value = self.backend.ptr_type.const_null();
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(allocate);
+        let object = self.allocate_text_map(
+            ty,
+            &layout,
+            new_length,
+            result,
+            ManagedSafepoint::Instruction(instruction.id()),
+            "text_map.remove",
+        )?;
+        let length_pointer =
+            self.text_map_field_pointer(&layout, object, 0, "text_map.remove.length.pointer")?;
+        self.backend
+            .builder
+            .build_store(length_pointer, new_length)
+            .map_err(builder_error)?;
+        let relocated_old = self.value(map)?.into_pointer_value();
+        let source_data =
+            self.text_map_field_pointer(&layout, relocated_old, 1, "text_map.remove.source")?;
+        let destination_data =
+            self.text_map_field_pointer(&layout, object, 1, "text_map.remove.destination")?;
+        let stride = self
+            .backend
+            .context
+            .i64_type()
+            .const_int(layout.entry_stride, false);
+        let prefix_bytes = self
+            .backend
+            .builder
+            .build_int_mul(position, stride, "text_map.remove.prefix_bytes")
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_memcpy(
+                destination_data,
+                layout.entry_align,
+                source_data,
+                layout.entry_align,
+                prefix_bytes,
+            )
+            .map_err(builder_error)?;
+
+        let suffix_source_index = self
+            .backend
+            .builder
+            .build_int_add(position, one, "text_map.remove.suffix_source_index")
+            .map_err(builder_error)?;
+        let suffix_count = self
+            .backend
+            .builder
+            .build_int_sub(new_length, position, "text_map.remove.suffix_count")
+            .map_err(builder_error)?;
+        let suffix_bytes = self
+            .backend
+            .builder
+            .build_int_mul(suffix_count, stride, "text_map.remove.suffix_bytes")
+            .map_err(builder_error)?;
+        let suffix_source = self.text_map_entry_pointer(
+            &layout,
+            relocated_old,
+            suffix_source_index,
+            "text_map.remove.suffix_source",
+        )?;
+        let suffix_destination = self.text_map_entry_pointer(
+            &layout,
+            object,
+            position,
+            "text_map.remove.suffix_destination",
+        )?;
+        self.backend
+            .builder
+            .build_memcpy(
+                suffix_destination,
+                layout.entry_align,
+                suffix_source,
+                layout.entry_align,
+                suffix_bytes,
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+        let allocated = self.current_block()?;
+
+        self.backend.builder.position_at_end(merge);
+        let phi = self
+            .backend
+            .builder
+            .build_phi(self.backend.ptr_type, "text_map.remove.result")
+            .map_err(builder_error)?;
+        phi.add_incoming(&[
+            (&old_object, absent),
+            (&empty_value, empty),
+            (&object, allocated),
+        ]);
+        Ok(phi.as_basic_value().into_pointer_value())
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "bounds checking and exact Option[(Text, V)] construction form one nonallocating compiler-private operation"
+    )]
+    fn emit_text_map_entry_get(
+        &self,
+        map: ValueId,
+        index: ValueId,
+        result_ty: ValueTypeId,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let ty = self.text_map_type_of_value(map)?;
+        let layout = self.backend.text_map_layout(ty)?;
+        let object = self.value(map)?.into_pointer_value();
+        let index = self.int(index)?;
+        let source = self.current_block()?;
+        let function = source.get_parent().ok_or_else(|| {
+            CodegenError::new("LlvmBuilderFailed", "TextMap entry read has no function")
+        })?;
+        let bounds = self
+            .backend
+            .context
+            .append_basic_block(function, "text_map.entry_get.bounds");
+        let some = self
+            .backend
+            .context
+            .append_basic_block(function, "text_map.entry_get.some");
+        let none = self
+            .backend
+            .context
+            .append_basic_block(function, "text_map.entry_get.none");
+        let merge = self
+            .backend
+            .context
+            .append_basic_block(function, "text_map.entry_get.merge");
+        let not_null = self
+            .backend
+            .builder
+            .build_is_not_null(object, "text_map.entry_get.not_null")
+            .map_err(builder_error)?;
+        let nonnegative = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::SGE,
+                index,
+                self.backend.context.i64_type().const_zero(),
+                "text_map.entry_get.nonnegative",
+            )
+            .map_err(builder_error)?;
+        let can_check = self
+            .backend
+            .builder
+            .build_and(not_null, nonnegative, "text_map.entry_get.can_check")
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(can_check, bounds, none)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(bounds);
+        let length_pointer =
+            self.text_map_field_pointer(&layout, object, 0, "text_map.entry_get.length.pointer")?;
+        let length = self
+            .backend
+            .builder
+            .build_load(
+                self.backend.context.i64_type(),
+                length_pointer,
+                "text_map.entry_get.length",
+            )
+            .map_err(builder_error)?
+            .into_int_value();
+        let in_bounds = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::ULT,
+                index,
+                length,
+                "text_map.entry_get.in_bounds",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(in_bounds, some, none)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(none);
+        let none_value = self.emit_sum_construct_values(result_ty, 0, &[])?;
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(some);
+        let entry =
+            self.text_map_entry_pointer(&layout, object, index, "text_map.entry_get.entry")?;
+        let value = self
+            .backend
+            .builder
+            .build_load(layout.entry, entry, "text_map.entry_get.value")
+            .map_err(builder_error)?;
+        let some_value = self.emit_sum_construct_values(result_ty, 1, &[value])?;
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(merge);
+        let phi = self
+            .backend
+            .builder
+            .build_phi(
+                self.backend.llvm_type(result_ty)?,
+                "text_map.entry_get.result",
+            )
             .map_err(builder_error)?;
         phi.add_incoming(&[(&none_value, none), (&some_value, some)]);
         Ok(phi.as_basic_value())

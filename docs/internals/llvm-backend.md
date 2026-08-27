@@ -299,8 +299,8 @@ zero of every entry traces the managed Text key, and the remaining offsets are
 the sorted, deduplicated managed leaves of the exact `V` representation. This
 covers scalar, Text, product, closed-sum, List, and nested TextMap values. The
 descriptor uses the existing `loom_gc_typed_repeated_alloc_v1` ABI; construct,
-insert, length, and lookup are typed LCIR operations emitted directly, not
-type-erased runtime map calls.
+insert, length, containment, lookup, removal, and structural comparison are
+typed LCIR operations emitted directly, not type-erased runtime map calls.
 
 Insert locates the canonical position before its safepoint, allocates exactly
 the new logical length, then reloads the rooted old map, key, and managed value
@@ -311,6 +311,16 @@ only behind an independently validated uniqueness certificate. Length and
 `get -> Option[V]` do not allocate; lookup constructs the exact option carrier
 without a universal `Value`, witness/executor pointer, tag registry, or stable
 address assumption.
+
+Containment reuses the same sorted-key locator and returns its exact found bit.
+Removal also locates before its possible safepoint. A missing key returns the
+source pointer, removing the sole entry returns null, and every other successful
+removal allocates `length - 1` entries, reloads the exactly rooted source map,
+then copies the prefix and suffix around the removed entry. The key is not used
+after allocation and therefore needs no forced root. Structural equality
+compares lengths and reads sorted entries positionally through a
+compiler-private exact `Option[(Text, V)]` operation. This keeps insertion order
+unobservable and recursively uses the ordinary typed equality CFG for `V`.
 
 ## Collision-free closed-sum storage
 
@@ -440,7 +450,7 @@ is correct.
 
 Object identities are route-separated:
 
-- `loom-lcir-native-object-v20` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v21` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -452,7 +462,7 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v25` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v26` and never suppresses fingerprint
 errors.
 
 The current LCIR domains encode the explicit transitive effect lattice,

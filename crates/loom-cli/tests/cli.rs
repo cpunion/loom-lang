@@ -1712,6 +1712,7 @@ fn typed_text_maps_close_real_check_build_test_and_run_commands() {
         b"ValueNode",
         b"loom_runtime_text_map_insert",
         b"loom_runtime_text_map_get",
+        b"loom_runtime_text_map_remove",
         b"loom_gc_root_push_v1",
         b"loom_gc_root_pop_v1",
         b"loom_executor_",

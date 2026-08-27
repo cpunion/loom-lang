@@ -3246,6 +3246,49 @@ pub fn main() Unit {
 }
 
 #[test]
+fn text_map_contains_remove_and_nested_equality_lower_to_exact_typed_operations() {
+    let dump = complete_dump(
+        r#"module typed_text_map_operations
+
+record Pair { label Text, count Int }
+
+enum Choice {
+    Number(Int)
+    Pairing(Pair)
+}
+
+pub fn main() Unit {
+    let pair = Pair { label = "pair", count = 7 }
+    let left = TextMap[Choice]().insert("z", Choice.Number(9)).insert("a", Choice.Pairing(pair))
+    let right = TextMap[Choice]().insert("a", Choice.Pairing(pair)).insert("z", Choice.Number(9))
+    let missing = left.remove("missing")
+    let removed = left.remove("z")
+    let nestedLeft = TextMap[TextMap[Choice]]().insert("inner", left)
+    let nestedRight = TextMap[TextMap[Choice]]().insert("inner", right)
+    let listLeft = TextMap[List[Text]]().insert("items", ["one", "two"])
+    let listRight = TextMap[List[Text]]().insert("items", ["one", "two"])
+    discard left.contains("a")
+    discard !left.contains("missing")
+    discard missing == left
+    discard removed != left
+    discard left == right
+    discard nestedLeft == nestedRight
+    discard listLeft == listRight
+    Unit
+}
+"#,
+    );
+
+    assert!(dump.contains("text_map.contains"), "{dump}");
+    assert_eq!(dump.matches("text_map.remove").count(), 2, "{dump}");
+    assert!(dump.matches("text_map.entry_get").count() >= 2, "{dump}");
+    assert!(dump.matches("text_map.length").count() >= 2, "{dump}");
+    assert!(dump.contains("list.get"), "{dump}");
+    assert!(dump.contains("text.compare.equal"), "{dump}");
+    assert!(!dump.contains("dynamic"), "{dump}");
+}
+
+#[test]
 fn recursive_list_backed_structural_equality_remains_one_atomic_fallback() {
     let outcome = lower_run(
         r"module recursive_equality
@@ -3264,6 +3307,33 @@ pub fn main() Unit {
     );
     let LoweringOutcome::Unsupported(report) = outcome else {
         panic!("recursive structural equality must not clone an unbounded LCIR CFG")
+    };
+    assert_eq!(report.items().len(), 1, "{report:?}");
+    assert_eq!(
+        report.items()[0].feature(),
+        UnsupportedFeature::NominalValue
+    );
+}
+
+#[test]
+fn recursive_text_map_backed_structural_equality_remains_one_atomic_fallback() {
+    let outcome = lower_run(
+        r"module recursive_text_map_equality
+
+record Node {
+    children TextMap[Node]
+}
+
+pub fn main() Unit {
+    let left = Node { children = TextMap[Node]() }
+    let right = Node { children = TextMap[Node]() }
+    discard left == right
+    Unit
+}
+",
+    );
+    let LoweringOutcome::Unsupported(report) = outcome else {
+        panic!("recursive TextMap structural equality must not clone an unbounded LCIR CFG")
     };
     assert_eq!(report.items().len(), 1, "{report:?}");
     assert_eq!(
