@@ -265,7 +265,7 @@ is correct.
 
 Object identities are route-separated:
 
-- `loom-lcir-native-object-v4` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v5` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -277,13 +277,12 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v9` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v10` and never suppresses fingerprint
 errors.
 
-The LCIR domains advance because literal text adds a new IR encoding and
-one-pointer physical ABI. The emitted globals and containment calls reuse
-runtime ABI symbols that were already versioned in the native runtime
-identity, so the native runtime ABI itself does not advance for this slice.
+The current LCIR domains also encode the explicit transitive effect lattice.
+This compiler-private metadata change does not add a physical runtime boundary,
+so the native runtime ABI itself does not advance for this slice.
 
 Every executable link consumes one validated runtime bundle; the compiler
 contains no runtime archive and its build script never starts Cargo. The CLI

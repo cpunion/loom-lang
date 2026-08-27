@@ -3,7 +3,7 @@
 use std::process::{Command, Output};
 
 use loom_codegen_ir::{
-    CheckedArtifact, LoweringOutcome, SourceArtifactRequest, TargetLayout, dump_program,
+    CheckedArtifact, Effects, LoweringOutcome, SourceArtifactRequest, TargetLayout, dump_program,
     lower_typed_artifact,
 };
 use loom_codegen_llvm::{
@@ -632,6 +632,14 @@ pub fn main() Unit {
         &SourceArtifactRequest::Run {
             entry: "main".into(),
         },
+    );
+    assert!(
+        artifact
+            .functions()
+            .iter()
+            .all(|function| function.effects() == Effects::NONE),
+        "literal-only Text must remain effect-free:\n{}",
+        dump_program(artifact.program())
     );
     let native = emit_and_run_lcir(&artifact, "source-pure-immortal-text");
     assert!(native.output.status.success(), "{:?}", native.output);

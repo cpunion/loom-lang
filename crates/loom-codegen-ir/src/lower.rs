@@ -1712,14 +1712,20 @@ impl<'program> Classifier<'program> {
 
 #[derive(Clone, Debug, Default)]
 struct EffectSummary {
-    local_fault: bool,
+    local: Effects,
     calls: BTreeSet<FunctionId>,
+}
+
+impl EffectSummary {
+    fn include(&mut self, effects: Effects) {
+        self.local = self.local.union(effects).with_implications();
+    }
 }
 
 #[derive(Clone, Debug)]
 struct InstanceEffectSummary {
     key: InstanceKey,
-    local_fault: bool,
+    local: Effects,
     calls: Box<[InstanceKey]>,
 }
 
@@ -1728,7 +1734,7 @@ impl InstanceEffectSummary {
     fn monomorphic(source: FunctionId, summary: EffectSummary) -> Self {
         Self {
             key: InstanceKey::monomorphic(source),
-            local_fault: summary.local_fault,
+            local: summary.local,
             calls: summary
                 .calls
                 .into_iter()
@@ -1788,7 +1794,7 @@ fn summarize_effects(
     scan_effect_block(&function.body, &mut summary);
     InstanceEffectSummary {
         key: key.clone(),
-        local_fault: summary.local_fault,
+        local: summary.local,
         calls: calls.to_vec().into_boxed_slice(),
     }
 }
@@ -1823,7 +1829,7 @@ fn scan_effect_statement(statement: &mir::Statement, summary: &mut EffectSummary
         StatementKind::Assert { condition } => {
             let continues = scan_effect_expr(condition, summary);
             if continues {
-                summary.local_fault = true;
+                summary.include(Effects::MAY_FAULT);
             }
             continues
         }
@@ -1853,7 +1859,7 @@ fn scan_effect_expr(expression: &mir::Expr, summary: &mut EffectSummary) -> bool
                 return false;
             }
             if *operator == UnaryOp::Negate && operand.ty == Type::Int {
-                summary.local_fault = true;
+                summary.include(Effects::MAY_FAULT);
             }
             true
         }
@@ -1869,7 +1875,7 @@ fn scan_effect_expr(expression: &mir::Expr, summary: &mut EffectSummary) -> bool
                 )
                 && left.ty == Type::Int
             {
-                summary.local_fault = true;
+                summary.include(Effects::MAY_FAULT);
             }
             right_continues || matches!(operator, BinaryOp::And | BinaryOp::Or)
         }
@@ -2121,7 +2127,7 @@ fn solve_effects(summaries: Vec<InstanceEffectSummary>) -> Result<EffectPlan, Lo
         }
     }
     let mut incoming_counts = allocated_slots(slot_count, 0_usize, "reverse-call counts")?;
-    let mut may_fault = allocated_slots(slot_count, false, "effect states")?;
+    let mut effects = allocated_slots(slot_count, Effects::NONE, "effect states")?;
     let mut pending = VecDeque::new();
     pending
         .try_reserve(slot_count)
@@ -2131,8 +2137,8 @@ fn solve_effects(summaries: Vec<InstanceEffectSummary>) -> Result<EffectPlan, Lo
         })?;
 
     for (caller, summary) in summaries.iter().enumerate() {
-        if summary.local_fault {
-            may_fault[caller] = true;
+        effects[caller] = summary.local.with_implications();
+        if !effects[caller].is_empty() {
             pending.push_back(caller);
         }
     }
@@ -2179,8 +2185,9 @@ fn solve_effects(summaries: Vec<InstanceEffectSummary>) -> Result<EffectPlan, Lo
 
     while let Some(callee) = pending.pop_front() {
         for caller in reverse_calls[callee].iter().copied() {
-            if !may_fault[caller] {
-                may_fault[caller] = true;
+            let propagated = effects[caller].union(effects[callee]).with_implications();
+            if propagated != effects[caller] {
+                effects[caller] = propagated;
                 pending.push_back(caller);
             }
         }
@@ -2188,14 +2195,10 @@ fn solve_effects(summaries: Vec<InstanceEffectSummary>) -> Result<EffectPlan, Lo
 
     let entries = summaries
         .into_iter()
-        .zip(may_fault)
-        .map(|(summary, may_fault)| EffectPlanEntry {
+        .zip(effects)
+        .map(|(summary, effects)| EffectPlanEntry {
             key: summary.key,
-            effects: if may_fault {
-                Effects::MAY_FAULT
-            } else {
-                Effects::NONE
-            },
+            effects,
         })
         .collect();
     Ok(EffectPlan { entries })
@@ -4458,7 +4461,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 .iter()
                 .map(|argument| argument.place.leaf_type()),
         );
-        if effect == Effects::NONE {
+        if !effect.contains(Effects::MAY_FAULT) {
             let results = self
                 .builder
                 .append_instruction(
@@ -4768,10 +4771,18 @@ mod tests {
     #[test]
     fn effect_solver_propagates_through_a_long_chain() {
         const FUNCTION_COUNT: u32 = 4_096;
+        const LEAF_EFFECTS: Effects = Effects::MAY_FAULT
+            .union(Effects::MAY_COLLECT)
+            .union(Effects::MAY_SUSPEND)
+            .with_implications();
         let mut summaries = Vec::new();
         for raw in 0..FUNCTION_COUNT {
             let mut summary = EffectSummary {
-                local_fault: raw == 0,
+                local: if raw == 0 {
+                    LEAF_EFFECTS
+                } else {
+                    Effects::NONE
+                },
                 ..EffectSummary::default()
             };
             if raw != 0 {
@@ -4783,7 +4794,7 @@ mod tests {
         let effects = solve_effects(summaries).expect("long-chain effects must solve");
         for (raw, entry) in (0..FUNCTION_COUNT).zip(effects.entries()) {
             assert_eq!(entry.key, InstanceKey::monomorphic(FunctionId(raw)));
-            assert_eq!(entry.effects, Effects::MAY_FAULT);
+            assert_eq!(entry.effects, LEAF_EFFECTS);
         }
     }
 
@@ -4793,21 +4804,21 @@ mod tests {
             (
                 FunctionId(0),
                 EffectSummary {
+                    local: Effects::MAY_COLLECT.with_implications(),
                     calls: BTreeSet::from([FunctionId(1)]),
-                    ..EffectSummary::default()
                 },
             ),
             (
                 FunctionId(1),
                 EffectSummary {
+                    local: Effects::MAY_FAULT,
                     calls: BTreeSet::from([FunctionId(2)]),
-                    ..EffectSummary::default()
                 },
             ),
             (
                 FunctionId(2),
                 EffectSummary {
-                    local_fault: true,
+                    local: Effects::MAY_SUSPEND.with_implications(),
                     calls: BTreeSet::from([FunctionId(0)]),
                 },
             ),
@@ -4819,11 +4830,13 @@ mod tests {
             .map(|(source, summary)| InstanceEffectSummary::monomorphic(source, summary))
             .collect();
         let effects = solve_effects(summaries).expect("recursive effects must solve");
-        assert!(
-            effects.entries()[..3]
-                .iter()
-                .all(|entry| entry.effects == Effects::MAY_FAULT)
-        );
+        assert!(effects.entries()[..3].iter().all(|entry| {
+            entry.effects
+                == Effects::MAY_FAULT
+                    .union(Effects::MAY_COLLECT)
+                    .union(Effects::MAY_SUSPEND)
+                    .with_implications()
+        }));
         assert_eq!(effects.entries()[3].effects, Effects::NONE);
     }
 

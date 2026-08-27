@@ -33,6 +33,7 @@ pub enum ValidationCode {
     ReturnType,
     CallShape,
     InOutShape,
+    EffectImplication,
     EffectMismatch,
     FaultState,
     OriginMismatch,
@@ -68,6 +69,7 @@ impl ValidationCode {
             Self::ReturnType => "LcirReturnType",
             Self::CallShape => "LcirCallShape",
             Self::InOutShape => "LcirInOutShape",
+            Self::EffectImplication => "LcirEffectImplication",
             Self::EffectMismatch => "LcirEffectMismatch",
             Self::FaultState => "LcirFaultState",
             Self::OriginMismatch => "LcirOriginMismatch",
@@ -923,14 +925,24 @@ impl<'a> Validator<'a> {
             .get(function_index)
             .copied()
             .unwrap_or(Effects::NONE);
+        let closed_effects = function.effects.with_implications();
+        if function.effects != closed_effects {
+            self.error(
+                ValidationCode::EffectImplication,
+                format!("{base}.effects"),
+                format!(
+                    "function declares {}, but capability implications require {}",
+                    function.effects, closed_effects
+                ),
+            );
+        }
         if function.effects != exact_effects {
             self.error(
                 ValidationCode::EffectMismatch,
                 format!("{base}.effects"),
                 format!(
                     "function declares {}, but its body and transitive callees require exactly {}",
-                    effects_name(function.effects),
-                    effects_name(exact_effects)
+                    function.effects, exact_effects
                 ),
             );
         }
@@ -1820,12 +1832,21 @@ impl<'a> Validator<'a> {
                     );
                     return;
                 };
-                if self.exact_effect(callee_id) != Some(Effects::NONE) {
-                    self.error(
-                        ValidationCode::CallShape,
-                        format!("{path}.callee"),
-                        "direct call requires an exactly infallible callee; use invoke for a may-fault callee",
-                    );
+                if let Some(effects) = self.exact_effect(callee_id) {
+                    if effects.contains(Effects::MAY_FAULT) {
+                        self.error(
+                            ValidationCode::CallShape,
+                            format!("{path}.callee"),
+                            "direct call requires an infallible callee; use invoke for a may-fault callee",
+                        );
+                    }
+                    if effects.contains(Effects::MAY_SUSPEND) {
+                        self.error(
+                            ValidationCode::CallShape,
+                            format!("{path}.callee"),
+                            "direct call cannot target a suspending callee",
+                        );
+                    }
                 }
                 if arguments.len() != callee.signature.params().len() {
                     self.error(
@@ -2089,12 +2110,21 @@ impl<'a> Validator<'a> {
                         format!("callee {callee_id} does not exist"),
                     );
                 }
-                if callee.is_some() && self.exact_effect(callee_id) != Some(Effects::MAY_FAULT) {
-                    self.error(
-                        ValidationCode::CallShape,
-                        format!("{path}.callee"),
-                        "invoke requires an exactly may-fault callee; use direct call for an infallible callee",
-                    );
+                if let Some(effects) = self.exact_effect(callee_id) {
+                    if !effects.contains(Effects::MAY_FAULT) {
+                        self.error(
+                            ValidationCode::CallShape,
+                            format!("{path}.callee"),
+                            "invoke requires a may-fault callee; use direct call for an infallible callee",
+                        );
+                    }
+                    if effects.contains(Effects::MAY_SUSPEND) {
+                        self.error(
+                            ValidationCode::CallShape,
+                            format!("{path}.callee"),
+                            "invoke cannot target a suspending callee",
+                        );
+                    }
                 }
                 if let Some(callee) = callee {
                     self.validate_call_arguments(
@@ -2856,14 +2886,14 @@ fn compute_program_fault_states(program: &Program) -> Vec<Vec<FaultStateSet>> {
         .collect()
 }
 
-/// Computes the least function-level fault effect from paths that are still
-/// inactive. Operations in active cleanup can only preserve the primary fault
-/// or suppress a secondary one, so they cannot seed or propagate `MAY_FAULT` for
-/// an otherwise infallible function.
+/// Computes the least transitive function effects from operation and call
+/// edges. Operations in active cleanup can only preserve the primary fault or
+/// suppress a secondary one, so those paths strip only `MAY_FAULT`; runtime,
+/// collection, executor, and suspension capabilities still propagate.
 fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>]) -> Vec<Effects> {
     let function_count = program.functions.len();
     let mut reverse_calls = vec![Vec::new(); function_count];
-    let mut may_fault = vec![false; function_count];
+    let mut effects = vec![Effects::NONE; function_count];
 
     for (caller, function) in program.functions.iter().enumerate() {
         for (block_index, block) in function.blocks.iter().enumerate() {
@@ -2872,9 +2902,10 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                 .and_then(|states| states.get(block_index))
                 .copied()
                 .unwrap_or(FaultStateSet::NONE);
-            if !state.contains(FaultStateSet::INACTIVE) {
+            if state == FaultStateSet::NONE {
                 continue;
             }
+            let propagates_fault = state.contains(FaultStateSet::INACTIVE);
 
             for instruction_id in block.instructions.iter().copied() {
                 let Some(instruction) = function.instruction(instruction_id) else {
@@ -2883,7 +2914,10 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                 if let InstructionKind::DirectCall { callee, .. } = instruction.kind()
                     && let Some(callee) = canonical_function_index(program, *callee)
                 {
-                    reverse_calls[callee].push(caller);
+                    reverse_calls[callee].push(EffectCaller {
+                        caller,
+                        propagates_fault,
+                    });
                 }
             }
 
@@ -2894,13 +2928,24 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                 TerminatorKind::CheckedIntNegate { .. }
                 | TerminatorKind::CheckedIntBinary { .. }
                 | TerminatorKind::Assert { .. }
-                | TerminatorKind::Fault { .. } => may_fault[caller] = true,
+                | TerminatorKind::Fault { .. }
+                    if propagates_fault =>
+                {
+                    effects[caller] = effects[caller].union(Effects::MAY_FAULT);
+                }
                 TerminatorKind::Invoke { callee, .. } => {
                     if let Some(callee) = canonical_function_index(program, *callee) {
-                        reverse_calls[callee].push(caller);
+                        reverse_calls[callee].push(EffectCaller {
+                            caller,
+                            propagates_fault,
+                        });
                     }
                 }
-                TerminatorKind::Jump(_)
+                TerminatorKind::CheckedIntNegate { .. }
+                | TerminatorKind::CheckedIntBinary { .. }
+                | TerminatorKind::Assert { .. }
+                | TerminatorKind::Fault { .. }
+                | TerminatorKind::Jump(_)
                 | TerminatorKind::Branch { .. }
                 | TerminatorKind::SumSwitch { .. }
                 | TerminatorKind::Return(_)
@@ -2910,31 +2955,38 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
         }
     }
 
-    let mut pending = may_fault
+    propagate_effects(effects, &reverse_calls)
+}
+
+fn propagate_effects(
+    mut effects: Vec<Effects>,
+    reverse_calls: &[Vec<EffectCaller>],
+) -> Vec<Effects> {
+    for effect in &mut effects {
+        *effect = effect.with_implications();
+    }
+    let mut pending = effects
         .iter()
         .copied()
         .enumerate()
-        .filter_map(|(index, effect)| effect.then_some(index))
+        .filter_map(|(index, effect)| (!effect.is_empty()).then_some(index))
         .collect::<VecDeque<_>>();
     while let Some(callee) = pending.pop_front() {
-        for caller in reverse_calls[callee].iter().copied() {
-            if !may_fault[caller] {
-                may_fault[caller] = true;
-                pending.push_back(caller);
+        for edge in reverse_calls[callee].iter().copied() {
+            let propagated = if edge.propagates_fault {
+                effects[callee]
+            } else {
+                effects[callee].without(Effects::MAY_FAULT)
+            };
+            let joined = effects[edge.caller].union(propagated).with_implications();
+            if joined != effects[edge.caller] {
+                effects[edge.caller] = joined;
+                pending.push_back(edge.caller);
             }
         }
     }
 
-    may_fault
-        .into_iter()
-        .map(|effect| {
-            if effect {
-                Effects::MAY_FAULT
-            } else {
-                Effects::NONE
-            }
-        })
-        .collect()
+    effects
 }
 
 fn canonical_function_index(program: &Program, function: InstanceId) -> Option<usize> {
@@ -2950,6 +3002,12 @@ fn canonical_function_index(program: &Program, function: InstanceId) -> Option<u
 struct FaultEdge {
     target: usize,
     activates_fault: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct EffectCaller {
+    caller: usize,
+    propagates_fault: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3027,16 +3085,6 @@ fn reachable_blocks(entry: usize, successors: &[Vec<usize>]) -> Vec<bool> {
         }
     }
     reachable
-}
-
-const fn effects_name(effects: Effects) -> &'static str {
-    if effects.is_empty() {
-        "none"
-    } else if effects.contains(Effects::MAY_FAULT) {
-        "may_fault"
-    } else {
-        "unknown"
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -3336,6 +3384,71 @@ mod tests {
                 .expect("declare");
         }
         builder.finish()
+    }
+
+    #[test]
+    fn independent_effect_propagation_closes_long_chains_and_recursive_sccs() {
+        const FUNCTION_COUNT: usize = 4_096;
+        let all = Effects::MAY_FAULT
+            .union(Effects::MAY_COLLECT)
+            .union(Effects::MAY_SUSPEND)
+            .with_implications();
+        let mut local = vec![Effects::NONE; FUNCTION_COUNT];
+        local[0] = all;
+        let mut reverse = vec![Vec::new(); FUNCTION_COUNT];
+        for caller in 1..FUNCTION_COUNT {
+            reverse[caller - 1].push(EffectCaller {
+                caller,
+                propagates_fault: true,
+            });
+        }
+        let closed = propagate_effects(local, &reverse);
+        assert!(closed.iter().all(|effects| *effects == all));
+
+        let local = vec![
+            Effects::MAY_COLLECT,
+            Effects::MAY_FAULT,
+            Effects::MAY_SUSPEND,
+            Effects::NONE,
+        ];
+        let reverse = vec![
+            vec![EffectCaller {
+                caller: 2,
+                propagates_fault: true,
+            }],
+            vec![EffectCaller {
+                caller: 0,
+                propagates_fault: true,
+            }],
+            vec![EffectCaller {
+                caller: 1,
+                propagates_fault: true,
+            }],
+            Vec::new(),
+        ];
+        let closed = propagate_effects(local, &reverse);
+        assert!(closed[..3].iter().all(|effects| *effects == all));
+        assert_eq!(closed[3], Effects::NONE);
+    }
+
+    #[test]
+    fn active_cleanup_call_edges_strip_only_the_fault_capability() {
+        let callee = Effects::MAY_FAULT
+            .union(Effects::MAY_COLLECT)
+            .union(Effects::MAY_SUSPEND)
+            .with_implications();
+        let closed = propagate_effects(
+            vec![Effects::NONE, callee],
+            &[
+                Vec::new(),
+                vec![EffectCaller {
+                    caller: 0,
+                    propagates_fault: false,
+                }],
+            ],
+        );
+        assert_eq!(closed[0], callee.without(Effects::MAY_FAULT));
+        assert_eq!(closed[1], callee);
     }
 
     #[test]
