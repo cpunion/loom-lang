@@ -427,6 +427,12 @@ pub enum InstructionKind {
     Unrefine {
         value: ValueId,
     },
+    /// Constructs one closed sum variant. The result type selects the sum
+    /// representation and `variant` selects its ordered payload signature.
+    SumConstruct {
+        variant: u32,
+        payload: Box<[ValueId]>,
+    },
     BoolNot {
         value: ValueId,
     },
@@ -490,6 +496,7 @@ impl InstructionKind {
             | Self::Unrefine { value }
             | Self::BoolNot { value }
             | Self::FloatNegate { value } => vec![*value],
+            Self::SumConstruct { payload, .. } => payload.to_vec(),
             Self::BoolCompare { left, right, .. }
             | Self::FloatBinary { left, right, .. }
             | Self::IntCompare { left, right, .. }
@@ -514,6 +521,30 @@ impl BlockTarget {
     #[must_use]
     pub fn new(block: BlockId, arguments: impl Into<Box<[ValueId]>>) -> Self {
         Self {
+            block,
+            arguments: arguments.into(),
+        }
+    }
+}
+
+/// One exhaustive closed-sum case edge.
+///
+/// The selected variant payload is injected into the destination's leading
+/// block parameters. Explicit `arguments` are forwarded after that implicit
+/// payload, mirroring result edges without materializing payload values in the
+/// source block.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SumCase {
+    pub variant: u32,
+    pub block: BlockId,
+    pub arguments: Box<[ValueId]>,
+}
+
+impl SumCase {
+    #[must_use]
+    pub fn new(variant: u32, block: BlockId, arguments: impl Into<Box<[ValueId]>>) -> Self {
+        Self {
+            variant,
             block,
             arguments: arguments.into(),
         }
@@ -650,6 +681,13 @@ pub enum TerminatorKind {
         then_target: BlockTarget,
         else_target: BlockTarget,
     },
+    /// Exhaustively switches over a closed sum. Checked LCIR requires exactly
+    /// one ordered case for every variant; each edge defines that variant's
+    /// payload in its destination block parameters.
+    SumSwitch {
+        scrutinee: ValueId,
+        cases: Box<[SumCase]>,
+    },
     Return(ValueId),
     /// Negates a signed integer, producing its value only on `normal` and
     /// activating [`FaultCode::IntegerOverflow`] on `fault`.
@@ -709,6 +747,16 @@ impl TerminatorKind {
                 operands.push(*condition);
                 operands.extend_from_slice(&then_target.arguments);
                 operands.extend_from_slice(&else_target.arguments);
+                operands
+            }
+            Self::SumSwitch { scrutinee, cases } => {
+                let mut operands = Vec::with_capacity(
+                    1 + cases.iter().map(|case| case.arguments.len()).sum::<usize>(),
+                );
+                operands.push(*scrutinee);
+                for case in cases {
+                    operands.extend_from_slice(&case.arguments);
+                }
                 operands
             }
             Self::Return(value) => vec![*value],
@@ -786,6 +834,9 @@ impl TerminatorKind {
                 else_target,
                 ..
             } => vec![preserve(then_target.block), preserve(else_target.block)],
+            Self::SumSwitch { cases, .. } => {
+                cases.iter().map(|case| preserve(case.block)).collect()
+            }
             Self::CheckedIntNegate { normal, fault, .. }
             | Self::CheckedIntBinary { normal, fault, .. } => {
                 vec![preserve(normal.block), activate(fault.block)]

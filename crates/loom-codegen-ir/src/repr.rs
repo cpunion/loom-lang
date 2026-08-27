@@ -5,7 +5,7 @@ use std::fmt;
 use loom_mir::Type;
 
 use crate::ids::ProgramBrand;
-use crate::{ProductReprId, ReprId, ValueTypeId};
+use crate::{ProductReprId, ReprId, SumReprId, ValueTypeId};
 
 pub(crate) const DIRECT_PRODUCT_MAX_NESTING_DEPTH: usize = 256;
 pub(crate) const DIRECT_PRODUCT_MAX_STRUCTURAL_NODES: usize = 256;
@@ -84,6 +84,10 @@ pub enum Repr {
     /// typed LCIR values. Closed products may contain other products, but
     /// validation rejects missing, uninhabited, or cyclic field graphs.
     Product(ProductReprId),
+    /// A closed tagged union whose ordered variants carry independently typed
+    /// payload fields. The sum plan fixes tag width and payload shape, while
+    /// the target backend selects the exact carrier size and alignment.
+    Sum(SumReprId),
 }
 
 /// Ordered fields of one compiler-private product representation.
@@ -96,6 +100,72 @@ impl ProductRepr {
     #[must_use]
     pub const fn fields(&self) -> &[ValueTypeId] {
         &self.fields
+    }
+}
+
+/// Minimal discriminant representation selected from the closed variant
+/// count. A single-variant sum has no observable tag in its physical ABI.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum SumTagRepr {
+    Tagless,
+    I8,
+    I16,
+    I32,
+}
+
+impl SumTagRepr {
+    pub(crate) fn for_variant_count(variants: usize) -> Option<Self> {
+        match variants {
+            0 => None,
+            1 => Some(Self::Tagless),
+            2..=256 => Some(Self::I8),
+            257..=65_536 => Some(Self::I16),
+            _ if u32::try_from(variants).is_ok() => Some(Self::I32),
+            _ => None,
+        }
+    }
+}
+
+/// Ordered payload fields of one closed sum variant.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SumVariantRepr {
+    fields: Box<[ValueTypeId]>,
+}
+
+impl SumVariantRepr {
+    #[must_use]
+    pub const fn fields(&self) -> &[ValueTypeId] {
+        &self.fields
+    }
+}
+
+/// Physical plan for one closed concrete sum.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SumRepr {
+    tag: SumTagRepr,
+    variants: Box<[SumVariantRepr]>,
+}
+
+impl SumRepr {
+    #[must_use]
+    pub const fn tag(&self) -> SumTagRepr {
+        self.tag
+    }
+
+    #[must_use]
+    pub const fn variants(&self) -> &[SumVariantRepr] {
+        &self.variants
+    }
+
+    /// Returns true when every variant has no semantic payload fields. A
+    /// multi-variant all-empty sum is represented by its tag alone.
+    #[must_use]
+    pub fn is_tag_only(&self) -> bool {
+        self.variants.len() > 1
+            && self
+                .variants
+                .iter()
+                .all(|variant| variant.fields.is_empty())
     }
 }
 
@@ -176,6 +246,7 @@ pub struct RepresentationPlan {
     target: TargetLayout,
     reprs: Vec<Repr>,
     products: Vec<ProductRepr>,
+    sums: Vec<SumRepr>,
     types: Vec<ValueType>,
     registrations: Vec<TypeRegistration>,
     canonical_types: BTreeMap<Type, ValueTypeId>,
@@ -229,6 +300,7 @@ impl RepresentationPlan {
             target,
             reprs,
             products: Vec::new(),
+            sums: Vec::new(),
             types,
             registrations,
             canonical_types,
@@ -248,6 +320,11 @@ impl RepresentationPlan {
     #[must_use]
     pub fn products(&self) -> &[ProductRepr] {
         &self.products
+    }
+
+    #[must_use]
+    pub fn sums(&self) -> &[SumRepr] {
+        &self.sums
     }
 
     #[must_use]
@@ -275,6 +352,13 @@ impl RepresentationPlan {
     pub fn product(&self, id: ProductReprId) -> Option<&ProductRepr> {
         (id.brand() == self.brand)
             .then(|| self.products.get(id.index()))
+            .flatten()
+    }
+
+    #[must_use]
+    pub fn sum(&self, id: SumReprId) -> Option<&SumRepr> {
+        (id.brand() == self.brand)
+            .then(|| self.sums.get(id.index()))
             .flatten()
     }
 
@@ -376,6 +460,48 @@ impl RepresentationPlan {
             semantic: semantic.clone(),
             repr,
             kind: ValueTypeKind::Transparent { base },
+        });
+        self.registrations.push(TypeRegistration {
+            semantic: semantic.clone(),
+            value_type: ty,
+        });
+        self.canonical_types.insert(semantic, ty);
+        Some(ty)
+    }
+
+    pub(crate) fn add_sum(
+        &mut self,
+        semantic: Type,
+        variants: &[Box<[Type]>],
+    ) -> Option<ValueTypeId> {
+        if self.type_id(&semantic).is_some() || !matches!(&semantic, Type::Nominal(_, _)) {
+            return None;
+        }
+        let tag = SumTagRepr::for_variant_count(variants.len())?;
+        let variants = variants
+            .iter()
+            .map(|variant| {
+                variant
+                    .iter()
+                    .map(|field| self.type_id(field))
+                    .collect::<Option<Vec<_>>>()
+                    .map(|fields| SumVariantRepr {
+                        fields: fields.into_boxed_slice(),
+                    })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let sum = SumReprId::from_index(self.brand, self.sums.len())?;
+        let repr = ReprId::from_index(self.brand, self.reprs.len())?;
+        let ty = ValueTypeId::from_index(self.brand, self.types.len())?;
+        self.sums.push(SumRepr {
+            tag,
+            variants: variants.into_boxed_slice(),
+        });
+        self.reprs.push(Repr::Sum(sum));
+        self.types.push(ValueType {
+            semantic: semantic.clone(),
+            repr,
+            kind: ValueTypeKind::Direct,
         });
         self.registrations.push(TypeRegistration {
             semantic: semantic.clone(),

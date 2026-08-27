@@ -173,6 +173,30 @@ metadata does not yet synthesize nominal source aliases such as `Money` or
 `Range`. This deliberate display limitation does not erase nominal identity
 from LCIR dumps, validation, cache fingerprints, or object artifact identity.
 
+## Direct LCIR closed sums
+
+LLVM derives every sum layout from the checked `SumRepr` and target data. A
+single variant is its payload struct with no tag. A multi-variant enum whose
+variants have no payload fields is only the smallest checked integer tag. All
+other sums are `{ tag, carrier }`. The carrier has the maximum payload ABI
+size, the maximum payload ABI alignment, and the required tail padding. A
+zero-length array of the most-aligned payload type imposes alignment without
+adding storage; target-data checks reject any disagreement between the planned
+and actual carrier size or alignment.
+
+`SumConstruct` builds payload fields in source order. `SumSwitch` extracts the
+tag once, switches exhaustively, and decodes the selected carrier into typed
+payload block parameters. Temporary typed carrier storage is an LLVM lowering
+detail: the release optimization gate requires SROA to remove every such
+`alloca` and forbids `memcpy`, the universal `loom.Value`, runtime/GC/executor
+symbols for pure sums, and indirect calls.
+
+The test harness consumes the checked artifact's `TestOutcomePlan`. `Unit`
+tests pass after a successful call. `Result[Unit, E]` tests compare the physical
+tag with the explicit success variant; the explicit failure variant produces a
+normal failed-test status. A source `RuntimeFault` is checked independently
+before the result tag and retains the existing runtime-failure behavior.
+
 ## Legacy native specialization
 
 The universal value path remains the complete semantic implementation. Current
@@ -201,7 +225,7 @@ is correct.
 
 Object identities are route-separated:
 
-- `loom-lcir-native-object-v2` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v3` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -213,7 +237,8 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned and never suppresses fingerprint errors.
+versioned as `loom-llvm-object-cache-v8` and never suppresses fingerprint
+errors.
 
 Every executable link consumes one validated runtime bundle; the compiler
 contains no runtime archive and its build script never starts Cargo. The CLI
@@ -242,7 +267,10 @@ debug information.
 The signature deliberately describes the exact compiler ABI rather than a
 logical wrapper that does not exist. Direct products use stable compiler-private
 `LoomProduct<tN>` names because LCIR does not retain source record names; their
-members, size, alignment, and offsets come from LLVM target data. An infallible
+members, size, alignment, and offsets come from LLVM target data. Closed sums
+similarly use `LoomSum<tN>` and describe their exact tagless, tag-only, or
+tagged physical ABI. Tagged carrier and tag fields are artificial debug members
+with target-data-derived sizes, alignments, and offsets. An infallible
 inout callable returns `{ value, writebacks... }`, while a fallible callable
 returns `{ status, value, writebacks... }` and receives an artificial trailing
 `LoomFaultContext*` parameter. Status and writeback members are artificial.

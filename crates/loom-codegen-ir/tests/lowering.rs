@@ -1,13 +1,16 @@
+use std::{collections::BTreeMap, fmt::Write as _, process::Command, time::Duration};
+
 use loom_codegen_ir::{
-    InstanceKey, InstructionKind, InvalidRootCode, LoweringErrorCode, LoweringOutcome,
-    SourceArtifactRequest, TargetLayout, UnsupportedFeature, artifact_identity, dump_program,
-    lower_typed_artifact,
+    CheckedIntBinaryOp, InstanceKey, InstructionKind, InvalidRootCode, LoweringErrorCode,
+    LoweringOutcome, SourceArtifactRequest, TargetLayout, TerminatorKind, UnsupportedFeature,
+    artifact_identity, dump_program, lower_typed_artifact,
 };
 use loom_core::FileId;
 use loom_hir::{SourceUnit, lower_files};
 use loom_lowering::lower_to_mir;
 use loom_sema::analyze;
 use loom_syntax::parse_with_file;
+use wait_timeout::ChildExt as _;
 
 fn compile(source: &str) -> loom_mir::CheckedProgram {
     let parsed = parse_with_file(FileId(0), source);
@@ -48,8 +51,9 @@ fn lower_run(source: &str) -> LoweringOutcome {
 }
 
 fn complete_dump(source: &str) -> String {
-    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
-        panic!("source should be completely supported")
+    let outcome = lower_run(source);
+    let LoweringOutcome::Complete(artifact) = &outcome else {
+        panic!("source should be completely supported: {outcome:?}")
     };
     dump_program(artifact.program())
 }
@@ -95,10 +99,15 @@ record Range {
     invariant self.low <= self.high
 }
 
+enum Stored {
+    Amount(Money)
+    Interval(Range)
+}
+
 pub fn main() Unit {
     let money = Money(10.0)
-    discard money
-    discard Range { low = Money(1.0), high = Money(2.0) }
+    discard Stored.Amount(money)
+    discard Stored.Interval(Range { low = Money(1.0), high = Money(2.0) })
     Unit
 }
 ";
@@ -120,6 +129,7 @@ pub fn main() Unit {
         fresh_dump.contains("invariant_record.proven"),
         "{fresh_dump}"
     );
+    assert!(fresh_dump.contains("sum.construct"), "{fresh_dump}");
 
     let bytes = loom_mir::encode_interpreted_executable_artifact(&fresh, "main")
         .expect("encode portable proof artifact");
@@ -342,6 +352,33 @@ pub fn main() Unit {
 }
 
 #[test]
+fn generic_sum_construction_and_matches_plan_each_concrete_instance() {
+    let dump = complete_dump(
+        r"module generic_sums
+
+fn unwrap[T](value Option[T], fallback T) T {
+    match value {
+        Some(found) => found
+        None => fallback
+    }
+}
+
+pub fn main() Unit {
+    discard unwrap(Some(7), 0)
+    discard unwrap(Some(true), false)
+    Unit
+}
+",
+    );
+
+    assert_eq!(dump.matches("source=f0 types=[Int]").count(), 1, "{dump}");
+    assert_eq!(dump.matches("source=f0 types=[Bool]").count(), 1, "{dump}");
+    assert!(dump.contains("Nominal#0[Int]"), "{dump}");
+    assert!(dump.contains("Nominal#0[Bool]"), "{dump}");
+    assert!(dump.matches("sum.switch").count() >= 2, "{dump}");
+}
+
+#[test]
 fn regular_generic_recursion_deduplicates_each_exact_instantiation() {
     let source = r"module generic_recursion
 
@@ -528,7 +565,7 @@ fn oversized_generic_call_key_is_rejected_before_lcir_allocation() {
 }
 
 #[test]
-fn sema_valid_fallible_test_root_is_unsupported_not_invalid() {
+fn sema_valid_result_test_root_is_supported_with_an_explicit_outcome() {
     let mir = compile(
         r"module fallible_tests
 
@@ -543,14 +580,18 @@ test fn fallible() Result[Unit, Problem] { Ok(Unit) }
         TargetLayout::new(64).expect("test target"),
     )
     .expect("a sema-valid test signature must reach coverage classification");
-    let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("Result-returning test is outside the typed slice")
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("closed Result-returning test should use typed LCIR")
     };
-    assert!(
-        report
-            .items()
-            .iter()
-            .any(|item| item.feature() == UnsupportedFeature::SignatureType)
+    assert_eq!(
+        artifact.test_outcomes(),
+        Some(
+            [loom_codegen_ir::TestOutcomePlan::Result {
+                success_variant: 0,
+                failure_variant: 1,
+            }]
+            .as_slice()
+        )
     );
 }
 
@@ -2098,6 +2139,447 @@ pub fn main() Unit {
 }
 
 #[test]
+fn closed_sums_and_ordered_nested_matches_lower_to_exhaustive_sum_cfg() {
+    let dump = complete_dump(
+        r"module closed_sums
+
+enum Inner {
+    Off
+    On(Int)
+}
+
+enum Choice {
+    Empty
+    Value(Int)
+    Nested(Inner)
+    Pair(Int, Bool)
+}
+
+fn choose(input Choice) Int {
+    match input {
+        Value(0) => 10
+        Value(value) => value
+        Nested(On(value)) => value + 1
+        Nested(Off) => 20
+        Pair(value, true) => value
+        Pair(value, false) => 30
+        Empty => 40
+    }
+}
+
+pub fn main() Unit {
+    discard choose(Choice.Value(0))
+    discard choose(Choice.Nested(Inner.On(4)))
+    discard choose(Choice.Pair(5, true))
+    discard choose(Choice.Empty)
+    Unit
+}
+",
+    );
+
+    assert!(dump.contains("sum s0 tag=i8"), "{dump}");
+    assert!(dump.contains("sum s1 tag=i8"), "{dump}");
+    assert!(dump.matches("sum.construct").count() >= 5, "{dump}");
+    assert!(dump.matches("sum.switch").count() >= 2, "{dump}");
+    assert!(dump.contains("payload0"), "{dump}");
+    assert!(dump.contains("int.compare.equal"), "{dump}");
+    assert!(dump.contains("bool.compare.equal"), "{dump}");
+}
+
+#[test]
+fn refined_and_invariant_values_are_direct_sum_payloads() {
+    let dump = complete_dump(
+        r"module mixed_proven_sums
+
+type Money = Float where self >= 0.0
+
+record Range {
+    low Money
+    high Money
+    invariant self.low <= self.high
+}
+
+enum Holding {
+    Empty
+    Cash(Money)
+    Window(Range)
+}
+
+fn value(input Holding) Float {
+    match input {
+        Empty => 0.0
+        Cash(money) => money
+        Window(range) => {
+            discard range
+            2.0
+        }
+    }
+}
+
+pub fn main() Unit {
+    discard value(Holding.Cash(Money(10.0)))
+    discard value(Holding.Window(Range { low = Money(1.0), high = Money(2.0) }))
+    Unit
+}
+",
+    );
+
+    assert!(dump.contains("transparent(t4)"), "{dump}");
+    assert!(dump.contains("invariant_product"), "{dump}");
+    assert!(dump.contains("sum s0"), "{dump}");
+    assert!(dump.contains("refine.proven"), "{dump}");
+    assert!(dump.contains("invariant_record.proven"), "{dump}");
+    assert!(dump.contains("sum.construct"), "{dump}");
+    assert!(dump.contains("sum.switch"), "{dump}");
+}
+
+#[test]
+fn wide_sum_match_shares_one_typed_capturing_arm_block() {
+    const VARIANTS: usize = 128;
+    let mut variants = String::new();
+    for index in 0..VARIANTS {
+        writeln!(variants, "    V{index}").expect("variant declaration");
+    }
+    let source = format!(
+        "module wide_sum_dag\n\nenum Wide {{\n{variants}}}\n\nfn classify(input Wide) Int {{\n    match input {{\n        V0 => 0\n        other => 40 + 2\n    }}\n}}\n\npub fn main() Unit {{\n    discard classify(Wide.V127)\n    Unit\n}}\n"
+    );
+    let mir = compile(&source);
+    let LoweringOutcome::Complete(artifact) = lower_typed_artifact(
+        &mir,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("lower wide sum DAG") else {
+        panic!("a bounded wide sum match must remain on typed LCIR")
+    };
+    let classify = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with(".classify"))
+        .expect("lowered classify function");
+    assert_eq!(
+        classify
+            .blocks()
+            .iter()
+            .filter(|block| matches!(
+                block.terminator().map(loom_codegen_ir::Terminator::kind),
+                Some(TerminatorKind::CheckedIntBinary {
+                    op: CheckedIntBinaryOp::Add,
+                    ..
+                })
+            ))
+            .count(),
+        1,
+        "the shared source arm must be lowered once, not once per enum case"
+    );
+    let mut incoming_jumps = BTreeMap::new();
+    for block in classify.blocks() {
+        if let Some(TerminatorKind::Jump(target)) =
+            block.terminator().map(loom_codegen_ir::Terminator::kind)
+        {
+            *incoming_jumps.entry(target.block).or_insert(0_usize) += 1;
+        }
+    }
+    let (shared_arm, incoming) = incoming_jumps
+        .into_iter()
+        .max_by_key(|(_, incoming)| *incoming)
+        .expect("shared arm jump target");
+    assert_eq!(incoming, VARIANTS - 1);
+    assert_eq!(
+        classify
+            .block(shared_arm)
+            .expect("shared capturing arm")
+            .params()
+            .len(),
+        1,
+        "the binding must cross the shared arm edge as one typed SSA parameter"
+    );
+}
+
+#[test]
+fn result_unit_tests_carry_explicit_outcome_plans_through_lowering() {
+    let mir = compile(
+        r"module result_tests
+
+enum Problem { Failed }
+
+test fn passes() Result[Unit, Problem] { Ok(Unit) }
+
+test fn fails() Result[Unit, Problem] { Err(Problem.Failed) }
+",
+    );
+    let LoweringOutcome::Complete(artifact) = lower_typed_artifact(
+        &mir,
+        &SourceArtifactRequest::Tests,
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("lower Result tests") else {
+        panic!("closed Result tests should use one LCIR artifact")
+    };
+    assert_eq!(artifact.test_roots().expect("roots").len(), 2);
+    assert_eq!(
+        artifact.test_outcomes(),
+        Some(
+            [
+                loom_codegen_ir::TestOutcomePlan::Result {
+                    success_variant: 0,
+                    failure_variant: 1,
+                },
+                loom_codegen_ir::TestOutcomePlan::Result {
+                    success_variant: 0,
+                    failure_variant: 1,
+                },
+            ]
+            .as_slice()
+        )
+    );
+}
+
+#[test]
+fn managed_and_recursive_sums_select_whole_artifact_fallback() {
+    for source in [
+        r#"module managed_sum
+
+enum Message { Textual(Text) }
+
+pub fn main() Unit {
+    discard Message.Textual("managed")
+    Unit
+}
+"#,
+        r"module recursive_sum
+
+enum Chain {
+    End
+    Next(Chain)
+}
+
+pub fn main() Unit {
+    discard Chain.End
+    Unit
+}
+",
+        r"module list_sum
+
+enum Values { Items(List[Int]) }
+
+pub fn main() Unit {
+    discard Values.Items(List[Int]())
+    Unit
+}
+",
+        r"module dynamic_sum
+
+dyn concept Numbered {
+    method number(self) Int
+}
+
+record Number { value Int }
+
+impl Numbered for Number {
+    method number(self) Int { self.value }
+}
+
+enum Packet { Item(dyn Numbered) }
+
+fn erase(value Number) dyn Numbered { value }
+
+pub fn main() Unit {
+    discard Packet.Item(erase(Number { value = 1 }))
+    Unit
+}
+",
+        r"module task_sum
+
+enum Work { Pending(Task[Int]) }
+
+async fn child() Int { 1 }
+
+pub async fn main() Unit {
+    let work = Work.Pending(child())
+    match work {
+        Pending(task) => { discard task.await }
+    }
+    Unit
+}
+",
+    ] {
+        let LoweringOutcome::Unsupported(report) = lower_run(source) else {
+            panic!("unsupported sum graph must select atomic fallback")
+        };
+        assert!(report.items().iter().any(|item| matches!(
+            item.feature(),
+            UnsupportedFeature::ExpressionType
+                | UnsupportedFeature::NominalValue
+                | UnsupportedFeature::TextConstant
+                | UnsupportedFeature::ListValue
+                | UnsupportedFeature::RefinedValue
+                | UnsupportedFeature::View
+                | UnsupportedFeature::AsyncFunction
+                | UnsupportedFeature::TaskOperation
+        )));
+    }
+}
+
+const NON_REGULAR_SUM_LOWERING_CHILD_ENV: &str = "LOOM_LCIR_NON_REGULAR_SUM_CHILD";
+
+#[test]
+fn non_regular_generic_sum_lowering_finishes_within_the_resource_gate() {
+    let mut child = Command::new(std::env::current_exe().expect("current test executable"))
+        .args([
+            "--exact",
+            "non_regular_generic_sum_lowering_child",
+            "--nocapture",
+        ])
+        .env(NON_REGULAR_SUM_LOWERING_CHILD_ENV, "1")
+        .spawn()
+        .expect("spawn non-regular sum lowering child");
+    let status = child
+        .wait_timeout(Duration::from_secs(15))
+        .expect("wait for non-regular sum lowering child");
+    let Some(status) = status else {
+        child.kill().expect("kill timed-out sum lowering child");
+        child.wait().expect("reap timed-out sum lowering child");
+        panic!("non-regular generic sum lowering exceeded 15 seconds");
+    };
+    assert!(status.success(), "non-regular sum lowering child failed");
+}
+
+fn checked_non_regular_spiral_fixture() -> loom_mir::CheckedProgram {
+    use loom_core::Span;
+    use loom_mir::{
+        Block, CallPlan, Constant, Expr, ExprKind, Function, FunctionId, Program, Statement,
+        StatementKind, Type, TypeDef, TypeDefKind, TypeId, VariantDef, VariantId,
+    };
+
+    let span = Span::default();
+    let spiral = TypeId(0);
+    let spiral_int = Type::Nominal(spiral, vec![Type::Int]);
+    let done = Expr::new(
+        ExprKind::Variant {
+            ty: spiral,
+            type_arguments: vec![Type::Int],
+            variant: VariantId(0),
+            payload: vec![Expr::new(
+                ExprKind::Constant(Constant::Int(0)),
+                Type::Int,
+                span,
+            )],
+        },
+        spiral_int,
+        span,
+    );
+    let mut main = Function {
+        id: FunctionId(0),
+        name: "manual.main".into(),
+        span,
+        type_parameters: 0,
+        is_async: false,
+        suspension_points: Vec::new(),
+        params: Vec::new(),
+        witness_params: Vec::new(),
+        witness_prefix_count: 0,
+        locals: Vec::new(),
+        return_ty: Type::Unit,
+        receiver: None,
+        body: Block {
+            statements: vec![Statement {
+                kind: StatementKind::Evaluate(done),
+                span,
+            }],
+            tail: Some(Box::new(Expr::new(
+                ExprKind::Constant(Constant::Unit),
+                Type::Unit,
+                span,
+            ))),
+            span,
+        },
+        call_plan: CallPlan::default(),
+    };
+    main.renumber_expr_ids().expect("number raw MIR fixture");
+    Program {
+        types: vec![TypeDef {
+            id: spiral,
+            name: "Spiral".into(),
+            span,
+            type_parameters: 1,
+            kind: TypeDefKind::Enum {
+                variants: vec![
+                    VariantDef {
+                        id: VariantId(0),
+                        name: "Done".into(),
+                        payload: vec![Type::Parameter(0)],
+                        span,
+                    },
+                    VariantDef {
+                        id: VariantId(1),
+                        name: "Next".into(),
+                        payload: vec![Type::Nominal(
+                            spiral,
+                            vec![Type::Tuple(vec![Type::Parameter(0), Type::Parameter(0)])],
+                        )],
+                        span,
+                    },
+                ],
+            },
+        }],
+        functions: vec![main],
+        exports: BTreeMap::from([("main".into(), FunctionId(0))]),
+        ..Program::default()
+    }
+    .into_checked()
+    .expect("bounded MIR validation must accept Spiral[Int].Done(0)")
+}
+
+#[test]
+fn non_regular_generic_sum_lowering_child() {
+    if std::env::var_os(NON_REGULAR_SUM_LOWERING_CHILD_ENV).is_none() {
+        return;
+    }
+
+    let outcome = lower_typed_artifact(
+        &checked_non_regular_spiral_fixture(),
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("bounded direct aggregate classification");
+    let LoweringOutcome::Unsupported(report) = outcome else {
+        panic!("a non-regular by-value sum must select whole-artifact fallback")
+    };
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::NominalValue),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn over_budget_match_plans_select_atomic_fallback() {
+    for constant_arms in [300_usize, 513] {
+        let mut arms = String::new();
+        for value in 0..constant_arms {
+            writeln!(arms, "        {value} => {value}").expect("write match arm");
+        }
+        let source = format!(
+            "module match_budget_{constant_arms}\n\nfn classify(value Int) Int {{\n    match value {{\n{arms}        _ => 0\n    }}\n}}\n\npub fn main() Unit {{\n    discard classify(42)\n    Unit\n}}\n"
+        );
+        let LoweringOutcome::Unsupported(report) = lower_run(&source) else {
+            panic!("over-budget match must select atomic fallback")
+        };
+        assert!(report.items().iter().any(|item| {
+            item.feature() == UnsupportedFeature::PatternMatch
+                && item.path() == "function[0].body.tail"
+        }));
+    }
+}
+
+#[test]
 fn managed_tuple_elements_and_over_budget_tuples_select_atomic_fallback() {
     let managed = lower_run(
         r#"module managed_tuple
@@ -2460,5 +2942,3 @@ fn over_budget_product_depth_and_structure_select_atomic_fallback() {
         );
     }
 }
-
-use std::collections::BTreeMap;

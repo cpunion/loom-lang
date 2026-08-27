@@ -3,9 +3,9 @@
 `loom-codegen-ir` owns two code-generation boundaries. Its source-graph module
 selects checked-MIR function roots and computes the closed-world source graph
 used by production native compilation. Separately, its LCIR foundation
-provides target-aware scalar, closed-product, and transparent nominal
-representations, whole-artifact checked-MIR
-lowering, typed SSA data structures, builders, independent program and
+provides target-aware scalar, closed-product, closed-sum, and transparent
+nominal representations, whole-artifact checked-MIR lowering, typed SSA data
+structures, builders, independent program and
 artifact-root validators, and a textual dump for tests and review.
 
 `loom-codegen-llvm` consumes the resulting `CheckedArtifact` directly and emits
@@ -55,29 +55,41 @@ explicit byte or address-space layout must add its deciding facts here. The cano
 | closed invariant-free record | `Product(field value types...)` |
 | closed record with a proven invariant | protected `Product(field value types...)` |
 | established monomorphic refined type | its base `ReprId`, with a distinct nominal `ValueTypeId` |
+| one-variant closed enum | tagless `Sum(variant payload...)` |
+| multi-variant closed enum with no payload fields | minimal integer tag |
+| other closed concrete enum | `{ minimal integer tag, exact aligned payload carrier }` |
 
 `Uninhabited` is catalog vocabulary only. The validator rejects it in function
-signatures and SSA values. A product is an immutable register aggregate. Its
-fields may be primitive values or other acyclic products. Tuples and records
-may therefore contain one another without changing representation. Generic
-records, runtime-checked constructions, and aggregates containing managed or
-uninhabited fields are not selected. A proven invariant record uses
-`InvariantRecordProven`; ordinary `ProductConstruct` is independently
-forbidden from creating it. A proven refinement uses `RefineProven`, and
-`Unrefine` targets only its exact registered base. These operations preserve
-the physical SSA value while retaining the proof boundary in validation and
-artifact identity. Managed, list, enum, dynamic-witness, and Task
-representations are not implemented in this crate.
+signatures and SSA values. Products and sums are immutable register
+aggregates. Their fields may be primitive values or other acyclic direct
+aggregates, so tuples, records, and closed sums may contain one another.
+Concrete instantiations of generic enums, including `Result[Unit, E]`, are
+eligible after payload substitution. Proven monomorphic refined values and
+closed records with statically proven invariants may appear as product fields
+or sum payloads. Generic records, runtime-checked constructions, recursive
+sums, and aggregates containing managed, list, Task, dynamic-witness, or
+uninhabited fields are not selected. `InvariantRecordProven` is the only
+construction for an invariant product; `RefineProven` and exact `Unrefine`
+preserve the physical SSA value while retaining the proof boundary.
 
-Support classification first builds one concrete direct-value plan, without
+Support classification first builds one concrete aggregate plan, without
 allocating LCIR. The plan covers every reachable structural tuple, closed
-record, and transparent refined chain, orders registrations after their value
-dependencies, and rejects by-value or transparent cycles. Classification walks
-each candidate direct-value graph iteratively
-and limits both nesting depth and the expanded structural size to 256.
-Structural size counts each product occurrence plus each field occurrence, so
-a single very wide tuple or record and repeated nested products consume the
-same finite budget as a deep chain. Crossing either limit is stable unsupported
+record, concrete closed enum, and transparent refined chain, orders
+registrations after their direct-value dependencies, and rejects mixed
+product/sum/transparent by-value cycles. Classification walks each candidate
+aggregate graph iteratively. Before substituting or cloning a generic payload,
+it walks borrowed declarations and rejects any reachable by-value nominal
+cycle by `TypeId`; cached acyclic declarations may then appear repeatedly at
+different concrete arguments, such as `Option[Option[Int]]`. Before allocating
+the variant table it also reserves `1 + variants + payload occurrences` from
+the structural budget. These preflights prevent recursive substitution and
+wide tag-only enums from allocating an unbounded intermediate plan. The
+preflight and concrete walks both enforce a 256-node type budget, and the
+concrete walk also limits nesting depth to 256.
+Structural size counts every aggregate occurrence, sum variant, and payload or
+product field occurrence. A wide tuple, record, or enum and repeated nested
+aggregates therefore consume the same finite budget as a deep chain. Crossing
+either limit is stable unsupported
 coverage and selects the atomic legacy route; it is not a lowering defect and
 cannot consume the compiler's call stack. Independent LCIR validation enforces
 the same limits for explicit builder clients.
@@ -108,15 +120,17 @@ boundary.
 `CheckedProgram`.
 
 `ArtifactRootRequest` selects either one run root or an ordered, possibly
-empty test-root list. `check_artifact` independently checks branded function
-identity, existence, duplicate tests, the zero-parameter `Unit` root signature,
-and exact direct/invoke callable closure. It then returns a `CheckedArtifact`
+empty test-root list. Every test root has an explicit `TestOutcomePlan`: `Unit`
+or the success and failure variant indices of `Result[Unit, E]`.
+`check_artifact` independently checks branded function identity, existence,
+duplicate tests, the zero-parameter root signature and outcome shape, and
+exact direct/invoke callable closure. It then returns a `CheckedArtifact`
 which owns both the checked program and privately checked roots. The independent
 LLVM object API consumes that wrapper without accepting unchecked roots or
 falling back to checked MIR.
 
 `artifact_identity` and `write_artifact_identity` expose a deterministic,
-compiler-private identity for that complete checked artifact. Schema 6 carries
+compiler-private identity for that complete checked artifact. Schema 7 carries
 the `typed-lcir-whole-artifact` route tag, artifact kind, ordered run or test
 roots, and the canonical LCIR dump with origins enabled. The payload therefore
 includes the target, representation, and instance plans, checked functions and
@@ -142,20 +156,22 @@ registration advances the identity to schema 5 and the text dump to `lcir 4`;
 new direct tuple entries and future nominal-argument, task, view, and other type
 entries cannot collapse to a shared placeholder. Tuple lowering therefore
 reuses schema 5 and dump version 4: its complete semantic identity was already
-encoded before the representation became selectable. Neither identity-only
-change alters the machine ABI. Transparent value provenance and its explicit
-proof operations advance the identity to schema 6 and the dump to `lcir 5`.
-They do not change the machine ABI: a transparent value reuses its base
-representation, while a protected invariant record uses the same product ABI
-as its fields. The native-object domain therefore remains
-`loom-lcir-native-object-v2`, and the independently versioned compiler cache
-remains schema 2 with object domain `loom-llvm-object-cache-v7`.
+encoded before the representation became selectable. Transparent value
+provenance, its explicit proof operations, and explicit test outcome plans
+advance the artifact identity to schema 6 and the dump to `lcir 5`;
+transparent values and protected invariant records reuse their base/product
+ABIs. Closed-sum representation and control-flow semantics then advance the
+identity to schema 7 and the dump to `lcir 6`. Sums add a new physical ABI,
+including when transparent or protected products are payloads. The LCIR
+native-object format is therefore
+`loom-lcir-native-object-v3`, and the CLI cache domain is
+`loom-llvm-object-cache-v8`.
 Concrete generic-instance closure reuses those versions: the existing instance
-plan, canonical dump, and schema-6 identity already encode every exact type and
+plan, canonical dump, and schema-7 identity already encode every exact type and
 witness argument, function body, signature, and call edge. The backend build
 fingerprint invalidates objects when the planner implementation changes. No
 serialized grammar or physical ABI changed, so the text, native-object, and
-object-cache domains do not advance.
+object-cache domains do not advance again.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
@@ -168,8 +184,9 @@ Invalid roots, resource limits, source-graph defects, and invalid generated
 LCIR are structured `LoweringError` values and never select fallback.
 
 The current lowering coverage is synchronous scalar, structural tuple,
-closed-record, and established refined signatures, including bounded direct
-generic calls whose concrete types use those representations. It covers
+closed-record, concrete closed-enum, and established refined signatures,
+including bounded direct generic calls whose concrete types use those
+representations. It covers
 constants, locals and assignment,
 tuple construction and immutable `let` destructuring, blocks and conditionals,
 short-circuit Boolean operations, integer ranges, pure scalar operations,
@@ -183,7 +200,21 @@ predicates and record invariants remain normal `Result[..., ConstraintError]`
 constructions and select whole-artifact fallback. A portable MIR proof replay
 (`ConstructionMode::Recheck`) also selects one explicit
 `SerializedProofRecheck` fallback for the complete artifact; it can never be
-translated to `RefineProven` or `InvariantRecordProven`. A mutable inherent
+translated to `RefineProven` or `InvariantRecordProven`. Enum construction
+uses `SumConstruct`. Exhaustive matches lower through a bounded decision DAG
+which preserves source arm order, evaluates the scrutinee once, compares scalar
+subpatterns only where needed, and emits an exhaustive `SumSwitch` with typed
+payload edge parameters at each sum decision. Every selected source arm has
+one shared LCIR block with typed capture parameters, so multiple DAG paths do
+not duplicate its body. A generic body's plan is keyed by its exact concrete
+`InstanceKey`, so separate instantiations derive distinct payload and capture
+types. Float-pattern equality is IEEE ordered equality:
+`+0.0` and `-0.0` select the same constant arm, while a NaN pattern can never
+match and is removed from the decision plan. Pattern, decision-node, and
+abstract-value budgets are each 512, planning work is limited to 32,768 units,
+and the complete match may require at most 1,024 CFG blocks including its join.
+All limits are checked before the lowerer allocates any match LCIR; exceeding a
+limit selects whole-artifact fallback. A mutable inherent
 receiver is a functional inout parameter:
 the callee returns its current product on both normal and fault exits. Only a
 whole local may cross that boundary; projected inout selects atomic fallback.
@@ -215,11 +246,11 @@ do not recognize a for-loop, Fibonacci, or another exact MIR shape.
 
 The source root boundary and LCIR artifact boundary intentionally differ. A
 run root has no value, type, witness, or receiver inputs and returns `Unit`. A
-source test root has no inputs and returns `Unit` or `Result[Unit, E]`; the
-current direct catalog cannot represent the latter, so it selects
-whole-artifact `Unsupported(SignatureType)`. A completed LCIR
-`CheckedArtifact` therefore retains the narrower zero-parameter `Unit` root
-signature required by its independent validator.
+source test root has no inputs and returns `Unit` or `Result[Unit, E]`.
+Eligible closed `Result` instantiations carry an explicit checked outcome plan
+into the artifact and native harness. `Err` is a normal failed-test outcome;
+it is not a `RuntimeFault`. Unsupported error payloads still select atomic
+fallback.
 
 A function contains:
 
@@ -317,11 +348,12 @@ cleanup fault is suppressed, leaves the first fault primary, and continues on
 an active unwind edge so remaining cleanup can run. This is the LCIR form of
 the language's deterministic cleanup policy, not a choice left to LLVM.
 
-Managed values, enums, runtime-checked refined values, dynamic dispatch,
+Managed values, open or managed enums, refined values, dynamic dispatch,
 cleanup registration and ordering, and coroutine control flow are not
-implemented. The current CFG
-can represent direct products plus the scalar operations and fault-state
-transitions which later slices will use.
+implemented. The current CFG represents direct products, concrete closed sums,
+and the scalar operations and fault-state transitions which later slices use.
+Here “refined values” means runtime-checked or otherwise unproved values;
+statically established monomorphic refinements are represented directly.
 
 `Origin` records a source MIR function, optional MIR expression, and source
 span for each function, instruction, and terminator. There is no inlining
@@ -347,7 +379,7 @@ The validator reports independently discoverable `ValidationErrors`; it does
 not repair a malformed program. Current checks include:
 
 - canonical registrations, representation tables, well-founded and
-  structurally bounded product graphs, and dense identities;
+  structurally bounded mixed product/sum graphs, canonical sum tags, and dense identities;
 - a branded, dense, unique, structurally bounded instance plan whose entries
   agree with function origins and all callable references;
 - valid function, block, instruction, value, and value-type references;
@@ -357,6 +389,8 @@ not repair a malformed program. Current checks include:
 - instruction result shapes and operand types;
 - direct-call and invoke arity, types, result types, and exact callee effects;
 - edge argument arity and types;
+- ordered exhaustive sum cases, exact construction payloads, and typed implicit
+  payload parameters on every `SumSwitch` edge;
 - implicit result/writeback parameter shape and type on normal and fault edges;
 - return types and operation-specific fault-effect requirements;
 - the exact minimal `MAY_FAULT` closure across the complete call graph;
@@ -367,6 +401,13 @@ not repair a malformed program. Current checks include:
   conditional branch may select one destination;
 - no `Uninhabited` signature or SSA value;
 - reachable blocks, dominance, and use-after-definition rules.
+
+Aggregate-use validation borrows the canonical representation catalog. A
+product construction compares directly against its field slice, and a sum use
+selects only its referenced variant. Validation therefore does not clone all
+fields or variants for every use; its allocation cost remains bounded by the
+program and CFG being checked rather than schema width multiplied by use
+count.
 
 When both branch arms carry the same arguments, LLVM emission collapses them to
 one unconditional edge. When their arguments differ, the emitter creates two
@@ -389,7 +430,7 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 5` text includes
+text even when the graphs are otherwise equivalent. The `lcir 6` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys, every function's selected entry block, and the checked value
 type of every block parameter and instruction result. Representation semantic
@@ -403,7 +444,7 @@ The crate's focused tests cover source-root selection, recursive graph closure,
 stable source-graph serialization and errors, branded artifact roots and root
 signatures, distinct type/witness instance keys, dense-plan and
 instance structural-budget validation, artifact identity and invalidation
-inputs, the direct representation catalog, product structural budgets and
+inputs, the direct representation catalog, aggregate and match-planner budgets and
 large-catalog lookup behavior, target pointer-width validation, block-parameter
 joins, loop backedges, pure scalar operations,
 infallible direct calls, fallible invokes, edge-defined checked results, active
@@ -423,12 +464,18 @@ LLVM-side tests additionally cover typed ABIs, block insertion order independent
 of dominance order, same-target edge normalization, exact scalar predicates,
 checked arithmetic, proved successors, first-primary fault suppression, fatal
 runtime setup failures, ordered tests, atomic automatic/legacy route selection,
-direct-product construction and mutation, normal and fault writebacks,
-source/interpreter/legacy differentials, route-separated identity, object-cache
+direct-product construction and mutation, closed-sum construction and ordered
+exhaustive matches, tagless/tag-only/tagged ABIs, unusual carrier alignment,
+`Result` test outcomes, normal and fault writebacks,
+source/interpreter/legacy differentials, an explicit checked-MIR float-pattern
+differential across the interpreter and both native routes, shared typed arm
+blocks for wide enums, high-use validation against wide schemas, live
+optimized sum-carrier SSA, route-separated identity, object-cache
 behavior, linking, execution, and verifier/optimization gates on Linux and
 macOS. The parameter-driven cross-language benchmark remains on the atomic
 legacy route because its root also reaches Text, List, parsing, and matching;
-the direct-product tests are the current closed-workload evidence. The
-configured Windows CI job also exercises typed LCIR object generation and
-native execution without making a platform-support claim before successful
-runner evidence exists.
+the direct aggregate tests are the current closed-workload evidence. The
+platform-independent Windows CI job checks, lints, tests, and builds
+`loom-codegen-ir`; cross-target LLVM tests also emit direct closed-sum MSVC
+COFF objects from the same live carrier fixture without selecting the legacy
+route.

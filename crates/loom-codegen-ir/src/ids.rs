@@ -76,6 +76,7 @@ define_global_id!(
     ValueTypeId => "t",
     ReprId => "r",
     ProductReprId => "p",
+    SumReprId => "s",
 );
 
 macro_rules! define_local_id {

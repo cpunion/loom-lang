@@ -19,7 +19,7 @@ current [Code generation IR internals](../internals/codegen-ir.md). Ordinary
 native build, run, and test preparation now selects complete supported
 primitive, structural-tuple, closed-record, and compile-time-established
 refined artifacts, plus bounded concrete direct generic instances over those
-representations, into typed LCIR
+representations and eligible concrete closed-enum artifacts, into typed LCIR
 and falls back atomically for reachable unsupported features. The broader
 representation migration and legacy deletion gates in this record are not
 complete.
@@ -28,8 +28,8 @@ complete.
 
 The production LLVM backend still lowers artifacts outside current direct LCIR
 coverage through a universal value implementation and several closed-world
-native specializations. Managed values, enums, runtime-checked constraints,
-concepts, contracts,
+native specializations. Managed values, unsupported or recursive enums,
+runtime-checked constraints, concepts, contracts,
 cleanup, async, and private-list paths still repeat representation, proof,
 call-compatibility, and runtime-requirement decisions inside the legacy target
 emitter. Some legacy functions may acquire universal, checked-native, and
@@ -107,11 +107,15 @@ vocabulary is:
 - a protected `Product(field value types...)` for a closed record whose
   invariant was proved statically;
 - a distinct semantic value type sharing its established base representation
-  for a monomorphic refined type.
+  for a monomorphic refined type;
+- `Sum(variants...)` for a concrete closed enum whose substituted payloads are
+  direct values. One variant is tagless, an all-empty multi-variant sum is tag
+  only, and every other sum has a minimal tag plus an exact aligned carrier.
 
-Products are immutable register aggregates. Tuples and records may recursively
-contain one another when the resulting product graph is acyclic. Each
-representation plan has an explicit canonical
+Products and sums are immutable register aggregates. Tuples, records, sums,
+established refinements, and protected invariant products may contain one
+another when the resulting by-value graph is acyclic. Each representation plan
+has an explicit canonical
 registration key for semantic-type lookup; value-representation alternatives
 are not required to be globally unique by semantic type. Managed,
 dynamic-witness, erased, and coroutine representations are added only with
@@ -208,6 +212,9 @@ source function:
 | `Scalar(I64)` | `i64` |
 | `Scalar(F64)` | `double` |
 | `Product(fields...)` | literal LLVM struct of the recursively mapped fields |
+| tagless `Sum` | its sole variant payload struct |
+| tag-only `Sum` | its checked minimal integer tag |
+| tagged `Sum` | `{ tag, exact target-aligned carrier }` |
 
 An infallible function without inout parameters returns its typed result
 directly. With ordered writebacks `W...`, it returns `{ T, W... }`. A function
@@ -223,6 +230,17 @@ recursive calls use the same typed ABI. Entry block parameters map to function
 parameters; non-entry block parameters map to phi nodes. The run or test
 harness calls the typed root directly. Product construction and functional
 field replacement use `insertvalue`, while projection uses `extractvalue`.
+Sum construction and exhaustive switching preserve ordered variants and move
+typed payloads through block parameters. `Result[Unit, E]` test roots carry an
+explicit success/failure variant plan; the harness never guesses from a source
+name or an implicit tag convention.
+Tagged carrier conversion is pure SSA bit packing and unpacking at LLVM
+target-data offsets on the supported little-endian targets. It does not use a
+stack reinterpretation buffer or `memcpy`, including when a live sum crosses a
+loop phi. Match plans use IEEE ordered equality for float constants, share one
+typed capture block per selected source arm, and are rejected before LCIR
+allocation if their bounded pattern, decision, value, work, or CFG-block
+budgets are exceeded.
 It creates no runtime for an infallible direct root and creates a runtime, but
 no executor, for a synchronous faulting root.
 
@@ -268,7 +286,7 @@ Legacy implementation is removed by demonstrated semantic coverage:
 | Scalar native wrappers and universal scalar locals | LCIR covers reachable scalar signatures, locals, CFG, direct and fallible calls, checked faults, scalar contracts and cleanup exits, and run/test harnesses with zero eligible fallback. |
 | Assumed integer bodies | General LCIR proofs preserve checked behavior inside and outside proved domains, recursive benchmarks remain competitive, and no emitted body depends on one recursion pattern. |
 | Duplicated universal/native/assumed requirement scans | Runtime, collection, executor, and fault requirements are derived from checked LCIR and its closed instance graph. |
-| Aggregate and private-storage specializations | Direct products cover structural tuple construction and destructuring, tuple/record nesting, closed POD record construction, copy/move, nested projection and functional mutation, aggregate phis/loops, typed calls, and whole-local receiver writeback. General managed representation, escape, range, and scalar-replacement planning must still cover GC, cleanup, suspension, and projected inout behavior. |
+| Aggregate and private-storage specializations | Direct products cover structural tuple construction and destructuring, tuple/record nesting, closed POD record construction, copy/move, nested projection and functional mutation, aggregate phis/loops, typed calls, and whole-local receiver writeback. Direct sums cover closed concrete enum construction, ordered exhaustive match decisions, typed payload edges, nested products/sums, and `Result` test outcomes. General managed representation, escape, range, and scalar-replacement planning must still cover GC, cleanup, suspension, and projected inout behavior. |
 | Universal function ABI and `ValueSlot` | LCIR covers aggregates, enums, refined values, generics, witnesses, `dyn`, contracts, builtins, moving GC, cleanup, async functions, Tasks, and all maintained native fixtures without fallback. |
 
 New exact-shape native specializations are not accepted migration work. Range,

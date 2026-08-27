@@ -18,23 +18,53 @@ use crate::{
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ArtifactRootRequest {
     Run(InstanceId),
-    Tests(Box<[InstanceId]>),
+    Tests {
+        roots: Box<[InstanceId]>,
+        outcomes: Box<[TestOutcomePlan]>,
+    },
 }
 
 impl ArtifactRootRequest {
     /// Creates a test-root request from an owned collection or borrowed slice.
     #[must_use]
     pub fn tests(roots: impl AsRef<[InstanceId]>) -> Self {
-        Self::Tests(roots.as_ref().into())
+        let roots: Box<[InstanceId]> = roots.as_ref().into();
+        let outcomes = vec![TestOutcomePlan::Unit; roots.len()].into_boxed_slice();
+        Self::Tests { roots, outcomes }
+    }
+
+    /// Creates an ordered test-root request with an explicit outcome plan for
+    /// every root.
+    #[must_use]
+    pub fn planned_tests(roots: impl IntoIterator<Item = (InstanceId, TestOutcomePlan)>) -> Self {
+        let (roots, outcomes): (Vec<_>, Vec<_>) = roots.into_iter().unzip();
+        Self::Tests {
+            roots: roots.into_boxed_slice(),
+            outcomes: outcomes.into_boxed_slice(),
+        }
     }
 
     #[must_use]
     pub const fn kind(&self) -> ArtifactKind {
         match self {
             Self::Run(_) => ArtifactKind::Run,
-            Self::Tests(_) => ArtifactKind::Tests,
+            Self::Tests { .. } => ArtifactKind::Tests,
         }
     }
+}
+
+/// Checked harness interpretation for one test root.
+///
+/// Source-level `Result[Unit, E]` is represented as an ordinary closed sum;
+/// the explicit variant plan prevents the native harness from guessing
+/// semantic success from a physical tag convention.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum TestOutcomePlan {
+    Unit,
+    Result {
+        success_variant: u32,
+        failure_variant: u32,
+    },
 }
 
 /// Harness kind selected for a checked LCIR artifact.
@@ -156,7 +186,10 @@ impl Error for ArtifactValidationErrors {}
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CheckedRoots {
     Run(InstanceId),
-    Tests(Box<[InstanceId]>),
+    Tests {
+        roots: Box<[InstanceId]>,
+        outcomes: Box<[TestOutcomePlan]>,
+    },
 }
 
 /// A complete checked LCIR program paired with independently checked roots.
@@ -182,7 +215,7 @@ impl CheckedArtifact {
     pub const fn kind(&self) -> ArtifactKind {
         match self.roots {
             CheckedRoots::Run(_) => ArtifactKind::Run,
-            CheckedRoots::Tests(_) => ArtifactKind::Tests,
+            CheckedRoots::Tests { .. } => ArtifactKind::Tests,
         }
     }
 
@@ -191,7 +224,7 @@ impl CheckedArtifact {
     pub const fn run_root(&self) -> Option<InstanceId> {
         match self.roots {
             CheckedRoots::Run(root) => Some(root),
-            CheckedRoots::Tests(_) => None,
+            CheckedRoots::Tests { .. } => None,
         }
     }
 
@@ -200,14 +233,24 @@ impl CheckedArtifact {
     pub fn test_roots(&self) -> Option<&[InstanceId]> {
         match &self.roots {
             CheckedRoots::Run(_) => None,
-            CheckedRoots::Tests(roots) => Some(roots),
+            CheckedRoots::Tests { roots, .. } => Some(roots),
+        }
+    }
+
+    /// Returns the ordered explicit test outcome plans, or `None` for a run
+    /// artifact.
+    #[must_use]
+    pub fn test_outcomes(&self) -> Option<&[TestOutcomePlan]> {
+        match &self.roots {
+            CheckedRoots::Run(_) => None,
+            CheckedRoots::Tests { outcomes, .. } => Some(outcomes),
         }
     }
 
     pub(crate) fn roots(&self) -> &[InstanceId] {
         match &self.roots {
             CheckedRoots::Run(root) => std::slice::from_ref(root),
-            CheckedRoots::Tests(roots) => roots,
+            CheckedRoots::Tests { roots, .. } => roots,
         }
     }
 
@@ -285,7 +328,7 @@ pub fn check_artifact(
     validate_artifact_roots(&program, &roots)?;
     let roots = match roots {
         ArtifactRootRequest::Run(root) => CheckedRoots::Run(root),
-        ArtifactRootRequest::Tests(roots) => CheckedRoots::Tests(roots),
+        ArtifactRootRequest::Tests { roots, outcomes } => CheckedRoots::Tests { roots, outcomes },
     };
     Ok(CheckedArtifact { program, roots })
 }
@@ -338,10 +381,21 @@ impl ArtifactValidator<'_> {
         let mut root_ids = Vec::new();
         match roots {
             ArtifactRootRequest::Run(root) => {
-                self.validate_root(*root, ArtifactKind::Run, "roots.run".to_owned());
+                self.validate_root(*root, ArtifactKind::Run, None, "roots.run".to_owned());
                 root_ids.push(*root);
             }
-            ArtifactRootRequest::Tests(roots) => {
+            ArtifactRootRequest::Tests { roots, outcomes } => {
+                if roots.len() != outcomes.len() {
+                    self.error(
+                        ArtifactValidationCode::RootSignature,
+                        "roots.tests".to_owned(),
+                        format!(
+                            "test artifact has {} root(s), but {} outcome plan(s)",
+                            roots.len(),
+                            outcomes.len()
+                        ),
+                    );
+                }
                 let mut first_indices = BrandedInstanceVec::filled(program, None);
                 for (index, root) in roots.iter().copied().enumerate() {
                     let path = format!("roots.tests[{index}]");
@@ -356,7 +410,12 @@ impl ArtifactValidator<'_> {
                             *first_index = Some(index);
                         }
                     }
-                    self.validate_root(root, ArtifactKind::Tests, path);
+                    self.validate_root(
+                        root,
+                        ArtifactKind::Tests,
+                        outcomes.get(index).copied(),
+                        path,
+                    );
                     root_ids.push(root);
                 }
             }
@@ -366,7 +425,13 @@ impl ArtifactValidator<'_> {
         }
     }
 
-    fn validate_root(&mut self, root: InstanceId, kind: ArtifactKind, path: String) {
+    fn validate_root(
+        &mut self,
+        root: InstanceId,
+        kind: ArtifactKind,
+        outcome: Option<TestOutcomePlan>,
+        path: String,
+    ) {
         let program = self.program.as_program();
         if root.brand() != program.brand {
             self.error(
@@ -385,19 +450,63 @@ impl ArtifactValidator<'_> {
             return;
         };
         let signature = function.signature();
-        let returns_unit = program
-            .representations()
-            .value_type(signature.result())
-            .is_some_and(|ty| ty.semantic() == &Type::Unit);
-        if !signature.params().is_empty() || !returns_unit {
+        let valid_result = match (kind, outcome) {
+            (ArtifactKind::Run, _) | (ArtifactKind::Tests, Some(TestOutcomePlan::Unit)) => program
+                .representations()
+                .value_type(signature.result())
+                .is_some_and(|ty| ty.semantic() == &Type::Unit),
+            (
+                ArtifactKind::Tests,
+                Some(TestOutcomePlan::Result {
+                    success_variant,
+                    failure_variant,
+                }),
+            ) => self.valid_result_outcome(signature.result(), success_variant, failure_variant),
+            (ArtifactKind::Tests, None) => false,
+        };
+        if !signature.params().is_empty() || !valid_result {
             self.error(
                 ArtifactValidationCode::RootSignature,
                 path,
                 format!(
-                    "{kind} root {root} must declare zero parameters and semantic Unit as its result"
+                    "{kind} root {root} must declare zero parameters and match its explicit Unit or Result[Unit, E] outcome plan"
                 ),
             );
         }
+    }
+
+    fn valid_result_outcome(
+        &self,
+        result: crate::ValueTypeId,
+        success_variant: u32,
+        failure_variant: u32,
+    ) -> bool {
+        if success_variant == failure_variant {
+            return false;
+        }
+        let representations = self.program.as_program().representations();
+        let Some(value_type) = representations.value_type(result) else {
+            return false;
+        };
+        let Some(crate::Repr::Sum(sum)) = representations.repr(value_type.repr()).copied() else {
+            return false;
+        };
+        let Some(sum) = representations.sum(sum) else {
+            return false;
+        };
+        let variants = sum.variants();
+        if variants.len() != 2 {
+            return false;
+        }
+        let success = usize::try_from(success_variant)
+            .ok()
+            .and_then(|index| variants.get(index));
+        let failure = usize::try_from(failure_variant)
+            .ok()
+            .and_then(|index| variants.get(index));
+        let unit = representations.type_id(&Type::Unit);
+        success.is_some_and(|variant| variant.fields() == unit.as_slice())
+            && failure.is_some_and(|variant| variant.fields().len() == 1)
     }
 
     fn validate_closed_graph(&mut self, roots: &[InstanceId]) {
@@ -591,27 +700,20 @@ mod tests {
             ("parameterized", vec![Type::Int], Type::Unit),
             ("returns_int", Vec::new(), Type::Int),
         ]);
-        let errors = validate_artifact_roots(
-            &program,
-            &ArtifactRootRequest::Tests(ids.into_boxed_slice()),
-        )
-        .expect_err("invalid signatures must fail");
+        let errors = validate_artifact_roots(&program, &ArtifactRootRequest::tests(ids))
+            .expect_err("invalid signatures must fail");
         assert_eq!(
             errors.as_slice(),
             &[
                 ArtifactValidationError {
                     code: ArtifactValidationCode::RootSignature,
                     path: "roots.tests[0]".to_owned(),
-                    message:
-                        "test root i0 must declare zero parameters and semantic Unit as its result"
-                            .to_owned(),
+                    message: "test root i0 must declare zero parameters and match its explicit Unit or Result[Unit, E] outcome plan".to_owned(),
                 },
                 ArtifactValidationError {
                     code: ArtifactValidationCode::RootSignature,
                     path: "roots.tests[1]".to_owned(),
-                    message:
-                        "test root i1 must declare zero parameters and semantic Unit as its result"
-                            .to_owned(),
+                    message: "test root i1 must declare zero parameters and match its explicit Unit or Result[Unit, E] outcome plan".to_owned(),
                 },
             ]
         );

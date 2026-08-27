@@ -226,3 +226,29 @@ fn transparent_semantic_chains_obey_the_direct_value_structure_budget() {
             && error.message().contains("semantic value closure")
     }));
 }
+
+#[test]
+fn transparent_chain_and_wide_sum_share_one_semantic_structure_budget() {
+    const VARIANTS: usize = 200;
+    const TRANSPARENT_LAYERS: u32 = 28;
+
+    let mut builder = ProgramBuilder::new(target());
+    let mut base = Type::Nominal(TypeId(2_000), Vec::new());
+    builder
+        .add_sum_type(base.clone(), &vec![Box::<[Type]>::default(); VARIANTS])
+        .expect("each individual sum registration remains total");
+    for index in 0..TRANSPARENT_LAYERS {
+        let semantic = Type::Nominal(TypeId(2_001 + index), Vec::new());
+        builder
+            .add_transparent_type(semantic.clone(), &base)
+            .expect("each individual transparent registration remains total");
+        base = semantic;
+    }
+
+    let errors = validate_program(&builder.finish())
+        .expect_err("sum variants and transparent layers must consume one shared budget");
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code() == ValidationCode::RepresentationPlan
+            && error.message().contains("semantic value closure")
+    }));
+}

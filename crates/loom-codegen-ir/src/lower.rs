@@ -15,12 +15,14 @@ use crate::instance_closure::{
     InstanceClosureError, InstanceClosureOutcome, InstanceClosureUnsupportedKind,
     InstanceSubstitution, InstantiationError, plan_instance_closure,
 };
+use crate::match_plan::{MatchNode, MatchPlan, plan_match};
 use crate::{
     ArtifactRootRequest, BlockId, BlockTarget, BoolPredicate, BuildError, BuildErrorCode,
     CheckedArtifact, CheckedIntBinaryOp, Constant, Effects, FloatBinaryOp, FloatPredicate,
     FunctionBuilder, InstanceId, InstanceKey, InstancePlan, InstructionKind, IntPredicate, Origin,
-    ProgramBuilder, ResultTarget, Signature, SourceRoots, TargetLayout, Terminator, TerminatorKind,
-    UnwindTarget, ValueId, ValueTypeId, analyze_source_reachability,
+    ProgramBuilder, ResultTarget, Signature, SourceRoots, SumCase, TargetLayout, Terminator,
+    TerminatorKind, TestOutcomePlan, UnwindTarget, ValueId, ValueTypeId,
+    analyze_source_reachability,
 };
 
 /// Source-level roots selected for one attempted LCIR artifact.
@@ -35,6 +37,10 @@ pub enum SourceArtifactRequest {
 
 /// The atomic result of LCIR route selection for one complete artifact.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the successful compiler path returns an owned checked artifact without a second allocation"
+)]
 pub enum LoweringOutcome {
     Complete(CheckedArtifact),
     Unsupported(SupportReport),
@@ -365,6 +371,7 @@ struct SelectedRoots {
     source: SourceRoots,
     ordered: Vec<FunctionId>,
     tests: bool,
+    test_outcomes: Vec<TestOutcomePlan>,
 }
 
 /// Classifies and, only when complete, lowers one whole checked-MIR artifact.
@@ -434,7 +441,12 @@ pub fn lower_typed_artifact(
             items: classifier.items,
         }));
     }
-    let aggregate_plan = classifier.aggregates.finish();
+    let Classifier {
+        aggregates,
+        match_plans,
+        ..
+    } = classifier;
+    let aggregate_plan = aggregates.finish();
     let summaries = closure
         .entries()
         .iter()
@@ -542,6 +554,7 @@ pub fn lower_typed_artifact(
             function_builder,
             &instances,
             &instance_effects,
+            &match_plans,
         )
         .lower()?;
     }
@@ -565,7 +578,11 @@ pub fn lower_typed_artifact(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let roots = if selected.tests {
-        ArtifactRootRequest::tests(lowered_roots)
+        ArtifactRootRequest::planned_tests(
+            lowered_roots
+                .into_iter()
+                .zip(selected.test_outcomes.iter().copied()),
+        )
     } else {
         ArtifactRootRequest::Run(lowered_roots.first().copied().ok_or_else(|| {
             LoweringError::defect(
@@ -703,20 +720,47 @@ fn select_roots(
             ));
         }
     }
+    let test_outcomes = if tests {
+        ordered
+            .iter()
+            .map(|root| {
+                let function = program.function(*root).ok_or_else(|| {
+                    LoweringError::defect(
+                        LoweringDefectCode::SourceGraph,
+                        format!("test root function #{} disappeared", root.0),
+                    )
+                })?;
+                test_outcome_plan(program, &function.return_ty).ok_or_else(|| {
+                    LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        format!(
+                            "validated test root `{}` has no outcome plan",
+                            function.name
+                        ),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
     Ok(SelectedRoots {
         source,
         ordered,
         tests,
+        test_outcomes,
     })
 }
 
 fn is_valid_test_return(program: &mir::Program, ty: &Type) -> bool {
+    test_outcome_plan(program, ty).is_some()
+}
+
+fn test_outcome_plan(program: &mir::Program, ty: &Type) -> Option<TestOutcomePlan> {
     if *ty == Type::Unit {
-        return true;
+        return Some(TestOutcomePlan::Unit);
     }
-    let Some(result) = program.prelude.result else {
-        return false;
-    };
+    let result = program.prelude.result?;
     matches!(
         ty,
         Type::Nominal(type_id, arguments)
@@ -724,6 +768,10 @@ fn is_valid_test_return(program: &mir::Program, ty: &Type) -> bool {
                 && arguments.len() == 2
                 && arguments.first() == Some(&Type::Unit)
     )
+    .then_some(TestOutcomePlan::Result {
+        success_variant: 0,
+        failure_variant: 1,
+    })
 }
 
 const fn is_scalar_type(ty: &Type) -> bool {
@@ -734,6 +782,7 @@ struct Classifier<'program> {
     program: &'program mir::Program,
     items: Vec<UnsupportedItem>,
     aggregates: AggregatePlanner<'program>,
+    match_plans: BTreeMap<String, BTreeMap<ExprId, MatchPlan>>,
 }
 
 impl<'program> Classifier<'program> {
@@ -742,6 +791,7 @@ impl<'program> Classifier<'program> {
             program,
             items: Vec::new(),
             aggregates: AggregatePlanner::new(program),
+            match_plans: BTreeMap::new(),
         }
     }
 
@@ -1193,7 +1243,6 @@ impl<'program> Classifier<'program> {
                 if !self.visit_expr(function, key, scrutinee, &format!("{path}.scrutinee")) {
                     return false;
                 }
-                self.expression_item(UnsupportedFeature::PatternMatch, function, expression, path);
                 let mut continues = false;
                 for (index, arm) in arms.iter().enumerate() {
                     continues |= self.visit_expr(
@@ -1201,6 +1250,53 @@ impl<'program> Classifier<'program> {
                         key,
                         &arm.value,
                         &format!("{path}.arms[{index}].value"),
+                    );
+                }
+                let scrutinee_ty = self.instantiated_type(
+                    function,
+                    key,
+                    Some(scrutinee),
+                    &scrutinee.ty,
+                    scrutinee.span,
+                    &format!("{path}.scrutinee.ty"),
+                );
+                if scrutinee_ty
+                    .as_ref()
+                    .is_some_and(|ty| self.supported_value_type(ty))
+                {
+                    if let Some(plan) = plan_match(
+                        self.program,
+                        scrutinee_ty.as_ref().expect("checked Some"),
+                        arms,
+                    ) {
+                        if self
+                            .match_plans
+                            .entry(key.canonical_identity())
+                            .or_default()
+                            .insert(expression.id, plan)
+                            .is_some()
+                        {
+                            self.expression_item(
+                                UnsupportedFeature::PatternMatch,
+                                function,
+                                expression,
+                                path,
+                            );
+                        }
+                    } else {
+                        self.expression_item(
+                            UnsupportedFeature::PatternMatch,
+                            function,
+                            expression,
+                            path,
+                        );
+                    }
+                } else {
+                    self.expression_item(
+                        UnsupportedFeature::PatternMatch,
+                        function,
+                        expression,
+                        path,
                     );
                 }
                 continues
@@ -1268,11 +1364,39 @@ impl<'program> Classifier<'program> {
                 }
                 expression.ty != Type::Never
             }
-            ExprKind::Variant { payload, .. } => {
+            ExprKind::Variant {
+                ty,
+                type_arguments,
+                payload,
+                ..
+            } => {
                 if !self.visit_exprs(function, key, payload, &format!("{path}.payload")) {
                     return false;
                 }
-                self.expression_item(UnsupportedFeature::NominalValue, function, expression, path);
+                let expression_ty = self.instantiated_type(
+                    function,
+                    key,
+                    Some(expression),
+                    &expression.ty,
+                    expression.span,
+                    &format!("{path}.ty"),
+                );
+                let semantic = InstanceSubstitution::new(key)
+                    .instantiate_types(type_arguments)
+                    .ok()
+                    .map(|arguments| Type::Nominal(*ty, arguments));
+                if expression_ty != semantic
+                    || semantic
+                        .as_ref()
+                        .is_none_or(|semantic| !self.supported_value_type(semantic))
+                {
+                    self.expression_item(
+                        UnsupportedFeature::NominalValue,
+                        function,
+                        expression,
+                        path,
+                    );
+                }
                 expression.ty != Type::Never
             }
             ExprKind::Refine {
@@ -2277,6 +2401,13 @@ enum ProductConstruction {
     InvariantProven,
 }
 
+#[derive(Clone)]
+struct LoweredMatchArm {
+    source_arm: usize,
+    block: BlockId,
+    captures: Box<[(LocalId, crate::match_plan::MatchValueId, ValueId)]>,
+}
+
 struct FunctionLowerer<'function, 'builder, 'plan> {
     program: &'plan mir::Program,
     source: &'function mir::Function,
@@ -2284,6 +2415,7 @@ struct FunctionLowerer<'function, 'builder, 'plan> {
     builder: FunctionBuilder<'builder>,
     instances: &'plan InstanceLookup,
     effects: &'plan [Effects],
+    match_plans: Option<&'plan BTreeMap<ExprId, MatchPlan>>,
     local_types: BTreeMap<LocalId, Type>,
     inout_locals: Box<[LocalId]>,
     environments: EnvironmentArena,
@@ -2298,6 +2430,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         builder: FunctionBuilder<'builder>,
         instances: &'plan InstanceLookup,
         effects: &'plan [Effects],
+        match_plans: &'plan BTreeMap<String, BTreeMap<ExprId, MatchPlan>>,
     ) -> Self {
         let local_types = source
             .params
@@ -2321,6 +2454,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             builder,
             instances,
             effects,
+            match_plans: match_plans.get(&key.canonical_identity()),
             local_types,
             inout_locals,
             environments: EnvironmentArena::new(),
@@ -2973,8 +3107,8 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 self.lower_product_values(flow, values, expression, ProductConstruction::Plain)
             }
             ExprKind::List(values) => self.lower_unsupported_values(flow, values, "list value"),
-            ExprKind::Match { scrutinee, .. } => {
-                self.lower_unsupported_operand(flow, scrutinee, "pattern match")
+            ExprKind::Match { scrutinee, arms } => {
+                self.lower_match(flow, scrutinee, arms, expression)
             }
             ExprKind::Record {
                 fields,
@@ -2993,9 +3127,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 };
                 self.lower_product_values(flow, fields, expression, instruction)
             }
-            ExprKind::Variant { payload, .. } => {
-                self.lower_unsupported_values(flow, payload, "variant value")
-            }
+            ExprKind::Variant {
+                variant, payload, ..
+            } => self.lower_sum_variant(flow, *variant, payload, expression),
             ExprKind::Refine {
                 value,
                 construction,
@@ -3098,6 +3232,387 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 self.type_id(&expression.ty)?,
                 self.expression_origin(expression),
             ),
+        }
+    }
+
+    fn lower_sum_variant(
+        &mut self,
+        mut flow: Flow,
+        variant: mir::VariantId,
+        payload: &[mir::Expr],
+        expression: &mir::Expr,
+    ) -> Result<EvalFlow, LoweringError> {
+        let mut lowered = Vec::with_capacity(payload.len());
+        for value in payload {
+            let EvalFlow::Continue {
+                flow: next_flow,
+                value,
+            } = self.lower_expr(flow, value)?
+            else {
+                return Ok(EvalFlow::Terminated);
+            };
+            flow = next_flow;
+            lowered.push(value);
+        }
+        self.one_instruction(
+            flow,
+            InstructionKind::SumConstruct {
+                variant: variant.0,
+                payload: lowered.into_boxed_slice(),
+            },
+            self.type_id(&expression.ty)?,
+            self.expression_origin(expression),
+        )
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "match setup validates and creates each shared typed arm before one decision walk"
+    )]
+    fn lower_match(
+        &mut self,
+        flow: Flow,
+        scrutinee: &mir::Expr,
+        arms: &[mir::MatchArm],
+        expression: &mir::Expr,
+    ) -> Result<EvalFlow, LoweringError> {
+        let EvalFlow::Continue {
+            flow,
+            value: scrutinee,
+        } = self.lower_expr(flow, scrutinee)?
+        else {
+            return Ok(EvalFlow::Terminated);
+        };
+        let plan = self
+            .match_plans
+            .and_then(|plans| plans.get(&expression.id))
+            .cloned()
+            .ok_or_else(|| self.unsupported_reached("unplanned pattern match"))?;
+        let mut values = vec![None; plan.value_count()];
+        // Match-value ids have a separate bounded domain from decision nodes.
+        // Grow exactly as payload ids are observed below rather than using
+        // source local counts or a universal runtime frame.
+        values[0] = Some(scrutinee);
+        let mut lowered_arms = BTreeMap::new();
+        for (node, decision) in plan.nodes() {
+            let MatchNode::Arm { arm, captures } = decision else {
+                continue;
+            };
+            let source_arm = arms.get(*arm).ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!("match decision references missing arm {arm}"),
+                )
+            })?;
+            let block = self.create_block()?;
+            let mut parameters = Vec::with_capacity(captures.len());
+            for (local, capture) in captures.iter().copied() {
+                let planned_type = plan.value_type(capture).ok_or_else(|| {
+                    LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        "match capture has no planned type",
+                    )
+                })?;
+                let ty = self.type_id(planned_type)?;
+                if self.local_type(local)? != ty {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        format!("match arm {arm} binding type does not match its payload"),
+                    ));
+                }
+                let parameter = self
+                    .builder
+                    .append_block_parameter(block, ty)
+                    .map_err(LoweringError::from)?;
+                parameters.push((local, capture, parameter));
+            }
+            if source_arm.bindings.len() != parameters.len() {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!("match arm {arm} has an inconsistent capture plan"),
+                ));
+            }
+            lowered_arms.insert(
+                node,
+                LoweredMatchArm {
+                    source_arm: *arm,
+                    block,
+                    captures: parameters.into_boxed_slice(),
+                },
+            );
+        }
+        let mut alternatives = Vec::new();
+        self.lower_match_node(&plan, plan.root(), flow, &values, expression, &lowered_arms)?;
+        for lowered_arm in lowered_arms.values().cloned() {
+            let source_arm = arms.get(lowered_arm.source_arm).ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!(
+                        "match decision references missing arm {}",
+                        lowered_arm.source_arm
+                    ),
+                )
+            })?;
+            let mut env = flow.env;
+            for (local, _, parameter) in lowered_arm.captures.iter().copied() {
+                env = self.environments.set(env, local, parameter)?;
+            }
+            let lowered = self.lower_expr(
+                Flow {
+                    block: lowered_arm.block,
+                    env,
+                },
+                &source_arm.value,
+            )?;
+            let lowered = match lowered {
+                EvalFlow::Continue { mut flow, value } => {
+                    for local in &source_arm.bindings {
+                        flow.env = self.environments.remove(flow.env, *local)?;
+                    }
+                    EvalFlow::Continue { flow, value }
+                }
+                EvalFlow::Terminated => EvalFlow::Terminated,
+            };
+            alternatives.push(lowered);
+        }
+        self.merge_evaluations(
+            alternatives,
+            flow.env,
+            &expression.ty,
+            self.expression_origin(expression),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive lowering walk keeps decision nodes and their SSA environment changes visibly paired"
+    )]
+    fn lower_match_node(
+        &mut self,
+        plan: &MatchPlan,
+        node: crate::match_plan::MatchNodeId,
+        flow: Flow,
+        values: &[Option<ValueId>],
+        expression: &mir::Expr,
+        lowered_arms: &BTreeMap<crate::match_plan::MatchNodeId, LoweredMatchArm>,
+    ) -> Result<(), LoweringError> {
+        let decision = plan.node(node).cloned().ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "match decision references a missing node",
+            )
+        })?;
+        match decision {
+            MatchNode::Arm { arm, captures } => {
+                let lowered = lowered_arms.get(&node).ok_or_else(|| {
+                    LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        format!("match decision has no shared LCIR block for arm {arm}"),
+                    )
+                })?;
+                if captures.len() != lowered.captures.len()
+                    || captures.iter().zip(&lowered.captures).any(
+                        |((local, value), (planned_local, planned_value, _))| {
+                            local != planned_local || value != planned_value
+                        },
+                    )
+                {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        format!("match arm {arm} changed after its shared block was planned"),
+                    ));
+                }
+                let arguments = captures
+                    .iter()
+                    .map(|(_, capture)| {
+                        values
+                            .get(capture.index())
+                            .copied()
+                            .flatten()
+                            .ok_or_else(|| {
+                                LoweringError::defect(
+                                    LoweringDefectCode::InconsistentPlan,
+                                    format!(
+                                        "match arm {arm} captures unavailable decision value {}",
+                                        capture.index()
+                                    ),
+                                )
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.terminate(
+                    flow.block,
+                    TerminatorKind::Jump(BlockTarget::new(lowered.block, arguments)),
+                    self.expression_origin(expression),
+                )
+            }
+            MatchNode::Constant {
+                value,
+                constant,
+                equal,
+                not_equal,
+            } => {
+                let operand = values
+                    .get(value.index())
+                    .copied()
+                    .flatten()
+                    .ok_or_else(|| {
+                        LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            "constant decision operand is unavailable",
+                        )
+                    })?;
+                let ty = plan.value_type(value).ok_or_else(|| {
+                    LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        "constant decision has no planned type",
+                    )
+                })?;
+                let constant = match constant {
+                    mir::Constant::Unit => Constant::Unit,
+                    mir::Constant::Bool(value) => Constant::Bool(value),
+                    mir::Constant::Int(value) => Constant::Int(value),
+                    mir::Constant::Float(value) => Constant::float(value),
+                    mir::Constant::Text(_) => {
+                        return Err(self.unsupported_reached("text pattern"));
+                    }
+                };
+                let EvalFlow::Continue {
+                    flow,
+                    value: expected,
+                } = self.constant(flow, constant, ty, self.expression_origin(expression))?
+                else {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::Builder,
+                        "match constant unexpectedly terminated",
+                    ));
+                };
+                let instruction = match ty {
+                    Type::Bool => InstructionKind::BoolCompare {
+                        predicate: BoolPredicate::Equal,
+                        left: operand,
+                        right: expected,
+                    },
+                    Type::Int => InstructionKind::IntCompare {
+                        predicate: IntPredicate::Equal,
+                        left: operand,
+                        right: expected,
+                    },
+                    Type::Float => InstructionKind::FloatCompare {
+                        predicate: FloatPredicate::OrderedEqual,
+                        left: operand,
+                        right: expected,
+                    },
+                    _ => return Err(self.unsupported_reached("non-scalar constant pattern")),
+                };
+                let EvalFlow::Continue {
+                    flow,
+                    value: condition,
+                } = self.one_instruction(
+                    flow,
+                    instruction,
+                    self.type_id(&Type::Bool)?,
+                    self.expression_origin(expression),
+                )?
+                else {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::Builder,
+                        "match comparison unexpectedly terminated",
+                    ));
+                };
+                let equal_block = self.create_block()?;
+                let not_equal_block = self.create_block()?;
+                self.terminate(
+                    flow.block,
+                    TerminatorKind::Branch {
+                        condition,
+                        then_target: BlockTarget::new(equal_block, []),
+                        else_target: BlockTarget::new(not_equal_block, []),
+                    },
+                    self.expression_origin(expression),
+                )?;
+                self.lower_match_node(
+                    plan,
+                    equal,
+                    Flow {
+                        block: equal_block,
+                        env: flow.env,
+                    },
+                    values,
+                    expression,
+                    lowered_arms,
+                )?;
+                self.lower_match_node(
+                    plan,
+                    not_equal,
+                    Flow {
+                        block: not_equal_block,
+                        env: flow.env,
+                    },
+                    values,
+                    expression,
+                    lowered_arms,
+                )
+            }
+            MatchNode::Sum { value, cases } => {
+                let scrutinee = values
+                    .get(value.index())
+                    .copied()
+                    .flatten()
+                    .ok_or_else(|| {
+                        LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            "sum decision scrutinee is unavailable",
+                        )
+                    })?;
+                let mut lowered_cases = Vec::with_capacity(cases.len());
+                let mut case_flows = Vec::with_capacity(cases.len());
+                for case in &cases {
+                    let block = self.create_block()?;
+                    let mut case_values = values.to_vec();
+                    for payload in case.payload.iter().copied() {
+                        if case_values.len() <= payload.index() {
+                            case_values.resize(payload.index().saturating_add(1), None);
+                        }
+                        let ty = plan.value_type(payload).ok_or_else(|| {
+                            LoweringError::defect(
+                                LoweringDefectCode::InconsistentPlan,
+                                "sum case payload has no planned type",
+                            )
+                        })?;
+                        let parameter = self
+                            .builder
+                            .append_block_parameter(block, self.type_id(ty)?)
+                            .map_err(LoweringError::from)?;
+                        case_values[payload.index()] = Some(parameter);
+                    }
+                    lowered_cases.push(SumCase::new(case.variant, block, []));
+                    case_flows.push((case.next, block, case_values));
+                }
+                self.terminate(
+                    flow.block,
+                    TerminatorKind::SumSwitch {
+                        scrutinee,
+                        cases: lowered_cases.into_boxed_slice(),
+                    },
+                    self.expression_origin(expression),
+                )?;
+                for (next, block, case_values) in case_flows {
+                    self.lower_match_node(
+                        plan,
+                        next,
+                        Flow {
+                            block,
+                            env: flow.env,
+                        },
+                        &case_values,
+                        expression,
+                        lowered_arms,
+                    )?;
+                }
+                Ok(())
+            }
         }
     }
 
@@ -3501,9 +4016,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         )
     }
 
-    fn merge_evaluations<const N: usize>(
+    fn merge_evaluations(
         &mut self,
-        alternatives: [EvalFlow; N],
+        alternatives: impl IntoIterator<Item = EvalFlow>,
         base_environment: EnvironmentRoot,
         result_type: &Type,
         origin: Origin,

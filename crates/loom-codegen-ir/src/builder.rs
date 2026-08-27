@@ -21,6 +21,7 @@ pub enum BuildErrorCode {
     InvalidBlock,
     InvalidValueType,
     InvalidProductType,
+    InvalidSumType,
     DuplicateEntry,
     BlockAlreadyTerminated,
     TrustedInstruction,
@@ -202,6 +203,36 @@ impl ProgramBuilder {
                 "LCIR tuple requires one unique structural tuple whose elements already have direct representations",
             )
         })
+    }
+
+    /// Adds one closed concrete sum whose ordered variant payload types have
+    /// already been registered. Sum types must be fixed before functions so
+    /// signatures and case-edge payload parameters have stable identities.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty/duplicate/non-nominal sum, an
+    /// unregistered payload type, registration after function declaration, or
+    /// an exhausted identity domain.
+    pub fn add_sum_type(
+        &mut self,
+        semantic: Type,
+        variants: &[Box<[Type]>],
+    ) -> Result<ValueTypeId, BuildError> {
+        if !self.functions.is_empty() {
+            return Err(BuildError::new(
+                BuildErrorCode::InvalidSumType,
+                "LCIR sum types must be registered before functions",
+            ));
+        }
+        self.representations
+            .add_sum(semantic, variants)
+            .ok_or_else(|| {
+                BuildError::new(
+                    BuildErrorCode::InvalidSumType,
+                    "LCIR sum requires one unique nonempty concrete nominal type whose variant payloads already have direct representations",
+                )
+            })
     }
 
     /// Declares a monomorphic function before its CFG is built. Declaring all
