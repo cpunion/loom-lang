@@ -17,7 +17,9 @@ remains the source of truth for which artifacts a tag actually provides.
 
 Each archive contains:
 
-- `loomc` and `loom-lsp`, or `loomc.exe` and `loom-lsp.exe` on Windows;
+- `loomc` and `loom-lsp`, or `loomc.exe`, `loom-lsp.exe`, and the pinned
+  `LLVM-C.dll` compiler dependency on Windows;
+- `LLVM-LICENSE.txt` beside the redistributed DLL in the Windows archive;
 - the repository README, license, changelog, roadmap, and community policy
   documents;
 - the complete English documentation tree under `docs/`;
@@ -30,8 +32,8 @@ configured set before publication and also contain an aggregate `SHA256SUMS`.
 
 For each archive platform, the workflow:
 
-1. installs Rust 1.88.0 and LLVM 19, using the shared SHA-256-pinned
-   LLVM/libxml bootstrap on Windows;
+1. installs Rust 1.88.0 and LLVM 19, using the shared SHA-256-pinned LLVM
+   bootstrap and verified `LLVM-C.dll` import pair on Windows;
 2. separately builds `loom-runtime` with the generic CPU policy;
 3. builds `loom-cli` and `loom-lsp` in release mode with `--locked`;
 4. packs the explicit runtime archive into `runtime/` beside `loomc`;
@@ -43,8 +45,8 @@ For each archive platform, the workflow:
 8. runs standard-library and runtime-bundle differential tests;
 9. runs `loom-quality`;
 10. verifies both release tools expose their command boundary;
-11. stages the tools and runtime as siblings, then links and executes a smoke
-    program through adjacent-bundle discovery;
+11. stages the tools, runtime, and Windows LLVM C ABI dependency as siblings,
+    then links and executes a smoke program through adjacent-bundle discovery;
 12. creates the platform archive and hashes the exact staged files.
 
 A manually dispatched workflow uploads successful Actions artifacts named with
