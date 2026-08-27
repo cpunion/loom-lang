@@ -955,9 +955,9 @@ mod tests {
                     id: refined,
                     name: "RefinedBox".into(),
                     span,
-                    type_parameters: 1,
+                    type_parameters: 0,
                     kind: TypeDefKind::Refined {
-                        base: Type::Nominal(boxed, vec![Type::Parameter(0)]),
+                        base: Type::Nominal(boxed, vec![Type::Int]),
                         predicate: true_contract(),
                     },
                 },
@@ -993,7 +993,7 @@ mod tests {
         let text_map = TypeId(3);
         let boxed_int = Type::Nominal(boxed, vec![Type::Int]);
         let guarded_text = Type::Nominal(guarded, vec![Type::Text]);
-        let refined_int = Type::Nominal(refined, vec![Type::Int]);
+        let refined_int = Type::Nominal(refined, Vec::new());
         let map_int = Type::Nominal(text_map, vec![Type::Int]);
 
         assert_eq!(
