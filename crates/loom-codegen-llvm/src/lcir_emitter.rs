@@ -6018,10 +6018,6 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         self.load_text_map_length(&layout, object, "text_map.length")
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "nonallocating lookup keeps canonical key search and exact Option construction in one operation"
-    )]
     fn emit_text_map_get(
         &self,
         map: ValueId,
