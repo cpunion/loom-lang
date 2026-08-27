@@ -1117,10 +1117,10 @@ const fn is_scalar_type(ty: &Type) -> bool {
 }
 
 /// Returns the extra direct types needed to expand equality for one concrete
-/// value into a bounded LCIR CFG. Lists use a finite loop and canonical
-/// `Option[element]` reads. Re-entering a nominal equality through a List is
-/// rejected here because recursively cloning that element CFG would not be a
-/// finite lowering plan.
+/// value into a bounded LCIR CFG. Lists and TextMaps use finite loops with
+/// canonical `Option[element]` or `Option[(Text, V)]` reads. Re-entering a
+/// nominal equality through either container is rejected here because
+/// recursively cloning that element CFG would not be a finite lowering plan.
 fn direct_structural_equality_dependencies(
     program: &mir::Program,
     ty: &Type,
@@ -1148,13 +1148,26 @@ fn direct_structural_equality_dependencies(
                 dependencies.insert(Type::Nominal(option, vec![(**element).clone()]));
                 visit(program, element, active, dependencies, remaining)
             }
+            Type::Nominal(id, arguments) if program.prelude.text_map == Some(*id) => {
+                let [value] = arguments.as_slice() else {
+                    return false;
+                };
+                if !active.insert(ty.clone()) {
+                    return false;
+                }
+                let Some(option) = program.prelude.option else {
+                    active.remove(ty);
+                    return false;
+                };
+                let entry = Type::Tuple(vec![Type::Text, value.clone()]);
+                dependencies.insert(entry.clone());
+                dependencies.insert(Type::Nominal(option, vec![entry]));
+                let result = visit(program, value, active, dependencies, remaining);
+                active.remove(ty);
+                result
+            }
             Type::Nominal(_, _) => {
-                if program
-                    .prelude
-                    .text_map
-                    .is_some_and(|text_map| matches!(ty, Type::Nominal(id, _) if *id == text_map))
-                    || !active.insert(ty.clone())
-                {
+                if !active.insert(ty.clone()) {
                     return false;
                 }
                 let result = if let Some(fields) = concrete_any_record_fields(program, ty) {
@@ -2910,7 +2923,9 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         | mir::Builtin::TextMapNew
                         | mir::Builtin::TextMapInsert
                         | mir::Builtin::TextMapLength
+                        | mir::Builtin::TextMapContains
                         | mir::Builtin::TextMapGet
+                        | mir::Builtin::TextMapRemove
                         | mir::Builtin::IsFinite
                         | mir::Builtin::ParseInt
                         | mir::Builtin::ParseFloat
@@ -2927,7 +2942,9 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                                     | mir::Builtin::TextMapNew
                                     | mir::Builtin::TextMapInsert
                                     | mir::Builtin::TextMapLength
+                                    | mir::Builtin::TextMapContains
                                     | mir::Builtin::TextMapGet
+                                    | mir::Builtin::TextMapRemove
                             )
                         ) {
                             self.managed_text = true;
@@ -3521,6 +3538,7 @@ fn scan_effect_expr(
                         | mir::Builtin::TextGet
                         | mir::Builtin::ListAdd
                         | mir::Builtin::TextMapInsert
+                        | mir::Builtin::TextMapRemove
                         | mir::Builtin::FormatFloat
                 )
             ) {
@@ -4206,6 +4224,35 @@ impl EnvironmentArena {
 struct Flow {
     block: BlockId,
     env: EnvironmentRoot,
+}
+
+#[derive(Clone, Copy)]
+enum IndexedEquality {
+    List,
+    TextMap,
+}
+
+impl IndexedEquality {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::List => "List",
+            Self::TextMap => "TextMap",
+        }
+    }
+
+    const fn length(self, value: ValueId) -> InstructionKind {
+        match self {
+            Self::List => InstructionKind::ListLength { list: value },
+            Self::TextMap => InstructionKind::TextMapLength { map: value },
+        }
+    }
+
+    const fn get(self, value: ValueId, index: ValueId) -> InstructionKind {
+        match self {
+            Self::List => InstructionKind::ListGet { list: value, index },
+            Self::TextMap => InstructionKind::TextMapEntryGet { map: value, index },
+        }
+    }
 }
 
 enum EvalFlow {
@@ -8226,11 +8273,43 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 })?;
                 let option_type =
                     self.type_id(&Type::Nominal(option, vec![(**element).clone()]))?;
-                self.branch_on_list_equality(
+                self.branch_on_indexed_equality(
                     flow,
                     left,
                     right,
                     option_type,
+                    IndexedEquality::List,
+                    equal,
+                    not_equal,
+                    origin,
+                )
+            }
+            crate::Repr::ManagedPointer
+                if value_type.kind() == crate::ValueTypeKind::ManagedTextMap =>
+            {
+                let Type::Nominal(id, arguments) = value_type.semantic() else {
+                    return Err(self.unsupported_reached("malformed TextMap equality"));
+                };
+                if self.program.prelude.text_map != Some(*id) {
+                    return Err(self.unsupported_reached("noncanonical TextMap equality"));
+                }
+                let [value] = arguments.as_slice() else {
+                    return Err(self.unsupported_reached("open TextMap equality"));
+                };
+                let option = self.program.prelude.option.ok_or_else(|| {
+                    LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        "managed TextMap equality requires the canonical Option type",
+                    )
+                })?;
+                let entry = Type::Tuple(vec![Type::Text, value.clone()]);
+                let option_type = self.type_id(&Type::Nominal(option, vec![entry]))?;
+                self.branch_on_indexed_equality(
+                    flow,
+                    left,
+                    right,
+                    option_type,
+                    IndexedEquality::TextMap,
                     equal,
                     not_equal,
                     origin,
@@ -8412,48 +8491,41 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
     #[expect(
         clippy::too_many_arguments,
         clippy::too_many_lines,
-        reason = "the bounded List loop keeps length, proof, checked reads, and equality backedge visibly connected"
+        reason = "the bounded List/TextMap loop keeps length, proof, checked reads, and equality backedge visibly connected"
     )]
-    fn branch_on_list_equality(
+    fn branch_on_indexed_equality(
         &mut self,
         flow: Flow,
         left: ValueId,
         right: ValueId,
         option_type: ValueTypeId,
+        container: IndexedEquality,
         equal: BlockId,
         not_equal: BlockId,
         origin: Origin,
     ) -> Result<(), LoweringError> {
         let integer = self.type_id(&Type::Int)?;
         let boolean = self.type_id(&Type::Bool)?;
-        let left_length = match self.one_instruction(
-            flow,
-            InstructionKind::ListLength { list: left },
-            integer,
-            origin,
-        )? {
-            EvalFlow::Continue { value, .. } => value,
-            EvalFlow::Terminated => {
-                return Err(LoweringError::defect(
-                    LoweringDefectCode::Builder,
-                    "left List length unexpectedly terminated",
-                ));
-            }
-        };
-        let right_length = match self.one_instruction(
-            flow,
-            InstructionKind::ListLength { list: right },
-            integer,
-            origin,
-        )? {
-            EvalFlow::Continue { value, .. } => value,
-            EvalFlow::Terminated => {
-                return Err(LoweringError::defect(
-                    LoweringDefectCode::Builder,
-                    "right List length unexpectedly terminated",
-                ));
-            }
-        };
+        let left_length =
+            match self.one_instruction(flow, container.length(left), integer, origin)? {
+                EvalFlow::Continue { value, .. } => value,
+                EvalFlow::Terminated => {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::Builder,
+                        format!("left {} length unexpectedly terminated", container.name()),
+                    ));
+                }
+            };
+        let right_length =
+            match self.one_instruction(flow, container.length(right), integer, origin)? {
+                EvalFlow::Continue { value, .. } => value,
+                EvalFlow::Terminated => {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::Builder,
+                        format!("right {} length unexpectedly terminated", container.name()),
+                    ));
+                }
+            };
         let same_length = match self.one_instruction(
             flow,
             InstructionKind::IntCompare {
@@ -8468,7 +8540,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             EvalFlow::Terminated => {
                 return Err(LoweringError::defect(
                     LoweringDefectCode::Builder,
-                    "List length comparison unexpectedly terminated",
+                    format!(
+                        "{} length comparison unexpectedly terminated",
+                        container.name()
+                    ),
                 ));
             }
         };
@@ -8496,7 +8571,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             EvalFlow::Terminated => {
                 return Err(LoweringError::defect(
                     LoweringDefectCode::Builder,
-                    "List equality zero index unexpectedly terminated",
+                    format!(
+                        "{} equality zero index unexpectedly terminated",
+                        container.name()
+                    ),
                 ));
             }
         };
@@ -8528,7 +8606,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             EvalFlow::Terminated => {
                 return Err(LoweringError::defect(
                     LoweringDefectCode::Builder,
-                    "List equality bounds comparison unexpectedly terminated",
+                    format!(
+                        "{} equality bounds comparison unexpectedly terminated",
+                        container.name()
+                    ),
                 ));
             }
         };
@@ -8548,7 +8629,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         };
         let left_element = match self.one_instruction(
             compare_flow,
-            InstructionKind::ListGet { list: left, index },
+            container.get(left, index),
             option_type,
             origin,
         )? {
@@ -8556,13 +8637,16 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             EvalFlow::Terminated => {
                 return Err(LoweringError::defect(
                     LoweringDefectCode::Builder,
-                    "left List equality read unexpectedly terminated",
+                    format!(
+                        "left {} equality read unexpectedly terminated",
+                        container.name()
+                    ),
                 ));
             }
         };
         let right_element = match self.one_instruction(
             compare_flow,
-            InstructionKind::ListGet { list: right, index },
+            container.get(right, index),
             option_type,
             origin,
         )? {
@@ -8570,7 +8654,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             EvalFlow::Terminated => {
                 return Err(LoweringError::defect(
                     LoweringDefectCode::Builder,
-                    "right List equality read unexpectedly terminated",
+                    format!(
+                        "right {} equality read unexpectedly terminated",
+                        container.name()
+                    ),
                 ));
             }
         };
@@ -8601,7 +8688,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             EvalFlow::Terminated => {
                 return Err(LoweringError::defect(
                     LoweringDefectCode::Builder,
-                    "List equality successor unexpectedly terminated",
+                    format!(
+                        "{} equality successor unexpectedly terminated",
+                        container.name()
+                    ),
                 ));
             }
         };
@@ -9252,7 +9342,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 mir::Builtin::TextMapNew
                 | mir::Builtin::TextMapInsert
                 | mir::Builtin::TextMapLength
-                | mir::Builtin::TextMapGet => {
+                | mir::Builtin::TextMapContains
+                | mir::Builtin::TextMapGet
+                | mir::Builtin::TextMapRemove => {
                     self.lower_text_map_builtin(flow, *builtin, arguments, expression)
                 }
                 _ => self.lower_builtin(flow, *builtin, arguments, expression),
@@ -10368,7 +10460,15 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 value: *value,
             },
             (mir::Builtin::TextMapLength, [map]) => InstructionKind::TextMapLength { map: *map },
+            (mir::Builtin::TextMapContains, [map, key]) => InstructionKind::TextMapContains {
+                map: *map,
+                key: *key,
+            },
             (mir::Builtin::TextMapGet, [map, key]) => InstructionKind::TextMapGet {
+                map: *map,
+                key: *key,
+            },
+            (mir::Builtin::TextMapRemove, [map, key]) => InstructionKind::TextMapRemove {
                 map: *map,
                 key: *key,
             },

@@ -549,17 +549,30 @@ greatest-fixed-point `Unique` ownership fact across CFG edges and loop phis;
 entry values, copies, calls, aggregate embedding, projections, and ambiguous
 joins are `Shared`. Raw LCIR builders cannot forge this certificate.
 
-`TextMapConstruct`, immutable `TextMapInsert`, `TextMapLength`, and `TextMapGet`
-are likewise first-class typed instructions. The semantic value argument is
-part of the concrete map type, and `get` must return the exact canonical
-`Option[V]`; validation independently rejects an erased value or mismatched
-option. Construct uses the null empty representation. Insert always performs a
-functional copy in this slice, so aliases keep their previous logical value;
-future in-place update requires a checked-MIR-only uniqueness proof rather than
-an address or reference-count observation. The collecting insertion roots and
-reloads the old map, Text key, and every managed leaf of `V`. Length and lookup
-do not allocate. The compiler emits no universal map value, runtime type tag,
-executor, or global layout registry.
+`TextMapConstruct`, immutable `TextMapInsert`, `TextMapLength`,
+`TextMapContains`, `TextMapGet`, and immutable `TextMapRemove` are likewise
+first-class typed instructions. The semantic value argument is part of the
+concrete map type, `get` must return the exact canonical `Option[V]`, and
+independent validation requires canonical managed `Text` keys. Construct uses
+the null empty representation. Insert and successful multi-entry removal
+perform functional copies, so aliases keep their previous logical value; a
+missing removal reuses the original pointer and removing the final entry
+returns the canonical null value. Future in-place update requires a
+checked-MIR-only uniqueness proof rather than an address or reference-count
+observation.
+
+Insertion roots and reloads the old map, Text key, and every managed leaf of
+`V`. Removal locates and consumes its key before allocation, roots exactly the
+source map, reloads it after possible relocation, and copies the entry ranges
+on either side of the removed position. Length, containment, lookup, and the
+compiler-private indexed entry read do not allocate. Structural equality first
+compares lengths and then walks the canonical sorted entries as exact
+`Option[(Text, V)]` values; it therefore ignores insertion history while
+recursively preserving the normal scalar, product, sum, List, and TextMap
+equality rules. A nominal cycle reached again through List or TextMap remains a
+whole-artifact fallback rather than generating an unbounded comparison graph.
+The compiler emits no universal map value, runtime type tag, executor, or
+global layout registry.
 
 ## Typed stackless coroutines
 

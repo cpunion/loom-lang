@@ -28,18 +28,25 @@ fn deeply_nested_json() Json {
     value
 }
 
-test fn text_map_and_json() {
+pub fn typed_text_map_segment() Unit {
     let empty = TextMap[Text]()
     let inserted = empty.insert("z", "last").insert("a", "first")
     let overwritten = inserted.insert("z", "updated")
-    let removed = overwritten.remove("missing")
+    let reverse_order = TextMap[Text]().insert("a", "first").insert("z", "updated")
+    let missing_removed = overwritten.remove("missing")
+    let existing_removed = overwritten.remove("z")
+    let expected_remaining = TextMap[Text]().insert("a", "first")
     let empty_length = empty.length()
     let overwritten_length = overwritten.length()
     let has_z = overwritten.contains("z")
+    let removed_has_z = existing_removed.contains("z")
     assert empty_length == 0
     assert overwritten_length == 2
     assert has_z
-    assert removed == overwritten
+    assert overwritten == reverse_order
+    assert missing_removed == overwritten
+    assert existing_removed == expected_remaining
+    assert removed_has_z == false
     match overwritten.get("z") {
         Some(value) => {
             assert value == "updated"
@@ -50,6 +57,11 @@ test fn text_map_and_json() {
             Unit
         }
     }
+    Unit
+}
+
+test fn text_map_and_json() {
+    typed_text_map_segment()
 
     let object = Json.Object(
         TextMap[Json]()

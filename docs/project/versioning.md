@@ -200,6 +200,13 @@ lanes remain zero. Fallible completion still publishes an ordinary typed
 `Result`, while Task fault and cancellation remain distinct scheduler states.
 No typed-task or native runtime ABI component changes.
 
+Typed TextMap containment, functional removal, indexed entry comparison, and
+structural equality advance the LCIR dump to 23, artifact schema to 24,
+native-object domain to v20, and LLVM object-cache domain to v25. Removal
+reuses `typed-repeated-v1`; containment, lookup, and equality allocate no map
+storage. No runtime symbol or universal value is added, so native runtime ABI
+component 15, `runtime-v9`, and `gc-v9` remain unchanged.
+
 Structural equality adds no LCIR opcode or runtime entry point. Products,
 refined values, sums, and finite List-backed graphs expand into the existing
 typed comparisons, product extraction, sum switches, List length/get, proved

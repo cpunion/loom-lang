@@ -27,7 +27,7 @@ impl BodyOrigins {
 }
 
 #[test]
-fn identity_schema_is_pinned_after_typed_coroutines_and_closed_dynamic_catalogs() {
+fn identity_schema_is_pinned_after_typed_coroutines_dynamic_catalogs_and_text_maps() {
     assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 24);
 }
 

@@ -326,8 +326,17 @@ fn write_instruction(
             write!(output, "text_map.insert %{map}, %{key}, %{value}")
         }
         InstructionKind::TextMapLength { map } => write!(output, "text_map.length %{map}"),
+        InstructionKind::TextMapContains { map, key } => {
+            write!(output, "text_map.contains %{map}, %{key}")
+        }
         InstructionKind::TextMapGet { map, key } => {
             write!(output, "text_map.get %{map}, %{key}")
+        }
+        InstructionKind::TextMapRemove { map, key } => {
+            write!(output, "text_map.remove %{map}, %{key}")
+        }
+        InstructionKind::TextMapEntryGet { map, index } => {
+            write!(output, "text_map.entry_get %{map}, %{index}")
         }
         InstructionKind::BoolNot { value } => write!(output, "bool.not %{value}"),
         InstructionKind::BoolCompare {

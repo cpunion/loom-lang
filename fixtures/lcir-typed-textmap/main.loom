@@ -25,6 +25,10 @@ fn verify() Result[Unit, Problem] {
     let alias = first
     let ordered = first.insert("a", 1)
     let replaced = ordered.insert("z", 10)
+    let reverse_order = TextMap[Int]().insert("a", 1).insert("z", 9)
+    let missing_removed = ordered.remove("missing")
+    let existing_removed = ordered.remove("z")
+    let last_removed = first.remove("z")
 
     let text = TextMap[Text]().insert("name", join("Lo", "om"))
     let pair = Pair { label = join("Pa", "ir"), count = 7 }
@@ -38,16 +42,23 @@ fn verify() Result[Unit, Problem] {
     let nested = TextMap[TextMap[Int]]().insert("inner", inner)
 
     var moving = TextMap[Pair]().insert(
-    "moving",
-    Pair { label = join("Mo", "ved"), count = 0 }
-    )
+    "drop",
+    Pair { label = join("Re", "move"), count = -1 }
+    ).insert("moving", Pair { label = join("Mo", "ved"), count = 0 })
     for index in 0..2048 {
+        moving = moving.remove("drop")
         moving = moving.insert(
+        "drop",
+        Pair { label = join("Re", "move"), count = index }
+        ).insert(
         "moving",
         Pair { label = join("Mo", "ved"), count = index }
         )
         Unit
     }
+    let moving_alias = moving
+    let moved_remove = moving.remove("drop")
+    let moved_missing = moved_remove.remove("missing")
 
     verdict(
     empty.length() == 0
@@ -55,6 +66,19 @@ fn verify() Result[Unit, Problem] {
     && ordered.length() == 2
     && replaced.length() == 2
     && alias.length() == 1
+    && empty.contains("missing") == false
+    && ordered.contains("a")
+    && ordered.contains("z")
+    && ordered.contains("missing") == false
+    && ordered == reverse_order
+    && ordered != replaced
+    && missing_removed == ordered
+    && existing_removed.length() == 1
+    && existing_removed.contains("a")
+    && existing_removed.contains("z") == false
+    && last_removed.length() == 0
+    && last_removed == empty
+    && alias.contains("z")
     && match alias.get("z") { Some(value) => value == 9, None => false }
     && match ordered.get("a") { Some(value) => value == 1, None => false }
     && match replaced.get("z") { Some(value) => value == 10, None => false }
@@ -90,8 +114,26 @@ fn verify() Result[Unit, Problem] {
         },
         None => false
     }
-    && moving.length() == 1
-    && match moving.get("moving") {
+    && text == TextMap[Text]().insert("name", "Loom")
+    && pairs == TextMap[Pair]().insert(
+        "pair",
+        Pair { label = "Pair", count = 7 }
+    )
+    && choices == TextMap[Choice]().insert(
+        "pair",
+        Choice.Pairing(pair)
+    ).insert("label", Choice.Label("Typed")).insert("number", Choice.Number(12))
+    && lists == TextMap[List[Text]]().insert("items", ["Nested", "List"])
+    && nested == TextMap[TextMap[Int]]().insert(
+        "inner",
+        TextMap[Int]().insert("answer", 42)
+    )
+    && moving_alias.length() == 2
+    && moving_alias.contains("drop")
+    && moved_remove.length() == 1
+    && moved_remove.contains("drop") == false
+    && moved_missing == moved_remove
+    && match moved_remove.get("moving") {
         Some(value) => value.label == "Moved" && value.count == 2047,
         None => false
     }

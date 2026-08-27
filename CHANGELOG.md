@@ -164,17 +164,21 @@ artifact, or runtime compatibility.
   component 15 is unchanged.
 - Typed LCIR now lowers compiler-private concrete closed `TextMap[V]` values on
   64-bit targets as one managed pointer to exact typed repeated entries.
-  Construction, functional insert/replacement, length, and exact
-  `get -> Option[V]` support scalar, Text, product, closed-sum, List, and nested
-  TextMap values. Target-derived descriptors trace every Text key and managed
-  value leaf through moving collection; insertion roots and reloads all inputs
-  and never mutates shared aliases. The implementation reuses
+  Construction, functional insert/replacement/removal, length, containment,
+  exact `get -> Option[V]`, and structural equality support scalar, Text,
+  product, closed-sum, List, and nested TextMap values. Missing removal reuses
+  the source value, successful removal preserves aliases, and equality compares
+  canonical sorted entries rather than insertion history. Target-derived
+  descriptors trace every Text key and managed value leaf through moving
+  collection; collecting operations root and reload their exact inputs. The
+  implementation reuses
   `typed-repeated-v1` and adds no universal value, executor, runtime type tag,
   callback registry, or map-specific runtime symbol. The
   `lcir-typed-textmap` fixture closes real `check/build/test/run`, forced-GC
   interpreter/legacy/typed differential execution, and Linux/MSVC object
-  emission. LCIR/artifact/object/cache version reservations remain deferred to
-  the integration rebase; the native runtime ABI is unchanged.
+  emission. The new operations advance the LCIR dump to 23, artifact schema to
+  24, native-object domain to v20, and object-cache domain to v25; the native
+  runtime ABI is unchanged.
 - Typed LCIR now monomorphizes fully concrete generic records, invariant
   records, and refined wrappers into their exact direct product or transparent
   representations. Generic field projection, contract evaluation, calls,
