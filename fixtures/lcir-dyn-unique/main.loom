@@ -1,0 +1,64 @@
+module lcir_dyn_unique
+
+dyn concept Metric {
+    method read(self) Int
+    method cold(self) Int
+}
+
+dyn concept Advance {
+    method advance(mut self) Int
+}
+
+record Counter {
+    value Int
+}
+
+impl Metric for Counter {
+    method read(self) Int { self.value }
+    method cold(self) Int { 7001 }
+}
+
+impl Advance for Counter {
+    method advance(mut self) Int {
+        self.value = self.value + 1
+        self.value
+    }
+}
+
+// This conformance is deliberately never constructed. Closed-world witness
+// reachability must not retain it merely because it exists in the source.
+record UnusedCounter {
+    value Int
+}
+
+impl Metric for UnusedCounter {
+    method read(self) Int { self.value + 9001 }
+    method cold(self) Int { 9002 }
+}
+
+fn measure(metric Metric) Int {
+    metric.read()
+}
+
+fn advance_once(counter Advance) Int {
+    counter.advance()
+}
+
+fn verify() Unit {
+    let measured = measure(Counter { value = 41 })
+    assert measured == 41
+
+    var counter = Counter { value = 41 }
+    let advanced = advance_once(counter)
+    assert advanced == 42
+    let counter_value = counter.value
+    assert counter_value == 42
+}
+
+pub fn main() Unit {
+    verify()
+}
+
+test fn uniqueDynamicWitness() {
+    verify()
+}

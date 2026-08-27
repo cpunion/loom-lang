@@ -6,6 +6,7 @@ use loom_mir::{
     StatementKind, Type, WitnessRef,
 };
 
+use crate::dyn_plan::DynConceptPlan;
 use crate::{INSTANCE_KEY_STRUCTURE_BUDGET, InstanceKey, InstanceWitnessArgument};
 
 /// Maximum number of concrete callable instances in one LCIR artifact.
@@ -817,12 +818,13 @@ struct CallSite {
     path: String,
 }
 
-struct CallCollector {
+struct CallCollector<'plan> {
     remaining: usize,
     calls: Vec<CallSite>,
+    dyn_concepts: &'plan DynConceptPlan,
 }
 
-impl CallCollector {
+impl CallCollector<'_> {
     fn reserve(
         &mut self,
         function: &mir::Function,
@@ -864,6 +866,7 @@ enum VisitState {
 pub(crate) fn plan_instance_closure(
     program: &mir::Program,
     roots: &[FunctionId],
+    dyn_concepts: &DynConceptPlan,
 ) -> Result<InstanceClosureOutcome, InstanceClosureError> {
     let mut tasks = roots
         .iter()
@@ -918,14 +921,19 @@ pub(crate) fn plan_instance_closure(
                     .function(key.source())
                     .ok_or(InstanceClosureError::MissingFunction(key.source()))?;
                 require_instance_arity(function, &key)?;
-                let calls =
-                    match collect_instance_calls(program, function, &key, remaining_call_edges) {
-                        Ok(calls) => calls,
-                        Err(CollectCallsError::Unsupported(issue)) => {
-                            return Ok(InstanceClosureOutcome::Unsupported(issue));
-                        }
-                        Err(CollectCallsError::Defect(error)) => return Err(error),
-                    };
+                let calls = match collect_instance_calls(
+                    program,
+                    function,
+                    &key,
+                    remaining_call_edges,
+                    dyn_concepts,
+                ) {
+                    Ok(calls) => calls,
+                    Err(CollectCallsError::Unsupported(issue)) => {
+                        return Ok(InstanceClosureOutcome::Unsupported(issue));
+                    }
+                    Err(CollectCallsError::Defect(error)) => return Err(error),
+                };
                 remaining_call_edges = remaining_call_edges.saturating_sub(calls.len());
                 active_sources.insert(key.source(), identity.clone());
                 states.insert(identity.clone(), VisitState::Visiting);
@@ -1018,10 +1026,12 @@ fn collect_instance_calls(
     function: &mir::Function,
     key: &InstanceKey,
     remaining: usize,
+    dyn_concepts: &DynConceptPlan,
 ) -> Result<Vec<CallSite>, CollectCallsError> {
     let mut collector = CallCollector {
         remaining,
         calls: Vec::new(),
+        dyn_concepts,
     };
     let substitution = InstanceSubstitution::new(program, key);
     let result = scan_block(
@@ -1077,7 +1087,7 @@ fn scan_block(
     block: &mir::Block,
     path: &str,
     substitution: &InstanceSubstitution<'_, '_>,
-    calls: &mut CallCollector,
+    calls: &mut CallCollector<'_>,
 ) -> ScanResult {
     for (index, statement) in block.statements.iter().enumerate() {
         if !scan_statement(
@@ -1101,7 +1111,7 @@ fn scan_statement(
     statement: &mir::Statement,
     path: &str,
     substitution: &InstanceSubstitution<'_, '_>,
-    calls: &mut CallCollector,
+    calls: &mut CallCollector<'_>,
 ) -> ScanResult {
     match &statement.kind {
         StatementKind::Let { value, .. }
@@ -1192,7 +1202,7 @@ fn scan_expr(
     expression: &mir::Expr,
     path: &str,
     substitution: &InstanceSubstitution<'_, '_>,
-    calls: &mut CallCollector,
+    calls: &mut CallCollector<'_>,
 ) -> ScanResult {
     let continues = match &expression.kind {
         ExprKind::Constant(_)
@@ -1331,7 +1341,29 @@ fn scan_expr(
                         )
                         .map_err(|error| instantiation_issue(function, expression, path, error))?,
                 ),
-                CallTarget::Dynamic { .. } | CallTarget::Builtin(_) => None,
+                CallTarget::Dynamic { requirement } => {
+                    let receiver_ty = arguments
+                        .first()
+                        .map(|argument| dynamic_receiver_type(function, argument, substitution))
+                        .transpose()
+                        .map_err(|error| instantiation_issue(function, expression, path, error))?
+                        .flatten();
+                    receiver_ty
+                        .as_ref()
+                        .and_then(|receiver_ty| calls.dyn_concepts.choice(receiver_ty))
+                        .map(|choice| {
+                            substitution.static_call_key(
+                                *requirement,
+                                &WitnessRef::Concrete(choice.witness()),
+                                choice.concrete(),
+                                &[],
+                                &[],
+                            )
+                        })
+                        .transpose()
+                        .map_err(|error| instantiation_issue(function, expression, path, error))?
+                }
+                CallTarget::Builtin(_) => None,
             };
             if let Some(key) = key {
                 calls.reserve(function, expression, path)?;
@@ -1354,7 +1386,7 @@ fn scan_exprs(
     expressions: &[mir::Expr],
     path: &str,
     substitution: &InstanceSubstitution<'_, '_>,
-    calls: &mut CallCollector,
+    calls: &mut CallCollector<'_>,
 ) -> ScanResult {
     for (index, expression) in expressions.iter().enumerate() {
         if !scan_expr(
@@ -1368,6 +1400,29 @@ fn scan_exprs(
         }
     }
     Ok(true)
+}
+
+fn dynamic_receiver_type(
+    function: &mir::Function,
+    argument: &CallArgument,
+    substitution: &InstanceSubstitution<'_, '_>,
+) -> Result<Option<Type>, InstantiationError> {
+    let ty = match argument {
+        CallArgument::Value(value) => &value.ty,
+        CallArgument::InOut(place) if place.projection.is_empty() => {
+            let Some(local) = function
+                .params
+                .iter()
+                .chain(&function.locals)
+                .find(|local| local.id == place.local)
+            else {
+                return Ok(None);
+            };
+            &local.ty
+        }
+        CallArgument::InOut(_) => return Ok(None),
+    };
+    substitution.instantiate_type(ty).map(Some)
 }
 
 #[cfg(test)]

@@ -13,6 +13,7 @@ use crate::aggregate_plan::{
     AggregatePlanner, AggregateRegistrationError, closed_enum_variants, concrete_any_record_fields,
     concrete_record_fields, concrete_refined_base, is_direct_scalar,
 };
+use crate::dyn_plan::DynConceptPlan;
 use crate::instance_closure::{
     InstanceClosureError, InstanceClosureOutcome, InstanceClosureUnsupportedKind,
     InstanceSubstitution, InstantiationError, plan_instance_closure,
@@ -245,6 +246,7 @@ pub enum UnsupportedFeature {
     RefinedValue,
     SerializedProofRecheck,
     DynamicDispatch,
+    DynamicWitnessSet,
     BuiltinCall,
     GenericInstanceBudget,
     NonRegularGenericRecursion,
@@ -273,6 +275,7 @@ impl UnsupportedFeature {
             Self::RefinedValue => "RefinedValue",
             Self::SerializedProofRecheck => "SerializedProofRecheck",
             Self::DynamicDispatch => "DynamicDispatch",
+            Self::DynamicWitnessSet => "DynamicWitnessSet",
             Self::BuiltinCall => "BuiltinCall",
             Self::GenericInstanceBudget => "GenericInstanceBudget",
             Self::NonRegularGenericRecursion => "NonRegularGenericRecursion",
@@ -388,13 +391,14 @@ pub fn lower_typed_artifact(
     target: TargetLayout,
 ) -> Result<LoweringOutcome, LoweringError> {
     let selected = select_roots(mir, request)?;
-    let _graph = analyze_source_reachability(mir, &selected.source).map_err(|error| {
+    let graph = analyze_source_reachability(mir, &selected.source).map_err(|error| {
         LoweringError::defect(
             LoweringDefectCode::SourceGraph,
             format!("checked-MIR reachability failed: {error}"),
         )
     })?;
-    let closure = match plan_instance_closure(mir.as_program(), &selected.ordered)
+    let dyn_concepts = DynConceptPlan::from_reachable(mir.as_program(), &graph);
+    let closure = match plan_instance_closure(mir.as_program(), &selected.ordered, &dyn_concepts)
         .map_err(instance_closure_error)?
     {
         InstanceClosureOutcome::Complete(closure) => closure,
@@ -421,7 +425,7 @@ pub fn lower_typed_artifact(
             }));
         }
     };
-    let mut classifier = Classifier::new(mir.as_program(), target);
+    let mut classifier = Classifier::new(mir.as_program(), target, &dyn_concepts);
     for key in closure.entries() {
         let source = mir.function(key.source()).ok_or_else(|| {
             LoweringError::defect(
@@ -528,17 +532,28 @@ pub fn lower_typed_artifact(
                 let ty = substitution
                     .instantiate_type(&parameter.ty)
                     .map_err(|error| instantiation_defect(function.id, None, error))?;
-                required_type(&builder, &ty)
+                required_type(&builder, &dyn_concepts, &ty)
             })
             .collect::<Result<Vec<_>, _>>()?;
         let result_ty = substitution
             .instantiate_type(&function.return_ty)
             .map_err(|error| instantiation_defect(function.id, None, error))?;
-        let result = required_type(&builder, &result_ty)?;
-        let signature = if function.receiver == Some(mir::Receiver::Mutable) {
-            Signature::with_inout_params(params, effect_result(result), [0_u32])
-        } else {
+        let result = required_type(&builder, &dyn_concepts, &result_ty)?;
+        let inout_params = function
+            .params
+            .iter()
+            .enumerate()
+            .filter_map(|(index, parameter)| {
+                let instantiated = substitution.instantiate_type(&parameter.ty).ok()?;
+                (parameter.mutable || is_mutable_view(&instantiated))
+                    .then(|| u32::try_from(index).ok())
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        let signature = if inout_params.is_empty() {
             Signature::new(params, effect_result(result))
+        } else {
+            Signature::with_inout_params(params, effect_result(result), inout_params)
         };
         let instance = builder
             .declare_instance(
@@ -591,6 +606,7 @@ pub fn lower_typed_artifact(
             &instances,
             &instance_effects,
             &match_plans,
+            &dyn_concepts,
         )
         .lower()?;
     }
@@ -687,13 +703,27 @@ const fn effect_result(result: ValueTypeId) -> ValueTypeId {
     result
 }
 
-fn required_type(builder: &ProgramBuilder, ty: &Type) -> Result<ValueTypeId, LoweringError> {
-    builder.type_id(ty).ok_or_else(|| {
+fn required_type(
+    builder: &ProgramBuilder,
+    dyn_concepts: &DynConceptPlan,
+    ty: &Type,
+) -> Result<ValueTypeId, LoweringError> {
+    let physical = dyn_concepts.physical_type(ty).ok_or_else(|| {
         LoweringError::defect(
             LoweringDefectCode::InconsistentPlan,
-            format!("classified direct type {ty:?} has no LCIR representation"),
+            format!("classified dynamic type {ty:?} has no unique concrete representation"),
+        )
+    })?;
+    builder.type_id(physical).ok_or_else(|| {
+        LoweringError::defect(
+            LoweringDefectCode::InconsistentPlan,
+            format!("classified direct type {physical:?} has no LCIR representation"),
         )
     })
+}
+
+const fn is_mutable_view(ty: &Type) -> bool {
+    matches!(ty, Type::View { mutable: true, .. })
 }
 
 fn select_roots(
@@ -1109,8 +1139,9 @@ fn runtime_constraint_result_type(program: &mir::Program, success: Type) -> Opti
     ))
 }
 
-struct Classifier<'program> {
+struct Classifier<'program, 'plan> {
     program: &'program mir::Program,
+    dyn_concepts: &'plan DynConceptPlan,
     target: TargetLayout,
     items: Vec<UnsupportedItem>,
     aggregates: AggregatePlanner<'program>,
@@ -1153,10 +1184,15 @@ impl PlaceSite {
     }
 }
 
-impl<'program> Classifier<'program> {
-    fn new(program: &'program mir::Program, target: TargetLayout) -> Self {
+impl<'program, 'plan> Classifier<'program, 'plan> {
+    fn new(
+        program: &'program mir::Program,
+        target: TargetLayout,
+        dyn_concepts: &'plan DynConceptPlan,
+    ) -> Self {
         Self {
             program,
+            dyn_concepts,
             target,
             items: Vec::new(),
             aggregates: AggregatePlanner::new(program, target.pointer_bits() == 64),
@@ -1169,6 +1205,9 @@ impl<'program> Classifier<'program> {
     }
 
     fn supported_value_type(&mut self, ty: &Type) -> bool {
+        let Some(ty) = self.dyn_concepts.physical_type(ty) else {
+            return false;
+        };
         if ty == &Type::Text {
             if self.target.pointer_bits() != 64 {
                 return false;
@@ -1232,6 +1271,24 @@ impl<'program> Classifier<'program> {
             return None;
         };
         Some(ty)
+    }
+
+    fn call_argument_type(
+        &mut self,
+        function: &mir::Function,
+        key: &InstanceKey,
+        argument: &CallArgument,
+        expression: &mir::Expr,
+        path: &str,
+    ) -> Option<Type> {
+        let ty = match argument {
+            CallArgument::Value(value) => &value.ty,
+            CallArgument::InOut(place) if place.projection.is_empty() => {
+                Self::local_type(function, place.local)?
+            }
+            CallArgument::InOut(_) => return None,
+        };
+        self.instantiated_type(function, key, Some(expression), ty, expression.span, path)
     }
 
     fn supported_projected_place(
@@ -2400,7 +2457,31 @@ impl<'program> Classifier<'program> {
                             witnesses,
                         )
                         .ok(),
-                    CallTarget::Dynamic { .. } | CallTarget::Builtin(_) => None,
+                    CallTarget::Dynamic { requirement } => arguments
+                        .first()
+                        .and_then(|argument| {
+                            self.call_argument_type(
+                                function,
+                                key,
+                                argument,
+                                expression,
+                                &format!("{path}.arguments[0].ty"),
+                            )
+                        })
+                        .and_then(|receiver| {
+                            self.dyn_concepts.choice(&receiver).and_then(|choice| {
+                                InstanceSubstitution::new(self.program, key)
+                                    .static_call_key(
+                                        *requirement,
+                                        &mir::WitnessRef::Concrete(choice.witness()),
+                                        choice.concrete(),
+                                        &[],
+                                        &[],
+                                    )
+                                    .ok()
+                            })
+                        }),
+                    CallTarget::Builtin(_) => None,
                 };
                 let mutable_receiver = callee_key.as_ref().and_then(|callee_key| {
                     self.program
@@ -2443,12 +2524,21 @@ impl<'program> Classifier<'program> {
                                                 && self.supported_value_type(ty)
                                         })
                                 } else {
+                                    let physical_place = place_type
+                                        .as_ref()
+                                        .and_then(|ty| self.dyn_concepts.physical_type(ty));
                                     index == 0
-                                        && mutable_receiver.as_ref() == place_type.as_ref()
+                                        && mutable_receiver.as_ref() == physical_place
                                         && place_type.as_ref().is_some_and(|ty| {
-                                            self.supported_record_type(ty)
-                                                || (is_invariant_record_type(self.program, ty)
-                                                    && self.aggregates.supports_value_type(ty))
+                                            let physical =
+                                                self.dyn_concepts.physical_type(ty).unwrap_or(ty);
+                                            self.supported_record_type(physical)
+                                                || (is_invariant_record_type(
+                                                    self.program,
+                                                    physical,
+                                                ) && self
+                                                    .aggregates
+                                                    .supports_value_type(physical))
                                         })
                                 };
                             if !allowed {
@@ -2466,7 +2556,8 @@ impl<'program> Classifier<'program> {
                     CallTarget::Direct(_)
                     | CallTarget::Inherent(_)
                     | CallTarget::StaticConcept { .. } => None,
-                    CallTarget::Dynamic { .. } => Some(UnsupportedFeature::DynamicDispatch),
+                    CallTarget::Dynamic { .. } if callee_key.is_some() => None,
+                    CallTarget::Dynamic { .. } => Some(UnsupportedFeature::DynamicWitnessSet),
                     CallTarget::Builtin(
                         mir::Builtin::TextLength
                         | mir::Builtin::TextContains
@@ -2501,16 +2592,69 @@ impl<'program> Classifier<'program> {
                 }
                 expression.ty != Type::Never
             }
-            ExprKind::MakeView { value, .. } => {
+            ExprKind::MakeView {
+                value,
+                writeback,
+                witness,
+                mutable,
+                ..
+            } => {
                 if !self.visit_expr(function, key, value, &format!("{path}.value")) {
                     return false;
                 }
-                self.expression_item(UnsupportedFeature::View, function, expression, path);
+                let view = self.instantiated_type(
+                    function,
+                    key,
+                    Some(expression),
+                    &expression.ty,
+                    expression.span,
+                    &format!("{path}.ty"),
+                );
+                let concrete = self.instantiated_type(
+                    function,
+                    key,
+                    Some(value),
+                    &value.ty,
+                    value.span,
+                    &format!("{path}.value.ty"),
+                );
+                let choice = view
+                    .as_ref()
+                    .and_then(|view| self.dyn_concepts.choice(view));
+                let valid = choice.is_some_and(|choice| {
+                    concrete.as_ref() == Some(choice.concrete())
+                        && witness == &mir::WitnessRef::Concrete(choice.witness())
+                        && matches!(view, Some(Type::View { mutable: expected, .. }) if expected == *mutable)
+                });
+                if let Some(writeback) = writeback {
+                    let writeback_ty = self.projected_place(
+                        function,
+                        key,
+                        writeback,
+                        PlaceUse::InOut,
+                        PlaceSite::expression(expression),
+                        &format!("{path}.writeback"),
+                    );
+                    if concrete != writeback_ty {
+                        self.expression_item(UnsupportedFeature::View, function, expression, path);
+                    }
+                }
+                if !valid {
+                    self.expression_item(
+                        if choice.is_some() {
+                            UnsupportedFeature::View
+                        } else {
+                            UnsupportedFeature::DynamicWitnessSet
+                        },
+                        function,
+                        expression,
+                        path,
+                    );
+                }
                 expression.ty != Type::Never
             }
             ExprKind::ReborrowView { owner, .. } => {
-                self.expression_item(UnsupportedFeature::View, function, expression, path);
-                self.projected_place(
+                let owner_ty = self.projected_place(
                     function,
                     key,
                     owner,
@@ -2518,6 +2662,26 @@ impl<'program> Classifier<'program> {
                     PlaceSite::expression(expression),
                     &format!("{path}.owner"),
                 );
+                let result_ty = self.instantiated_type(
+                    function,
+                    key,
+                    Some(expression),
+                    &expression.ty,
+                    expression.span,
+                    &format!("{path}.ty"),
+                );
+                let same_choice = owner_ty
+                    .as_ref()
+                    .zip(result_ty.as_ref())
+                    .and_then(|(owner, result)| {
+                        self.dyn_concepts
+                            .choice(owner)
+                            .zip(self.dyn_concepts.choice(result))
+                    })
+                    .is_some_and(|(owner, result)| owner == result);
+                if !owner.projection.is_empty() || !same_choice {
+                    self.expression_item(UnsupportedFeature::View, function, expression, path);
+                }
                 true
             }
             ExprKind::Await { task, .. } => {
@@ -3665,6 +3829,7 @@ struct ContractContext {
 
 struct FunctionLowerer<'function, 'builder, 'plan> {
     program: &'plan mir::Program,
+    dyn_concepts: &'plan DynConceptPlan,
     source: &'function mir::Function,
     key: &'plan InstanceKey,
     builder: FunctionBuilder<'builder>,
@@ -3682,6 +3847,7 @@ struct FunctionLowerer<'function, 'builder, 'plan> {
 }
 
 impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         program: &'plan mir::Program,
         source: &'function mir::Function,
@@ -3690,6 +3856,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         instances: &'plan InstanceLookup,
         effects: &'plan [Effects],
         match_plans: &'plan BTreeMap<String, BTreeMap<ExprId, MatchPlan>>,
+        dyn_concepts: &'plan DynConceptPlan,
     ) -> Self {
         let local_types = source
             .params
@@ -3697,17 +3864,22 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             .chain(&source.locals)
             .map(|local| (local.id, local.ty.clone()))
             .collect();
-        let inout_locals: Box<[LocalId]> = if source.receiver == Some(mir::Receiver::Mutable) {
-            source
-                .params
-                .first()
-                .map(|receiver| vec![receiver.id].into_boxed_slice())
-                .unwrap_or_default()
-        } else {
-            Box::new([])
-        };
+        let substitution = InstanceSubstitution::new(program, key);
+        let inout_locals = source
+            .params
+            .iter()
+            .filter_map(|parameter| {
+                substitution
+                    .instantiate_type(&parameter.ty)
+                    .ok()
+                    .is_some_and(|ty| parameter.mutable || is_mutable_view(&ty))
+                    .then_some(parameter.id)
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
         Self {
             program,
+            dyn_concepts,
             source,
             key,
             builder,
@@ -3788,13 +3960,21 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         let instantiated = InstanceSubstitution::new(self.program, self.key)
             .instantiate_type(ty)
             .map_err(|error| instantiation_defect(self.source.id, None, error))?;
+        let physical = self.dyn_concepts.physical_type(&instantiated).ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                format!(
+                    "classified dynamic type {instantiated:?} has no unique concrete representation"
+                ),
+            )
+        })?;
         self.builder
             .representations()
-            .type_id(&instantiated)
+            .type_id(physical)
             .ok_or_else(|| {
                 LoweringError::defect(
                     LoweringDefectCode::InconsistentPlan,
-                    format!("classified direct type {instantiated:?} has no LCIR type"),
+                    format!("classified direct type {physical:?} has no LCIR type"),
                 )
             })
     }
@@ -6190,10 +6370,40 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     self.expression_origin(expression),
                 )
             }
-            ExprKind::MakeView { value, .. } => {
-                self.lower_unsupported_operand(flow, value, "view construction")
+            ExprKind::MakeView { value, witness, .. } => {
+                let instantiated = InstanceSubstitution::new(self.program, self.key)
+                    .instantiate_type(&expression.ty)
+                    .map_err(|error| {
+                        instantiation_defect(self.source.id, Some(expression.id), error)
+                    })?;
+                let choice = self
+                    .dyn_concepts
+                    .choice(&instantiated)
+                    .ok_or_else(|| self.unsupported_reached("non-unique dynamic witness set"))?;
+                if witness != &mir::WitnessRef::Concrete(choice.witness()) {
+                    return Err(self.unsupported_reached("dynamic witness choice mismatch"));
+                }
+                let EvalFlow::Continue { flow, value } = self.lower_expr(flow, value)? else {
+                    return Ok(EvalFlow::Terminated);
+                };
+                if self.builder.value_type(value) != Some(self.type_id(&expression.ty)?) {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        "devirtualized view value does not use its selected concrete type",
+                    ));
+                }
+                Ok(EvalFlow::Continue { flow, value })
             }
-            ExprKind::ReborrowView { .. } => Err(self.unsupported_reached("view reborrow")),
+            ExprKind::ReborrowView { owner, .. } => {
+                let plan = self.place_plan(owner, PlaceUse::Read)?;
+                if plan.leaf_type() != self.type_id(&expression.ty)? {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        "devirtualized reborrow does not preserve its selected concrete type",
+                    ));
+                }
+                self.read_place(flow, &plan, origin)
+            }
             ExprKind::Await { task, .. } => {
                 self.lower_unsupported_operand(flow, task, "suspension")
             }
@@ -8534,7 +8744,24 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 type_arguments,
                 witnesses,
             ),
-            _ => return Err(self.unsupported_reached("non-direct call")),
+            CallTarget::Dynamic { requirement } => {
+                let receiver = arguments
+                    .first()
+                    .ok_or_else(|| self.unsupported_reached("dynamic call without receiver"))?;
+                let receiver_ty = self.dynamic_receiver_type(receiver, expression)?;
+                let choice = self
+                    .dyn_concepts
+                    .choice(&receiver_ty)
+                    .ok_or_else(|| self.unsupported_reached("non-unique dynamic witness set"))?;
+                substitution.static_call_key(
+                    *requirement,
+                    &mir::WitnessRef::Concrete(choice.witness()),
+                    choice.concrete(),
+                    &[],
+                    &[],
+                )
+            }
+            CallTarget::Builtin(_) => unreachable!("builtins return before direct-call planning"),
         }
         .map_err(|error| instantiation_defect(self.source.id, Some(expression.id), error))?;
         let callee = key.source();
@@ -8548,12 +8775,28 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             .params
             .iter()
             .enumerate()
-            .filter_map(|(index, parameter)| parameter.mutable.then_some(index))
+            .filter_map(|(index, parameter)| {
+                InstanceSubstitution::new(self.program, &key)
+                    .instantiate_type(&parameter.ty)
+                    .ok()
+                    .is_some_and(|ty| parameter.mutable || is_mutable_view(&ty))
+                    .then_some(index)
+            })
             .collect::<Vec<_>>();
         let mut inout_arguments = Vec::with_capacity(expected_inout.len());
         let origin = self.expression_origin(expression);
         for (index, argument) in arguments.iter().enumerate() {
             match argument {
+                CallArgument::Value(argument) if expected_inout.contains(&index) => {
+                    let (next_flow, value, place) =
+                        self.lower_view_inout_argument(flow, argument, expression)?;
+                    flow = next_flow;
+                    lowered_arguments.push(value);
+                    inout_arguments.push(InOutArgumentPlan {
+                        parameter: index,
+                        place,
+                    });
+                }
                 CallArgument::Value(argument) => {
                     let EvalFlow::Continue {
                         flow: next_flow,
@@ -8749,6 +8992,92 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             flow: normal_flow,
             value: result,
         })
+    }
+
+    fn dynamic_receiver_type(
+        &self,
+        argument: &CallArgument,
+        expression: &mir::Expr,
+    ) -> Result<Type, LoweringError> {
+        let source = match argument {
+            CallArgument::Value(value) => &value.ty,
+            CallArgument::InOut(place) if place.projection.is_empty() => {
+                self.local_types.get(&place.local).ok_or_else(|| {
+                    LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        format!("dynamic receiver local #{} disappeared", place.local.0),
+                    )
+                })?
+            }
+            CallArgument::InOut(_) => {
+                return Err(self.unsupported_reached("projected dynamic receiver"));
+            }
+        };
+        InstanceSubstitution::new(self.program, self.key)
+            .instantiate_type(source)
+            .map_err(|error| instantiation_defect(self.source.id, Some(expression.id), error))
+    }
+
+    fn lower_view_inout_argument(
+        &mut self,
+        flow: Flow,
+        argument: &mir::Expr,
+        call: &mir::Expr,
+    ) -> Result<(Flow, ValueId, PlacePlan), LoweringError> {
+        let origin = self.expression_origin(call);
+        match &argument.kind {
+            ExprKind::MakeView {
+                value,
+                writeback: Some(writeback),
+                witness,
+                mutable: true,
+                ..
+            } => {
+                let view_ty = InstanceSubstitution::new(self.program, self.key)
+                    .instantiate_type(&argument.ty)
+                    .map_err(|error| {
+                        instantiation_defect(self.source.id, Some(argument.id), error)
+                    })?;
+                let choice = self.dyn_concepts.choice(&view_ty).ok_or_else(|| {
+                    self.unsupported_reached("non-unique mutable dynamic witness set")
+                })?;
+                if witness != &mir::WitnessRef::Concrete(choice.witness()) {
+                    return Err(self.unsupported_reached("mutable dynamic witness mismatch"));
+                }
+                let EvalFlow::Continue { flow, value } = self.lower_expr(flow, value)? else {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        "mutable dynamic receiver terminated before call",
+                    ));
+                };
+                let place = self.place_plan(writeback, PlaceUse::InOut)?;
+                if self.builder.value_type(value) != Some(place.leaf_type()) {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        "mutable dynamic receiver does not match its writeback place",
+                    ));
+                }
+                Ok((flow, value, place))
+            }
+            ExprKind::ReborrowView {
+                owner,
+                mutable: true,
+                ..
+            } => {
+                let place = self.place_plan(owner, PlaceUse::InOut)?;
+                let EvalFlow::Continue { flow, value } = self.read_place(flow, &place, origin)?
+                else {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::Builder,
+                        "mutable dynamic reborrow unexpectedly terminated",
+                    ));
+                };
+                Ok((flow, value, place))
+            }
+            _ => Err(self.unsupported_reached(
+                "mutable interface argument without an exact writeback place",
+            )),
+        }
     }
 
     #[expect(
