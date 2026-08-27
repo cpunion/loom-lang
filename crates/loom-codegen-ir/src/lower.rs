@@ -9,7 +9,7 @@ use loom_mir::{
 };
 
 use crate::aggregate_plan::{
-    AggregatePlanner, AggregateRegistrationError, concrete_any_record_fields,
+    AggregatePlanner, AggregateRegistrationError, closed_enum_variants, concrete_any_record_fields,
     concrete_record_fields, concrete_refined_base, is_direct_scalar,
 };
 use crate::instance_closure::{
@@ -30,6 +30,7 @@ use crate::{
 
 const DIRECT_CLEANUP_MAX_ACTIVE_ACTIONS: usize = 1_024;
 const DIRECT_CLEANUP_MAX_EXPANSIONS: usize = 65_536;
+const DIRECT_EQUALITY_MAX_CFG_NODES: usize = 4_096;
 
 /// Source-level roots selected for one attempted LCIR artifact.
 ///
@@ -957,6 +958,79 @@ const fn is_scalar_type(ty: &Type) -> bool {
     is_direct_scalar(ty)
 }
 
+/// Returns whether equality for one already-concrete direct value can be
+/// expanded into a bounded LCIR CFG. Recursive equality through a managed
+/// List is intentionally admitted by the List-specific lowering slice rather
+/// than treating a coinductive semantic proof as an infinitely inlineable CFG.
+fn supports_direct_structural_equality(program: &mir::Program, ty: &Type) -> bool {
+    fn visit(
+        program: &mir::Program,
+        ty: &Type,
+        active: &mut BTreeSet<Type>,
+        remaining: &mut usize,
+    ) -> bool {
+        if *remaining == 0 {
+            return false;
+        }
+        *remaining -= 1;
+        match ty {
+            Type::Unit | Type::Bool | Type::Int | Type::Float | Type::Text => true,
+            Type::Tuple(elements) => elements
+                .iter()
+                .all(|element| visit(program, element, active, remaining)),
+            Type::Nominal(_, _) => {
+                if program
+                    .prelude
+                    .text_map
+                    .is_some_and(|text_map| matches!(ty, Type::Nominal(id, _) if *id == text_map))
+                    || !active.insert(ty.clone())
+                {
+                    return false;
+                }
+                let result = if let Some(fields) = concrete_any_record_fields(program, ty) {
+                    fields
+                        .iter()
+                        .all(|field| visit(program, field, active, remaining))
+                } else if let Some(base) = concrete_refined_base(program, ty) {
+                    visit(program, &base, active, remaining)
+                } else if let Some(variants) = closed_enum_variants(program, ty) {
+                    let Some(case_cost) = variants.len().checked_mul(variants.len()) else {
+                        active.remove(ty);
+                        return false;
+                    };
+                    if *remaining < case_cost {
+                        active.remove(ty);
+                        return false;
+                    }
+                    *remaining -= case_cost;
+                    variants.iter().all(|variant| {
+                        variant
+                            .iter()
+                            .all(|payload| visit(program, payload, active, remaining))
+                    })
+                } else {
+                    false
+                };
+                active.remove(ty);
+                result
+            }
+            // Managed List equality is added separately because recursive
+            // lists require a runtime loop rather than recursive CFG cloning.
+            Type::List(_)
+            | Type::Never
+            | Type::Parameter(_)
+            | Type::AssociatedProjection { .. }
+            | Type::Task(_)
+            | Type::TaskOutcome(_)
+            | Type::View { .. }
+            | Type::Error => false,
+        }
+    }
+
+    let mut remaining = DIRECT_EQUALITY_MAX_CFG_NODES;
+    visit(program, ty, &mut BTreeSet::new(), &mut remaining)
+}
+
 struct Classifier<'program> {
     program: &'program mir::Program,
     target: TargetLayout,
@@ -1384,7 +1458,8 @@ impl<'program> Classifier<'program> {
                         | BinaryOp::Divide => matches!(left, Type::Int | Type::Float),
                         BinaryOp::And | BinaryOp::Or => left == Type::Bool,
                         BinaryOp::Equal | BinaryOp::NotEqual => {
-                            matches!(left, Type::Bool | Type::Int | Type::Float | Type::Text)
+                            self.supported_value_type(&left)
+                                && supports_direct_structural_equality(self.program, &left)
                         }
                         BinaryOp::Less
                         | BinaryOp::LessEqual
@@ -1716,21 +1791,23 @@ impl<'program> Classifier<'program> {
                 if self.visit_expr(function, key, left, &format!("{path}.left")) {
                     let right_continues =
                         self.visit_expr(function, key, right, &format!("{path}.right"));
-                    let scalar = self
-                        .instantiated_type(
-                            function,
-                            key,
-                            Some(left),
-                            &left.ty,
-                            left.span,
-                            &format!("{path}.left.ty"),
-                        )
-                        .is_some_and(|ty| {
+                    let operand_type = self.instantiated_type(
+                        function,
+                        key,
+                        Some(left),
+                        &left.ty,
+                        left.span,
+                        &format!("{path}.left.ty"),
+                    );
+                    let supported = operand_type.is_some_and(|ty| {
+                        if matches!(operator, BinaryOp::Equal | BinaryOp::NotEqual) {
+                            self.supported_value_type(&ty)
+                                && supports_direct_structural_equality(self.program, &ty)
+                        } else {
                             is_scalar_type(&ty)
-                                || (ty == Type::Text
-                                    && matches!(operator, BinaryOp::Equal | BinaryOp::NotEqual))
-                        });
-                    if right_continues && !scalar {
+                        }
+                    });
+                    if right_continues && !supported {
                         self.expression_item(
                             UnsupportedFeature::NominalValue,
                             function,
@@ -4206,6 +4283,18 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 origin,
             );
         }
+        if matches!(operator, BinaryOp::Equal | BinaryOp::NotEqual)
+            && !matches!(left.ty, Type::Bool | Type::Int | Type::Float | Type::Text)
+        {
+            return self.lower_structural_equality(
+                flow,
+                operator,
+                left.value,
+                right.value,
+                self.type_id(&left.ty)?,
+                origin,
+            );
+        }
         let kind = match &left.ty {
             Type::Bool => InstructionKind::BoolCompare {
                 predicate: match operator {
@@ -6120,6 +6209,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         Err(self.unsupported_reached(operation))
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "scalar operations and structural equality share one checked binary dispatch boundary"
+    )]
     fn lower_binary(
         &mut self,
         flow: Flow,
@@ -6179,6 +6272,21 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 origin,
             );
         }
+        if matches!(operator, BinaryOp::Equal | BinaryOp::NotEqual)
+            && !matches!(
+                operand_type,
+                Type::Unit | Type::Bool | Type::Int | Type::Float | Type::Text
+            )
+        {
+            return self.lower_structural_equality(
+                flow,
+                operator,
+                left,
+                right,
+                self.type_id(&operand_type)?,
+                origin,
+            );
+        }
 
         let ty = self.type_id(&Type::Bool)?;
         let kind = match &operand_type {
@@ -6219,6 +6327,468 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             _ => return Err(self.unsupported_reached("scalar comparison")),
         };
         self.one_instruction(flow, kind, ty, origin)
+    }
+
+    fn lower_structural_equality(
+        &mut self,
+        flow: Flow,
+        operator: BinaryOp,
+        left: ValueId,
+        right: ValueId,
+        operand_type: ValueTypeId,
+        origin: Origin,
+    ) -> Result<EvalFlow, LoweringError> {
+        let equal = self.create_block()?;
+        let not_equal = self.create_block()?;
+        let join = self.create_block()?;
+        let bool_type = self.type_id(&Type::Bool)?;
+        let result = self
+            .builder
+            .append_block_parameter(join, bool_type)
+            .map_err(LoweringError::from)?;
+        self.branch_on_structural_equality(
+            flow,
+            left,
+            right,
+            operand_type,
+            equal,
+            not_equal,
+            origin,
+        )?;
+
+        let true_value = match self.constant(
+            Flow {
+                block: equal,
+                env: flow.env,
+            },
+            Constant::Bool(true),
+            &Type::Bool,
+            origin,
+        )? {
+            EvalFlow::Continue { value, .. } => value,
+            EvalFlow::Terminated => {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::Builder,
+                    "structural equality true constant unexpectedly terminated",
+                ));
+            }
+        };
+        self.terminate(
+            equal,
+            TerminatorKind::Jump(BlockTarget::new(join, [true_value])),
+            origin,
+        )?;
+        let false_value = match self.constant(
+            Flow {
+                block: not_equal,
+                env: flow.env,
+            },
+            Constant::Bool(false),
+            &Type::Bool,
+            origin,
+        )? {
+            EvalFlow::Continue { value, .. } => value,
+            EvalFlow::Terminated => {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::Builder,
+                    "structural equality false constant unexpectedly terminated",
+                ));
+            }
+        };
+        self.terminate(
+            not_equal,
+            TerminatorKind::Jump(BlockTarget::new(join, [false_value])),
+            origin,
+        )?;
+        let joined = Flow {
+            block: join,
+            env: flow.env,
+        };
+        if operator == BinaryOp::NotEqual {
+            self.one_instruction(
+                joined,
+                InstructionKind::BoolNot { value: result },
+                bool_type,
+                origin,
+            )
+        } else {
+            Ok(EvalFlow::Continue {
+                flow: joined,
+                value: result,
+            })
+        }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "recursive representation dispatch keeps each exact typed equality shape auditable in one boundary"
+    )]
+    fn branch_on_structural_equality(
+        &mut self,
+        flow: Flow,
+        left: ValueId,
+        right: ValueId,
+        ty: ValueTypeId,
+        equal: BlockId,
+        not_equal: BlockId,
+        origin: Origin,
+    ) -> Result<(), LoweringError> {
+        for (side, value) in [("left", left), ("right", right)] {
+            if self.builder.value_type(value) != Some(ty) {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!("structural equality {side} operand has the wrong LCIR value type"),
+                ));
+            }
+        }
+        let value_type = self
+            .builder
+            .representations()
+            .value_type(ty)
+            .cloned()
+            .ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!("structural equality references missing value type {ty}"),
+                )
+            })?;
+        if let crate::ValueTypeKind::Transparent { base } = value_type.kind() {
+            let left = match self.one_instruction(
+                flow,
+                InstructionKind::Unrefine { value: left },
+                base,
+                origin,
+            )? {
+                EvalFlow::Continue { value, .. } => value,
+                EvalFlow::Terminated => {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::Builder,
+                        "left structural unrefine unexpectedly terminated",
+                    ));
+                }
+            };
+            let right = match self.one_instruction(
+                flow,
+                InstructionKind::Unrefine { value: right },
+                base,
+                origin,
+            )? {
+                EvalFlow::Continue { value, .. } => value,
+                EvalFlow::Terminated => {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::Builder,
+                        "right structural unrefine unexpectedly terminated",
+                    ));
+                }
+            };
+            return self
+                .branch_on_structural_equality(flow, left, right, base, equal, not_equal, origin);
+        }
+
+        let repr = self
+            .builder
+            .representations()
+            .repr(value_type.repr())
+            .copied()
+            .ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!("structural equality references missing representation for {ty}"),
+                )
+            })?;
+        match repr {
+            crate::Repr::Zst => self.terminate(
+                flow.block,
+                TerminatorKind::Jump(BlockTarget::new(equal, [])),
+                origin,
+            ),
+            crate::Repr::Scalar(_) | crate::Repr::ImmortalText | crate::Repr::ManagedPointer => {
+                let instruction = match value_type.semantic() {
+                    Type::Bool => InstructionKind::BoolCompare {
+                        predicate: BoolPredicate::Equal,
+                        left,
+                        right,
+                    },
+                    Type::Int => InstructionKind::IntCompare {
+                        predicate: IntPredicate::Equal,
+                        left,
+                        right,
+                    },
+                    Type::Float => InstructionKind::FloatCompare {
+                        predicate: FloatPredicate::OrderedEqual,
+                        left,
+                        right,
+                    },
+                    Type::Text => InstructionKind::TextCompare {
+                        predicate: BoolPredicate::Equal,
+                        left,
+                        right,
+                    },
+                    _ => return Err(self.unsupported_reached("managed structural equality")),
+                };
+                let condition = match self.one_instruction(
+                    flow,
+                    instruction,
+                    self.type_id(&Type::Bool)?,
+                    origin,
+                )? {
+                    EvalFlow::Continue { value, .. } => value,
+                    EvalFlow::Terminated => {
+                        return Err(LoweringError::defect(
+                            LoweringDefectCode::Builder,
+                            "structural leaf comparison unexpectedly terminated",
+                        ));
+                    }
+                };
+                self.terminate(
+                    flow.block,
+                    TerminatorKind::Branch {
+                        condition,
+                        then_target: BlockTarget::new(equal, []),
+                        else_target: BlockTarget::new(not_equal, []),
+                    },
+                    origin,
+                )
+            }
+            crate::Repr::Product(product) => {
+                let fields = self
+                    .builder
+                    .representations()
+                    .product(product)
+                    .map(|product| product.fields().to_vec())
+                    .ok_or_else(|| {
+                        LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            format!("structural equality references missing product {product}"),
+                        )
+                    })?;
+                let mut pairs = Vec::with_capacity(fields.len());
+                let mut flow = flow;
+                for (index, field_type) in fields.into_iter().enumerate() {
+                    let field = u32::try_from(index).map_err(|_| LoweringError::ResourceLimit {
+                        code: ResourceLimitCode::ProgramTooLarge,
+                        message: "structural equality product field index exceeds u32".into(),
+                    })?;
+                    let left_field = match self.one_instruction(
+                        flow,
+                        InstructionKind::ProductExtract {
+                            aggregate: left,
+                            field,
+                        },
+                        field_type,
+                        origin,
+                    )? {
+                        EvalFlow::Continue {
+                            flow: next_flow,
+                            value,
+                        } => {
+                            flow = next_flow;
+                            value
+                        }
+                        EvalFlow::Terminated => {
+                            return Err(LoweringError::defect(
+                                LoweringDefectCode::Builder,
+                                "left structural product extraction unexpectedly terminated",
+                            ));
+                        }
+                    };
+                    let right_field = match self.one_instruction(
+                        flow,
+                        InstructionKind::ProductExtract {
+                            aggregate: right,
+                            field,
+                        },
+                        field_type,
+                        origin,
+                    )? {
+                        EvalFlow::Continue {
+                            flow: next_flow,
+                            value,
+                        } => {
+                            flow = next_flow;
+                            value
+                        }
+                        EvalFlow::Terminated => {
+                            return Err(LoweringError::defect(
+                                LoweringDefectCode::Builder,
+                                "right structural product extraction unexpectedly terminated",
+                            ));
+                        }
+                    };
+                    pairs.push((left_field, right_field, field_type));
+                }
+                self.branch_on_equal_fields(flow, &pairs, equal, not_equal, origin)
+            }
+            crate::Repr::Sum(sum) => {
+                let variants = self
+                    .builder
+                    .representations()
+                    .sum(sum)
+                    .map(|sum| {
+                        sum.variants()
+                            .iter()
+                            .map(|variant| variant.fields().to_vec())
+                            .collect::<Vec<_>>()
+                    })
+                    .ok_or_else(|| {
+                        LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            format!("structural equality references missing sum {sum}"),
+                        )
+                    })?;
+                self.branch_on_sum_equality(flow, left, right, &variants, equal, not_equal, origin)
+            }
+            crate::Repr::Uninhabited => Err(LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "an uninhabited value reached structural equality lowering",
+            )),
+        }
+    }
+
+    fn branch_on_equal_fields(
+        &mut self,
+        mut flow: Flow,
+        fields: &[(ValueId, ValueId, ValueTypeId)],
+        equal: BlockId,
+        not_equal: BlockId,
+        origin: Origin,
+    ) -> Result<(), LoweringError> {
+        if fields.is_empty() {
+            return self.terminate(
+                flow.block,
+                TerminatorKind::Jump(BlockTarget::new(equal, [])),
+                origin,
+            );
+        }
+        for (index, (left, right, ty)) in fields.iter().copied().enumerate() {
+            let next = if index + 1 == fields.len() {
+                equal
+            } else {
+                self.create_block()?
+            };
+            self.branch_on_structural_equality(flow, left, right, ty, next, not_equal, origin)?;
+            flow.block = next;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    fn branch_on_sum_equality(
+        &mut self,
+        flow: Flow,
+        left: ValueId,
+        right: ValueId,
+        variants: &[Vec<ValueTypeId>],
+        equal: BlockId,
+        not_equal: BlockId,
+        origin: Origin,
+    ) -> Result<(), LoweringError> {
+        let mut left_cases = Vec::with_capacity(variants.len());
+        let mut left_payloads = Vec::with_capacity(variants.len());
+        for (variant, fields) in variants.iter().enumerate() {
+            let block = self.create_block()?;
+            let mut payload = Vec::with_capacity(fields.len());
+            for field in fields {
+                payload.push(
+                    self.builder
+                        .append_block_parameter(block, *field)
+                        .map_err(LoweringError::from)?,
+                );
+            }
+            left_cases.push(SumCase::new(
+                u32::try_from(variant).map_err(|_| LoweringError::ResourceLimit {
+                    code: ResourceLimitCode::ProgramTooLarge,
+                    message: "structural equality sum variant index exceeds u32".into(),
+                })?,
+                block,
+                [],
+            ));
+            left_payloads.push((block, payload));
+        }
+        self.terminate(
+            flow.block,
+            TerminatorKind::SumSwitch {
+                scrutinee: left,
+                cases: left_cases.into_boxed_slice(),
+            },
+            origin,
+        )?;
+
+        for (left_variant, (left_block, left_payload)) in left_payloads.into_iter().enumerate() {
+            let mut right_cases = Vec::with_capacity(variants.len());
+            let mut right_payloads = Vec::with_capacity(variants.len());
+            for (right_variant, fields) in variants.iter().enumerate() {
+                let block = self.create_block()?;
+                let mut payload = Vec::with_capacity(fields.len());
+                for field in fields {
+                    payload.push(
+                        self.builder
+                            .append_block_parameter(block, *field)
+                            .map_err(LoweringError::from)?,
+                    );
+                }
+                right_cases.push(SumCase::new(
+                    u32::try_from(right_variant).map_err(|_| LoweringError::ResourceLimit {
+                        code: ResourceLimitCode::ProgramTooLarge,
+                        message: "structural equality sum variant index exceeds u32".into(),
+                    })?,
+                    block,
+                    [],
+                ));
+                right_payloads.push((block, payload));
+            }
+            self.terminate(
+                left_block,
+                TerminatorKind::SumSwitch {
+                    scrutinee: right,
+                    cases: right_cases.into_boxed_slice(),
+                },
+                origin,
+            )?;
+            for (right_variant, (right_block, right_payload)) in
+                right_payloads.into_iter().enumerate()
+            {
+                if left_variant != right_variant {
+                    self.terminate(
+                        right_block,
+                        TerminatorKind::Jump(BlockTarget::new(not_equal, [])),
+                        origin,
+                    )?;
+                    continue;
+                }
+                let fields = variants.get(left_variant).ok_or_else(|| {
+                    LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        "structural equality lost a sum variant plan",
+                    )
+                })?;
+                if left_payload.len() != fields.len() || right_payload.len() != fields.len() {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        "structural equality sum payload shape changed during lowering",
+                    ));
+                }
+                let pairs = left_payload
+                    .iter()
+                    .copied()
+                    .zip(right_payload.iter().copied())
+                    .zip(fields.iter().copied())
+                    .map(|((left, right), ty)| (left, right, ty))
+                    .collect::<Vec<_>>();
+                self.branch_on_equal_fields(
+                    Flow {
+                        block: right_block,
+                        env: flow.env,
+                    },
+                    &pairs,
+                    equal,
+                    not_equal,
+                    origin,
+                )?;
+            }
+        }
+        Ok(())
     }
 
     fn lower_checked_negate(

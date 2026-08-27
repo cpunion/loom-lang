@@ -724,7 +724,7 @@ pub(crate) struct AggregatePlan {
 }
 
 impl AggregatePlan {
-    #[expect(
+    #[allow(
         clippy::too_many_lines,
         reason = "registration preserves one explicit dependency order across List pointers, products, sums, and transparent aliases"
     )]

@@ -2778,6 +2778,75 @@ pub fn main() Unit {
 }
 
 #[test]
+fn structural_equality_lowers_products_refinements_and_active_sum_payloads() {
+    let dump = complete_dump(
+        r"module structural_equality
+
+record Pair {
+    number Int
+    enabled Bool
+}
+
+record Boxed[T] {
+    value T
+}
+
+type PositivePair = Pair where self.number >= 0
+
+enum Choice {
+    Empty
+    PairValue(Pair)
+    BoxValue(Boxed[Int])
+}
+
+fn preserve_pair(value Pair, expected Pair) Pair
+    requires value == expected
+    ensures result == value
+{
+    expected
+}
+
+fn preserve_choice(value Choice, expected Choice) Choice
+    requires value == expected
+    ensures result == value
+{
+    expected
+}
+
+pub fn main() Unit {
+    let pair = Pair { number = 7, enabled = true }
+    let same_pair = Pair { number = 7, enabled = true }
+    let other_pair = Pair { number = 8, enabled = true }
+    let boxed = Boxed { value = 7 }
+    let same_boxed = Boxed { value = 7 }
+    let positive = PositivePair(pair)
+    let same_positive = PositivePair(same_pair)
+    let tuple = (pair, boxed)
+    let same_tuple = (same_pair, Boxed { value = 7 })
+    let choice = Choice.PairValue(pair)
+    let same_choice = Choice.PairValue(same_pair)
+    let other_choice = Choice.BoxValue(boxed)
+    let checked_pair = preserve_pair(pair, same_pair)
+    let checked_choice = preserve_choice(choice, same_choice)
+    if pair == same_pair && pair != other_pair && boxed == same_boxed && positive == same_positive && tuple == same_tuple && choice == same_choice && choice != other_choice && checked_pair == pair && checked_choice == choice {
+        Unit
+    } else {
+        discard 1 / 0
+        Unit
+    }
+}
+",
+    );
+
+    assert!(dump.matches("product.extract").count() >= 12, "{dump}");
+    assert!(dump.matches("sum.switch").count() >= 4, "{dump}");
+    assert!(dump.contains("unrefine"), "{dump}");
+    assert!(dump.contains("int.compare.equal"), "{dump}");
+    assert!(dump.contains("bool.compare.equal"), "{dump}");
+    assert!(dump.contains("bool.not"), "{dump}");
+}
+
+#[test]
 fn closed_sums_and_ordered_nested_matches_lower_to_exhaustive_sum_cfg() {
     let dump = complete_dump(
         r"module closed_sums

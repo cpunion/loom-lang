@@ -4938,7 +4938,8 @@ impl<'program> Validator<'program> {
             }
             BinaryOp::Equal | BinaryOp::NotEqual
                 if left == right
-                    && matches!(left, Type::Bool | Type::Int | Type::Float | Type::Text) =>
+                    && self.supports_value_equality(&left)
+                    && self.supports_value_equality(&right) =>
             {
                 Some(Type::Bool)
             }
