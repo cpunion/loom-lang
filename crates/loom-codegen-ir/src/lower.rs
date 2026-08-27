@@ -2798,8 +2798,22 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                             {
                                 index == 0
                                     && place_type.as_ref().is_some_and(|ty| {
-                                        self.dyn_concepts.finite(ty).is_some()
-                                            && self.supported_value_type(ty)
+                                        if self.dyn_concepts.finite(ty).is_some() {
+                                            self.supported_value_type(ty)
+                                        } else {
+                                            let physical = self
+                                                .dyn_concepts
+                                                .physical_type(ty)
+                                                .unwrap_or_else(|| ty.clone());
+                                            mutable_receiver.as_ref() == Some(&physical)
+                                                && (self.supported_record_type(&physical)
+                                                    || (is_invariant_record_type(
+                                                        self.program,
+                                                        &physical,
+                                                    ) && self
+                                                        .aggregates
+                                                        .supports_value_type(&physical)))
+                                        }
                                     })
                             } else {
                                 let physical_place = place_type
