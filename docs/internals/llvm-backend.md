@@ -312,6 +312,31 @@ only behind an independently validated uniqueness certificate. Length and
 without a universal `Value`, witness/executor pointer, tag registry, or stable
 address assumption.
 
+## Canonical recursive Json storage
+
+The canonical `Json` enum is the one admitted recursive sum: its recursive
+edges pass through the existing direct `List[Json]` and `TextMap[Json]`
+pointers. It remains an unboxed tagged LCIR value. The target-layout planner
+uses a separated carrier on supported 64-bit targets, producing 24 bytes with
+the tag at byte 0, Bool/Float storage at byte 8, and the Text/List/TextMap
+pointer cell at byte 16. Construction starts from a zero carrier, then writes
+only the active payload. Match control flow reads a payload only after its tag
+case has been selected.
+
+That separation is required for precise repeated tracing: arbitrary Float
+bits never occupy a descriptor-advertised pointer cell. The ordinary repeated
+layout planner consequently derives `List[Json]` stride 24 with pointer offset
+16 and `{ Text, Json }` map-entry stride 32 with pointer offsets 0 and 24.
+There is no Json-specific heap header, universal envelope, runtime tag
+registry, tracing callback, or executor. Targets that cannot prove this
+direct-pointer layout fail closed; the current compiler does not admit it on
+32-bit targets.
+
+This slice emits construction, copying, List/TextMap operations, exhaustive
+matching, and exact moving-GC roots. Json equality, parsing, and formatting are
+separate coverage boundaries and still select whole-artifact fallback when
+reachable.
+
 ## Direct lexical cleanup
 
 LCIR contains the already expanded control flow for `defer`, `scoped`, and
@@ -413,11 +438,11 @@ The current LCIR domains encode the explicit transitive effect lattice,
 canonical typed fault metadata, nongeneric proof-replay guards,
 source-contract placement, direct managed
 Text semantics, managed leaves inside unboxed products and closed sums,
-monomorphized managed Lists, compiler-private concrete TextMaps, List
-uniqueness certificates, lexical cleanup, and checked coroutine plans with
-typed Task creation, suspension edges, and exact frame-root rows, plus
-artifact-closed finite dynamic catalogs with candidate-specific precise boxes
-and direct tag-switch dispatch.
+monomorphized managed Lists, compiler-private concrete TextMaps, the canonical
+recursive Json carrier, List uniqueness certificates, lexical cleanup, and
+checked coroutine plans with typed Task creation, suspension edges, and exact
+frame-root rows, plus artifact-closed finite dynamic catalogs with
+candidate-specific precise boxes and direct tag-switch dispatch.
 The first two changes add no physical runtime boundary. Dynamic concat does:
 the runtime ABI component is 10, with `text-v2` and `runtime-v4` identity
 components while GC remains `gc-v8`.

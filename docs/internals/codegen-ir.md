@@ -79,10 +79,15 @@ Concrete instantiations of generic enums, including `Result[Unit, E]`, are
 eligible after payload substitution. Proven monomorphic refined values and
 closed records with statically proven invariants may appear as product fields
 or sum payloads. Fully concrete generic records use the same plan.
-Runtime-checked constructions, recursive sums, general Task storage, incomplete
-dynamic witness sets, and uninhabited fields are not selected. A
-concrete List or TextMap breaks by-value aggregate recursion and may contain any
-registered closed direct scalar, Text, product, sum, List, or TextMap value.
+Runtime-checked constructions, general by-value recursive sums, general Task
+storage, incomplete dynamic witness sets, and uninhabited fields are not
+selected. A concrete List or TextMap
+breaks by-value aggregate recursion and may contain any registered closed
+direct scalar, Text, product, sum, List, or TextMap value. The canonical
+recursive `Json` sum is admitted through exactly those two indirections:
+`Null`, `Bool(Bool)`, `Number(Float)`, `Text(Text)`, `Array(List[Json])`, and
+`Object(TextMap[Json])`. No recursive direct payload is admitted, and no
+universal value or runtime type registry is introduced.
 Every TextMap also has managed Text keys. Managed Text is admitted through
 product fields, closed sum variants, List elements, and TextMap keys or values,
 but not transparent/refined carriers. `InvariantRecordProven` is the only
@@ -151,6 +156,12 @@ nominal type through a List remains whole-artifact unsupported: inlining that
 coinductive semantic equality would make an unbounded CFG. A future reusable
 recursive comparison-instance plan can close that case without changing the
 source equality rule.
+
+The representation-only recursive `Json` slice therefore supports
+construction, exhaustive matching, List/TextMap storage, copying, and precise
+moving-GC relocation. `Json == Json`, parsing, and formatting remain outside
+that slice; their later typed operations must not route through the legacy
+universal-value helpers.
 
 Support classification first builds one concrete aggregate plan, without
 allocating LCIR. The plan covers every reachable structural tuple, closed
@@ -577,6 +588,19 @@ an async caller.
 The callback already forwards child fault/cancel terminal states without
 turning them into source `Result` values, but source programs cannot reach
 those paths until the corresponding checked control-flow slice exists.
+
+The LLVM layout planner recognizes the canonical recursive `Json` storage
+shape structurally. On supported 64-bit targets its tagged sum is 24 bytes:
+the tag is at byte 0, scalar payload storage begins at byte 8, and the sole
+managed payload cell is at byte 16. Constructors zero the complete carrier
+before inserting the selected payload, so the managed cell is null for
+`Null`, `Bool`, and `Number`; matching still uses the tag to decide which
+payload is semantically active. Scalar bits can never be traced as a pointer.
+The same target-data plan derives a `List[Json]` element stride of 24 with the
+single element pointer offset 16, and a `TextMap[Json]` entry stride of 32 with
+pointer offsets 0 for its Text key and 24 for the Json managed cell. The
+emitter rejects targets that cannot prove these direct-pointer layouts; the
+current 32-bit route fails closed before LCIR emission.
 
 ## Typed projected places
 

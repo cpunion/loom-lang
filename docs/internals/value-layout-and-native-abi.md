@@ -152,6 +152,15 @@ transparent/refined carriers, and other unsupported managed shapes remain
 complete legacy fallback. Concrete closed Lists instead use direct managed
 pointers and typed repeated descriptors.
 
+The canonical recursive `Json` value is admitted through List/TextMap pointer
+cycle breakers. On supported 64-bit targets its unboxed tagged carrier is 24
+bytes: tag byte 0, scalar payload byte 8, and managed payload pointer byte 16.
+The carrier is zeroed before the active payload is inserted. Repeated
+descriptors therefore trace only byte 16 for `List[Json]`; a
+`TextMap[Json]` entry traces its Text key at byte 0 and the Json pointer cell at
+byte 24. The layout exposes no stable address, universal value, or runtime type
+tag, and unsupported 32-bit layouts fail closed.
+
 The descriptor is runtime trace/layout metadata. It is not a source-visible
 tag and does not make `Text` a dynamic type. Literal objects and typed moving
 objects reuse the existing language-visible layout prefix. The concat helper

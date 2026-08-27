@@ -131,6 +131,24 @@ layout registry, or tracing callback. Nested Lists and TextMaps are ordinary
 managed-pointer leaves, while product and sum values contribute their precise
 projected cells.
 
+The canonical recursive `Json` sum uses a separated carrier rather than
+overlaying every payload at byte zero. On 64-bit targets the physical sum is
+24 bytes: tag byte 0, scalar payload byte 8, and managed payload cell byte 16.
+Only byte 16 appears in the repeated element pointer table. A scalar Json
+constructor zeroes that cell before writing Bool or Float data, while a
+Text/Array/Object constructor writes the exact managed base there. The active
+tag controls language payload access; the descriptor sees one stable pointer
+cell whose inactive value is null. Consequently `List[Json]` has element
+stride 24 and pointer offset 16. A `{ Text, Json }` TextMap entry has stride 32
+and pointer offsets 0 and 24. All offsets, alignment, and stride come from the
+same LLVM target-data layout calculation, and unsupported 32-bit layouts are
+rejected rather than approximated.
+
+This Json representation reuses `typed-repeated-v1` and the typed shadow
+stack. It adds no universal `Value`, object tag, tracing callback, executor,
+or runtime ABI symbol. Json parsing and formatting are not part of this
+representation slice.
+
 ## Moving collection
 
 The collector traces live universal values, managed nodes and sequences, text
