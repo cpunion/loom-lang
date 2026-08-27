@@ -15,11 +15,11 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `23` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `3` |
-| LCIR textual dump | version `23` |
-| LCIR artifact identity | schema `24` |
-| LCIR native-object domain | `loom-lcir-native-object-v20` |
+| LCIR textual dump | version `24` |
+| LCIR artifact identity | schema `25` |
+| LCIR native-object domain | `loom-lcir-native-object-v21` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v25` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v26` |
 | Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
 | Native runtime ABI component | `15` |
@@ -201,8 +201,8 @@ lanes remain zero. Fallible completion still publishes an ordinary typed
 No typed-task or native runtime ABI component changes.
 
 Typed TextMap containment, functional removal, indexed entry comparison, and
-structural equality advance the LCIR dump to 23, artifact schema to 24,
-native-object domain to v20, and LLVM object-cache domain to v25. Removal
+structural equality advance the LCIR dump to 24, artifact schema to 25,
+native-object domain to v21, and LLVM object-cache domain to v26. Removal
 reuses `typed-repeated-v1`; containment, lookup, and equality allocate no map
 storage. No runtime symbol or universal value is added, so native runtime ABI
 component 15, `runtime-v9`, and `gc-v9` remain unchanged.

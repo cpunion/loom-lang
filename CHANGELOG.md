@@ -176,8 +176,8 @@ artifact, or runtime compatibility.
   callback registry, or map-specific runtime symbol. The
   `lcir-typed-textmap` fixture closes real `check/build/test/run`, forced-GC
   interpreter/legacy/typed differential execution, and Linux/MSVC object
-  emission. The new operations advance the LCIR dump to 23, artifact schema to
-  24, native-object domain to v20, and object-cache domain to v25; the native
+  emission. The new operations advance the LCIR dump to 24, artifact schema to
+  25, native-object domain to v21, and object-cache domain to v26; the native
   runtime ABI is unchanged.
 - Typed LCIR now monomorphizes fully concrete generic records, invariant
   records, and refined wrappers into their exact direct product or transparent
