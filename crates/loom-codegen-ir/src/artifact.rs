@@ -842,8 +842,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        Constant, Effects, FaultCode, InstructionKind, Origin, ProgramBuilder, ResultTarget,
-        Signature, TargetLayout, Terminator, TerminatorKind, UnwindTarget, dump_program,
+        Constant, ContractFaultMetadata, Effects, FaultMetadata, InstructionKind, Origin,
+        ProgramBuilder, ResultTarget, Signature, TargetLayout, Terminator, TerminatorKind,
+        UnwindTarget, dump_program,
     };
 
     fn origin(function: u32) -> Origin {
@@ -1082,7 +1083,9 @@ mod tests {
                     entry,
                     Terminator::new(
                         TerminatorKind::Fault {
-                            code: FaultCode::ContractFailed,
+                            metadata: FaultMetadata::contract(ContractFaultMetadata::assertion(
+                                origin(10).span,
+                            )),
                         },
                         origin(10),
                     ),

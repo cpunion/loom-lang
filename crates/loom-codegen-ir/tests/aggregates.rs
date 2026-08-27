@@ -1,7 +1,7 @@
 use loom_codegen_ir::{
-    BlockTarget, Constant, Effects, FaultCode, InstructionKind, Origin, ProgramBuilder,
-    ResultTarget, Signature, TargetLayout, Terminator, TerminatorKind, UnwindTarget,
-    ValidationCode, dump_program, validate_program,
+    BlockTarget, Constant, ContractFaultMetadata, Effects, FaultMetadata, InstructionKind, Origin,
+    ProgramBuilder, ResultTarget, Signature, TargetLayout, Terminator, TerminatorKind,
+    UnwindTarget, ValidationCode, dump_program, validate_program,
 };
 use loom_mir::{FunctionId, Type, TypeId};
 
@@ -79,7 +79,9 @@ fn products_cross_construction_projection_phi_call_return_and_fault_edges() {
                 entry,
                 Terminator::with_writebacks(
                     TerminatorKind::Fault {
-                        code: FaultCode::ContractFailed,
+                        metadata: FaultMetadata::contract(ContractFaultMetadata::assertion(
+                            origin(0).span,
+                        )),
                     },
                     origin(0),
                     [updated],
@@ -408,7 +410,9 @@ fn malformed_product_calls_and_implicit_writeback_edges_are_rejected() {
                 entry,
                 Terminator::with_writebacks(
                     TerminatorKind::Fault {
-                        code: FaultCode::ContractFailed,
+                        metadata: FaultMetadata::contract(ContractFaultMetadata::assertion(
+                            origin(5).span,
+                        )),
                     },
                     origin(5),
                     [receiver],

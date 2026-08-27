@@ -15,11 +15,11 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `20` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `2` |
-| LCIR textual dump | version `8` |
-| LCIR artifact identity | schema `9` |
-| LCIR native-object domain | `loom-lcir-native-object-v5` |
+| LCIR textual dump | version `9` |
+| LCIR artifact identity | schema `10` |
+| LCIR native-object domain | `loom-lcir-native-object-v6` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v10` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v11` |
 | Runtime bundle manifest | schema `2` |
 | Native runtime ABI component | `8` |
 | Coroutine/Task ABI component | `2` |
@@ -42,6 +42,13 @@ executor, and suspension capability identity even though current typed source
 lowering still emits only effect-free or `MAY_FAULT` functions. Its canonical
 encoding advances the four compiler-private LCIR and object-cache boundaries;
 it does not change the runtime ABI.
+
+Typed LCIR fault metadata adds canonical contract-fault kinds, bounded text,
+and concrete contract/blame spans to dumps and artifact identity. LLVM emits
+the existing contract diagnostic wire schema from that checked data. The four
+compiler-private LCIR/object-cache boundaries advance, while the native runtime
+ABI and source-language behavior remain unchanged; source contract and
+assertion lowering still selects atomic fallback.
 
 ## Toolchain releases
 

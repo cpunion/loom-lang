@@ -32,11 +32,11 @@ use inkwell::values::{
 use inkwell::{FloatPredicate as LlvmFloatPredicate, IntPredicate};
 use llvm_sys::debuginfo::LLVMDIBuilderInsertDbgValueRecordBefore;
 use loom_codegen_ir::{
-    BlockId, BlockTarget, BoolPredicate, CheckedArtifact, CheckedIntBinaryOp, Constant, Effects,
-    FaultCode, FloatBinaryOp, FloatPredicate as LcirFloatPredicate, Function, InstanceId,
-    Instruction, InstructionKind, IntPredicate as LcirIntPredicate, Origin, Repr, ResultTarget,
-    ScalarRepr, SumRepr, SumTagRepr, Terminator, TerminatorKind, TestOutcomePlan, UnwindTarget,
-    ValueId, ValueTypeId,
+    BlockId, BlockTarget, BoolPredicate, CheckedArtifact, CheckedIntBinaryOp, Constant,
+    ContractFaultMetadata, Effects, FaultCode, FaultMetadata, FloatBinaryOp,
+    FloatPredicate as LcirFloatPredicate, Function, InstanceId, Instruction, InstructionKind,
+    IntPredicate as LcirIntPredicate, Origin, Repr, ResultTarget, ScalarRepr, SumRepr, SumTagRepr,
+    Terminator, TerminatorKind, TestOutcomePlan, UnwindTarget, ValueId, ValueTypeId,
 };
 use loom_core::runtime_fault::{INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE};
 use loom_runtime_abi::{
@@ -1672,6 +1672,12 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
     }
 }
 
+#[derive(Clone, Copy)]
+enum FaultEmission<'metadata> {
+    Runtime { code: FaultCode, origin: Origin },
+    Contract(&'metadata ContractFaultMetadata),
+}
+
 struct FunctionEmitter<'backend, 'ctx, 'artifact> {
     backend: &'backend Backend<'ctx, 'artifact>,
     source: &'artifact Function,
@@ -2894,18 +2900,19 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             } => self.emit_invoke(*callee, arguments, normal, unwind),
             TerminatorKind::Assert {
                 condition,
-                code,
+                metadata,
                 success,
                 fault,
-            } => self.emit_assert(
-                self.int(*condition)?,
-                *code,
-                terminator.origin(),
-                success,
-                fault,
-            ),
-            TerminatorKind::Fault { code } => {
-                self.emit_source_fault(*code, terminator.origin())?;
+            } => self.emit_assert(self.int(*condition)?, metadata, success, fault),
+            TerminatorKind::Fault { metadata } => {
+                match metadata {
+                    FaultMetadata::Runtime(code) => {
+                        self.emit_source_fault(*code, terminator.origin())?;
+                    }
+                    FaultMetadata::Contract(metadata) => {
+                        self.emit_contract_fault(metadata)?;
+                    }
+                }
                 self.emit_fault_return(terminator.writebacks())
             }
             TerminatorKind::ResumeFault => self.emit_fault_return(terminator.writebacks()),
@@ -3276,8 +3283,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
     fn emit_assert(
         &mut self,
         condition: IntValue<'ctx>,
-        code: FaultCode,
-        origin: Origin,
+        metadata: &ContractFaultMetadata,
         success: &BlockTarget,
         fault: &UnwindTarget,
     ) -> Result<(), CodegenError> {
@@ -3292,11 +3298,19 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .build_conditional_branch(condition, self.block(success.block)?, report)
             .map_err(builder_error)?;
         self.backend.builder.position_at_end(report);
-        self.emit_source_fault(code, origin)?;
+        self.emit_contract_fault(metadata)?;
         self.unwind_branch(fault)
     }
 
     fn emit_source_fault(&self, code: FaultCode, origin: Origin) -> Result<(), CodegenError> {
+        self.emit_fault(FaultEmission::Runtime { code, origin })
+    }
+
+    fn emit_contract_fault(&self, metadata: &ContractFaultMetadata) -> Result<(), CodegenError> {
+        self.emit_fault(FaultEmission::Contract(metadata))
+    }
+
+    fn emit_fault(&self, fault: FaultEmission<'_>) -> Result<(), CodegenError> {
         let context = self.fault_context.ok_or_else(|| {
             CodegenError::new(
                 "LlvmAbiDefect",
@@ -3368,7 +3382,14 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .build_load(self.backend.ptr_type, runtime_pointer, "fault.runtime")
             .map_err(builder_error)?
             .into_pointer_value();
-        self.backend.raise_fault(runtime, code, origin)?;
+        match fault {
+            FaultEmission::Runtime { code, origin } => {
+                self.backend.raise_fault(runtime, code, origin)?;
+            }
+            FaultEmission::Contract(metadata) => {
+                self.backend.raise_contract_fault(runtime, metadata)?;
+            }
+        }
         self.backend
             .builder
             .build_unconditional_branch(continuation)
@@ -4146,6 +4167,42 @@ impl<'ctx> Backend<'ctx, '_> {
             })
         }
         .to_string();
+        self.raise_fault_payload(runtime, code, message, &display, &detail)
+    }
+
+    fn raise_contract_fault(
+        &self,
+        runtime: PointerValue<'ctx>,
+        metadata: &ContractFaultMetadata,
+    ) -> Result<(), CodegenError> {
+        let code = metadata.kind().fault_code();
+        let message = metadata.message();
+        let display = metadata.user_code().map_or_else(
+            || code.to_owned(),
+            |user_code| format!("{code}: {user_code}"),
+        );
+        let detail = serde_json::to_string(&serde_json::json!({
+            "channel": "contract",
+            "fault": {
+                "code": code,
+                "category": metadata.kind().category(),
+                "message": message,
+                "contractSpan": metadata.contract_span(),
+                "blameSpan": metadata.blame_span(),
+            },
+        }))
+        .map_err(|error| CodegenError::new("FaultEncodingFailed", error.to_string()))?;
+        self.raise_fault_payload(runtime, code, message, &display, &detail)
+    }
+
+    fn raise_fault_payload(
+        &self,
+        runtime: PointerValue<'ctx>,
+        code: &str,
+        message: &str,
+        display: &str,
+        detail: &str,
+    ) -> Result<(), CodegenError> {
         let code_data = self
             .builder
             .build_global_string_ptr(code, &self.unique("fault.code"))
@@ -4156,11 +4213,11 @@ impl<'ctx> Backend<'ctx, '_> {
             .map_err(builder_error)?;
         let display_data = self
             .builder
-            .build_global_string_ptr(&display, &self.unique("fault.display"))
+            .build_global_string_ptr(display, &self.unique("fault.display"))
             .map_err(builder_error)?;
         let detail_data = self
             .builder
-            .build_global_string_ptr(&detail, &self.unique("fault.detail"))
+            .build_global_string_ptr(detail, &self.unique("fault.detail"))
             .map_err(builder_error)?;
         self.builder
             .build_call(
@@ -4269,10 +4326,6 @@ fn fault_properties(code: FaultCode) -> (&'static str, &'static str) {
         FaultCode::IntegerDivisionOverflow => {
             ("IntegerDivisionOverflow", "integer division overflowed")
         }
-        FaultCode::AssertionFailed => ("AssertionFailed", "assertion failed"),
-        // LCIR does not yet carry the legacy contract category, blame span, or
-        // contract span. The stable generic code remains faithfully emit-able.
-        FaultCode::ContractFailed => ("ContractFailed", "contract failed"),
     }
 }
 

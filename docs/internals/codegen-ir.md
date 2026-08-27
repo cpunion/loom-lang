@@ -218,6 +218,13 @@ schema 9, the dump to `lcir 8`, the LCIR native-object domain to
 `loom-lcir-native-object-v5`, and the CLI object-cache domain to
 `loom-llvm-object-cache-v10`. It changes compiler-private planning identity but
 introduces no runtime ABI symbol or physical value layout.
+Exact typed fault metadata then advances the artifact identity to schema 10,
+the dump to `lcir 9`, the LCIR native-object domain to
+`loom-lcir-native-object-v6`, and the CLI object-cache domain to
+`loom-llvm-object-cache-v11`. The encoding replaces generic assertion and
+contract placeholders with canonical fault kind, category, bounded user code,
+message, contract span, and concrete blame span. It changes no runtime ABI
+symbol or physical value layout.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
@@ -502,9 +509,21 @@ distinct-target branches remain direct.
 These checks apply both to explicit clients and to the whole-artifact typed
 lowerer. The production automatic route consumes only the resulting checked
 artifact when the complete reachable graph is supported. Source contracts
-remain `Unsupported`: the generic
-`ContractFailed` code does not yet carry category, user code, contract span, or
-blame span, so it cannot replace production contract diagnostics.
+remain `Unsupported`: LCIR now has their exact diagnostic vocabulary, but the
+source lowerer does not yet materialize preconditions at closed-world call
+sites or build the required contract/assertion cleanup ladders. Atomic fallback
+therefore preserves the existing interpreter and legacy-native behavior rather
+than partially enabling the new representation.
+
+`ContractFaultMetadata` distinguishes assertion, precondition, postcondition,
+and invariant faults. Named contracts carry their source code and the derived
+message ``contract `<code>` was not satisfied``; assertions carry no user code
+and use `assertion was not satisfied`. Preconditions may use a distinct,
+concrete call-site blame span. Postconditions, invariants, and assertions must
+blame their contract/assertion span. Independent validation rejects forged
+relationships, noncanonical messages, inverted spans, and any user-code or
+message field above the public compiler-private 4 KiB UTF-8 budget before a
+dump or backend can encode it.
 
 ## Text dump
 
@@ -515,10 +534,11 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 8` text includes
+text even when the graphs are otherwise equivalent. The `lcir 9` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys, every function's selected entry block and ordered effect set,
-and the checked value type of every block parameter and instruction result. Representation semantic
+typed runtime/contract fault identity, and the checked value type of every
+block parameter and instruction result. Representation semantic
 types and instance-key arguments use the same complete, iterative type
 encoder; no type is represented by a catch-all placeholder. It is
 compiler-private and has no compatibility or serialization guarantee.

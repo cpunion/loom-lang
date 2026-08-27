@@ -198,6 +198,12 @@ invoke callee(arguments...)
     normal target(result, writebacks...; forwarded...)
     unwind target(writebacks...; forwarded...)
 
+assert condition, contract metadata
+    success target(forwarded...)
+    fault target(forwarded...)
+
+fault runtime code | contract metadata
+
 resume_fault
 ```
 
@@ -205,6 +211,16 @@ Checked addition, subtraction, and multiplication map to overflow-aware target
 operations. Integer division and remainder first branch on division by zero and
 the signed `MIN / -1` case, then execute a proved operation. The two source
 faults remain distinguishable.
+
+Contract metadata is authoritative checked LCIR data, not a source lookup. It
+contains one canonical assertion/precondition/postcondition/invariant kind,
+optional bounded user code, the canonical message, and concrete contract and
+blame spans. A precondition can blame its materialized call site; every other
+kind must blame its own contract/assertion span. Independent validation rejects
+forged combinations and applies a 4 KiB UTF-8 limit to each text field before
+dumping or LLVM global/detail encoding. This exact vocabulary does not itself
+enable source contract lowering: source contracts and assertions remain atomic
+fallback until call-site placement and cleanup control flow are complete.
 
 Validation prevents a checked result from being used on its fault edge and
 prevents an unwind edge from returning normally. The target emitter does not

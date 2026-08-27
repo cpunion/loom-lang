@@ -59,6 +59,14 @@ artifact, or runtime compatibility.
   LCIR dump to 8, artifact identity to schema 9, native-object domain to v5,
   and CLI object cache to v10; it does not add runtime, GC, executor, or
   suspension operations.
+- Typed LCIR fault origins now distinguish integer runtime faults from exact
+  `AssertionFault`, `PreconditionFault`, `PostconditionFault`, and
+  `InvariantFault` metadata. Contract metadata carries bounded user code,
+  canonical messages, and concrete contract/blame spans through validation,
+  dumps, identity, and LLVM machine diagnostics. This advances the LCIR dump
+  to 9, artifact identity to schema 10, native-object domain to v6, and CLI
+  object cache to v11. Source contracts and assertions still select atomic
+  fallback until their control-flow and cleanup lowering is complete.
 - Interpreted MIR version 20 permits projected moves. They return the selected
   leaf and consume the complete aggregate root, preserving a simple initialized
   or moved local state without partial-initialization compatibility.

@@ -4,14 +4,16 @@ use std::process::{Command, Output};
 
 use loom_codegen_ir::{
     ArtifactRootRequest, BlockTarget, BoolPredicate, CheckedArtifact, CheckedIntBinaryOp, Constant,
-    Effects, FaultCode, FloatBinaryOp, FloatPredicate, InstructionKind, IntPredicate, Origin,
-    ProgramBuilder, ResultTarget, Signature, TargetLayout, Terminator, TerminatorKind,
-    UnwindTarget,
+    ContractFaultKind, ContractFaultMetadata, Effects, FaultMetadata, FloatBinaryOp,
+    FloatPredicate, InstructionKind, IntPredicate, Origin, ProgramBuilder, ResultTarget, Signature,
+    TargetLayout, Terminator, TerminatorKind, UnwindTarget,
 };
 use loom_codegen_llvm::{
     DebugSource, NativeObjectOptions, OptimizationProfile, emit_lcir_native_object,
 };
+use loom_core::{FileId, Span};
 use loom_mir::{FunctionId as MirFunctionId, Type};
+use loom_runtime_abi::{FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX};
 
 mod support;
 use support::link_native_object;
@@ -54,6 +56,30 @@ fn emit_and_run(
     emit_lcir_native_object(artifact, &object, &options).expect("emit LCIR object");
     link_native_object(&object, &executable).expect("link LCIR executable");
     let output = Command::new(executable)
+        .output()
+        .expect("run LCIR executable");
+    (
+        std::fs::read_to_string(ir).expect("read emitted LCIR LLVM IR"),
+        output,
+    )
+}
+
+fn emit_and_run_json_fault(
+    artifact: &CheckedArtifact,
+    directory: &tempfile::TempDir,
+    stem: &str,
+) -> (String, Output) {
+    let object = directory.path().join(format!("{stem}.o"));
+    let ir = directory.path().join(format!("{stem}.ll"));
+    let executable = directory.path().join(stem);
+    let options = NativeObjectOptions {
+        emit_ir: Some(ir.clone()),
+        ..NativeObjectOptions::default()
+    };
+    emit_lcir_native_object(artifact, &object, &options).expect("emit LCIR object");
+    link_native_object(&object, &executable).expect("link LCIR executable");
+    let output = Command::new(executable)
+        .env(FAULT_FORMAT_ENV, FAULT_FORMAT_JSON)
         .output()
         .expect("run LCIR executable");
     (
@@ -1272,6 +1298,83 @@ fn checked_integer_operations_use_intrinsics_and_guard_signed_division() {
 }
 
 #[test]
+fn terminal_contract_fault_emits_the_canonical_machine_diagnostic() {
+    let contract_span = Span::new(FileId(7), 10, 20);
+    let blame_span = Span::new(FileId(9), 30, 40);
+    let mut program = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let unit_ty = program.type_id(&Type::Unit).expect("Unit type");
+    let root = program
+        .declare_function(
+            origin(29),
+            "contract.fault.root",
+            Signature::new(Vec::new(), unit_ty),
+            Effects::MAY_FAULT,
+        )
+        .expect("declare root");
+    {
+        let mut function = program.function(root).expect("root builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("set entry");
+        function
+            .terminate(
+                entry,
+                terminator(
+                    29,
+                    TerminatorKind::Fault {
+                        metadata: FaultMetadata::contract(ContractFaultMetadata::contract(
+                            ContractFaultKind::Precondition,
+                            "amount.positive",
+                            contract_span,
+                            blame_span,
+                        )),
+                    },
+                ),
+            )
+            .expect("contract fault");
+    }
+    let artifact = program
+        .finish_checked()
+        .expect("checked contract fault")
+        .into_artifact(ArtifactRootRequest::Run(root))
+        .expect("contract fault artifact");
+    let directory = tempfile::tempdir().expect("temp directory");
+    let (ir, output) = emit_and_run_json_fault(&artifact, &directory, "contract-fault");
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let faults = String::from_utf8(output.stderr)
+        .expect("UTF-8 fault output")
+        .lines()
+        .filter_map(|line| line.strip_prefix(FAULT_JSON_PREFIX))
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("fault JSON"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        faults,
+        [serde_json::json!({
+            "channel": "contract",
+            "fault": {
+                "code": "PreconditionFault",
+                "category": "precondition",
+                "message": "contract `amount.positive` was not satisfied",
+                "contractSpan": {
+                    "file": 7,
+                    "range": { "start": 10, "end": 20 },
+                },
+                "blameSpan": {
+                    "file": 9,
+                    "range": { "start": 30, "end": 40 },
+                },
+            },
+        })]
+    );
+    assert!(ir.contains("PreconditionFault"), "{ir}");
+    assert!(ir.contains("amount.positive"), "{ir}");
+    assert!(!ir.contains("AssertionFailed"), "{ir}");
+    assert!(!ir.contains("ContractFailed"), "{ir}");
+    assert!(!ir.contains("loom_executor_"), "{ir}");
+    assert!(!ir.contains("loom_gc_"), "{ir}");
+}
+
+#[test]
 fn invoke_shares_one_first_primary_fault_context_across_active_cleanup() {
     let mut program = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
     let unit_ty = program.type_id(&Type::Unit).expect("Unit type");
@@ -1302,7 +1405,9 @@ fn invoke_shares_one_first_primary_fault_context_across_active_cleanup() {
                 terminator(
                     30,
                     TerminatorKind::Fault {
-                        code: FaultCode::AssertionFailed,
+                        metadata: FaultMetadata::contract(ContractFaultMetadata::assertion(
+                            origin(30).span,
+                        )),
                     },
                 ),
             )
@@ -1378,7 +1483,7 @@ fn invoke_shares_one_first_primary_fault_context_across_active_cleanup() {
     let (ir, output) = emit_and_run(&artifact, &directory, "invoke-primary");
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("UTF-8 output");
-    assert_eq!(stdout.matches("AssertionFailed").count(), 1, "{stdout}");
+    assert_eq!(stdout.matches("AssertionFault").count(), 1, "{stdout}");
     assert!(!stdout.contains("IntegerOverflow"), "{stdout}");
     assert!(
         ir.contains("call { i32, {} } @loom.lcir.fn.0(ptr %0)"),
@@ -1459,7 +1564,12 @@ fn tests_harness_is_ordered_continues_after_fault_and_never_creates_an_executor(
                     41,
                     TerminatorKind::Assert {
                         condition,
-                        code: FaultCode::ContractFailed,
+                        metadata: ContractFaultMetadata::contract(
+                            ContractFaultKind::Postcondition,
+                            "test.beta",
+                            origin(41).span,
+                            origin(41).span,
+                        ),
                         success: BlockTarget::new(success, Vec::new()),
                         fault: UnwindTarget::new(fault, Vec::new()),
                     },
@@ -1498,7 +1608,7 @@ fn tests_harness_is_ordered_continues_after_fault_and_never_creates_an_executor(
         harness_lines,
         ["passed alpha", "failed beta", "passed gamma"]
     );
-    assert_eq!(stdout.matches("ContractFailed").count(), 1, "{stdout}");
+    assert_eq!(stdout.matches("PostconditionFault").count(), 1, "{stdout}");
     assert!(ir.contains("loom_runtime_create_v1"), "{ir}");
     assert!(!ir.contains("loom_executor_"), "{ir}");
     assert!(ir.contains("define internal {} @loom.lcir.fn.0()"), "{ir}");

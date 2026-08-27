@@ -35,6 +35,7 @@ pub enum ValidationCode {
     InOutShape,
     EffectImplication,
     EffectMismatch,
+    FaultMetadata,
     FaultState,
     OriginMismatch,
     DuplicateSuccessor,
@@ -71,6 +72,7 @@ impl ValidationCode {
             Self::InOutShape => "LcirInOutShape",
             Self::EffectImplication => "LcirEffectImplication",
             Self::EffectMismatch => "LcirEffectMismatch",
+            Self::FaultMetadata => "LcirFaultMetadata",
             Self::FaultState => "LcirFaultState",
             Self::OriginMismatch => "LcirOriginMismatch",
             Self::DuplicateSuccessor => "LcirDuplicateSuccessor",
@@ -2170,9 +2172,9 @@ impl<'a> Validator<'a> {
             }
             TerminatorKind::Assert {
                 condition,
+                metadata,
                 success,
                 fault,
-                ..
             } => {
                 self.require_known_value_type(
                     function,
@@ -2183,9 +2185,13 @@ impl<'a> Validator<'a> {
                 );
                 self.validate_target(function, success, format!("{path}.success"));
                 self.validate_unwind_target(function, fault, &[], &format!("{path}.fault"));
+                self.validate_contract_fault_metadata(metadata, &format!("{path}.metadata"));
                 self.require_may_fault_effect(function, &path, "assert");
             }
-            TerminatorKind::Fault { .. } => {
+            TerminatorKind::Fault { metadata } => {
+                if let crate::FaultMetadata::Contract(metadata) = metadata {
+                    self.validate_contract_fault_metadata(metadata, &format!("{path}.metadata"));
+                }
                 self.require_may_fault_effect(function, &path, "fault");
             }
             TerminatorKind::ResumeFault => {
@@ -2416,6 +2422,161 @@ impl<'a> Validator<'a> {
                 ValidationCode::EffectMismatch,
                 path,
                 format!("{operation} requires the function's MAY_FAULT effect"),
+            );
+        }
+    }
+
+    fn validate_contract_fault_metadata(
+        &mut self,
+        metadata: &crate::ContractFaultMetadata,
+        path: &str,
+    ) {
+        let user_code_in_budget = self.validate_contract_fault_text(metadata, path);
+        for (name, span) in [
+            ("contract_span", metadata.contract_span()),
+            ("blame_span", metadata.blame_span()),
+        ] {
+            self.validate_contract_fault_span(span, &format!("{path}.{name}"));
+        }
+
+        match metadata.kind() {
+            crate::ContractFaultKind::Assertion => {
+                self.validate_assertion_fault_metadata(metadata, path);
+            }
+            crate::ContractFaultKind::Precondition
+            | crate::ContractFaultKind::Postcondition
+            | crate::ContractFaultKind::Invariant => {
+                self.validate_named_contract_fault_metadata(metadata, path, user_code_in_budget);
+            }
+        }
+    }
+
+    fn validate_contract_fault_text(
+        &mut self,
+        metadata: &crate::ContractFaultMetadata,
+        path: &str,
+    ) -> bool {
+        let user_code_in_budget = metadata.user_code().is_none_or(|user_code| {
+            if user_code.len() <= crate::CONTRACT_FAULT_TEXT_MAX_BYTES {
+                true
+            } else {
+                self.error(
+                    ValidationCode::FaultMetadata,
+                    format!("{path}.user_code"),
+                    format!(
+                        "contract user code is {} UTF-8 bytes, exceeding the {}-byte limit",
+                        user_code.len(),
+                        crate::CONTRACT_FAULT_TEXT_MAX_BYTES
+                    ),
+                );
+                false
+            }
+        });
+        if metadata.message().len() > crate::CONTRACT_FAULT_TEXT_MAX_BYTES {
+            self.error(
+                ValidationCode::FaultMetadata,
+                format!("{path}.message"),
+                format!(
+                    "contract fault message is {} UTF-8 bytes, exceeding the {}-byte limit",
+                    metadata.message().len(),
+                    crate::CONTRACT_FAULT_TEXT_MAX_BYTES
+                ),
+            );
+        }
+        user_code_in_budget
+    }
+
+    fn validate_contract_fault_span(&mut self, span: loom_core::Span, path: &str) {
+        if span.range.start > span.range.end {
+            self.error(
+                ValidationCode::FaultMetadata,
+                path,
+                format!(
+                    "fault span starts at {}, after its end {}",
+                    span.range.start, span.range.end
+                ),
+            );
+        }
+    }
+
+    fn validate_assertion_fault_metadata(
+        &mut self,
+        metadata: &crate::ContractFaultMetadata,
+        path: &str,
+    ) {
+        if metadata.user_code().is_some() {
+            self.error(
+                ValidationCode::FaultMetadata,
+                format!("{path}.user_code"),
+                "AssertionFault must not carry a named contract code",
+            );
+        }
+        if metadata.message() != "assertion was not satisfied" {
+            self.error(
+                ValidationCode::FaultMetadata,
+                format!("{path}.message"),
+                "AssertionFault message must be `assertion was not satisfied`",
+            );
+        }
+        if metadata.contract_span() != metadata.blame_span() {
+            self.error(
+                ValidationCode::FaultMetadata,
+                format!("{path}.blame_span"),
+                "AssertionFault must blame its assertion span",
+            );
+        }
+    }
+
+    fn validate_named_contract_fault_metadata(
+        &mut self,
+        metadata: &crate::ContractFaultMetadata,
+        path: &str,
+        user_code_in_budget: bool,
+    ) {
+        if let Some(user_code) = metadata.user_code() {
+            if user_code.is_empty() {
+                self.error(
+                    ValidationCode::FaultMetadata,
+                    format!("{path}.user_code"),
+                    format!(
+                        "{} requires a non-empty user contract code",
+                        metadata.kind().fault_code()
+                    ),
+                );
+            }
+            if user_code_in_budget {
+                let expected = format!("contract `{user_code}` was not satisfied");
+                if metadata.message() != expected {
+                    self.error(
+                        ValidationCode::FaultMetadata,
+                        format!("{path}.message"),
+                        format!(
+                            "{} message must be derived from its user contract code",
+                            metadata.kind().fault_code()
+                        ),
+                    );
+                }
+            }
+        } else {
+            self.error(
+                ValidationCode::FaultMetadata,
+                format!("{path}.user_code"),
+                format!(
+                    "{} requires a non-empty user contract code",
+                    metadata.kind().fault_code()
+                ),
+            );
+        }
+        if metadata.kind() != crate::ContractFaultKind::Precondition
+            && metadata.contract_span() != metadata.blame_span()
+        {
+            self.error(
+                ValidationCode::FaultMetadata,
+                format!("{path}.blame_span"),
+                format!(
+                    "{} must blame its implementation contract span",
+                    metadata.kind().fault_code()
+                ),
             );
         }
     }
