@@ -4,7 +4,7 @@ use crate::instance::write_type_identity;
 use crate::{
     BlockTarget, BoolPredicate, CheckedIntBinaryOp, CheckedProgram, Constant, Effects,
     FloatBinaryOp, FloatPredicate, Function, Instruction, InstructionKind, IntPredicate, Origin,
-    Repr, ResultTarget, ScalarRepr, Terminator, TerminatorKind, UnwindTarget,
+    Repr, ResultTarget, ScalarRepr, Terminator, TerminatorKind, UnwindTarget, ValueTypeKind,
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -52,7 +52,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 4")?;
+    writeln!(output, "lcir 5")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -68,7 +68,13 @@ pub fn write_program_with_options(
     for (index, value_type) in representations.value_types().iter().enumerate() {
         write!(output, "type t{index} = ")?;
         write_type_identity(output, value_type.semantic())?;
-        writeln!(output, " => {}", value_type.repr())?;
+        write!(output, " => {}", value_type.repr())?;
+        match value_type.kind() {
+            ValueTypeKind::Direct => {}
+            ValueTypeKind::Transparent { base } => write!(output, " transparent({base})")?,
+            ValueTypeKind::InvariantProduct => output.write_str(" invariant_product")?,
+        }
+        writeln!(output)?;
     }
     writeln!(output)?;
     for (index, registration) in representations.registrations().iter().enumerate() {
@@ -187,6 +193,11 @@ fn write_instruction(
             write_arguments(output, fields)?;
             write!(output, ")")
         }
+        InstructionKind::InvariantRecordProven { fields } => {
+            write!(output, "invariant_record.proven (")?;
+            write_arguments(output, fields)?;
+            write!(output, ")")
+        }
         InstructionKind::ProductExtract { aggregate, field } => {
             write!(output, "product.extract %{aggregate}, field {field}")
         }
@@ -198,6 +209,8 @@ fn write_instruction(
             output,
             "product.insert %{aggregate}, field {field}, %{value}"
         ),
+        InstructionKind::RefineProven { value } => write!(output, "refine.proven %{value}"),
+        InstructionKind::Unrefine { value } => write!(output, "unrefine %{value}"),
         InstructionKind::BoolNot { value } => write!(output, "bool.not %{value}"),
         InstructionKind::BoolCompare {
             predicate,

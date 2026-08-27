@@ -17,7 +17,8 @@ artifact format, an ownership system, or a public FFI ABI.
 The direct foundation and its first production route are described in the
 current [Code generation IR internals](../internals/codegen-ir.md). Ordinary
 native build, run, and test preparation now selects complete supported
-primitive, structural-tuple, and closed-POD-record artifacts into typed LCIR
+primitive, structural-tuple, closed-record, and compile-time-established
+refined artifacts into typed LCIR
 and falls back atomically for reachable unsupported features. The broader
 representation migration and legacy deletion gates in this record are not
 complete.
@@ -26,7 +27,8 @@ complete.
 
 The production LLVM backend still lowers artifacts outside current direct LCIR
 coverage through a universal value implementation and several closed-world
-native specializations. Managed or refined records, concepts, contracts,
+native specializations. Managed values, enums, runtime-checked constraints,
+concepts, contracts,
 cleanup, async, and private-list paths still repeat representation, proof,
 call-compatibility, and runtime-requirement decisions inside the legacy target
 emitter. Some legacy functions may acquire universal, checked-native, and
@@ -68,6 +70,16 @@ Each stage has one responsibility:
 Target emission must not resolve names, reinterpret contracts, infer a physical
 representation from an expression shape, or create new callable instances.
 
+For a statically established source predicate, fresh checked MIR is also the
+process-local proof boundary. The public raw LCIR builder cannot mint
+proof-bearing instructions, and LCIR validation checks their exact typed
+construction shape; it does not claim to reconstruct and re-prove a predicate
+that LCIR does not encode. Serialization replaces `Proven` with `Recheck`, and
+decoding normalizes a forged `Proven` spelling the same way. `Recheck` selects
+atomic legacy fallback and executes the predicate or invariant before
+publishing a nominal value. A checked-MIR wrapper is neither a portable proof
+certificate nor publisher authentication.
+
 ## Representation policy
 
 Statically known values use direct representations by default. The implemented
@@ -81,7 +93,11 @@ vocabulary is:
 - `Product(element value types...)` for a structural tuple whose transitive
   elements are direct values;
 - `Product(field value types...)` for a closed, invariant-free record whose
-  transitive fields are direct values.
+  transitive fields are direct values;
+- a protected `Product(field value types...)` for a closed record whose
+  invariant was proved statically;
+- a distinct semantic value type sharing its established base representation
+  for a monomorphic refined type.
 
 Products are immutable register aggregates. Tuples and records may recursively
 contain one another when the resulting product graph is acyclic. Each
@@ -92,6 +108,14 @@ dynamic-witness, erased, and coroutine representations are added only with
 complete lowering and validation rules. A generic or dynamic operation
 elsewhere in an artifact does not make an unrelated direct value carry a
 universal tag.
+
+Transparent representation reuse is not an arbitrary layout cast. The plan
+records the exact base type, `RefineProven` requires that base and a distinct
+transparent result, and `Unrefine` returns only that base. Likewise,
+`InvariantRecordProven` is the only product constructor for a protected record;
+ordinary construction and insertion cannot forge its invariant. Unknown
+constraint proofs remain normal language `Result` construction and currently
+select whole-artifact fallback.
 
 Every representation change is explicit in LCIR. Genuine erased boundaries,
 including `dyn C`, use purpose-specific representations. They do not preserve a

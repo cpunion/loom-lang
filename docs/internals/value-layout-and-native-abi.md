@@ -7,9 +7,12 @@ conventions, and external code must not depend on them.
 
 Production native compilation selects one representation boundary for an
 entire reachable artifact. A completely supported direct artifact uses typed
-LCIR for primitive values, structural tuples, and closed POD records. Any
+LCIR for primitive values, structural tuples, closed records, and
+compile-time-established refined values. Any
 reachable feature outside current LCIR coverage selects the complete legacy
-layout below; the two callable ABIs are never mixed in one object.
+layout below; the two callable ABIs are never mixed in one object. In
+particular, portable MIR `Recheck` constructions use the legacy checker and
+cannot enter the zero-check transparent LCIR representation.
 
 ## Universal value envelope
 
@@ -59,6 +62,13 @@ graph is acyclic. An explicit registration table chooses the canonical value
 representation for a semantic type; other representation alternatives do not
 compete merely because they have the same semantic type.
 
+An established monomorphic refined type receives its own semantic
+`ValueTypeId` and reuses the exact `ReprId` of its declared base. The checked
+plan records that relationship, so `RefineProven` and `Unrefine` cannot be used
+as arbitrary same-layout casts. A record whose invariant was proved uses a
+protected product type: `InvariantRecordProven` may create it, while ordinary
+product construction or insertion may not bypass the invariant boundary.
+
 The checked-artifact LLVM API maps a product to a literal LLVM struct and emits
 construction, projection, and functional field replacement as `insertvalue`
 and `extractvalue`. Product parameters, returns, block phis, and loop-carried
@@ -77,7 +87,7 @@ compiler-private object ABI, not a native library ABI.
 The production automatic route uses this typed ABI for eligible build, run,
 and test artifacts. Tuple construction and `let` destructuring are direct SSA
 construction and extraction; they do not allocate tuple nodes. Generic
-records, invariants, refined or managed aggregate elements, runtime-checked
+records, managed aggregate elements, runtime-checked
 construction, projected inout arguments, concepts, contracts, cleanup, and
 async operations still select the complete universal route. Typed LCIR does
 not change the legacy runtime ABI or make either object ABI public.

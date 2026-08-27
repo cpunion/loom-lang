@@ -3,7 +3,8 @@
 `loom-codegen-ir` owns two code-generation boundaries. Its source-graph module
 selects checked-MIR function roots and computes the closed-world source graph
 used by production native compilation. Separately, its LCIR foundation
-provides target-aware scalar and closed-product representations, whole-artifact checked-MIR
+provides target-aware scalar, closed-product, and transparent nominal
+representations, whole-artifact checked-MIR
 lowering, typed SSA data structures, builders, independent program and
 artifact-root validators, and a textual dump for tests and review.
 
@@ -52,19 +53,27 @@ explicit byte or address-space layout must add its deciding facts here. The cano
 | `Float` | `Scalar(F64)` |
 | structural tuple | `Product(element value types...)` |
 | closed invariant-free record | `Product(field value types...)` |
+| closed record with a proven invariant | protected `Product(field value types...)` |
+| established monomorphic refined type | its base `ReprId`, with a distinct nominal `ValueTypeId` |
 
 `Uninhabited` is catalog vocabulary only. The validator rejects it in function
 signatures and SSA values. A product is an immutable register aggregate. Its
 fields may be primitive values or other acyclic products. Tuples and records
 may therefore contain one another without changing representation. Generic
-records, records with invariants, and aggregates containing managed, refined,
-or uninhabited fields are not selected. Managed, list, dynamic-witness, and
-Task representations are not implemented in this crate.
+records, runtime-checked constructions, and aggregates containing managed or
+uninhabited fields are not selected. A proven invariant record uses
+`InvariantRecordProven`; ordinary `ProductConstruct` is independently
+forbidden from creating it. A proven refinement uses `RefineProven`, and
+`Unrefine` targets only its exact registered base. These operations preserve
+the physical SSA value while retaining the proof boundary in validation and
+artifact identity. Managed, list, enum, dynamic-witness, and Task
+representations are not implemented in this crate.
 
-Support classification first builds one concrete aggregate plan, without
-allocating LCIR. The plan covers every reachable structural tuple and closed
-record, orders registrations after their aggregate children, and rejects
-by-value cycles. Classification walks each candidate product graph iteratively
+Support classification first builds one concrete direct-value plan, without
+allocating LCIR. The plan covers every reachable structural tuple, closed
+record, and transparent refined chain, orders registrations after their value
+dependencies, and rejects by-value or transparent cycles. Classification walks
+each candidate direct-value graph iteratively
 and limits both nesting depth and the expanded structural size to 256.
 Structural size counts each product occurrence plus each field occurrence, so
 a single very wide tuple or record and repeated nested products consume the
@@ -80,7 +89,11 @@ to add another representation for the same semantic type without making
 semantic type equality an accidental layout key. The plan maintains a
 deterministic ordered map for logarithmic canonical lookup; validation rebuilds
 that map from the ordered registrations and rejects a duplicate or stale
-index.
+index. Every alternative for one semantic type must inherit the canonical
+construction protection. An invariant product cannot acquire a direct
+alternative, and every transparent alternative must retain the canonical
+base semantic relation even when a future plan chooses a different physical
+representation.
 
 `TargetLayout::new` accepts nonzero, byte-sized pointer widths no greater than
 128 bits. Acceptance by this standalone type is not a Loom native-target claim;
@@ -103,7 +116,7 @@ LLVM object API consumes that wrapper without accepting unchecked roots or
 falling back to checked MIR.
 
 `artifact_identity` and `write_artifact_identity` expose a deterministic,
-compiler-private identity for that complete checked artifact. Schema 4 carries
+compiler-private identity for that complete checked artifact. Schema 6 carries
 the `typed-lcir-whole-artifact` route tag, artifact kind, ordered run or test
 roots, and the canonical LCIR dump with origins enabled. The payload therefore
 includes the target, representation, and instance plans, checked functions and
@@ -130,7 +143,13 @@ new direct tuple entries and future nominal-argument, task, view, and other type
 entries cannot collapse to a shared placeholder. Tuple lowering therefore
 reuses schema 5 and dump version 4: its complete semantic identity was already
 encoded before the representation became selectable. Neither identity-only
-change alters the machine ABI.
+change alters the machine ABI. Transparent value provenance and its explicit
+proof operations advance the identity to schema 6 and the dump to `lcir 5`.
+They do not change the machine ABI: a transparent value reuses its base
+representation, while a protected invariant record uses the same product ABI
+as its fields. The native-object domain therefore remains
+`loom-lcir-native-object-v2`, and the independently versioned compiler cache
+remains schema 2 with object domain `loom-llvm-object-cache-v7`.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects `SourceRoots`, closes them with
@@ -141,13 +160,20 @@ Invalid roots, resource limits, source-graph defects, and invalid generated
 LCIR are structured `LoweringError` values and never select fallback.
 
 The current lowering coverage is monomorphic synchronous scalar, structural
-tuple, and closed-POD-record signatures, constants, locals and assignment,
+tuple, closed-record, and established refined signatures, constants, locals and assignment,
 tuple construction and immutable `let` destructuring, blocks and conditionals,
 short-circuit Boolean operations, integer ranges, pure scalar operations,
 checked integer arithmetic, and direct/readonly-inherent calls including
 recursion. Plain record construction, whole-value copy and move, nested field
 read/write, tuple/record nesting, product block parameters, parameters,
-returns, and loop-carried products lower directly to SSA. A mutable inherent
+returns, and loop-carried products lower directly to SSA. Compile-time-proven
+refined construction, exact unrefinement, and compile-time-proven record
+invariants are representation-preserving typed operations. Unknown refined
+predicates and record invariants remain normal `Result[..., ConstraintError]`
+constructions and select whole-artifact fallback. A portable MIR proof replay
+(`ConstructionMode::Recheck`) also selects one explicit
+`SerializedProofRecheck` fallback for the complete artifact; it can never be
+translated to `RefineProven` or `InvariantRecordProven`. A mutable inherent
 receiver is a functional inout parameter:
 the callee returns its current product on both normal and fault exits. Only a
 whole local may cross that boundary; projected inout selects atomic fallback.
@@ -238,7 +264,8 @@ The current instruction set is deliberately small:
 - signed integer comparisons;
 - a proof-carrying signed successor below an `Int` upper bound;
 - explicitly ordered or unordered floating-point comparisons;
-- product construction, field extraction, and immutable field insertion;
+- ordinary and invariant-proven product construction, field extraction, and immutable field insertion;
+- proven refinement and exact unrefinement across one registered transparent boundary;
 - direct calls to infallible typed functions.
 
 The current terminators include jump, conditional branch, return, terminal
@@ -260,8 +287,9 @@ cleanup fault is suppressed, leaves the first fault primary, and continues on
 an active unwind edge so remaining cleanup can run. This is the LCIR form of
 the language's deterministic cleanup policy, not a choice left to LLVM.
 
-Managed values, enums, refined values, dynamic dispatch, cleanup registration
-and ordering, and coroutine control flow are not implemented. The current CFG
+Managed values, enums, runtime-checked refined values, dynamic dispatch,
+cleanup registration and ordering, and coroutine control flow are not
+implemented. The current CFG
 can represent direct products plus the scalar operations and fault-state
 transitions which later slices will use.
 
@@ -270,6 +298,20 @@ span for each function, instruction, and terminator. There is no inlining
 provenance model yet.
 
 ## Validation boundary
+
+Fresh checked MIR carries the frontend's process-local
+`ConstructionMode::Proven` conclusion for a predicate or record invariant
+already established during semantic analysis.
+The public raw LCIR builder rejects `RefineProven` and
+`InvariantRecordProven`; only the crate-private checked-MIR lowerer can append
+them. LCIR deliberately does not encode or re-evaluate the arbitrary source
+predicate. Its independent validator checks the certificate's structural
+boundary: exact base/result types, protected construction kind, protection on
+every representation alternative, representation identity, and the usual SSA
+rules. Thus `CheckedProgram` certifies valid LCIR structure while trusting that
+fresh frontend conclusion for predicate truth. Portable MIR decoding replaces
+it with `Recheck`; support classification rejects that mode before allocating
+LCIR, and the complete artifact uses the checking legacy route.
 
 The validator reports independently discoverable `ValidationErrors`; it does
 not repair a malformed program. Current checks include:
@@ -317,7 +359,7 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 4` text includes
+text even when the graphs are otherwise equivalent. The `lcir 5` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys, every function's selected entry block, and the checked value
 type of every block parameter and instruction result. Representation semantic
@@ -337,7 +379,10 @@ joins, loop backedges, pure scalar operations,
 infallible direct calls, fallible invokes, edge-defined checked results, active
 cleanup paths, recursive effect closure, stable fallible dumps, optional
 origins, malformed SSA programs, and source-to-MIR-to-LCIR classification and
-dumps for structurally different recursive and iterative Fibonacci programs.
+dumps for structurally different recursive and iterative Fibonacci programs,
+plus zero-cost proven refinements and invariant records. Malformed-LCIR tests
+prove that ordinary products cannot forge an invariant and that refinement
+cannot accept a merely layout-compatible, non-base value.
 Structural regressions cover thousands of live locals and identity branches,
 bounded persistent-map allocation, and sparse-map reference differentials.
 LLVM-side tests additionally cover typed ABIs, block insertion order independent

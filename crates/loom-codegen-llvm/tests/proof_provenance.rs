@@ -102,6 +102,20 @@ fn assert_canonical_proof_failure(failure: &ExecutionFailure, expected_span: Spa
     assert_eq!(fault.span, expected_span);
 }
 
+fn assert_fresh_proof_uses_lcir(program: &CheckedProgram, entry: &str) {
+    let prepared = prepare_native_object(
+        program,
+        EmitOptions::run(entry).with_optimization(OptimizationProfile::Release),
+        NativeRoutePolicy::Automatic,
+    )
+    .expect("prepare fresh process-local proof");
+    assert_eq!(
+        prepared.route_kind(),
+        NativeRouteKind::Lcir,
+        "fresh Proven must remain a zero-check direct LCIR construction"
+    );
+}
+
 fn native_json_failure(
     program: &CheckedProgram,
     entry: &str,
@@ -141,6 +155,7 @@ pub fn main() Unit {
         fresh_debug.contains("construction: Proven"),
         "{fresh_debug}"
     );
+    assert_fresh_proof_uses_lcir(&fresh, "main");
 
     let directory = tempfile::tempdir().expect("create proof output directory");
     let fresh_executable = directory.path().join("fresh");
@@ -399,6 +414,11 @@ pub fn main() Unit {
         prepare_native_object(warm_program, warm_options, NativeRoutePolicy::Automatic)
             .expect("prepare rebuilt warm proof object");
     assert_eq!(cold_prepared.route_kind(), warm_prepared.route_kind());
+    assert_eq!(
+        cold_prepared.route_kind(),
+        NativeRouteKind::Lcir,
+        "disk-cache reanalysis must recover the fresh Proven LCIR route"
+    );
     emit_prepared_native_object(&cold_prepared, &output.path().join("cold.o"))
         .expect("emit cold proof object");
     emit_prepared_native_object(&warm_prepared, &output.path().join("warm.o"))

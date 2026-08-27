@@ -15,6 +15,11 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `19` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `2` |
+| LCIR textual dump | version `5` |
+| LCIR artifact identity | schema `6` |
+| LCIR native-object domain | `loom-lcir-native-object-v2` |
+| Legacy native-object domain | `loom-legacy-native-object-v5` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v7` |
 | Runtime bundle manifest | schema `2` |
 | Native runtime ABI component | `8` |
 | Coroutine/Task ABI component | `2` |

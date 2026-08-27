@@ -54,6 +54,166 @@ fn complete_dump(source: &str) -> String {
 }
 
 #[test]
+fn checked_mir_is_the_only_source_of_proven_refinement_instructions() {
+    let dump = complete_dump(
+        r"module proven_boundaries
+
+type Money = Float where self >= 0.0
+
+record Range {
+    low Money
+    high Money
+    invariant self.low <= self.high
+}
+
+fn widen(value Money) Float { value }
+
+pub fn main() Unit {
+    let money = Money(10.0)
+    let range = Range { low = Money(1.0), high = Money(2.0) }
+    discard widen(money)
+    discard range
+    Unit
+}
+",
+    );
+    assert!(dump.contains("refine.proven"), "{dump}");
+    assert!(dump.contains("unrefine"), "{dump}");
+    assert!(dump.contains("invariant_record.proven"), "{dump}");
+}
+
+#[test]
+fn portable_proof_rechecks_select_one_atomic_legacy_fallback() {
+    let source = r"module portable_proof_fallback
+
+type Money = Float where self >= 0.0
+
+record Range {
+    low Money
+    high Money
+    invariant self.low <= self.high
+}
+
+pub fn main() Unit {
+    let money = Money(10.0)
+    discard money
+    discard Range { low = Money(1.0), high = Money(2.0) }
+    Unit
+}
+";
+    let fresh = compile(source);
+    let fresh_outcome = lower_typed_artifact(
+        &fresh,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("lower fresh process-local proofs");
+    let LoweringOutcome::Complete(fresh_artifact) = fresh_outcome else {
+        panic!("fresh process-local Proven constructions must use direct LCIR")
+    };
+    let fresh_dump = dump_program(fresh_artifact.program());
+    assert!(fresh_dump.contains("refine.proven"), "{fresh_dump}");
+    assert!(
+        fresh_dump.contains("invariant_record.proven"),
+        "{fresh_dump}"
+    );
+
+    let bytes = loom_mir::encode_interpreted_executable_artifact(&fresh, "main")
+        .expect("encode portable proof artifact");
+    let (decoded, entry) = loom_mir::decode_interpreted_executable_artifact(&bytes)
+        .expect("decode portable proof artifact");
+    assert!(decoded.serialized_construction_proofs_were_distrusted());
+    let decoded_debug = format!("{decoded:#?}");
+    assert!(
+        decoded_debug.contains("construction: Recheck"),
+        "{decoded_debug}"
+    );
+    assert!(
+        !decoded_debug.contains("construction: Proven"),
+        "{decoded_debug}"
+    );
+
+    let decoded_outcome = lower_typed_artifact(
+        &decoded,
+        &SourceArtifactRequest::Run { entry },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("classify decoded proof replay");
+    let LoweringOutcome::Unsupported(report) = decoded_outcome else {
+        panic!("one reachable Recheck must select fallback for the complete artifact")
+    };
+    assert!(!report.is_empty());
+    assert!(
+        report
+            .items()
+            .iter()
+            .all(|item| { item.feature() == UnsupportedFeature::SerializedProofRecheck }),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn generic_invariant_and_refined_record_instantiations_remain_atomic_fallback() {
+    let program = compile(
+        r"module generic_proof_fallback
+
+record Boxed[T] {
+    value T
+}
+
+record Guarded[T] {
+    value T
+    marker Int
+    invariant self.marker >= 0
+}
+
+type PositiveBox = Boxed[Int] where self.value >= 0
+
+fn refined() PositiveBox {
+    PositiveBox(Boxed { value = 1 })
+}
+
+fn established_invariant() Guarded[Int] {
+    Guarded { value = 1, marker = 1 }
+}
+
+pub fn main() Unit {
+    discard refined()
+    discard established_invariant()
+    Unit
+}
+",
+    );
+    let mir_debug = format!("{program:#?}");
+    assert!(
+        mir_debug.contains("type_arguments: [\n") && mir_debug.contains("Int,"),
+        "generic construction arguments must remain explicit in MIR: {mir_debug}"
+    );
+    let outcome = lower_typed_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("classify generic proof-bearing values");
+    let LoweringOutcome::Unsupported(report) = outcome else {
+        panic!("generic invariant/refined records must select whole-artifact fallback")
+    };
+    assert!(report.items().iter().any(|item| {
+        matches!(
+            item.feature(),
+            UnsupportedFeature::SignatureType
+                | UnsupportedFeature::ExpressionType
+                | UnsupportedFeature::NominalValue
+                | UnsupportedFeature::RefinedValue
+        )
+    }));
+}
+
+#[test]
 fn empty_tests_are_one_complete_empty_artifact() {
     let mir = compile("module empty\n");
     let outcome = lower_typed_artifact(
@@ -1825,8 +1985,12 @@ record Positive {
     invariant self.value >= 0
 }
 
+fn checked(value Int) Result[Positive, ConstraintError] {
+    Positive { value = value }
+}
+
 pub fn main() Unit {
-    discard Positive { value = 1 }
+    discard checked(1)
     Unit
 }
 ",

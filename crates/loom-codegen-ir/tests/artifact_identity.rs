@@ -28,7 +28,7 @@ impl BodyOrigins {
 
 #[test]
 fn identity_schema_is_pinned_after_complete_type_encoding() {
-    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 5);
+    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 6);
 }
 
 fn origin(expression: Option<u32>, file: u32, start: u32, end: u32) -> Origin {
@@ -558,7 +558,10 @@ fn complete_tuple_semantics_are_dump_and_artifact_identity_inputs() {
     );
     assert_ne!(boolean_dump, floating_dump);
     assert_ne!(artifact_identity(&boolean), artifact_identity(&floating));
-    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 5, "tuple support reuses schema 5");
+    assert_eq!(
+        ARTIFACT_IDENTITY_SCHEMA, 6,
+        "transparent semantic boundaries advance the identity schema"
+    );
 }
 
 #[test]

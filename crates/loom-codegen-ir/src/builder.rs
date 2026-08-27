@@ -23,6 +23,7 @@ pub enum BuildErrorCode {
     InvalidProductType,
     DuplicateEntry,
     BlockAlreadyTerminated,
+    TrustedInstruction,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -115,6 +116,65 @@ impl ProgramBuilder {
                 BuildError::new(
                     BuildErrorCode::InvalidProductType,
                     "LCIR POD record requires one unique monomorphic nominal type whose fields already have direct representations",
+                )
+            })
+    }
+
+    /// Adds a monomorphic record whose invariant has already been proved by
+    /// semantic analysis. Its physical layout is an ordinary direct product,
+    /// but independent validation prevents the ordinary product-construction
+    /// instruction from creating values of this type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error under the same registration constraints as
+    /// [`Self::add_pod_record_type`].
+    pub fn add_invariant_record_type(
+        &mut self,
+        semantic: Type,
+        fields: &[Type],
+    ) -> Result<ValueTypeId, BuildError> {
+        if !self.functions.is_empty() {
+            return Err(BuildError::new(
+                BuildErrorCode::InvalidProductType,
+                "LCIR invariant record types must be registered before functions",
+            ));
+        }
+        self.representations
+            .add_invariant_record(semantic, fields)
+            .ok_or_else(|| {
+                BuildError::new(
+                    BuildErrorCode::InvalidProductType,
+                    "LCIR invariant record requires one unique monomorphic nominal type whose fields already have direct representations",
+                )
+            })
+    }
+
+    /// Adds a semantically distinct nominal type which transparently reuses
+    /// its already-registered base representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a duplicate/non-nominal semantic type, an
+    /// unregistered or uninhabited base, registration after function
+    /// declaration, or an exhausted value-type identity domain.
+    pub fn add_transparent_type(
+        &mut self,
+        semantic: Type,
+        base: &Type,
+    ) -> Result<ValueTypeId, BuildError> {
+        if !self.functions.is_empty() {
+            return Err(BuildError::new(
+                BuildErrorCode::InvalidValueType,
+                "LCIR transparent types must be registered before functions",
+            ));
+        }
+        self.representations
+            .add_transparent(semantic, base)
+            .ok_or_else(|| {
+                BuildError::new(
+                    BuildErrorCode::InvalidValueType,
+                    "LCIR transparent type requires one unique monomorphic nominal type and an already-registered inhabited base",
                 )
             })
     }
@@ -384,6 +444,48 @@ impl FunctionBuilder<'_> {
     /// Returns an error for an unknown/terminated block, an unknown result
     /// type, or an exhausted identity domain.
     pub fn append_instruction(
+        &mut self,
+        block: BlockId,
+        kind: InstructionKind,
+        result_types: &[ValueTypeId],
+        origin: Origin,
+    ) -> Result<Box<[ValueId]>, BuildError> {
+        if matches!(
+            kind,
+            InstructionKind::RefineProven { .. } | InstructionKind::InvariantRecordProven { .. }
+        ) {
+            return Err(BuildError::new(
+                BuildErrorCode::TrustedInstruction,
+                "proof-establishing LCIR instructions may only be emitted from checked MIR",
+            ));
+        }
+        self.append_instruction_inner(block, kind, result_types, origin)
+    }
+
+    /// Appends an instruction carrying a frontend proof certificate.
+    ///
+    /// This entry point is deliberately crate-private: only lowering from
+    /// checked MIR may establish a refined or invariant-protected value.
+    pub(crate) fn append_trusted_instruction(
+        &mut self,
+        block: BlockId,
+        kind: InstructionKind,
+        result_types: &[ValueTypeId],
+        origin: Origin,
+    ) -> Result<Box<[ValueId]>, BuildError> {
+        if !matches!(
+            kind,
+            InstructionKind::RefineProven { .. } | InstructionKind::InvariantRecordProven { .. }
+        ) {
+            return Err(BuildError::new(
+                BuildErrorCode::TrustedInstruction,
+                "the checked-MIR instruction path accepts only proof-establishing instructions",
+            ));
+        }
+        self.append_instruction_inner(block, kind, result_types, origin)
+    }
+
+    fn append_instruction_inner(
         &mut self,
         block: BlockId,
         kind: InstructionKind,

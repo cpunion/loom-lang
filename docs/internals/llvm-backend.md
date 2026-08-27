@@ -26,15 +26,19 @@ workspace does not silently fall back to another LLVM major version.
 ## LCIR foundation status
 
 The workspace contains a direct typed-SSA foundation in `loom-codegen-ir` for
-primitive values, structural tuples, and closed, invariant-free POD records.
+primitive values, structural tuples, closed records, and established
+transparent refined values.
 Tuples and records are recursive acyclic products of other direct values and
 may contain one another.
 The LCIR emitter accepts only a closed `CheckedArtifact`: its roots, callable
-closure, representations, CFG, types, proofs, and exact fault effects have
-already crossed independent validation. It declares every source function
-with its typed LCIR ABI, keeps source symbols internal, emits a run or ordered
-test harness, verifies before and after optimization, and writes a relocatable
-object.
+closure, representations, CFG, types, proof-boundary shapes, and exact fault
+effects have already crossed independent validation. Predicate truth itself is
+a process-local conclusion supplied by fresh checked MIR; LCIR does not
+re-prove an omitted source predicate. A decoded `Recheck` is outside LCIR
+coverage and selects the complete legacy route. The emitter declares every
+source function with its typed LCIR ABI, keeps source symbols internal, emits a
+run or ordered test harness, verifies before and after optimization, and writes
+a relocatable object.
 
 Ordinary `build`, `run`, and `test` use `NativeRoutePolicy::Automatic`. Route
 preparation creates one target machine and attempts the complete direct
@@ -149,8 +153,25 @@ infallible call with source result `T` and ordered writebacks `W...` returns
 the usual fault-context pointer. Both normal and fault exits carry the current
 receiver value, so a mutation completed before a later fault remains visible
 to the caller. Only whole-local inout arguments are in this slice; projected
-inout, contracts, refined values, managed fields, and runtime construction
-select atomic whole-artifact fallback.
+inout, contracts, managed fields, and runtime-checked construction select
+atomic whole-artifact fallback.
+
+Fresh-source proven record invariants and refined predicates do not add an LLVM
+wrapper or check. LCIR retains their distinct semantic types and proof opcodes,
+while the emitter forwards the already established physical SSA value. A
+refined scalar therefore uses the base scalar ABI; a refined product uses the
+base product ABI; and an invariant record uses its field product ABI. Unknown
+construction proofs still return language `Result` values on the legacy route.
+Serialized proof rechecks retain their nominal result shape but also use the
+legacy route, where failure is the canonical `ArtifactProofRejected` runtime
+fault.
+
+The current debug-info boundary describes that physical ABI as well. A
+transparent scalar is reported as its base scalar debug type, and transparent
+or invariant products use compiler-private physical product types; LLVM debug
+metadata does not yet synthesize nominal source aliases such as `Money` or
+`Range`. This deliberate display limitation does not erase nominal identity
+from LCIR dumps, validation, cache fingerprints, or object artifact identity.
 
 ## Legacy native specialization
 

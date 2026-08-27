@@ -59,7 +59,7 @@ pub use lower::{
 };
 pub use repr::{
     ProductRepr, Repr, RepresentationPlan, ScalarRepr, TargetLayout, TargetLayoutError,
-    TypeRegistration, ValueType,
+    TypeRegistration, ValueType, ValueTypeKind,
 };
 pub use source_graph::{
     GraphError, GraphErrorCode, ReachableSourceGraph, SourceRoots, analyze_source_reachability,
