@@ -79,8 +79,7 @@ pub async fn main() Unit {
 }
 ";
 
-const TYPED_TASK_ALL_SOURCE: &str =
-    include_str!("../../../fixtures/lcir-typed-task-all/main.loom");
+const TYPED_TASK_ALL_SOURCE: &str = include_str!("../../../fixtures/lcir-typed-task-all/main.loom");
 
 #[test]
 fn async_scalar_call_and_await_lower_to_a_checked_coroutine_plan() {
@@ -180,13 +179,12 @@ fn static_heterogeneous_task_all_uses_direct_and_first_class_checked_shapes() {
     let await_widths = exercise
         .blocks()
         .iter()
-        .filter_map(|block| match block
-            .terminator()
-            .map(loom_codegen_ir::Terminator::kind)
-        {
-            Some(TerminatorKind::AwaitTasks { tasks, .. }) => Some(tasks.len()),
-            _ => None,
-        })
+        .filter_map(
+            |block| match block.terminator().map(loom_codegen_ir::Terminator::kind) {
+                Some(TerminatorKind::AwaitTasks { tasks, .. }) => Some(tasks.len()),
+                _ => None,
+            },
+        )
         .collect::<Vec<_>>();
     assert_eq!(await_widths, [2, 2, 1, 1, 1, 1]);
     assert_eq!(
@@ -200,12 +198,15 @@ fn static_heterogeneous_task_all_uses_direct_and_first_class_checked_shapes() {
         await_widths,
         "coroutine rows must encode every implicit heterogeneous result slot"
     );
-    assert!(exercise.instructions().iter().any(|instruction| {
-        matches!(
-            instruction.kind(),
-            InstructionKind::ProductConstruct { fields } if fields.len() == 1
-        )
-    }), "one-element Task.all must construct the canonical one-field tuple");
+    assert!(
+        exercise.instructions().iter().any(|instruction| {
+            matches!(
+                instruction.kind(),
+                InstructionKind::ProductConstruct { fields } if fields.len() == 1
+            )
+        }),
+        "one-element Task.all must construct the canonical one-field tuple"
+    );
 
     let dump = dump_program(artifact.program());
     assert!(dump.contains("task.join_all("), "{dump}");
@@ -228,9 +229,12 @@ pub async fn main() Unit {
     let LoweringOutcome::Unsupported(dynamic) = lower_run(dynamic) else {
         panic!("dynamic List Task.all must remain one whole-artifact fallback")
     };
-    assert!(dynamic.items().iter().any(|item| {
-        item.feature() == UnsupportedFeature::TaskOperation
-    }));
+    assert!(
+        dynamic
+            .items()
+            .iter()
+            .any(|item| { item.feature() == UnsupportedFeature::TaskOperation })
+    );
 
     let settled = r"module settled_task_join
 
@@ -243,9 +247,12 @@ pub async fn main() Unit {
     let LoweringOutcome::Unsupported(settled) = lower_run(settled) else {
         panic!("Task.settled must remain one whole-artifact fallback")
     };
-    assert!(settled.items().iter().any(|item| {
-        item.feature() == UnsupportedFeature::TaskOperation
-    }));
+    assert!(
+        settled
+            .items()
+            .iter()
+            .any(|item| { item.feature() == UnsupportedFeature::TaskOperation })
+    );
 }
 
 #[test]

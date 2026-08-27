@@ -279,6 +279,11 @@ fn task_sleep_requires_exact_coroutine_effects_and_task_unit_result() {
     );
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    clippy::too_many_lines,
+    reason = "the malformed-program matrix keeps every exact join shape and independent validator defect visible in one builder"
+)]
 fn task_join_all_program(
     duplicate: bool,
     empty: bool,
@@ -443,15 +448,11 @@ fn task_join_all_program(
 #[test]
 fn task_join_all_requires_unique_exact_children_result_and_executor_context() {
     let effects = Effects::NEEDS_EXECUTOR.with_implications();
-    validate_program(&task_join_all_program(
-        false, false, false, true, effects,
-    ))
-    .expect("canonical heterogeneous task.join_all must validate");
+    validate_program(&task_join_all_program(false, false, false, true, effects))
+        .expect("canonical heterogeneous task.join_all must validate");
 
-    let duplicate = validate_program(&task_join_all_program(
-        true, false, false, true, effects,
-    ))
-    .expect_err("one child cannot be consumed twice");
+    let duplicate = validate_program(&task_join_all_program(true, false, false, true, effects))
+        .expect_err("one child cannot be consumed twice");
     assert!(duplicate.as_slice().iter().any(|error| {
         error.code() == ValidationCode::InstructionShape
             && error.message().contains("more than once")
@@ -460,23 +461,21 @@ fn task_join_all_requires_unique_exact_children_result_and_executor_context() {
     let empty = validate_program(&task_join_all_program(false, true, false, true, effects))
         .expect_err("an empty static join must fail");
     assert!(empty.as_slice().iter().any(|error| {
-        error.code() == ValidationCode::InstructionShape
-            && error.message().contains("at least one")
+        error.code() == ValidationCode::InstructionShape && error.message().contains("at least one")
     }));
 
-    let wrong_result = validate_program(&task_join_all_program(
-        false, false, true, true, effects,
-    ))
-    .expect_err("the composite output must be the exact heterogeneous tuple");
-    assert!(wrong_result
-        .as_slice()
-        .iter()
-        .any(|error| error.code() == ValidationCode::TypeMismatch));
+    let wrong_result = validate_program(&task_join_all_program(false, false, true, true, effects))
+        .expect_err("the composite output must be the exact heterogeneous tuple");
+    assert!(
+        wrong_result
+            .as_slice()
+            .iter()
+            .any(|error| error.code() == ValidationCode::TypeMismatch)
+    );
 
-    let no_coroutine = validate_program(&task_join_all_program(
-        false, false, false, false, effects,
-    ))
-    .expect_err("a sync function cannot gain a hidden executor context");
+    let no_coroutine =
+        validate_program(&task_join_all_program(false, false, false, false, effects))
+            .expect_err("a sync function cannot gain a hidden executor context");
     assert!(no_coroutine.as_slice().iter().any(|error| {
         error.code() == ValidationCode::InvalidCoroutinePlan
             && error.message().contains("active typed-coroutine")
@@ -491,11 +490,216 @@ fn task_join_all_requires_unique_exact_children_result_and_executor_context() {
     ))
     .expect_err("task.join_all requires executor effects");
     assert!(no_executor.as_slice().iter().any(|error| {
-        error.code() == ValidationCode::EffectMismatch
-            && error.message().contains("NEEDS_EXECUTOR")
+        error.code() == ValidationCode::EffectMismatch && error.message().contains("NEEDS_EXECUTOR")
     }));
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one raw LCIR builder exposes edge aliasing and cross-site Task consumption without relying on source ownership checks"
+)]
+fn invalid_task_ownership_program(
+    await_children: bool,
+    reuse_children: bool,
+) -> loom_codegen_ir::Program {
+    let origin = Origin::synthetic(FunctionId(0));
+    let child_origin = Origin::synthetic(FunctionId(1));
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let unit = builder.type_id(&Type::Unit).expect("Unit");
+    let integer = builder.type_id(&Type::Int).expect("Int");
+    let tuple = builder
+        .add_tuple_type(&[Type::Int, Type::Int])
+        .expect("(Int, Int)");
+    let task_int = builder
+        .add_task_handle_type(Type::Task(Box::new(Type::Int)))
+        .expect("Task[Int]");
+    let task_tuple = builder
+        .add_task_handle_type(Type::Task(Box::new(Type::Tuple(vec![
+            Type::Int,
+            Type::Int,
+        ]))))
+        .expect("Task[(Int, Int)]");
+
+    let child = builder
+        .declare_function(
+            child_origin,
+            "aliased.child",
+            Signature::new([], integer),
+            Effects::NEEDS_EXECUTOR.with_implications(),
+        )
+        .expect("child");
+    {
+        let mut function = builder.function(child).expect("child builder");
+        function
+            .set_coroutine_plan(CoroutinePlan::new(integer, []))
+            .expect("child coroutine");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("entry");
+        let value = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Int(1)),
+                &[integer],
+                child_origin,
+            )
+            .expect("Int")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(TerminatorKind::Return(value), child_origin),
+            )
+            .expect("return");
+    }
+
+    let effects = if await_children {
+        Effects::MAY_SUSPEND.with_implications()
+    } else {
+        Effects::NEEDS_EXECUTOR.with_implications()
+    };
+    let root = builder
+        .declare_function(origin, "aliased.root", Signature::new([], unit), effects)
+        .expect("root");
+    {
+        let mut function = builder.function(root).expect("root builder");
+        let suspensions =
+            await_children.then(|| vec![CoroutineSuspension::new(1, [integer, integer], [])]);
+        function
+            .set_coroutine_plan(CoroutinePlan::new(unit, suspensions.unwrap_or_default()))
+            .expect("root coroutine");
+        let entry = function.create_block().expect("entry");
+        let forwarded = function.create_block().expect("forwarded");
+        function.set_entry(entry).expect("entry");
+        let task = function
+            .append_instruction(
+                entry,
+                InstructionKind::TaskCreate {
+                    coroutine: child,
+                    arguments: Box::new([]),
+                },
+                &[task_int],
+                origin,
+            )
+            .expect("Task[Int]")[0];
+        let second_task = if reuse_children {
+            function
+                .append_instruction(
+                    entry,
+                    InstructionKind::TaskCreate {
+                        coroutine: child,
+                        arguments: Box::new([]),
+                    },
+                    &[task_int],
+                    origin,
+                )
+                .expect("second Task[Int]")[0]
+        } else {
+            task
+        };
+        let first = function
+            .append_block_parameter(forwarded, task_int)
+            .expect("first Task[Int]");
+        let second = function
+            .append_block_parameter(forwarded, task_int)
+            .expect("second Task[Int]");
+        function
+            .terminate(
+                entry,
+                Terminator::new(
+                    TerminatorKind::Jump(BlockTarget::new(forwarded, [task, second_task])),
+                    origin,
+                ),
+            )
+            .expect("Task forwarding edge");
+
+        let return_block = if await_children {
+            let normal = function.create_block().expect("normal");
+            function
+                .append_block_parameter(normal, integer)
+                .expect("first Int result");
+            function
+                .append_block_parameter(normal, integer)
+                .expect("second Int result");
+            function
+                .terminate(
+                    forwarded,
+                    Terminator::new(
+                        TerminatorKind::AwaitTasks {
+                            state: 1,
+                            tasks: Box::from([first, second]),
+                            normal: ResultTarget::new(normal, []),
+                        },
+                        origin,
+                    ),
+                )
+                .expect("await aliased Tasks");
+            normal
+        } else {
+            function
+                .append_instruction(
+                    forwarded,
+                    InstructionKind::TaskJoinAll {
+                        tasks: Box::from([first, second]),
+                    },
+                    &[task_tuple],
+                    origin,
+                )
+                .expect("join aliased Tasks");
+            if reuse_children {
+                function
+                    .append_instruction(
+                        forwarded,
+                        InstructionKind::TaskJoinAll {
+                            tasks: Box::from([first, second]),
+                        },
+                        &[task_tuple],
+                        origin,
+                    )
+                    .expect("reuse joined Tasks");
+            }
+            forwarded
+        };
+        let result = function
+            .append_instruction(
+                return_block,
+                InstructionKind::Constant(Constant::Unit),
+                &[unit],
+                origin,
+            )
+            .expect("Unit")[0];
+        function
+            .terminate(
+                return_block,
+                Terminator::new(TerminatorKind::Return(result), origin),
+            )
+            .expect("return");
+    }
+    let _ = tuple;
+    builder.finish()
+}
+
+#[test]
+fn task_ownership_rejects_aliases_hidden_behind_distinct_block_parameters() {
+    for await_children in [false, true] {
+        let errors = validate_program(&invalid_task_ownership_program(await_children, false))
+            .expect_err("one Task cannot be forwarded into two apparent child handles");
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::InvalidTaskOwnership
+                && error.message().contains("consumed more than once")
+        }));
+    }
+
+    let reused = validate_program(&invalid_task_ownership_program(false, true))
+        .expect_err("consumed Task children cannot enter a later join");
+    assert!(reused.as_slice().iter().any(|error| {
+        error.code() == ValidationCode::InvalidTaskOwnership
+            && error.message().contains("consumed more than once")
+    }));
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the malformed-program matrix keeps coroutine plans and heterogeneous await edges together"
+)]
 fn await_tasks_program(duplicate: bool, swap_plan: bool) -> loom_codegen_ir::Program {
     let origin = Origin::synthetic(FunctionId(0));
     let int_origin = Origin::synthetic(FunctionId(1));
@@ -675,6 +879,8 @@ fn await_tasks_requires_unique_children_and_exact_planned_result_slots() {
         .expect_err("the suspension row cannot swap heterogeneous outputs");
     assert!(swapped.as_slice().iter().any(|error| {
         error.code() == ValidationCode::InvalidCoroutinePlan
-            && error.message().contains("does not match its child Task output")
+            && error
+                .message()
+                .contains("does not match its child Task output")
     }));
 }

@@ -3285,8 +3285,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     && outputs
                         .filter(|outputs| !outputs.is_empty())
                         .is_some_and(|outputs| {
-                            result
-                                == Some(Type::Task(Box::new(Type::Tuple(outputs))))
+                            result == Some(Type::Task(Box::new(Type::Tuple(outputs))))
                         });
                 if !supported {
                     self.expression_item(

@@ -78,6 +78,7 @@ pub enum ValidationCode {
     Dominance,
     InvalidIntegerProof,
     InvalidListUniqueness,
+    InvalidTaskOwnership,
     InvalidCoroutinePlan,
 }
 
@@ -118,6 +119,7 @@ impl ValidationCode {
             Self::Dominance => "LcirDominance",
             Self::InvalidIntegerProof => "LcirInvalidIntegerProof",
             Self::InvalidListUniqueness => "LcirInvalidListUniqueness",
+            Self::InvalidTaskOwnership => "LcirInvalidTaskOwnership",
             Self::InvalidCoroutinePlan => "LcirInvalidCoroutinePlan",
         }
     }
@@ -886,7 +888,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::RepresentationPlan,
                         format!("representations.product[{index}].field[{field_index}]"),
-                        "product fields must reference inhabited direct values; Text leaves require ManagedPointer",
+                        "product fields must reference inhabited non-Task direct values; Text leaves require ManagedPointer",
                     );
                 }
                 if let Some(nested) = aggregate_index(field) {
@@ -941,7 +943,7 @@ impl<'a> Validator<'a> {
                             format!(
                                 "representations.sum[{index}].variant[{variant_index}].field[{field_index}]"
                             ),
-                            "sum payloads must reference inhabited direct values; Text leaves require ManagedPointer",
+                            "sum payloads must reference inhabited non-Task direct values; Text leaves require ManagedPointer",
                         );
                     }
                     if let Some(nested) = aggregate_index(field) {
@@ -1306,6 +1308,104 @@ impl<'a> Validator<'a> {
         self.validate_dominance(function, &base, &schedule, &reachable, &dominators);
         self.validate_integer_proofs(function, &base, &reachable, &predecessors, &dominators);
         self.validate_list_uniqueness(function, &base, &reachable);
+        self.validate_task_ownership(function, &base, &reachable);
+    }
+
+    fn validate_task_ownership(&mut self, function: &Function, base: &str, reachable: &[bool]) {
+        let task_values = function
+            .values()
+            .iter()
+            .map(|value| {
+                self.program
+                    .representations
+                    .value_type(value.ty())
+                    .is_some_and(|ty| {
+                        self.program.representations.repr(ty.repr()) == Some(&Repr::TaskHandle)
+                    })
+            })
+            .collect::<Vec<_>>();
+        if !task_values.iter().any(|is_task| *is_task) {
+            return;
+        }
+
+        let empty = vec![TaskAvailability::NONE; function.values().len()];
+        let mut inputs = vec![empty.clone(); function.blocks().len()];
+        let Some(entry) = function.entry() else {
+            return;
+        };
+        for parameter in function
+            .block(entry)
+            .into_iter()
+            .flat_map(crate::Block::params)
+            .copied()
+            .filter(|value| task_values.get(value.index()).copied().unwrap_or(false))
+        {
+            inputs[entry.index()][parameter.index()] = TaskAvailability::AVAILABLE;
+        }
+
+        loop {
+            let mut next = vec![empty.clone(); function.blocks().len()];
+            let mut seen = vec![false; function.blocks().len()];
+            next[entry.index()].clone_from(&inputs[entry.index()]);
+            seen[entry.index()] = true;
+            for (block_index, block) in function.blocks().iter().enumerate() {
+                if !reachable.get(block_index).copied().unwrap_or(false) {
+                    continue;
+                }
+                for edge in transfer_task_ownership(
+                    function,
+                    block,
+                    &inputs[block_index],
+                    &task_values,
+                    false,
+                )
+                .edges
+                {
+                    if edge.target == entry.index()
+                        || !reachable.get(edge.target).copied().unwrap_or(false)
+                    {
+                        continue;
+                    }
+                    if seen[edge.target] {
+                        for (current, incoming) in next[edge.target]
+                            .iter_mut()
+                            .zip(edge.states.iter().copied())
+                        {
+                            *current = current.union(incoming);
+                        }
+                    } else {
+                        next[edge.target] = edge.states;
+                        seen[edge.target] = true;
+                    }
+                }
+            }
+            if next == inputs {
+                break;
+            }
+            inputs = next;
+        }
+
+        let mut reported = BTreeSet::new();
+        for (block_index, block) in function.blocks().iter().enumerate() {
+            if !reachable.get(block_index).copied().unwrap_or(false) {
+                continue;
+            }
+            let transfer =
+                transfer_task_ownership(function, block, &inputs[block_index], &task_values, true);
+            for issue in transfer.issues {
+                if reported.insert((issue.site, issue.value, issue.message)) {
+                    let path = match issue.site {
+                        TaskOwnershipSite::Instruction(instruction) => {
+                            format!("{base}.instruction[{}].task", instruction.index())
+                        }
+                        TaskOwnershipSite::Terminator(block) => {
+                            format!("{base}.block[{}].terminator.task", block.index())
+                        }
+                    };
+                    self.error(ValidationCode::InvalidTaskOwnership, path, issue.message);
+                }
+            }
+        }
     }
 
     fn validate_list_uniqueness(&mut self, function: &Function, base: &str, reachable: &[bool]) {
@@ -1611,9 +1711,7 @@ impl<'a> Validator<'a> {
                 if actual != Some(expected) {
                     self.error(
                         ValidationCode::InvalidCoroutinePlan,
-                        format!(
-                            "{base}.coroutine.suspension[{index}].awaited[{awaited_index}]"
-                        ),
+                        format!("{base}.coroutine.suspension[{index}].awaited[{awaited_index}]"),
                         "coroutine awaited-result type does not match its child Task output",
                     );
                 }
@@ -3086,9 +3184,9 @@ impl<'a> Validator<'a> {
                     outputs.push(semantic);
                 }
                 let expected = valid.then(|| {
-                    self.program.representations.type_id(&Type::Task(Box::new(
-                        Type::Tuple(outputs),
-                    )))
+                    self.program
+                        .representations
+                        .type_id(&Type::Task(Box::new(Type::Tuple(outputs))))
                 });
                 if valid && expected.is_some_and(|expected| expected.is_none()) {
                     self.error(
@@ -4798,6 +4896,31 @@ fn compute_program_fault_states(program: &Program) -> Vec<Vec<FaultStateSet>> {
         .collect()
 }
 
+fn instruction_direct_effects(kind: &InstructionKind) -> Effects {
+    let mut effects = Effects::NONE;
+    if matches!(
+        kind,
+        InstructionKind::TextConcat { .. }
+            | InstructionKind::TextGet { .. }
+            | InstructionKind::FormatFloat { .. }
+            | InstructionKind::ListAppend { .. }
+            | InstructionKind::ListAppendUnique { .. }
+            | InstructionKind::TextMapInsert { .. }
+            | InstructionKind::TextMapRemove { .. }
+            | InstructionKind::DynConstruct { .. }
+    ) || matches!(kind, InstructionKind::ListConstruct { elements } if !elements.is_empty())
+    {
+        effects = effects.union(Effects::MAY_COLLECT);
+    }
+    if matches!(
+        kind,
+        InstructionKind::TaskCreate { .. } | InstructionKind::TaskJoinAll { .. }
+    ) {
+        effects = effects.union(Effects::NEEDS_EXECUTOR);
+    }
+    effects
+}
+
 /// Computes the least transitive function effects from operation and call
 /// edges. Operations in active cleanup can only preserve the primary fault or
 /// suppress a secondary one, so those paths strip only `MAY_FAULT`; runtime,
@@ -4826,28 +4949,8 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                 let Some(instruction) = function.instruction(instruction_id) else {
                     continue;
                 };
-                if matches!(
-                    instruction.kind(),
-                    InstructionKind::TextConcat { .. }
-                        | InstructionKind::TextGet { .. }
-                        | InstructionKind::FormatFloat { .. }
-                        | InstructionKind::ListAppend { .. }
-                        | InstructionKind::ListAppendUnique { .. }
-                        | InstructionKind::TextMapInsert { .. }
-                        | InstructionKind::TextMapRemove { .. }
-                ) || matches!(
-                    instruction.kind(),
-                    InstructionKind::ListConstruct { elements } if !elements.is_empty()
-                ) || matches!(instruction.kind(), InstructionKind::DynConstruct { .. })
-                {
-                    effects[caller] = effects[caller].union(Effects::MAY_COLLECT);
-                }
-                if matches!(
-                    instruction.kind(),
-                    InstructionKind::TaskCreate { .. } | InstructionKind::TaskJoinAll { .. }
-                ) {
-                    effects[caller] = effects[caller].union(Effects::NEEDS_EXECUTOR);
-                }
+                effects[caller] =
+                    effects[caller].union(instruction_direct_effects(instruction.kind()));
                 if let InstructionKind::DirectCall { callee, .. }
                 | InstructionKind::TaskCreate {
                     coroutine: callee, ..
@@ -5018,6 +5121,194 @@ fn compute_fault_states(entry: usize, edges: &[Vec<FaultEdge>]) -> Vec<FaultStat
         }
     }
     states
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TaskAvailability(u8);
+
+impl TaskAvailability {
+    const NONE: Self = Self(0);
+    const AVAILABLE: Self = Self(1);
+    const CONSUMED: Self = Self(2);
+
+    const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum TaskOwnershipSite {
+    Instruction(InstructionId),
+    Terminator(BlockId),
+}
+
+#[derive(Clone, Copy)]
+struct TaskOwnershipIssue {
+    site: TaskOwnershipSite,
+    value: ValueId,
+    message: &'static str,
+}
+
+struct TaskOwnershipEdge {
+    target: usize,
+    states: Vec<TaskAvailability>,
+}
+
+struct TaskOwnershipTransfer {
+    edges: Vec<TaskOwnershipEdge>,
+    issues: Vec<TaskOwnershipIssue>,
+}
+
+fn consume_task_handle(
+    value: ValueId,
+    site: TaskOwnershipSite,
+    states: &mut [TaskAvailability],
+    task_values: &[bool],
+    collect_issues: bool,
+    issues: &mut Vec<TaskOwnershipIssue>,
+) {
+    if !task_values.get(value.index()).copied().unwrap_or(false) {
+        return;
+    }
+    let Some(state) = states.get_mut(value.index()) else {
+        return;
+    };
+    if collect_issues && *state != TaskAvailability::AVAILABLE {
+        issues.push(TaskOwnershipIssue {
+            site,
+            value,
+            message: "a Task handle is consumed more than once or is unavailable on an incoming control-flow path",
+        });
+    }
+    *state = TaskAvailability::CONSUMED;
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the affine Task transfer keeps instruction uses, implicit results, and edge moves in one auditable fixed-point operation"
+)]
+fn transfer_task_ownership(
+    function: &Function,
+    block: &crate::Block,
+    input: &[TaskAvailability],
+    task_values: &[bool],
+    collect_issues: bool,
+) -> TaskOwnershipTransfer {
+    let mut states = input.to_vec();
+    let mut issues = Vec::new();
+    for instruction_id in block.instructions().iter().copied() {
+        let Some(instruction) = function.instruction(instruction_id) else {
+            continue;
+        };
+        let site = TaskOwnershipSite::Instruction(instruction_id);
+        for operand in instruction.kind().operands() {
+            consume_task_handle(
+                operand,
+                site,
+                &mut states,
+                task_values,
+                collect_issues,
+                &mut issues,
+            );
+        }
+        for result in instruction.results().iter().copied() {
+            if task_values.get(result.index()).copied().unwrap_or(false) {
+                states[result.index()] = TaskAvailability::AVAILABLE;
+            }
+        }
+    }
+
+    let Some(terminator) = block.terminator() else {
+        return TaskOwnershipTransfer {
+            edges: Vec::new(),
+            issues,
+        };
+    };
+    let site = TaskOwnershipSite::Terminator(block.id());
+    match terminator.kind() {
+        TerminatorKind::Invoke { arguments, .. } => {
+            for argument in arguments.iter().copied() {
+                consume_task_handle(
+                    argument,
+                    site,
+                    &mut states,
+                    task_values,
+                    collect_issues,
+                    &mut issues,
+                );
+            }
+        }
+        TerminatorKind::AwaitTasks { tasks, .. } => {
+            for task in tasks.iter().copied() {
+                consume_task_handle(
+                    task,
+                    site,
+                    &mut states,
+                    task_values,
+                    collect_issues,
+                    &mut issues,
+                );
+            }
+        }
+        TerminatorKind::Return(value) => consume_task_handle(
+            *value,
+            site,
+            &mut states,
+            task_values,
+            collect_issues,
+            &mut issues,
+        ),
+        _ => {}
+    }
+    for writeback in terminator.writebacks().iter().copied() {
+        consume_task_handle(
+            writeback,
+            site,
+            &mut states,
+            task_values,
+            collect_issues,
+            &mut issues,
+        );
+    }
+
+    let mut edges = Vec::new();
+    for (target, arguments) in forwarded_list_edges(terminator.kind()) {
+        let Some(target_block) = function.block(target) else {
+            continue;
+        };
+        let mut edge_states = states.clone();
+        let implicit = target_block.params().len().saturating_sub(arguments.len());
+
+        // Consume every source before defining any destination. This ordering
+        // is essential for self-loop phis: forwarding one handle into two
+        // parameters must not let the first parameter definition resurrect it
+        // before the duplicate second move is checked.
+        for argument in arguments.iter().copied() {
+            consume_task_handle(
+                argument,
+                site,
+                &mut edge_states,
+                task_values,
+                collect_issues,
+                &mut issues,
+            );
+        }
+        for parameter in target_block.params().iter().copied().take(implicit) {
+            if task_values.get(parameter.index()).copied().unwrap_or(false) {
+                edge_states[parameter.index()] = TaskAvailability::AVAILABLE;
+            }
+        }
+        for parameter in target_block.params().iter().copied().skip(implicit) {
+            if task_values.get(parameter.index()).copied().unwrap_or(false) {
+                edge_states[parameter.index()] = TaskAvailability::AVAILABLE;
+            }
+        }
+        edges.push(TaskOwnershipEdge {
+            target: target.index(),
+            states: edge_states,
+        });
+    }
+    TaskOwnershipTransfer { edges, issues }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

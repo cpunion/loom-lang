@@ -968,7 +968,43 @@ mod tests {
             error.code() == ValidationCode::RepresentationPlan
                 && error.path() == "representations.product[0].field[0]"
                 && error.message()
-                    == "product fields must reference inhabited direct values; Text leaves require ManagedPointer"
+                    == "product fields must reference inhabited non-Task direct values; Text leaves require ManagedPointer"
+        }));
+
+        let mut task_aggregate = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        let task = task_aggregate
+            .add_task_handle_type(Type::Task(Box::new(Type::Int)))
+            .expect("Task[Int]");
+        let tuple = task_aggregate
+            .add_tuple_type(&[Type::Int])
+            .expect("pointer-free product");
+        task_aggregate
+            .add_sum_type(
+                Type::Nominal(TypeId(5_001), Vec::new()),
+                &[Box::from([Type::Int])],
+            )
+            .expect("pointer-free sum");
+        let mut task_aggregate = task_aggregate.finish();
+        let Repr::Product(product) = task_aggregate.representations.reprs[task_aggregate
+            .representations
+            .types[tuple.index()]
+        .repr
+        .index()] else {
+            panic!("tuple must use a product")
+        };
+        task_aggregate.representations.products[product.index()].fields[0] = task;
+        task_aggregate.representations.sums[0].variants[0].fields[0] = task;
+        let errors = validate_program(&task_aggregate)
+            .expect_err("Task handles cannot hide in copyable product or sum values");
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::RepresentationPlan
+                && error.path() == "representations.product[0].field[0]"
+                && error.message().contains("non-Task")
+        }));
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::RepresentationPlan
+                && error.path() == "representations.sum[0].variant[0].field[0]"
+                && error.message().contains("non-Task")
         }));
 
         let mut immortal_sum = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
@@ -989,7 +1025,7 @@ mod tests {
             error.code() == ValidationCode::RepresentationPlan
                 && error.path() == "representations.sum[0].variant[0].field[0]"
                 && error.message()
-                    == "sum payloads must reference inhabited direct values; Text leaves require ManagedPointer"
+                    == "sum payloads must reference inhabited non-Task direct values; Text leaves require ManagedPointer"
         }));
 
         let mut transparent = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
