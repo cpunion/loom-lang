@@ -51,7 +51,7 @@ export function checkReleaseWorkflow({ ci, release, bootstrap, argumentTest }) {
       errors.push(`${label}: duplicates the pinned LLVM download owned by ${bootstrapName}`);
     }
     if (source.includes("https://gitlab.gnome.org/GNOME/libxml2/")) {
-      errors.push(`${label}: duplicates the pinned libxml2 download owned by ${bootstrapName}`);
+      errors.push(`${label}: restores the retired static libxml2 rebuild`);
     }
   }
 
@@ -81,15 +81,22 @@ export function checkReleaseWorkflow({ ci, release, bootstrap, argumentTest }) {
   for (const expected of [
     "$llvmVersion = \"19.1.7\"",
     "$llvmArchiveSha256 = \"b4557b4f012161f56a2f5d9e877ab9635cafd7a08f7affe14829bd60c9d357f0\"",
-    "$libxmlVersion = \"2.9.12\"",
-    "$libxmlArchiveSha256 = \"98bfa7a9a5e2a75638422050740448ee9f02bf4dc2075c9822d7747d5ff9e617\"",
     "& curl.exe @downloadArguments",
     "& tar.exe @unpackArguments",
-    "& tar.exe @libxmlUnpackArguments",
-    "& cmake.exe @libxmlOptions",
-    "& cmake.exe @buildArguments",
+    '$llvmCDll = Join-Path $InstallRoot "bin\\LLVM-C.dll"',
+    '$llvmCImportLibrary = Join-Path $InstallRoot "lib\\LLVM-C.lib"',
+    '$llvmLicense = Join-Path $InstallRoot "include\\llvm\\Support\\LICENSE.TXT"',
+    "& $llvmConfig --shared-mode",
+    "& $llvmConfig --targets-built",
   ]) {
     requireText(errors, bootstrap, expected, "Windows LLVM bootstrap");
+  }
+  for (const retired of ["$libxmlVersion", "libxml2", "cmake.exe"]) {
+    if (bootstrap.includes(retired)) {
+      errors.push(
+        `Windows LLVM bootstrap: must use the official LLVM-C DLL/import library instead of ${JSON.stringify(retired)}`,
+      );
+    }
   }
   for (const parameter of ["CacheRoot", "InstallRoot", "EnvironmentFile", "PathFile"]) {
     requireText(errors, bootstrap, `[string]$${parameter}`, "Windows LLVM bootstrap");
