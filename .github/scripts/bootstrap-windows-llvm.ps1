@@ -112,7 +112,7 @@ Write-Host "LLVM build mode: $buildMode"
 Write-Host "LLVM C++ flags: $compilerFlags"
 $llvmCDll = Join-Path $InstallRoot "bin\LLVM-C.dll"
 $llvmCImportLibrary = Join-Path $InstallRoot "lib\LLVM-C.lib"
-$llvmLicense = Join-Path $InstallRoot "LICENSE.TXT"
+$llvmLicense = Join-Path $InstallRoot "include\llvm\Support\LICENSE.TXT"
 if (-not (Test-Path $llvmCDll -PathType Leaf) -or (Get-Item $llvmCDll).Length -eq 0) {
   throw "the official LLVM archive is missing LLVM-C.dll"
 }
@@ -123,7 +123,7 @@ if (-not (Test-Path $llvmCImportLibrary -PathType Leaf) -or
 Write-Host "LLVM-C.dll: $((Get-Item $llvmCDll).Length) bytes"
 Write-Host "LLVM-C.lib: $((Get-Item $llvmCImportLibrary).Length) bytes"
 if (-not (Test-Path $llvmLicense -PathType Leaf) -or (Get-Item $llvmLicense).Length -eq 0) {
-  throw "the official LLVM archive is missing LICENSE.TXT"
+  throw "the official LLVM archive is missing include\llvm\Support\LICENSE.TXT"
 }
 $targetsBuilt = (& $llvmConfig --targets-built).Trim() -split '\s+' | Sort-Object -Unique
 $expectedTargets = @("AArch64", "ARM", "X86")
