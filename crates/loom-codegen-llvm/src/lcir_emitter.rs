@@ -3885,7 +3885,11 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         let slots = self.root_plan.slots().to_vec();
         let slot_array = self.prepare_root_cells(entry, &slots)?;
         let descriptor = self.emit_root_descriptor(slots.len())?;
-        self.link_root_frame(descriptor, slot_array)
+        self.link_root_frame(descriptor, slot_array)?;
+        if self.coroutine.is_none() {
+            self.blocks[entry.index()] = self.current_block()?;
+        }
+        Ok(())
     }
 
     fn prepare_resource_close_cells(&mut self) -> Result<(), CodegenError> {
