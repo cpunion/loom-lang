@@ -2201,6 +2201,61 @@ pub fn main() Unit {
 }
 
 #[test]
+fn portable_generic_record_proof_rechecks_use_concrete_contract_types() {
+    let source = r#"module portable_generic_proof
+
+record Guarded[Label, Payload] {
+    label Label
+    payload Option[Payload]
+    marker Float
+
+    invariant self.marker >= 0.0 || match self.payload {
+        Some(value) => true
+        None => true
+    }
+}
+
+fn wrap[T](value T) Guarded[Text, T] {
+    Guarded { label = "typed", payload = Some(value), marker = 9.0 }
+}
+
+pub fn main() Unit {
+    discard wrap(7)
+    Unit
+}
+"#;
+    let fresh = compile(source);
+    let bytes = loom_mir::encode_interpreted_executable_artifact(&fresh, "main")
+        .expect("encode portable generic proof artifact");
+    let (decoded, entry) = loom_mir::decode_interpreted_executable_artifact(&bytes)
+        .expect("decode portable generic proof artifact");
+    assert!(decoded.serialized_construction_proofs_were_distrusted());
+    let decoded_debug = format!("{decoded:#?}");
+    assert!(
+        decoded_debug.contains("construction: Recheck"),
+        "{decoded_debug}"
+    );
+
+    let outcome = lower_typed_artifact(
+        &decoded,
+        &SourceArtifactRequest::Run { entry },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("classify decoded generic proof replay");
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("generic proof rechecks must use typed LCIR: {outcome:?}")
+    };
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("[Text,Int]"), "{dump}");
+    assert_eq!(
+        dump.matches("runtime ArtifactProofRejected").count(),
+        1,
+        "{dump}"
+    );
+    assert_eq!(dump.matches("invariant_record.proven").count(), 1, "{dump}");
+}
+
+#[test]
 fn generic_invariant_and_refined_record_instantiations_lower_directly() {
     let source = r"module generic_products
 

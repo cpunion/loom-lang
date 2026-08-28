@@ -254,13 +254,16 @@ artifact, or runtime compatibility.
   collection counts, or nested business data. This advances interpreted MIR to
   version 23; persistent-cache schema 3 remains valid because checked-MIR cache
   envelopes independently carry the artifact version.
-- Nongeneric portable refined and invariant proof rechecks now remain on the
-  typed LCIR route. The embedded predicate executes before nominal publication,
-  rejection produces the canonical `ArtifactProofRejected` `RuntimeFault` with
-  the exact construction span, and lexical cleanup uses the existing typed
-  fault edge. This advances the LCIR dump to 18, artifact identity to schema
-  19, LCIR native-object domain to v15, and LLVM object-cache domain to v20;
-  the runtime ABI is unchanged.
+- Portable refined and concrete invariant-record proof rechecks now remain on
+  the typed LCIR route, including generic record instantiations. Generic
+  function arguments and record-definition parameters are substituted in
+  their separate namespaces, including lexical contract-match bindings. The
+  embedded predicate executes before nominal publication, rejection produces
+  the canonical `ArtifactProofRejected` `RuntimeFault` with the exact
+  construction span, and lexical cleanup uses the existing typed fault edge.
+  The original nongeneric slice advanced the LCIR dump to 18, artifact identity
+  to schema 19, LCIR native-object domain to v15, and LLVM object-cache domain
+  to v20; the generic coverage expansion changes no format or runtime ABI.
 - Nongeneric refined and invariant runtime construction now remains on typed
   LCIR and returns the exact `Result[..., ConstraintError]`. Rejection builds
   the validated six-field, disclosure-safe error value; acceptance publishes
@@ -367,8 +370,10 @@ artifact, or runtime compatibility.
   predicate or invariant, while proof-bearing persistent compiler-cache layers
   rebuild from source to preserve cold/warm route and optimization behavior.
 - Fresh-source proven refinements and record invariants use zero-check typed
-  LCIR representations. Serialized proof rechecks atomically select the legacy
-  route and retain canonical `ArtifactProofRejected` behavior.
+  LCIR representations. Serialized proof rechecks preserve concrete nominal
+  identity and use guarded typed LCIR whenever their representation and
+  contract shape are supported; rejection retains canonical
+  `ArtifactProofRejected` behavior.
 - Reachable direct generic calls now form one bounded, deterministic LCIR
   instance closure with exact type and static-witness identity. Supported
   instances use direct typed LLVM signatures; nonregular or over-budget

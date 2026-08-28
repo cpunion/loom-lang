@@ -204,11 +204,13 @@ Fresh-source proven record invariants and refined predicates do not add an LLVM
 wrapper or check. LCIR retains their distinct semantic types and proof opcodes,
 while the emitter forwards the already established physical SSA value. A
 refined scalar therefore uses the base scalar ABI; a refined product uses the
-base product ABI; and an invariant record uses its field product ABI. Unknown
-construction proofs still return language `Result` values on the legacy route.
-Serialized proof rechecks retain their nominal result shape but also use the
-legacy route, where failure is the canonical `ArtifactProofRejected` runtime
-fault.
+base product ABI; and an invariant record uses its field product ABI. Supported
+nongeneric runtime construction returns the exact language `Result` value on
+typed LCIR; generic or unsupported-shape runtime construction remains atomic
+fallback. Serialized refined and concrete invariant-record proof rechecks
+retain their nominal result shape on typed LCIR, guard publication with the
+canonical `ArtifactProofRejected` runtime fault, and preserve concrete generic
+contract types without a universal value.
 
 The current debug-info boundary describes that physical ABI as well. A
 transparent scalar is reported as its base scalar debug type, and transparent
@@ -587,7 +589,7 @@ versioned as `loom-llvm-object-cache-v33` and never suppresses fingerprint
 errors.
 
 The current LCIR domains encode the explicit transitive effect lattice,
-canonical typed fault metadata, nongeneric proof-replay guards,
+canonical typed fault metadata, concrete proof-replay guards,
 source-contract placement, direct managed
 Text semantics, managed leaves inside unboxed products and closed sums,
 monomorphized managed Lists, compiler-private concrete TextMaps, the generic

@@ -504,13 +504,17 @@ record construction, whole-value copy and move, nested field read/write,
 tuple/record nesting, product block parameters, parameters, returns, and
 loop-carried products lower directly to SSA. Compile-time-proven
 refined construction, exact unrefinement, and compile-time-proven record
-invariants are representation-preserving typed operations. Unknown refined
-predicates and record invariants remain normal `Result[..., ConstraintError]`
-constructions and select whole-artifact fallback. A portable MIR proof replay
-(`ConstructionMode::Recheck`) for a nongeneric refined type or invariant
-record re-evaluates the embedded predicate in typed LCIR, raises the canonical
-`ArtifactProofRejected` runtime fault on rejection, and creates the established
-nominal value only in the accepted block. Generic proof replay remains an
+invariants are representation-preserving typed operations. Unknown nongeneric
+refined predicates and record invariants remain normal typed
+`Result[..., ConstraintError]` constructions; generic or unsupported-shape
+runtime construction selects whole-artifact fallback. A portable MIR proof
+replay (`ConstructionMode::Recheck`) for a refined type or concrete
+invariant-record instantiation re-evaluates the embedded predicate in typed
+LCIR, raises the canonical `ArtifactProofRejected` runtime fault on rejection,
+and creates the established nominal value only in the accepted block. Generic
+invariant records first apply the current function-instance substitution and then their
+independent definition-parameter substitution to fields and lexical contract
+bindings. Unsupported concrete representations or contract shapes remain an
 explicit `SerializedProofRecheck` fallback. Enum construction uses
 `SumConstruct`. Exhaustive matches lower through a bounded decision DAG
 which preserves source arm order, evaluates the scrutinee once, compares scalar
@@ -1024,13 +1028,14 @@ await Tasks, including through an executor-dependent callee. An active
 source-fault cleanup likewise cannot await again before `resume_fault`.
 
 Managed values outside the admitted Text, List, and TextMap graphs, open or
-recursive enums, generic or unsupported-shape runtime construction and proof
-replay, incomplete dynamic witness catalogs, derived dynamic proof conversion,
-contracts over unsupported value shapes, and coroutine forms outside the
-bounded typed slice are not implemented. Nongeneric
+recursive enums, generic or unsupported-shape runtime construction,
+unsupported-shape proof replay, incomplete dynamic witness catalogs, derived
+dynamic proof conversion, contracts over unsupported value shapes, and
+coroutine forms outside the bounded typed slice are not implemented. Nongeneric
 refined and invariant runtime construction is direct typed CFG returning the
-exact `Result[..., ConstraintError]`; portable nongeneric proof replay uses a
-canonical runtime-fault assertion before nominal publication. The current CFG
+exact `Result[..., ConstraintError]`; portable refined and concrete
+invariant-record proof replay uses a canonical runtime-fault assertion before
+nominal publication. The current CFG
 represents direct products, concrete closed sums, both direct Text modes, and
 the scalar operations and fault-state transitions which later slices use.
 

@@ -111,6 +111,14 @@ checked predicate is explicit typed CFG, rejection raises the canonical
 created only on the accepted edge. This reuses the existing fault-context ABI
 and changes no runtime component.
 
+Concrete generic invariant-record proof replay later reuses that same LCIR
+assertion and protected product construction. It changes route coverage rather
+than representation or serialization: exact record arguments, substituted
+field types, and substituted lexical contract bindings are already present in
+the existing checked MIR and LCIR identities. The LCIR dump, artifact schema,
+native-object domain, object-cache domain, and runtime ABI therefore do not
+advance again.
+
 Typed scalar builtins advance the LCIR dump to 19, artifact schema to 20,
 native-object domain to v16, and LLVM object-cache domain to v21. `ParseInt`
 and `ParseFloat` reuse their existing closed status ABI; `IsFinite` and
