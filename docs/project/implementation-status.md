@@ -11,18 +11,23 @@ long-term compatibility guarantee.
 | --- | --- | --- | --- | --- | --- |
 | Linux x86-64 (Ubuntu 24.04) | yes | yes | yes | host and tested 64-bit alternate-object path | yes |
 | macOS arm64 (macOS 15) | yes | yes | yes | host and tested 64-bit alternate-object path | yes |
-| Windows x86-64 (Windows 2025) | configured native job | complete workspace | LLVM 19 native closure configured | host object path | `.zip` workflow entry configured; no verified archive |
+| Windows x86-64 (Windows 2025) | real runner, full pass pending | check/lint and most workspace tests verified | runtime pack plus typed object/link/run paths verified; complete job pending | host object path | `.zip` workflow entry configured; no verified archive |
 | Other LLVM 64-bit triples | no general CI claim | host-dependent | only with a matching validated runtime bundle and linker | possible when LLVM provides the target | no |
 | 32-bit triples | no | not a native claim | no runtime/executable support | feature-dependent direct LCIR object only when LLVM provides the target; `Text` and the legacy route reject | no |
 
 The Windows CI job installs LLVM 19.1.7 and Rust 1.88, checks, lints, tests, and
 builds the complete workspace, and runs the Core 0.1-0.3 check/build/test/run
-loops on both backends. Native builds additionally require the expected `.exe`
-and `.pdb` outputs, parse the PDB, and inspect a compiler-emitted COFF object for
-CodeView sections before executing the artifact. The release job reuses the
-same pinned LLVM bootstrap and is configured to stage `loomc.exe`,
-`loom-lsp.exe`, the compiler's `LLVM-C.dll`, and `loom_runtime.lib`, execute
-Core, C3, standard-library, and adjacent-runtime gates, and hash a `.zip`.
+loops on both backends. A real Windows runner has verified the LLVM bootstrap,
+compiler check/lint, runtime packing, target-machine construction, and most
+typed native CLI loops. Its last incomplete run exposed a one-MiB process-stack
+failure while lowering a long logical chain; lowering now balances associative
+short-circuit chains and the job runs that exact TextMap closure before the full
+workspace. Native builds additionally require the expected `.exe` and `.pdb`
+outputs, parse the PDB, and inspect a compiler-emitted COFF object for CodeView
+sections before executing the artifact. The release job reuses the same pinned
+LLVM bootstrap and is configured to stage `loomc.exe`, `loom-lsp.exe`, the
+compiler's `LLVM-C.dll`, and `loom_runtime.lib`, execute Core, C3,
+standard-library, and adjacent-runtime gates, and hash a `.zip`.
 These configurations become Windows toolchain and archive claims only after
 successful Windows runner evidence; source-level cross-checks on another host
 are not described as Windows execution.
@@ -55,7 +60,7 @@ The following repository fixtures are run through real compiler stages:
 | `fixtures/lcir-managed-products` | unboxed nested record/tuple products with managed Text leaves, direct product calls/returns, semantic aliases, and real check/build/test/run commands |
 | `fixtures/lcir-managed-sums` | closed unboxed sums with active-variant Text roots, nested product payloads, contract matches over managed leaves, forced collection between call arguments, and real check/build/test/run commands |
 | `fixtures/lcir-managed-lists` | direct repeated storage for scalar/Text/product/sum/nested-List elements, immutable aliases, checked reads, geometric unique append, moving-GC roots, and real check/build/test/run commands |
-| `fixtures/lcir-typed-textmap` | compiler-private direct `TextMap[V]` storage for scalar/Text/product/sum/List/nested-map values, immutable insertion/replacement/removal, containment, exact `Option[V]` lookup, insertion-order-independent structural equality, removal during forced moving-GC relocation, interpreter/legacy/typed differential execution, release IR, Linux/MSVC objects, 32-bit fail-close classification, and real `check/build/test/run` commands |
+| `fixtures/lcir-typed-textmap` | compiler-private direct `TextMap[V]` storage for scalar/Text/product/sum/List/nested-map values, immutable insertion/replacement/removal, containment, exact `Option[V]` lookup, insertion-order-independent structural equality, removal during forced moving-GC relocation, interpreter/legacy/typed differential execution, release IR, Linux/MSVC objects, 32-bit fail-close classification, real `check/build/test/run` commands, and a one-MiB compiler-stack closure for its long logical chain |
 | `fixtures/lcir-typed-async` | checked stackless coroutine frames for infallible scalar/product/Text async functions, typed Task handles and one-child await joins, exact suspension root maps, forced parent-Text relocation, interpreter/legacy/typed differential execution, Linux/MSVC objects, and real `check/build/test/run` commands |
 | `fixtures/lcir-async-managed-collections` | exact one-pointer `List[T]` and compiler-private `TextMap[V]` values in async parameters, results, nested products, and live suspension rows; moving-GC pressure, checked frame bitmaps, debug metadata, Linux/MSVC objects, 32-bit fail-close classification, and real `check/build/test/run` commands |
 | `fixtures/lcir-typed-sleep` | first-class checked `Task.sleep` with `Int` and `Duration` inputs, zero and positive deadlines, managed values live across later awaits, and typed-LCIR main/test native execution |
@@ -141,7 +146,10 @@ shapes.
 Linux CI runs formatting, workspace check, Clippy with warnings denied, all
 workspace tests and builds, dual-backend fixture loops, standard-library
 differential tests, runtime-bundle tests, Linux DWARF inspection, the controlled
-`loom-quality` runner, and three short fuzz targets. The separate macOS job
+`loom-quality` runner, and three short fuzz targets. Before the full workspace
+test, Linux repeats the typed TextMap `check/build/test/run` loop with a one-MiB
+process stack; Windows runs the same focused closure on its native compiler
+stack. The separate macOS job
 verifies the dSYM metadata and runs the LLDB parameter and step-out inspection.
 The controlled runner prepares every native object through the production
 router, and requires Core 0.1, Core 0.2, Core 0.3, the async generic-contract

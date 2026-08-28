@@ -50,6 +50,36 @@ search profile directories for an archive, because such a file can be stale or
 belong to another Cargo invocation. Run a single Rust test by adding its name
 and `--exact` when appropriate.
 
+### Compiler-stack closure
+
+The public syntax nesting limit must remain usable on the one-MiB process stack
+used by the Windows compiler. The focused lowering test constructs near-limit
+`&&`/`||` expressions and contracts inside an explicitly sized thread, verifies
+operand order, and requires logarithmic MIR depth:
+
+```sh
+cargo +1.88.0 test --locked -p loom-lowering --test source_programs \
+  logical_chains_lower_on_one_mib_stack_and_remain_balanced -- --exact
+```
+
+On Unix, reproduce the complete typed fixture boundary after preparing the
+runtime bundle:
+
+```sh
+(
+  ulimit -s 1024
+  target/debug/loomc --no-cache check fixtures/lcir-typed-textmap
+  target/debug/loomc --no-cache build --emit object \
+    --output target/low-stack-textmap.o fixtures/lcir-typed-textmap
+  target/debug/loomc --no-cache test fixtures/lcir-typed-textmap
+  target/debug/loomc --no-cache run fixtures/lcir-typed-textmap
+)
+```
+
+Do not raise the executable stack reserve to mask recursive compiler traversal.
+Prefer an iterative visitor or a semantics-preserving bounded-depth IR shape,
+then keep the low-stack source loop as the regression boundary.
+
 ## End-to-end source loop
 
 For a language fixture, exercise both backends rather than only parsing it:
@@ -139,8 +169,9 @@ replace focused tests and is not a general benchmark.
 Linux runs the full workspace and all principal fixture gates. macOS runs the
 full workspace, standard-library differential tests, and the C3 dual-backend
 loop. Complete Windows CI and release jobs are configured, including a
-PowerShell argument-binding probe for their shared pinned LLVM bootstrap, but
-they are not verified platform or release evidence until real Windows runner
-and archive results are recorded. See
+PowerShell argument-binding probe for their shared pinned LLVM bootstrap. A
+real Windows runner has verified the bootstrap and most of the native workspace;
+the platform and release remain unverified until the complete job and archive
+both pass. See
 [Implementation status](../project/implementation-status.md) before adding a
 platform claim.
