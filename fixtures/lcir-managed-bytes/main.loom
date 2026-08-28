@@ -1,0 +1,77 @@
+module lcir_managed_bytes
+
+fn requireByte(bytes Bytes, index Int, expected Int) {
+    match bytes.get(index) {
+        Some(value) => { assert value == expected }
+        None => { assert false }
+    }
+}
+
+fn requireMissing(bytes Bytes, index Int) {
+    match bytes.get(index) {
+        None => {}
+        Some(_) => { assert false }
+    }
+}
+
+fn verifyBytes() {
+    let text = "A界🙂"
+    let encoded = text.encode_utf8()
+    let encodedLength = encoded.length()
+    assert encodedLength == 8
+
+    requireByte(encoded, 0, 65)
+    requireByte(encoded, 1, 231)
+    requireByte(encoded, 2, 149)
+    requireByte(encoded, 3, 140)
+    requireByte(encoded, 4, 240)
+    requireByte(encoded, 5, 159)
+    requireByte(encoded, 6, 153)
+    requireByte(encoded, 7, 130)
+    requireMissing(encoded, -1)
+    requireMissing(encoded, 8)
+
+    let same = "A界🙂".encode_utf8()
+    let different = "A界🙃".encode_utf8()
+    assert encoded == same
+    assert encoded != different
+
+    let empty = "".encode_utf8()
+    let emptyLength = empty.length()
+    let prefixed = empty.append(encoded)
+    let suffixed = encoded.append(empty)
+    assert emptyLength == 0
+    assert prefixed == encoded
+    assert suffixed == encoded
+
+    let appended = encoded.append("!".encode_utf8())
+    let appendedLength = appended.length()
+    assert appendedLength == 9
+    requireByte(appended, 8, 33)
+    match appended.decode_utf8() {
+        Ok(decoded) => { assert decoded == "A界🙂!" }
+        Err(InvalidUtf8) => { assert false }
+    }
+}
+
+fn verifyMovingBytes() {
+    var current = "".encode_utf8()
+    for index in 0..512 {
+        let retained = current
+        current = current.append("x".encode_utf8())
+        let retainedLength = retained.length()
+        assert retainedLength == index
+    }
+    let currentLength = current.length()
+    assert currentLength == 512
+}
+
+pub fn main() {
+    verifyBytes()
+    verifyMovingBytes()
+}
+
+test fn typedBytes() {
+    verifyBytes()
+    verifyMovingBytes()
+}
