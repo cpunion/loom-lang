@@ -10,13 +10,13 @@ use loom_codegen_ir::{
     ReachableSourceGraph, ResourceLimitCode, SourceArtifactRequest, SourceRoots, SupportReport,
     TargetLayout, analyze_source_reachability, lower_typed_artifact, write_artifact_identity,
 };
-use loom_mir::{CheckedProgram, Type};
+use loom_mir::CheckedProgram;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::codegen::{
     DebugSource, EmitKind, EmitOptions, NativeObjectArtifact, NativeObjectOptions,
-    legacy_object_fingerprint_with_target,
+    legacy_object_fingerprint_with_target, validate_legacy_root_signatures,
 };
 use crate::emitter::Emitter;
 use crate::lcir_emitter::LcirEmitter;
@@ -451,7 +451,14 @@ fn validated_legacy_roots(
             SourceRoots::for_tests(mir)
         }
     };
-    validate_root_signatures(mir, options, &roots)?;
+    if let Err(error) = validate_legacy_root_signatures(mir, options, &roots) {
+        let code = if error.code() == "InvalidFunctionReference" {
+            "NativePreparationInvalidRootFunction"
+        } else {
+            "NativePreparationRootSignature"
+        };
+        return Err(NativePreparationError::invalid_root(code, error.message()));
+    }
     Ok(roots)
 }
 
@@ -460,61 +467,6 @@ fn raw_roots(mir: &CheckedProgram, options: &EmitOptions) -> Option<SourceRoots>
         EmitKind::Run { entry } => SourceRoots::for_entry(mir, entry),
         EmitKind::Tests => Some(SourceRoots::for_tests(mir)),
     }
-}
-
-fn validate_root_signatures(
-    mir: &CheckedProgram,
-    options: &EmitOptions,
-    roots: &SourceRoots,
-) -> Result<(), NativePreparationError> {
-    let tests = matches!(options.kind, EmitKind::Tests);
-    for root in roots.functions() {
-        let function = mir.function(*root).ok_or_else(|| {
-            NativePreparationError::invalid_root(
-                "NativePreparationInvalidRootFunction",
-                format!("artifact root function #{} does not exist", root.0),
-            )
-        })?;
-        let hidden_inputs = function.type_parameters != 0
-            || !function.witness_params.is_empty()
-            || function.witness_prefix_count != 0
-            || function.receiver.is_some();
-        let invalid = if tests {
-            hidden_inputs
-                || !function.params.is_empty()
-                || !is_valid_test_return(mir, &function.return_ty)
-        } else {
-            hidden_inputs || !function.params.is_empty() || function.return_ty != Type::Unit
-        };
-        if invalid {
-            let expected = if tests {
-                "have no inputs and return Unit or Result[Unit, E]"
-            } else {
-                "have signature () -> Unit"
-            };
-            return Err(NativePreparationError::invalid_root(
-                "NativePreparationRootSignature",
-                format!("artifact root `{}` must {expected}", function.name),
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn is_valid_test_return(program: &CheckedProgram, ty: &Type) -> bool {
-    if *ty == Type::Unit {
-        return true;
-    }
-    let Some(result) = program.prelude.result else {
-        return false;
-    };
-    matches!(
-        ty,
-        Type::Nominal(type_id, arguments)
-            if *type_id == result
-                && arguments.len() == 2
-                && arguments.first() == Some(&Type::Unit)
-    )
 }
 
 fn lcir_options(options: &EmitOptions) -> NativeObjectOptions {

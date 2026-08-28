@@ -4,7 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
 
 use inkwell::targets::TargetMachine;
-use loom_codegen_llvm::{EmitOptions, OptimizationProfile, emit_native_object, target_identity};
+use loom_codegen_llvm::{
+    EmitOptions, OptimizationProfile, emit_native_object, native_object_fingerprint,
+    target_identity,
+};
 use loom_driver::AnalysisHost;
 use loom_interpreter::Interpreter;
 use loom_mir::{
@@ -13,12 +16,56 @@ use loom_mir::{
 };
 
 mod support;
-use support::emit_native;
+#[cfg(unix)]
+use support::run_with_closed_stdout;
+use support::{emit_native, run_with_read_only_stdout};
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 const CROSS_TRIPLE: &str = "x86_64-unknown-linux-gnu";
 #[cfg(not(all(target_arch = "aarch64", target_os = "linux")))]
 const CROSS_TRIPLE: &str = "aarch64-unknown-linux-gnu";
+
+fn assert_exact_stdout_ir(ir: &str) {
+    assert!(ir.contains("@loom_runtime_stdout_write_v1"), "{ir}");
+    for forbidden in ["@puts", "@printf", "@loom.runtime.print"] {
+        assert!(!ir.contains(forbidden), "unexpected `{forbidden}`:\n{ir}");
+    }
+}
+
+#[test]
+fn raw_legacy_codegen_rejects_non_language_run_roots_before_fingerprinting_or_emission() {
+    for (label, source) in [
+        (
+            "non-unit",
+            "module invalid_result\n\npub fn main() Int { 1 }\n",
+        ),
+        (
+            "parameter",
+            "module invalid_parameter\n\npub fn main(value Int) Unit { discard value\nUnit }\n",
+        ),
+    ] {
+        let project = tempfile::tempdir().expect("create invalid root project");
+        std::fs::write(project.path().join("main.loom"), source)
+            .expect("write invalid root source");
+        let snapshot = AnalysisHost::new(project.path())
+            .expect("load invalid root project")
+            .snapshot()
+            .expect("analyze invalid root project");
+        assert!(
+            !snapshot.has_errors(),
+            "{label}: {:#?}",
+            snapshot.diagnostics()
+        );
+        let program = snapshot.executable().expect("lower invalid root MIR");
+        let options = EmitOptions::run("main");
+        let fingerprint = native_object_fingerprint(program, &options)
+            .expect_err("invalid raw root cannot receive an object identity");
+        assert_eq!(fingerprint.code(), "InvalidRootSignature", "{label}");
+        let emission = emit_native_object(program, &project.path().join("invalid.o"), &options)
+            .expect_err("invalid raw root cannot reach LLVM emission");
+        assert_eq!(emission.code(), "InvalidRootSignature", "{label}");
+    }
+}
 
 #[test]
 fn emits_links_and_runs_a_native_unit_entry() {
@@ -30,11 +77,75 @@ fn emits_links_and_runs_a_native_unit_entry() {
     assert_eq!(artifact.functions, 1);
     let output = Command::new(&executable).output().expect("run executable");
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(String::from_utf8(output.stdout).unwrap(), "Unit\n");
+    assert_eq!(output.stdout, b"Unit\n");
 }
 
 #[test]
-fn root_result_is_consumed_before_its_runtime_is_destroyed() {
+fn legacy_run_returns_failure_when_exact_stdout_is_not_writable() {
+    let program = unit_program();
+    let directory = tempfile::tempdir().expect("create temp directory");
+    let executable = directory.path().join("program");
+    let ir = directory.path().join("program.ll");
+    let mut options = EmitOptions::run("main");
+    options.emit_ir = Some(ir.clone());
+    emit_native(&program, &executable, &options).expect("emit legacy native executable");
+
+    let llvm = std::fs::read_to_string(ir).expect("read legacy stdout LLVM IR");
+    assert_exact_stdout_ir(&llvm);
+    let write = llvm
+        .lines()
+        .find(|line| line.contains("call i32 @loom_runtime_stdout_write_v1"))
+        .expect("legacy Unit harness must call the exact stdout ABI");
+    assert!(
+        write.contains("i64 5"),
+        "Unit plus LF must use the exact five-byte length: {write}"
+    );
+
+    let failed = run_with_read_only_stdout(&executable, directory.path());
+    assert!(
+        !failed.status.success(),
+        "legacy harness ignored an exact stdout write failure: {failed:?}"
+    );
+
+    #[cfg(unix)]
+    {
+        let closed = run_with_closed_stdout(&executable);
+        assert_eq!(
+            closed.status.code(),
+            Some(loom_runtime_abi::STDOUT_WRITE_FAILED),
+            "legacy harness allowed SIGPIPE to bypass the stdout ABI: {closed:?}"
+        );
+    }
+}
+
+#[test]
+fn legacy_passing_tests_return_failure_when_exact_stdout_is_not_writable() {
+    let program = unit_test_program();
+    let directory = tempfile::tempdir().expect("create temp directory");
+    let executable = directory.path().join("tests");
+    let ir = directory.path().join("tests.ll");
+    let mut options = EmitOptions::tests();
+    options.emit_ir = Some(ir.clone());
+    emit_native(&program, &executable, &options).expect("emit legacy native tests executable");
+
+    let llvm = std::fs::read_to_string(ir).expect("read legacy tests stdout LLVM IR");
+    assert_exact_stdout_ir(&llvm);
+    let normal = Command::new(&executable)
+        .output()
+        .expect("run legacy tests executable");
+    assert!(normal.status.success(), "{normal:?}");
+    assert_eq!(normal.stdout, b"passed sample.main\n");
+
+    let failed = run_with_read_only_stdout(&executable, directory.path());
+    assert!(
+        !failed.status.success(),
+        "legacy tests harness ignored a passing-line stdout failure: {failed:?}"
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn unit_output_runs_after_its_runtime_is_destroyed() {
     let source = r"module root_result_lifetime
 
 pub fn main() Unit {
@@ -69,17 +180,19 @@ test fn list_result_lifetime() {
     .expect("emit root lifetime executable");
 
     let llvm = std::fs::read_to_string(ir).expect("read root lifetime LLVM IR");
-    let print = llvm
-        .find("call void @loom.runtime.print")
-        .expect("root must consume its result");
-    let destroy = llvm[print..]
+    let success = llvm.find("run.success:").expect("run success block");
+    let success = &llvm[success..];
+    let destroy = success
         .find("call i32 @loom_runtime_destroy_v1")
-        .map(|offset| print + offset)
         .expect("allocating root must release its runtime");
+    let output = success
+        .find("call i32 @loom_runtime_stdout_write_v1")
+        .expect("Unit root must write its fixed result");
     assert!(
-        print < destroy,
-        "root runtime was destroyed before result use:\n{llvm}"
+        destroy < output,
+        "Unit output must not keep the root runtime active:\n{success}"
     );
+    assert_exact_stdout_ir(&llvm);
     assert!(llvm.contains("call ptr @loom_runtime_create_v1"), "{llvm}");
     assert!(
         llvm.contains("call i32 @loom_runtime_activate_v1"),
@@ -107,7 +220,7 @@ test fn list_result_lifetime() {
         .output()
         .expect("run root lifetime executable");
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(String::from_utf8(output.stdout).unwrap(), "Unit\n");
+    assert_eq!(output.stdout, b"Unit\n");
 
     let tests = project.path().join("tests");
     let tests_ir = project.path().join("tests.ll");
@@ -501,12 +614,14 @@ fn contracted(value Int) Int
     value + 1
 }
 
-pub fn main() Int {
+pub fn main() Unit {
     let recursive = fibonacci(20)
     assert recursive == 6765
     let negative = checkedFibonacci(-1)
     assert negative == -1
-    contracted(41)
+    let answer = contracted(41)
+    assert answer == 42
+    Unit
 }
 
 fn checkedFibonacci(value Int) Int {
@@ -660,7 +775,7 @@ fn checkedFibonacci(value Int) Int {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-    assert_eq!(output.stdout, b"42\n");
+    assert_eq!(output.stdout, b"Unit\n");
 
     let overflow_source = r"module scalar_int_fault
 
@@ -668,8 +783,9 @@ fn checkedAdd(left Int, right Int) Int {
     left + right
 }
 
-pub fn main() Int {
-    checkedAdd(9223372036854775807, 1)
+pub fn main() Unit {
+    discard checkedAdd(9223372036854775807, 1)
+    Unit
 }
 ";
     let overflow_project = tempfile::tempdir().expect("create scalar Int fault project");
@@ -707,8 +823,9 @@ fn amplified(value Int) Int {
     }
 }
 
-pub fn main() Int {
-    amplified(4)
+pub fn main() Unit {
+    discard amplified(4)
+    Unit
 }
 ";
     let recursive_overflow_project =
@@ -786,8 +903,9 @@ fn choose(value Int) Int {
     }
 }
 
-pub fn main() Int {
-    choose(42)
+pub fn main() Unit {
+    discard choose(42)
+    Unit
 }
 ";
     let project = tempfile::tempdir().expect("create pure scalar Int project");
@@ -849,7 +967,7 @@ pub fn main() Int {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-    assert_eq!(output.stdout, b"42\n");
+    assert_eq!(output.stdout, b"Unit\n");
 }
 
 #[test]
@@ -862,7 +980,10 @@ fn copiedLiteralLength() Int {
     copied.length()
 }
 
-pub fn main() Int { copiedLiteralLength() }
+pub fn main() Unit {
+    discard copiedLiteralLength()
+    Unit
+}
 "#;
     let (project, _program, llvm) = emit_source_with_ir(source);
     let copied = llvm_native_function(&llvm, "pure_text_leaf_copiedLiteralLength");
@@ -882,7 +1003,7 @@ pub fn main() Int { copiedLiteralLength() }
         .output()
         .expect("run context-free Text leaf executable");
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(output.stdout, b"4\n");
+    assert_eq!(output.stdout, b"Unit\n");
 }
 
 #[test]
@@ -897,10 +1018,11 @@ fn moveCall(value Pair) Int { read(value) }
 
 fn copyCall(value Pair) Int { read(value) }
 
-pub fn main() Int {
+pub fn main() Unit {
     let moved = moveCall(Pair { value = 41 })
     let copied = copyCall(Pair { value = 42 })
-    moved + copied
+    discard moved + copied
+    Unit
 }
 ";
     let project = tempfile::tempdir().expect("create universal call project");
@@ -958,7 +1080,7 @@ pub fn main() Int {
         .output()
         .expect("run universal call executable");
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(output.stdout, b"83\n");
+    assert_eq!(output.stdout, b"Unit\n");
 }
 
 #[test]
@@ -3320,7 +3442,7 @@ pub fn main() Unit {
         .output()
         .expect("run construction executable");
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(String::from_utf8(output.stdout).unwrap(), "Unit\n");
+    assert_eq!(output.stdout, b"Unit\n");
 }
 
 #[test]
@@ -3488,7 +3610,7 @@ fn assert_emitted_main_succeeds(project: &tempfile::TempDir) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-    assert_eq!(String::from_utf8(output.stdout).unwrap(), "Unit\n");
+    assert_eq!(output.stdout, b"Unit\n");
 }
 
 fn llvm_any_function<'source>(ir: &'source str, symbol_suffix: &str) -> Option<&'source str> {
@@ -3960,6 +4082,14 @@ fn unit_program() -> CheckedProgram {
         .expect("valid checked unit-program fixture")
 }
 
+fn unit_test_program() -> CheckedProgram {
+    let mut program = unit_program().into_program();
+    program.tests = vec![FunctionId(0)];
+    program
+        .into_checked()
+        .expect("valid checked unit-test-program fixture")
+}
+
 #[test]
 fn core_examples_compile_and_run_as_native_programs() {
     let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -3993,7 +4123,7 @@ fn core_examples_compile_and_run_as_native_programs() {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
-        assert_eq!(String::from_utf8(output.stdout).unwrap(), "Unit\n");
+        assert_eq!(output.stdout, b"Unit\n");
         if let Some(ir) = &options.emit_ir {
             let ir = std::fs::read_to_string(ir).expect("read async LLVM IR");
             assert!(ir.contains("@loom.resume."), "{ir}");
@@ -4110,7 +4240,7 @@ pub async fn main() Unit {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-    assert_eq!(String::from_utf8(output.stdout).unwrap(), "Unit\n");
+    assert_eq!(output.stdout, b"Unit\n");
 }
 
 #[test]
@@ -4182,7 +4312,7 @@ pub async fn main() Unit {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-    assert_eq!(String::from_utf8(output.stdout).unwrap(), "Unit\n");
+    assert_eq!(output.stdout, b"Unit\n");
 }
 
 #[test]
@@ -4257,7 +4387,7 @@ pub async fn main() Unit {{
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-    assert_eq!(String::from_utf8(output.stdout).unwrap(), "Unit\n");
+    assert_eq!(output.stdout, b"Unit\n");
     server.join().expect("join test server");
     assert_eq!(std::fs::read_to_string(file).unwrap(), "hello from loom");
 }
@@ -4357,7 +4487,7 @@ pub async fn main() Unit {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-    assert_eq!(String::from_utf8(output.stdout).unwrap(), "Unit\n");
+    assert_eq!(output.stdout, b"Unit\n");
 }
 
 #[test]

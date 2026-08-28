@@ -38,7 +38,7 @@ use loom_mir::{
 };
 use loom_runtime_abi::{
     GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, PARSE_FLOAT_SYMBOL,
-    PARSE_INT_SYMBOL, SHADOW_STACK_ABI_VERSION, TEXT_OBJECT_ALIGNMENT,
+    PARSE_INT_SYMBOL, SHADOW_STACK_ABI_VERSION, STDOUT_WRITE_SYMBOL, TEXT_OBJECT_ALIGNMENT,
     TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH,
     TEXT_OBJECT_HEADER_SIZE,
 };
@@ -1366,8 +1366,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
 
     fn emit_runtime_helpers(&self) -> Result<(), CodegenError> {
         self.emit_unwrap_helper()?;
-        self.emit_equal_helpers()?;
-        self.emit_print_helper()
+        self.emit_equal_helpers()
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1826,95 +1825,6 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         Ok(())
     }
 
-    fn emit_print_helper(&self) -> Result<(), CodegenError> {
-        let function_type = self
-            .context
-            .void_type()
-            .fn_type(&[self.ptr_type.into()], false);
-        let function =
-            self.module
-                .add_function("loom.runtime.print", function_type, Some(Linkage::Internal));
-        let entry = self.context.append_basic_block(function, "entry");
-        let unit = self.context.append_basic_block(function, "unit");
-        let boolean = self.context.append_basic_block(function, "bool");
-        let integer = self.context.append_basic_block(function, "int");
-        let float = self.context.append_basic_block(function, "float");
-        let text = self.context.append_basic_block(function, "text");
-        let nominal = self.context.append_basic_block(function, "nominal");
-        let dynamic = self.context.append_basic_block(function, "dyn");
-        let done = self.context.append_basic_block(function, "done");
-        self.builder.position_at_end(entry);
-        let value = parameter_pointer(function, 0)?;
-        let tag = self.load_i64_field(self.value_type, value, VALUE_FIELD_TAG, "print.tag")?;
-        self.builder
-            .build_switch(
-                tag,
-                nominal,
-                &[
-                    (self.tag(VALUE_TAG_UNIT), unit),
-                    (self.tag(VALUE_TAG_BOOL), boolean),
-                    (self.tag(VALUE_TAG_INT), integer),
-                    (self.tag(VALUE_TAG_FLOAT), float),
-                    (self.tag(VALUE_TAG_TEXT), text),
-                    (self.tag(VALUE_TAG_DYN), dynamic),
-                ],
-            )
-            .map_err(builder_error)?;
-        self.builder.position_at_end(unit);
-        self.puts("Unit")?;
-        self.branch(done)?;
-        self.builder.position_at_end(boolean);
-        let scalar =
-            self.load_i64_field(self.value_type, value, VALUE_FIELD_SCALAR, "bool.value")?;
-        let is_true = self
-            .builder
-            .build_int_compare(
-                IntPredicate::NE,
-                scalar,
-                self.i64_type.const_zero(),
-                "bool.true",
-            )
-            .map_err(builder_error)?;
-        let print_true = self.context.append_basic_block(function, "print.true");
-        let print_false = self.context.append_basic_block(function, "print.false");
-        self.builder
-            .build_conditional_branch(is_true, print_true, print_false)
-            .map_err(builder_error)?;
-        self.builder.position_at_end(print_true);
-        self.puts("true")?;
-        self.branch(done)?;
-        self.builder.position_at_end(print_false);
-        self.puts("false")?;
-        self.branch(done)?;
-        self.builder.position_at_end(integer);
-        let scalar =
-            self.load_i64_field(self.value_type, value, VALUE_FIELD_SCALAR, "int.value")?;
-        self.printf("%lld\n", &[scalar.into()])?;
-        self.branch(done)?;
-        self.builder.position_at_end(float);
-        let bits = self.load_i64_field(self.value_type, value, VALUE_FIELD_SCALAR, "float.bits")?;
-        let number = self
-            .builder
-            .build_bit_cast(bits, self.context.f64_type(), "float.value")
-            .map_err(builder_error)?;
-        self.printf("%.17g\n", &[number.into()])?;
-        self.branch(done)?;
-        self.builder.position_at_end(text);
-        let (_, _, length) = self.sequence_parts(value, "print.text")?;
-        self.printf("Text(bytes=%lld)\n", &[length.into()])?;
-        self.branch(done)?;
-        self.builder.position_at_end(nominal);
-        let id = self.load_i64_field(self.value_type, value, VALUE_FIELD_NOMINAL, "nominal.id")?;
-        self.printf("type#%lld\n", &[id.into()])?;
-        self.branch(done)?;
-        self.builder.position_at_end(dynamic);
-        self.puts("<dyn>")?;
-        self.branch(done)?;
-        self.builder.position_at_end(done);
-        self.builder.build_return(None).map_err(builder_error)?;
-        Ok(())
-    }
-
     fn libc_memcmp(&self) -> FunctionValue<'ctx> {
         self.module.get_function("memcmp").unwrap_or_else(|| {
             let function_type = self.context.i32_type().fn_type(
@@ -1926,26 +1836,6 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 false,
             );
             self.module.add_function("memcmp", function_type, None)
-        })
-    }
-
-    fn libc_puts(&self) -> FunctionValue<'ctx> {
-        self.module.get_function("puts").unwrap_or_else(|| {
-            let function_type = self
-                .context
-                .i32_type()
-                .fn_type(&[self.ptr_type.into()], false);
-            self.module.add_function("puts", function_type, None)
-        })
-    }
-
-    fn libc_printf(&self) -> FunctionValue<'ctx> {
-        self.module.get_function("printf").unwrap_or_else(|| {
-            let function_type = self
-                .context
-                .i32_type()
-                .fn_type(&[self.ptr_type.into()], true);
-            self.module.add_function("printf", function_type, None)
         })
     }
 
@@ -2989,19 +2879,36 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             })
     }
 
-    fn puts(&self, value: &str) -> Result<(), CodegenError> {
+    fn stdout_line(&self, value: &str) -> Result<IntValue<'ctx>, CodegenError> {
+        let value = format!("{value}\n");
+        let length = u64::try_from(value.len())
+            .map_err(|_| CodegenError::new("ProgramTooLarge", "stdout line is too large"))?;
         let string = self
             .builder
-            .build_global_string_ptr(value, &self.unique("string"))
+            .build_global_string_ptr(&value, &self.unique("stdout.line"))
             .map_err(builder_error)?;
-        self.builder
-            .build_call(
-                self.libc_puts(),
-                &[string.as_pointer_value().into()],
-                "puts",
-            )
-            .map_err(builder_error)?;
-        Ok(())
+        call_int(
+            &self.builder,
+            self.runtime_stdout_write(),
+            &[
+                string.as_pointer_value().into(),
+                self.i64_type.const_int(length, false).into(),
+            ],
+            "stdout.write",
+        )
+    }
+
+    fn runtime_stdout_write(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(STDOUT_WRITE_SYMBOL)
+            .unwrap_or_else(|| {
+                let function_type = self
+                    .context
+                    .i32_type()
+                    .fn_type(&[self.ptr_type.into(), self.i64_type.into()], false);
+                self.module
+                    .add_function(STDOUT_WRITE_SYMBOL, function_type, None)
+            })
     }
 
     fn set_task_fault(
@@ -3134,24 +3041,6 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 ],
                 "fault.raise.with.span",
             )
-            .map_err(builder_error)?;
-        Ok(())
-    }
-
-    fn printf(
-        &self,
-        format: &str,
-        values: &[BasicMetadataValueEnum<'ctx>],
-    ) -> Result<(), CodegenError> {
-        let string = self
-            .builder
-            .build_global_string_ptr(format, &self.unique("format"))
-            .map_err(builder_error)?;
-        let mut arguments = Vec::with_capacity(values.len() + 1);
-        arguments.push(string.as_pointer_value().into());
-        arguments.extend_from_slice(values);
-        self.builder
-            .build_call(self.libc_printf(), &arguments, "printf")
             .map_err(builder_error)?;
         Ok(())
     }
@@ -3345,7 +3234,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             .build_conditional_branch(exists, ready, failed)
             .map_err(builder_error)?;
         self.builder.position_at_end(failed);
-        self.puts("RuntimeFault: task allocation failed")?;
+        self.stdout_line("RuntimeFault: task allocation failed")?;
         self.builder
             .build_return(Some(
                 &self.context.i32_type().const_int(TASK_STEP_FAULTED, false),
@@ -3575,7 +3464,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             .build_conditional_branch(exists, ready, failed)
             .map_err(builder_error)?;
         self.builder.position_at_end(failed);
-        self.puts("RuntimeFault: runtime creation failed")?;
+        self.stdout_line("RuntimeFault: runtime creation failed")?;
         self.builder
             .build_return(Some(&self.context.i32_type().const_int(6, false)))
             .map_err(builder_error)?;
@@ -3613,7 +3502,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 "runtime.root.activation.destroy",
             )
             .map_err(builder_error)?;
-        self.puts("RuntimeFault: runtime activation failed")?;
+        self.stdout_line("RuntimeFault: runtime activation failed")?;
         self.builder
             .build_return(Some(&self.context.i32_type().const_int(6, false)))
             .map_err(builder_error)?;
@@ -3661,7 +3550,7 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 "executor.root.failure.destroy.runtime",
             )
             .map_err(builder_error)?;
-        self.puts("RuntimeFault: executor creation failed")?;
+        self.stdout_line("RuntimeFault: executor creation failed")?;
         self.builder
             .build_return(Some(&self.context.i32_type().const_int(6, false)))
             .map_err(builder_error)?;
@@ -3778,20 +3667,10 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     .build_conditional_branch(ok, success, failure)
                     .map_err(builder_error)?;
                 self.builder.position_at_end(success);
-                let print = self
-                    .module
-                    .get_function("loom.runtime.print")
-                    .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "print helper is missing"))?;
-                self.builder
-                    .build_call(print, &[result.into()], "print.result")
-                    .map_err(builder_error)?;
-                // The root result can contain pointers into the moving heap
-                // owned by this execution context. Consume it before tearing
-                // that context down; destroying first would leave print with
-                // dangling aggregate/Text/container payloads.
                 self.destroy_root_context(context)?;
+                let output_status = self.stdout_line("Unit")?;
                 self.builder
-                    .build_return(Some(&self.context.i32_type().const_zero()))
+                    .build_return(Some(&output_status))
                     .map_err(builder_error)?;
                 self.builder.position_at_end(failure);
                 self.destroy_root_context(context)?;
@@ -3866,10 +3745,48 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                         })?
                         .name;
                     self.builder.position_at_end(pass);
-                    self.puts(&format!("passed {name}"))?;
+                    let output_status = self.stdout_line(&format!("passed {name}"))?;
+                    let output_failed = self
+                        .builder
+                        .build_int_compare(
+                            IntPredicate::NE,
+                            output_status,
+                            self.context.i32_type().const_zero(),
+                            "test.output.failed",
+                        )
+                        .map_err(builder_error)?;
+                    let previous = self
+                        .builder
+                        .build_load(self.context.i32_type(), failed, "tests.previous_status")
+                        .map_err(builder_error)?
+                        .into_int_value();
+                    let previously_failed = self
+                        .builder
+                        .build_int_compare(
+                            IntPredicate::NE,
+                            previous,
+                            self.context.i32_type().const_zero(),
+                            "tests.previously_failed",
+                        )
+                        .map_err(builder_error)?;
+                    let any_failed = self
+                        .builder
+                        .build_or(previously_failed, output_failed, "tests.any_failed")
+                        .map_err(builder_error)?;
+                    let normalized = self
+                        .builder
+                        .build_int_z_extend(
+                            any_failed,
+                            self.context.i32_type(),
+                            "tests.status.with_output",
+                        )
+                        .map_err(builder_error)?;
+                    self.builder
+                        .build_store(failed, normalized)
+                        .map_err(builder_error)?;
                     self.branch(next)?;
                     self.builder.position_at_end(fail);
-                    self.puts(&format!("failed {name}"))?;
+                    self.stdout_line(&format!("failed {name}"))?;
                     self.builder
                         .build_store(failed, self.context.i32_type().const_int(1, false))
                         .map_err(builder_error)?;
@@ -8039,7 +7956,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             .map_err(builder_error)?;
         self.backend.builder.position_at_end(invalid);
         self.backend
-            .puts("RuntimeFault: invalid wait notification")?;
+            .stdout_line("RuntimeFault: invalid wait notification")?;
         self.emit_all_cleanups()?;
         self.emit_status_return(self.failure_status(), None)?;
         self.backend.builder.position_at_end(resume);
@@ -9549,7 +9466,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             test_block = next;
         }
         self.backend.builder.position_at_end(test_block);
-        self.backend.puts("NonExhaustiveMatch")?;
+        self.backend.stdout_line("NonExhaustiveMatch")?;
         self.emit_all_cleanups()?;
         self.emit_status_return(self.failure_status(), None)?;
         self.backend.builder.position_at_end(merge);
@@ -12982,7 +12899,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             test_block = next;
         }
         self.backend.builder.position_at_end(test_block);
-        self.backend.puts("InvalidContractMatch")?;
+        self.backend.stdout_line("InvalidContractMatch")?;
         self.emit_all_cleanups()?;
         self.emit_status_return(self.failure_status(), None)?;
         self.backend.builder.position_at_end(merge);

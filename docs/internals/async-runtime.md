@@ -259,8 +259,8 @@ plan while a later fault is captured.
 Both `any` and `race` use generalized winner finalization when the source
 callback consumes `loom_task_join_step`. It retains the original winner,
 disposes completed loser results, and retires losers in static reverse-input
-order. A loser-disposal fault becomes primary before source cleanup. This
-revision advances the exact native runtime identity to component 19 with
+order. A loser-disposal fault becomes primary before source cleanup. That
+revision advanced the exact native runtime identity to component 19 with
 `typed-task-winner-finalize-v1`, `typed-task-outcome-v1`, and `runtime-v13`.
 Typed-task v1, coroutine v2, wait v1, and GC v9 remain unchanged.
 

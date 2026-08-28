@@ -16,7 +16,9 @@ use loom_mir::{FunctionId as MirFunctionId, Type};
 use loom_runtime_abi::{FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX};
 
 mod support;
-use support::link_native_object;
+#[cfg(unix)]
+use support::run_with_closed_stdout;
+use support::{link_native_object, run_with_read_only_stdout};
 
 fn origin(function: u32) -> Origin {
     Origin::synthetic(MirFunctionId(function))
@@ -88,7 +90,7 @@ fn emit_and_run_json_fault(
     )
 }
 
-fn unit_run(pointer_bits: u16) -> CheckedArtifact {
+fn unit_artifact(pointer_bits: u16, tests: bool) -> CheckedArtifact {
     let mut program = ProgramBuilder::new(TargetLayout::new(pointer_bits).expect("target"));
     let unit_ty = program.type_id(&Type::Unit).expect("Unit type");
     let root = program
@@ -115,11 +117,24 @@ fn unit_run(pointer_bits: u16) -> CheckedArtifact {
             .terminate(entry, terminator(1, TerminatorKind::Return(unit)))
             .expect("return");
     }
+    let roots = if tests {
+        ArtifactRootRequest::tests([root])
+    } else {
+        ArtifactRootRequest::Run(root)
+    };
     program
         .finish_checked()
         .expect("checked unit LCIR")
-        .into_artifact(ArtifactRootRequest::Run(root))
-        .expect("unit run artifact")
+        .into_artifact(roots)
+        .expect("unit artifact")
+}
+
+fn unit_run(pointer_bits: u16) -> CheckedArtifact {
+    unit_artifact(pointer_bits, false)
+}
+
+fn unit_tests(pointer_bits: u16) -> CheckedArtifact {
+    unit_artifact(pointer_bits, true)
 }
 
 fn assert_no_legacy_ir(ir: &str) {
@@ -128,6 +143,8 @@ fn assert_no_legacy_ir(ir: &str) {
         "ArgNode",
         "ValueNode",
         "loom.runtime.print",
+        "@puts",
+        "@printf",
         "loom_executor_",
         "loom_gc_",
         "witness",
@@ -143,17 +160,83 @@ fn assert_no_legacy_ir(ir: &str) {
 }
 
 #[test]
-fn pure_run_has_the_zst_abi_and_no_runtime_or_legacy_surface() {
+fn pure_run_has_the_zst_abi_and_only_the_stateless_output_runtime_surface() {
     let artifact = unit_run(64);
     let directory = tempfile::tempdir().expect("temp directory");
     let (ir, output) = emit_and_run(&artifact, &directory, "pure-unit");
 
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(String::from_utf8(output.stdout).unwrap(), "Unit\n");
+    assert_eq!(output.stdout, b"Unit\n");
     assert!(ir.contains("define internal {} @loom.lcir.fn.0()"), "{ir}");
-    assert!(!ir.contains("loom_runtime_"), "{ir}");
+    assert!(ir.contains("@loom_runtime_stdout_write_v1"), "{ir}");
+    for forbidden in [
+        "@loom_runtime_create_v1",
+        "@loom_runtime_activate_v1",
+        "@loom_runtime_destroy_v1",
+        "@puts",
+        "@printf",
+    ] {
+        assert!(!ir.contains(forbidden), "unexpected `{forbidden}`:\n{ir}");
+    }
     assert!(!ir.contains("loom_context_raise_fault_v1"), "{ir}");
     assert_no_legacy_ir(&ir);
+}
+
+#[test]
+fn pure_run_returns_failure_when_exact_stdout_is_not_writable() {
+    let artifact = unit_run(64);
+    let directory = tempfile::tempdir().expect("temp directory");
+    let (ir, normal) = emit_and_run(&artifact, &directory, "pure-unit-output-failure");
+    assert!(normal.status.success(), "{normal:?}");
+    assert_eq!(normal.stdout, b"Unit\n");
+
+    let write = ir
+        .lines()
+        .find(|line| line.contains("call i32 @loom_runtime_stdout_write_v1"))
+        .expect("pure Unit harness must call the exact stdout ABI");
+    assert!(
+        write.contains("i64 5"),
+        "Unit plus LF must use the exact five-byte length: {write}"
+    );
+    assert_no_legacy_ir(&ir);
+
+    let failed = run_with_read_only_stdout(
+        &directory.path().join("pure-unit-output-failure"),
+        directory.path(),
+    );
+    assert!(
+        !failed.status.success(),
+        "LCIR harness ignored an exact stdout write failure: {failed:?}"
+    );
+
+    #[cfg(unix)]
+    {
+        let closed = run_with_closed_stdout(&directory.path().join("pure-unit-output-failure"));
+        assert_eq!(
+            closed.status.code(),
+            Some(loom_runtime_abi::STDOUT_WRITE_FAILED),
+            "LCIR harness allowed SIGPIPE to bypass the stdout ABI: {closed:?}"
+        );
+    }
+}
+
+#[test]
+fn passing_tests_return_failure_when_exact_stdout_is_not_writable() {
+    let artifact = unit_tests(64);
+    let directory = tempfile::tempdir().expect("temp directory");
+    let (ir, normal) = emit_and_run(&artifact, &directory, "pure-test-output-failure");
+    assert!(normal.status.success(), "{normal:?}");
+    assert_eq!(normal.stdout, b"passed main\n");
+    assert_no_legacy_ir(&ir);
+
+    let failed = run_with_read_only_stdout(
+        &directory.path().join("pure-test-output-failure"),
+        directory.path(),
+    );
+    assert!(
+        !failed.status.success(),
+        "LCIR tests harness ignored a passing-line stdout failure: {failed:?}"
+    );
 }
 
 #[test]
@@ -210,7 +293,7 @@ fn cfg_preorder_not_block_insertion_order_drives_llvm_emission() {
     let (ir, output) = emit_and_run(&artifact, &directory, "reverse-block-order");
 
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(String::from_utf8(output.stdout).unwrap(), "Unit\n");
+    assert_eq!(output.stdout, b"Unit\n");
     let entry = ir.find("b2:").expect("LCIR entry block in LLVM IR");
     let body = ir.find("b1:").expect("LCIR body block in LLVM IR");
     let exit = ir.find("b0:").expect("LCIR exit block in LLVM IR");
@@ -1260,7 +1343,7 @@ fn checked_integer_operations_use_intrinsics_and_guard_signed_division() {
     let directory = tempfile::tempdir().expect("temp directory");
     let (ir, output) = emit_and_run(&artifact, &directory, "checked-integer");
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(String::from_utf8(output.stdout).unwrap(), "Unit\n");
+    assert_eq!(output.stdout, b"Unit\n");
     for intrinsic in [
         "llvm.sadd.with.overflow.i64",
         "llvm.ssub.with.overflow.i64",
@@ -1642,7 +1725,7 @@ fn tests_harness_is_ordered_continues_after_fault_and_never_creates_an_executor(
         .find("call i32 @loom_runtime_destroy_v1")
         .expect("activation failure destroys the inactive runtime");
     let diagnostic = activation_failure
-        .find("call i32 @puts")
+        .find("call i32 @loom_runtime_stdout_write_v1")
         .expect("activation failure reports a RuntimeFault");
     assert!(
         destroy < diagnostic,

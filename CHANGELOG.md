@@ -42,6 +42,26 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- Compiler-generated native run and test output now uses the versioned
+  `loom_runtime_stdout_write_v1(data, length)` boundary in both the typed LCIR
+  and legacy emitters. Each call supplies the complete UTF-8 line, including a
+  literal LF byte, and its exact byte length; the runtime neither scans for
+  NUL, appends a delimiter, nor applies C-runtime text-mode translation. A
+  failed write or flush may have emitted a prefix, so generated code fails
+  closed without retrying: output failure turns an otherwise successful run or
+  passed test nonzero, while an already failing path preserves its original
+  nonzero result. The boundary first flushes any buffered Rust stdout prefix.
+  On Unix it ignores `SIGPIPE` so a closed pipe returns the same failure status
+  instead of terminating the generated C entry by signal. A pure LCIR
+  executable may therefore reference this one
+  output-only runtime symbol without constructing a Loom runtime or executor.
+  The obsolete legacy arbitrary-value root printer is removed, and the raw
+  native object boundary now independently requires the complete executable
+  root signature `() -> Unit`. This advances the native runtime ABI to
+  component 20 with `stdout-v1` and `runtime-v14`. Serialized LCIR and artifact
+  schemas are unchanged because harness output is not LCIR; object and cache
+  domains are unchanged because the exact runtime identity already participates
+  in native fingerprints and runtime-bundle validation.
 - Typed coroutine frames now admit canonical one-pointer `List[T]` and
   compiler-private `TextMap[V]` values in parameters, results, nested products,
   and suspension-live rows. Their repeated element graphs remain governed by

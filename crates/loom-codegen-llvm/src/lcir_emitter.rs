@@ -57,16 +57,16 @@ use loom_runtime_abi::{
     FORMAT_FLOAT_TYPED_SYMBOL, GC_MAX_OBJECT_ALIGNMENT, GC_MAX_OBJECT_BYTES,
     GC_MAX_OBJECT_POINTERS, GC_MAX_REPEATED_POINTER_CELLS, GC_MAX_ROOT_BITMAP_WORDS,
     GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, PARSE_FLOAT_SYMBOL, PARSE_INT_SYMBOL,
-    PARSE_STATUS_INVALID_SYNTAX, PARSE_STATUS_OK, PARSE_STATUS_OUT_OF_RANGE, TASK_CANCELLED,
-    TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL, TASK_JOIN_ANY, TASK_JOIN_RACE, TASK_JOIN_SETTLED,
-    TASK_PENDING, TEXT_CONCAT_TYPED_SYMBOL, TEXT_CONTAINS_SYMBOL, TEXT_GET_TYPED_FOUND,
-    TEXT_GET_TYPED_MISSING, TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT,
-    TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH,
-    TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION, TYPED_GC_ALLOC_SYMBOL,
-    TYPED_GC_REPEATED_ABI_VERSION, TYPED_GC_REPEATED_ALLOC_SYMBOL, TYPED_GC_ROOT_POP_SYMBOL,
-    TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE,
-    TYPED_RESOURCE_KIND_SOCKET, TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION,
-    TYPED_TASK_PUBLISH_ADOPTING_SYMBOL, TYPED_TASK_TAKE_OUTCOME_SYMBOL,
+    PARSE_STATUS_INVALID_SYNTAX, PARSE_STATUS_OK, PARSE_STATUS_OUT_OF_RANGE, STDOUT_WRITE_SYMBOL,
+    TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL, TASK_JOIN_ANY, TASK_JOIN_RACE,
+    TASK_JOIN_SETTLED, TASK_PENDING, TEXT_CONCAT_TYPED_SYMBOL, TEXT_CONTAINS_SYMBOL,
+    TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_MISSING, TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL,
+    TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES,
+    TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION,
+    TYPED_GC_ALLOC_SYMBOL, TYPED_GC_REPEATED_ABI_VERSION, TYPED_GC_REPEATED_ALLOC_SYMBOL,
+    TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_RESOURCE_CLOSE_SYMBOL,
+    TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET, TYPED_SHADOW_STACK_ABI_VERSION,
+    TYPED_TASK_ABI_VERSION, TYPED_TASK_PUBLISH_ADOPTING_SYMBOL, TYPED_TASK_TAKE_OUTCOME_SYMBOL,
     TYPED_TIMER_TASK_CREATE_SYMBOL,
 };
 
@@ -12664,9 +12664,9 @@ impl<'ctx> Backend<'ctx, '_> {
                 self.builder
                     .build_call(self.function(root)?, &[], "run")
                     .map_err(builder_error)?;
-                self.puts("Unit")?;
+                let output_status = self.stdout_line("Unit")?;
                 self.builder
-                    .build_return(Some(&self.context.i32_type().const_zero()))
+                    .build_return(Some(&output_status))
                     .map_err(builder_error)?;
                 Ok(())
             }
@@ -12694,7 +12694,7 @@ impl<'ctx> Backend<'ctx, '_> {
             .map_err(builder_error)?;
 
         self.builder.position_at_end(create_failed);
-        self.puts("RuntimeFault: runtime creation failed")?;
+        self.stdout_line("RuntimeFault: runtime creation failed")?;
         self.builder
             .build_return(Some(&self.context.i32_type().const_int(6, false)))
             .map_err(builder_error)?;
@@ -12733,7 +12733,7 @@ impl<'ctx> Backend<'ctx, '_> {
                 "runtime.root.activation.destroy",
             )
             .map_err(builder_error)?;
-        self.puts("RuntimeFault: runtime activation failed")?;
+        self.stdout_line("RuntimeFault: runtime activation failed")?;
         self.builder
             .build_return(Some(&self.context.i32_type().const_int(6, false)))
             .map_err(builder_error)?;
@@ -12770,9 +12770,9 @@ impl<'ctx> Backend<'ctx, '_> {
             .map_err(builder_error)?;
 
         self.builder.position_at_end(success);
-        self.puts("Unit")?;
+        let output_status = self.stdout_line("Unit")?;
         self.builder
-            .build_return(Some(&self.context.i32_type().const_zero()))
+            .build_return(Some(&output_status))
             .map_err(builder_error)?;
         self.builder.position_at_end(failure);
         self.builder
@@ -13042,7 +13042,7 @@ impl<'ctx> Backend<'ctx, '_> {
             .map_err(builder_error)?;
 
         self.builder.position_at_end(create_failed);
-        self.puts("RuntimeFault: runtime creation failed")?;
+        self.stdout_line("RuntimeFault: runtime creation failed")?;
         self.builder
             .build_return(Some(&self.context.i32_type().const_int(6, false)))
             .map_err(builder_error)?;
@@ -13081,7 +13081,7 @@ impl<'ctx> Backend<'ctx, '_> {
                 "test.runtime.activation.destroy",
             )
             .map_err(builder_error)?;
-        self.puts("RuntimeFault: runtime activation failed")?;
+        self.stdout_line("RuntimeFault: runtime activation failed")?;
         self.builder
             .build_return(Some(&self.context.i32_type().const_int(6, false)))
             .map_err(builder_error)?;
@@ -13153,12 +13153,50 @@ impl<'ctx> Backend<'ctx, '_> {
             .build_conditional_branch(succeeded, pass, fail)
             .map_err(builder_error)?;
         self.builder.position_at_end(pass);
-        self.puts(&format!("passed {name}"))?;
+        let output_status = self.stdout_line(&format!("passed {name}"))?;
+        let output_failed = self
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                output_status,
+                self.context.i32_type().const_zero(),
+                "test.output.failed",
+            )
+            .map_err(builder_error)?;
+        let previous = self
+            .builder
+            .build_load(self.context.i32_type(), failed, "tests.previous_status")
+            .map_err(builder_error)?
+            .into_int_value();
+        let previously_failed = self
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                previous,
+                self.context.i32_type().const_zero(),
+                "tests.previously_failed",
+            )
+            .map_err(builder_error)?;
+        let any_failed = self
+            .builder
+            .build_or(previously_failed, output_failed, "tests.any_failed")
+            .map_err(builder_error)?;
+        let normalized = self
+            .builder
+            .build_int_z_extend(
+                any_failed,
+                self.context.i32_type(),
+                "tests.status.with_output",
+            )
+            .map_err(builder_error)?;
+        self.builder
+            .build_store(failed, normalized)
+            .map_err(builder_error)?;
         self.builder
             .build_unconditional_branch(next)
             .map_err(builder_error)?;
         self.builder.position_at_end(fail);
-        self.puts(&format!("failed {name}"))?;
+        self.stdout_line(&format!("failed {name}"))?;
         self.builder
             .build_store(failed, self.context.i32_type().const_int(1, false))
             .map_err(builder_error)?;
@@ -13280,19 +13318,23 @@ impl<'ctx> Backend<'ctx, '_> {
         Ok(())
     }
 
-    fn puts(&self, value: &str) -> Result<(), CodegenError> {
+    fn stdout_line(&self, value: &str) -> Result<IntValue<'ctx>, CodegenError> {
+        let value = format!("{value}\n");
+        let length = u64::try_from(value.len())
+            .map_err(|_| CodegenError::new("ProgramTooLarge", "stdout line is too large"))?;
         let string = self
             .builder
-            .build_global_string_ptr(value, &self.unique("string"))
+            .build_global_string_ptr(&value, &self.unique("stdout.line"))
             .map_err(builder_error)?;
-        self.builder
-            .build_call(
-                self.libc_puts(),
-                &[string.as_pointer_value().into()],
-                "puts",
-            )
-            .map_err(builder_error)?;
-        Ok(())
+        call_int(
+            &self.builder,
+            self.runtime_stdout_write(),
+            &[
+                string.as_pointer_value().into(),
+                self.context.i64_type().const_int(length, false).into(),
+            ],
+            "stdout.write",
+        )
     }
 
     fn raise_fault(
@@ -13623,14 +13665,17 @@ impl<'ctx> Backend<'ctx, '_> {
         Ok(function)
     }
 
-    fn libc_puts(&self) -> FunctionValue<'ctx> {
-        self.module.get_function("puts").unwrap_or_else(|| {
-            let function_type = self
-                .context
-                .i32_type()
-                .fn_type(&[self.ptr_type.into()], false);
-            self.module.add_function("puts", function_type, None)
-        })
+    fn runtime_stdout_write(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(STDOUT_WRITE_SYMBOL)
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[self.ptr_type.into(), self.context.i64_type().into()],
+                    false,
+                );
+                self.module
+                    .add_function(STDOUT_WRITE_SYMBOL, function_type, None)
+            })
     }
 }
 

@@ -31,6 +31,40 @@ The current runtime ABI identity is versioned as a whole in
 linking. It is not backward-compatible with earlier identities and is not a
 public ABI.
 
+## Native harness stdout
+
+Compiler-generated native run and test harnesses call
+`loom_runtime_stdout_write_v1(data, length) -> i32`. `data` names an exact raw
+byte range and `length` is its `u64` byte length. A zero-length call may use a
+null pointer; a nonzero call requires a readable range representable by the
+runtime. The boundary does not scan for NUL, append a delimiter, or pass bytes
+through C-runtime text-mode translation. Harnesses construct the complete UTF-8
+line themselves, include one literal LF byte when a line ending is intended,
+and exclude the LLVM string global's trailing NUL from `length`. Consequently,
+redirected Windows output retains LF rather than being rewritten to CRLF.
+
+Status `0` means that the complete range was accepted and stdout was flushed;
+status `1` rejects an invalid argument, and status `2` reports a write or flush
+failure. I/O failure may occur after a prefix was written, or after all bytes
+were accepted but flushing failed, so generated callers must not retry. Failure
+while emitting an otherwise successful `Unit` result or passed test makes the
+process result nonzero. An already failing run or test keeps its original
+nonzero result and does not recursively report the output failure.
+
+The runtime holds the standard-output lock and flushes any existing buffered
+Rust stdout prefix before writing through a cloned raw OS handle. On Unix, the
+first boundary call installs process-wide `SIGPIPE` ignore semantics so a
+closed pipe reports status `2` instead of terminating a compiler-generated C
+entry by signal. A zero-length call still performs this flush and may therefore
+fail even though its null data pointer is valid.
+
+This is an output-only runtime boundary. It does not give a pure typed LCIR
+source function a runtime context, GC capability, or executor requirement. A
+pure executable object may nevertheless reference this symbol from its native
+harness. The boundary advances the current native runtime ABI to component 20
+with `stdout-v1` and `runtime-v14`; the exact identity remains
+compiler-private.
+
 ## Legacy primitive and aggregate specialization
 
 Within a complete legacy object, `Unit`, `Bool`, `Int`, and `Float` can use
@@ -340,10 +374,15 @@ coroutine v2, wait v1, and GC v9 remain unchanged.
 Static `Task.settled` and `Task.race` use
 `loom_typed_task_take_outcome_v1` to move one exact completed result or publish
 managed fault Text before retiring a terminal child. Generalized winner
-finalization is shared by `any` and `race`. The current identity is native
-component 19 with `typed-task-winner-finalize-v1`, `typed-task-outcome-v1`, and
+finalization is shared by `any` and `race`. That slice advanced the native
+identity to component 19 with `typed-task-winner-finalize-v1`,
+`typed-task-outcome-v1`, and
 `runtime-v13`; Task handles and source `TaskOutcome[T]` layouts do not gain an
 extra runtime tag or pointer.
+
+The subsequent exact-length native harness stdout boundary adds `stdout-v1`
+and advances the native runtime identity to component 20 with `runtime-v14`.
+It changes no source-value, typed-task, coroutine, wait, Text, or GC layout.
 
 Witness descriptors emitted by the compiler are immutable process-lifetime
 constants. Dynamically assembled witness instances live in a non-moving proof

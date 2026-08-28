@@ -4,7 +4,7 @@
 //! values crossing the runtime boundary are defined here once and consumed by
 //! both generated-code declarations and the Rust runtime implementation.
 
-pub const RUNTIME_ABI_VERSION: u32 = 19;
+pub const RUNTIME_ABI_VERSION: u32 = 20;
 pub const COROUTINE_ABI_VERSION: u32 = 2;
 pub const TYPED_TASK_ABI_VERSION: u32 = 1;
 pub const WAIT_ABI_VERSION: u32 = 1;
@@ -15,7 +15,22 @@ pub const TYPED_GC_ABI_VERSION: u32 = 1;
 pub const TYPED_GC_REPEATED_ABI_VERSION: u32 = 1;
 pub const TYPED_SHADOW_STACK_ABI_VERSION: u32 = 1;
 pub const WITNESS_ABI_VERSION: u32 = 1;
-pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-timer-v1/typed-resource-v1/format-float-v1/runtime-v13/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4";
+pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-timer-v1/typed-resource-v1/format-float-v1/stdout-v1/runtime-v14/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4";
+
+/// Writes exactly `length` bytes to the process standard-output stream.
+///
+/// The boundary never scans for NUL, adds a line ending, or applies the C
+/// runtime's platform text-mode translation. A zero length accepts a null data
+/// pointer and still flushes the process stream; every nonzero call requires a
+/// readable range no larger than `isize::MAX`. `STDOUT_WRITE_OK` means the
+/// complete range was accepted and flushed. `STDOUT_WRITE_FAILED` may have
+/// emitted a prefix, so generated callers fail without retrying. Unix runtime
+/// initialization for this boundary ignores `SIGPIPE`, making a closed pipe a
+/// reported write failure instead of an uncatchable signal exit.
+pub const STDOUT_WRITE_SYMBOL: &str = "loom_runtime_stdout_write_v1";
+pub const STDOUT_WRITE_OK: i32 = 0;
+pub const STDOUT_WRITE_INVALID_ARGUMENT: i32 = 1;
+pub const STDOUT_WRITE_FAILED: i32 = 2;
 
 pub const GC_OK: i32 = 0;
 pub const GC_INVALID_ARGUMENT: i32 = 1;
@@ -469,6 +484,7 @@ mod tests {
         LoomWitnessInstance, NATIVE_RUNTIME_ABI_IDENTITY, PARSE_FLOAT_SYMBOL, PARSE_INT_SYMBOL,
         PARSE_STATUS_INVALID_SYNTAX, PARSE_STATUS_OK, PARSE_STATUS_OUT_OF_RANGE,
         RUNTIME_ABI_VERSION, SHADOW_STACK_ABI_VERSION, STANDARD_LIBRARY_ABI_VERSION,
+        STDOUT_WRITE_FAILED, STDOUT_WRITE_INVALID_ARGUMENT, STDOUT_WRITE_OK, STDOUT_WRITE_SYMBOL,
         TEXT_CONTAINS_SYMBOL, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_INVALID, TEXT_GET_TYPED_MISSING,
         TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT,
         TEXT_OBJECT_FIELD_ALLOCATION_SIZE, TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES,
@@ -486,7 +502,7 @@ mod tests {
 
     #[test]
     fn native_runtime_identity_is_pinned() {
-        assert_eq!(RUNTIME_ABI_VERSION, 19);
+        assert_eq!(RUNTIME_ABI_VERSION, 20);
         assert_eq!(COROUTINE_ABI_VERSION, 2);
         assert_eq!(TYPED_TASK_ABI_VERSION, 1);
         assert_eq!(LAYOUT_ABI_VERSION, 1);
@@ -522,6 +538,10 @@ mod tests {
         assert_eq!(PARSE_STATUS_OK, 0);
         assert_eq!(PARSE_STATUS_INVALID_SYNTAX, 1);
         assert_eq!(PARSE_STATUS_OUT_OF_RANGE, 2);
+        assert_eq!(STDOUT_WRITE_SYMBOL, "loom_runtime_stdout_write_v1");
+        assert_eq!(STDOUT_WRITE_OK, 0);
+        assert_eq!(STDOUT_WRITE_INVALID_ARGUMENT, 1);
+        assert_eq!(STDOUT_WRITE_FAILED, 2);
         assert_eq!(
             TYPED_RESOURCE_CLOSE_SYMBOL,
             "loom_runtime_resource_close_typed_v1"
@@ -539,7 +559,7 @@ mod tests {
         assert_eq!(STANDARD_LIBRARY_ABI_VERSION, 4);
         assert_eq!(
             NATIVE_RUNTIME_ABI_IDENTITY,
-            "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-timer-v1/typed-resource-v1/format-float-v1/runtime-v13/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4",
+            "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-timer-v1/typed-resource-v1/format-float-v1/stdout-v1/runtime-v14/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4",
         );
     }
 
