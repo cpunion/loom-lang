@@ -7,13 +7,13 @@ use std::ptr;
 use std::slice;
 
 use loom_runtime_abi::{
-    GC_INVALID_ARGUMENT, GC_OK, GC_RESOURCE_LIMIT, LAYOUT_ABI_VERSION, LAYOUT_FLAG_LEAF,
-    LAYOUT_FLAG_MANAGED_POINTER, LAYOUT_FLAG_TRAILING_BYTES, LAYOUT_KIND_BYTES, LAYOUT_KIND_TEXT,
-    LoomGcObjectDescriptor, LoomGcTypedRootDescriptor, LoomGcTypedRootFrame, LoomLayoutDescriptor,
-    TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_INVALID, TEXT_GET_TYPED_MISSING, TEXT_OBJECT_HEADER_SIZE,
-    TYPED_GC_ABI_VERSION, TYPED_SHADOW_STACK_ABI_VERSION, VALUE_SLOT_WORDS, VALUE_TAG_TEXT,
-    VALUE_WORD_AUX, VALUE_WORD_DATA, VALUE_WORD_NOMINAL, VALUE_WORD_SCALAR, VALUE_WORD_TAG,
-    VALUE_WORD_WITNESS,
+    BYTES_DECODE_UTF8_TYPED_INVALID_UTF8, GC_INVALID_ARGUMENT, GC_MAX_OBJECT_BYTES, GC_OK,
+    GC_RESOURCE_LIMIT, LAYOUT_ABI_VERSION, LAYOUT_FLAG_LEAF, LAYOUT_FLAG_MANAGED_POINTER,
+    LAYOUT_FLAG_TRAILING_BYTES, LAYOUT_KIND_BYTES, LAYOUT_KIND_TEXT, LoomGcObjectDescriptor,
+    LoomGcTypedRootDescriptor, LoomGcTypedRootFrame, LoomLayoutDescriptor, TEXT_GET_TYPED_FOUND,
+    TEXT_GET_TYPED_INVALID, TEXT_GET_TYPED_MISSING, TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION,
+    TYPED_SHADOW_STACK_ABI_VERSION, VALUE_SLOT_WORDS, VALUE_TAG_TEXT, VALUE_WORD_AUX,
+    VALUE_WORD_DATA, VALUE_WORD_NOMINAL, VALUE_WORD_SCALAR, VALUE_WORD_TAG, VALUE_WORD_WITNESS,
 };
 
 use crate::gc::{allocate_typed_object, typed_root_pop_v1, typed_root_push_v1};
@@ -142,6 +142,148 @@ pub unsafe extern "C" fn get_typed_v1(
     } else {
         TEXT_GET_TYPED_INVALID
     }
+}
+
+/// Concatenates two immutable byte sequences into one direct managed Bytes
+/// leaf. A typed Bytes value may reuse an immutable Text object after
+/// `encode_utf8`, so both canonical byte-sequence layouts are accepted.
+///
+/// Both payloads are copied to non-GC staging storage before allocation. The
+/// allocator may therefore move or reclaim either input, including when an
+/// output root cell previously held one of those inputs. The output is cleared
+/// before input validation and receives the initialized object only after the
+/// allocation and payload copy are complete.
+#[unsafe(export_name = "loom_runtime_bytes_append_typed_v1")]
+pub unsafe extern "C" fn bytes_append_typed_v1(
+    left: *const c_void,
+    right: *const c_void,
+    output: *mut *mut c_void,
+) -> i32 {
+    if output.is_null() || !output.addr().is_multiple_of(align_of::<*mut c_void>()) {
+        return GC_INVALID_ARGUMENT;
+    }
+    unsafe { output.write(ptr::null_mut()) };
+    let staged = (|| {
+        // SAFETY: both complete immutable payloads are consumed before the
+        // typed allocator below can enter a moving collection.
+        let left = unsafe { bytes(left) }?;
+        let right = unsafe { bytes(right) }?;
+        let byte_length = left.len().checked_add(right.len())?;
+        enforce_typed_byte_length(byte_length);
+        let mut staged = Vec::with_capacity(byte_length);
+        staged.extend_from_slice(left);
+        staged.extend_from_slice(right);
+        Some(staged)
+    })();
+    let Some(staged) = staged else {
+        return GC_INVALID_ARGUMENT;
+    };
+    unsafe { allocate_typed_bytes(&staged, output) }
+}
+
+/// Decodes one immutable byte sequence into a direct managed Text leaf.
+///
+/// Invalid UTF-8 is the one ordinary negative result. Positive failures retain
+/// the shared GC status domain. A canonical Text-backed byte sequence is
+/// validated deeply and returned directly; a distinct Bytes payload and its
+/// scalar count are staged before allocation, so collection cannot invalidate
+/// the source. Every non-success path leaves `output` null.
+#[unsafe(export_name = "loom_runtime_bytes_decode_utf8_typed_v1")]
+pub unsafe extern "C" fn bytes_decode_utf8_typed_v1(
+    source: *const c_void,
+    output: *mut *mut c_void,
+) -> i32 {
+    if output.is_null() || !output.addr().is_multiple_of(align_of::<*mut c_void>()) {
+        return GC_INVALID_ARGUMENT;
+    }
+    unsafe { output.write(ptr::null_mut()) };
+    let Some(source_bytes) = (unsafe { bytes(source) }) else {
+        return GC_INVALID_ARGUMENT;
+    };
+    let Some(header) = (unsafe { source.cast::<TextObject>().as_ref() }) else {
+        return GC_INVALID_ARGUMENT;
+    };
+    if header.layout == &raw const TEXT_LAYOUT_DESCRIPTOR {
+        let Ok(text) = std::str::from_utf8(source_bytes) else {
+            return GC_INVALID_ARGUMENT;
+        };
+        if u64::try_from(text.chars().count()).ok() != Some(header.scalar_length) {
+            return GC_INVALID_ARGUMENT;
+        }
+        // A typed Bytes value produced by Text.encode_utf8 may share the exact
+        // immutable Text object. No allocation or collection is needed to
+        // recover Text; storage identity remains compiler-private.
+        unsafe { output.write(source.cast_mut()) };
+        return GC_OK;
+    }
+    enforce_typed_byte_length(source_bytes.len());
+    let staged = source_bytes.to_vec();
+    let Ok(text) = std::str::from_utf8(&staged) else {
+        return BYTES_DECODE_UTF8_TYPED_INVALID_UTF8;
+    };
+    let Ok(scalar_length) = u64::try_from(text.chars().count()) else {
+        std::process::abort();
+    };
+    unsafe { allocate_typed_text(&staged, scalar_length, output) }
+}
+
+fn enforce_typed_byte_length(byte_length: usize) {
+    let maximum = GC_MAX_OBJECT_BYTES
+        .checked_sub(TEXT_OBJECT_HEADER_SIZE)
+        .and_then(|maximum| usize::try_from(maximum).ok())
+        .unwrap_or_else(|| std::process::abort());
+    if byte_length > maximum {
+        std::process::abort();
+    }
+}
+
+unsafe fn allocate_typed_bytes(staged: &[u8], output: *mut *mut c_void) -> i32 {
+    let Ok(byte_length) = u64::try_from(staged.len()) else {
+        std::process::abort();
+    };
+    let Some(allocation_size) = TEXT_OBJECT_HEADER_SIZE.checked_add(byte_length) else {
+        std::process::abort();
+    };
+    let descriptor = LoomGcObjectDescriptor {
+        abi_version: TYPED_GC_ABI_VERSION,
+        flags: 0,
+        fixed_size: TEXT_OBJECT_HEADER_SIZE,
+        object_align: align_of::<ByteObject>() as u64,
+        pointer_count: 0,
+        pointer_offsets: ptr::null(),
+    };
+    let mut allocated = ptr::null_mut();
+    // SAFETY: metadata and the local unpublished output cell remain stable for
+    // the complete allocation, including any moving collection.
+    let status = unsafe {
+        allocate_typed_object(&raw const descriptor, allocation_size, &raw mut allocated)
+    };
+    if status == GC_RESOURCE_LIMIT {
+        std::process::abort();
+    }
+    if status != GC_OK {
+        return status;
+    }
+    let object = allocated.cast::<ByteObject>();
+    // SAFETY: the fresh zeroed typed allocation has the exact fixed header and
+    // trailing byte extent. Initialization contains no safepoint; publication
+    // to the caller-owned cell is deliberately the final operation.
+    unsafe {
+        object.write(ByteObject {
+            layout: &raw const BYTES_LAYOUT_DESCRIPTOR,
+            allocation_size,
+            byte_length,
+            reserved: 0,
+            bytes: [],
+        });
+        ptr::copy_nonoverlapping(
+            staged.as_ptr(),
+            allocated.cast::<u8>().add(TEXT_OBJECT_HEADER_BYTES),
+            staged.len(),
+        );
+        output.write(allocated);
+    }
+    GC_OK
 }
 
 pub(crate) unsafe fn allocate_typed_text(
@@ -456,7 +598,8 @@ mod tests {
     use std::ptr;
 
     use loom_runtime_abi::{
-        GC_OK, LoomGcTypedRootDescriptor, LoomGcTypedRootFrame, LoomLayoutDescriptor,
+        BYTES_DECODE_UTF8_TYPED_INVALID_UTF8, GC_INVALID_ARGUMENT, GC_OK,
+        LoomGcTypedRootDescriptor, LoomGcTypedRootFrame, LoomLayoutDescriptor,
         TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_INVALID, TEXT_GET_TYPED_MISSING,
         TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_HEADER_SIZE, TYPED_SHADOW_STACK_ABI_VERSION,
         VALUE_SLOT_WORDS, VALUE_TAG_TEXT,
@@ -464,8 +607,9 @@ mod tests {
 
     use super::{
         BYTES_LAYOUT_DESCRIPTOR, ByteObject, TEXT_LAYOUT_DESCRIPTOR, TextObject,
-        allocate_byte_storage, allocate_text_storage, bytes, concat_typed_v1, get_typed_v1,
-        scalar_length, text_bytes, validate_text_object_deep,
+        allocate_byte_storage, allocate_text_storage, bytes, bytes_append_typed_v1,
+        bytes_decode_utf8_typed_v1, concat_typed_v1, get_typed_v1, scalar_length, text_bytes,
+        validate_text_object_deep,
     };
     use crate::gc::{
         activate_runtime_v1, deactivate_runtime_v1, typed_root_pop_v1, typed_root_push_v1,
@@ -655,6 +799,171 @@ mod tests {
         drop(bytes_storage);
         drop(empty_storage);
         drop(source_storage);
+    }
+
+    #[test]
+    fn typed_bytes_append_stages_both_layouts_before_forced_collection() {
+        let (left_storage, left) = allocate_text_storage(b"left\0").unwrap();
+        let (right_storage, right) = allocate_byte_storage(&[0xff, 2]).unwrap();
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            (*runtime).heap.collect_before_every_allocation = true;
+
+            let bitmaps = [0_u64, 1_u64];
+            let descriptor = LoomGcTypedRootDescriptor {
+                abi_version: TYPED_SHADOW_STACK_ABI_VERSION,
+                flags: 0,
+                slot_count: 1,
+                state_count: 2,
+                live_bitmap_words: 1,
+                live_bitmaps: bitmaps.as_ptr(),
+            };
+            let mut cell: *mut c_void = ptr::null_mut();
+            let slots = [(&raw mut cell).cast::<c_void>()];
+            let mut frame = LoomGcTypedRootFrame {
+                abi_version: TYPED_SHADOW_STACK_ABI_VERSION,
+                flags: 0,
+                state: 1,
+                descriptor: &raw const descriptor,
+                slots: slots.as_ptr(),
+                previous: ptr::null_mut(),
+            };
+            assert_eq!(typed_root_push_v1(&raw mut frame), GC_OK);
+
+            assert_eq!(
+                bytes_append_typed_v1(left.cast(), right.cast(), &raw mut cell),
+                GC_OK
+            );
+            assert_eq!(bytes(cell), Some(&b"left\0\xff\x02"[..]));
+            assert_eq!(
+                (*cell.cast::<ByteObject>()).layout,
+                &raw const BYTES_LAYOUT_DESCRIPTOR
+            );
+
+            let first = cell;
+            assert_eq!(bytes_append_typed_v1(first, first, &raw mut cell), GC_OK);
+            assert_eq!(bytes(cell), Some(&b"left\0\xff\x02left\0\xff\x02"[..]));
+            assert!((*runtime).heap.collections >= 2);
+            assert!((*runtime).heap.reclaimed >= 1);
+
+            assert_eq!(typed_root_pop_v1(&raw mut frame), GC_OK);
+            (*runtime).heap.collect_before_every_allocation = false;
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+        drop(right_storage);
+        drop(left_storage);
+    }
+
+    #[test]
+    fn typed_bytes_decode_has_distinct_utf8_and_defect_statuses() {
+        let (valid_storage, valid) = allocate_byte_storage("a界🙂".as_bytes()).unwrap();
+        let (shared_text_storage, shared_text) =
+            allocate_text_storage("shared 界🙂".as_bytes()).unwrap();
+        let (malformed_text_storage, malformed_text) =
+            allocate_text_storage("bad cache".as_bytes()).unwrap();
+        unsafe { (*malformed_text).scalar_length += 1 };
+        let (empty_storage, empty) = allocate_text_storage(b"").unwrap();
+        let (invalid_storage, invalid) = allocate_byte_storage(&[0xff]).unwrap();
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            (*runtime).heap.collect_before_every_allocation = true;
+
+            let bitmaps = [0_u64, 1_u64];
+            let descriptor = LoomGcTypedRootDescriptor {
+                abi_version: TYPED_SHADOW_STACK_ABI_VERSION,
+                flags: 0,
+                slot_count: 1,
+                state_count: 2,
+                live_bitmap_words: 1,
+                live_bitmaps: bitmaps.as_ptr(),
+            };
+            let mut cell: *mut c_void = ptr::null_mut();
+            let slots = [(&raw mut cell).cast::<c_void>()];
+            let mut frame = LoomGcTypedRootFrame {
+                abi_version: TYPED_SHADOW_STACK_ABI_VERSION,
+                flags: 0,
+                state: 1,
+                descriptor: &raw const descriptor,
+                slots: slots.as_ptr(),
+                previous: ptr::null_mut(),
+            };
+            assert_eq!(typed_root_push_v1(&raw mut frame), GC_OK);
+
+            assert_eq!(
+                bytes_append_typed_v1(valid.cast(), empty.cast(), &raw mut cell),
+                GC_OK
+            );
+            assert_eq!(bytes(cell), Some("a界🙂".as_bytes()));
+            assert_eq!(bytes_decode_utf8_typed_v1(cell, &raw mut cell), GC_OK);
+            assert_eq!(text_bytes(cell), Some("a界🙂".as_bytes()));
+            assert_eq!(scalar_length(cell.cast()), Some(3));
+            assert!((*runtime).heap.reclaimed >= 1);
+
+            let collections = (*runtime).heap.collections;
+            let mut shared: *mut c_void = shared_text.cast();
+            assert_eq!(bytes_decode_utf8_typed_v1(shared, &raw mut shared), GC_OK);
+            assert_eq!(shared, shared_text.cast());
+            assert_eq!(text_bytes(shared), Some("shared 界🙂".as_bytes()));
+            assert_eq!(scalar_length(shared.cast()), Some(9));
+            assert_eq!((*runtime).heap.collections, collections);
+
+            let mut failed = ptr::dangling_mut::<c_void>();
+            assert_eq!(
+                bytes_decode_utf8_typed_v1(malformed_text.cast(), &raw mut failed),
+                GC_INVALID_ARGUMENT
+            );
+            assert!(failed.is_null());
+            assert_eq!((*runtime).heap.collections, collections);
+
+            failed = ptr::dangling_mut();
+            assert_eq!(
+                bytes_decode_utf8_typed_v1(invalid.cast(), &raw mut failed),
+                BYTES_DECODE_UTF8_TYPED_INVALID_UTF8
+            );
+            assert!(failed.is_null());
+            assert_eq!((*runtime).heap.collections, collections);
+
+            failed = ptr::dangling_mut();
+            assert_eq!(
+                bytes_decode_utf8_typed_v1(ptr::null(), &raw mut failed),
+                GC_INVALID_ARGUMENT
+            );
+            assert!(failed.is_null());
+            failed = ptr::dangling_mut();
+            assert_eq!(
+                bytes_append_typed_v1(ptr::null(), valid.cast(), &raw mut failed),
+                GC_INVALID_ARGUMENT
+            );
+            assert!(failed.is_null());
+
+            assert_eq!(typed_root_pop_v1(&raw mut frame), GC_OK);
+            (*runtime).heap.collect_before_every_allocation = false;
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+
+            failed = ptr::dangling_mut();
+            assert_eq!(
+                bytes_decode_utf8_typed_v1(valid.cast(), &raw mut failed),
+                GC_INVALID_ARGUMENT
+            );
+            assert!(failed.is_null());
+            failed = ptr::dangling_mut();
+            assert_eq!(
+                bytes_append_typed_v1(valid.cast(), empty.cast(), &raw mut failed),
+                GC_INVALID_ARGUMENT
+            );
+            assert!(failed.is_null());
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+        drop(invalid_storage);
+        drop(empty_storage);
+        drop(malformed_text_storage);
+        drop(shared_text_storage);
+        drop(valid_storage);
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //! values crossing the runtime boundary are defined here once and consumed by
 //! both generated-code declarations and the Rust runtime implementation.
 
-pub const RUNTIME_ABI_VERSION: u32 = 22;
+pub const RUNTIME_ABI_VERSION: u32 = 23;
 pub const COROUTINE_ABI_VERSION: u32 = 2;
 pub const TYPED_TASK_ABI_VERSION: u32 = 1;
 pub const WAIT_ABI_VERSION: u32 = 1;
@@ -16,7 +16,7 @@ pub const TYPED_GC_REPEATED_ABI_VERSION: u32 = 1;
 pub const TYPED_SHADOW_STACK_ABI_VERSION: u32 = 1;
 pub const WITNESS_ABI_VERSION: u32 = 1;
 pub const TYPED_JSON_ABI_VERSION: u32 = 1;
-pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-timer-v1/typed-resource-v1/format-float-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v16/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4";
+pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-timer-v1/typed-resource-v1/format-float-v1/typed-bytes-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v17/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4";
 
 /// Writes exactly `length` bytes to the process standard-output stream.
 ///
@@ -140,6 +140,17 @@ pub const TEXT_GET_TYPED_SYMBOL: &str = "loom_runtime_text_get_typed_v1";
 pub const TEXT_GET_TYPED_INVALID: i32 = -1;
 pub const TEXT_GET_TYPED_MISSING: i32 = 0;
 pub const TEXT_GET_TYPED_FOUND: i32 = 1;
+/// Stages two complete immutable byte sequences, then publishes one freshly
+/// allocated direct Bytes pointer. Success and defects use the shared `GC_*`
+/// status domain.
+pub const BYTES_APPEND_TYPED_SYMBOL: &str = "loom_runtime_bytes_append_typed_v1";
+/// Validates one immutable byte sequence as UTF-8, then publishes a direct
+/// Text pointer on success. Canonical Text-backed input may be reused; distinct
+/// Bytes input is staged before allocation. `GC_OK` is success, positive
+/// `GC_*` values are ABI/runtime defects, and this negative status is the sole
+/// ordinary invalid-UTF-8 outcome.
+pub const BYTES_DECODE_UTF8_TYPED_SYMBOL: &str = "loom_runtime_bytes_decode_utf8_typed_v1";
+pub const BYTES_DECODE_UTF8_TYPED_INVALID_UTF8: i32 = -1;
 /// Existing scalar parse boundaries shared by both native backends. These
 /// symbols predate the typed LCIR route; naming them here prevents either
 /// emitter from inventing an ABI spelling. These pre-existing symbols do not
@@ -510,6 +521,8 @@ pub const TEXT_OBJECT_ALIGNMENT: u64 = 8;
 /// Runtime layout descriptor referenced by compiler-emitted literal and
 /// runtime-allocated managed Text objects.
 pub const TEXT_LAYOUT_SYMBOL: &str = "loom_layout_text_v1";
+/// Runtime layout descriptor referenced by managed arbitrary Bytes objects.
+pub const BYTES_LAYOUT_SYMBOL: &str = "loom_layout_bytes_v1";
 /// Allocation-free UTF-8 byte-subsequence helper used by typed LCIR Text.
 pub const TEXT_CONTAINS_SYMBOL: &str = "loom_runtime_text_contains";
 pub const FAULT_SCHEMA_VERSION: u32 = 1;
@@ -562,15 +575,16 @@ mod tests {
     use std::mem::{align_of, offset_of, size_of};
 
     use super::{
-        COROUTINE_ABI_VERSION, FORMAT_FLOAT_TYPED_SYMBOL, GC_DESCRIPTOR_INVALID,
-        GC_MAX_OBJECT_ALIGNMENT, GC_MAX_OBJECT_BYTES, GC_MAX_OBJECT_POINTERS,
-        GC_MAX_REPEATED_POINTER_CELLS, GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_DEPTH,
-        GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, GC_RESOURCE_LIMIT, LAYOUT_ABI_VERSION, LoomByteView,
-        LoomGcObjectDescriptor, LoomGcRepeatedObjectDescriptor, LoomGcRootDescriptor,
-        LoomGcRootFrame, LoomGcTypedRootDescriptor, LoomGcTypedRootFrame,
-        LoomTypedCoroutineDescriptor, LoomTypedJsonLayout, LoomTypedLogField,
-        LoomTypedTaskFaultView, LoomWitnessDescriptor, LoomWitnessInstance,
-        NATIVE_RUNTIME_ABI_IDENTITY, PARSE_FLOAT_SYMBOL, PARSE_INT_SYMBOL,
+        BYTES_APPEND_TYPED_SYMBOL, BYTES_DECODE_UTF8_TYPED_INVALID_UTF8,
+        BYTES_DECODE_UTF8_TYPED_SYMBOL, BYTES_LAYOUT_SYMBOL, COROUTINE_ABI_VERSION,
+        FORMAT_FLOAT_TYPED_SYMBOL, GC_DESCRIPTOR_INVALID, GC_MAX_OBJECT_ALIGNMENT,
+        GC_MAX_OBJECT_BYTES, GC_MAX_OBJECT_POINTERS, GC_MAX_REPEATED_POINTER_CELLS,
+        GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_DEPTH, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES,
+        GC_RESOURCE_LIMIT, LAYOUT_ABI_VERSION, LoomByteView, LoomGcObjectDescriptor,
+        LoomGcRepeatedObjectDescriptor, LoomGcRootDescriptor, LoomGcRootFrame,
+        LoomGcTypedRootDescriptor, LoomGcTypedRootFrame, LoomTypedCoroutineDescriptor,
+        LoomTypedJsonLayout, LoomTypedLogField, LoomTypedTaskFaultView, LoomWitnessDescriptor,
+        LoomWitnessInstance, NATIVE_RUNTIME_ABI_IDENTITY, PARSE_FLOAT_SYMBOL, PARSE_INT_SYMBOL,
         PARSE_STATUS_INVALID_SYNTAX, PARSE_STATUS_OK, PARSE_STATUS_OUT_OF_RANGE,
         RUNTIME_ABI_VERSION, SHADOW_STACK_ABI_VERSION, STANDARD_LIBRARY_ABI_VERSION,
         STDOUT_WRITE_FAILED, STDOUT_WRITE_INVALID_ARGUMENT, STDOUT_WRITE_OK, STDOUT_WRITE_SYMBOL,
@@ -597,7 +611,7 @@ mod tests {
 
     #[test]
     fn native_runtime_identity_is_pinned() {
-        assert_eq!(RUNTIME_ABI_VERSION, 22);
+        assert_eq!(RUNTIME_ABI_VERSION, 23);
         assert_eq!(COROUTINE_ABI_VERSION, 2);
         assert_eq!(TYPED_TASK_ABI_VERSION, 1);
         assert_eq!(LAYOUT_ABI_VERSION, 1);
@@ -628,6 +642,15 @@ mod tests {
         assert_eq!(TEXT_GET_TYPED_INVALID, -1);
         assert_eq!(TEXT_GET_TYPED_MISSING, 0);
         assert_eq!(TEXT_GET_TYPED_FOUND, 1);
+        assert_eq!(
+            BYTES_APPEND_TYPED_SYMBOL,
+            "loom_runtime_bytes_append_typed_v1"
+        );
+        assert_eq!(
+            BYTES_DECODE_UTF8_TYPED_SYMBOL,
+            "loom_runtime_bytes_decode_utf8_typed_v1"
+        );
+        assert_eq!(BYTES_DECODE_UTF8_TYPED_INVALID_UTF8, -1);
         assert_eq!(PARSE_INT_SYMBOL, "loom_runtime_parse_int");
         assert_eq!(PARSE_FLOAT_SYMBOL, "loom_runtime_parse_float");
         assert_eq!(PARSE_STATUS_OK, 0);
@@ -674,7 +697,7 @@ mod tests {
         assert_eq!(STANDARD_LIBRARY_ABI_VERSION, 4);
         assert_eq!(
             NATIVE_RUNTIME_ABI_IDENTITY,
-            "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-timer-v1/typed-resource-v1/format-float-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v16/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4",
+            "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-timer-v1/typed-resource-v1/format-float-v1/typed-bytes-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v17/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4",
         );
     }
 
@@ -773,6 +796,7 @@ mod tests {
         assert_eq!(TEXT_OBJECT_HEADER_SIZE, 32);
         assert_eq!(TEXT_OBJECT_ALIGNMENT, 8);
         assert_eq!(TEXT_LAYOUT_SYMBOL, "loom_layout_text_v1");
+        assert_eq!(BYTES_LAYOUT_SYMBOL, "loom_layout_bytes_v1");
         assert_eq!(TEXT_CONTAINS_SYMBOL, "loom_runtime_text_contains");
     }
 
