@@ -1,11 +1,7 @@
-module standard.resource
+module lcir_lexical_cleanup
 
-concept Dispose {
-    method dispose(mut self)
-}
-
-concept MustScope {}
-concept NoSuspend {}
+import standard.resource.Dispose
+import standard.resource.MustScope
 
 record Resource {
     value Int

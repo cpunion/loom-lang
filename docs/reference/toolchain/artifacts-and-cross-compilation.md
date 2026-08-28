@@ -15,7 +15,7 @@ rather than assuming every build output is executable.
 | Runtime bundle | `runtime pack` or a release archive | target-specific | used by the linker |
 
 The interpreted artifact format is `loom.interpreted-mir`, currently version
-`24`. Its complete checked MIR is decoded and validated before execution.
+`25`. Its complete checked MIR is decoded and validated before execution.
 
 Portable libraries use source-package format version `2`. They record the Loom
 language version, resolved package graph, exact non-standard-library Loom
@@ -37,6 +37,18 @@ authentication; artifact provenance still belongs to the distribution layer.
 
 Version 23 requires the canonical six-field compiler-private
 `ConstraintError` record and rejects the earlier empty synthetic shape.
+
+Version 25 gives `Dispose`, `MustScope`, and `NoSuspend` distinct
+compiler-known MIR identity tags. A tag paired with its matching prelude id is
+the authority; source module and name cannot create language semantics. The
+validator cross-checks each asserted identity against the unique expected
+`standard.resource` declaration and fixed shape. Both artifact encoding and
+decoding require the complete identity trio, all corresponding prelude ids,
+and the canonical Dispose requirement. General in-process checked MIR may omit
+the trio for low-level tools, but such a program cannot cross the interpreted
+artifact boundary. These are structural guarantees only; publisher
+authentication remains the responsibility of the registry or distribution
+channel.
 
 Source-local construction proofs are not portable certificates. A `.loomi`
 encodes them as mandatory predicate/invariant rechecks. A successful recheck

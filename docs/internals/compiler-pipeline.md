@@ -48,8 +48,12 @@ read-only `standard` package available through a reserved direct dependency. It
 is not concatenated with a root source file and it receives no privileged
 frontend pass: migrated modules are parsed, resolved, checked, lowered, and
 selected by the same reachability rules as user packages. The current package
-contains the foundational `standard.int` algorithms; JSON and other documented
-APIs still have transitional compiler-known or runtime paths. See
+contains the foundational `standard.int` algorithms and the public resource
+concept declarations in `standard.resource`. `Dispose`, `MustScope`, and
+`NoSuspend` pass through the ordinary source pipeline, while their canonical
+identity, required shapes, and lexical static rules remain compiler-enforced
+and require no runtime registry. JSON and other documented APIs still have
+transitional compiler-known or runtime paths. See
 [Core, standard library, and runtime boundary](core-library-runtime-boundary.md).
 
 A version 2 `.loomlib` dependency enters at this same source boundary. Its

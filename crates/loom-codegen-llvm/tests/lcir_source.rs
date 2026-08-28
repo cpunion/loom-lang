@@ -5234,14 +5234,10 @@ pub fn cleanupFaultMain() {
 
 #[test]
 fn typed_scoped_disposal_is_one_static_inout_call_after_initialization() {
-    let source = r"module standard.resource
+    let source = r"module lcir_scoped_disposal
 
-concept Dispose {
-    method dispose(mut self)
-}
-
-concept MustScope {}
-concept NoSuspend {}
+import standard.resource.Dispose
+import standard.resource.MustScope
 
 record Resource {
     value Int

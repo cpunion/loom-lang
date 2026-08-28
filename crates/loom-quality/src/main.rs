@@ -80,7 +80,7 @@ const TASKS: &[TaskSpec] = &[
         name: "structured-async",
         path: "examples/core03",
         source: "examples/core03/tasks.loom",
-        sha256: "6d78ff8a8995952386c18e9befc03720a847e729b814f06a17ea097fb5fc06d1",
+        sha256: "59ed932a44d12b6a74c212cff9fcd7b60fc7046209166ddf31d4b16b76279edf",
         main_native_route: NativeRouteExpectation::Lcir,
         test_native_route: NativeRouteExpectation::Lcir,
     },

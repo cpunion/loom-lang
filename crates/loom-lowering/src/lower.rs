@@ -25,10 +25,6 @@ use loom_sema::{
     Signature, StandardLibraryItem, TyData, TyId, ViewSource, WitnessSelection, WitnessSource,
 };
 
-const RESOURCE_MODULE: &str = "standard.resource";
-const DISPOSE_CONCEPT: &str = "Dispose";
-const NO_SUSPEND_CONCEPT: &str = "NoSuspend";
-
 const OPTION_TYPE: TypeId = TypeId(0);
 const RESULT_TYPE: TypeId = TypeId(1);
 const CONSTRAINT_ERROR_TYPE: TypeId = TypeId(2);
@@ -277,7 +273,18 @@ impl<'a> Compiler<'a> {
     }
 
     fn run(&self) -> LowerResult<Program> {
-        let dispose = self.language_concept(DISPOSE_CONCEPT);
+        let dispose = self
+            .analysis
+            .canonical_concepts
+            .dispose
+            .map(|definition| {
+                required(
+                    self.indices.concepts.get(&definition).copied(),
+                    "canonical Dispose concept has no MIR id",
+                    definition_span(self.hir, definition),
+                )
+            })
+            .transpose()?;
         let must_scope = self
             .analysis
             .canonical_concepts
@@ -290,21 +297,30 @@ impl<'a> Compiler<'a> {
                 )
             })
             .transpose()?;
-        let dispose_requirement = dispose.and_then(|definition| {
-            let DefinitionKind::Concept(concept) = &self.hir.definitions[definition].kind else {
-                return None;
-            };
-            concept
-                .requirements
-                .iter()
-                .find(|requirement| {
-                    self.hir.definitions[**requirement]
-                        .name
-                        .as_ref()
-                        .is_some_and(|name| name.as_str() == "dispose")
-                })
-                .and_then(|requirement| self.indices.requirements.get(requirement).copied())
-        });
+        let dispose_requirement = self
+            .analysis
+            .canonical_concepts
+            .dispose_requirement
+            .map(|definition| {
+                required(
+                    self.indices.requirements.get(&definition).copied(),
+                    "canonical Dispose.dispose requirement has no MIR id",
+                    definition_span(self.hir, definition),
+                )
+            })
+            .transpose()?;
+        let no_suspend = self
+            .analysis
+            .canonical_concepts
+            .no_suspend
+            .map(|definition| {
+                required(
+                    self.indices.concepts.get(&definition).copied(),
+                    "canonical NoSuspend concept has no MIR id",
+                    definition_span(self.hir, definition),
+                )
+            })
+            .transpose()?;
         let mut program = Program {
             types: self.lower_types()?,
             concepts: self.lower_concepts()?,
@@ -334,31 +350,16 @@ impl<'a> Compiler<'a> {
                 io_error: Some(IO_ERROR_TYPE),
                 io_error_kind: Some(IO_ERROR_KIND_TYPE),
                 log_level: Some(LOG_LEVEL_TYPE),
-                dispose_concept: dispose.and_then(|id| self.indices.concepts.get(&id).copied()),
+                dispose_concept: dispose,
                 dispose_requirement,
                 must_scope_concept: must_scope,
-                no_suspend_concept: self
-                    .language_concept(NO_SUSPEND_CONCEPT)
-                    .and_then(|id| self.indices.concepts.get(&id).copied()),
+                no_suspend_concept: no_suspend,
             },
         };
         program.types.shrink_to_fit();
         program.functions.shrink_to_fit();
         program.witnesses.shrink_to_fit();
         Ok(program)
-    }
-
-    fn language_concept(&self, name: &str) -> Option<DefId> {
-        self.hir.definitions.iter().find_map(|(definition, item)| {
-            let module = &self.hir.modules[item.module];
-            (module.name.as_str() == RESOURCE_MODULE
-                && item
-                    .name
-                    .as_ref()
-                    .is_some_and(|candidate| candidate.as_str() == name)
-                && matches!(item.kind, DefinitionKind::Concept(_)))
-            .then_some(definition)
-        })
     }
 
     #[allow(clippy::too_many_lines)]
@@ -730,8 +731,15 @@ impl<'a> Compiler<'a> {
                 module: self.hir.modules[source.module].name.to_string(),
                 name: definition_name(self.hir, definition)?,
                 span,
-                identity: (self.analysis.canonical_concepts.must_scope == Some(definition))
-                    .then_some(ConceptIdentity::MustScope),
+                identity: if self.analysis.canonical_concepts.dispose == Some(definition) {
+                    Some(ConceptIdentity::Dispose)
+                } else if self.analysis.canonical_concepts.must_scope == Some(definition) {
+                    Some(ConceptIdentity::MustScope)
+                } else if self.analysis.canonical_concepts.no_suspend == Some(definition) {
+                    Some(ConceptIdentity::NoSuspend)
+                } else {
+                    None
+                },
                 dynamic: concept.dyn_capable,
                 associated_types: concept
                     .associated_types

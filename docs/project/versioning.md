@@ -12,7 +12,7 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Manifest schema | `1` |
 | Lockfile schema | `1` |
 | Registry protocol/bundle | `1` |
-| Interpreted MIR artifact | format `loom.interpreted-mir`, version `24` |
+| Interpreted MIR artifact | format `loom.interpreted-mir`, version `25` |
 | Portable library artifact | source-package version `2` |
 | Persistent compiler cache | schema `4` |
 | Portable-library final-cache layer | `portable-library-artifact-v3` |
@@ -142,6 +142,14 @@ existing typed `TextMapEntryGet` instruction and the established TextMap
 layout, so LCIR, native-object, runtime, and cache schema versions do not
 advance.
 
+Interpreted MIR version 25 resolves `Dispose`, `MustScope`, and `NoSuspend`
+only from the compiler-owned standard package and assigns distinct MIR
+identity tags. Each tag and prelude id form the authority while exact
+`standard.resource` module/name provenance and fixed shapes are consistency
+checks. Interpreted artifact encoding and decoding require the complete trio;
+focused non-artifact checked MIR may omit all three. It changes no LCIR or
+runtime ABI.
+
 Portable library version 2 replaces version 1's checked-MIR payload with a
 source-and-interface package envelope. It stores the resolved non-standard
 package graph, exact source text, language version, and canonical public
@@ -153,7 +161,7 @@ compiler-distributed standard library and repeat parsing, type checking, proof
 search, lowering, and MIR validation. Version 1 is rejected and must be
 rebuilt. The derived final-artifact cache layer advances to
 `portable-library-artifact-v3` and binds the source-package format/version;
-`.loomi` version 24, persistent compiler-cache schema 4, and the checked-MIR
+`.loomi` version 25, persistent compiler-cache schema 4, and the checked-MIR
 cache envelope are unchanged by this library-format replacement.
 
 Nongeneric `.loomi` proof replay advances the LCIR dump to 18, artifact schema

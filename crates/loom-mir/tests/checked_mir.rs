@@ -270,7 +270,7 @@ fn resource_program(mut main: Function, mut extra: Vec<Function>, no_suspend: bo
                 module: "standard.resource".to_owned(),
                 name: "Dispose".to_owned(),
                 span: span(),
-                identity: None,
+                identity: Some(ConceptIdentity::Dispose),
                 dynamic: false,
                 associated_types: Vec::new(),
                 requirements: vec![RequirementId(0)],
@@ -290,7 +290,7 @@ fn resource_program(mut main: Function, mut extra: Vec<Function>, no_suspend: bo
                 module: "standard.resource".to_owned(),
                 name: "NoSuspend".to_owned(),
                 span: span(),
-                identity: None,
+                identity: Some(ConceptIdentity::NoSuspend),
                 dynamic: false,
                 associated_types: Vec::new(),
                 requirements: Vec::new(),
@@ -319,6 +319,69 @@ fn resource_program(mut main: Function, mut extra: Vec<Function>, no_suspend: bo
         },
         ..Program::default()
     }
+}
+
+fn artifact_program_with_resource_identities(mut program: Program) -> CheckedProgram {
+    assert!(program.prelude.dispose_concept.is_none());
+    assert!(program.prelude.dispose_requirement.is_none());
+    assert!(program.prelude.must_scope_concept.is_none());
+    assert!(program.prelude.no_suspend_concept.is_none());
+
+    let dispose = ConceptId(u32::try_from(program.concepts.len()).expect("test concept id"));
+    let must_scope = ConceptId(dispose.0 + 1);
+    let no_suspend = ConceptId(dispose.0 + 2);
+    let dispose_requirement =
+        RequirementId(u32::try_from(program.requirements.len()).expect("test requirement id"));
+    program.concepts.extend([
+        ConceptDef {
+            id: dispose,
+            module: "standard.resource".to_owned(),
+            name: "Dispose".to_owned(),
+            span: span(),
+            identity: Some(ConceptIdentity::Dispose),
+            dynamic: false,
+            associated_types: Vec::new(),
+            requirements: vec![dispose_requirement],
+        },
+        ConceptDef {
+            id: must_scope,
+            module: "standard.resource".to_owned(),
+            name: "MustScope".to_owned(),
+            span: span(),
+            identity: Some(ConceptIdentity::MustScope),
+            dynamic: false,
+            associated_types: Vec::new(),
+            requirements: Vec::new(),
+        },
+        ConceptDef {
+            id: no_suspend,
+            module: "standard.resource".to_owned(),
+            name: "NoSuspend".to_owned(),
+            span: span(),
+            identity: Some(ConceptIdentity::NoSuspend),
+            dynamic: false,
+            associated_types: Vec::new(),
+            requirements: Vec::new(),
+        },
+    ]);
+    program.requirements.push(RequirementDef {
+        id: dispose_requirement,
+        concept: dispose,
+        name: "dispose".to_owned(),
+        span: span(),
+        receiver: Some(Receiver::Mutable),
+        method_type_parameters: 0,
+        params: vec![RequirementType::SelfType],
+        return_ty: RequirementType::Unit,
+        witness_params: Vec::new(),
+    });
+    program.prelude.dispose_concept = Some(dispose);
+    program.prelude.dispose_requirement = Some(dispose_requirement);
+    program.prelude.must_scope_concept = Some(must_scope);
+    program.prelude.no_suspend_concept = Some(no_suspend);
+    program
+        .into_checked()
+        .expect("artifact fixture has canonical resource identities")
 }
 
 fn generic_carrier_type(id: u32) -> TypeDef {
@@ -2082,9 +2145,14 @@ fn scoped_statement_and_canonical_resource_identity_round_trips_in_current_artif
     let decoded = decode_interpreted_artifact(&encoded).expect("decode scoped artifact");
     assert_eq!(decoded.prelude.dispose_concept, Some(ConceptId(0)));
     assert_eq!(decoded.prelude.must_scope_concept, Some(ConceptId(1)));
+    assert_eq!(decoded.concepts[0].identity, Some(ConceptIdentity::Dispose));
     assert_eq!(
         decoded.concepts[1].identity,
         Some(ConceptIdentity::MustScope)
+    );
+    assert_eq!(
+        decoded.concepts[2].identity,
+        Some(ConceptIdentity::NoSuspend)
     );
     assert!(matches!(
         decoded.functions[1].body.statements[0].kind,
@@ -2093,6 +2161,41 @@ fn scoped_statement_and_canonical_resource_identity_round_trips_in_current_artif
             ..
         }
     ));
+}
+
+#[test]
+fn interpreted_artifact_boundaries_require_the_complete_resource_identity_trio() {
+    let low_level = Program::default()
+        .into_checked()
+        .expect("low-level checked MIR may omit compiler artifact metadata");
+    let encode_error = encode_interpreted_artifact(&low_level)
+        .expect_err("production artifact encoding requires all resource identities");
+    assert!(
+        matches!(encode_error, ArtifactError::InvalidProgram(ref errors) if errors.contains(MirValidationCode::ConceptShape)),
+        "{encode_error:?}"
+    );
+
+    let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits()))
+        .expect("complete artifact fixture");
+    let mut absent: serde_json::Value = serde_json::from_slice(&bytes).expect("artifact JSON");
+    absent["program"]["concepts"] = serde_json::json!([]);
+    absent["program"]["requirements"] = serde_json::json!([]);
+    for field in [
+        "dispose_concept",
+        "dispose_requirement",
+        "must_scope_concept",
+        "no_suspend_concept",
+    ] {
+        absent["program"]["prelude"][field] = serde_json::Value::Null;
+    }
+    let decode_error = decode_interpreted_artifact(
+        &serde_json::to_vec(&absent).expect("encode absent resource metadata"),
+    )
+    .expect_err("production artifact decoding requires all resource identities");
+    assert!(
+        matches!(decode_error, ArtifactError::InvalidProgram(ref errors) if errors.contains(MirValidationCode::ConceptShape)),
+        "{decode_error:?}"
+    );
 }
 
 #[test]
@@ -2203,50 +2306,107 @@ fn forged_must_scope_identities_fail_closed_at_artifact_decode() {
     duplicate["program"]["concepts"][3]["identity"] = serde_json::json!("mustScope");
     rejects_identity("duplicate tag", &duplicate);
 
+    let mut wrong_name = original.clone();
+    wrong_name["program"]["concepts"][1]["name"] = serde_json::json!("ForgedScope");
+    rejects_identity("wrong canonical name", &wrong_name);
+
     let mut wrong_shape = original;
     wrong_shape["program"]["concepts"][1]["dynamic"] = serde_json::json!(true);
     rejects_identity("invalid marker shape", &wrong_shape);
 }
 
 #[test]
-fn same_named_concept_outside_standard_resource_has_no_resource_identity() {
-    let concept = ConceptDef {
-        id: ConceptId(0),
-        module: "application".to_owned(),
-        name: "MustScope".to_owned(),
-        span: span(),
-        identity: None,
-        dynamic: false,
-        associated_types: Vec::new(),
-        requirements: Vec::new(),
-    };
-    let witness = Witness {
-        id: WitnessId(0),
-        concept: ConceptId(0),
-        concrete: Type::Int,
-        methods: BTreeMap::new(),
-        associated: BTreeMap::new(),
-        type_parameters: 0,
-        prerequisites: Vec::new(),
-    };
-    let returns_int = function(
-        0,
+fn dispose_and_no_suspend_reject_forged_tags_names_and_modules_at_artifact_decode() {
+    let main = function(
+        1,
         Vec::new(),
-        Vec::new(),
-        Type::Int,
+        vec![local(0, resource_type(), true)],
+        Type::Unit,
         Block {
-            statements: Vec::new(),
-            tail: Some(Box::new(constant(Constant::Int(1), Type::Int))),
+            statements: vec![scoped_resource(0, 7)],
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
             span: span(),
         },
     );
-    validate_program(&Program {
-        concepts: vec![concept],
-        functions: vec![returns_int],
-        witnesses: vec![witness],
-        ..Program::default()
-    })
-    .expect("an unqualified same-named concept must remain an ordinary concept");
+    let checked = resource_program(main, Vec::new(), true)
+        .into_checked()
+        .expect("resource provenance fixture");
+    let bytes = encode_interpreted_artifact(&checked).expect("encode resource provenance fixture");
+    let original: serde_json::Value = serde_json::from_slice(&bytes).expect("artifact JSON");
+
+    let rejects_identity = |label: &str, value: &serde_json::Value| {
+        let error = decode_interpreted_artifact(
+            &serde_json::to_vec(value).expect("encode forged artifact JSON"),
+        )
+        .expect_err("forged resource language-item identity must be rejected");
+        assert!(
+            matches!(error, ArtifactError::InvalidProgram(ref errors) if errors.contains(MirValidationCode::ConceptShape)),
+            "{label}: {error:?}"
+        );
+    };
+
+    for (label, index, forged_tag) in [("Dispose", 0, "noSuspend"), ("NoSuspend", 2, "dispose")] {
+        let mut wrong_module = original.clone();
+        wrong_module["program"]["concepts"][index]["module"] =
+            serde_json::json!("application.resource");
+        rejects_identity(&format!("{label} wrong module"), &wrong_module);
+
+        let mut wrong_name = original.clone();
+        wrong_name["program"]["concepts"][index]["name"] =
+            serde_json::json!(format!("Forged{label}"));
+        rejects_identity(&format!("{label} wrong name"), &wrong_name);
+
+        let mut missing_tag = original.clone();
+        missing_tag["program"]["concepts"][index]["identity"] = serde_json::Value::Null;
+        rejects_identity(&format!("{label} missing tag"), &missing_tag);
+
+        let mut wrong_tag = original.clone();
+        wrong_tag["program"]["concepts"][index]["identity"] = serde_json::json!(forged_tag);
+        rejects_identity(&format!("{label} wrong tag"), &wrong_tag);
+    }
+}
+
+#[test]
+fn source_spelling_without_a_compiler_identity_tag_has_no_resource_semantics() {
+    for module in ["application", "standard.resource"] {
+        let concept = ConceptDef {
+            id: ConceptId(0),
+            module: module.to_owned(),
+            name: "MustScope".to_owned(),
+            span: span(),
+            identity: None,
+            dynamic: false,
+            associated_types: Vec::new(),
+            requirements: Vec::new(),
+        };
+        let witness = Witness {
+            id: WitnessId(0),
+            concept: ConceptId(0),
+            concrete: Type::Int,
+            methods: BTreeMap::new(),
+            associated: BTreeMap::new(),
+            type_parameters: 0,
+            prerequisites: Vec::new(),
+        };
+        let returns_int = function(
+            0,
+            Vec::new(),
+            Vec::new(),
+            Type::Int,
+            Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(constant(Constant::Int(1), Type::Int))),
+                span: span(),
+            },
+        );
+        validate_program(&Program {
+            concepts: vec![concept],
+            functions: vec![returns_int],
+            witnesses: vec![witness],
+            ..Program::default()
+        })
+        .unwrap_or_else(|errors| panic!("{module} spelling acquired resource authority: {errors}"));
+    }
 }
 
 #[test]
@@ -3869,7 +4029,7 @@ fn portable_mir_rejects_no_suspend_resource_across_await() {
 }
 
 fn float_program(bits: u64) -> CheckedProgram {
-    Program {
+    artifact_program_with_resource_identities(Program {
         functions: vec![function(
             0,
             Vec::new(),
@@ -3898,9 +4058,7 @@ fn float_program(bits: u64) -> CheckedProgram {
         )],
         exports: BTreeMap::from([("main".to_owned(), FunctionId(0))]),
         ..Program::default()
-    }
-    .into_checked()
-    .expect("valid floating-point artifact fixture")
+    })
 }
 
 fn forged_proof_program() -> CheckedProgram {
@@ -3914,7 +4072,7 @@ fn forged_proof_program() -> CheckedProgram {
     };
     let refined = TypeId(0);
     let guarded = TypeId(1);
-    Program {
+    artifact_program_with_resource_identities(Program {
         types: vec![
             TypeDef {
                 id: refined,
@@ -3978,9 +4136,7 @@ fn forged_proof_program() -> CheckedProgram {
         )],
         exports: BTreeMap::from([("main".to_owned(), FunctionId(0))]),
         ..Program::default()
-    }
-    .into_checked()
-    .expect("shape-valid forged proof fixture")
+    })
 }
 
 #[test]
@@ -4140,7 +4296,7 @@ fn artifact_rejects_pre_witness_segmentation_version_sixteen_before_body_decode(
 
 #[test]
 fn artifact_rejects_raw_wait_version_seventeen_before_body_decode() {
-    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 24);
+    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 25);
     let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
     let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
     value["version"] = serde_json::json!(17);
@@ -7356,14 +7512,11 @@ fn conditional_witness_apply_is_checked_as_a_recursive_proof_tree() {
     let program = conditional_concept_program();
     validate_program(&program).expect("valid conditional conformance proof");
 
-    let checked = program
-        .clone()
-        .into_checked()
-        .expect("valid checked concept metadata");
+    let checked = artifact_program_with_resource_identities(program.clone());
     let bytes = encode_interpreted_artifact(&checked).expect("encode concept metadata");
     let decoded = decode_interpreted_artifact(&bytes).expect("decode concept metadata");
-    assert_eq!(decoded.concepts.len(), 1);
-    assert_eq!(decoded.requirements.len(), 1);
+    assert_eq!(decoded.concepts.len(), 4);
+    assert_eq!(decoded.requirements.len(), 2);
 
     let mut wrong_arity = program.clone();
     let ExprKind::Call {
@@ -7667,9 +7820,7 @@ fn unrefine_contract_bindings_and_diverging_branches_are_explicit() {
         functions: vec![read_price, checked, diverging_if],
         ..Program::default()
     };
-    let program = program
-        .into_checked()
-        .expect("explicit unrefine, bindings, and Never join are valid");
+    let program = artifact_program_with_resource_identities(program);
     let bytes = encode_interpreted_artifact(&program).expect("encode new Core 0.1 nodes");
     decode_interpreted_artifact(&bytes).expect("round trip new Core 0.1 nodes");
 }

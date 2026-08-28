@@ -17,9 +17,11 @@ A MIR `Program` contains dense tables for:
 - compiler-known prelude identities.
 
 Concept metadata retains its source module separately from its unqualified
-name. Semantic analysis resolves the module-qualified
-`standard.resource.MustScope` definition and lowering marks only that `DefId`
-with the versioned compiler-known `MustScope` identity.
+name. Semantic analysis resolves `Dispose`, `MustScope`, and `NoSuspend` only
+from the exact current compiler-owned `standard` package and its
+`standard.resource` module. Lowering consumes those resolved `DefId` values
+without reconstructing names and assigns distinct compiler-known `Dispose`,
+`MustScope`, and `NoSuspend` identity tags only to those three definitions.
 
 MIR types include primitive values, tuples, lists, nominal instantiations,
 generic parameters, associated projections, `Task`, `TaskOutcome`, dynamic
@@ -68,15 +70,26 @@ Validation covers:
 - canonical `Dispose`, `MustScope`, and `NoSuspend` prelude identities, plus
   independent affine resource-flow and cleanup-stack validation.
 
-For `MustScope`, the validator does not accept an unqualified name as proof. It
-independently finds the unique `standard.resource.MustScope` concept from the
-serialized source-module provenance, then requires that concept, its
-compiler-known identity tag, and `prelude.must_scope_concept` to be the same
-dense id with the exact empty non-dynamic marker shape. Missing both the tag and
-the prelude id is still invalid when the qualified concept remains. A concept
-named `MustScope` in another module remains an ordinary concept. Any inconsistent
-identity is a fail-closed resource result for all loss, escape, receiver, and
-place-use checks, in addition to producing `MirConceptShape`.
+For resource concepts, only a compiler-known identity tag paired with its
+matching prelude id grants language semantics. Module and name metadata cannot
+create an identity: even an untagged low-level concept spelled exactly
+`standard.resource.MustScope` remains ordinary. Once an identity is asserted,
+the validator cross-checks that its tagged dense id is the unique declaration
+with the expected `standard.resource` module and name. It also requires the
+fixed non-dynamic shape, including the exact `Dispose.dispose(mut self)`
+requirement. A missing, redirected, duplicated, or cross-tagged identity is a
+fail-closed resource result for all loss, escape, receiver, and place-use
+checks, in addition to producing `MirConceptShape`.
+
+The general `CheckedProgram` boundary permits all three identities and their
+prelude entries to be absent together. This keeps focused low-level MIR tools
+independent of the compiler-distributed library. Persistent interpreted
+artifact encoding and decoding apply a stricter profile: `Dispose`,
+`MustScope`, and `NoSuspend`, all three prelude ids, and the canonical Dispose
+requirement must be present and valid. A completely missing trio is therefore
+valid only as non-artifact checked MIR. These identity checks establish MIR
+structure, not publisher authenticity; registry and distribution validation
+remain responsible for artifact provenance.
 
 Persistent typed-semantic cache entries intentionally do not carry
 `CanonicalConcepts` as proof authority. On a compatible cache hit,
@@ -188,7 +201,7 @@ root merely because storage still exists.
 The interpreted MIR envelope currently uses:
 
 - format `loom.interpreted-mir`;
-- artifact version `24`;
+- artifact version `25`;
 - Loom language version `0.3`.
 
 Executable `.loomi` artifacts additionally bind one validated exported entry.

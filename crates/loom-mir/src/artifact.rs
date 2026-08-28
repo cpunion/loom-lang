@@ -6,10 +6,11 @@ use serde::{Deserialize, Serialize};
 use crate::{
     Block, CallArgument, CheckedProgram, Constant, Contract, ContractExpr, ContractExprKind, Expr,
     ExprKind, MirValidationErrors, Pattern, Program, StatementKind, TypeDefKind, check_program,
+    validation::validate_interpreted_artifact_profile,
 };
 
 pub const INTERPRETED_ARTIFACT_FORMAT: &str = "loom.interpreted-mir";
-pub const INTERPRETED_ARTIFACT_VERSION: u32 = 24;
+pub const INTERPRETED_ARTIFACT_VERSION: u32 = 25;
 pub const LOOM_LANGUAGE_VERSION: &str = loom_core::LOOM_LANGUAGE_VERSION;
 const CANONICAL_NAN_BITS: u64 = 0x7ff8_0000_0000_0000;
 const MAX_ARTIFACT_JSON_NESTING: usize = 512;
@@ -127,8 +128,10 @@ struct Envelope {
 ///
 /// # Errors
 ///
-/// Returns [`ArtifactError::Encode`] on serialization failure. Unchecked MIR
-/// cannot enter this public encoding boundary.
+/// Returns [`ArtifactError::Encode`] on serialization failure and
+/// [`ArtifactError::InvalidProgram`] when the checked program lacks the
+/// complete canonical resource identity profile. Unchecked MIR cannot enter
+/// this public encoding boundary.
 pub fn encode_interpreted_artifact(program: &CheckedProgram) -> Result<Vec<u8>, ArtifactError> {
     encode_interpreted_artifact_envelope(program, None)
 }
@@ -137,9 +140,9 @@ pub fn encode_interpreted_artifact(program: &CheckedProgram) -> Result<Vec<u8>, 
 ///
 /// # Errors
 ///
-/// Returns [`ArtifactError::UnknownEntry`] when `entry` is not exported, in
-/// addition to serialization failures. Unchecked MIR cannot enter this public
-/// encoding boundary.
+/// Returns [`ArtifactError::UnknownEntry`] when `entry` is not exported, or an
+/// ordinary artifact error including incomplete resource identity metadata.
+/// Unchecked MIR cannot enter this public encoding boundary.
 pub fn encode_interpreted_executable_artifact(
     program: &CheckedProgram,
     entry: &str,
@@ -152,6 +155,7 @@ fn encode_interpreted_artifact_envelope(
     entry: Option<&str>,
 ) -> Result<Vec<u8>, ArtifactError> {
     let program = checked.as_program();
+    validate_interpreted_artifact_profile(program).map_err(ArtifactError::InvalidProgram)?;
     validate_entry(program, entry)?;
     let mut normalized = program.clone();
     distrust_serialized_construction_proofs(&mut normalized);
@@ -182,7 +186,8 @@ fn encode_interpreted_artifact_envelope(
 /// # Errors
 ///
 /// Rejects malformed envelopes, format/version mismatches, non-canonical Float
-/// tables, and any decoded program which fails MIR validation.
+/// tables, incomplete canonical resource identities, and any decoded program
+/// which fails MIR validation.
 pub fn decode_interpreted_artifact(bytes: &[u8]) -> Result<CheckedProgram, ArtifactError> {
     decode_interpreted_artifact_envelope(bytes).map(|(program, _entry)| program)
 }
@@ -245,6 +250,8 @@ fn decode_interpreted_artifact_envelope(
         }
     });
     let mut program = check_program(envelope.program).map_err(ArtifactError::InvalidProgram)?;
+    validate_interpreted_artifact_profile(program.as_program())
+        .map_err(ArtifactError::InvalidProgram)?;
     if construction_proofs_distrusted {
         program.mark_serialized_construction_proofs_distrusted();
     }

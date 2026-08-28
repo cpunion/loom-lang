@@ -70,22 +70,21 @@ call an ordinary `mut self` method through it. The compiler can still invoke
 the statically selected disposal operation exactly once on scope exit.
 
 Built-in `File` and `Socket` values have compiler-known close operations. A
-custom resource uses the canonical concepts in module `standard.resource`:
+custom resource imports the canonical concepts from the compiler-distributed
+`standard.resource` source module:
 
 ```loom
-concept Dispose {
-    method dispose(mut self)
-}
-
-concept MustScope {}
-concept NoSuspend {}
+import standard.resource.Dispose
+import standard.resource.MustScope
+import standard.resource.NoSuspend
 ```
 
 `Dispose` selects lexical cleanup. A type implementing `MustScope` must enter a
 `scoped` binding instead of being silently stored, passed, or discarded. A
 `NoSuspend` resource may be scoped only across code with no `.await` point.
-These declarations are compiler-known, non-dynamic concepts with fixed shapes;
-they do not create a runtime resource registry.
+Applications import rather than redeclare these public Loom concepts. The
+compiler still enforces their fixed non-dynamic shapes and static meaning; the
+source declarations do not create a runtime resource registry.
 
 ```loom
 impl Dispose for Resource {

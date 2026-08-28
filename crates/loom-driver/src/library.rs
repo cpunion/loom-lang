@@ -153,7 +153,8 @@ impl std::error::Error for LibraryArtifactError {}
 /// # Errors
 ///
 /// Returns an error if the graph has no manifest root, source provenance is
-/// incomplete, or the compiler-owned standard library leaked into the payload.
+/// incomplete or inconsistent, or the compiler-owned standard library leaked
+/// into the payload.
 pub fn encode_library_artifact(
     project: &ProjectGraph,
     sources: &SourceMap,
@@ -190,8 +191,17 @@ pub fn encode_library_artifact(
                 source.relative_path()
             ))
         })?;
-        if package.name() == crate::standard_library::STANDARD_PACKAGE_NAME {
+        if source.is_authoritative_compiler_standard() {
             continue;
+        }
+        if source.is_compiler_owned()
+            || package.name() == crate::standard_library::STANDARD_PACKAGE_NAME
+        {
+            return Err(LibraryArtifactError::InvalidGraph(format!(
+                "source `{}` has inconsistent compiler-owned standard provenance: origin {:?}, package `{package}`",
+                source.relative_path(),
+                source.origin(),
+            )));
         }
         let text = source.text().ok_or_else(|| {
             LibraryArtifactError::InvalidGraph(format!(

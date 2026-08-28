@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 
 use crate::project::ProjectSource;
 
-pub(crate) const STANDARD_PACKAGE_NAME: &str = "standard";
+pub(crate) use loom_core::STANDARD_PACKAGE_NAME;
 const STANDARD_LIBRARY_IDENTITY_DOMAIN: &str = "loom-source-stdlib-v1";
 
 struct StandardSource {
@@ -16,15 +16,22 @@ struct StandardSource {
     text: &'static str,
 }
 
-const STANDARD_SOURCES: &[StandardSource] = &[StandardSource {
-    path: "src/int.loom",
-    module: "standard.int",
-    text: include_str!("../../../library/standard/src/int.loom"),
-}];
+const STANDARD_SOURCES: &[StandardSource] = &[
+    StandardSource {
+        path: "src/int.loom",
+        module: "standard.int",
+        text: include_str!("../../../library/standard/src/int.loom"),
+    },
+    StandardSource {
+        path: "src/resource.loom",
+        module: "standard.resource",
+        text: include_str!("../../../library/standard/src/resource.loom"),
+    },
+];
 
 #[must_use]
 pub(crate) fn package_id(language_version: &str) -> PackageId {
-    PackageId::with_language(STANDARD_PACKAGE_NAME, language_version, language_version)
+    PackageId::compiler_standard(language_version)
 }
 
 #[must_use]
@@ -44,17 +51,16 @@ pub(crate) fn project_sources(root: &Path, language_version: &str) -> Vec<Projec
         .collect()
 }
 
-/// Whether a module is supplied by the current compiler-owned source library.
+/// Whether a module belongs to the compiler-reserved standard namespace.
 ///
-/// Legacy projects may still contain historical compiler-known namespaces
-/// such as `standard.resource`; only an actually distributed source module is
-/// reserved here, so the reservation grows atomically with the embedded source
-/// set.
+/// Reserving the complete namespace lets future source modules be added without
+/// colliding with a user module that happened to claim the same path first.
 #[must_use]
 pub(crate) fn owns_module(module: &str) -> bool {
-    STANDARD_SOURCES
-        .iter()
-        .any(|source| source.module == module)
+    module == STANDARD_PACKAGE_NAME
+        || module
+            .strip_prefix(STANDARD_PACKAGE_NAME)
+            .is_some_and(|suffix| suffix.starts_with('.'))
 }
 
 #[must_use]
@@ -89,7 +95,9 @@ fn hash_field(hasher: &mut Sha256, value: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{STANDARD_LIBRARY_IDENTITY_DOMAIN, StandardSource, identity_for_sources};
+    use super::{
+        STANDARD_LIBRARY_IDENTITY_DOMAIN, StandardSource, identity_for_sources, owns_module,
+    };
 
     fn source(path: &'static str, module: &'static str, text: &'static str) -> StandardSource {
         StandardSource { path, module, text }
@@ -128,5 +136,14 @@ mod tests {
                 )],
             )
         );
+    }
+
+    #[test]
+    fn complete_standard_namespace_is_reserved_without_matching_prefixes() {
+        assert!(owns_module("standard"));
+        assert!(owns_module("standard.resource"));
+        assert!(owns_module("standard.future.nested"));
+        assert!(!owns_module("standardish.resource"));
+        assert!(!owns_module("application.standard"));
     }
 }

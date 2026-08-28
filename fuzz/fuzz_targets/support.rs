@@ -5,7 +5,7 @@ use loom_sema::analyze;
 use loom_syntax::parse_with_file;
 
 pub const STRUCTURED_STANDARD_SOURCE: &str = r#"
-module standard.resource
+module fuzz.structured_standard
 
 import standard.file.try_open_read_path
 import standard.file.try_create_path
@@ -17,13 +17,6 @@ import standard.log.info
 import standard.log.warn
 import standard.log.error
 import standard.log.write
-
-concept Dispose {
-    method dispose(mut self)
-}
-
-concept MustScope {}
-concept NoSuspend {}
 
 fn jsonValue(value Json) {
     match value {

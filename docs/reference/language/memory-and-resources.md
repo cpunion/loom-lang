@@ -66,21 +66,22 @@ methods on the binding, but an ordinary `mut self` method still requires `var`
 and is therefore rejected. The registered `Dispose.dispose(mut self)` call is
 performed only by lexical cleanup.
 
-`File` and `Socket` are built-in scoped resources. Custom scoped resources use
-the canonical concepts in module `standard.resource`:
+`File` and `Socket` are built-in scoped resources. A module defining a custom
+resource imports the canonical concepts from the compiler-distributed
+`standard.resource` source module:
 
 ```loom
-concept Dispose {
-    method dispose(mut self)
-}
-
-concept MustScope {}
-concept NoSuspend {}
+import standard.resource.Dispose
+import standard.resource.MustScope
+import standard.resource.NoSuspend
 ```
 
-`Dispose` must be a non-dynamic concept containing only the shown method,
-without contracts. `MustScope` and `NoSuspend` must be empty non-dynamic marker
-concepts.
+Applications do not redeclare these concepts. The standard package declares
+`Dispose` as a non-dynamic concept containing exactly
+`method dispose(mut self)` without contracts; `MustScope` and `NoSuspend` are
+empty non-dynamic marker concepts. Their declarations are ordinary public Loom
+source, while their fixed shapes and static meaning are language rules. They
+do not create a runtime resource registry.
 
 `scoped` requires a unique `Dispose` conformance. A type that conforms to
 `MustScope` must enter `scoped`; ordinary `let`, explicit discard, and implicit

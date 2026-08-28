@@ -63,12 +63,14 @@ assertion, or contract check are conservatively reanalyzed from source rather
 than trusted for that disposition. This restriction does not apply to reuse
 inside one `AnalysisHost` process.
 
-Compiler-known `MustScope` identity is likewise not accepted from persistent
+Compiler-known resource identities are likewise not accepted from persistent
 typed-state bytes. A compatible state can supply reusable body facts, but
-semantic analysis rederives the canonical module-qualified `DefId` from the
-current HIR. Checked-MIR cache entries carry the resulting concept module and
-identity under artifact version 22 and cross the ordinary MIR validator before
-reuse; inconsistent identity metadata is a cache miss.
+semantic analysis rederives `Dispose`, `MustScope`, and `NoSuspend` from the
+exact current compiler-owned package and HIR module. Checked-MIR cache entries
+carry the three resulting identity tags, source-module consistency metadata,
+and prelude ids. Cache serialization requires the complete artifact resource
+profile, and cache reads cross both ordinary MIR validation and that profile;
+inconsistent or incomplete identity metadata is a cache miss.
 
 Task policy and timer calls store their resolved `StandardLibraryItem` in typed
 body facts. Cache schema 4 and `loom-compilation-cache-v4` reject earlier
@@ -76,12 +78,16 @@ semantic entries that lacked this standard-item identity. Whether a body is
 reused or conservatively reanalyzed, MIR lowering consumes only the resolved
 identity; it never reconstructs a policy from source spelling.
 
-Checked-MIR cache envelopes use artifact version 24. Version 24 adds the
-compiler-known `TextMap.entry_at` builtin; artifact-version validation rejects
-older enum encodings rather than guessing their meaning. The earlier canonical
-six-field `ConstraintError` shape remains validator-enforced. Neither change
-requires another cache-schema advance because typed semantic cache payloads do
-not encode MIR builtins or the synthetic prelude record. The separate
+Checked-MIR cache envelopes use artifact version 25. Version 24 added the
+compiler-known `TextMap.entry_at` builtin; version 25 assigns distinct
+compiler-known tags to the three resource concepts resolved from the
+compiler-owned package. Tags paired with prelude ids grant MIR authority;
+module/name and fixed shapes are independent consistency checks. The artifact
+profile rejects a missing or partial trio at both encode and decode.
+Artifact-version validation rejects older encodings rather than guessing their meaning. The earlier
+canonical six-field `ConstraintError` shape remains validator-enforced. These
+changes require no cache-schema advance because typed semantic cache payloads
+do not encode MIR builtins or canonical concept authority. The separate
 standard-item change above is why the current cache schema is 4.
 
 The complete compilation key includes the normalized project graph, exact

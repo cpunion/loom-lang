@@ -41,17 +41,29 @@ artifact, or runtime compatibility.
   with `runtime-v8`; the collector remains `gc-v9`.
 - A compiler-distributed, read-only `standard` source package compiled through
   the ordinary frontend, MIR, reachability, and native pipelines. The initial
-  `standard.int` module provides `minimum` and `maximum`; unreachable functions
-  are absent from native artifacts. Exact embedded source bytes and the
-  language version form the versioned `loom-source-stdlib-v1/<sha256>` cache
-  identity, and the `standard` package name, dependency alias, and distributed
-  module names are reserved from user replacement.
+  source set includes `standard.int`, which provides `minimum` and `maximum`,
+  and `standard.resource`, which publicly declares `Dispose`, `MustScope`, and
+  `NoSuspend`. Resource declarations now pass through the ordinary source
+  pipeline, while their fixed shapes and lexical static rules remain in the
+  language core and add no runtime registry. Unreachable functions are absent
+  from native artifacts. Exact embedded source bytes and the language version
+  form the versioned `loom-source-stdlib-v1/<sha256>` cache identity; the
+  `standard` package name, dependency alias, and complete `standard.*` module
+  namespace are reserved from user replacement.
 - `TextMap.entry_at(index) -> Option[(Text, V)]`, exposing checked read-only
   enumeration in canonical UTF-8 key order. Negative and out-of-range indices
   return `None`; typed LCIR reuses the existing exact indexed-entry operation,
   so this adds no JSON special case or runtime ABI.
 
 ### Changed
+
+- Interpreted MIR advances to version 25. Semantic analysis now resolves
+  `Dispose`, `MustScope`, and `NoSuspend` only from the compiler-owned standard
+  package, lowering consumes those nominal `DefId` identities without
+  reconstructing source names, and assigns distinct MIR identity tags. Tags
+  paired with prelude ids grant resource semantics; module/name and fixed
+  shapes are consistency checks only. Interpreted artifact encoding and
+  decoding require the complete canonical identity trio.
 
 - Portable `.loomlib` artifacts now use source-package format version 2. They
   contain the resolved non-standard package graph, exact Loom sources, and
