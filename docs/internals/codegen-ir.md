@@ -154,6 +154,16 @@ then constructs and publishes the exact Result without an intervening
 safepoint. These five existing source APIs introduce no JSON-specific operation
 or runtime type registry, and require no ownership or borrow syntax.
 
+`TextFromUtf8Units` accepts only the canonical direct `List[Int]` managed
+representation and returns the exact closed
+`Result[Text, DecodeTextError]`. It is an explicit `MAY_COLLECT` safepoint.
+Generated code branches around the null empty-List representation, passes a
+borrowed contiguous `i64` view to the format-neutral typed runtime helper, and
+constructs the exact Result after the helper returns. Runtime status `0`
+selects `Ok`; `-1` selects `InvalidUtf8`; every positive or unknown status
+traps as a compiler/runtime defect. The input needs a root only when it is live
+after the safepoint because the helper stages all units before allocation.
+
 ## Structural equality lowering
 
 Equality is expanded from the checked semantic type and its exact `ValueType`
@@ -513,6 +523,28 @@ the four checked result/error selectors required by independent validation.
 This advances the artifact identity to schema 33, the dump to `lcir 32`, the
 LCIR native-object domain to `loom-lcir-native-object-v29`, and the CLI
 object-cache domain to `loom-llvm-object-cache-v34`.
+
+Compiler-generated `StructuralEquality` instances then close recursive
+List/TextMap-backed equality with finite, type-specialized direct-call cycles.
+The new callable identity advances the artifact schema to 34, the dump to
+`lcir 33`, the LCIR native-object domain to `loom-lcir-native-object-v30`, and
+the CLI object-cache domain to `loom-llvm-object-cache-v35`; it adds no opcode
+or runtime entry point.
+
+The typed Bytes instruction family advances the artifact schema to 35, the
+dump to `lcir 34`, the LCIR native-object domain to
+`loom-lcir-native-object-v31`, and the CLI object-cache domain to
+`loom-llvm-object-cache-v36`. `TextEncodeUtf8` shares canonical storage;
+`BytesLength`, `BytesGet`, and `BytesCompare` are non-collecting; and
+`BytesAppend` plus `BytesDecodeUtf8` are explicit typed allocation boundaries.
+
+`TextFromUtf8Units` subsequently adds one format-neutral, collecting Text
+construction boundary. Independent validation requires the exact canonical
+`List[Int]` operand and `Result[Text, DecodeTextError]` result, rather than a
+layout-compatible representation alternative. This advances the artifact
+schema to 36, the dump to `lcir 35`, the LCIR native-object domain to
+`loom-lcir-native-object-v32`, and the CLI object-cache domain to
+`loom-llvm-object-cache-v37`.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
@@ -1226,7 +1258,7 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 34` text includes
+text even when the graphs are otherwise equivalent. The `lcir 35` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys including their contract-boundary role, every function's
 selected entry block and ordered effect set,
@@ -1238,7 +1270,8 @@ typed runtime/contract fault identity including proof-replay and Duration
 guards, closed parse operations, and managed Float formatting,
 managed-pointer representations, finite dynamic candidate catalogs,
 `dyn.construct`, `dyn.switch`, and
-`text.concat`, `text.get`, `text.encode_utf8`, the typed Bytes operations,
+`text.concat`, `text.get`, `text.encode_utf8`, `text.from_utf8_units`, the
+typed Bytes operations,
 `json.format`, typed resource-close and structured-log
 edges, transient
 protected-receiver updates, typed TextMap containment/removal/indexed-entry

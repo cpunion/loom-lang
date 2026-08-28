@@ -10,6 +10,18 @@ artifact, or runtime compatibility.
 
 ### Added
 
+- `Text.from_utf8_units(List[Int]) -> Result[Text, DecodeTextError]`, with
+  strict byte-range and UTF-8 validation in both interpreted and native
+  execution. Typed LCIR lowers the operation directly to a format-neutral
+  runtime boundary that stages every input unit before a moving-GC safepoint,
+  handles an empty List without forming a null interior pointer, and publishes
+  a complete Text pointer last. Invalid units and malformed UTF-8 produce
+  `DecodeTextError.InvalidUtf8`; no JSON parser or universal `Value` enters the
+  runtime. This advances interpreted MIR to 27, the LCIR dump to 35, artifact
+  schema to 36, the native-object domain to v32, the LLVM object-cache domain
+  to v37, the native runtime ABI to component 24 with
+  `typed-text-units-v1` and `runtime-v18`, and the public standard-library ABI
+  to v5.
 - `NativeRoutePolicy::LcirOnly`, which turns incomplete whole-artifact LCIR
   coverage into a structured `NativePreparationUnsupportedLcir` error and
   retains the complete deterministic `SupportReport` for tooling and gates.

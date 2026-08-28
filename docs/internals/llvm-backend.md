@@ -634,10 +634,10 @@ is correct.
 
 ## Object identity and linking
 
-The canonical textual dump is `lcir 34`, and the checked artifact identity uses
-schema 35. Object identities are route-separated:
+The canonical textual dump is `lcir 35`, and the checked artifact identity uses
+schema 36. Object identities are route-separated:
 
-- `loom-lcir-native-object-v31` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v32` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -649,7 +649,7 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v36` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v37` and never suppresses fingerprint
 errors.
 
 The current LCIR domains encode the explicit transitive effect lattice,
@@ -782,6 +782,17 @@ symbol. This advances the native runtime identity to component 23 with
 standard-library ABI v4 remain unchanged. The five typed Bytes source APIs
 advance the LCIR, artifact, native-object, and object-cache domains listed
 above without adding a JSON policy or ownership syntax.
+
+`Text.from_utf8_units` adds the collecting
+`loom_runtime_text_from_utf8_units_typed_v1(units, count, out_text)` boundary.
+LLVM passes the exact direct `List[Int]` payload as a borrowed contiguous `i64`
+view and branches around the null empty-List representation. The runtime stages
+all bytes before allocation and never observes a JSON type. Status `0` selects
+the exact Result success variant, status `-1` selects
+`DecodeTextError.InvalidUtf8`, and any other status traps. This advances the
+native runtime identity to component 24 with `typed-text-units-v1` and
+`runtime-v18`, the public standard-library ABI to v5, and the LCIR, artifact,
+native-object, and object-cache domains listed above.
 
 They also encode closed static-witness method selection and normalized
 associated types. Those proofs are absent from the machine ABI: LLVM receives
