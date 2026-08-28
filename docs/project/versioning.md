@@ -15,6 +15,7 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `26` |
 | Portable library artifact | source-package version `2` |
 | Persistent compiler cache | schema `4` |
+| Interpreted final-cache layer | `final-artifact-v3` / writer v3 |
 | Portable-library final-cache layer | `portable-library-artifact-v3` |
 | LCIR textual dump | version `33` |
 | LCIR artifact identity | schema `34` |
@@ -154,7 +155,10 @@ Interpreted MIR version 26 makes envelope kind part of the decoding contract.
 A generic compiler-cache artifact has an explicitly null `entry`; an
 executable artifact has a fixed string entry. Generic and executable decoders
 reject the opposite kind before validating the MIR program body. It changes no
-LCIR or runtime ABI.
+LCIR or runtime ABI. The interpreted final-cache layer and writer domain advance
+to v3 because executable writing now closes the selected export's definitions,
+dense-remaps all global MIR identities, and independently revalidates the
+result. The generic checked-MIR cache remains complete and keeps schema 4.
 
 Portable library version 2 replaces version 1's checked-MIR payload with a
 source-and-interface package envelope. It stores the resolved non-standard

@@ -60,7 +60,12 @@ artifact, or runtime compatibility.
 - Interpreted MIR advances to version 26. Generic compiler-cache artifacts now
   require a null `entry`, while executable artifacts require a fixed string
   entry. The two decoders reject the opposite artifact kind explicitly before
-  validating its program body.
+  validating its program body. Final `.loomi` builds close definitions from
+  only the selected export, preserve every structurally serialized reference,
+  densely remap MIR identities, and revalidate the result before encoding.
+  Other exports, tests, unrelated types and conformances, and unreachable
+  private bodies remain in the full compiler cache but are absent from that
+  executable. The interpreted final-artifact cache domain advances to v3.
 
 - Interpreted MIR advances to version 25. Semantic analysis now resolves
   `Dispose`, `MustScope`, and `NoSuspend` only from the compiler-owned standard

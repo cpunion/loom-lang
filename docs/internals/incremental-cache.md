@@ -50,7 +50,7 @@ larger graph.
 
 The persistent cache schema is `4`. Current layers include source parse,
 module-interface presence, typed module state, complete checked MIR, target
-objects, and portable final artifacts.
+objects, and deterministic final artifacts.
 
 The typed-module-state key deliberately excludes body fingerprints while its
 payload records them per module. This lets a later process load the compatible
@@ -123,7 +123,11 @@ source map. Unreachable private bodies are absent from the fingerprint.
 The native final link remains uncached because the compiler cannot yet
 identify every SDK, sysroot, CRT, system library, linker subprocess, and debug
 companion as one hermetic input. Interpreter executables and `.loomlib` files
-are portable deterministic bytes and are cached as final artifacts.
+are portable deterministic bytes and are cached as final artifacts. The
+interpreter's `final-artifact-v3` / `loom-interpreted-artifact-writer-v3`
+domain records that `.loomi` writing now closes and densely remaps the selected
+entry instead of serializing the complete checked-MIR cache payload. The full
+cache entry itself is unchanged and can serve another export.
 
 ## Trust model
 
