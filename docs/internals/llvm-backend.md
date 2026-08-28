@@ -576,7 +576,10 @@ suspension edges, exact stored `Task.all` composites, direct static forms of
 all four standard Task join policies, explicit terminal-outcome capture, and
 exact frame-root rows, including optional coroutine caller-span fields, dynamic
 precondition blame, explicit join modes, normal/fault/cancel await targets, and
-static cleanup across suspension, plus
+static cleanup across suspension. Concrete List and compiler-private TextMap
+values occupy one exact managed-pointer cell in parameters, results, and live
+rows; their target offsets participate in the same per-state bitmap as managed
+Text and aggregate leaves. The LCIR domains also include
 artifact-closed finite dynamic catalogs with candidate-specific precise boxes
 and direct tag-switch dispatch.
 For a `MAY_FAULT` coroutine, each resume callback creates an activation-local

@@ -461,9 +461,11 @@ The current lowering coverage includes synchronous scalar, direct `Text`,
 structural tuple, closed-record, concrete closed-enum, and established refined
 signatures. Async signatures without explicit mutable parameters and their
 suspension frames may also use direct scalar/refined/product/Text shapes and
-closed sums whose payload graphs contain those shapes, including when lexical
-cleanup is active across a suspension. Their bodies may call synchronous
-functions with functional inout parameters. These coroutines preserve
+closed sums whose payload graphs contain those shapes, plus concrete closed
+`List[T]` and compiler-private `TextMap[V]` one-pointer carriers, including when
+these values are nested or lexical cleanup is active across a suspension. Their
+bodies may call synchronous functions with functional inout parameters. These
+coroutines preserve
 `MAY_FAULT` from checked operations, assertions, state-zero preconditions,
 ordinary fallible invokes, await fault propagation, and checked timer
 construction. A
@@ -784,19 +786,19 @@ call a synchronous function with functional inout parameters. Its normal and
 fault writebacks update the coroutine's current SSA environment; a fault
 writeback is installed before control enters the active static cleanup suffix.
 
-Parameters, results, and live frame values are limited to direct
-scalar/refined/product/Text shapes and admitted closed sums, with Task handles
+Parameters, results, and live frame values admit direct
+scalar/refined/product/Text shapes, closed sums, and canonical one-pointer
+`List[T]` or compiler-private `TextMap[V]` carriers, with Task handles
 additionally allowed only in suspension-live rows. A unique closed dynamic
 witness is recursively physicalized to its concrete representation in those
 locations. The recursive frame walk consumes one shared bounded structural
 budget, so cyclic or non-regular generic expansion fails closed instead of
-growing the compiler stack. List, TextMap, finite-catalog or open
-dynamic-concept frame values, raw readiness, stored or computed dynamic Task
-collections, first-class `Task.any`, `Task.settled`, or `Task.race` results, and
-cancellation sources remain atomic whole-artifact fallback. Fixed arguments
-and a sole nonempty List literal are admitted when the join is consumed
-immediately by `.await`; `any` and `race` additionally require one homogeneous
-output type.
+growing the compiler stack. Finite-catalog or open dynamic-concept frame values,
+raw readiness, stored or computed dynamic Task collections, first-class
+`Task.any`, `Task.settled`, or `Task.race` results, and cancellation sources
+remain atomic whole-artifact fallback. Fixed arguments and a sole nonempty List
+literal are admitted when the join is consumed immediately by `.await`; `any`
+and `race` additionally require one homogeneous output type.
 Because this slice does not add a hidden executor to synchronous function ABIs,
 any reachable synchronous function that calls an async callee also selects that
 fallback before emitter selection, including a synchronous helper reached from
@@ -1075,7 +1077,9 @@ not repair a malformed program. Current checks include:
   dense unique resume states, matching `task.create`/`task.await` edges,
   identical exact live rows on normal/fault/cancel await edges, normal-only
   child results, cancellation-path provenance, continuation arguments, and
-  executor/fault/suspension effects;
+  executor/fault/suspension effects; coroutine managed-pointer slots accept
+  only canonical direct Text/List values or compiler-private `ManagedTextMap`
+  values, while dynamic boxes continue to fail closed;
 - implicit result/writeback parameter shape and type on normal and fault edges;
 - exact nominal one-handle File/Socket resource shape, typed close
   result/writeback edges, and required runtime/fault capabilities;

@@ -749,6 +749,78 @@ fn ordinary_native_commands_use_the_atomic_automatic_route() {
 }
 
 #[test]
+fn async_managed_collections_close_real_check_build_test_and_run_commands() {
+    let project = TestProject::new(include_str!(
+        "../../../fixtures/lcir-async-managed-collections/main.loom"
+    ));
+
+    let check = loomc()
+        .args(["--no-cache", "check"])
+        .arg(&project.0)
+        .output()
+        .expect("check managed-collection coroutine source");
+    assert_eq!(check.status.code(), Some(0), "{check:?}");
+
+    let object_path = project.0.join("async-managed-collections.o");
+    let build = loomc()
+        .args(["--no-cache", "build", "--emit", "object", "--output"])
+        .arg(&object_path)
+        .arg(&project.0)
+        .output()
+        .expect("build managed-collection coroutine source");
+    assert_eq!(build.status.code(), Some(0), "{build:?}");
+    let object = fs::read(object_path).expect("read managed-collection coroutine object");
+    for required in [
+        b"loom.lcir.fn".as_slice(),
+        b"loom_gc_typed_repeated_alloc_v1",
+        b"loom_typed_task_create_v1",
+        b"loom_typed_task_set_root_state_v1",
+        b"loom_task_suspend_join",
+    ] {
+        assert!(
+            contains_bytes(&object, required),
+            "managed-collection coroutine object omitted `{}`",
+            String::from_utf8_lossy(required)
+        );
+    }
+    for forbidden in [
+        b"loom.fn.".as_slice(),
+        b"loom.Value",
+        b"ValueNode",
+        b"loom_runtime_list_add",
+        b"loom_runtime_list_get",
+        b"loom_runtime_text_map_insert",
+        b"loom_runtime_text_map_get",
+    ] {
+        assert!(
+            !contains_bytes(&object, forbidden),
+            "managed-collection coroutine object exposed `{}`",
+            String::from_utf8_lossy(forbidden)
+        );
+    }
+
+    let tests = loomc()
+        .args(["--no-cache", "test"])
+        .arg(&project.0)
+        .output()
+        .expect("test managed-collection coroutine source");
+    assert_eq!(tests.status.code(), Some(0), "{tests:?}");
+    assert!(
+        String::from_utf8_lossy(&tests.stdout)
+            .contains("passed lcir_async_managed_collections.managedCollectionsCrossAwait"),
+        "{tests:?}"
+    );
+
+    let run = loomc()
+        .args(["--no-cache", "run"])
+        .arg(&project.0)
+        .output()
+        .expect("run managed-collection coroutine source");
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    assert_eq!(run.stdout, b"Unit\n");
+}
+
+#[test]
 fn typed_sleep_closes_real_check_build_test_and_run_commands() {
     let project = TestProject::new(include_str!("../../../fixtures/lcir-typed-sleep/main.loom"));
 

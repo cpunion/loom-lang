@@ -38,6 +38,15 @@ route, and the optional named legacy allowance. This changes evidence consumers
 only: route policy does not alter a selected object's LCIR artifact, object
 identity domain, cache key format, or native runtime ABI.
 
+Admitting canonical List and compiler-private TextMap managed pointers in typed
+coroutine frames changes classifier, validator, and debug-type coverage. It
+reuses the existing LCIR `ManagedPointer` representation,
+repeated-allocation descriptors, coroutine frame layout, typed shadow roots,
+and typed-task ABI. No serialized shape changes, so the current dump, artifact,
+native-object, cache, runtime bundle, and runtime ABI versions remain unchanged.
+Compiler/backend build fingerprints still invalidate objects produced by an
+older implementation.
+
 Interpreted MIR version 21 replaces the lossy synthesized `Let` plus `Defer`
 encoding of `scoped` with an atomic scoped-initialization and disposal record.
 Version 20 is intentionally rejected rather than inferred or upgraded.

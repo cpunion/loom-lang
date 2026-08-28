@@ -205,6 +205,7 @@ struct DebugState<'ctx> {
     float_type: DIType<'ctx>,
     text_type: DIType<'ctx>,
     list_type: DIType<'ctx>,
+    text_map_type: DIType<'ctx>,
     task_type: DIType<'ctx>,
     dynamic_type: DIType<'ctx>,
     status_type: DIType<'ctx>,
@@ -357,6 +358,32 @@ impl<'ctx> DebugState<'ctx> {
                 AddressSpace::default(),
             )
             .as_type();
+        let text_map_header_type = context.struct_type(&[context.i64_type().into()], false);
+        let text_map_object_type = builder
+            .create_struct_type(
+                file.as_debug_info_scope(),
+                "TextMapObject",
+                file,
+                0,
+                target_data.get_bit_size(&text_map_header_type),
+                abi_alignment_bits(target_data, &text_map_header_type)?,
+                DIFlags::ARTIFICIAL,
+                None,
+                &[],
+                0,
+                None,
+                "loom.compiler.TextMapObject",
+            )
+            .as_type();
+        let text_map_type = builder
+            .create_pointer_type(
+                "TextMap",
+                text_map_object_type,
+                target_data.get_bit_size(&ptr_type),
+                abi_alignment_bits(target_data, &ptr_type)?,
+                AddressSpace::default(),
+            )
+            .as_type();
         let task_object_type = builder
             .create_struct_type(
                 file.as_debug_info_scope(),
@@ -487,6 +514,7 @@ impl<'ctx> DebugState<'ctx> {
             float_type,
             text_type,
             list_type,
+            text_map_type,
             task_type,
             dynamic_type,
             status_type,
@@ -564,15 +592,21 @@ impl<'ctx> DebugState<'ctx> {
             Some(Repr::Scalar(ScalarRepr::I64)) => Ok(self.int_type),
             Some(Repr::Scalar(ScalarRepr::F64)) => Ok(self.float_type),
             Some(Repr::ImmortalText) => Ok(self.text_type),
-            Some(Repr::ManagedPointer) => match value_type.semantic() {
-                Type::Text => Ok(self.text_type),
-                Type::List(_) => Ok(self.list_type),
-                Type::View { .. } => Ok(self.dynamic_type),
-                semantic => Err(CodegenError::new(
-                    "LlvmDebugInfoFailed",
-                    format!("managed LCIR type {semantic:?} has no debug representation"),
-                )),
-            },
+            Some(Repr::ManagedPointer) => {
+                if value_type.kind() == ValueTypeKind::ManagedTextMap {
+                    Ok(self.text_map_type)
+                } else {
+                    match value_type.semantic() {
+                        Type::Text => Ok(self.text_type),
+                        Type::List(_) => Ok(self.list_type),
+                        Type::View { .. } => Ok(self.dynamic_type),
+                        semantic => Err(CodegenError::new(
+                            "LlvmDebugInfoFailed",
+                            format!("managed LCIR type {semantic:?} has no debug representation"),
+                        )),
+                    }
+                }
+            }
             Some(Repr::TaskHandle) => Ok(self.task_type),
             Some(Repr::Product(product)) => {
                 if let Some(existing) = self.product_types.borrow().get(&ty.raw()).copied() {
@@ -788,17 +822,21 @@ impl<'ctx> DebugState<'ctx> {
                 self.status_type,
             ),
             Some(Repr::ManagedPointer) => {
-                let (name, debug_type) = match value_type.semantic() {
-                    Type::Text => ("Text", self.text_type),
-                    Type::List(_) => ("List", self.list_type),
-                    Type::View { .. } => ("Dynamic", self.dynamic_type),
-                    semantic => {
-                        return Err(CodegenError::new(
-                            "LlvmDebugInfoFailed",
-                            format!(
-                                "managed LCIR type {semantic:?} has no fallible debug representation"
-                            ),
-                        ));
+                let (name, debug_type) = if value_type.kind() == ValueTypeKind::ManagedTextMap {
+                    ("TextMap", self.text_map_type)
+                } else {
+                    match value_type.semantic() {
+                        Type::Text => ("Text", self.text_type),
+                        Type::List(_) => ("List", self.list_type),
+                        Type::View { .. } => ("Dynamic", self.dynamic_type),
+                        semantic => {
+                            return Err(CodegenError::new(
+                                "LlvmDebugInfoFailed",
+                                format!(
+                                    "managed LCIR type {semantic:?} has no fallible debug representation"
+                                ),
+                            ));
+                        }
                     }
                 };
                 create_fallible_debug_type(

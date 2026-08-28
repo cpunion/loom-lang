@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use loom_codegen_ir::{
     AwaitMode, BlockTarget, Constant, ContractFaultBlame, ContractFaultKind, ContractFaultMetadata,
     CoroutinePlan, CoroutineSuspension, Effects, FaultCode, FaultMetadata, InstructionKind, Origin,
@@ -5,7 +7,7 @@ use loom_codegen_ir::{
     UnwindTarget, ValidationCode, dump_program, validate_program,
 };
 use loom_core::{FileId, Span};
-use loom_mir::{FunctionId, Type, TypeId};
+use loom_mir::{ConceptId, FunctionId, Type, TypeId};
 
 fn caller_span_coroutine_program(
     carries_caller_span: bool,
@@ -239,6 +241,127 @@ fn validator_accepts_a_fallible_coroutine_with_a_managed_sum_result() {
     }
 
     validate_program(&builder.finish()).expect("fallible managed Result coroutine is valid");
+}
+
+#[test]
+fn validator_accepts_managed_list_and_text_map_coroutine_boundaries() {
+    let origin = Origin::synthetic(FunctionId(0));
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    builder
+        .add_managed_text_type()
+        .expect("register managed Text");
+    let list_semantic = Type::List(Box::new(Type::Text));
+    let list = builder
+        .add_managed_list_type(list_semantic.clone())
+        .expect("List[Text]");
+    let map_semantic = Type::Nominal(TypeId(80), vec![list_semantic]);
+    let map = builder
+        .add_managed_text_map_type(map_semantic.clone())
+        .expect("TextMap[List[Text]]");
+    let bundle = builder
+        .add_pod_record_type(
+            Type::Nominal(TypeId(81), Vec::new()),
+            &[Type::List(Box::new(Type::Text)), map_semantic],
+        )
+        .expect("managed collection bundle");
+    let root = builder
+        .declare_function(
+            origin,
+            "coroutine.managed_collections",
+            Signature::new([list, map], bundle),
+            Effects::NEEDS_EXECUTOR.with_implications(),
+        )
+        .expect("function");
+    {
+        let mut function = builder.function(root).expect("function builder");
+        function
+            .set_coroutine_plan(CoroutinePlan::new(bundle, []))
+            .expect("coroutine plan");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("set entry");
+        let values = function
+            .append_block_parameter(entry, list)
+            .expect("List parameter");
+        let lookup = function
+            .append_block_parameter(entry, map)
+            .expect("TextMap parameter");
+        let result = function
+            .append_instruction(
+                entry,
+                InstructionKind::ProductConstruct {
+                    fields: Box::from([values, lookup]),
+                },
+                &[bundle],
+                origin,
+            )
+            .expect("Bundle")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(TerminatorKind::Return(result), origin),
+            )
+            .expect("return");
+    }
+
+    validate_program(&builder.finish())
+        .expect("canonical List/TextMap coroutine frame boundaries must validate");
+}
+
+#[test]
+fn validator_keeps_managed_dynamic_boxes_out_of_coroutine_frames() {
+    let origin = Origin::synthetic(FunctionId(0));
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let unit = builder.type_id(&Type::Unit).expect("Unit");
+    let view = builder
+        .add_managed_dynamic_type(
+            Type::View {
+                mutable: false,
+                concept: ConceptId(70),
+                bindings: BTreeMap::default(),
+            },
+            &[Type::Int, Type::Bool],
+        )
+        .expect("closed dynamic catalog");
+    let root = builder
+        .declare_function(
+            origin,
+            "coroutine.dynamic_box",
+            Signature::new([view], unit),
+            Effects::NEEDS_EXECUTOR.with_implications(),
+        )
+        .expect("function");
+    {
+        let mut function = builder.function(root).expect("function builder");
+        function
+            .set_coroutine_plan(CoroutinePlan::new(unit, []))
+            .expect("unchecked coroutine plan");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("set entry");
+        function
+            .append_block_parameter(entry, view)
+            .expect("dynamic parameter");
+        let result = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Unit),
+                &[unit],
+                origin,
+            )
+            .expect("Unit")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(TerminatorKind::Return(result), origin),
+            )
+            .expect("return");
+    }
+
+    let errors = validate_program(&builder.finish())
+        .expect_err("a managed dynamic box cannot masquerade as a frame collection");
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code() == ValidationCode::InvalidCoroutinePlan
+            && error.path().ends_with("coroutine.frame_type[0]")
+    }));
 }
 
 #[test]

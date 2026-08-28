@@ -2197,7 +2197,17 @@ impl<'a> Validator<'a> {
             match self.program.representations.repr(value_type.repr()) {
                 Some(Repr::Zst | Repr::Scalar(_) | Repr::ImmortalText) => {}
                 Some(Repr::ManagedPointer) => {
-                    if value_type.semantic() != &Type::Text {
+                    let canonical =
+                        self.program.representations.type_id(value_type.semantic()) == Some(ty);
+                    let supported = match value_type.semantic() {
+                        Type::Text | Type::List(_) => value_type.kind() == ValueTypeKind::Direct,
+                        Type::Nominal(_, arguments) => {
+                            value_type.kind() == ValueTypeKind::ManagedTextMap
+                                && arguments.len() == 1
+                        }
+                        _ => false,
+                    };
+                    if !canonical || !supported {
                         return false;
                     }
                 }

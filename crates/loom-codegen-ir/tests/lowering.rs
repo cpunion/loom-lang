@@ -1343,7 +1343,27 @@ pub async fn main() Unit {
     Unit
 }
 ";
-    let unique_with_list = r"module async_unique_view_with_list
+    for (label, source) in [
+        ("finite", finite),
+        ("open", open),
+        ("nested finite", nested_finite),
+    ] {
+        let LoweringOutcome::Unsupported(report) = lower_run(source) else {
+            panic!("{label} dynamic coroutine frame must remain atomic fallback")
+        };
+        assert!(
+            report
+                .items()
+                .iter()
+                .any(|item| item.feature() == UnsupportedFeature::SignatureType),
+            "{label}: {report:#?}"
+        );
+    }
+}
+
+#[test]
+fn async_unique_views_may_contain_managed_lists() {
+    let source = r"module async_unique_view_with_list
 
 dyn concept Source {
     method next(mut self) Int
@@ -1366,23 +1386,38 @@ pub async fn main() Unit {
 }
 ";
 
-    for (label, source) in [
-        ("finite", finite),
-        ("open", open),
-        ("nested finite", nested_finite),
-        ("unique with List", unique_with_list),
-    ] {
-        let LoweringOutcome::Unsupported(report) = lower_run(source) else {
-            panic!("{label} dynamic coroutine frame must remain atomic fallback")
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("a managed List nested under a uniquely erased View must use typed LCIR")
+    };
+    let take_owned = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("takeOwned"))
+        .expect("owned-View coroutine");
+    assert!(take_owned.coroutine().is_some());
+    assert!(take_owned.signature().inout_params().is_empty());
+    assert!(take_owned.signature().params().iter().any(|ty| {
+        let Some(value) = artifact.representations().value_type(*ty) else {
+            return false;
         };
-        assert!(
-            report
-                .items()
-                .iter()
-                .any(|item| item.feature() == UnsupportedFeature::SignatureType),
-            "{label}: {report:#?}"
-        );
-    }
+        let Some(loom_codegen_ir::Repr::Product(product)) =
+            artifact.representations().repr(value.repr())
+        else {
+            return false;
+        };
+        artifact
+            .representations()
+            .product(*product)
+            .is_some_and(|product| {
+                product.fields().iter().any(|field| {
+                    artifact
+                        .representations()
+                        .value_type(*field)
+                        .and_then(|field| artifact.representations().repr(field.repr()))
+                        == Some(&loom_codegen_ir::Repr::ManagedPointer)
+                })
+            })
+    }));
 }
 
 #[test]

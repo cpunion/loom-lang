@@ -982,6 +982,95 @@ mod tests {
     }
 
     #[test]
+    fn coroutine_frames_reject_noncanonical_managed_collection_alternatives() {
+        let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        builder
+            .add_managed_text_type()
+            .expect("register managed Text");
+        let list_semantic = Type::List(Box::new(Type::Text));
+        let list = builder
+            .add_managed_list_type(list_semantic.clone())
+            .expect("List[Text]");
+        let map_semantic = Type::Nominal(TypeId(96), vec![list_semantic]);
+        let map = builder
+            .add_managed_text_map_type(map_semantic)
+            .expect("TextMap[List[Text]]");
+        let unit = builder.type_id(&Type::Unit).expect("Unit");
+
+        for (index, (name, parameter)) in [("noncanonical.list", list), ("noncanonical.map", map)]
+            .into_iter()
+            .enumerate()
+        {
+            let origin = Origin::synthetic(MirFunctionId(
+                96 + u32::try_from(index).expect("fixture function index"),
+            ));
+            let function = builder
+                .declare_function(
+                    origin,
+                    name,
+                    Signature::new([parameter], unit),
+                    Effects::NEEDS_EXECUTOR.with_implications(),
+                )
+                .expect("declare coroutine");
+            let mut function = builder.function(function).expect("function builder");
+            function
+                .set_coroutine_plan(CoroutinePlan::new(unit, []))
+                .expect("coroutine plan");
+            let entry = function.create_block().expect("entry");
+            function.set_entry(entry).expect("set entry");
+            function
+                .append_block_parameter(entry, parameter)
+                .expect("collection parameter");
+            let result = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::Constant(Constant::Unit),
+                    &[unit],
+                    origin,
+                )
+                .expect("Unit")[0];
+            function
+                .terminate(
+                    entry,
+                    Terminator::new(TerminatorKind::Return(result), origin),
+                )
+                .expect("return");
+        }
+
+        let mut program = builder.finish();
+        for (function_index, canonical) in [list, map].into_iter().enumerate() {
+            let canonical = program.representations.types[canonical.index()].clone();
+            let alternative_repr =
+                ReprId::from_index(program.brand, program.representations.reprs.len())
+                    .expect("alternative representation identity");
+            let alternative_type =
+                ValueTypeId::from_index(program.brand, program.representations.types.len())
+                    .expect("alternative value type identity");
+            program.representations.reprs.push(Repr::ManagedPointer);
+            program.representations.types.push(ValueType {
+                semantic: canonical.semantic,
+                repr: alternative_repr,
+                kind: canonical.kind,
+            });
+            program.functions[function_index].signature = Signature::new([alternative_type], unit);
+            program.functions[function_index].values[0].ty = alternative_type;
+        }
+
+        let errors = validate_program(&program)
+            .expect_err("coroutine frames must reject noncanonical collection representations");
+        for function_index in 0..2 {
+            assert!(
+                errors.as_slice().iter().any(|error| {
+                    error.code() == ValidationCode::InvalidCoroutinePlan
+                        && error.path()
+                            == format!("function[{function_index}].coroutine.frame_type[0]")
+                }),
+                "{errors:#?}"
+            );
+        }
+    }
+
+    #[test]
     fn independent_validation_enforces_text_container_boundaries() {
         let mut immortal = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
         let text = immortal.add_immortal_text_type().expect("immortal Text");

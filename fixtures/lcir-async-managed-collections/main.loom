@@ -1,0 +1,77 @@
+module lcir_async_managed_collections
+
+record Bundle {
+    values List[Text]
+    lookup TextMap[List[Text]]
+}
+
+fn join(left Text, right Text) Text { left.concat(right) }
+
+fn identityMap(value TextMap[List[Text]]) TextMap[List[Text]] { value }
+
+fn impossible() { impossible() }
+
+async fn allocationPressure() Bool {
+    var allocated = "x"
+    for index in 0..17 {
+        discard index
+        allocated = allocated.concat(allocated)
+    }
+    allocated.length() == 131072
+}
+
+async fn carry(
+values List[Text],
+lookup TextMap[List[Text]],
+) Bundle {
+    let valuesAlias = values
+    let lookupAlias = lookup
+    let relocated = allocationPressure().await
+    Task.sleep(0).await
+    if (relocated
+    && valuesAlias.length() == 2
+    && match valuesAlias.get(0) {
+        Some(value) => value == "kept",
+        None => false,
+    }
+    && match lookupAlias.get("nested") {
+        Some(nested) => match nested.get(1) {
+            Some(value) => value == "second",
+            None => false,
+        },
+        None => false,
+    }) {
+        Unit
+    } else {
+        impossible()
+    }
+    Bundle { values = valuesAlias, lookup = lookupAlias }
+}
+
+async fn produce() Bundle {
+    let values = [join("ke", "pt"), "second"]
+    let lookup = identityMap(TextMap[List[Text]]().insert("nested", values))
+    carry(values, lookup).await
+}
+
+async fn verify() Bool {
+    let bundle = produce().await
+    (bundle.values.length() == 2
+    && match bundle.lookup.get("nested") {
+        Some(values) => match values.get(0) {
+            Some(value) => value == "kept",
+            None => false
+        },
+        None => false,
+    })
+}
+
+pub async fn main() Unit {
+    let valid = verify().await
+    if valid { Unit } else { impossible() }
+}
+
+test async fn managedCollectionsCrossAwait() Unit {
+    let valid = verify().await
+    if valid { Unit } else { impossible() }
+}
