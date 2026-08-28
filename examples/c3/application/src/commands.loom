@@ -8,7 +8,7 @@ import foundation.error.CheckoutError
 import foundation.money.Money
 import foundation.quantity.Quantity
 
-pub fn run_checkout() Unit {
+pub fn run_checkout() {
     let product = Product {
         label = "compiler"
         price = Money(40.0)

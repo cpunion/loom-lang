@@ -48,9 +48,11 @@ an empty body or a body ending after a statement supplies the implicit Unit
 tail. A final non-Unit expression in an omitted-return function is a type error,
 not an implicit discard.
 
-An explicit `Unit` return type remains valid and can improve public API
-readability. `Unit` cannot be omitted inside another type such as
-`Result[Unit, E]` or `Task[Unit]`.
+The callable syntax forbids an explicit bare `Unit` return annotation and a
+direct final bare `Unit` expression in the callable body. Both are implicit.
+This restriction does not hide the user-visible `Unit` type or value: `Unit`
+cannot be omitted inside another type such as `Result[Unit, E]` or `Task[Unit]`,
+and expressions such as `Ok(Unit)` remain valid.
 
 ## Methods
 
@@ -62,7 +64,7 @@ impl Counter {
         self.current
     }
 
-    method increment(mut self) Unit {
+    method increment(mut self) {
         self.current = self.current + 1
     }
 }

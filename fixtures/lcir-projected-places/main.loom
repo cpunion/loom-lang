@@ -25,7 +25,7 @@ impl Cell {
 }
 
 impl Holder {
-    method setEnabled(mut self, next Bool) Unit {
+    method setEnabled(mut self, next Bool) {
         self.enabled = next
     }
 }
@@ -69,12 +69,11 @@ pub fn projectedResult() Int {
     }
 }
 
-pub fn crossTarget() Unit {
+pub fn crossTarget() {
     discard projectedResult()
-    Unit
 }
 
-fn verify() Unit {
+fn verify() {
     if projectedResult() == 42 {
         Unit
     } else {
@@ -83,10 +82,10 @@ fn verify() Unit {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     verify()
 }
 
-test fn projectedPlaces() Unit {
+test fn projectedPlaces() {
     verify()
 }

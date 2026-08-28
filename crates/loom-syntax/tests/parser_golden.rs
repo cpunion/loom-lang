@@ -98,7 +98,7 @@ impl Order {
         self.subtotal - self.discount
     }
 
-    pub method apply(mut self, value Price) Unit
+    pub method apply(mut self, value Price)
         requires value <= self.subtotal
         ensures self.discount == value
     {
@@ -169,9 +169,7 @@ impl Zero for Int {
     static method zero() Int { 0 }
 }
 
-fn consume(source dyn Source[Item = Text]) Unit {
-    Unit
-}
+fn consume(source dyn Source[Item = Text]) {}
 ",
     );
     let DeclKind::Function(function) = &parsed.ast().declarations[3].kind else {
@@ -194,9 +192,7 @@ dyn concept Formatter {
 fn use(
     formatter Formatter[Error = FormatError],
     erased dyn Formatter[Error = FormatError],
-) Unit {
-    Unit
-}
+) {}
 ",
     );
     let DeclKind::Function(function) = &parsed.ast().declarations[1].kind else {
@@ -214,7 +210,7 @@ fn use(
 
 #[test]
 fn removed_carrier_words_parse_as_plain_identifiers_and_remain_lossless() {
-    let source = "module legacy\nfn use(value view[dyn C]) Unit { discard box(value)\n discard shared(value)\n Unit }\n";
+    let source = "module legacy\nfn use(value view[dyn C]) { discard box(value)\n discard shared(value)\n}\n";
     let parsed = assert_clean(source);
     assert_eq!(parsed.reconstructed(), source);
 }
@@ -250,9 +246,7 @@ fn invariant_is_unique_and_must_follow_fields() {
 
 #[test]
 fn requires_must_precede_ensures_but_both_are_retained() {
-    let parsed = parse(
-        "module contracts\nfn bad() Unit\n ensures result == Unit\n requires true\n{ Unit }\n",
-    );
+    let parsed = parse("module contracts\nfn bad()\n ensures result == Unit\n requires true\n{}\n");
     assert!(codes(&parsed).contains(&"UnexpectedToken"));
     let DeclKind::Function(function) = &parsed.ast().declarations[0].kind else {
         panic!("expected function");
@@ -261,7 +255,7 @@ fn requires_must_precede_ensures_but_both_are_retained() {
 }
 
 #[test]
-fn every_callable_may_omit_a_fixed_unit_return() {
+fn every_callable_uses_the_fixed_implicit_unit_return() {
     let parsed = assert_clean(
         r"module returns
 record R {}
@@ -272,7 +266,7 @@ async fn asynchronous() { return }
 pub async fn publicAsynchronous() {}
 test fn testUnit() { return }
 test async fn asyncTestUnit() {}
-fn explicit() Unit { Unit }
+fn empty() {}
 pub fn contracted(flag Bool)
     requires flag
     ensures true
@@ -303,10 +297,10 @@ impl C for R {
     };
     assert!(private.signature.return_type.is_none());
 
-    let DeclKind::Function(explicit) = &parsed.ast().declarations[7].kind else {
-        panic!("expected explicit Unit function");
+    let DeclKind::Function(empty) = &parsed.ast().declarations[7].kind else {
+        panic!("expected empty function");
     };
-    assert!(explicit.signature.return_type.is_some());
+    assert!(empty.signature.return_type.is_none());
 
     let DeclKind::Function(contracted) = &parsed.ast().declarations[8].kind else {
         panic!("expected contracted function");
@@ -316,9 +310,170 @@ impl C for R {
 }
 
 #[test]
+fn explicit_unit_return_annotations_are_rejected_for_every_callable_kind() {
+    const MESSAGE: &str = "`Unit` return types are implicit; omit `Unit` after the parameter list";
+    let source = r"module rejected
+record R {}
+
+fn privateFunction() Unit {}
+pub fn publicFunction() (Unit) {}
+async fn asynchronous() Unit {}
+pub async fn publicAsynchronous() (Unit) {}
+test fn testFunction() Unit {}
+test async fn asyncTestFunction() (Unit) {}
+
+impl R {
+    method privateMethod(self) Unit {}
+    pub method publicMethod(self) (Unit) {}
+}
+
+concept C {
+    method required(self) Unit
+    static method requiredStatic() (Unit)
+}
+
+impl C for R {
+    method required(self) Unit {}
+    static method requiredStatic() (Unit) {}
+}
+";
+    let parsed = parse(source);
+    assert_eq!(parsed.reconstructed(), source);
+    assert!(parsed.is_valid_for_source(source));
+
+    let diagnostics = parsed
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| diagnostic.message == MESSAGE)
+        .collect::<Vec<_>>();
+    assert_eq!(diagnostics.len(), 12, "{:#?}", parsed.diagnostics());
+    assert_eq!(parsed.diagnostics().len(), diagnostics.len());
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code == "UnexpectedToken")
+    );
+    let spellings = diagnostics
+        .iter()
+        .map(|diagnostic| {
+            let range = diagnostic.primary.range;
+            &source[range.start as usize..range.end as usize]
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        spellings,
+        vec![
+            "Unit", "(Unit)", "Unit", "(Unit)", "Unit", "(Unit)", "Unit", "(Unit)", "Unit",
+            "(Unit)", "Unit", "(Unit)",
+        ]
+    );
+}
+
+#[test]
+fn direct_callable_tail_unit_is_rejected_for_functions_and_methods() {
+    const MESSAGE: &str = "a Unit-returning callable must omit the final bare Unit expression";
+    let source = r"module rejected
+record R {}
+
+fn function() { Unit }
+async fn asynchronous() { (Unit) }
+test fn testFunction() { Unit }
+test async fn asyncTestFunction() { (Unit) }
+
+impl R {
+    method inherent(self) { Unit }
+}
+
+concept C { method required(self) }
+impl C for R {
+    method required(self) { (Unit) }
+}
+";
+    let parsed = parse(source);
+    assert_eq!(parsed.reconstructed(), source);
+    assert!(parsed.is_valid_for_source(source));
+
+    let diagnostics = parsed
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| diagnostic.message == MESSAGE)
+        .collect::<Vec<_>>();
+    assert_eq!(diagnostics.len(), 6, "{:#?}", parsed.diagnostics());
+    assert_eq!(parsed.diagnostics().len(), diagnostics.len());
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code == "UnexpectedToken")
+    );
+    let spellings = diagnostics
+        .iter()
+        .map(|diagnostic| {
+            let range = diagnostic.primary.range;
+            &source[range.start as usize..range.end as usize]
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        spellings,
+        vec!["Unit", "(Unit)", "Unit", "(Unit)", "Unit", "(Unit)"]
+    );
+}
+
+#[test]
+fn unit_callable_diagnostics_recover_losslessly() {
+    let source = "module recovery\nfn rejected() (Unit) { Unit }\nfn good() {}\n";
+    let parsed = parse(source);
+    assert_eq!(parsed.reconstructed(), source);
+    assert!(parsed.is_valid_for_source(source));
+    assert_eq!(codes(&parsed), vec!["UnexpectedToken", "UnexpectedToken"]);
+    assert_eq!(parsed.ast().declarations.len(), 2);
+
+    let DeclKind::Function(rejected) = &parsed.ast().declarations[0].kind else {
+        panic!("expected rejected function");
+    };
+    assert!(rejected.signature.return_type.is_some());
+    assert!(matches!(
+        rejected.body.items.last(),
+        Some(BlockItem::Expr(expression)) if matches!(expression.kind, ExprKind::Name(_))
+    ));
+    assert!(matches!(
+        &parsed.ast().declarations[1].kind,
+        DeclKind::Function(function) if function.signature.name.text == "good"
+    ));
+}
+
+#[test]
+fn unit_remains_legal_outside_callable_return_sugar() {
+    assert_clean(
+        r"module legal
+record Holder { value Unit }
+enum MaybeUnit { Some(Unit), None }
+
+fn values(value Unit, task Task[Unit], outcome Result[Unit, Error]) Result[Unit, Error] {
+    let local = Unit
+    discard Unit
+    discard Ok(Unit)
+    return Unit
+}
+
+fn nested(flag Bool) {
+    Unit
+    if flag { Unit } else { { Unit } }
+}
+
+fn tupleValue() (Unit,) { (Unit,) }
+fn qualifiedReturn() types.Unit { return Unit }
+
+concept C {
+    method apply(self, value Unit) Task[Unit]
+}
+",
+    );
+}
+
+#[test]
 fn if_without_else_does_not_consume_the_next_statement_boundary() {
     let parsed =
-        assert_clean("module flow\nfn run(flag Bool) Unit {\n if flag { Unit }\n assert true\n}\n");
+        assert_clean("module flow\nfn run(flag Bool) {\n if flag { Unit }\n assert true\n}\n");
     let DeclKind::Function(function) = &parsed.ast().declarations[0].kind else {
         panic!("expected function");
     };
@@ -330,14 +485,14 @@ fn if_and_match_require_parentheses_around_record_literal_scrutinees() {
     assert_clean(
         r"module control
 record Flag { enabled Bool }
-fn check() Unit {
+fn check() {
     if (Flag { enabled = true }) { Unit }
     match (Flag { enabled = false }) { _ => Unit }
 }
 ",
     );
     let bad = parse(
-        "module control\nrecord Flag { enabled Bool }\nfn check() Unit { if Flag { enabled = true } { Unit } }\n",
+        "module control\nrecord Flag { enabled Bool }\nfn check() { if Flag { enabled = true } { Unit } }\n",
     );
     assert!(bad.has_errors());
 }
@@ -400,15 +555,14 @@ fn name_patterns_remain_unresolved_without_casing_heuristics() {
 
 #[test]
 fn local_type_annotations_are_rejected_locally() {
-    let parsed = parse("module locals\nfn f() Unit { let value: Int = 1\n Unit }\n");
+    let parsed = parse("module locals\nfn f() { let value: Int = 1 }\n");
     assert!(codes(&parsed).contains(&"UnexpectedToken"));
     assert_eq!(parsed.ast().declarations.len(), 1);
 }
 
 #[test]
 fn malformed_top_level_declaration_recovers_at_full_start_sequence() {
-    let parsed =
-        parse("module recovery\nnoise that is not a declaration\npub fn good() Unit { Unit }\n");
+    let parsed = parse("module recovery\nnoise that is not a declaration\npub fn good() {}\n");
     assert!(codes(&parsed).contains(&"UnexpectedToken"));
     let good = parsed
         .ast()
@@ -425,7 +579,7 @@ fn malformed_top_level_declaration_recovers_at_full_start_sequence() {
 
 #[test]
 fn top_level_recovery_ignores_an_unclosed_parenthesis() {
-    let source = "module recovery\nfn broken(\npub fn good() Unit { Unit }\n";
+    let source = "module recovery\nfn broken(\npub fn good() {}\n";
     let parsed = parse(source);
     assert!(codes(&parsed).contains(&"UnexpectedToken"));
     assert!(parsed.ast().declarations.iter().any(|decl| {
@@ -439,9 +593,9 @@ fn impl_recovery_keeps_the_next_complete_method() {
     let source = r"module recovery
 record R {}
 impl R {
-    method broken(self) Unit {
+    method broken(self) {
         return
-    method good(self) Unit { Unit }
+    method good(self) {}
 }
 ";
     let parsed = parse(source);
@@ -465,7 +619,7 @@ fn impl_recovery_ignores_an_unclosed_method_parameter_list() {
 record R {}
 impl R {
     method broken(
-    method good(self) Unit { Unit }
+    method good(self) {}
 }
 ";
     let parsed = parse(source);
@@ -485,7 +639,7 @@ impl R {
 
 #[test]
 fn lexical_errors_are_local_and_later_declarations_survive() {
-    let source = "module strings\nfn broken() Text { \"oops\n}\nfn good() Unit { Unit }\n";
+    let source = "module strings\nfn broken() Text { \"oops\n}\nfn good() {}\n";
     let parsed = parse(source);
     assert!(codes(&parsed).contains(&"NewlineInString"));
     assert!(parsed.ast().declarations.iter().any(|decl| {

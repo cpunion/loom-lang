@@ -32,7 +32,7 @@ import standard.file.open_read_path
 import standard.file.create_path
 
 concept Dispose {
-    method dispose(mut self) Unit
+    method dispose(mut self)
 }
 
 concept MustScope {}
@@ -50,7 +50,7 @@ impl IndexSelf for Token {
     }
 }
 
-fn values(text Text, bytes Bytes, base Path, child Path, index Int) Unit {
+fn values(text Text, bytes Bytes, base Path, child Path, index Int) {
     let scalar_count = text.length()
     let scalar = text.get(index)
     let concatenated = text.concat("!")
@@ -65,14 +65,13 @@ fn values(text Text, bytes Bytes, base Path, child Path, index Int) Unit {
     let parsed = Path.from_text(text)
     assert bytes == bytes
     assert base == base
-    Unit
 }
 
 fn conceptValue(token Token) TextMap[Token] {
     token.indexSelf()
 }
 
-fn decodeOutcome(value Result[Text, DecodeTextError]) Unit {
+fn decodeOutcome(value Result[Text, DecodeTextError]) {
     match value {
         Ok(_) => Unit
         Err(error) => match error {
@@ -81,7 +80,7 @@ fn decodeOutcome(value Result[Text, DecodeTextError]) Unit {
     }
 }
 
-fn pathOutcome(value Result[Path, PathError]) Unit {
+fn pathOutcome(value Result[Path, PathError]) {
     match value {
         Ok(_) => Unit
         Err(error) => match error {
@@ -91,10 +90,9 @@ fn pathOutcome(value Result[Path, PathError]) Unit {
     }
 }
 
-async fn pathFiles(path Path) Unit {
+async fn pathFiles(path Path) {
     scoped input = open_read_path(path).await
     scoped output = create_path(path).await
-    Unit
 }
 "#,
     );
@@ -107,15 +105,14 @@ fn standard_value_calls_reject_wrong_shapes_and_incomplete_error_matches() {
         r#"
 module sample
 
-fn wrong(text Text, bytes Bytes, path Path) Unit {
+fn wrong(text Text, bytes Bytes, path Path) {
     let scalar = text.get("zero")
     let appended = bytes.append(text)
     let parsed = Path.from_text(1)
     let joined = path.join(text)
-    Unit
 }
 
-fn incomplete(error PathError) Unit {
+fn incomplete(error PathError) {
     match error {
         ContainsNul => Unit
     }
@@ -154,13 +151,13 @@ import standard.log.error
 import standard.log.write
 
 concept Dispose {
-    method dispose(mut self) Unit
+    method dispose(mut self)
 }
 
 concept MustScope {}
 concept NoSuspend {}
 
-fn values(text Text) Unit {
+fn values(text Text) {
     let empty = TextMap[Text]()
     let inserted = empty.insert("name", text)
     let overwritten = inserted.insert("name", "loom")
@@ -186,10 +183,9 @@ fn values(text Text) Unit {
     warn("warn")
     error("error")
     write(level, "event", removed)
-    Unit
 }
 
-fn jsonValue(value Json) Unit {
+fn jsonValue(value Json) {
     match value {
         Null => Unit
         Bool(_) => Unit
@@ -200,7 +196,7 @@ fn jsonValue(value Json) Unit {
     }
 }
 
-fn jsonFailure(value JsonError) Unit {
+fn jsonFailure(value JsonError) {
     match value {
         InvalidSyntax(_) => Unit
         NumberOutOfRange(_) => Unit
@@ -209,7 +205,7 @@ fn jsonFailure(value JsonError) Unit {
     }
 }
 
-fn ioFailure(error IoError) Unit {
+fn ioFailure(error IoError) {
     let message = error.message()
     match error.kind() {
         NotFound => Unit
@@ -225,7 +221,7 @@ fn ioFailure(error IoError) Unit {
     }
 }
 
-fn logLevel(level LogLevel) Unit {
+fn logLevel(level LogLevel) {
     match level {
         Debug => Unit
         Info => Unit
@@ -272,23 +268,22 @@ fn genericEquality[T](left TextMap[T], right TextMap[T]) Bool {
     left == right
 }
 
-fn wrong(text Text) Unit {
+fn wrong(text Text) {
     let map = TextMap[Int]().insert(1, text)
     let missing = Json.Null()
     let badJson = Json.Bool(text)
     let formatted = format_json(text)
     write(LogLevel.Info, "event", TextMap[Int]())
-    Unit
 }
 
-fn incompleteJson(value Json) Unit {
+fn incompleteJson(value Json) {
     match value {
         Null => Unit
         Bool(_) => Unit
     }
 }
 
-fn incompleteIo(kind IoErrorKind) Unit {
+fn incompleteIo(kind IoErrorKind) {
     match kind {
         Other => Unit
     }
@@ -325,29 +320,25 @@ module resources
 
 import standard.file.try_open_read
 
-fn consume[T](value T) Unit {
-    Unit
+fn consume[T](value T) {
 }
 
-async fn stored(path Text) Unit {
+async fn stored(path Text) {
     let outcome = try_open_read(path).await
-    Unit
 }
 
-async fn discarded(path Text) Unit {
+async fn discarded(path Text) {
     try_open_read(path).await
-    Unit
 }
 
-async fn wildcard(path Text) Unit {
+async fn wildcard(path Text) {
     match try_open_read(path).await {
         Ok(_) => Unit
         Err(_) => Unit
     }
-    Unit
 }
 
-async fn extractedButNotScoped(path Text) Unit {
+async fn extractedButNotScoped(path Text) {
     match try_open_read(path).await {
         Ok(file) => {
             let alias = file
@@ -355,10 +346,9 @@ async fn extractedButNotScoped(path Text) Unit {
         }
         Err(_) => Unit
     }
-    Unit
 }
 
-async fn usedAfterScopedTransfer(path Text) Unit {
+async fn usedAfterScopedTransfer(path Text) {
     match try_open_read(path).await {
         Ok(file) => {
             scoped resource = file
@@ -367,17 +357,14 @@ async fn usedAfterScopedTransfer(path Text) Unit {
         }
         Err(_) => Unit
     }
-    Unit
 }
 
-async fn passed(path Text) Unit {
+async fn passed(path Text) {
     consume(try_open_read(path).await)
-    Unit
 }
 
-async fn aggregate() Unit {
+async fn aggregate() {
     let files = List[File]()
-    Unit
 }
 ",
     );
@@ -418,7 +405,7 @@ async fn direct(path Text) Result[Unit, IoError] {
     Ok(Unit)
 }
 
-async fn matched(path Text) Unit {
+async fn matched(path Text) {
     let pending = try_open_read(path)
     match pending.await {
         Ok(file) => {
@@ -428,7 +415,6 @@ async fn matched(path Text) Unit {
         }
         Err(_) => Unit
     }
-    Unit
 }
 ",
     );

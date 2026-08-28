@@ -598,26 +598,22 @@ record Gauge {
 }
 
 impl Counter {
-    method reset(mut self, value Int) Unit {
+    method reset(mut self, value Int) {
         self.value = value
-        Unit
     }
 
-    method add(mut self, value Int) Unit {
+    method add(mut self, value Int) {
         self.value = self.value + value
-        Unit
     }
 }
 
 impl Gauge {
-    method reset(mut self, value Int) Unit {
+    method reset(mut self, value Int) {
         self.value = value
-        Unit
     }
 
-    method add(mut self, value Int) Unit {
+    method add(mut self, value Int) {
         self.value = self.value + value
-        Unit
     }
 }
 
@@ -625,7 +621,7 @@ fn forward(value Counter) Counter {
     value
 }
 
-pub fn main() Unit {
+pub fn main() {
     var counter = Counter { value = 1, enabled = true }
     counter.reset(2)
     counter.add(3)
@@ -635,7 +631,6 @@ pub fn main() Unit {
     gauge.reset(5)
     gauge.add(6)
     discard gauge.value
-    Unit
 }
 ";
     let program = compile_source(source);
@@ -825,7 +820,7 @@ fn classify(value Float) Int {
     }
 }
 
-fn requireEqual(actual Int, expected Int) Unit {
+fn requireEqual(actual Int, expected Int) {
     if actual == expected {
         Unit
     } else {
@@ -834,13 +829,12 @@ fn requireEqual(actual Int, expected Int) Unit {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     requireEqual(classify(0.0), 10)
     requireEqual(classify(-0.0), 10)
     requireEqual(classify(1.0), 20)
     requireEqual(classify(42.0), 30)
     requireEqual(classify(0.0 / 0.0), 30)
-    Unit
 }
 ";
     let mut program = compile_source(source).into_program();
@@ -1134,9 +1128,8 @@ fn choose(flag Bool, left Float, right Float) Bool {
     if flag { left < right } else { !flag }
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard choose(true, 1.0, 2.0)
-    Unit
 }
 ";
     let program = compile_source(source);
@@ -1169,11 +1162,10 @@ impl Scheduler {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     let Task = Scheduler { base = 10 }
     discard Task.any(2)
     discard Task.race(3)
-    Unit
 }
 ";
     let program = compile_source(source);
@@ -1272,7 +1264,7 @@ fn floatOutOfRange(input Text) Bool {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     let managed = join("92", "23372036854775807")
     let maxInt = parsedIntEquals(managed, 9223372036854775807)
     let minInt = parsedIntEquals("-9223372036854775808", -9223372036854775807 - 1)
@@ -1319,7 +1311,6 @@ pub fn main() Unit {
     let delay = milliseconds(42)
     let observed = delay.as_milliseconds()
     assert observed == 42
-    Unit
 }
 "#;
     let program = compile_source(source);
@@ -1422,7 +1413,7 @@ fn join(left Text, right Text) Text {{ left.concat(right) }}
 
 fn render(value Float) Text {{ format_float(value) }}
 
-pub fn main() Unit {{
+pub fn main() {{
     let kept = join("K", "eep")
     let pressure = "{pressure}".concat("{pressure}")
     discard pressure.length()
@@ -1441,7 +1432,6 @@ pub fn main() Unit {{
     assert positiveInfinity == "Infinity"
     assert negativeInfinity == "-Infinity"
     assert notANumber == "NaN"
-    Unit
 }}
 "#
     );
@@ -1540,9 +1530,8 @@ fn negative_duration_fault_matches_interpreter_and_legacy() {
 
 import standard.time.milliseconds
 
-pub fn main() Unit {
+pub fn main() {
     discard milliseconds(-1)
-    Unit
 }
 ";
     let program = compile_source(source);
@@ -1589,12 +1578,11 @@ fn invalid_duration_during_cleanup_cannot_replace_the_primary_fault() {
 
 import standard.time.milliseconds
 
-pub fn main() Unit {
+pub fn main() {
     defer {
         discard milliseconds(-1)
     }
     discard 1 / 0
-    Unit
 }
 ";
     let program = compile_source(source);
@@ -1631,9 +1619,8 @@ fn inspect(value Text) Bool {
     value.length() == 6 && value.contains("界") && value == "hello界" && value != "other"
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard inspect("hello界")
-    Unit
 }
 "#,
     );
@@ -1759,9 +1746,8 @@ enum Problem {{ WrongText }}
 
 fn join(left Text, right Text) Text {{ left.concat(right) }}
 
-pub fn main() Unit {{
+pub fn main() {{
     discard join("hello", "界").length()
-    Unit
 }}
 
 test fn concatMovesAndAliases() Result[Unit, Problem] {{
@@ -1928,9 +1914,8 @@ test fn selectsUnicodeScalars() Result[Unit, Problem] {{
     }}
 }}
 
-pub fn main() Unit {{
+pub fn main() {{
     discard "a界🙂z".get(1)
-    Unit
 }}
 "#
     );
@@ -2051,11 +2036,10 @@ record Bundle {{
 }}
 
 impl Bundle {{
-    method refresh(mut self) Unit {{
+    method refresh(mut self) {{
         let pressure = collectPressure()
         discard pressure.length()
         self.pair.left = self.pair.left.concat("")
-        Unit
     }}
 }}
 
@@ -2125,9 +2109,8 @@ fn verify() Result[Unit, Problem] {{
     }}
 }}
 
-pub fn main() Unit {{
+pub fn main() {{
     discard verify()
-    Unit
 }}
 
 test fn managedProducts() Result[Unit, Problem] {{ verify() }}
@@ -2645,7 +2628,7 @@ fn managed_lists_use_precise_repeated_descriptors_and_survive_forced_relocation(
 #[test]
 fn managed_list_source_is_direct_on_64_bit_and_fails_closed_on_32_bit() {
     let program = compile_source(
-        "module list_target\npub fn main() Unit {\n    let values = [1, 2]\n    discard values.length()\n    Unit\n}\n",
+        "module list_target\npub fn main() {\n    let values = [1, 2]\n    discard values.length()\n}\n",
     );
     let request = SourceArtifactRequest::Run {
         entry: "main".into(),
@@ -3428,7 +3411,7 @@ fn deep_nested_sum_layout_is_cached_and_bounded_across_the_complete_graph() {
     }
     writeln!(
         source,
-        "\npub fn main() Unit {{\n    let kept = join(\"de\", \"ep\")\n    let values = [{wrapped}]\n    let pressure = join(\"mo\", \"ved\")\n    let valid = match values.get(0) {{\n        Some(value) => label{}(value) == \"deep\",\n        None => false,\n    }}\n    assert valid\n    discard pressure\n    Unit\n}}",
+        "\npub fn main() {{\n    let kept = join(\"de\", \"ep\")\n    let values = [{wrapped}]\n    let pressure = join(\"mo\", \"ved\")\n    let valid = match values.get(0) {{\n        Some(value) => label{}(value) == \"deep\",\n        None => false,\n    }}\n    assert valid\n    discard pressure\n}}",
         LAYERS - 1
     )
     .expect("append nested sum entry");
@@ -3512,11 +3495,11 @@ fn independent_wide_sums_share_one_bounded_carrier_placement_budget() {
     for index in 0..SUMS {
         source.push_str(&wide_sum_definition(&format!("Wide{index}"), SCALAR_FIELDS));
     }
-    source.push_str("\npub fn main() Unit {\n");
+    source.push_str("\npub fn main() {\n");
     for index in 0..SUMS {
         source.push_str(&wide_sum_construct(&format!("Wide{index}"), SCALAR_FIELDS));
     }
-    source.push_str("    Unit\n}\n");
+    source.push_str("}\n");
 
     assert_sum_emission_resource_error(&source, "shared-sum-placement", "sum carrier placement");
 }
@@ -3527,11 +3510,11 @@ fn repeated_wide_sum_packing_shares_one_bounded_ir_emission_budget() {
     const CONSTRUCTS: usize = 34;
     let mut source = String::from("module lcir_shared_sum_emission\n\n");
     source.push_str(&wide_sum_definition("Wide", SCALAR_FIELDS));
-    source.push_str("\npub fn main() Unit {\n");
+    source.push_str("\npub fn main() {\n");
     for _ in 0..CONSTRUCTS {
         source.push_str(&wide_sum_construct("Wide", SCALAR_FIELDS));
     }
-    source.push_str("    Unit\n}\n");
+    source.push_str("}\n");
 
     assert_sum_emission_resource_error(&source, "shared-sum-emission", "sum carrier pack/unpack");
 }
@@ -3539,7 +3522,7 @@ fn repeated_wide_sum_packing_shares_one_bounded_ir_emission_budget() {
 #[test]
 fn typed_text_map_source_is_direct_on_64_bit_and_fails_closed_on_32_bit() {
     let program = compile_source(
-        "module text_map_target\npub fn main() Unit {\n    let values = TextMap[Int]().insert(\"answer\", 42)\n    let same = TextMap[Int]().insert(\"answer\", 42)\n    discard values.contains(\"answer\")\n    discard values.remove(\"missing\")\n    discard values.get(\"answer\")\n    discard values == same\n    Unit\n}\n",
+        "module text_map_target\npub fn main() {\n    let values = TextMap[Int]().insert(\"answer\", 42)\n    let same = TextMap[Int]().insert(\"answer\", 42)\n    discard values.contains(\"answer\")\n    discard values.remove(\"missing\")\n    discard values.get(\"answer\")\n    discard values == same\n}\n",
     );
     let request = SourceArtifactRequest::Run {
         entry: "main".into(),
@@ -4497,10 +4480,9 @@ fn nested(outer Int, inner Int) Int {
     seen
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard highBit()
     discard nested(3, 4)
-    Unit
 }
 ";
     let program = compile_source(source);
@@ -4571,7 +4553,7 @@ fn highBit() Int {
     seen
 }
 
-fn requireEqual(actual Int, expected Int) Unit {
+fn requireEqual(actual Int, expected Int) {
     if actual == expected {
         Unit
     } else {
@@ -4580,11 +4562,10 @@ fn requireEqual(actual Int, expected Int) Unit {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     requireEqual(recursive(10), 55)
     requireEqual(iterative(10), 55)
     requireEqual(highBit(), 9223372036854775806)
-    Unit
 }
 ";
     let program = compile_source(source);
@@ -4614,10 +4595,9 @@ fn trap() Bool {
     true
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard false && trap()
     discard true || trap()
-    Unit
 }
 ";
     let program = compile_source(source);
@@ -4654,9 +4634,8 @@ fn source_integer_faults_match_interpreter_and_legacy_diagnostics() {
     ];
 
     for (name, statement, expected) in cases {
-        let source = format!(
-            "module lcir_source_{name}\n\npub fn main() Unit {{\n    {statement}\n    Unit\n}}\n"
-        );
+        let source =
+            format!("module lcir_source_{name}\n\npub fn main() {{\n    {statement}\n}}\n");
         let program = compile_source(&source);
         let failure = interpret_run(&program, "main").expect_err("interpreter fault");
         assert!(
@@ -4695,12 +4674,11 @@ fn source_integer_faults_match_interpreter_and_legacy_diagnostics() {
 fn typed_lexical_cleanup_matches_interpreter_and_legacy_on_every_exit_shape() {
     let source = r"module typed_lexical_cleanup
 
-fn requireEqual(actual Int, expected Int) Unit {
+fn requireEqual(actual Int, expected Int) {
     assert actual == expected
-    Unit
 }
 
-pub fn normalMain() Unit {
+pub fn normalMain() {
     var order = 0
     {
         defer {
@@ -4722,10 +4700,9 @@ pub fn normalMain() Unit {
         Unit
     }
     requireEqual(order, 34)
-    Unit
 }
 
-pub fn earlyReturnMain() Unit {
+pub fn earlyReturnMain() {
     defer {
         assert false
         Unit
@@ -4733,17 +4710,16 @@ pub fn earlyReturnMain() Unit {
     return
 }
 
-pub fn bodyFaultMain() Unit {
+pub fn bodyFaultMain() {
     defer {
         assert false
         Unit
     }
     let primary = 1 / 0
     discard primary
-    Unit
 }
 
-pub fn cleanupFaultMain() Unit {
+pub fn cleanupFaultMain() {
     defer {
         let secondary = 1 / 0
         discard secondary
@@ -4753,7 +4729,6 @@ pub fn cleanupFaultMain() Unit {
         assert false
         Unit
     }
-    Unit
 }
 ";
     let program = compile_source(source);
@@ -4835,7 +4810,7 @@ fn typed_scoped_disposal_is_one_static_inout_call_after_initialization() {
     let source = r"module standard.resource
 
 concept Dispose {
-    method dispose(mut self) Unit
+    method dispose(mut self)
 }
 
 concept MustScope {}
@@ -4846,29 +4821,25 @@ record Resource {
 }
 
 impl Dispose for Resource {
-    method dispose(mut self) Unit {
+    method dispose(mut self) {
         let acquired = self.value
         assert acquired > 0
         self.value = 0
-        Unit
     }
 }
 
 impl MustScope for Resource {}
 
-pub fn successMain() Unit {
+pub fn successMain() {
     scoped resource = Resource { value = 3 }
-    Unit
 }
 
-pub fn disposalFaultMain() Unit {
+pub fn disposalFaultMain() {
     scoped resource = Resource { value = 0 }
-    Unit
 }
 
-pub fn initializerFaultMain() Unit {
+pub fn initializerFaultMain() {
     scoped resource = Resource { value = 1 / 0 }
-    Unit
 }
 ";
     let program = compile_source(source);
@@ -4985,24 +4956,20 @@ fn add(left Int, right Int) Int { left + right }
 fn subtract(left Int, right Int) Int { left - right }
 fn multiply(left Int, right Int) Int { left * right }
 
-pub fn negateMain() Unit {
+pub fn negateMain() {
     discard negate(-9223372036854775808)
-    Unit
 }
 
-pub fn addMain() Unit {
+pub fn addMain() {
     discard add(9223372036854775807, 1)
-    Unit
 }
 
-pub fn subtractMain() Unit {
+pub fn subtractMain() {
     discard subtract(-9223372036854775808, 1)
-    Unit
 }
 
-pub fn multiplyMain() Unit {
+pub fn multiplyMain() {
     discard multiply(9223372036854775807, 2)
-    Unit
 }
 ";
     let program = compile_source(source);
@@ -5065,10 +5032,9 @@ pub fn multiplyMain() Unit {
 fn provable_integer_arithmetic_remains_fault_free() {
     let source = r"module lcir_provable_integer_arithmetic
 
-pub fn main() Unit {
+pub fn main() {
     let value = (20 + 22) * 1 - 0
     assert value == 42
-    Unit
 }
 ";
     let program = compile_source(source);
@@ -5103,10 +5069,9 @@ pub fn main() Unit {
 fn contract_int_negation_overflow_matches_interpreter_lcir_and_legacy() {
     let source = r"module contract_int_negation
 
-fn guarded(value Int) Unit
+fn guarded(value Int)
     requires -value >= 0
 {
-    Unit
 }
 
 fn returnMinimum() Int
@@ -5115,19 +5080,17 @@ fn returnMinimum() Int
     -9223372036854775808
 }
 
-pub fn requiresMain() Unit {
+pub fn requiresMain() {
     guarded(-9223372036854775808)
 }
 
-pub fn ensuresMain() Unit {
+pub fn ensuresMain() {
     discard returnMinimum()
-    Unit
 }
 
-pub fn assertMain() Unit {
+pub fn assertMain() {
     let minimum = -9223372036854775808
     assert -minimum >= 0
-    Unit
 }
 ";
     let program = compile_source(source);
@@ -5211,26 +5174,22 @@ pub fn assertMain() Unit {
 fn checked_contract_binary_overflow_and_short_circuit_match_all_backends() {
     let source = r"module contract_checked_binary
 
-fn overflow(value Int) Unit
+fn overflow(value Int)
     requires value + 1 > 0
 {
-    Unit
 }
 
-fn shortCircuit(value Int) Unit
+fn shortCircuit(value Int)
     requires true || value + 1 > 0
 {
-    Unit
 }
 
-pub fn overflowMain() Unit {
+pub fn overflowMain() {
     overflow(9223372036854775807)
-    Unit
 }
 
-pub fn shortCircuitMain() Unit {
+pub fn shortCircuitMain() {
     shortCircuit(9223372036854775807)
-    Unit
 }
 ";
     let program = compile_source(source);
@@ -5285,31 +5244,27 @@ pub fn shortCircuitMain() Unit {
 fn contract_precondition_blame_matches_each_closed_world_call_and_checked_root() {
     let source = r"module contract_blame
 
-fn positive(value Int) Unit
+fn positive(value Int)
     requires value > 0
 {
-    Unit
 }
 
-fn allArgumentsBeforeRequires(first Int, later Int) Unit
+fn allArgumentsBeforeRequires(first Int, later Int)
     requires first > 0
 {
     discard later
-    Unit
 }
 
-pub fn callerMain() Unit {
+pub fn callerMain() {
     positive(0)
-    Unit
 }
 
-pub fn rootMain() Unit
+pub fn rootMain()
     requires false
 {
-    Unit
 }
 
-pub fn argumentFaultMain() Unit {
+pub fn argumentFaultMain() {
     allArgumentsBeforeRequires(0, 1 / 0)
 }
 ";
@@ -5339,19 +5294,9 @@ pub fn argumentFaultMain() Unit {
     }
 
     let caller = source_function(&program, "callerMain");
-    let call_span = caller
-        .body
-        .statements
-        .iter()
-        .find_map(|statement| match &statement.kind {
-            StatementKind::Evaluate(Expr {
-                kind: ExprKind::Call { .. },
-                span,
-                ..
-            }) => Some(*span),
-            _ => None,
-        })
-        .expect("caller expression span");
+    let call = caller.body.tail.as_deref().expect("caller tail call");
+    assert!(matches!(call.kind, ExprKind::Call { .. }), "{call:?}");
+    let call_span = call.span;
     let failure = serde_json::to_value(
         interpret_run(&program, "callerMain").expect_err("caller precondition fault"),
     )
@@ -5396,24 +5341,22 @@ pub fn argumentFaultMain() Unit {
 fn typed_async_precondition_blame_preserves_each_call_site_and_root_span() {
     let source = r"module async_contract_blame
 
-async fn positive(value Int) Unit
+async fn positive(value Int)
     requires value > 0
 {
-    Unit
 }
 
-test async fn a_first_call() Unit {
+test async fn a_first_call() {
     positive(0).await
 }
 
-test async fn b_second_call() Unit {
+test async fn b_second_call() {
     positive(0).await
 }
 
-test async fn c_checked_root() Unit
+test async fn c_checked_root()
     requires false
 {
-    Unit
 }
 ";
     let program = compile_source(source);
@@ -5565,13 +5508,12 @@ fn mutable_receiver_old_current_and_cleanup_order_match_all_backends() {
 
 record Boxed { value Int }
 
-fn requireEqual(actual Int, expected Int) Unit {
+fn requireEqual(actual Int, expected Int) {
     assert actual == expected
-    Unit
 }
 
 impl Boxed {
-    method replaceAfterCleanup(mut self, target Int) Unit
+    method replaceAfterCleanup(mut self, target Int)
         ensures old(self.value) == 1
         ensures self.value == target
     {
@@ -5589,17 +5531,16 @@ record Counter {
 }
 
 impl Counter {
-    method increase(mut self, amount Int) Unit
+    method increase(mut self, amount Int)
         requires amount >= 0
         ensures old(self.value) == 2
         ensures self.value == 5
     {
         self.value = self.value + amount
-        Unit
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     var boxed = Boxed { value = 1 }
     boxed.replaceAfterCleanup(7)
     requireEqual(boxed.value, 7)
@@ -5607,7 +5548,6 @@ pub fn main() Unit {
     var counter = Counter { value = 2 }
     counter.increase(3)
     requireEqual(counter.value, 5)
-    Unit
 }
 ";
     let program = compile_source(source);
@@ -5639,16 +5579,15 @@ pub fn main() Unit {
 fn cleanup_fault_precedes_the_postcondition_and_matches_all_backends() {
     let source = r"module contract_cleanup_fault
 
-fn failDuringCleanup() Unit
+fn failDuringCleanup()
     ensures false
 {
     defer {
         discard 1 / 0
     }
-    Unit
 }
 
-pub fn main() Unit {
+pub fn main() {
     failDuringCleanup()
 }
 ";
@@ -5737,7 +5676,7 @@ fn keep(value Option[Int]) Result[Option[Int], Problem]
     Ok(value)
 }
 
-pub fn main() Unit {
+pub fn main() {
     let staticOk = read(Number { value = 7 })
     let nestedOk = match keep(Some(3)) {
         Ok(Some(number)) => number == 3
@@ -5779,17 +5718,15 @@ fn managed_text_product_remains_typed_and_live_through_a_contract_check() {
 
 record Label { value Text }
 
-fn accept(label Label, pressure Text) Unit
+fn accept(label Label, pressure Text)
     requires label.value == "Keep"
 {
     discard pressure.length()
-    Unit
 }
 
-pub fn main() Unit {
+pub fn main() {
     let label = Label { value = "K".concat("eep") }
     accept(label, "x".concat("y"))
-    Unit
 }
 "#;
     let program = compile_source(source);
@@ -5822,9 +5759,9 @@ pub fn main() Unit {
 fn source_test_roots_preserve_declaration_order_in_one_pure_artifact() {
     let source = r"module lcir_source_tests
 
-test fn zeta() { Unit }
-test fn alpha() { Unit }
-test fn middle() { Unit }
+test fn zeta() {}
+test fn alpha() {}
+test fn middle() {}
 ";
     let program = compile_source(source);
     let interpreted = Interpreter::new(&program).run_tests();
@@ -5884,17 +5821,15 @@ record Holder {
 }
 
 impl Holder {
-    method setTotal(mut self, value Int) Unit {
+    method setTotal(mut self, value Int) {
         self.counter.total = value
-        Unit
     }
 }
 
 impl Counter {
-    method add(mut self, value Int) Unit {
+    method add(mut self, value Int) {
         self.total = self.total + value
         self.calls = self.calls + 1
-        Unit
     }
 }
 
@@ -5920,7 +5855,7 @@ fn nestedUpdate() Holder {
     holder
 }
 
-fn requireEqual(actual Int, expected Int) Unit {
+fn requireEqual(actual Int, expected Int) {
     if actual == expected {
         Unit
     } else {
@@ -5929,7 +5864,7 @@ fn requireEqual(actual Int, expected Int) Unit {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     var original = Counter { total = 3, calls = 4 }
     var copied = original
     copied.add(5)
@@ -5943,7 +5878,6 @@ pub fn main() Unit {
     let holder = nestedUpdate()
     requireEqual(holder.counter.total, 11)
     requireEqual(holder.counter.calls, 2)
-    Unit
 }
 ";
     let program = compile_source(source);
@@ -6041,18 +5975,18 @@ record Pair { left Counter, right Counter }
 record Holder { guard Int, pair Pair }
 
 impl Counter {
-    method add(mut self, amount Int) Unit {
+    method add(mut self, amount Int) {
         self.value = self.value + amount
     }
 }
 
 impl Pair {
-    method bumpLeft(mut self) Unit {
+    method bumpLeft(mut self) {
         self.left.add(5)
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     var holder = Holder {
         guard = 7,
         pair = Pair {
@@ -6159,14 +6093,14 @@ fn rearrange(input (Packet, Float)) (Bool, Packet) {
     (enabled, Packet { pair = (number, enabled) })
 }
 
-fn requireEqual(actual Int, expected Int) Unit {
+fn requireEqual(actual Int, expected Int) {
     if actual == expected { Unit } else {
         discard 1 / 0
         Unit
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     let enabled, packet = rearrange((Packet { pair = (40, true) }, 1.5))
     let number, copied = packet.pair
     if enabled && copied {
@@ -6274,7 +6208,7 @@ fn value(input Holding) Float {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     let money, range = established()
     let cash = value(Holding.Cash(money))
     let window = value(Holding.Window(range))
@@ -6370,7 +6304,7 @@ fn checked(raw Float) Result[Money, ConstraintError] {
     Money(raw)
 }
 
-pub fn main() Unit {
+pub fn main() {
     let accepted = match checked(1.0) {
         Ok(value) => value == 1.0
         Err(_) => false
@@ -6381,7 +6315,6 @@ pub fn main() Unit {
     }
     assert accepted
     assert rejected
-    Unit
 }
 ";
     let program = compile_source(source);
@@ -6420,13 +6353,12 @@ fn roundTrip(input (Packet, Float)) (Bool, Packet) {
     (enabled, Packet { pair = (number, enabled) })
 }
 
-pub fn main() Unit {
+pub fn main() {
     let enabled, packet = roundTrip((Packet { pair = (40, true) }, 1.5))
     discard enabled
     let number, copied = packet.pair
     discard number
     discard copied
-    Unit
 }
 ";
     let program = compile_source(source);
@@ -6529,14 +6461,14 @@ fn container(input Container) Int {
     }
 }
 
-fn requireEqual(actual Int, expected Int) Unit {
+fn requireEqual(actual Int, expected Int) {
     if actual == expected { Unit } else {
         discard 1 / 0
         Unit
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     requireEqual(unwrap(Single.Wrapped(41)), 41)
     requireEqual(flag(Flag.Off), 0)
     requireEqual(flag(Flag.On), 1)
@@ -6546,7 +6478,6 @@ pub fn main() Unit {
     requireEqual(odd(Odd.Bytes(false, false, false, false, false, false, false, false, true)), 9)
     requireEqual(container(Container.Boxed(Envelope { value = Odd.Wide(81) })), 81)
     requireEqual(container(Container.Paired((12, true))), 12)
-    Unit
 }
 ";
     let program = compile_source(source);
@@ -6620,11 +6551,10 @@ fn score(input Odd) Int {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard score(Odd.Empty)
     discard score(Odd.Wide(73))
     discard score(Odd.Bytes(false, false, false, false, false, false, false, false, true))
-    Unit
 }
 ";
     let program = compile_source(source);
@@ -6888,21 +6818,19 @@ record Pair { left Counter, right Counter }
 record Holder { pair Pair, guard Int }
 
 impl Counter {
-    method mutateThenFail(mut self) Unit {
+    method mutateThenFail(mut self) {
         self.value = 9
         discard 1 / 0
-        Unit
     }
 }
 
 impl Holder {
-    method cascade(mut self) Unit {
+    method cascade(mut self) {
         self.pair.left.mutateThenFail()
-        Unit
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     var holder = Holder {
         pair = Pair {
             left = Counter { value = 1 },
@@ -6911,7 +6839,6 @@ pub fn main() Unit {
         guard = 7,
     }
     holder.cascade()
-    Unit
 }
 ";
     let program = compile_source(source);
@@ -7627,16 +7554,14 @@ fn typed_sleep_uses_checked_lcir_and_the_narrow_timer_runtime_abi() {
 fn typed_sleep_source_faults_match_interpreter_and_legacy_codegen() {
     let source = r"module lcir_typed_sleep_faults
 
-pub async fn negativeMain() Unit {
+pub async fn negativeMain() {
     let timer = Task.sleep(-1)
     timer.await
-    Unit
 }
 
-pub async fn overflowMain() Unit {
+pub async fn overflowMain() {
     let timer = Task.sleep(9223372036854775807)
     timer.await
-    Unit
 }
 ";
     let program = compile_source(source);
@@ -7883,15 +7808,14 @@ async fn failed() Text {
     "unreachable"
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     let winner = Task.any(slow(), fast()).await
     assert winner == "fast"
     let recovered = Task.any(failed(), fast()).await
     assert recovered == "fast"
-    Unit
 }
 
-pub async fn allFailed() Unit {
+pub async fn allFailed() {
     discard Task.any(failed(), failed()).await
 }
 "#;
@@ -8101,12 +8025,11 @@ async fn linger(depth Int) Text {
     }
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     let combined = Task.all(overflowChild(), linger(8))
     let failed, lingered = combined.await
     discard failed
     discard lingered
-    Unit
 }
 "#;
     let program = compile_source(source);
@@ -8406,34 +8329,31 @@ async fn linger(depth Int) Int {
     }
 }
 
-pub async fn runtimeMain() Unit {
+pub async fn runtimeMain() {
     let failed = overflowChild()
     let sibling = linger(8)
     discard failed.await
     discard sibling.await
-    Unit
 }
 
-async fn assertionChild() Unit {
+async fn assertionChild() {
     assert false
-    Unit
 }
 
-pub async fn assertionMain() Unit {
+pub async fn assertionMain() {
     assertionChild().await
 }
 
-async fn required(value Int) Unit
+async fn required(value Int)
     requires value > 0
 {
-    Unit
 }
 
-async fn preconditionParent() Unit {
+async fn preconditionParent() {
     required(0).await
 }
 
-pub async fn preconditionMain() Unit {
+pub async fn preconditionMain() {
     preconditionParent().await
 }
 
@@ -8443,9 +8363,8 @@ async fn wrongAnswer() Int
     41
 }
 
-pub async fn postconditionMain() Unit {
+pub async fn postconditionMain() {
     discard wrongAnswer().await
-    Unit
 }
 
 ";

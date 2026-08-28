@@ -1470,7 +1470,7 @@ impl<'program> Validator<'program> {
             if !valid {
                 self.push(
                     MirValidationCode::RequirementShape,
-                    "prelude Dispose.dispose must be exactly `method dispose(mut self) Unit` with no generic proof parameters",
+                    "prelude Dispose.dispose must be exactly `method dispose(mut self)` with no generic proof parameters",
                     requirement.span,
                     "prelude.dispose_requirement",
                 );
@@ -2222,7 +2222,7 @@ impl<'program> Validator<'program> {
             {
                 self.push(
                     MirValidationCode::WitnessShape,
-                    "Dispose implementation methods must be synchronous, contract-free, and exactly `dispose(mut self) Unit`",
+                    "Dispose implementation methods must be synchronous, contract-free, and exactly `dispose(mut self)`",
                     function.span,
                     &method_path,
                 );
@@ -6759,7 +6759,7 @@ impl<'program> Validator<'program> {
                 {
                     self.push(
                         MirValidationCode::WitnessShape,
-                        "scoped Dispose implementation must be synchronous, contract-free, and exactly `dispose(mut self) Unit`",
+                        "scoped Dispose implementation must be synchronous, contract-free, and exactly `dispose(mut self)`",
                         method.span,
                         path,
                     );

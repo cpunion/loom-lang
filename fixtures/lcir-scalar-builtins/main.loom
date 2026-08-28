@@ -20,7 +20,7 @@ fn parsedFloatEquals(input Text, expected Float) Bool {
     }
 }
 
-fn scalarBuiltins() Unit {
+fn scalarBuiltins() {
     let managedDigits = "9".concat("223372036854775807")
     let parsedMaximum = parsedIntEquals(managedDigits, 9223372036854775807)
     let invalidInt = match parse_int("17x") {
@@ -60,13 +60,12 @@ fn scalarBuiltins() Unit {
     let delay = milliseconds(42)
     let observedDelay = delay.as_milliseconds()
     assert observedDelay == 42
-    Unit
 }
 
-pub fn main() Unit {
+pub fn main() {
     scalarBuiltins()
 }
 
-test fn typedScalarBuiltins() Unit {
+test fn typedScalarBuiltins() {
     scalarBuiltins()
 }

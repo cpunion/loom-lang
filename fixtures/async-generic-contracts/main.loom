@@ -99,5 +99,4 @@ test async fn generic_async_contracts_and_cancellation() {
 
     let winner = Task.any(slow(Boxed { value = Number { value = 9 } }), fast()).await
     assert winner == 2
-    Unit
 }

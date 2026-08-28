@@ -46,7 +46,7 @@ module canonical_task
 
 async fn child() Int { 1 }
 
-pub async fn main() Unit {
+pub async fn main() {
     discard Task.sleep(0).await
     discard Task.all(child()).await
     discard Task.settled(child()).await
@@ -88,7 +88,7 @@ impl Scheduler {
     method sleep(self, value Int) Int { value }
 }
 
-fn localReceiver() Unit {
+fn localReceiver() {
     let Task = Scheduler {}
     discard Task.all(1)
     discard Task.settled(2)
@@ -97,7 +97,7 @@ fn localReceiver() Unit {
     discard Task.sleep(5)
 }
 
-fn parameterReceiver(Task Scheduler) Unit {
+fn parameterReceiver(Task Scheduler) {
     discard Task.all(6)
     discard Task.settled(7)
     discard Task.any(8)
@@ -133,7 +133,7 @@ record Scheduler {}
 fn Task() Scheduler { Scheduler {} }
 fn Task() Scheduler { Scheduler {} }
 
-fn useTask() Unit {
+fn useTask() {
     discard Task.any(1)
 }
 ",
@@ -176,7 +176,7 @@ module application
 
 import library.Task
 
-fn useTask() Unit {
+fn useTask() {
     discard Task.any(1)
 }
 ",
@@ -269,7 +269,7 @@ module forged_task_type
 
 record Task {}
 
-fn useTask() Unit {
+fn useTask() {
     discard Task.any(1)
 }
 ",
@@ -286,7 +286,7 @@ module forged_task_parameter
 
 async fn child() Int { 1 }
 
-async fn useTask[Task]() Unit {
+async fn useTask[Task]() {
     discard Task.any(child()).await
 }
 ",

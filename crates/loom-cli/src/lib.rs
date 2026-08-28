@@ -2936,7 +2936,7 @@ mod tests {
         let project = tempfile::tempdir().expect("create source project");
         std::fs::write(
             project.path().join("main.loom"),
-            "module cache_bypass\n\npub fn main() Unit { Unit }\n",
+            "module cache_bypass\n\npub fn main() {}\n",
         )
         .expect("write source fixture");
         let snapshot = AnalysisHost::new(project.path())

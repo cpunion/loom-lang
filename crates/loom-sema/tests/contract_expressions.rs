@@ -27,10 +27,9 @@ fn binary_int_arithmetic_is_checked_inside_contracts() {
     let diagnostics = analyze_source(
         r"module sample
 
-fn invalid(value Int) Unit
+fn invalid(value Int)
     requires value + 1 > 0
 {
-    Unit
 }
 ",
     );

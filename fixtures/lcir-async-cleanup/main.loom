@@ -1,7 +1,7 @@
 module standard.resource
 
 concept Dispose {
-    method dispose(mut self) Unit
+    method dispose(mut self)
 }
 
 concept MustScope {}
@@ -12,10 +12,9 @@ record Resource {
 }
 
 impl Dispose for Resource {
-    method dispose(mut self) Unit {
+    method dispose(mut self) {
         assert self.value == 7
         self.value = 0
-        Unit
     }
 }
 
@@ -42,7 +41,7 @@ async fn normalCleanup() Int {
     order
 }
 
-async fn scopedCleanup() Unit {
+async fn scopedCleanup() {
     {
         scoped resource = Resource { value = 7 }
         Task.sleep(1).await
@@ -51,13 +50,12 @@ async fn scopedCleanup() Unit {
     }
 }
 
-async fn failsAfterSuspension() Unit {
+async fn failsAfterSuspension() {
     Task.sleep(0).await
     assert false
-    Unit
 }
 
-async fn waitsWithCleanup(marker Int) Unit {
+async fn waitsWithCleanup(marker Int) {
     defer {
         assert marker == 2
         Unit
@@ -65,7 +63,7 @@ async fn waitsWithCleanup(marker Int) Unit {
     Task.sleep(100).await
 }
 
-pub async fn faultCleanupMain() Unit {
+pub async fn faultCleanupMain() {
     let marker = 1
     defer {
         assert marker == 2
@@ -74,23 +72,22 @@ pub async fn faultCleanupMain() Unit {
     failsAfterSuspension().await
 }
 
-pub async fn cancellationMain() Unit {
+pub async fn cancellationMain() {
     let failed, waited = Task.all(failsAfterSuspension(), waitsWithCleanup(1)).await
     discard failed
     discard waited
-    Unit
 }
 
-async fn exercise() Unit {
+async fn exercise() {
     let order = normalCleanup().await
     assert order == 21
     scopedCleanup().await
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     exercise().await
 }
 
-test async fn cleanupAcrossSuspension() Unit {
+test async fn cleanupAcrossSuspension() {
     exercise().await
 }

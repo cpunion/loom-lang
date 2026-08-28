@@ -10,22 +10,20 @@ async fn flagChild() Bool { true }
 
 async fn numberChild() Int { 42 }
 
-async fn directJoin() Unit {
+async fn directJoin() {
     let flag, number = Task.all(flagChild(), numberChild()).await
     assert flag
     assert number == 42
-    Unit
 }
 
-async fn storedJoin() Unit {
+async fn storedJoin() {
     let combined = Task.all(flagChild(), numberChild())
     let flag, number = combined.await
     assert flag
     assert number == 42
-    Unit
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     directJoin().await
     storedJoin().await
 }

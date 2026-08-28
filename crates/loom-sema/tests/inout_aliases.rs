@@ -44,7 +44,7 @@ record Lists {
     right List[Unit]
 }
 
-fn valid() Unit {
+fn valid() {
     var values = List[Int]()
     values.add(values.length())
 
@@ -53,7 +53,6 @@ fn valid() Unit {
         right = List[Unit](),
     }
     lists.left.add(lists.right.add(Unit))
-    Unit
 }
 ",
     );
@@ -66,10 +65,9 @@ fn list_add_rejects_overlapping_nested_mutation() {
         r"
 module inout_list_invalid
 
-fn invalid() Unit {
+fn invalid() {
     var values = List[Unit]()
     values.add(values.add(Unit))
-    Unit
 }
 ",
     );
@@ -83,7 +81,7 @@ fn inherent_inout_scope_covers_nested_calls_assignments_and_dyn_adaptation() {
 module inout_inherent
 
 dyn concept Touch {
-    method touch(mut self) Unit
+    method touch(mut self)
 }
 
 record Cell {
@@ -91,7 +89,7 @@ record Cell {
 }
 
 impl Touch for Cell {
-    method touch(mut self) Unit {
+    method touch(mut self) {
         self.value = self.value + 1
     }
 }
@@ -106,41 +104,37 @@ impl Cell {
         self.value
     }
 
-    method consumeInt(mut self, value Int) Unit {
+    method consumeInt(mut self, value Int) {
         self.value = value
     }
 
-    method consumeUnit(mut self, value Unit) Unit {
+    method consumeUnit(mut self, value Unit) {
         self.value = self.value + 1
     }
 
-    method consumeTouch(mut self, other Touch) Unit {
+    method consumeTouch(mut self, other Touch) {
         other.touch()
     }
 }
 
-fn valid() Unit {
+fn valid() {
     var cell = Cell { value = 1 }
     cell.consumeInt(cell.read())
-    Unit
 }
 
-fn invalidNested() Unit {
+fn invalidNested() {
     var cell = Cell { value = 1 }
     cell.consumeInt(cell.reset())
-    Unit
 }
 
-fn invalidAssign() Unit {
+fn invalidAssign() {
     var cell = Cell { value = 1 }
     cell.consumeUnit(if true { cell = Cell { value = 2 } } else { Unit })
-    Unit
 }
 
-fn invalidMutableView() Unit {
+fn invalidMutableView() {
     var cell = Cell { value = 1 }
     cell.consumeTouch(cell)
-    Unit
 }
 ",
     );
@@ -166,7 +160,7 @@ record Counter {
 dyn concept CounterOps {
     method read(self) Int
     method reset(mut self) Int
-    method consume(mut self, value Int) Unit
+    method consume(mut self, value Int)
 }
 
 impl CounterOps for Counter {
@@ -179,26 +173,23 @@ impl CounterOps for Counter {
         self.value
     }
 
-    method consume(mut self, value Int) Unit {
+    method consume(mut self, value Int) {
         self.value = value
     }
 }
 
-fn validStatic() Unit {
+fn validStatic() {
     var counter = Counter { value = 1 }
     counter.consume(counter.read())
-    Unit
 }
 
-fn invalidStatic() Unit {
+fn invalidStatic() {
     var counter = Counter { value = 1 }
     counter.consume(counter.reset())
-    Unit
 }
 
-fn invalidDynamic(counter dyn CounterOps) Unit {
+fn invalidDynamic(counter dyn CounterOps) {
     counter.consume(counter.reset())
-    Unit
 }
 ",
     );
@@ -222,26 +213,25 @@ record Cell {
 }
 
 dyn concept Touch {
-    method touch(mut self) Unit
+    method touch(mut self)
 }
 
 impl Touch for Cell {
-    method touch(mut self) Unit {
+    method touch(mut self) {
         self.value = self.value + 1
     }
 }
 
-fn touch(value Touch) Unit {
+fn touch(value Touch) {
     value.touch()
 }
 
-fn valid() Unit {
+fn valid() {
     var values = List[Unit]()
     values.add(Unit)
 
     var cell = Cell { value = 1 }
     touch(cell)
-    Unit
 }
 ",
     );

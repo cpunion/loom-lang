@@ -17,7 +17,7 @@ expected `List[T]` type; `List[T]()` is the explicit empty constructor.
 ```text
 list.length() Int
 list.get(index Int) Option[T]
-list.add(value T) Unit
+list.add(value T)
 ```
 
 `length` returns the element count. `get` returns a logical copy of the element

@@ -380,8 +380,7 @@ fn check_reports_source_errors_before_pipeline_incompleteness() {
 
 #[test]
 fn human_code_frames_do_not_change_the_json_diagnostic_contract() {
-    let project =
-        TestProject::new("module demo\n\npub fn main() Unit {\n    missing()\n    Unit\n}\n");
+    let project = TestProject::new("module demo\n\npub fn main() {\n    missing()\n}\n");
     let human = loomc()
         .arg("check")
         .arg(&project.0)
@@ -426,9 +425,7 @@ fn human_code_frames_do_not_change_the_json_diagnostic_contract() {
 
 #[test]
 fn native_and_interpreter_failures_share_the_structured_json_schema() {
-    let project = TestProject::new(
-        "module fault_parity\n\npub fn main() Unit {\n    assert false\n    Unit\n}\n",
-    );
+    let project = TestProject::new("module fault_parity\n\npub fn main() {\n    assert false\n}\n");
     let failures = ["interpreter", "llvm"].map(|backend| {
         let output = loomc()
             .args(["--json", "--no-cache", "--backend", backend, "run"])
@@ -477,7 +474,7 @@ fn check_rejects_an_unknown_language_version() {
 
 #[test]
 fn clean_check_uses_the_real_semantic_pipeline() {
-    let project = TestProject::new("module demo\n\nfn main() Unit {\n    Unit\n}\n");
+    let project = TestProject::new("module demo\n\nfn main() {\n}\n");
     let output = loomc()
         .args(["check", "--json"])
         .arg(&project.0)
@@ -491,7 +488,7 @@ fn clean_check_uses_the_real_semantic_pipeline() {
 
 #[test]
 fn persistent_cache_hits_content_keys_and_final_artifacts() {
-    let project = TestProject::new("module demo\n\npub fn main() Unit {\n    Unit\n}\n");
+    let project = TestProject::new("module demo\n\npub fn main() {\n}\n");
 
     let check = |extra: &[&str]| {
         loomc()
@@ -517,7 +514,7 @@ fn persistent_cache_hits_content_keys_and_final_artifacts() {
 
     project.write(
         "main.loom",
-        "module demo\n\npub fn main() Unit {\n    assert true\n    Unit\n}\n",
+        "module demo\n\npub fn main() {\n    assert true\n}\n",
     );
     let changed = check(&["check"]);
     assert_eq!(changed.status.code(), Some(0));
@@ -566,7 +563,7 @@ fn persistent_cache_hits_content_keys_and_final_artifacts() {
 
 #[test]
 fn backend_switch_reuses_the_same_checked_mir_identity() {
-    let project = TestProject::new("module demo\n\npub fn main() Unit {\n    Unit\n}\n");
+    let project = TestProject::new("module demo\n\npub fn main() {\n}\n");
     let interpreter = loomc()
         .args(["--json", "--backend", "interpreter", "check"])
         .arg(&project.0)
@@ -596,7 +593,7 @@ fn backend_switch_reuses_the_same_checked_mir_identity() {
 
 #[test]
 fn target_and_optimization_split_object_cache_but_reuse_checked_mir() {
-    let project = TestProject::new("module demo\n\npub fn main() Unit {\n    Unit\n}\n");
+    let project = TestProject::new("module demo\n\npub fn main() {\n}\n");
     let host_triple = loom_codegen_llvm::target_identity(
         None,
         loom_codegen_llvm::OptimizationProfile::Development,
@@ -700,7 +697,7 @@ fn target_and_optimization_split_object_cache_but_reuse_checked_mir() {
 #[test]
 fn ordinary_native_commands_use_the_atomic_automatic_route() {
     let scalar = TestProject::new(
-        "module automatic_scalar\n\nfn choose(flag Bool) Int { if flag { 1 } else { 2 } }\n\npub fn main() Unit {\n    discard choose(true)\n    Unit\n}\n\ntest fn scalar() Unit {\n    discard choose(false)\n    Unit\n}\n",
+        "module automatic_scalar\n\nfn choose(flag Bool) Int { if flag { 1 } else { 2 } }\n\npub fn main() {\n    discard choose(true)\n}\n\ntest fn scalar() {\n    discard choose(false)\n}\n",
     );
     let scalar_object = scalar.0.join("scalar.o");
     let build = loomc()
@@ -729,7 +726,7 @@ fn ordinary_native_commands_use_the_atomic_automatic_route() {
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
 
     let managed = TestProject::new(
-        "module automatic_managed_text\n\npub fn main() Unit {\n    discard \"left\".concat(\"right\")\n    Unit\n}\n",
+        "module automatic_managed_text\n\npub fn main() {\n    discard \"left\".concat(\"right\")\n}\n",
     );
     let managed_object = managed.0.join("managed-text.o");
     let build = loomc()
@@ -2397,7 +2394,7 @@ fn typed_logging_closes_real_check_build_test_and_run_commands() {
 
 #[test]
 fn cache_stat_and_prune_have_stable_json_reports() {
-    let project = TestProject::new("module demo\n\npub fn main() Unit { Unit }\n");
+    let project = TestProject::new("module demo\n\npub fn main() {}\n");
     let check = loomc()
         .args(["--json", "--backend", "interpreter", "check"])
         .arg(&project.0)
@@ -2427,9 +2424,8 @@ fn cache_stat_and_prune_have_stable_json_reports() {
 
 #[test]
 fn unreachable_private_body_edits_reuse_native_object_and_relink() {
-    let project = TestProject::new(
-        "module demo\n\npub fn main() Unit {\n    Unit\n}\n\nfn dead() Int {\n    1\n}\n",
-    );
+    let project =
+        TestProject::new("module demo\n\npub fn main() {\n}\n\nfn dead() Int {\n    1\n}\n");
     let first_artifact = project.0.join("first.native");
     let first = loomc()
         .args(["--json", "build", "--output"])
@@ -2449,7 +2445,7 @@ fn unreachable_private_body_edits_reuse_native_object_and_relink() {
 
     project.write(
         "main.loom",
-        "module demo\n\npub fn main() Unit {\n    Unit\n}\n\nfn dead() Int {\n    2\n}\n",
+        "module demo\n\npub fn main() {\n}\n\nfn dead() Int {\n    2\n}\n",
     );
     let second_artifact = project.0.join("second.native");
     let second = loomc()
@@ -2508,7 +2504,7 @@ fn manifest_targets_and_path_dependencies_drive_cli_roots() {
     );
     project.write(
         "application/src/main.loom",
-        "module application\n\nimport utility.increment\n\npub fn start() Unit {\n    let value = increment(1)\n    assert value == 2\n    Unit\n}\n\ntest fn dependency_works() {\n    let value = increment(2)\n    assert value == 3\n    Unit\n}\n",
+        "module application\n\nimport utility.increment\n\npub fn start() {\n    let value = increment(1)\n    assert value == 2\n}\n\ntest fn dependency_works() {\n    let value = increment(2)\n    assert value == 3\n}\n",
     );
     let root = project.0.join("application");
 
@@ -2674,7 +2670,7 @@ fn library_targets_build_portable_validated_artifacts() {
     );
     project.write(
         "consumer/src/main.loom",
-        "module consumer\n\nimport sample.answer\n\npub fn main() Unit {\n    let value = answer()\n    assert value == 42\n    Unit\n}\n\ntest fn artifact_dependency_works() {\n    main()\n}\n",
+        "module consumer\n\nimport sample.answer\n\npub fn main() {\n    let value = answer()\n    assert value == 42\n}\n\ntest fn artifact_dependency_works() {\n    main()\n}\n",
     );
     fs::remove_dir_all(project.0.join("src")).expect("remove producer sources");
     let consumed = loomc()
@@ -2799,7 +2795,7 @@ fn loopback_http_registry_publish_fetch_lock_and_offline_cache_close_the_loop() 
         "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"consumer\"\nversion = \"1.0.0\"\n[registries]\nremote = {{ url = {:?} }}\n[dependencies]\nutility = {{ registry = \"remote\", version = \"^1\" }}\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"consumer.main\"\n",
         fixture.url
     );
-    let consumer_source = "module consumer\n\nimport utility.answer\n\npub fn main() Unit {\n    let value = answer()\n    assert value == 42\n    Unit\n}\n";
+    let consumer_source = "module consumer\n\nimport utility.answer\n\npub fn main() {\n    let value = answer()\n    assert value == 42\n}\n";
     project.write("consumer/loom.toml", &consumer_manifest);
     project.write("consumer/src/main.loom", consumer_source);
     let resolved = loomc()
@@ -2960,7 +2956,7 @@ fn cli_resolves_registry_features_and_enforces_lockfiles() {
     );
     project.write(
         "app/src/main.loom",
-        "module app\n\nimport utility.answer\n\npub fn main() Unit {\n    let value = answer()\n    assert value > 0\n    Unit\n}\n",
+        "module app\n\nimport utility.answer\n\npub fn main() {\n    let value = answer()\n    assert value > 0\n}\n",
     );
     let root = project.0.join("app");
 
@@ -3035,7 +3031,7 @@ fn cli_resolves_registry_features_and_enforces_lockfiles() {
 
 #[test]
 fn fmt_check_and_write_form_an_idempotent_real_file_flow() {
-    let project = TestProject::new("module demo\r\n\r\nfn main() Unit {\r\n\tUnit   \r\n}\r\n\r\n");
+    let project = TestProject::new("module demo\r\n\r\nfn main() {\r\n}\r\n\r\n");
     let first = loomc()
         .args(["fmt", "--check"])
         .arg(&project.0)
@@ -3051,7 +3047,7 @@ fn fmt_check_and_write_form_an_idempotent_real_file_flow() {
     assert_eq!(write.status.code(), Some(0));
     assert_eq!(
         fs::read_to_string(project.0.join("main.loom")).expect("read formatted source"),
-        "module demo\n\nfn main() Unit {\n    Unit\n}\n"
+        "module demo\n\nfn main() {\n}\n"
     );
 
     let second = loomc()
@@ -3077,7 +3073,7 @@ fn fmt_never_writes_dependency_sources() {
     );
     project.write(
         "application/src/main.loom",
-        "module application\n\nfn local() Unit {\n\tUnit   \n}\n",
+        "module application\n\nfn local() {\n}\n",
     );
 
     let output = loomc()
@@ -3092,15 +3088,15 @@ fn fmt_never_writes_dependency_sources() {
     );
     assert_eq!(
         fs::read_to_string(project.0.join("application/src/main.loom")).expect("read root source"),
-        "module application\n\nfn local() Unit {\n    Unit\n}\n"
+        "module application\n\nfn local() {\n}\n"
     );
 }
 
 #[test]
 fn configured_entries_use_one_strict_signature_check() {
     for (name, declaration) in [
-        ("parameters", "pub fn main(value Int) Unit { Unit }"),
-        ("generic", "pub fn main[T]() Unit { Unit }"),
+        ("parameters", "pub fn main(value Int) {}"),
+        ("generic", "pub fn main[T]() {}"),
         ("return", "pub fn main() Int { 1 }"),
     ] {
         let project = TestProject::empty();
@@ -3132,7 +3128,7 @@ fn dependency_public_functions_cannot_be_selected_as_root_entries() {
     );
     project.write(
         "dependency/src/lib.loom",
-        "module dependency\n\npub fn main() Unit { Unit }\n",
+        "module dependency\n\npub fn main() {}\n",
     );
     project.write(
         "application/loom.toml",
@@ -3152,7 +3148,7 @@ fn dependency_public_functions_cannot_be_selected_as_root_entries() {
 #[test]
 fn test_and_run_execute_native_code() {
     let project = TestProject::new(
-        "module demo\n\npub fn main() Unit {\n    Unit\n}\n\ntest fn passes() {\n    assert true\n    Unit\n}\n",
+        "module demo\n\npub fn main() {\n}\n\ntest fn passes() {\n    assert true\n}\n",
     );
     let test = loomc()
         .arg("test")
@@ -3249,7 +3245,7 @@ test async fn discards_awaited_value() {
 #[test]
 fn range_and_growable_list_run_on_both_backends() {
     let project = TestProject::new(
-        "module dynamic\n\nimport standard.int.parse_int\nimport standard.process.arguments\nimport standard.process.environment\n\nasync fn worker(value Int) Int {\n    value * 2\n}\n\npub async fn main() Unit {\n    let processArguments = arguments()\n    let argumentCount = processArguments.length()\n    assert argumentCount == 5\n    let count = match environment(\"LOOM_WORKERS\") {\n        Some(text) => {\n            match parse_int(text) {\n                Ok(value) => value\n                Err(ParseIntError.InvalidSyntax) => 0\n                Err(ParseIntError.OutOfRange) => 0\n            }\n        }\n        None => 0\n    }\n    assert count == 5\n    match environment(\"LOOM_TEST_ENV\") {\n        Some(value) => {\n            assert value == \"visible\"\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    var tasks = List[Task[Int]]()\n    for i in 0..count {\n        tasks.add(worker(i))\n        Unit\n    }\n    let values = Task.all(tasks).await\n    let length = values.length()\n    assert length == count\n    let selected = values.get(3)\n    match selected {\n        Some(value) => {\n            assert value == 6\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    let missing = values.get(-1)\n    match missing {\n        Some(_) => {\n            assert false\n            Unit\n        }\n        None => Unit\n    }\n    Unit\n}\n",
+        "module dynamic\n\nimport standard.int.parse_int\nimport standard.process.arguments\nimport standard.process.environment\n\nasync fn worker(value Int) Int {\n    value * 2\n}\n\npub async fn main() {\n    let processArguments = arguments()\n    let argumentCount = processArguments.length()\n    assert argumentCount == 5\n    let count = match environment(\"LOOM_WORKERS\") {\n        Some(text) => {\n            match parse_int(text) {\n                Ok(value) => value\n                Err(ParseIntError.InvalidSyntax) => 0\n                Err(ParseIntError.OutOfRange) => 0\n            }\n        }\n        None => 0\n    }\n    assert count == 5\n    match environment(\"LOOM_TEST_ENV\") {\n        Some(value) => {\n            assert value == \"visible\"\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    var tasks = List[Task[Int]]()\n    for i in 0..count {\n        tasks.add(worker(i))\n        Unit\n    }\n    let values = Task.all(tasks).await\n    let length = values.length()\n    assert length == count\n    let selected = values.get(3)\n    match selected {\n        Some(value) => {\n            assert value == 6\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    let missing = values.get(-1)\n    match missing {\n        Some(_) => {\n            assert false\n            Unit\n        }\n        None => Unit\n    }\n}\n",
     );
     for backend in ["interpreter", "llvm"] {
         let output = loomc()
@@ -3306,7 +3302,7 @@ fn range_and_growable_list_run_on_both_backends() {
 
 #[test]
 fn build_writes_a_runnable_native_artifact() {
-    let project = TestProject::new("module demo\n\npub fn main() Unit {\n    Unit\n}\n");
+    let project = TestProject::new("module demo\n\npub fn main() {\n}\n");
     let artifact = project.0.join("out.native");
     let mut build = loomc();
     build
@@ -3334,7 +3330,7 @@ fn build_writes_a_runnable_native_artifact() {
 #[cfg(unix)]
 #[test]
 fn debug_builds_source_mapped_native_code_and_launches_a_debugger() {
-    let project = TestProject::new("module demo\n\npub fn main() Unit {\n    Unit\n}\n");
+    let project = TestProject::new("module demo\n\npub fn main() {\n}\n");
     project.write(
         "debug-wrapper",
         "#!/bin/sh\nexecutable=$1\nshift\ntest -x \"$executable\" || exit 91\ntest \"$1\" = \"--\" || exit 92\nshift\ntest \"$1\" = \"alpha\" || exit 93\ntest \"$2\" = \"beta gamma\" || exit 94\ncp \"$executable\" \"$LOOM_DEBUG_COPY\" || exit 95\nprintf 'debug-wrapper:%s:%s\\n' \"$1\" \"$2\"\n\"$executable\" \"$@\"\n",
@@ -3373,7 +3369,7 @@ fn debug_builds_source_mapped_native_code_and_launches_a_debugger() {
 #[test]
 fn debug_routes_text_selection_through_typed_lcir_codegen() {
     let project = TestProject::new(
-        "module debug_text_get\n\npub fn main() Unit {\n    discard \"value\".get(0)\n    Unit\n}\n",
+        "module debug_text_get\n\npub fn main() {\n    discard \"value\".get(0)\n}\n",
     );
     project.write(
         "debug-wrapper",
@@ -3413,7 +3409,7 @@ fn debug_routes_text_selection_through_typed_lcir_codegen() {
 
 #[test]
 fn debug_rejects_non_native_noninteractive_and_release_modes() {
-    let project = TestProject::new("module demo\n\npub fn main() Unit {\n    Unit\n}\n");
+    let project = TestProject::new("module demo\n\npub fn main() {\n}\n");
     for (arguments, expected) in [
         (
             vec!["--backend", "interpreter", "debug"],
@@ -3438,7 +3434,7 @@ fn debug_rejects_non_native_noninteractive_and_release_modes() {
 
 #[test]
 fn release_and_cross_target_object_builds_are_distinct_and_cached() {
-    let project = TestProject::new("module demo\n\npub fn main() Unit {\n    Unit\n}\n");
+    let project = TestProject::new("module demo\n\npub fn main() {\n}\n");
     let release_object = project.0.join("release-aarch64.o");
     let release = loomc()
         .args([
@@ -3541,7 +3537,7 @@ fn release_and_cross_target_object_builds_are_distinct_and_cached() {
 
 #[test]
 fn native_target_preparation_errors_are_usage_errors() {
-    let project = TestProject::new("module invalid_target\n\npub fn main() Unit { Unit }\n");
+    let project = TestProject::new("module invalid_target\n\npub fn main() {}\n");
     let output = loomc()
         .args([
             "--json",
@@ -3567,9 +3563,8 @@ fn native_target_preparation_errors_are_usage_errors() {
 
 #[test]
 fn non_linking_commands_do_not_resolve_the_native_runtime_bundle() {
-    let project = TestProject::new(
-        "module no_runtime\n\ntest fn passes() Unit { Unit }\n\npub fn main() Unit { Unit }\n",
-    );
+    let project =
+        TestProject::new("module no_runtime\n\ntest fn passes() {}\n\npub fn main() {}\n");
     let unavailable = project.0.join("unavailable-runtime-bundle");
 
     let checked = loomc_without_test_runtime()
@@ -3610,7 +3605,7 @@ fn non_linking_commands_do_not_resolve_the_native_runtime_bundle() {
 #[cfg(unix)]
 #[test]
 fn packed_host_runtime_bundle_builds_and_target_mismatch_fails_closed() {
-    let project = TestProject::new("module demo\n\npub fn main() Unit {\n    Unit\n}\n");
+    let project = TestProject::new("module demo\n\npub fn main() {\n}\n");
     let bundle = project.0.join("host-runtime");
     let packed = loomc()
         .args(["--json", "runtime", "pack", "--archive"])
@@ -3706,7 +3701,7 @@ fn packed_host_runtime_bundle_builds_and_target_mismatch_fails_closed() {
 
 #[test]
 fn invalid_explicit_runtime_bundle_does_not_fall_back_to_the_environment() {
-    let project = TestProject::new("module no_fallback\n\npub fn main() Unit { Unit }\n");
+    let project = TestProject::new("module no_fallback\n\npub fn main() {}\n");
     let invalid_explicit_bundle = project.0.join("invalid-explicit-runtime");
     fs::write(&invalid_explicit_bundle, b"not a runtime directory")
         .expect("write invalid explicit bundle");
@@ -3727,7 +3722,7 @@ fn invalid_explicit_runtime_bundle_does_not_fall_back_to_the_environment() {
 #[cfg(unix)]
 #[test]
 fn host_linker_resolution_uses_environment_and_prefers_explicit_cli() {
-    let project = TestProject::new("module demo\n\npub fn main() Unit { Unit }\n");
+    let project = TestProject::new("module demo\n\npub fn main() {}\n");
     project.write(
         "passthrough-linker",
         r#"#!/bin/sh
@@ -3778,7 +3773,7 @@ exec "${LOOM_REAL_LINKER:?}" "$@"
 #[test]
 #[allow(clippy::too_many_lines)]
 fn foreign_runtime_bundle_relinks_when_undeclared_tool_inputs_change() {
-    let project = TestProject::new("module demo\n\npub fn main() Unit {\n    Unit\n}\n");
+    let project = TestProject::new("module demo\n\npub fn main() {\n}\n");
     let bundle_one = project.0.join("runtime-one");
     write_fake_runtime_bundle(&bundle_one, b"foreign runtime archive one");
     write_fake_linker(&project, "linker identity one");
@@ -3914,7 +3909,7 @@ fn foreign_runtime_bundle_relinks_when_undeclared_tool_inputs_change() {
 
 #[test]
 fn release_build_produces_a_runnable_native_executable() {
-    let project = TestProject::new("module demo\n\npub fn main() Unit {\n    Unit\n}\n");
+    let project = TestProject::new("module demo\n\npub fn main() {\n}\n");
     let release_output = project.0.join("release-native");
     let native = loomc()
         .args(["--release", "build", "--output"])
@@ -3984,7 +3979,7 @@ fn must_scope_identity_closes_cached_check_build_test_run_and_artifact_decode() 
         r"module standard.resource
 
 concept Dispose {
-    method dispose(mut self) Unit
+    method dispose(mut self)
 }
 
 concept MustScope {}
@@ -3994,22 +3989,19 @@ record Resource {
 }
 
 impl Dispose for Resource {
-    method dispose(mut self) Unit {
+    method dispose(mut self) {
         self.value = 0
-        Unit
     }
 }
 
 impl MustScope for Resource {}
 
-pub fn main() Unit {
+pub fn main() {
     scoped resource = Resource { value = 1 }
-    Unit
 }
 
 test fn resource_identity() {
     scoped resource = Resource { value = 2 }
-    Unit
 }
 ",
     );
@@ -4100,7 +4092,7 @@ fn run_rejects_pre_raw_wait_removal_artifact_version() {
 
 #[test]
 fn run_rejects_an_incompatible_artifact_language_version() {
-    let project = TestProject::new("module demo\n\npub fn main() Unit { Unit }\n");
+    let project = TestProject::new("module demo\n\npub fn main() {}\n");
     let artifact = project.0.join("future.loomi");
     let build = loomc()
         .args(["--backend", "interpreter", "build", "--output"])

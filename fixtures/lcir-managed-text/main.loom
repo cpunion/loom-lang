@@ -4,12 +4,11 @@ enum Problem { WrongText }
 
 fn join(left Text, right Text) Text { left.concat(right) }
 
-fn exercise() Unit {
+fn exercise() {
     let kept = "Keep"
     let joined = join(kept, "Right")
     discard joined.length()
     discard kept.length()
-    Unit
 }
 
 fn verify() Result[Unit, Problem] {
@@ -22,6 +21,6 @@ fn verify() Result[Unit, Problem] {
     }
 }
 
-pub fn main() Unit { exercise() }
+pub fn main() { exercise() }
 
 test fn managedText() Result[Unit, Problem] { verify() }

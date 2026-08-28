@@ -102,9 +102,11 @@ fn notify(message Text) {
 ```
 
 A block with no tail expression evaluates to `Unit`. Therefore a Unit-returning
-function may end after its final statement or with an empty body. `Unit` remains
-explicit when it is a type argument: `Result[Unit, E]` and `Task[Unit]` cannot
-omit it.
+function may end after its final statement or with an empty body. The callable
+syntax requires both its bare `Unit` return annotation and a direct final bare
+`Unit` expression to be omitted. `Unit` remains a user-visible type and value;
+it is explicit in type arguments such as `Result[Unit, E]` and `Task[Unit]`, and
+may be used in ordinary expressions such as `Ok(Unit)`.
 
 ## Type compatibility and conversions
 

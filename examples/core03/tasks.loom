@@ -1,7 +1,7 @@
 module standard.resource
 
 concept Dispose {
-    method dispose(mut self) Unit
+    method dispose(mut self)
 }
 
 concept MustScope {}
@@ -48,9 +48,8 @@ impl CleanupProbe {
 }
 
 impl Dispose for Resource {
-    method dispose(mut self) Unit {
+    method dispose(mut self) {
         self.value = 0
-        Unit
     }
 }
 
@@ -158,7 +157,7 @@ fn cleanupOrder() Int {
     order
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     let order = cleanupOrder()
     assert order == 21
     scoped resource = Resource { value = 3 }
@@ -234,7 +233,6 @@ pub async fn main() Unit {
     let firstTimer, secondTimer = Task.all(Task.sleep(2), Task.sleep(1)).await
     assert firstTimer == Unit
     assert secondTimer == Unit
-    Unit
 }
 
 test async fn task_and_cleanup() {
@@ -320,5 +318,4 @@ test async fn task_and_cleanup() {
     let firstTimer, secondTimer = Task.all(Task.sleep(2), Task.sleep(1)).await
     assert firstTimer == Unit
     assert secondTimer == Unit
-    Unit
 }

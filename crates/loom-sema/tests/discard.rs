@@ -32,11 +32,10 @@ fn number() Int {
     42
 }
 
-fn discardValues() Unit {
+fn discardValues() {
     discard number()
     discard "unused"
     discard Unit
-    Unit
 }
 
 fn omittedReturnIsUnit() {
@@ -68,7 +67,7 @@ fn discarding_a_diverging_block_does_not_require_a_return_value() {
         r"
 module discard_never
 
-fn exits() Unit {
+fn exits() {
     discard {
         return
     }
@@ -88,10 +87,10 @@ fn number() Int {
     42
 }
 
-fn bareValues() Unit {
+fn bareValues() {
     42
     number()
-    Unit
+    return
 }
 ",
     );
@@ -111,14 +110,12 @@ fn must_scope_obligations_cannot_be_discarded_through_wrappers() {
         r"
 module discard_resources
 
-fn direct(file File) Unit {
+fn direct(file File) {
     discard file
-    Unit
 }
 
-fn wrapped(value Result[Option[File], IoError]) Unit {
+fn wrapped(value Result[Option[File], IoError]) {
     discard value
-    Unit
 }
 ",
     );
@@ -146,24 +143,20 @@ async fn work() Int {
     42
 }
 
-fn direct() Unit {
+fn direct() {
     discard work()
-    Unit
 }
 
-fn wrapped(value Option[Task[Int]]) Unit {
+fn wrapped(value Option[Task[Int]]) {
     discard value
-    Unit
 }
 
-fn listed(value List[Task[Int]]) Unit {
+fn listed(value List[Task[Int]]) {
     discard value
-    Unit
 }
 
-fn boxed(value TaskBox[Int]) Unit {
+fn boxed(value TaskBox[Int]) {
     discard value
-    Unit
 }
 ",
     );
@@ -183,9 +176,8 @@ fn unconstrained_generic_values_cannot_be_discarded() {
         r"
 module discard_generics
 
-fn ignore[T](value T) Unit {
+fn ignore[T](value T) {
     discard value
-    Unit
 }
 ",
     );
@@ -203,10 +195,10 @@ async fn work() Int {
     42
 }
 
-fn bare(file File) Unit {
+fn bare(file File) {
     file
     work()
-    Unit
+    return
 }
 ",
     );
@@ -274,9 +266,8 @@ fn eraseGeneric[T: Label](value T) dyn Label {
     value
 }
 
-fn ignoreDyn(value dyn Label) Unit {
+fn ignoreDyn(value dyn Label) {
     discard value
-    Unit
 }
 "#,
     );

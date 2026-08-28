@@ -50,9 +50,8 @@ fn choiceText(values List[Choice], index Int) Text {
 }
 
 impl Holder {
-    method append(mut self, value Text) Unit {
+    method append(mut self, value Text) {
         self.values.add(value)
-        Unit
     }
 }
 
@@ -109,9 +108,8 @@ fn verify() Result[Unit, Problem] {
     )
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard verify()
-    Unit
 }
 
 test fn managedLists() Result[Unit, Problem] { verify() }

@@ -78,7 +78,7 @@ fn verify() Result[Unit, Problem] {
     )
 }
 
-pub fn main() Unit {
+pub fn main() {
     match verify() {
         Ok(_) => Unit
         Err(_) => {

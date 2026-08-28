@@ -1122,7 +1122,7 @@ record R {}
 pub fn omitted() { return }
 async fn omittedAsync() {}
 test fn omittedTest() { return }
-fn explicit() Unit { Unit }
+fn anotherOmitted() {}
 
 impl R {
     pub method inherent(self) {}
@@ -1150,7 +1150,6 @@ impl C for R {
         assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
 
         let mut omitted_signatures = 0;
-        let mut explicit_signatures = 0;
         for (_, definition) in lowered.program.definitions.iter() {
             let signature = match &definition.kind {
                 DefinitionKind::Function(function) | DefinitionKind::Test(function) => {
@@ -1162,20 +1161,10 @@ impl C for R {
             let Some(signature) = signature else {
                 continue;
             };
-            if definition
-                .name
-                .as_ref()
-                .is_some_and(|name| name.as_str() == "explicit")
-            {
-                assert!(signature.return_ty.is_some());
-                explicit_signatures += 1;
-            } else {
-                assert!(signature.return_ty.is_none());
-                omitted_signatures += 1;
-            }
+            assert!(signature.return_ty.is_none());
+            omitted_signatures += 1;
         }
-        assert_eq!(omitted_signatures, 6);
-        assert_eq!(explicit_signatures, 1);
+        assert_eq!(omitted_signatures, 7);
         assert!(lowered.program.bodies.iter().any(|(_, body)| {
             body.expressions
                 .values()
@@ -1230,7 +1219,7 @@ impl C for R {
             FileId(0),
             r"module task_calls
 
-fn calls(task Task[Int]) Unit {
+fn calls(task Task[Int]) {
     discard Task.sleep(1)
     discard Task.all(task)
     discard Task.settled(task)

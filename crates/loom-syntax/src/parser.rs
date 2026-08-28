@@ -542,6 +542,7 @@ impl<'a> Parser<'a> {
         }
         self.skip_separators();
         let body = self.parse_block();
+        self.reject_bare_unit_tail(&body);
         FunctionDecl {
             signature,
             body,
@@ -573,6 +574,15 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        if let Some(return_type) = &return_type
+            && is_bare_unit_type(return_type)
+        {
+            self.error_at(
+                "UnexpectedToken",
+                "`Unit` return types are implicit; omit `Unit` after the parameter list",
+                return_type.range,
+            );
+        }
 
         self.skip_separators();
         let contracts = self.parse_contracts();
@@ -795,6 +805,7 @@ impl<'a> Parser<'a> {
         let signature = self.parse_signature(context, is_static);
         self.skip_separators();
         let body = self.parse_block();
+        self.reject_bare_unit_tail(&body);
         MethodDecl {
             visibility,
             is_static,
@@ -1829,6 +1840,19 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn reject_bare_unit_tail(&mut self, body: &Block) {
+        let Some(BlockItem::Expr(expression)) = body.items.last() else {
+            return;
+        };
+        if is_bare_unit_expression(expression) {
+            self.error_at(
+                "UnexpectedToken",
+                "a Unit-returning callable must omit the final bare Unit expression",
+                expression.range,
+            );
+        }
+    }
+
     fn parse_for_range_at(&mut self, nesting: SyntaxNesting) -> ForRange {
         let start = self.start();
         self.bump();
@@ -2432,6 +2456,22 @@ impl<'a> Parser<'a> {
     fn finish(&self, start: u32) -> TextRange {
         TextRange::new(start, self.last_end.max(start))
     }
+}
+
+fn is_bare_unit_type(ty: &TypeExpr) -> bool {
+    matches!(
+        &ty.kind,
+        TypeExprKind::Named { path, arguments }
+            if arguments.is_empty() && is_unqualified_unit_path(path)
+    )
+}
+
+fn is_bare_unit_expression(expression: &Expr) -> bool {
+    matches!(&expression.kind, ExprKind::Name(path) if is_unqualified_unit_path(path))
+}
+
+fn is_unqualified_unit_path(path: &Path) -> bool {
+    matches!(path.segments.as_slice(), [segment] if segment.text == "Unit")
 }
 
 fn expr_as_path(expr: &Expr) -> Option<Path> {

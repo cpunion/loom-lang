@@ -10,7 +10,7 @@ fn selectedLevel(useWarn Bool) LogLevel {
     if useWarn { LogLevel.Warn } else { LogLevel.Info }
 }
 
-fn emitCanonicalLogs() Unit {
+fn emitCanonicalLogs() {
     debug("debug \"line\"")
     info("information")
     warn("warning")
@@ -20,9 +20,8 @@ fn emitCanonicalLogs() Unit {
         "event\nline",
         TextMap[Text]().insert("z", "last").insert("a", "first")
     )
-    Unit
 }
 
-pub fn main() Unit { emitCanonicalLogs() }
+pub fn main() { emitCanonicalLogs() }
 
-test fn typedLogging() Unit { emitCanonicalLogs() }
+test fn typedLogging() { emitCanonicalLogs() }

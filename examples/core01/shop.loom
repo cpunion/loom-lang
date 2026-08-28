@@ -48,7 +48,7 @@ fn checked_order(subtotal Price, discount Price) Result[Order, ConstraintError] 
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     let subtotal = Price(100.0)
     let discount = Price(20.0)
     let order = Order {
@@ -57,7 +57,6 @@ pub fn main() Unit {
     }
     let total = order.total()
     assert total == 80.0
-    Unit
 }
 
 test fn constrained_values_and_record_invariant() {
@@ -69,7 +68,6 @@ test fn constrained_values_and_record_invariant() {
     }
     let total = order.total()
     assert total == 80.0
-    Unit
 }
 
 test fn negative_price_is_rejected() {

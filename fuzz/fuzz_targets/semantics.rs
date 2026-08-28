@@ -58,7 +58,7 @@ fuzz_target!(|input: &[u8]| {
          fn checked(value Int) Result[Checked, ConstraintError] {{\n\
              Checked(value)\n\
          }}\n\n\
-         pub fn main() Unit {{\n\
+         pub fn main() {{\n\
              let value = direct()\n\
              assert value == {proven}\n\
              match checked({candidate}) {{\n\
@@ -119,7 +119,7 @@ fn bad() TextMap[Int] { TextMap[Int]().insert("key", "wrong") }
         2 => {
             r#"
 module fuzz.structured.reject
-fn bad(value Json) Unit {
+fn bad(value Json) {
     match value {
         Null => Unit
         Bool(_) => Unit
@@ -136,7 +136,7 @@ fn bad() Json { Json.Null() }
         4 => {
             r#"
 module fuzz.structured.reject
-fn bad(value IoErrorKind) Unit {
+fn bad(value IoErrorKind) {
     match value {
         NotFound => Unit
         Other => Unit
@@ -148,9 +148,8 @@ fn bad(value IoErrorKind) Unit {
             r#"
 module fuzz.structured.reject
 import standard.log.write
-fn bad() Unit {
+fn bad() {
     write(LogLevel.Info, "event", TextMap[Int]())
-    Unit
 }
 "#
         }

@@ -1,7 +1,6 @@
 module lcir_typed_task_any
 
-async fn completesOnce() Unit {
-    Unit
+async fn completesOnce() {
 }
 
 async fn slowText() Text {
@@ -17,7 +16,7 @@ async fn selectFastText() Text {
     Task.any(slowText(), fastText()).await
 }
 
-async fn exerciseAny() Unit {
+async fn exerciseAny() {
     let first = selectFastText().await
     assert first == "fast winner"
 
@@ -27,13 +26,12 @@ async fn exerciseAny() Unit {
     assert third == "fast winner"
     let fourth = selectFastText().await
     assert fourth == "fast winner"
-    Unit
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     exerciseAny().await
 }
 
-test async fn fixedTaskAnySelectsTheSecondManagedWinnerRepeatedly() Unit {
+test async fn fixedTaskAnySelectsTheSecondManagedWinnerRepeatedly() {
     exerciseAny().await
 }

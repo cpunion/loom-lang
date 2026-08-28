@@ -149,11 +149,11 @@ import standard.log.write
 ```
 
 ```text
-debug(message Text) Unit
-info(message Text) Unit
-warn(message Text) Unit
-error(message Text) Unit
-write(level LogLevel, message Text, fields TextMap[Text]) Unit
+debug(message Text)
+info(message Text)
+warn(message Text)
+error(message Text)
+write(level LogLevel, message Text, fields TextMap[Text])
 ```
 
 `LogLevel` is the closed value `Debug | Info | Warn | Error`. The four helpers

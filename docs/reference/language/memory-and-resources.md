@@ -71,7 +71,7 @@ the canonical concepts in module `standard.resource`:
 
 ```loom
 concept Dispose {
-    method dispose(mut self) Unit
+    method dispose(mut self)
 }
 
 concept MustScope {}

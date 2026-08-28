@@ -74,13 +74,12 @@ import standard.log.warn
 import standard.log.error
 import standard.log.write
 
-pub fn main() Unit {
+pub fn main() {
     debug("debug")
     info("info")
     warn("warn")
     error("error")
     write(LogLevel.Warn, "event", TextMap[Text]())
-    Unit
 }
 "#,
     );
@@ -150,7 +149,7 @@ async fn echo(value Bool) Bool {
     value
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     let observed = echo(true).await
     if observed {
         Unit
@@ -213,16 +212,12 @@ fn async_scalar_call_and_await_lower_to_a_checked_coroutine_plan() {
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the source fixture and its three explicit cleanup continuations stay visible together"
-)]
 fn async_scoped_and_defer_cleanup_are_explicit_on_every_suspension_exit() {
     let outcome = lower_run(
         r"module standard.resource
 
 concept Dispose {
-    method dispose(mut self) Unit
+    method dispose(mut self)
 }
 
 concept MustScope {}
@@ -233,10 +228,9 @@ record Resource {
 }
 
 impl Dispose for Resource {
-    method dispose(mut self) Unit {
+    method dispose(mut self) {
         assert self.value > 0
         self.value = 0
-        Unit
     }
 }
 
@@ -247,7 +241,7 @@ async fn child() Int {
     7
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     var marker = 0
     defer {
         marker = marker + 1
@@ -255,7 +249,6 @@ pub async fn main() Unit {
     scoped resource = Resource { value = 3 }
     let value = child().await
     discard value
-    Unit
 }
 ",
     );
@@ -429,7 +422,7 @@ fn immediately_awaited_fixed_task_any_lowers_but_stored_and_dynamic_joins_fall_b
 
 async fn child(value Int) Int { value }
 
-pub async fn main() Unit {
+pub async fn main() {
     discard Task.any(child(1), child(2)).await
 }
 ";
@@ -479,7 +472,7 @@ async fn choose[T](first T, second T) T {
     Task.any(child(first), child(second)).await
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     discard choose(1, 2).await
 }
 ";
@@ -492,7 +485,7 @@ pub async fn main() Unit {
 
 async fn child(value Int) Int { value }
 
-pub async fn main() Unit {
+pub async fn main() {
     let pending = Task.any(child(1), child(2))
     discard pending.await
 }
@@ -511,7 +504,7 @@ pub async fn main() Unit {
 
 async fn child(value Int) Int { value }
 
-pub async fn main() Unit {
+pub async fn main() {
     let tasks = [child(1), child(2)]
     discard Task.all(tasks).await
 }
@@ -531,7 +524,7 @@ pub async fn main() Unit {
 async fn child(value Int) Int { value }
 async fn label() Text { "two" }
 
-pub async fn main() Unit {
+pub async fn main() {
     discard Task.settled(child(1), label()).await
     discard Task.race(child(1), child(2)).await
 }
@@ -565,7 +558,7 @@ fn sole_nonempty_task_list_literals_expand_to_fixed_rows_without_input_list_valu
 
 async fn child(value Int) Int { value }
 
-pub async fn main() Unit {
+pub async fn main() {
     discard Task.all([child(1), child(2)]).await
     discard Task.any([child(3), child(4)]).await
     discard Task.settled([child(5), child(6)]).await
@@ -667,7 +660,7 @@ pub async fn main() Unit {
 fn empty_and_stored_task_list_joins_remain_whole_artifact_fallbacks() {
     let empty = r"module empty_task_list_join
 
-pub async fn main() Unit {
+pub async fn main() {
     discard Task.all(List[Task[Int]]()).await
 }
 ";
@@ -685,7 +678,7 @@ pub async fn main() Unit {
 
 async fn child(value Int) Int { value }
 
-pub async fn main() Unit {
+pub async fn main() {
     let pending = Task.all([child(1), child(2)])
     discard pending.await
 }
@@ -712,7 +705,7 @@ async fn broken() Int {
 
 async fn child() Int { 1 }
 
-pub async fn main() Unit {
+pub async fn main() {
     let outcome = Task.race([broken(), child()]).await
     match outcome {
         Completed(_) => Unit
@@ -810,13 +803,12 @@ fn task_sleep_normalizes_duration_and_preserves_first_class_task_flow() {
 
 import standard.time.milliseconds
 
-pub async fn main() Unit {
+pub async fn main() {
     let delay = milliseconds(0)
     let timer = Task.sleep(delay)
     let marker = 42
     timer.await
     assert marker == 42
-    Unit
 }
 ";
     let LoweringOutcome::Complete(artifact) = lower_run(source) else {
@@ -895,7 +887,7 @@ async fn checkedAnswer(value Int, divisor Int) Int
     checkedDivide(value, divisor)
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     let completed = outcome(7).await
     let answer = checkedAnswer(84, 2).await
     match completed {
@@ -908,7 +900,6 @@ pub async fn main() Unit {
             Unit
         }
     }
-    Unit
 }
 ";
     let LoweringOutcome::Complete(artifact) = lower_run(source) else {
@@ -962,10 +953,9 @@ async fn constrained(ignored Int, required Int, oldRequired Int) Int
     7
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     let observed = constrained(99, 3, 4).await
     assert observed == 7
-    Unit
 }
 ";
     let mir = compile(source);
@@ -1073,11 +1063,10 @@ fn async_generic_contract_fixture_has_a_complete_contract_aware_lcir_test_route(
 fn async_root_preconditions_lower_into_the_checked_task_entry() {
     let source = r"module async_root_contract
 
-pub async fn main() Unit
+pub async fn main()
     requires false
     ensures false
 {
-    Unit
 }
 ";
     let LoweringOutcome::Complete(artifact) = lower_run(source) else {
@@ -1112,10 +1101,9 @@ async fn child(value Int) Int
     value
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     let value = child(1).await
     assert value == 1
-    Unit
 }
 "#;
     let LoweringOutcome::Complete(artifact) = lower_run(source) else {
@@ -1153,7 +1141,7 @@ enum Problem { Wrong }
 
 async fn child() Result[Text, Problem] { Ok("man".concat("aged")) }
 
-pub async fn main() Unit {
+pub async fn main() {
     match child().await {
         Ok(text) => {
             discard text.length()
@@ -1161,7 +1149,6 @@ pub async fn main() Unit {
         }
         Err(_) => Unit
     }
-    Unit
 }
 "#;
     let LoweringOutcome::Complete(artifact) = lower_run(source) else {
@@ -1186,16 +1173,14 @@ fn async_local_inout_calls_reuse_synchronous_functional_writeback() {
 record Counter { value Int }
 
 impl Counter {
-    method update(mut self) Unit {
+    method update(mut self) {
         self.value = 42
-        Unit
     }
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     var counter = Counter { value = 0 }
     counter.update()
-    Unit
 }
 ";
     let LoweringOutcome::Complete(artifact) = lower_run(source) else {
@@ -1242,12 +1227,11 @@ async fn takeOwned(source Source) Int {
     source.next()
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     let original = Counter { value = 0 }
     let observed = takeOwned(original).await
     assert observed == 1
     assert original.value == 0
-    Unit
 }
 ";
     let LoweringOutcome::Complete(artifact) = lower_run(source) else {
@@ -1320,12 +1304,11 @@ async fn takeNested(envelope Envelope) Int {
     source.next()
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     let original = Counter { value = 0 }
     let observed = takeNested(Envelope { source = original }).await
     assert observed == 7
     assert original.value == 0
-    Unit
 }
 ";
     let LoweringOutcome::Complete(artifact) = lower_run(source) else {
@@ -1372,12 +1355,11 @@ async fn takeOwned(source Source) Int {
     source.next()
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     let first = takeOwned(First { value = 1 }).await
     let second = takeOwned(Second { value = 2 }).await
     assert first == 1
     assert second == 2
-    Unit
 }
 ";
     let open = r"module async_open_view
@@ -1396,10 +1378,9 @@ async fn takeOwned(source Source) Int {
     source.next()
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     let observed = takeOwned(Boxed { value = 1 }).await
     assert observed == 1
-    Unit
 }
 ";
     let nested_finite = r"module async_nested_finite_view
@@ -1425,12 +1406,11 @@ async fn takeNested(envelope Envelope) Int {
     source.next()
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     let first = takeNested(Envelope { source = First { value = 1 } }).await
     let second = takeNested(Envelope { source = Second { value = 2 } }).await
     assert first == 1
     assert second == 2
-    Unit
 }
 ";
     for (label, source) in [
@@ -1469,10 +1449,9 @@ async fn takeOwned(source Source) Int {
     source.next()
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     let observed = takeOwned(Boxed { values = [1] }).await
     assert observed == 1
-    Unit
 }
 ";
 
@@ -1517,14 +1496,13 @@ fn async_fault_cleanup_reads_the_synchronous_callee_writeback() {
 record Counter { value Int }
 
 impl Counter {
-    method updateThenFail(mut self) Unit {
+    method updateThenFail(mut self) {
         self.value = 42
         assert false
-        Unit
     }
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     var counter = Counter { value = 0 }
     defer {
         let cleaned = counter.value
@@ -1532,7 +1510,6 @@ pub async fn main() Unit {
     }
     Task.sleep(0).await
     counter.updateThenFail()
-    Unit
 }
 ";
     let LoweringOutcome::Complete(artifact) = lower_run(source) else {
@@ -1797,8 +1774,7 @@ fn builtin_scoped_file_cleanup_lowers_to_one_typed_runtime_edge() {
 #[test]
 fn direct_cleanup_depth_has_a_stable_program_too_large_boundary() {
     let cleanups = "    defer { Unit }\n".repeat(1_025);
-    let source =
-        format!("module cleanup_budget\n\npub fn main() Unit {{\n{cleanups}    Unit\n}}\n");
+    let source = format!("module cleanup_budget\n\npub fn main() {{\n{cleanups}}}\n");
     let mir = compile(&source);
     let error = lower_typed_artifact(
         &mir,
@@ -1831,9 +1807,8 @@ fn inspect(value Text) Bool {
     value.length() == 6 && value.contains("界") && value == "hello界" && value != "other"
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard inspect(identity("hello界"))
-    Unit
 }
 "#,
     );
@@ -1855,7 +1830,7 @@ pub fn main() Unit {
 fn text_literal_bytes_participate_in_artifact_identity() {
     let identity = |literal: &str| {
         let source = format!(
-            "module lcir_text_identity\n\npub fn main() Unit {{\n    discard \"{literal}\".length()\n    Unit\n}}\n"
+            "module lcir_text_identity\n\npub fn main() {{\n    discard \"{literal}\".length()\n}}\n"
         );
         let LoweringOutcome::Complete(artifact) = lower_run(&source) else {
             panic!("bounded Text literal should lower directly")
@@ -1870,9 +1845,8 @@ fn immortal_text_requires_the_pinned_64_bit_runtime_layout() {
     let mir = compile(
         r#"module lcir_text_32
 
-pub fn main() Unit {
+pub fn main() {
     discard "literal".length()
-    Unit
 }
 "#,
     );
@@ -1903,9 +1877,8 @@ fn text_product_without_a_literal_still_obeys_the_64_bit_pointer_boundary() {
 
 fn spin() (Text, Int) { spin() }
 
-pub fn main() Unit {
+pub fn main() {
     discard spin()
-    Unit
 }
 ",
     );
@@ -1963,9 +1936,8 @@ enum MaybeText {
 
 fn spin() MaybeText { spin() }
 
-pub fn main() Unit {
+pub fn main() {
     discard spin()
-    Unit
 }
 ",
     );
@@ -2005,10 +1977,9 @@ fn text_selection_lowers_to_one_managed_collecting_instruction() {
     let outcome = lower_run(
         r#"module lcir_text_get
 
-pub fn main() Unit {
+pub fn main() {
     discard "a界🙂".get(1)
     discard "value".get(-1)
-    Unit
 }
 "#,
     );
@@ -2052,10 +2023,9 @@ fn concat_selects_one_managed_text_representation_and_collection_effect() {
 
 fn join(left Text, right Text) Text { left.concat(right) }
 
-pub fn main() Unit {
+pub fn main() {
     let joined = join("left", "right")
     discard joined.length()
-    Unit
 }
 "#,
     );
@@ -2097,9 +2067,8 @@ fn text_product_selects_managed_provenance_without_inventing_runtime_effects() {
 
 record Named { value Text }
 
-pub fn main() Unit {
+pub fn main() {
     discard Named { value = "safe" }
-    Unit
 }
 "#,
     );
@@ -2143,12 +2112,11 @@ record Range {
 
 fn widen(value Money) Float { value }
 
-pub fn main() Unit {
+pub fn main() {
     let money = Money(10.0)
     let range = Range { low = Money(1.0), high = Money(2.0) }
     discard widen(money)
     discard range
-    Unit
 }
 ",
     );
@@ -2174,11 +2142,10 @@ enum Stored {
     Interval(Range)
 }
 
-pub fn main() Unit {
+pub fn main() {
     let money = Money(10.0)
     discard Stored.Amount(money)
     discard Stored.Interval(Range { low = Money(1.0), high = Money(2.0) })
-    Unit
 }
 ";
     let fresh = compile(source);
@@ -2263,9 +2230,8 @@ fn wrap[T](value T) Guarded[Text, T] {
     Guarded { label = "typed", payload = Some(value), marker = 9.0 }
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard wrap(7)
-    Unit
 }
 "#;
     let fresh = compile(source);
@@ -2323,10 +2289,9 @@ fn established_invariant() Guarded[Int] {
     Guarded { value = 1, marker = 1 }
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard refined()
     discard established_invariant()
-    Unit
 }
 ";
     let program = compile(source);
@@ -2372,8 +2337,7 @@ fn empty_tests_are_one_complete_empty_artifact() {
 
 #[test]
 fn ordered_test_roots_form_one_complete_artifact() {
-    let mir =
-        compile("module tests\n\ntest fn first() { Unit }\n\ntest fn second() Unit { Unit }\n");
+    let mir = compile("module tests\n\ntest fn first() {}\n\ntest fn second() {}\n");
     let outcome = lower_typed_artifact(
         &mir,
         &SourceArtifactRequest::Tests,
@@ -2399,9 +2363,9 @@ fn source_lowering_routes_declarations_calls_and_roots_through_monomorphic_insta
     let LoweringOutcome::Complete(artifact) = lower_run(
         r"module instance_regression
 
-fn helper() Unit { Unit }
+fn helper() {}
 
-pub fn main() Unit { helper() }
+pub fn main() { helper() }
 ",
     ) else {
         panic!("scalar source should lower completely")
@@ -2455,9 +2419,8 @@ fn reachable_generic_calls_lower_to_exact_concrete_instances() {
 
 fn identity[T](value T) T { value }
 
-pub fn main() Unit {
+pub fn main() {
     discard identity(1)
-    Unit
 }
 ",
     );
@@ -2493,10 +2456,9 @@ fn unwrap[T](value Option[T], fallback T) T {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard unwrap(Some(7), 0)
     discard unwrap(Some(true), false)
-    Unit
 }
 ",
     );
@@ -2520,11 +2482,10 @@ fn repeat[T](value T, remaining Int) T {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard repeat(7, 2)
     discard repeat(8, 1)
     discard repeat(true, 1)
-    Unit
 }
 ";
     let first = complete_dump(source);
@@ -2566,9 +2527,8 @@ impl Marker for Int {}
 
 fn preserve[T: Marker](value T) T { value }
 
-pub fn main() Unit {
+pub fn main() {
     discard preserve(7)
-    Unit
 }
 ",
     );
@@ -2646,7 +2606,7 @@ fn verify() Result[Unit, Problem] {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     match verify() {
         Ok(_) => Unit
         Err(_) => Unit
@@ -2695,9 +2655,8 @@ impl Unused for Counter {
     method unused(self) Int { 99 }
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard Counter { value = 7 }.step(3)
-    Unit
 }
 ",
     );
@@ -2743,9 +2702,8 @@ fn choose(first Bool) dyn Truth {
 
 fn erased(value Truth) Bool { value.truth() }
 
-pub fn main() Unit {
+pub fn main() {
     discard erased(choose(true))
-    Unit
 }
 ",
     ) else {
@@ -2796,9 +2754,8 @@ dyn concept Truth { method truth(self) Bool }
 
 fn missing() dyn Truth { missing() }
 
-pub fn main() Unit {
+pub fn main() {
     discard missing().truth()
-    Unit
 }
 ",
     ) else {
@@ -2832,9 +2789,8 @@ impl[T: Truth] Truth for Wrapped[T] {
 
 fn erase(value Wrapped[Atom]) dyn Truth { value }
 
-pub fn main() Unit {
+pub fn main() {
     discard erase(Wrapped { value = Atom { value = true } }).truth()
-    Unit
 }
 ",
     ) else {
@@ -2856,14 +2812,12 @@ fn test_roots_share_one_reachable_generic_instance() {
 
 fn identity[T](value T) T { value }
 
-test fn first() Unit {
+test fn first() {
     discard identity(1)
-    Unit
 }
 
-test fn second() Unit {
+test fn second() {
     discard identity(2)
-    Unit
 }
 ",
     );
@@ -2895,11 +2849,11 @@ fn unreachable_generic_definitions_do_not_change_the_complete_route() {
     let dump = complete_dump(
         r"module unreachable_generic
 
-fn spiral[T](value T) Unit {
+fn spiral[T](value T) {
     spiral((value, value))
 }
 
-pub fn main() Unit { Unit }
+pub fn main() {}
 ",
     );
     assert_eq!(dump.matches("instance ").count(), 1, "{dump}");
@@ -2978,7 +2932,7 @@ impl Scheduler {
     method race(self, value Int) Int { value }
 }
 
-pub fn main() Unit {
+pub fn main() {
     let Task = Scheduler {}
     discard Task.any(1)
     discard Task.race(2)
@@ -3005,11 +2959,11 @@ fn nonregular_generic_recursion_selects_atomic_unsupported() {
     let outcome = lower_run(
         r"module nonregular_generic
 
-fn spiral[T](value T) Unit {
+fn spiral[T](value T) {
     spiral((value, value))
 }
 
-pub fn main() Unit {
+pub fn main() {
     spiral(1)
 }
 ",
@@ -3030,7 +2984,7 @@ fn oversized_generic_call_key_is_rejected_before_lcir_allocation() {
         .collect::<Vec<_>>()
         .join(", ");
     let source = format!(
-        "module generic_budget\n\nfn expand[T](value T) Unit {{\n    expand(({values}))\n}}\n\npub fn main() Unit {{\n    expand(1)\n}}\n"
+        "module generic_budget\n\nfn expand[T](value T) {{\n    expand(({values}))\n}}\n\npub fn main() {{\n    expand(1)\n}}\n"
     );
     let outcome = lower_run(&source);
     let LoweringOutcome::Unsupported(report) = outcome else {
@@ -3225,7 +3179,7 @@ fn hidden_run_root_inputs_are_invalid_not_unsupported() {
 
 #[test]
 fn invalid_run_name_is_an_error_not_unsupported() {
-    let mir = compile("module roots\n\npub fn main() Unit { Unit }\n");
+    let mir = compile("module roots\n\npub fn main() {}\n");
     let error = lower_typed_artifact(
         &mir,
         &SourceArtifactRequest::Run {
@@ -3247,7 +3201,7 @@ fn unreachable_concat_does_not_select_managed_text_or_fallback() {
 
 fn deadText() Text { "left".concat("right") }
 
-pub fn main() Unit { Unit }
+pub fn main() {}
 "#,
     );
     assert!(dump.contains("fn i0 mir=f1 \"unreachable.main\""), "{dump}");
@@ -3259,14 +3213,13 @@ fn unreachable_code_inside_a_reachable_function_is_ignored_exactly() {
     let outcome = lower_run(
         r#"module dead_control
 
-fn helper() Unit { Unit }
+fn helper() {}
 
-pub fn main() Unit {
+pub fn main() {
     return Unit
     let legacy = "legacy"
     discard legacy
     helper()
-    Unit
 }
 "#,
     );
@@ -3492,9 +3445,8 @@ fn reachable_concat_is_repeatably_supported_as_one_complete_artifact() {
 
 fn textValue() Text { "left".concat("right") }
 
-pub fn main() Unit {
+pub fn main() {
     let value = textValue()
-    Unit
 }
 "#,
     );
@@ -3550,10 +3502,9 @@ fn choose(flag Bool, integer Int, decimal Float) Int {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     let output = choose(true, 41, -1.5)
     discard output == 41
-    Unit
 }
 ",
     );
@@ -3588,10 +3539,9 @@ fn selected(flag Bool) Int {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     implicitUnit()
     let value = selected(false)
-    Unit
 }
 ",
     );
@@ -3605,7 +3555,7 @@ fn pure_recursive_cycle_stays_infallible_and_uses_direct_calls() {
     let dump = complete_dump(
         r"module pure_recursion
 
-fn recurse(flag Bool) Unit {
+fn recurse(flag Bool) {
     if flag {
         recurse(flag)
     } else {
@@ -3613,7 +3563,7 @@ fn recurse(flag Bool) Unit {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     recurse(false)
 }
 ",
@@ -4124,10 +4074,9 @@ fn throughBranches(flag Bool) Int {
     value
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard throughBlock()
     discard throughBranches(true)
-    Unit
 }
 ",
     );
@@ -4153,10 +4102,9 @@ fn sameValue(flag Bool, value Int) Int {
     if flag { value } else { value }
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard onePath(false)
     discard sameValue(true, 7)
-    Unit
 }
 ",
     );
@@ -4184,9 +4132,8 @@ fn stopOnRhs(flag Bool) Bool {
     flag && { return flag }
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard stopOnRhs(false)
-    Unit
 }
 ",
     );
@@ -4214,9 +4161,8 @@ fn accumulate(limit Int, readonly Int) Int {
     changed
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard accumulate(3, 2)
-    Unit
 }
 ",
     );
@@ -4264,10 +4210,9 @@ fn nested(outer Int, inner Int) Int {
     last
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard lastBelow(8)
     discard nested(3, 4)
-    Unit
 }
 ",
     );
@@ -4424,9 +4369,8 @@ fn fibonacci(value Int) Int {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     let output = fibonacci(8)
-    Unit
 }
 ",
     );
@@ -4458,9 +4402,8 @@ fn fibonacci(limit Int) Int {
     previous
 }
 
-pub fn main() Unit {
+pub fn main() {
     let output = fibonacci(8)
-    Unit
 }
 ",
     );
@@ -4477,14 +4420,13 @@ fn canonical_direct_local_list_loop_carries_a_trusted_unique_certificate() {
     let dump = complete_dump(
         r"module list_unique_loop
 
-pub fn main() Unit {
+pub fn main() {
     var values = List[Int]()
     for index in 0..128 {
         values.add(index)
         Unit
     }
     let count = values.length()
-    Unit
 }
 ",
     );
@@ -4497,15 +4439,13 @@ fn assert_and_defer_lower_to_direct_lexical_cleanup_control_flow() {
     let dump = complete_dump(
         r"module cleanup
 
-fn check(condition Bool) Unit {
+fn check(condition Bool) {
     defer { Unit }
     assert condition
-    Unit
 }
 
-pub fn main() Unit {
+pub fn main() {
     check(true)
-    Unit
 }
 ",
     );
@@ -4526,9 +4466,8 @@ fn positive(value Int) Int
     value
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard positive(1)
-    Unit
 }
 ",
     );
@@ -4561,22 +4500,19 @@ record Counter { total Int, calls Int }
 record Holder { counter Counter, enabled Bool }
 
 impl Counter {
-    method reset(mut self) Unit {
+    method reset(mut self) {
         self.total = 0
-        Unit
     }
 
-    method add(mut self, value Int) Unit {
+    method add(mut self, value Int) {
         self.total = self.total + value
         self.calls = self.calls + 1
-        Unit
     }
 }
 
 impl Holder {
-    method setTotal(mut self, value Int) Unit {
+    method setTotal(mut self, value Int) {
         self.counter.total = value
-        Unit
     }
 }
 
@@ -4589,14 +4525,13 @@ fn make() Holder {
     holder
 }
 
-pub fn main() Unit {
+pub fn main() {
     var counter = Counter { total = 0, calls = 0 }
     counter.reset()
     counter.add(4)
     discard counter.total
     let holder = make()
     discard holder.counter.total
-    Unit
 }
 ",
     );
@@ -4630,13 +4565,12 @@ fn rearrange(input (Packet, Float)) (Bool, Packet) {
     (enabled, Packet { pair = (number + 1, enabled) })
 }
 
-pub fn main() Unit {
+pub fn main() {
     let enabled, packet = rearrange((Packet { pair = (40, true) }, 1.5))
     discard enabled
     let number, copied = packet.pair
     discard number
     discard copied
-    Unit
 }
 ",
     );
@@ -4692,7 +4626,7 @@ fn preserve_pairs(value List[Pair], expected List[Pair]) List[Pair]
     expected
 }
 
-pub fn main() Unit {
+pub fn main() {
     let pair = Pair { number = 7, enabled = true }
     let same_pair = Pair { number = 7, enabled = true }
     let other_pair = Pair { number = 8, enabled = true }
@@ -4746,7 +4680,7 @@ enum Choice {
     Pairing(Pair)
 }
 
-pub fn main() Unit {
+pub fn main() {
     let pair = Pair { label = "pair", count = 7 }
     let left = TextMap[Choice]().insert("z", Choice.Number(9)).insert("a", Choice.Pairing(pair))
     let right = TextMap[Choice]().insert("a", Choice.Pairing(pair)).insert("z", Choice.Number(9))
@@ -4763,7 +4697,6 @@ pub fn main() Unit {
     discard left == right
     discard nestedLeft == nestedRight
     discard listLeft == listRight
-    Unit
 }
 "#,
     );
@@ -4786,11 +4719,10 @@ record Node {
     children List[Node]
 }
 
-pub fn main() Unit {
+pub fn main() {
     let left = Node { children = [] }
     let right = Node { children = [] }
     discard left == right
-    Unit
 }
 ",
     );
@@ -4813,11 +4745,10 @@ record Node {
     children TextMap[Node]
 }
 
-pub fn main() Unit {
+pub fn main() {
     let left = Node { children = TextMap[Node]() }
     let right = Node { children = TextMap[Node]() }
     discard left == right
-    Unit
 }
 ",
     );
@@ -4886,12 +4817,11 @@ fn choose(input Choice) Int {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard choose(Choice.Value(0))
     discard choose(Choice.Nested(Inner.On(4)))
     discard choose(Choice.Pair(5, true))
     discard choose(Choice.Empty)
-    Unit
 }
 ",
     );
@@ -4935,10 +4865,9 @@ fn value(input Holding) Float {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard value(Holding.Cash(Money(10.0)))
     discard value(Holding.Window(Range { low = Money(1.0), high = Money(2.0) }))
-    Unit
 }
 ",
     );
@@ -4960,7 +4889,7 @@ fn wide_sum_match_shares_one_typed_capturing_arm_block() {
         writeln!(variants, "    V{index}").expect("variant declaration");
     }
     let source = format!(
-        "module wide_sum_dag\n\nenum Wide {{\n{variants}}}\n\nfn classify(input Wide) Int {{\n    match input {{\n        V0 => 0\n        other => 40 + 2\n    }}\n}}\n\npub fn main() Unit {{\n    discard classify(Wide.V127)\n    Unit\n}}\n"
+        "module wide_sum_dag\n\nenum Wide {{\n{variants}}}\n\nfn classify(input Wide) Int {{\n    match input {{\n        V0 => 0\n        other => 40 + 2\n    }}\n}}\n\npub fn main() {{\n    discard classify(Wide.V127)\n}}\n"
     );
     let mir = compile(&source);
     let LoweringOutcome::Complete(artifact) = lower_typed_artifact(
@@ -5064,9 +4993,8 @@ record Label { value Text }
 
 enum Message { Textual(Label) }
 
-pub fn main() Unit {
+pub fn main() {
     discard Message.Textual(Label { value = "managed" })
-    Unit
 }
 "#;
     assert!(
@@ -5077,9 +5005,8 @@ pub fn main() Unit {
 
 enum Values { Items(List[Int]) }
 
-pub fn main() Unit {
+pub fn main() {
     discard Values.Items(List[Int]())
-    Unit
 }
 ";
     assert!(
@@ -5102,9 +5029,8 @@ enum Packet { Item(dyn Numbered) }
 
 fn erase(value Number) dyn Numbered { value }
 
-pub fn main() Unit {
+pub fn main() {
     discard Packet.Item(erase(Number { value = 1 }))
-    Unit
 }
 ";
     let LoweringOutcome::Complete(dynamic_sum) = lower_run(dynamic_sum) else {
@@ -5120,9 +5046,8 @@ enum Chain {
     Next(Chain)
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard Chain.End
-    Unit
 }
 ",
         r"module task_sum
@@ -5131,12 +5056,11 @@ enum Work { Pending(Task[Int]) }
 
 async fn child() Int { 1 }
 
-pub async fn main() Unit {
+pub async fn main() {
     let work = Work.Pending(child())
     match work {
         Pending(task) => { discard task.await }
     }
-    Unit
 }
 ",
     ] {
@@ -5402,7 +5326,7 @@ fn over_budget_match_plans_select_atomic_fallback() {
             writeln!(arms, "        {value} => {value}").expect("write match arm");
         }
         let source = format!(
-            "module match_budget_{constant_arms}\n\nfn classify(value Int) Int {{\n    match value {{\n{arms}        _ => 0\n    }}\n}}\n\npub fn main() Unit {{\n    discard classify(42)\n    Unit\n}}\n"
+            "module match_budget_{constant_arms}\n\nfn classify(value Int) Int {{\n    match value {{\n{arms}        _ => 0\n    }}\n}}\n\npub fn main() {{\n    discard classify(42)\n}}\n"
         );
         let LoweringOutcome::Unsupported(report) = lower_run(&source) else {
             panic!("over-budget match must select atomic fallback")
@@ -5421,11 +5345,10 @@ fn managed_tuple_elements_lower_directly_and_over_budget_tuples_fallback() {
 
 fn make() (Int, Text) { (1, "legacy") }
 
-pub fn main() Unit {
+pub fn main() {
     let number, label = make()
     discard number
     discard label
-    Unit
 }
 "#,
     );
@@ -5459,7 +5382,7 @@ pub fn main() Unit {
         .join(", ");
     let values = std::iter::repeat_n("0", 256).collect::<Vec<_>>().join(", ");
     let source = format!(
-        "module wide_tuple\n\nfn make() ({fields}) {{ ({values}) }}\n\npub fn main() Unit {{\n    discard make()\n    Unit\n}}\n"
+        "module wide_tuple\n\nfn make() ({fields}) {{ ({values}) }}\n\npub fn main() {{\n    discard make()\n}}\n"
     );
     let wide = lower_run(&source);
     let LoweringOutcome::Unsupported(wide) = wide else {
@@ -5491,10 +5414,9 @@ fn checked_refined(value Int) Result[StrictPositive, ConstraintError] {
     StrictPositive(value)
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard checked_record(1)
     discard checked_refined(1)
-    Unit
 }
 ",
     );
@@ -5564,10 +5486,9 @@ record Positive {
 
 record Holder { value Positive }
 
-pub fn main() Unit {
+pub fn main() {
     let holder = Holder { value = Positive { value = 7 } }
     discard holder.value.value
-    Unit
 }
 ",
     );
@@ -5592,16 +5513,14 @@ record Counter { value Int }
 record Holder { counter Counter }
 
 impl Counter {
-    method add(mut self, value Int) Unit {
+    method add(mut self, value Int) {
         self.value = self.value + value
-        Unit
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     var holder = Holder { counter = Counter { value = 0 } }
     holder.counter.add(1)
-    Unit
 }
 ",
     );

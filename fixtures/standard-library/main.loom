@@ -13,9 +13,8 @@ record Counter {
 }
 
 impl Counter {
-    method increment(mut self) Unit {
+    method increment(mut self) {
         self.value = self.value + 1
-        Unit
     }
 }
 
@@ -28,7 +27,7 @@ fn deeply_nested_json() Json {
     value
 }
 
-pub fn typed_text_map_segment() Unit {
+pub fn typed_text_map_segment() {
     let empty = TextMap[Text]()
     let inserted = empty.insert("z", "last").insert("a", "first")
     let overwritten = inserted.insert("z", "updated")
@@ -57,7 +56,6 @@ pub fn typed_text_map_segment() Unit {
             Unit
         }
     }
-    Unit
 }
 
 test fn text_map_and_json() {
@@ -126,7 +124,6 @@ test fn text_map_and_json() {
             Unit
         }
     }
-    Unit
 }
 
 test async fn text_map_copy_and_gc() {
@@ -180,7 +177,6 @@ test async fn text_map_copy_and_gc() {
             Unit
         }
     }
-    Unit
 }
 
 async fn file_round_trip(path Text) Result[Text, IoError] {
@@ -302,7 +298,6 @@ test async fn typed_io() {
             Unit
         }
     }
-    Unit
 }
 
 test fn canonical_logging() {
@@ -312,5 +307,4 @@ test fn canonical_logging() {
         "event\nline",
         TextMap[Text]().insert("z", "last").insert("a", "first")
     )
-    Unit
 }

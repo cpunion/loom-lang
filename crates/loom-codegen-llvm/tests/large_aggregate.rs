@@ -41,9 +41,8 @@ fn copying_and_comparing_a_large_list_is_stack_bounded_on_both_backends() {
     let source = format!(
         r"module large_aggregate
 
-fn verify(left List[Int], right List[Int]) Unit {{
+fn verify(left List[Int], right List[Int]) {{
     assert left == right
-    Unit
 }}
 
 test fn copy_and_compare_large_list() {{

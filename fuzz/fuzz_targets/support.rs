@@ -19,13 +19,13 @@ import standard.log.error
 import standard.log.write
 
 concept Dispose {
-    method dispose(mut self) Unit
+    method dispose(mut self)
 }
 
 concept MustScope {}
 concept NoSuspend {}
 
-fn jsonValue(value Json) Unit {
+fn jsonValue(value Json) {
     match value {
         Null => Unit
         Bool(_) => Unit
@@ -36,7 +36,7 @@ fn jsonValue(value Json) Unit {
     }
 }
 
-fn jsonFailure(value JsonError) Unit {
+fn jsonFailure(value JsonError) {
     match value {
         InvalidSyntax(_) => Unit
         NumberOutOfRange(_) => Unit
@@ -45,7 +45,7 @@ fn jsonFailure(value JsonError) Unit {
     }
 }
 
-fn ioFailure(error IoError) Unit {
+fn ioFailure(error IoError) {
     let message = error.message()
     match error.kind() {
         NotFound => Unit
@@ -76,7 +76,7 @@ async fn network(host Text, port Int) Result[Unit, IoError] {
     Ok(Unit)
 }
 
-pub fn main() Unit {
+pub fn main() {
     let fields = TextMap[Text]().insert("key", "value").remove("missing")
     let present = fields.contains("key")
     let found = fields.get("key")
@@ -88,7 +88,6 @@ pub fn main() Unit {
     warn("warn")
     error("error")
     write(LogLevel.Info, "event", fields)
-    Unit
 }
 "#;
 

@@ -295,18 +295,16 @@ impl Marker for Text {}
 fn markInt(value Int) dyn Marker { value }
 fn markText(value Text) dyn Marker { value }
 
-pub fn main() Unit {
+pub fn main() {
     let value = markInt(7)
     let fields = TextMap[dyn Marker]().insert("live", value)
     info("live")
-    Unit
 }
 
-fn dead() Unit {
+fn dead() {
     let value = markText("dead")
     let parsed = parse_json("null")
     warn("dead")
-    Unit
 }
 "#,
     )
@@ -344,16 +342,14 @@ import standard.json.parse_json
 import standard.log.info
 import standard.log.warn
 
-pub fn main() Unit {
+pub fn main() {
     let fields = TextMap[Text]().insert("live", "value")
     info("live")
-    Unit
 }
 
-fn dead(text Text) Unit {
+fn dead(text Text) {
     let parsed = parse_json(text)
     warn("dead")
-    Unit
 }
 "#,
     )

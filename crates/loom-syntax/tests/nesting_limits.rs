@@ -183,7 +183,7 @@ fn deep_inputs_child() {
     assert_limited_and_recovered(&member_projection);
 
     let pattern = format!(
-        "module pattern\nfn deep(value T) Unit {{ match value {{ {}_{} => Unit }} }}\nfn good() Unit {{ Unit }}\n",
+        "module pattern\nfn deep(value T) {{ match value {{ {}_{} => Unit }} }}\nfn good() {{}}\n",
         "Some(".repeat(ADVERSARIAL_DEPTH),
         ")".repeat(ADVERSARIAL_DEPTH)
     );

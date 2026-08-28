@@ -66,12 +66,12 @@ async fn verify() Bool {
     })
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     let valid = verify().await
     if valid { Unit } else { impossible() }
 }
 
-test async fn managedCollectionsCrossAwait() Unit {
+test async fn managedCollectionsCrossAwait() {
     let valid = verify().await
     if valid { Unit } else { impossible() }
 }

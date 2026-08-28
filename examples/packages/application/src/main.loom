@@ -2,14 +2,12 @@ module application
 
 import utility.math.increment
 
-pub fn start() Unit {
+pub fn start() {
     let answer = increment(41)
     assert answer == 42
-    Unit
 }
 
 test fn dependencyWorks() {
     let answer = increment(1)
     assert answer == 2
-    Unit
 }
