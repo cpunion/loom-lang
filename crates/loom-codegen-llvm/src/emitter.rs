@@ -27,7 +27,7 @@ use loom_core::Span;
 use loom_core::runtime_fault::{
     ARTIFACT_PROOF_REJECTED_FAULT_CODE, ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
     INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE, INVALID_DURATION_FAULT_CODE,
-    INVALID_DURATION_FAULT_MESSAGE,
+    INVALID_DURATION_FAULT_MESSAGE, LOG_WRITE_FAULT_CODE, LOG_WRITE_FAULT_MESSAGE,
 };
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, ConceptId, Constant, ConstructionMode,
@@ -187,6 +187,7 @@ fn native_fault_message(code: &str) -> &str {
         "TaskAllocationFault" => "task allocation failed",
         "TaskJoinFault" => "task join failed",
         "ResourceCloseFault" => "resource close failed",
+        LOG_WRITE_FAULT_CODE => LOG_WRITE_FAULT_MESSAGE,
         ARTIFACT_PROOF_REJECTED_FAULT_CODE => ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
         _ => "runtime operation failed",
     }

@@ -34,7 +34,13 @@ use loom_runtime_abi::{
 };
 
 mod support;
-use support::{emit_native, link_native_object};
+#[cfg(unix)]
+use support::run_with_closed_stderr;
+use support::{emit_native, link_native_object, run_with_read_only_stderr};
+
+const TYPED_LOGGING_INTERPRETER_CHILD_ENV: &str = "LOOM_LCIR_TYPED_LOGGING_INTERPRETER_CHILD";
+const TYPED_LOGGING_STDERR: &[u8] =
+    include_bytes!("../../../fixtures/lcir-typed-logging/expected.stderr");
 
 struct NativeRun {
     ir: String,
@@ -2671,6 +2677,223 @@ fn managed_list_source_is_direct_on_64_bit_and_fails_closed_on_32_bit() {
             "{report:?}"
         ),
         LoweringOutcome::Complete(_) => panic!("32-bit managed List must fail closed"),
+    }
+}
+
+#[test]
+fn typed_logging_interpreter_child() {
+    let Some(mode) = std::env::var_os(TYPED_LOGGING_INTERPRETER_CHILD_ENV) else {
+        return;
+    };
+    let source = include_str!("../../../fixtures/lcir-typed-logging/main.loom");
+    let program = compile_source(source);
+    if mode == "unwritable" {
+        let failure =
+            interpret_run(&program, "main").expect_err("logging must report stderr failure");
+        assert!(
+            matches!(failure, ExecutionFailure::Runtime { ref fault } if fault.code == "LogWriteFault" && fault.message == "log write failed"),
+            "{failure:#?}"
+        );
+    } else if mode == "run" {
+        assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    } else {
+        assert_eq!(mode, "tests");
+        let results = Interpreter::new(&program).run_tests();
+        assert_eq!(results.len(), 1, "{results:#?}");
+        assert_eq!(results[0].status, TestStatus::Passed, "{results:#?}");
+    }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one gate keeps all five source logging calls, exact interpreter/legacy/typed stderr, release IR purity, and Linux/MSVC object ABIs together"
+)]
+fn typed_logging_uses_one_direct_fallible_runtime_boundary() {
+    let source = include_str!("../../../fixtures/lcir-typed-logging/main.loom");
+    let program = compile_source(source);
+
+    for mode in ["run", "tests"] {
+        let output = Command::new(std::env::current_exe().expect("current LCIR test executable"))
+            .args(["--exact", "typed_logging_interpreter_child", "--nocapture"])
+            .env(TYPED_LOGGING_INTERPRETER_CHILD_ENV, mode)
+            .output()
+            .unwrap_or_else(|error| panic!("run typed logging interpreter {mode}: {error}"));
+        assert!(output.status.success(), "interpreter {mode}: {output:?}");
+        assert_eq!(output.stderr, TYPED_LOGGING_STDERR, "interpreter {mode}");
+    }
+
+    for (options, request) in [
+        (
+            EmitOptions::run("main"),
+            SourceArtifactRequest::Run {
+                entry: "main".into(),
+            },
+        ),
+        (EmitOptions::tests(), SourceArtifactRequest::Tests),
+    ] {
+        for policy in [NativeRoutePolicy::Automatic, NativeRoutePolicy::LcirOnly] {
+            let prepared = prepare_native_object(&program, options.clone(), policy)
+                .unwrap_or_else(|error| panic!("prepare typed logging with {policy:?}: {error}"));
+            assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+        }
+
+        let artifact = lower_source_artifact(&program, &request);
+        let dump = dump_program(artifact.program());
+        assert_eq!(dump.matches("log.write").count(), 5, "{dump}");
+        let logging = artifact
+            .functions()
+            .iter()
+            .find(|function| function.name().ends_with("emitCanonicalLogs"))
+            .expect("typed logging source function");
+        assert!(logging.effects().contains(Effects::MAY_FAULT));
+        assert!(logging.effects().contains(Effects::MAY_COLLECT));
+        assert!(logging.effects().contains(Effects::NEEDS_RUNTIME));
+        assert!(!logging.effects().contains(Effects::NEEDS_EXECUTOR));
+
+        let stem = match &request {
+            SourceArtifactRequest::Run { .. } => "typed-logging-run",
+            SourceArtifactRequest::Tests => "typed-logging-tests",
+        };
+        let native = emit_and_run_lcir_with_options(
+            &artifact,
+            stem,
+            NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
+        );
+        let legacy = match &request {
+            SourceArtifactRequest::Run { .. } => {
+                emit_and_run_legacy(&program, "main", "legacy-typed-logging-run")
+            }
+            SourceArtifactRequest::Tests => {
+                emit_and_run_legacy_tests(&program, "legacy-typed-logging-tests")
+            }
+        };
+        assert!(native.output.status.success(), "{:#?}", native.output);
+        assert!(legacy.status.success(), "{legacy:#?}");
+        assert_eq!(native.output.stdout, legacy.stdout);
+        assert_eq!(native.output.stderr, TYPED_LOGGING_STDERR);
+        assert_eq!(native.output.stderr, legacy.stderr);
+        for required in [
+            "@loom_runtime_log_typed_v1",
+            "LogWriteFault",
+            "log.write.failed",
+            "llvm.trap",
+        ] {
+            assert!(
+                native.ir.contains(required),
+                "typed logging omitted `{required}`:\n{}",
+                native.ir
+            );
+        }
+        for forbidden in [
+            "@loom_runtime_log(",
+            "%loom.Value",
+            "ValueNode",
+            "loom_runtime_text_map_",
+            "@loom_gc_root_push_v1",
+            "loom_executor_",
+        ] {
+            assert!(
+                !native.ir.contains(forbidden),
+                "typed logging retained `{forbidden}`:\n{}",
+                native.ir
+            );
+        }
+
+        for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
+            let directory = tempfile::tempdir().expect("create typed logging target directory");
+            let object = directory.path().join(if target.contains("windows") {
+                "typed-logging.obj"
+            } else {
+                "typed-logging.o"
+            });
+            let ir_path = directory.path().join("typed-logging.ll");
+            emit_lcir_native_object(
+                &artifact,
+                &object,
+                &NativeObjectOptions {
+                    target_triple: Some(target.to_owned()),
+                    emit_ir: Some(ir_path.clone()),
+                    optimization: OptimizationProfile::Release,
+                    ..NativeObjectOptions::default()
+                },
+            )
+            .unwrap_or_else(|error| panic!("emit typed logging object for {target}: {error}"));
+            let bytes = std::fs::read(&object).expect("read typed logging target object");
+            if target.contains("windows") {
+                assert_eq!(bytes.get(..2), Some([0x64, 0x86].as_slice()));
+            } else {
+                assert_eq!(bytes.get(..4), Some(b"\x7fELF".as_slice()));
+            }
+            let ir = std::fs::read_to_string(ir_path).expect("read typed logging target IR");
+            assert!(ir.contains("@loom_runtime_log_typed_v1"), "{target}: {ir}");
+            assert!(!ir.contains("@loom_runtime_log("), "{target}: {ir}");
+            assert!(!ir.contains("%loom.Value"), "{target}: {ir}");
+            assert!(!ir.contains("loom_executor_"), "{target}: {ir}");
+        }
+    }
+
+    let directory = tempfile::tempdir().expect("create unwritable-stderr logging outputs");
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let typed_object = directory.path().join("typed-logging-unwritable.o");
+    let typed_executable = directory.path().join("typed-logging-unwritable");
+    emit_lcir_native_object(
+        &artifact,
+        &typed_object,
+        &NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
+    )
+    .expect("emit typed logging unwritable-stderr object");
+    link_native_object(&typed_object, &typed_executable)
+        .expect("link typed logging unwritable-stderr executable");
+    let legacy_executable = directory.path().join("legacy-logging-unwritable");
+    emit_native(&program, &legacy_executable, &EmitOptions::run("main"))
+        .expect("emit legacy logging unwritable-stderr executable");
+
+    let mut interpreter = Command::new(std::env::current_exe().expect("current test executable"));
+    interpreter
+        .args(["--exact", "typed_logging_interpreter_child", "--nocapture"])
+        .env(TYPED_LOGGING_INTERPRETER_CHILD_ENV, "unwritable");
+    let interpreter = run_with_read_only_stderr(&mut interpreter, directory.path());
+    assert!(
+        interpreter.status.success(),
+        "interpreter did not observe read-only stderr: {interpreter:?}"
+    );
+    for executable in [&typed_executable, &legacy_executable] {
+        let mut command = Command::new(executable);
+        let output = run_with_read_only_stderr(&mut command, directory.path());
+        assert!(
+            !output.status.success(),
+            "{} silently accepted read-only stderr: {output:?}",
+            executable.display()
+        );
+    }
+
+    #[cfg(unix)]
+    {
+        let mut interpreter =
+            Command::new(std::env::current_exe().expect("current test executable"));
+        interpreter
+            .args(["--exact", "typed_logging_interpreter_child", "--nocapture"])
+            .env(TYPED_LOGGING_INTERPRETER_CHILD_ENV, "unwritable");
+        let interpreter = run_with_closed_stderr(&mut interpreter);
+        assert!(
+            interpreter.status.success(),
+            "interpreter did not observe closed stderr: {interpreter:?}"
+        );
+        for executable in [&typed_executable, &legacy_executable] {
+            let mut command = Command::new(executable);
+            let output = run_with_closed_stderr(&mut command);
+            assert!(
+                !output.status.success(),
+                "{} silently accepted closed stderr: {output:?}",
+                executable.display()
+            );
+        }
     }
 }
 

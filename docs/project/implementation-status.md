@@ -73,6 +73,7 @@ The following repository fixtures are run through real compiler stages:
 | `fixtures/lcir-sum-layout-collisions` | unrelated and nested closed sums, including opposing pointer-first/scalar-first record variants, with scalar, product, Text, List, TextMap, and recursive Json payloads; one target-data-derived carrier plan drives pack/unpack, exact repeated descriptors, and forced moving-GC relocation across interpreter/legacy/typed differential execution, Linux/MSVC objects, 32-bit fail-closed emission, artifact-wide placement/emission bounds, and real `check/build/test/run` commands |
 | `fixtures/lcir-fallible-async` | checked fallible stackless coroutines, ordinary managed `Result` completion, exact child source/contract fault propagation, cancellation, collision-free completed/live sum roots, balanced callback roots, forced moving-GC relocation, interpreter/legacy/typed differential execution, Linux/MSVC objects, 32-bit fail-closed behavior, and real `check/build/test/run` commands |
 | `fixtures/lcir-scalar-builtins` | exact parse-result sums, finite checks, managed Float formatting, direct Duration values, typed roots, and real check/build/test/run commands without universal values or an executor |
+| `fixtures/lcir-typed-logging` | canonical structured logging through typed LCIR, including exact JSONL stderr, escaping, empty fields, and canonical TextMap key order |
 | `fixtures/lcir-lexical-cleanup` | direct typed assertions and source contracts, checked-root and assumed-body boundaries, mutable invariant writeback, lexical `defer`, static-concept `scoped` disposal, exact LIFO/fault behavior, and real check/build/test/run commands without universal values or an executor |
 | `fixtures/lcir-static-concepts` | concrete static method selection, conditional proof forwarding, associated-type normalization, direct host execution, and MSVC COFF emission without runtime witness or universal-value surfaces |
 | `fixtures/lcir-dyn-unique` | closed-world unique-witness `dyn` erasure, direct calls, aggregate/List storage, dead conformance and method-slot elimination, real check/build/test/run, host execution, and Linux/MSVC object emission without runtime witness data |
@@ -115,6 +116,7 @@ direct coverage includes:
 - scalar and managed Text operations, structural tuples, concrete records,
   refined values, closed sums, Lists, compiler-private TextMaps, and bounded
   concrete generic instances;
+- canonical structured logging with direct Text and `TextMap[Text]` values;
 - supported contracts and proof replay, static concepts, closed dynamic-concept
   catalogs, exact moving-GC roots, and static lexical cleanup;
 - checked stackless coroutines, typed Task handles, exact suspension rows,
@@ -153,10 +155,11 @@ stack. The separate macOS job
 verifies the dSYM metadata and runs the LLDB parameter and step-out inspection.
 The controlled runner prepares every native object through the production
 router, and requires Core 0.1, Core 0.2, Core 0.3, the async generic-contract
-fixture, and the complete C3 repository to select LCIR for their prepared main
-or test artifacts. The remaining reviewed legacy allowance covers the broader
-standard-library fixture's JSON parse/format, typed external I/O, and logging
-operations.
+fixture, the typed logging fixture, and the complete C3 repository to select
+LCIR for their prepared main or test artifacts. The typed logging gate also
+checks the exact JSONL standard-error bytes for both run and test artifacts.
+The remaining reviewed legacy allowance covers the broader standard-library
+fixture's JSON parse/format and typed external I/O operations.
 
 The PR benchmark workflow compares the base and candidate merge revisions on
 one Ubuntu x86-64 runner and one macOS arm64 runner. A separate trusted workflow

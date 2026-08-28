@@ -15,14 +15,14 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `23` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `4` |
-| LCIR textual dump | version `30` |
-| LCIR artifact identity | schema `31` |
-| LCIR native-object domain | `loom-lcir-native-object-v27` |
+| LCIR textual dump | version `31` |
+| LCIR artifact identity | schema `32` |
+| LCIR native-object domain | `loom-lcir-native-object-v28` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v32` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v33` |
 | Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
-| Native runtime ABI component | `20` |
+| Native runtime ABI component | `21` |
 | Coroutine/Task ABI component | `2` |
 | Typed Task ABI component | `1` |
 | Wait ABI component | `1` |
@@ -44,6 +44,19 @@ runtime or executor requirements. LCIR serialization and artifact schema do not
 change because harness output is not part of LCIR. Native-object and
 object-cache domains do not advance because native fingerprints and
 runtime-bundle checks already include the exact runtime ABI identity.
+
+Typed structured logging adds the synchronous, non-collecting
+`loom_runtime_log_typed_v1(level, message, fields, count)` boundary. Generated
+code passes direct Text object pointers and the canonical contiguous
+`TextMap[Text]` entry view; no universal value, runtime type tag, scheduler, or
+Loom GC safepoint crosses the call. Runtime status `2` becomes the canonical
+`LogWriteFault` and follows LCIR cleanup edges, while invalid or unknown ABI
+statuses trap as compiler/runtime defects. This advances the runtime identity
+to component 21 with `typed-log-v1` and `runtime-v15`, while the public
+standard-library ABI remains v4. The new `LogWrite` terminator advances the
+LCIR dump to 31, artifact schema to 32, native-object domain to
+`loom-lcir-native-object-v28`, and object-cache domain to
+`loom-llvm-object-cache-v33`.
 
 Task composition and timer calls now remain ordinary HIR calls until semantic
 resolution selects a stable compiler-owned `StandardLibraryItem`. The item is

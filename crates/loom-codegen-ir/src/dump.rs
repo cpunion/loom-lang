@@ -53,7 +53,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 30")?;
+    writeln!(output, "lcir 31")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -610,6 +610,24 @@ fn write_terminator(
             write!(output, ", fault ")?;
             write_unwind_target(output, fault, 1)
         }
+        TerminatorKind::LogWrite {
+            level,
+            message,
+            fields,
+            normal,
+            fault,
+        } => {
+            write!(output, "log.write %{level}, %{message}, fields ")?;
+            if let Some(fields) = fields {
+                write!(output, "%{fields}")?;
+            } else {
+                output.write_str("none")?;
+            }
+            write!(output, ", normal ")?;
+            write_result_target(output, normal, 0)?;
+            write!(output, ", fault ")?;
+            write_unwind_target(output, fault, 0)
+        }
         TerminatorKind::Assert {
             condition,
             metadata,
@@ -867,6 +885,7 @@ const fn fault_code_name(code: crate::FaultCode) -> &'static str {
         crate::FaultCode::SleepDurationOverflow => "SleepDurationOverflow",
         crate::FaultCode::TaskAnyFailed => "TaskAnyFailed",
         crate::FaultCode::ResourceClose => "ResourceCloseFault",
+        crate::FaultCode::LogWrite => "LogWriteFault",
     }
 }
 

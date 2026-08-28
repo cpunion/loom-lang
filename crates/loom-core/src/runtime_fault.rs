@@ -34,6 +34,13 @@ pub const TASK_ANY_FAILED_FAULT_CODE: &str = "TaskAnyFailed";
 /// Stable user-facing message when Task.any has no successful child.
 pub const TASK_ANY_FAILED_FAULT_MESSAGE: &str = "Task.any completed without a successful task";
 
+/// Stable runtime-fault code emitted when a structured log line cannot be
+/// written to the process error stream.
+pub const LOG_WRITE_FAULT_CODE: &str = "LogWriteFault";
+
+/// Stable user-facing message for a structured-log output failure.
+pub const LOG_WRITE_FAULT_MESSAGE: &str = "log write failed";
+
 /// Stable runtime-fault code emitted when a serialized construction proof
 /// fails independent replay at an artifact trust boundary.
 pub const ARTIFACT_PROOF_REJECTED_FAULT_CODE: &str = "ArtifactProofRejected";

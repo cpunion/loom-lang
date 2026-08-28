@@ -77,6 +77,25 @@ pub fn run_with_read_only_stdout(executable: &Path, directory: &Path) -> Output 
     output
 }
 
+pub fn run_with_read_only_stderr(command: &mut Command, directory: &Path) -> Output {
+    let target = directory.join("read-only-stderr");
+    std::fs::write(&target, b"stderr sentinel\n").expect("create stderr sentinel");
+    let read_only = std::fs::File::open(&target).expect("open read-only stderr handle");
+    let output = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::from(read_only))
+        .spawn()
+        .expect("spawn executable with read-only stderr")
+        .wait_with_output()
+        .expect("wait for executable with read-only stderr");
+    assert_eq!(
+        std::fs::read(&target).expect("read stderr sentinel"),
+        b"stderr sentinel\n",
+        "child unexpectedly changed its read-only stderr target"
+    );
+    output
+}
+
 #[cfg(unix)]
 pub fn run_with_closed_stdout(executable: &Path) -> Output {
     let (reader, writer) = UnixStream::pair().expect("create closed stdout socket pair");
@@ -89,6 +108,20 @@ pub fn run_with_closed_stdout(executable: &Path) -> Output {
         .expect("spawn executable with closed stdout")
         .wait_with_output()
         .expect("wait for executable with closed stdout")
+}
+
+#[cfg(unix)]
+pub fn run_with_closed_stderr(command: &mut Command) -> Output {
+    let (reader, writer) = UnixStream::pair().expect("create closed stderr socket pair");
+    drop(reader);
+    let writer = std::fs::File::from(OwnedFd::from(writer));
+    command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::from(writer))
+        .spawn()
+        .expect("spawn executable with closed stderr")
+        .wait_with_output()
+        .expect("wait for executable with closed stderr")
 }
 
 pub fn runtime_bundle_identity() -> String {

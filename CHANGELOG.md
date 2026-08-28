@@ -42,6 +42,15 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- All five canonical structured-logging calls now lower through typed LCIR.
+  `LogWrite` is an explicit fallible normal/fault terminator, and LLVM passes
+  direct Text plus canonical `TextMap[Text]` entries to the synchronous,
+  non-collecting `loom_runtime_log_typed_v1` boundary. No universal Value,
+  scheduler, or untyped root ABI is involved. Exact interpreter, legacy, and
+  typed JSONL output is gated on host execution and Linux/MSVC object emission.
+  This advances the LCIR dump to 31, artifact schema to 32, native-object
+  domain to v28, object-cache domain to v33, and native runtime ABI to
+  component 21 with `typed-log-v1` and `runtime-v15`; stdlib ABI remains v4.
 - `Task.sleep`, `Task.all`, `Task.settled`, `Task.any`, and `Task.race` now stay
   ordinary method calls in HIR. Semantic analysis resolves only canonical Task
   members to stable compiler-owned standard-library identities, and MIR

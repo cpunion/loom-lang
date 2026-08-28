@@ -4,6 +4,7 @@ use std::fmt;
 
 use loom_mir::Type;
 
+use crate::ir::{LOG_LEVEL_TYPE_ID, TEXT_MAP_TYPE_ID};
 use crate::{
     AwaitMode, BlockId, Constant, Effects, Function, InstanceId, Instruction, InstructionId,
     InstructionKind, ProductReprId, Program, Repr, RepresentationPlan, ResultTarget, SumReprId,
@@ -4320,6 +4321,107 @@ impl<'a> Validator<'a> {
                     );
                 }
             }
+            TerminatorKind::LogWrite {
+                level,
+                message,
+                fields,
+                normal,
+                fault,
+            } => {
+                let level_semantic = Type::Nominal(LOG_LEVEL_TYPE_ID, Vec::new());
+                let level_type = self.program.representations.type_id(&level_semantic);
+                let canonical_level = level_type.is_some_and(|ty| {
+                    let Some(value_type) = self.program.representations.value_type(ty) else {
+                        return false;
+                    };
+                    if value_type.kind() != ValueTypeKind::Direct
+                        || value_type.semantic() != &level_semantic
+                        || self.program.representations.type_id(value_type.semantic()) != Some(ty)
+                    {
+                        return false;
+                    }
+                    let Repr::Sum(sum) = self
+                        .program
+                        .representations
+                        .repr(value_type.repr())
+                        .copied()
+                        .unwrap_or(Repr::Uninhabited)
+                    else {
+                        return false;
+                    };
+                    self.program.representations.sum(sum).is_some_and(|sum| {
+                        sum.tag() == SumTagRepr::I8
+                            && sum.variants().len() == 4
+                            && sum
+                                .variants()
+                                .iter()
+                                .all(|variant| variant.fields().is_empty())
+                    })
+                });
+                if !canonical_level {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.level"),
+                        "typed logging requires canonical Nominal#20 LogLevel with four empty ordered variants",
+                    );
+                }
+                self.require_known_value_type(
+                    function,
+                    *level,
+                    level_type,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.level"),
+                );
+
+                let text = self.scalar_type(&Type::Text);
+                self.require_known_value_type(
+                    function,
+                    *message,
+                    text,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.message"),
+                );
+                if let Some(fields) = fields {
+                    let fields_semantic = Type::Nominal(TEXT_MAP_TYPE_ID, vec![Type::Text]);
+                    let fields_type = self.program.representations.type_id(&fields_semantic);
+                    let canonical_fields = fields_type.is_some_and(|ty| {
+                        self.program
+                            .representations
+                            .value_type(ty)
+                            .is_some_and(|value_type| {
+                                value_type.kind() == ValueTypeKind::ManagedTextMap
+                                    && value_type.semantic() == &fields_semantic
+                                    && self.program.representations.type_id(value_type.semantic())
+                                        == Some(ty)
+                                    && self.program.representations.repr(value_type.repr())
+                                        == Some(&Repr::ManagedPointer)
+                            })
+                            && self.text_map_value(ty) == text
+                    });
+                    if !canonical_fields {
+                        self.error(
+                            ValidationCode::TypeMismatch,
+                            format!("{path}.fields"),
+                            "typed structured logging requires canonical Nominal#15[Text] managed TextMap fields",
+                        );
+                    }
+                    self.require_known_value_type(
+                        function,
+                        *fields,
+                        fields_type,
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.fields"),
+                    );
+                }
+                self.validate_result_target(
+                    function,
+                    normal,
+                    &[self.scalar_type(&Type::Unit)],
+                    &format!("{path}.normal"),
+                );
+                self.validate_unwind_target(function, fault, &[], &format!("{path}.fault"));
+                self.require_may_fault_effect(function, &path, "typed log write");
+            }
             TerminatorKind::Assert {
                 condition,
                 metadata,
@@ -5653,6 +5755,7 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
             match terminator.kind() {
                 TerminatorKind::CheckedIntNegate { .. }
                 | TerminatorKind::CheckedIntBinary { .. }
+                | TerminatorKind::LogWrite { .. }
                 | TerminatorKind::Assert { .. }
                 | TerminatorKind::Fault { .. }
                     if propagates_fault =>
@@ -5685,6 +5788,7 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                 }
                 TerminatorKind::CheckedIntNegate { .. }
                 | TerminatorKind::CheckedIntBinary { .. }
+                | TerminatorKind::LogWrite { .. }
                 | TerminatorKind::Assert { .. }
                 | TerminatorKind::Fault { .. }
                 | TerminatorKind::Jump(_)
@@ -6364,7 +6468,8 @@ fn forwarded_list_edges(kind: &TerminatorKind) -> Vec<(BlockId, &[ValueId])> {
         TerminatorKind::CheckedIntNegate { normal, fault, .. }
         | TerminatorKind::CheckedIntBinary { normal, fault, .. }
         | TerminatorKind::TaskSleep { normal, fault, .. }
-        | TerminatorKind::ResourceClose { normal, fault, .. } => vec![
+        | TerminatorKind::ResourceClose { normal, fault, .. }
+        | TerminatorKind::LogWrite { normal, fault, .. } => vec![
             (normal.block, &normal.arguments),
             (fault.block, &fault.arguments),
         ],

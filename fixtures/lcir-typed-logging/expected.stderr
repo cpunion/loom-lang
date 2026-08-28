@@ -1,0 +1,5 @@
+{"level":"debug","message":"debug \"line\"","fields":{}}
+{"level":"info","message":"information","fields":{}}
+{"level":"warn","message":"warning","fields":{}}
+{"level":"error","message":"error","fields":{}}
+{"level":"warn","message":"event\nline","fields":{"a":"first","z":"last"}}
