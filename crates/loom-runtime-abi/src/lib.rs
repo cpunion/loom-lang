@@ -4,11 +4,11 @@
 //! values crossing the runtime boundary are defined here once and consumed by
 //! both generated-code declarations and the Rust runtime implementation.
 
-pub const RUNTIME_ABI_VERSION: u32 = 23;
+pub const RUNTIME_ABI_VERSION: u32 = 24;
 pub const COROUTINE_ABI_VERSION: u32 = 2;
 pub const TYPED_TASK_ABI_VERSION: u32 = 1;
 pub const WAIT_ABI_VERSION: u32 = 1;
-pub const STANDARD_LIBRARY_ABI_VERSION: u32 = 4;
+pub const STANDARD_LIBRARY_ABI_VERSION: u32 = 5;
 pub const LAYOUT_ABI_VERSION: u32 = 1;
 pub const SHADOW_STACK_ABI_VERSION: u32 = 1;
 pub const TYPED_GC_ABI_VERSION: u32 = 1;
@@ -16,7 +16,7 @@ pub const TYPED_GC_REPEATED_ABI_VERSION: u32 = 1;
 pub const TYPED_SHADOW_STACK_ABI_VERSION: u32 = 1;
 pub const WITNESS_ABI_VERSION: u32 = 1;
 pub const TYPED_JSON_ABI_VERSION: u32 = 1;
-pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-timer-v1/typed-resource-v1/format-float-v1/typed-bytes-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v17/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4";
+pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-timer-v1/typed-resource-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v18/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v5";
 
 /// Writes exactly `length` bytes to the process standard-output stream.
 ///
@@ -140,6 +140,15 @@ pub const TEXT_GET_TYPED_SYMBOL: &str = "loom_runtime_text_get_typed_v1";
 pub const TEXT_GET_TYPED_INVALID: i32 = -1;
 pub const TEXT_GET_TYPED_MISSING: i32 = 0;
 pub const TEXT_GET_TYPED_FOUND: i32 = 1;
+/// Converts a borrowed contiguous array of integer UTF-8 units into one direct
+/// managed Text value. Every integer must fit in one byte and the complete byte
+/// sequence must be valid UTF-8. The runtime stages the entire sequence before
+/// entering the moving-GC allocator and publishes only a complete Text object.
+pub const TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL: &str = "loom_runtime_text_from_utf8_units_typed_v1";
+/// The sole ordinary failure from the typed UTF-8-unit conversion. Values
+/// outside `0..=255` and malformed UTF-8 both map to the source-level decode
+/// error; positive values remain reserved for ABI and GC defects.
+pub const TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8: i32 = -1;
 /// Stages two complete immutable byte sequences, then publishes one freshly
 /// allocated direct Bytes pointer. Success and defects use the shared `GC_*`
 /// status domain.
@@ -588,8 +597,9 @@ mod tests {
         PARSE_STATUS_INVALID_SYNTAX, PARSE_STATUS_OK, PARSE_STATUS_OUT_OF_RANGE,
         RUNTIME_ABI_VERSION, SHADOW_STACK_ABI_VERSION, STANDARD_LIBRARY_ABI_VERSION,
         STDOUT_WRITE_FAILED, STDOUT_WRITE_INVALID_ARGUMENT, STDOUT_WRITE_OK, STDOUT_WRITE_SYMBOL,
-        TEXT_CONTAINS_SYMBOL, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_INVALID, TEXT_GET_TYPED_MISSING,
-        TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT,
+        TEXT_CONTAINS_SYMBOL, TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8,
+        TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_INVALID,
+        TEXT_GET_TYPED_MISSING, TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT,
         TEXT_OBJECT_FIELD_ALLOCATION_SIZE, TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES,
         TEXT_OBJECT_FIELD_LAYOUT, TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE,
         TYPED_GC_ABI_VERSION, TYPED_GC_ALLOC_SYMBOL, TYPED_GC_REPEATED_ABI_VERSION,
@@ -611,7 +621,7 @@ mod tests {
 
     #[test]
     fn native_runtime_identity_is_pinned() {
-        assert_eq!(RUNTIME_ABI_VERSION, 23);
+        assert_eq!(RUNTIME_ABI_VERSION, 24);
         assert_eq!(COROUTINE_ABI_VERSION, 2);
         assert_eq!(TYPED_TASK_ABI_VERSION, 1);
         assert_eq!(LAYOUT_ABI_VERSION, 1);
@@ -642,6 +652,11 @@ mod tests {
         assert_eq!(TEXT_GET_TYPED_INVALID, -1);
         assert_eq!(TEXT_GET_TYPED_MISSING, 0);
         assert_eq!(TEXT_GET_TYPED_FOUND, 1);
+        assert_eq!(
+            TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL,
+            "loom_runtime_text_from_utf8_units_typed_v1"
+        );
+        assert_eq!(TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8, -1);
         assert_eq!(
             BYTES_APPEND_TYPED_SYMBOL,
             "loom_runtime_bytes_append_typed_v1"
@@ -694,10 +709,10 @@ mod tests {
             "loom_typed_timer_task_create_v1"
         );
         assert_eq!(WITNESS_ABI_VERSION, 1);
-        assert_eq!(STANDARD_LIBRARY_ABI_VERSION, 4);
+        assert_eq!(STANDARD_LIBRARY_ABI_VERSION, 5);
         assert_eq!(
             NATIVE_RUNTIME_ABI_IDENTITY,
-            "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-timer-v1/typed-resource-v1/format-float-v1/typed-bytes-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v17/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4",
+            "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-timer-v1/typed-resource-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v18/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v5",
         );
     }
 

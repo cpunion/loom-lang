@@ -10,8 +10,9 @@ use loom_runtime_abi::{
     BYTES_DECODE_UTF8_TYPED_INVALID_UTF8, GC_INVALID_ARGUMENT, GC_MAX_OBJECT_BYTES, GC_OK,
     GC_RESOURCE_LIMIT, LAYOUT_ABI_VERSION, LAYOUT_FLAG_LEAF, LAYOUT_FLAG_MANAGED_POINTER,
     LAYOUT_FLAG_TRAILING_BYTES, LAYOUT_KIND_BYTES, LAYOUT_KIND_TEXT, LoomGcObjectDescriptor,
-    LoomGcTypedRootDescriptor, LoomGcTypedRootFrame, LoomLayoutDescriptor, TEXT_GET_TYPED_FOUND,
-    TEXT_GET_TYPED_INVALID, TEXT_GET_TYPED_MISSING, TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION,
+    LoomGcTypedRootDescriptor, LoomGcTypedRootFrame, LoomLayoutDescriptor,
+    TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_INVALID,
+    TEXT_GET_TYPED_MISSING, TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION,
     TYPED_SHADOW_STACK_ABI_VERSION, VALUE_SLOT_WORDS, VALUE_TAG_TEXT, VALUE_WORD_AUX,
     VALUE_WORD_DATA, VALUE_WORD_NOMINAL, VALUE_WORD_SCALAR, VALUE_WORD_TAG, VALUE_WORD_WITNESS,
 };
@@ -142,6 +143,52 @@ pub unsafe extern "C" fn get_typed_v1(
     } else {
         TEXT_GET_TYPED_INVALID
     }
+}
+
+/// Builds one direct managed Text value from borrowed integer UTF-8 units.
+///
+/// The complete input is narrowed and validated in non-GC staging storage
+/// before the only managed allocation. Consequently the allocation safepoint
+/// never observes or retains `units`, and publication of the initialized Text
+/// object remains the final operation. Out-of-byte-range integers and malformed
+/// UTF-8 are the one ordinary negative result; positive results are shared GC
+/// or ABI defects. Every failure leaves `output` null.
+#[unsafe(export_name = "loom_runtime_text_from_utf8_units_typed_v1")]
+pub unsafe extern "C" fn from_utf8_units_typed_v1(
+    units: *const i64,
+    count: u64,
+    output: *mut *mut c_void,
+) -> i32 {
+    if output.is_null() || !output.addr().is_multiple_of(align_of::<*mut c_void>()) {
+        return GC_INVALID_ARGUMENT;
+    }
+    unsafe { output.write(ptr::null_mut()) };
+    if (count != 0 && units.is_null()) || !units.addr().is_multiple_of(align_of::<i64>()) {
+        return GC_INVALID_ARGUMENT;
+    }
+    let Ok(count) = usize::try_from(count) else {
+        return GC_INVALID_ARGUMENT;
+    };
+    enforce_typed_byte_length(count);
+    let mut staged = Vec::with_capacity(count);
+    if count != 0 {
+        // SAFETY: the compiler supplies a live contiguous `List[Int]` element
+        // range. The range is consumed completely before any Loom safepoint.
+        let units = unsafe { slice::from_raw_parts(units, count) };
+        for &unit in units {
+            let Ok(byte) = u8::try_from(unit) else {
+                return TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8;
+            };
+            staged.push(byte);
+        }
+    }
+    let Ok(text) = std::str::from_utf8(&staged) else {
+        return TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8;
+    };
+    let Ok(scalar_length) = u64::try_from(text.chars().count()) else {
+        std::process::abort();
+    };
+    unsafe { allocate_typed_text(&staged, scalar_length, output) }
 }
 
 /// Concatenates two immutable byte sequences into one direct managed Bytes
@@ -600,16 +647,16 @@ mod tests {
     use loom_runtime_abi::{
         BYTES_DECODE_UTF8_TYPED_INVALID_UTF8, GC_INVALID_ARGUMENT, GC_OK,
         LoomGcTypedRootDescriptor, LoomGcTypedRootFrame, LoomLayoutDescriptor,
-        TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_INVALID, TEXT_GET_TYPED_MISSING,
-        TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_HEADER_SIZE, TYPED_SHADOW_STACK_ABI_VERSION,
-        VALUE_SLOT_WORDS, VALUE_TAG_TEXT,
+        TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_INVALID,
+        TEXT_GET_TYPED_MISSING, TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_HEADER_SIZE,
+        TYPED_SHADOW_STACK_ABI_VERSION, VALUE_SLOT_WORDS, VALUE_TAG_TEXT,
     };
 
     use super::{
         BYTES_LAYOUT_DESCRIPTOR, ByteObject, TEXT_LAYOUT_DESCRIPTOR, TextObject,
         allocate_byte_storage, allocate_text_storage, bytes, bytes_append_typed_v1,
-        bytes_decode_utf8_typed_v1, concat_typed_v1, get_typed_v1, scalar_length, text_bytes,
-        validate_text_object_deep,
+        bytes_decode_utf8_typed_v1, concat_typed_v1, from_utf8_units_typed_v1, get_typed_v1,
+        scalar_length, text_bytes, validate_text_object_deep,
     };
     use crate::gc::{
         activate_runtime_v1, deactivate_runtime_v1, typed_root_pop_v1, typed_root_push_v1,
@@ -665,6 +712,86 @@ mod tests {
             &raw const BYTES_LAYOUT_DESCRIPTOR
         );
         drop(allocation);
+    }
+
+    #[test]
+    fn typed_utf8_units_validate_transactionally_before_forced_collection() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            (*runtime).heap.collect_before_every_allocation = true;
+
+            let bitmaps = [0_u64, 1_u64];
+            let descriptor = LoomGcTypedRootDescriptor {
+                abi_version: TYPED_SHADOW_STACK_ABI_VERSION,
+                flags: 0,
+                slot_count: 1,
+                state_count: 2,
+                live_bitmap_words: 1,
+                live_bitmaps: bitmaps.as_ptr(),
+            };
+            let mut cell: *mut c_void = ptr::null_mut();
+            let slots = [(&raw mut cell).cast::<c_void>()];
+            let mut frame = LoomGcTypedRootFrame {
+                abi_version: TYPED_SHADOW_STACK_ABI_VERSION,
+                flags: 0,
+                state: 1,
+                descriptor: &raw const descriptor,
+                slots: slots.as_ptr(),
+                previous: ptr::null_mut(),
+            };
+            assert_eq!(typed_root_push_v1(&raw mut frame), GC_OK);
+
+            let unicode = [65_i64, 0xe7, 0x95, 0x8c, 0xf0, 0x9f, 0x99, 0x82];
+            assert_eq!(
+                from_utf8_units_typed_v1(unicode.as_ptr(), unicode.len() as u64, &raw mut cell,),
+                GC_OK
+            );
+            assert_eq!(text_bytes(cell), Some("A界🙂".as_bytes()));
+            assert_eq!(scalar_length(cell.cast()), Some(3));
+
+            assert_eq!(
+                from_utf8_units_typed_v1(ptr::null(), 0, &raw mut cell),
+                GC_OK
+            );
+            assert_eq!(text_bytes(cell), Some(&b""[..]));
+            assert_eq!(scalar_length(cell.cast()), Some(0));
+            assert!((*runtime).heap.collections >= 2);
+            assert!((*runtime).heap.reclaimed >= 1);
+
+            for invalid in [[-1_i64].as_slice(), [256_i64].as_slice()] {
+                cell = ptr::dangling_mut();
+                assert_eq!(
+                    from_utf8_units_typed_v1(invalid.as_ptr(), invalid.len() as u64, &raw mut cell,),
+                    TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8
+                );
+                assert!(cell.is_null());
+            }
+            let malformed = [0xc3_i64, 0x28];
+            cell = ptr::dangling_mut();
+            assert_eq!(
+                from_utf8_units_typed_v1(malformed.as_ptr(), malformed.len() as u64, &raw mut cell,),
+                TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8
+            );
+            assert!(cell.is_null());
+
+            cell = ptr::dangling_mut();
+            assert_eq!(
+                from_utf8_units_typed_v1(ptr::null(), 1, &raw mut cell),
+                GC_INVALID_ARGUMENT
+            );
+            assert!(cell.is_null());
+            assert_eq!(
+                from_utf8_units_typed_v1(unicode.as_ptr(), unicode.len() as u64, ptr::null_mut()),
+                GC_INVALID_ARGUMENT
+            );
+
+            assert_eq!(typed_root_pop_v1(&raw mut frame), GC_OK);
+            (*runtime).heap.collect_before_every_allocation = false;
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
     }
 
     #[test]

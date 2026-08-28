@@ -16,6 +16,7 @@ struct BytesTypes {
     integer: ValueTypeId,
     text: ValueTypeId,
     bytes: ValueTypeId,
+    list_int: ValueTypeId,
     option_int: ValueTypeId,
     decode_result: ValueTypeId,
 }
@@ -35,6 +36,9 @@ fn builder_with_bytes_types() -> (ProgramBuilder, BytesTypes) {
     let bytes = builder
         .add_managed_bytes_type(Type::Nominal(BYTES_TYPE_ID, Vec::new()))
         .expect("canonical managed Bytes");
+    let list_int = builder
+        .add_managed_list_type(Type::List(Box::new(Type::Int)))
+        .expect("canonical List[Int]");
     let option_int = builder
         .add_sum_type(
             Type::Nominal(OPTION_TYPE_ID, vec![Type::Int]),
@@ -62,6 +66,7 @@ fn builder_with_bytes_types() -> (ProgramBuilder, BytesTypes) {
             integer,
             text,
             bytes,
+            list_int,
             option_int,
             decode_result,
         },
@@ -80,13 +85,19 @@ fn checked_bytes_instruction_family_has_exact_shapes_effects_roots_and_dump() {
             origin(),
             "bytes",
             Signature::new(
-                [types.text, types.bytes, types.bytes, types.integer],
+                [
+                    types.text,
+                    types.bytes,
+                    types.bytes,
+                    types.integer,
+                    types.list_int,
+                ],
                 types.unit,
             ),
             Effects::MAY_COLLECT.with_implications(),
         )
         .expect("function");
-    let (append_id, decode_id) = {
+    let (append_id, decode_id, from_units_id, units_id) = {
         let mut function = builder.function(root).expect("function builder");
         let entry = function.create_block().expect("entry");
         function.set_entry(entry).expect("set entry");
@@ -102,6 +113,9 @@ fn checked_bytes_instruction_family_has_exact_shapes_effects_roots_and_dump() {
         let index = function
             .append_block_parameter(entry, types.integer)
             .expect("index parameter");
+        let units = function
+            .append_block_parameter(entry, types.list_int)
+            .expect("List[Int] parameter");
         function
             .append_instruction(
                 entry,
@@ -110,6 +124,27 @@ fn checked_bytes_instruction_family_has_exact_shapes_effects_roots_and_dump() {
                 origin(),
             )
             .expect("encode");
+        let from_units = function
+            .append_instruction(
+                entry,
+                InstructionKind::TextFromUtf8Units {
+                    units,
+                    ok_variant: 0,
+                    error_variant: 1,
+                    invalid_utf8_variant: 0,
+                },
+                &[types.decode_result],
+                origin(),
+            )
+            .expect("from UTF-8 units");
+        function
+            .append_instruction(
+                entry,
+                InstructionKind::ListLength { list: units },
+                &[types.integer],
+                origin(),
+            )
+            .expect("keep units live across construction");
         function
             .append_instruction(
                 entry,
@@ -178,7 +213,7 @@ fn checked_bytes_instruction_family_has_exact_shapes_effects_roots_and_dump() {
                 Terminator::new(TerminatorKind::Return(result), origin()),
             )
             .expect("return");
-        (append[0], decode[0])
+        (append[0], decode[0], from_units[0], units)
     };
     let program = builder.finish_checked().expect("checked Bytes program");
     let function = program.as_program().function(root).expect("function");
@@ -199,9 +234,22 @@ fn checked_bytes_instruction_family_has_exact_shapes_effects_roots_and_dump() {
             .state(ManagedSafepoint::Instruction(instruction_id(decode_id)))
             .is_some()
     );
+    let from_units_state = roots
+        .state(ManagedSafepoint::Instruction(instruction_id(from_units_id)))
+        .expect("UTF-8-unit construction root state");
+    let units_slot = roots
+        .slots()
+        .iter()
+        .position(|slot| slot.value() == units_id && slot.projection().is_empty())
+        .expect("live List[Int] source root");
+    let bitmap = roots.bitmaps()[usize::try_from(from_units_state).expect("root state")
+        * roots.bitmap_words()
+        + units_slot / 64];
+    assert_ne!(bitmap & (1_u64 << (units_slot % 64)), 0);
     let dump = dump_program(&program);
     for opcode in [
         "text.encode_utf8",
+        "text.from_utf8_units",
         "bytes.length",
         "bytes.get",
         "bytes.append",
@@ -245,6 +293,19 @@ fn independent_validation_rejects_wrong_bytes_operands_variants_and_effects() {
                 origin(),
             )
             .expect("malformed length");
+        function
+            .append_instruction(
+                entry,
+                InstructionKind::TextFromUtf8Units {
+                    units: integer,
+                    ok_variant: 1,
+                    error_variant: 0,
+                    invalid_utf8_variant: 1,
+                },
+                &[types.decode_result],
+                origin(),
+            )
+            .expect("malformed UTF-8 unit construction");
         function
             .append_instruction(
                 entry,

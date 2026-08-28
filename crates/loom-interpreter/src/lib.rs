@@ -3309,6 +3309,7 @@ impl<'program> Interpreter<'program> {
                 | Builtin::TextConcat
                 | Builtin::TextContains
                 | Builtin::TextEncodeUtf8
+                | Builtin::TextFromUtf8Units
                 | Builtin::BytesLength
                 | Builtin::BytesGet
                 | Builtin::BytesAppend
@@ -3954,6 +3955,52 @@ impl<'program> Interpreter<'program> {
             }
             (Builtin::TextEncodeUtf8, [Value::Text { value }]) => {
                 self.bytes_value(value.as_bytes().to_vec(), span)
+            }
+            (Builtin::TextFromUtf8Units, [Value::List { elements }]) => {
+                let mut units = Vec::with_capacity(elements.len());
+                let mut invalid_unit = false;
+                for element in elements {
+                    let Value::Int { value } = element else {
+                        return Err(self
+                            .runtime_fault(
+                                "LOOM_RUNTIME_INVALID_MIR",
+                                "Text.from_utf8_units expected List[Int]",
+                                span,
+                            )
+                            .into());
+                    };
+                    if let Ok(value) = u8::try_from(*value) {
+                        units.push(value);
+                    } else {
+                        invalid_unit = true;
+                        break;
+                    }
+                }
+                let value = if invalid_unit {
+                    None
+                } else {
+                    String::from_utf8(units).ok()
+                };
+                if let Some(value) = value {
+                    self.result_value(true, Value::Text { value }, span)
+                } else {
+                    let ty = self.program.prelude.decode_text_error.ok_or_else(|| {
+                        self.runtime_fault(
+                            "LOOM_RUNTIME_INVALID_MIR",
+                            "prelude DecodeTextError type is missing",
+                            span,
+                        )
+                    })?;
+                    self.result_value(
+                        false,
+                        Value::Enum {
+                            ty,
+                            variant: VariantId(0),
+                            payload: Vec::new(),
+                        },
+                        span,
+                    )
+                }
             }
             (Builtin::BytesLength, [bytes]) => Ok(Value::Int {
                 value: i64::try_from(self.bytes_payload(bytes, span)?.len()).map_err(|_| {
@@ -6804,6 +6851,40 @@ mod standard_value_tests {
                     ty: TypeId(13), variant: VariantId(0), payload, ..
                 }] if payload.is_empty())
         ));
+
+        let valid_units = Value::List {
+            elements: [65, 231, 149, 140]
+                .into_iter()
+                .map(|value| Value::Int { value })
+                .collect(),
+        };
+        let rebuilt = interpreter
+            .eval_standard_value_builtin(Builtin::TextFromUtf8Units, &[valid_units], span)
+            .unwrap();
+        assert!(matches!(
+            rebuilt,
+            Value::Enum { ty: TypeId(1), variant: VariantId(0), payload, .. }
+                if payload == vec![Value::Text { value: "A界".into() }]
+        ));
+
+        for invalid_units in [vec![-1], vec![256], vec![255]] {
+            let invalid_units = Value::List {
+                elements: invalid_units
+                    .into_iter()
+                    .map(|value| Value::Int { value })
+                    .collect(),
+            };
+            let decoded = interpreter
+                .eval_standard_value_builtin(Builtin::TextFromUtf8Units, &[invalid_units], span)
+                .unwrap();
+            assert!(matches!(
+                decoded,
+                Value::Enum { ty: TypeId(1), variant: VariantId(1), payload, .. }
+                    if matches!(payload.as_slice(), [Value::Enum {
+                        ty: TypeId(13), variant: VariantId(0), payload, ..
+                    }] if payload.is_empty())
+            ));
+        }
 
         let base = interpreter.path_value("root".into(), span).unwrap();
         let child = interpreter.path_value("child/file".into(), span).unwrap();

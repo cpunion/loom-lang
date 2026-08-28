@@ -1045,6 +1045,7 @@ const fn builtin_requirements(builtin: Builtin) -> RuntimeRequirements {
         | Builtin::BytesGet
         | Builtin::BytesAppend
         | Builtin::BytesDecodeUtf8
+        | Builtin::TextFromUtf8Units
         | Builtin::PathFromText
         | Builtin::PathJoin
         | Builtin::ListAdd

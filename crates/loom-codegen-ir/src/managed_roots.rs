@@ -337,6 +337,7 @@ fn collect_safepoint_values(
                 instruction.kind(),
                 InstructionKind::TextConcat { .. }
                     | InstructionKind::TextGet { .. }
+                    | InstructionKind::TextFromUtf8Units { .. }
                     | InstructionKind::BytesAppend { .. }
                     | InstructionKind::BytesDecodeUtf8 { .. }
                     | InstructionKind::FormatFloat { .. }
