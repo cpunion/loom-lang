@@ -28,6 +28,27 @@ test("requires every named PowerShell bootstrap argument", () => {
   );
 });
 
+test("requires exact LF byte checks in both release archive branches", () => {
+  const errors = checkReleaseWorkflow({
+    ci: "",
+    release: "",
+    bootstrap: "",
+    argumentTest: "",
+  });
+  for (const marker of [
+    "od -An -v -tx1",
+    'if [ \\"$smoke_hex\\" != \\"556e69740a\\" ]',
+    "Start-Process -FilePath $smokeExecutable -RedirectStandardOutput $smokeStdout",
+    "[IO.File]::ReadAllBytes($smokeStdout)",
+    'if ($smokeHex -ne \\"556e69740a\\")',
+  ]) {
+    assert.ok(
+      errors.some((error) => error.includes(marker)),
+      `missing policy error for ${marker}`,
+    );
+  }
+});
+
 test("rejects duplicated downloads, legacy rebuilds, and unsplatted native arguments", () => {
   const errors = checkReleaseWorkflow({
     ci: [

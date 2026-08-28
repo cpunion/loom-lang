@@ -1,7 +1,13 @@
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
 use std::sync::OnceLock;
+
+#[cfg(unix)]
+use std::os::fd::OwnedFd;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
 
 use loom_codegen_llvm::{
     CodegenError, EmitOptions, NativeArtifact, RuntimeBundle, RuntimeLinker,
@@ -50,6 +56,39 @@ pub fn emit_native(
 pub fn link_native_object(object: &Path, output: &Path) -> Result<(), CodegenError> {
     let runtime = test_runtime();
     link_object_with_runtime_bundle(object, output, &runtime.bundle, &runtime.linker)
+}
+
+pub fn run_with_read_only_stdout(executable: &Path, directory: &Path) -> Output {
+    let target = directory.join("read-only-stdout");
+    std::fs::write(&target, b"stdout sentinel\n").expect("create stdout sentinel");
+    let read_only = std::fs::File::open(&target).expect("open read-only stdout handle");
+    let output = Command::new(executable)
+        .stdout(Stdio::from(read_only))
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn executable with read-only stdout")
+        .wait_with_output()
+        .expect("wait for executable with read-only stdout");
+    assert_eq!(
+        std::fs::read(&target).expect("read stdout sentinel"),
+        b"stdout sentinel\n",
+        "child unexpectedly changed its read-only stdout target"
+    );
+    output
+}
+
+#[cfg(unix)]
+pub fn run_with_closed_stdout(executable: &Path) -> Output {
+    let (reader, writer) = UnixStream::pair().expect("create closed stdout socket pair");
+    drop(reader);
+    let writer = std::fs::File::from(OwnedFd::from(writer));
+    Command::new(executable)
+        .stdout(Stdio::from(writer))
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn executable with closed stdout")
+        .wait_with_output()
+        .expect("wait for executable with closed stdout")
 }
 
 pub fn runtime_bundle_identity() -> String {

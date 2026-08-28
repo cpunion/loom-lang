@@ -772,15 +772,24 @@ fn run_fixture(
         .current_dir(workspace);
     let timed_output = output_with_timeout(&mut command, timeout, &action)?;
     require_success(timed_output.output, &action).and_then(|stdout| {
-        if matches!(stdout.as_bytes(), b"Unit\n" | b"Unit\r\n") {
+        if fixture_stdout_is_valid(language.language, stdout.as_bytes()) {
             Ok(timed_output.elapsed)
         } else {
+            let expected = if language.language == "loom" {
+                "exact stdout bytes `Unit\\n`"
+            } else {
+                "one platform line `Unit`"
+            };
             Err(format!(
-                "execute {} {case}: expected one platform line `Unit`, got {stdout:?}",
+                "execute {} {case}: expected {expected}, got {stdout:?}",
                 language.language
             ))
         }
     })
+}
+
+fn fixture_stdout_is_valid(language: &str, stdout: &[u8]) -> bool {
+    stdout == b"Unit\n" || (language != "loom" && stdout == b"Unit\r\n")
 }
 
 fn rotated_indices(length: usize, rotation: usize) -> impl Iterator<Item = usize> {
@@ -1063,9 +1072,9 @@ mod tests {
 
     use super::{
         BenchmarkProfile, CASES, CaseReport, ConfigReport, HostReport, REPORT_KIND, REPORT_WARNING,
-        Report, RuntimeReport, executable_path, fib_checksum, lcg_final_checksum, list_checksum,
-        nearest_rank, output_with_timeout, parse_config, parse_first_number,
-        reject_busy_measured_run, summarize,
+        Report, RuntimeReport, executable_path, fib_checksum, fixture_stdout_is_valid,
+        lcg_final_checksum, list_checksum, nearest_rank, output_with_timeout, parse_config,
+        parse_first_number, reject_busy_measured_run, summarize,
     };
 
     #[test]
@@ -1074,6 +1083,22 @@ mod tests {
             executable_path(std::path::Path::new("bin"), "fixture"),
             std::path::Path::new("bin").join(format!("fixture{}", std::env::consts::EXE_SUFFIX))
         );
+    }
+
+    #[test]
+    fn fixture_stdout_requires_lf_for_loom() {
+        assert!(fixture_stdout_is_valid("loom", b"Unit\n"));
+        assert!(!fixture_stdout_is_valid("loom", b"Unit\r\n"));
+        assert!(!fixture_stdout_is_valid("loom", b"Unit\n\0"));
+    }
+
+    #[test]
+    fn fixture_stdout_accepts_crlf_for_competing_languages() {
+        for language in ["go", "rust", "c", "cpp"] {
+            assert!(fixture_stdout_is_valid(language, b"Unit\n"));
+            assert!(fixture_stdout_is_valid(language, b"Unit\r\n"));
+            assert!(!fixture_stdout_is_valid(language, b"Unit\n\0"));
+        }
     }
 
     #[test]

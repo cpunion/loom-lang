@@ -181,6 +181,7 @@ jobs:
       - name: Standard library differential release gate
         shell: bash
         run: |
+          cargo test --locked --release -p loom-runtime-abi --lib
           cargo test --locked --release -p loom-codegen-llvm --test standard_values
           cargo test --locked --release -p loom-codegen-llvm --test structured_standard_values
           cargo test --locked --release -p loom-codegen-llvm --test runtime_bundle
@@ -218,7 +219,13 @@ jobs:
           cp -R "$LOOM_RUNTIME_BUNDLE" "$staging/runtime"
           env -u LOOM_RUNTIME_BUNDLE \
             "$staging/loomc" --no-cache build --output target/release-bundle-smoke examples/core01
-          target/release-bundle-smoke
+          smoke_stdout="$RUNNER_TEMP/loom-release-bundle-smoke-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.stdout"
+          target/release-bundle-smoke > "$smoke_stdout"
+          smoke_hex="$(od -An -v -tx1 "$smoke_stdout" | tr -d '[:space:]')"
+          if [ "$smoke_hex" != "556e69740a" ]; then
+            echo "staged Unix native smoke stdout mismatch: expected hex 556e69740a, got $smoke_hex" >&2
+            exit 1
+          fi
           tar -czf "$archive" -C "$staging" .
           shasum -a 256 "$archive" > "$archive.sha256"
       - name: Archive and checksum Windows release
@@ -251,9 +258,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "the staged Windows compiler could not discover its adjacent runtime bundle"
           }
-          & target/release-bundle-smoke.exe
-          if ($LASTEXITCODE -ne 0) {
+          $smokeStdout = Join-Path $env:RUNNER_TEMP "loom-release-bundle-smoke-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT.stdout"
+          $smokeExecutable = (Resolve-Path -LiteralPath "target/release-bundle-smoke.exe").Path
+          $smokeProcess = Start-Process -FilePath $smokeExecutable -RedirectStandardOutput $smokeStdout -NoNewWindow -Wait -PassThru
+          if ($smokeProcess.ExitCode -ne 0) {
             throw "the staged Windows native smoke executable failed"
+          }
+          $smokeHex = [Convert]::ToHexString([IO.File]::ReadAllBytes($smokeStdout)).ToLowerInvariant()
+          if ($smokeHex -ne "556e69740a") {
+            throw "staged Windows native smoke stdout mismatch: expected hex 556e69740a, got $smokeHex"
           }
           Compress-Archive `
             -Path (Join-Path $staging "*") `

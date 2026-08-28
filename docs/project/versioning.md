@@ -22,7 +22,7 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | LLVM object-cache domain | `loom-llvm-object-cache-v32` |
 | Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
-| Native runtime ABI component | `19` |
+| Native runtime ABI component | `20` |
 | Coroutine/Task ABI component | `2` |
 | Typed Task ABI component | `1` |
 | Wait ABI component | `1` |
@@ -31,6 +31,19 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 The exact compiler-private native ABI identity contains additional layout,
 text, shadow-stack, witness, list, and runtime component versions. Runtime
 bundles compare the whole identity, not only the numeric runtime component.
+
+Compiler-generated native harness output adds the exact-length
+`loom_runtime_stdout_write_v1(data, length)` boundary and advances the current
+native runtime ABI identity to component 20 with `stdout-v1` and
+`runtime-v14`. The byte range includes any intended literal LF and bypasses C
+runtime text-mode translation; the runtime does not scan for NUL or append a
+delimiter. Success means that the complete range was accepted and flushed.
+Failure may follow a partial write, so generated callers never retry. Pure
+LCIR objects may reference this output-only symbol without acquiring execution
+runtime or executor requirements. LCIR serialization and artifact schema do not
+change because harness output is not part of LCIR. Native-object and
+object-cache domains do not advance because native fingerprints and
+runtime-bundle checks already include the exact runtime ABI identity.
 
 Controlled quality evidence schema 2 adds an ordered native-route record for
 every prepared object. Each record carries the scenario, expected and actual

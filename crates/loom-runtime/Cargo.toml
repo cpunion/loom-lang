@@ -13,6 +13,9 @@ crate-type = ["rlib", "staticlib"]
 loom-runtime-abi.workspace = true
 polling.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [lints.rust]
 unsafe_code = "allow"
 

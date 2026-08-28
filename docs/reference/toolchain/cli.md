@@ -149,6 +149,20 @@ native executable. With `--backend interpreter`, it decodes a `.loomi`
 executable and uses its validated embedded entry. The command does not accept a
 source path or re-resolve an entry.
 
+Native run and test harness lines are exact UTF-8 byte ranges. The compiler
+includes a literal LF byte in each complete line and the ABI writes precisely
+that length without NUL scanning, delimiter insertion, or C-runtime text-mode
+translation; redirected output therefore uses LF on every supported host. A
+successful run's `Unit` line and a passed-test line count as successful only if
+the complete range is accepted and flushed. A write or flush failure may leave
+a visible prefix, so the generated program does not retry. If the program or
+test was already failing, its existing nonzero status is preserved without a
+second output-error diagnostic. A pure LCIR root still constructs no Loom
+runtime or executor merely to print: its native harness may link the ABI 20
+output-only `stdout-v1` symbol. On Unix, a closed output pipe is reported as
+this ordinary nonzero output failure rather than terminating the generated
+entry with `SIGPIPE`.
+
 ## Exit status
 
 | Status | Meaning |

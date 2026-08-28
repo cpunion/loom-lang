@@ -2421,7 +2421,7 @@ fn manifest_targets_and_path_dependencies_drive_cli_roots() {
         .output()
         .expect("run materialized cached native artifact");
     assert_eq!(artifact_run.status.code(), Some(0));
-    assert_eq!(String::from_utf8_lossy(&artifact_run.stdout), "Unit\n");
+    assert_eq!(artifact_run.stdout, b"Unit\n");
 
     let interpreted_artifact = project.0.join("application.loomi");
     let interpreted_build = loomc()
@@ -2450,7 +2450,7 @@ fn manifest_targets_and_path_dependencies_drive_cli_roots() {
         .output()
         .expect("run interpreted manifest artifact");
     assert_eq!(interpreted_run.status.code(), Some(0));
-    assert_eq!(String::from_utf8_lossy(&interpreted_run.stdout), "Unit\n");
+    assert_eq!(interpreted_run.stdout, b"Unit\n");
 
     let wrong_kind = loomc()
         .args(["--json", "run", "--target", "unit"])
@@ -2554,7 +2554,7 @@ fn library_targets_build_portable_validated_artifacts() {
         String::from_utf8_lossy(&consumed.stdout),
         String::from_utf8_lossy(&consumed.stderr)
     );
-    assert_eq!(String::from_utf8_lossy(&consumed.stdout), "Unit\n");
+    assert_eq!(consumed.stdout, b"Unit\n");
 
     for command in ["check", "test"] {
         let verified = loomc()
@@ -3034,10 +3034,7 @@ fn test_and_run_execute_native_code() {
         .output()
         .expect("run loomc run");
     assert_eq!(run.status.code(), Some(0));
-    assert_eq!(
-        String::from_utf8(run.stdout).expect("UTF-8 stdout"),
-        "Unit\n"
-    );
+    assert_eq!(run.stdout, b"Unit\n");
 }
 
 #[test]
@@ -3136,7 +3133,7 @@ fn range_and_growable_list_run_on_both_backends() {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        assert_eq!(String::from_utf8_lossy(&output.stdout), "Unit\n");
+        assert_eq!(output.stdout, b"Unit\n");
 
         let artifact = project.0.join(format!("dynamic-{backend}.artifact"));
         let build = loomc()
@@ -3168,7 +3165,7 @@ fn range_and_growable_list_run_on_both_backends() {
             String::from_utf8_lossy(&artifact_output.stdout),
             String::from_utf8_lossy(&artifact_output.stderr)
         );
-        assert_eq!(String::from_utf8_lossy(&artifact_output.stdout), "Unit\n");
+        assert_eq!(artifact_output.stdout, b"Unit\n");
     }
 }
 
@@ -3196,10 +3193,7 @@ fn build_writes_a_runnable_native_artifact() {
         .output()
         .expect("run built artifact");
     assert_eq!(run.status.code(), Some(0));
-    assert_eq!(
-        String::from_utf8(run.stdout).expect("UTF-8 stdout"),
-        "Unit\n"
-    );
+    assert_eq!(run.stdout, b"Unit\n");
 }
 
 #[cfg(unix)]
@@ -3800,7 +3794,7 @@ fn release_build_produces_a_runnable_native_executable() {
         .output()
         .expect("run release executable");
     assert_eq!(executed.status.code(), Some(0));
-    assert_eq!(String::from_utf8_lossy(&executed.stdout), "Unit\n");
+    assert_eq!(executed.stdout, b"Unit\n");
 }
 
 #[test]

@@ -162,6 +162,18 @@ allow a proven pure direct native body to omit status and hidden runtime
 context, a synchronous managed root to create only a runtime, and an async root
 to attach an executor only when required.
 
+These requirements describe execution state, not compiler-generated harness
+output. Even a pure direct LCIR executable may declare the output-only
+`loom_runtime_stdout_write_v1(data, length)` symbol while constructing no Loom
+runtime or executor. Both native emitters build the complete UTF-8 harness line
+with a literal LF, pass its exact byte length excluding the LLVM global's
+trailing NUL, and branch on the returned status where success could otherwise
+be reported. The Rust runtime writes and flushes that raw range without C
+runtime text translation, NUL scanning, or delimiter insertion. A failure may
+leave an already emitted prefix, so no generated path retries it. The boundary
+flushes an existing Rust stdout buffer before the raw write and suppresses Unix
+`SIGPIPE`, allowing a closed pipe to return the same failure status.
+
 ## Direct LCIR products
 
 LCIR `Product` values become literal LLVM structs whose fields recursively use
@@ -505,8 +517,10 @@ and actual carrier size or alignment.
 tag once, switches exhaustively, and decodes the selected carrier into typed
 payload block parameters. Temporary typed carrier storage is an LLVM lowering
 detail: the release optimization gate requires SROA to remove every such
-`alloca` and forbids `memcpy`, the universal `loom.Value`, runtime/GC/executor
-symbols for pure sums, and indirect calls.
+`alloca` and forbids `memcpy`, the universal `loom.Value`, execution-runtime,
+GC, and executor symbols for pure sums, and indirect calls. The output-only
+`loom_runtime_stdout_write_v1` harness declaration is allowed and does not
+weaken the pure source-function check.
 
 Structural sum equality is a pair of checked `SumSwitch` trees. Each operand's
 payload is decoded only on its active case edge; mismatched tags branch false,
@@ -519,6 +533,12 @@ tests pass after a successful call. `Result[Unit, E]` tests compare the physical
 tag with the explicit success variant; the explicit failure variant produces a
 normal failed-test status. A source `RuntimeFault` is checked independently
 before the result tag and retains the existing runtime-failure behavior.
+
+Harness stdout is success-sensitive. Failure to write or flush `Unit` or a
+passed-test line changes the otherwise successful process status to nonzero.
+Failure while writing an already failing diagnostic leaves the existing
+nonzero status intact; because a prefix may already be visible, the harness
+does not retry or add a second diagnostic.
 
 ## Legacy native specialization
 
@@ -638,8 +658,9 @@ semantic boundary advances the native component to 18 with
 
 Static `Task.settled` and `Task.race` add the exact
 `loom_typed_task_take_outcome_v1` transfer boundary and generalize winner
-finalization for `any` and `race`. The current native component is 19 with
-`typed-task-winner-finalize-v1`, `typed-task-outcome-v1`, and `runtime-v13`.
+finalization for `any` and `race`. That slice advanced the native component to
+19 with `typed-task-winner-finalize-v1`, `typed-task-outcome-v1`, and
+`runtime-v13`.
 The outcome helper validates the terminal child and exact completed layout,
 publishes fault code/message Text through caller-provided rooted cells, and
 retires the child only after a successful transfer. It does not add a universal
@@ -652,6 +673,16 @@ constructors. Dynamic contract detail assembly reuses the established context
 fault entry point and wire schema. This advances only the LCIR dump, artifact,
 native-object, and object-cache domains described above; native runtime ABI
 component 19 and `runtime-v13` remain unchanged.
+
+The later exact stdout boundary adds
+`loom_runtime_stdout_write_v1(data, length)` and advances the native runtime
+identity to component 20 with `stdout-v1` and `runtime-v14`. It does not change
+LCIR serialization, source-function ABI, typed-task, coroutine, wait, Text, or
+GC layouts. Existing native fingerprints already include the exact runtime
+identity, so the artifact, native-object, and object-cache domains above do not
+advance. The legacy arbitrary-value run-root printer is removed; both object
+routes independently validate the complete executable root as `() -> Unit` at
+their public raw-object boundary.
 
 They also encode closed static-witness method selection and normalized
 associated types. Those proofs are absent from the machine ABI: LLVM receives

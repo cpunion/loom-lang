@@ -380,11 +380,22 @@ loop phi. Match plans use IEEE ordered equality for float constants, share one
 typed capture block per selected source arm, and are rejected before LCIR
 allocation if their bounded pattern, decision, value, work, or CFG-block
 budgets are exceeded.
-The harness creates no runtime for a pure direct root. It creates a runtime,
-but no executor, for a synchronous faulting or collecting root. An async root
-creates one executor, constructs the root Task, runs it to a terminal state,
-takes its exact typed result, and destroys the executor. When the async root has
-preconditions, construction supplies its declaration span as state-zero blame.
+The harness creates no execution runtime for a pure direct root. It may still
+declare the output-only `loom_runtime_stdout_write_v1(data, length)` boundary;
+that symbol does not add a runtime context, collection capability, or executor
+requirement to the source graph. The harness constructs each complete UTF-8
+line with a literal LF and supplies its exact byte length, excluding the LLVM
+global's trailing NUL. The runtime performs no NUL scan, delimiter insertion,
+or C text-mode translation. Output failure may leave a prefix, so generated
+code never retries it: an otherwise successful `Unit` or passed-test path
+becomes nonzero, while an already failing path retains its nonzero status. A
+synchronous faulting or collecting root creates a runtime but no executor. An
+async root creates one executor, constructs the root Task, runs it to a terminal
+state, takes its exact typed result, and destroys the executor. When the async
+root has preconditions, construction supplies its declaration span as
+state-zero blame. Both raw object-emission routes independently validate the
+complete executable root as `() -> Unit`; the legacy arbitrary-value root
+printer is not part of this boundary.
 
 Each admitted async instance has a checked `CoroutinePlan` with an exact output
 type, an optional carried creation span for state-zero preconditions, and dense
@@ -574,6 +585,15 @@ encode the optional caller span; the root harness supplies the declaration span
 when no creating call exists. Existing fault-context entry points and the JSON
 wire schema are reused, so native runtime component 19 and `runtime-v13` do not
 change.
+
+Exact native harness stdout subsequently adds
+`loom_runtime_stdout_write_v1(data, length)` and advances the native runtime
+identity to component 20 with `stdout-v1` and `runtime-v14`. This is an
+output-only symbol, not an execution-runtime requirement. LCIR serialization
+and artifact schema do not change because harness output is not part of LCIR.
+Native-object and object-cache domains do not advance because the exact runtime
+identity already participates in object fingerprints and runtime-bundle
+validation.
 
 Calls to the C process entry, libc, and versioned Loom runtime functions are
 explicit external boundaries. They do not permit two source-function ABIs in

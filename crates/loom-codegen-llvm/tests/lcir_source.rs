@@ -966,6 +966,8 @@ fn assert_no_legacy_surface(ir: &str) {
         "ArgNode",
         "ValueNode",
         "loom.runtime.print",
+        "@puts",
+        "@printf",
         "loom_executor_",
         "loom_gc_",
         "witness",
@@ -997,7 +999,21 @@ fn assert_no_indirect_calls(ir: &str) {
 
 fn assert_pure_surface(ir: &str) {
     assert_no_legacy_surface(ir);
-    assert!(!ir.contains("loom_runtime_"), "{ir}");
+    assert!(ir.contains("loom_runtime_stdout_write_v1"), "{ir}");
+    for line in ir.lines().filter(|line| line.contains("@loom_runtime_")) {
+        assert!(
+            line.contains("@loom_runtime_stdout_write_v1"),
+            "pure LCIR has an unexpected runtime symbol: {line}\n{ir}"
+        );
+    }
+    for forbidden in [
+        "loom_runtime_create_v1",
+        "loom_runtime_activate_v1",
+        "loom_runtime_destroy_v1",
+        "loom_runtime_deactivate_v1",
+    ] {
+        assert!(!ir.contains(forbidden), "unexpected `{forbidden}`:\n{ir}");
+    }
     assert!(!ir.contains("loom_context_raise_fault_v1"), "{ir}");
 }
 
@@ -4228,7 +4244,6 @@ pub fn main() Unit {
         "with.overflow",
         "invoke.status",
         "fault.status",
-        "loom_runtime_",
         "loom_context_raise_fault_v1",
     ] {
         assert!(
@@ -6150,7 +6165,6 @@ pub fn main() Unit {
         "alloca",
         "memcpy",
         "loom.Value",
-        "loom_runtime_",
         "loom_gc_",
         "loom_executor_",
     ] {
@@ -6349,7 +6363,6 @@ pub fn main() Unit {
         "alloca",
         "memcpy",
         "loom.Value",
-        "loom_runtime_",
         "loom_gc_",
         "loom_executor_",
     ] {
@@ -6463,7 +6476,6 @@ fn closed_sum_carriers_emit_as_native_msvc_objects_without_fallback() {
         "alloca",
         "memcpy",
         "loom.Value",
-        "loom_runtime_",
         "loom_gc_",
         "loom_executor_",
     ] {
@@ -6513,19 +6525,12 @@ test fn fails() Result[Unit, Problem] { Err(Problem.Failed(7)) }
     let legacy = emit_and_run_legacy_tests(&program, "legacy-result-tests");
     assert!(!lcir.output.status.success(), "{:?}", lcir.output);
     assert!(!legacy.status.success(), "{legacy:?}");
-    let stdout = String::from_utf8(lcir.output.stdout).expect("UTF-8 LCIR test output");
-    assert!(
-        stdout.contains("passed lcir_result_tests.succeeds"),
-        "{stdout}"
-    );
-    assert!(
-        stdout.contains("failed lcir_result_tests.fails"),
-        "{stdout}"
-    );
+    let expected = b"passed lcir_result_tests.succeeds\nfailed lcir_result_tests.fails\n";
+    assert_eq!(lcir.output.stdout, expected);
+    assert_eq!(legacy.stdout, expected);
     assert!(lcir.ir.contains("test.result.succeeded"), "{}", lcir.ir);
-    assert!(!lcir.ir.contains("loom_runtime_"), "{}", lcir.ir);
     assert_no_indirect_calls(&lcir.ir);
-    assert_no_legacy_surface(&lcir.ir);
+    assert_pure_surface(&lcir.ir);
 }
 
 #[test]

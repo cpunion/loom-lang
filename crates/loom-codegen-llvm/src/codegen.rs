@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use loom_codegen_ir::{
     CheckedArtifact, ReachableSourceGraph, SourceRoots, analyze_source_reachability,
 };
-use loom_mir::CheckedProgram;
+use loom_mir::{CheckedProgram, Type};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -204,8 +204,64 @@ pub(crate) fn select_roots(
         })?,
         EmitKind::Tests => SourceRoots::for_tests(program),
     };
+    validate_legacy_root_signatures(program, options, &roots)?;
     let reachable = analyze_source_reachability(program, &roots)?;
     Ok((roots, reachable))
+}
+
+pub(crate) fn validate_legacy_root_signatures(
+    program: &CheckedProgram,
+    options: &EmitOptions,
+    roots: &SourceRoots,
+) -> Result<(), CodegenError> {
+    let tests = matches!(options.kind, EmitKind::Tests);
+    for root in roots.functions() {
+        let function = program.function(*root).ok_or_else(|| {
+            CodegenError::new(
+                "InvalidFunctionReference",
+                format!("artifact root function #{} does not exist", root.0),
+            )
+        })?;
+        let hidden_inputs = function.type_parameters != 0
+            || !function.witness_params.is_empty()
+            || function.witness_prefix_count != 0
+            || function.receiver.is_some();
+        let invalid = if tests {
+            hidden_inputs
+                || !function.params.is_empty()
+                || !is_valid_test_return(program, &function.return_ty)
+        } else {
+            hidden_inputs || !function.params.is_empty() || function.return_ty != Type::Unit
+        };
+        if invalid {
+            let expected = if tests {
+                "have no inputs and return Unit or Result[Unit, E]"
+            } else {
+                "have signature () -> Unit"
+            };
+            return Err(CodegenError::new(
+                "InvalidRootSignature",
+                format!("artifact root `{}` must {expected}", function.name),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_valid_test_return(program: &CheckedProgram, ty: &Type) -> bool {
+    if *ty == Type::Unit {
+        return true;
+    }
+    let Some(result) = program.prelude.result else {
+        return false;
+    };
+    matches!(
+        ty,
+        Type::Nominal(type_id, arguments)
+            if *type_id == result
+                && arguments.len() == 2
+                && arguments.first() == Some(&Type::Unit)
+    )
 }
 
 /// Computes the closed-world semantic identity of the target object.
