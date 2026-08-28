@@ -21,7 +21,12 @@ pub struct SourceUnit<'a> {
     pub syntax: &'a syntax::SourceFile,
 }
 
-/// A parsed file with resolved package provenance.
+/// A parsed file with a caller-validated resolved package identity.
+///
+/// This is a trusted compiler-embedding boundary. [`PackageId`] is nominal
+/// identity rather than proof of source ownership, so callers accepting
+/// filesystem, registry, or artifact inputs must validate that package graph
+/// before constructing this unit.
 #[derive(Clone)]
 pub struct PackageSourceUnit<'a> {
     pub file: FileId,
@@ -48,6 +53,10 @@ pub fn lower_files<'a>(files: impl IntoIterator<Item = SourceUnit<'a>>) -> Lower
 }
 
 /// Lowers files while preserving package identity in every module.
+///
+/// This function does not load or authenticate packages and does not enforce
+/// reserved-package policy. Callers must supply a previously validated closed
+/// package graph; untrusted project inputs should enter through the driver.
 #[must_use]
 pub fn lower_package_files<'a>(
     files: impl IntoIterator<Item = PackageSourceUnit<'a>>,

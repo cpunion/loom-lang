@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 
 use loom_core::{FileId, ModuleName, Span};
 use loom_hir::{
-    BodyId, DefId, DefinitionTag, Expr, GenericParamId, LocalId, ModuleId, ParamId, Path, Pattern,
-    TypeRef, Visibility,
+    BodyId, ConceptRef, DefId, DefinitionKind, DefinitionTag, Expr, GenericParamId, LocalId,
+    ModuleId, ParamId, Path, Pattern, TypeRef, Visibility,
 };
 use loom_sema::{CallTarget, Namespace, PlaceProjection, Resolution, TyData};
 use loom_syntax::TokenKind;
@@ -228,6 +228,7 @@ impl AnalysisSnapshot {
         self.collect_declarations(&mut occurrences);
         self.collect_imports(&mut occurrences);
         self.collect_type_references(&mut occurrences);
+        self.collect_concept_references(&mut occurrences);
         self.collect_body_references(&mut occurrences);
         occurrences.sort_by_key(|occurrence| {
             let path = self
@@ -370,6 +371,41 @@ impl AnalysisSnapshot {
                     declaration: false,
                 });
             }
+        }
+    }
+
+    fn collect_concept_references(&self, occurrences: &mut Vec<Occurrence>) {
+        for (_, definition) in self.hir().definitions.iter() {
+            match &definition.kind {
+                DefinitionKind::AssociatedType(associated) => {
+                    for concept in &associated.bounds {
+                        self.collect_concept_reference(occurrences, definition.module, concept);
+                    }
+                }
+                DefinitionKind::Conformance(conformance) => self.collect_concept_reference(
+                    occurrences,
+                    definition.module,
+                    &conformance.concept,
+                ),
+                _ => {}
+            }
+        }
+        for (_, parameter) in self.hir().generic_params.iter() {
+            let module = self.hir().definitions[parameter.owner].module;
+            for concept in &parameter.bounds {
+                self.collect_concept_reference(occurrences, module, concept);
+            }
+        }
+    }
+
+    fn collect_concept_reference(
+        &self,
+        occurrences: &mut Vec<Occurrence>,
+        module: ModuleId,
+        concept: &ConceptRef,
+    ) {
+        if let Some(target) = self.resolve_unique(module, &concept.path, Namespace::Concept) {
+            push_path(occurrences, target, &concept.path);
         }
     }
 

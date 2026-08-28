@@ -26,17 +26,10 @@ fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
 fn text_bytes_path_and_path_file_calls_type_check() {
     let diagnostics = analyze_source(
         r#"
-module standard.resource
+module standard_values
 
 import standard.file.open_read_path
 import standard.file.create_path
-
-concept Dispose {
-    method dispose(mut self)
-}
-
-concept MustScope {}
-concept NoSuspend {}
 
 concept IndexSelf {
     method indexSelf(self) TextMap[Self]
@@ -135,7 +128,7 @@ fn incomplete(error PathError) {
 fn text_map_json_typed_io_and_logging_type_check() {
     let diagnostics = analyze_source(
         r#"
-module standard.resource
+module standard_values_extended
 
 import standard.file.try_open_read
 import standard.file.try_create
@@ -149,13 +142,6 @@ import standard.log.info
 import standard.log.warn
 import standard.log.error
 import standard.log.write
-
-concept Dispose {
-    method dispose(mut self)
-}
-
-concept MustScope {}
-concept NoSuspend {}
 
 fn values(text Text) {
     let empty = TextMap[Text]()

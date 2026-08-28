@@ -7,7 +7,7 @@ language core
   -> defines syntax, static semantics, and irreducible operations
 
 Loom standard library source
-  -> defines reusable policies and data-processing algorithms
+  -> defines public protocols, reusable policies, and data-processing algorithms
 
 native runtime
   -> supplies GC, scheduling, platform services, and allocation primitives
@@ -27,7 +27,8 @@ circularity or loss of static guarantees:
 - lexical and type syntax;
 - values, calls, control flow, contracts, concepts, and `dyn` dispatch rules;
 - GC-safe managed-value semantics;
-- lexical `scoped` and `defer` cleanup;
+- lexical `scoped` and `defer` cleanup, including the static meaning of the
+  canonical resource concepts;
 - `Task`, postfix `.await`, and coroutine suspension semantics;
 - primitive scalar operations and compiler-known layout operations;
 - exact checked operations needed to construct and inspect managed values.
@@ -43,6 +44,15 @@ The standard library is compiler-distributed Loom source. It is loaded as a
 read-only, versioned `standard` package rather than merged into the user's root
 package. Its source is parsed, resolved, type-checked, lowered, instantiated,
 and optimized by the ordinary pipeline.
+
+The `standard.resource` module declares the public `Dispose`, `MustScope`, and
+`NoSuspend` concepts in ordinary Loom source. Moving these declarations into
+the standard package removes copies from applications and fixtures; it does not
+turn lexical cleanup into a library convention. The compiler identifies the
+definitions from its own `standard` package, validates their fixed shapes, and
+enforces disposal, recursive resource obligations, and suspension restrictions
+statically. Concept witnesses lower through the normal direct-call machinery;
+there is no runtime resource registry or name-based runtime dispatch.
 
 The library owns reusable policy and algorithms, including:
 

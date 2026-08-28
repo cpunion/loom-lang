@@ -144,6 +144,11 @@ pub enum SourceOrigin {
     CompilerOwnedStandardLibrary,
 }
 
+fn is_authoritative_compiler_standard(origin: SourceOrigin, package: Option<&PackageId>) -> bool {
+    matches!(origin, SourceOrigin::CompilerOwnedStandardLibrary)
+        && package.is_some_and(PackageId::is_compiler_standard)
+}
+
 /// One source document in a snapshot.
 #[derive(Clone, Debug)]
 pub struct SourceDocument {
@@ -207,6 +212,13 @@ impl SourceDocument {
     #[must_use]
     pub const fn is_compiler_owned(&self) -> bool {
         matches!(self.origin, SourceOrigin::CompilerOwnedStandardLibrary)
+    }
+
+    /// Whether both source ownership and nominal package identity identify the
+    /// compiler-distributed standard library.
+    #[must_use]
+    pub(crate) fn is_authoritative_compiler_standard(&self) -> bool {
+        is_authoritative_compiler_standard(self.origin, self.package.as_ref())
     }
 
     /// Whether an editor can navigate to a real backing source file.
@@ -618,4 +630,43 @@ fn floor_char_boundary(text: &str, mut offset: usize) -> usize {
         offset -= 1;
     }
     offset
+}
+
+#[cfg(test)]
+mod provenance_tests {
+    use loom_core::{LOOM_LANGUAGE_VERSION, PackageId};
+
+    use super::{SourceOrigin, is_authoritative_compiler_standard};
+
+    #[test]
+    fn compiler_standard_authority_requires_origin_and_exact_package_identity() {
+        let standard = PackageId::compiler_standard(LOOM_LANGUAGE_VERSION);
+        let application = PackageId::new("application", "1.0.0");
+
+        for (origin, package, expected) in [
+            (SourceOrigin::CompilerOwnedStandardLibrary, &standard, true),
+            (
+                SourceOrigin::CompilerOwnedStandardLibrary,
+                &application,
+                false,
+            ),
+            (SourceOrigin::FileSystem, &standard, false),
+            (SourceOrigin::FileSystem, &application, false),
+        ] {
+            assert_eq!(
+                is_authoritative_compiler_standard(origin, Some(package)),
+                expected,
+                "origin={origin:?}, package={package}"
+            );
+        }
+
+        assert!(!is_authoritative_compiler_standard(
+            SourceOrigin::PortableLibrary,
+            Some(&standard),
+        ));
+        assert!(!is_authoritative_compiler_standard(
+            SourceOrigin::CompilerOwnedStandardLibrary,
+            None,
+        ));
+    }
 }

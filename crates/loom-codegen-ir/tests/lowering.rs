@@ -11,8 +11,8 @@ use loom_codegen_ir::{
     TargetLayout, TerminatorKind, UnsupportedFeature, artifact_identity, dump_program,
     lower_typed_artifact,
 };
-use loom_core::{FileId, Span};
-use loom_hir::{SourceUnit, lower_files};
+use loom_core::{FileId, LOOM_LANGUAGE_VERSION, Name, PackageId, Span};
+use loom_hir::{PackageSourceUnit, SourceUnit, lower_files, lower_package_files};
 use loom_lowering::lower_to_mir;
 use loom_mir::{
     Block, CallPlan, Constant, ConstructionMode, Expr, ExprKind, FieldDef, Function, FunctionId,
@@ -49,8 +49,67 @@ fn compile(source: &str) -> loom_mir::CheckedProgram {
         .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
 }
 
+fn compile_with_standard_resource(source: &str) -> loom_mir::CheckedProgram {
+    let application = parse_with_file(FileId(0), source);
+    let resource = parse_with_file(
+        FileId(1),
+        include_str!("../../../library/standard/src/resource.loom"),
+    );
+    assert!(
+        application.diagnostics().is_empty() && resource.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} standard={:#?}",
+        application.diagnostics(),
+        resource.diagnostics()
+    );
+    let standard = PackageId::compiler_standard(LOOM_LANGUAGE_VERSION);
+    let root = PackageId::legacy();
+    let mut lowered = lower_package_files([
+        PackageSourceUnit {
+            file: FileId(0),
+            package: root.clone(),
+            syntax: application.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(1),
+            package: standard.clone(),
+            syntax: resource.ast(),
+        },
+    ]);
+    lowered
+        .program
+        .register_package(standard.clone(), [], false);
+    lowered
+        .program
+        .register_package(root, [(Name::new("standard"), standard)], true);
+    assert!(
+        lowered.diagnostics.is_empty(),
+        "HIR diagnostics: {:#?}",
+        lowered.diagnostics
+    );
+    let analysis = analyze(&lowered.program);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "semantic diagnostics: {:#?}",
+        analysis.diagnostics
+    );
+    lower_to_mir(&lowered.program, &analysis)
+        .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
+}
+
 fn lower_run(source: &str) -> LoweringOutcome {
     let mir = compile(source);
+    lower_typed_artifact(
+        &mir,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("lower typed artifact")
+}
+
+fn lower_run_with_standard_resource(source: &str) -> LoweringOutcome {
+    let mir = compile_with_standard_resource(source);
     lower_typed_artifact(
         &mir,
         &SourceArtifactRequest::Run {
@@ -219,15 +278,11 @@ fn async_scalar_call_and_await_lower_to_a_checked_coroutine_plan() {
 
 #[test]
 fn async_scoped_and_defer_cleanup_are_explicit_on_every_suspension_exit() {
-    let outcome = lower_run(
-        r"module standard.resource
+    let outcome = lower_run_with_standard_resource(
+        r"module typed_async_resource
 
-concept Dispose {
-    method dispose(mut self)
-}
-
-concept MustScope {}
-concept NoSuspend {}
+import standard.resource.Dispose
+import standard.resource.MustScope
 
 record Resource {
     value Int
@@ -749,7 +804,8 @@ pub async fn main() {
 
 #[test]
 fn core03_task_list_joins_are_complete_for_run_and_tests() {
-    let program = compile(include_str!("../../../examples/core03/tasks.loom"));
+    let program =
+        compile_with_standard_resource(include_str!("../../../examples/core03/tasks.loom"));
     for (route, request) in [
         (
             "run",
@@ -2154,7 +2210,7 @@ pub fn main() {
     discard Stored.Interval(Range { low = Money(1.0), high = Money(2.0) })
 }
 ";
-    let fresh = compile(source);
+    let fresh = compile_with_standard_resource(source);
     let fresh_outcome = lower_typed_artifact(
         &fresh,
         &SourceArtifactRequest::Run {
@@ -2240,7 +2296,7 @@ pub fn main() {
     discard wrap(7)
 }
 "#;
-    let fresh = compile(source);
+    let fresh = compile_with_standard_resource(source);
     let bytes = loom_mir::encode_interpreted_executable_artifact(&fresh, "main")
         .expect("encode portable generic proof artifact");
     let (decoded, entry) = loom_mir::decode_interpreted_executable_artifact(&bytes)

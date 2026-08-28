@@ -705,9 +705,7 @@ fn validate_package_module(
     };
     let module_name = declaration.name.as_string();
     if crate::standard_library::owns_module(&module_name)
-        && source
-            .package()
-            .is_none_or(|package| package.name() != crate::standard_library::STANDARD_PACKAGE_NAME)
+        && !source.is_authoritative_compiler_standard()
     {
         diagnostics.push(Diagnostic::error(
             "ReservedStandardModule",

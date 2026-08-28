@@ -1,5 +1,5 @@
-use loom_core::FileId;
-use loom_hir::{SourceUnit, lower_files};
+use loom_core::{FileId, LOOM_LANGUAGE_VERSION, Name, PackageId};
+use loom_hir::{PackageSourceUnit, SourceUnit, lower_files, lower_package_files};
 use loom_lowering::lower_to_mir;
 use loom_sema::analyze;
 use loom_syntax::parse_with_file;
@@ -34,23 +34,61 @@ fn compile_and_validate(source: &str) -> loom_mir::CheckedProgram {
     compile(source)
 }
 
-fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
-    let parsed = parse_with_file(FileId(0), source);
-    assert!(
-        parsed.diagnostics().is_empty(),
-        "syntax diagnostics: {:#?}",
-        parsed.diagnostics()
+fn lower_with_standard_resource(source: &str) -> loom_hir::Program {
+    let application = parse_with_file(FileId(0), source);
+    let resource = parse_with_file(
+        FileId(1),
+        include_str!("../../../library/standard/src/resource.loom"),
     );
-    let lowered = lower_files([SourceUnit {
-        file: FileId(0),
-        syntax: parsed.ast(),
-    }]);
+    assert!(
+        application.diagnostics().is_empty() && resource.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} standard={:#?}",
+        application.diagnostics(),
+        resource.diagnostics()
+    );
+    let standard = PackageId::compiler_standard(LOOM_LANGUAGE_VERSION);
+    let root = PackageId::legacy();
+    let mut lowered = lower_package_files([
+        PackageSourceUnit {
+            file: FileId(0),
+            package: root.clone(),
+            syntax: application.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(1),
+            package: standard.clone(),
+            syntax: resource.ast(),
+        },
+    ]);
+    lowered
+        .program
+        .register_package(standard.clone(), [], false);
+    lowered
+        .program
+        .register_package(root, [(Name::new("standard"), standard)], true);
     assert!(
         lowered.diagnostics.is_empty(),
         "HIR diagnostics: {:#?}",
         lowered.diagnostics
     );
-    analyze(&lowered.program).diagnostics
+    lowered.program
+}
+
+fn compile_with_standard_resource(source: &str) -> loom_mir::CheckedProgram {
+    let program = lower_with_standard_resource(source);
+    let analysis = analyze(&program);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "semantic diagnostics: {:#?}",
+        analysis.diagnostics
+    );
+    lower_to_mir(&program, &analysis)
+        .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
+}
+
+fn analyze_with_standard_resource(source: &str) -> Vec<loom_core::Diagnostic> {
+    let program = lower_with_standard_resource(source);
+    analyze(&program).diagnostics
 }
 
 fn function_has_name(function: &loom_mir::Function, expected: &str) -> bool {
@@ -114,7 +152,8 @@ fn core02_source_lowers_and_validates() {
 
 #[test]
 fn core03_source_lowers_and_validates() {
-    let program = compile_and_validate(include_str!("../../../examples/core03/tasks.loom"));
+    let program =
+        compile_with_standard_resource(include_str!("../../../examples/core03/tasks.loom"));
     assert!(program.functions.iter().any(|function| function.is_async));
     assert!(format!("{program:#?}").contains("Await"));
     assert!(format!("{program:#?}").contains("Tuple"));
@@ -221,16 +260,12 @@ fn logical_chains_lower_on_one_mib_stack_and_remain_balanced() {
 
 #[test]
 fn scoped_source_lowers_to_first_class_mir_without_a_synthetic_defer() {
-    let program = compile_and_validate(
+    let program = compile_with_standard_resource(
         r"
-module standard.resource
+module custom_resource
 
-concept Dispose {
-    method dispose(mut self)
-}
-
-concept MustScope {}
-concept NoSuspend {}
+import standard.resource.Dispose
+import standard.resource.MustScope
 
 record Resource {
     value Int
@@ -253,13 +288,26 @@ fn main() {
     assert!(program.prelude.dispose_requirement.is_some());
     assert!(program.prelude.must_scope_concept.is_some());
     assert!(program.prelude.no_suspend_concept.is_some());
+    let dispose = program
+        .concept(program.prelude.dispose_concept.expect("Dispose id"))
+        .expect("Dispose concept");
     let must_scope = program
         .concept(program.prelude.must_scope_concept.expect("MustScope id"))
         .expect("MustScope concept");
+    let no_suspend = program
+        .concept(program.prelude.no_suspend_concept.expect("NoSuspend id"))
+        .expect("NoSuspend concept");
+    assert_eq!(dispose.module, "standard.resource");
+    assert_eq!(dispose.identity, Some(loom_mir::ConceptIdentity::Dispose));
     assert_eq!(must_scope.module, "standard.resource");
     assert_eq!(
         must_scope.identity,
         Some(loom_mir::ConceptIdentity::MustScope)
+    );
+    assert_eq!(no_suspend.module, "standard.resource");
+    assert_eq!(
+        no_suspend.identity,
+        Some(loom_mir::ConceptIdentity::NoSuspend)
     );
     let main = program
         .functions
@@ -274,16 +322,12 @@ fn main() {
 
 #[test]
 fn source_and_portable_mir_independently_reject_unscoped_must_scope_state() {
-    let diagnostics = analyze_source(
+    let diagnostics = analyze_with_standard_resource(
         r"
-module standard.resource
+module unscoped_resource
 
-concept Dispose {
-    method dispose(mut self)
-}
-
-concept MustScope {}
-concept NoSuspend {}
+import standard.resource.Dispose
+import standard.resource.MustScope
 
 record Resource {
     value Int
@@ -462,8 +506,8 @@ fn earlier_contract_clauses_eliminate_weaker_later_clauses() {
 #[test]
 fn lowering_and_artifact_are_deterministic() {
     let source = include_str!("../../../examples/core02/concepts.loom");
-    let first = compile(source);
-    let second = compile(source);
+    let first = compile_with_standard_resource(source);
+    let second = compile_with_standard_resource(source);
     for function in &first.functions {
         assert!(
             function
@@ -959,17 +1003,10 @@ async fn returns(flag Bool, first Int, second Int) Int {
 fn text_bytes_path_and_path_file_calls_lower_to_checked_mir() {
     let program = compile_and_validate(
         r#"
-module standard.resource
+module standard_value_lowering
 
 import standard.file.open_read_path
 import standard.file.create_path
-
-concept Dispose {
-    method dispose(mut self)
-}
-
-concept MustScope {}
-concept NoSuspend {}
 
 fn values(text Text, bytes Bytes, base Path, child Path, index Int) {
     let scalar_count = text.length()
@@ -1041,7 +1078,7 @@ async fn pathFiles(path Path) {
 fn structured_standard_values_lower_to_checked_mir() {
     let program = compile_and_validate(
         r#"
-module standard.resource
+module structured_standard_lowering
 
 import standard.file.try_open_read_path
 import standard.file.try_create_path
@@ -1053,13 +1090,6 @@ import standard.log.info
 import standard.log.warn
 import standard.log.error
 import standard.log.write
-
-concept Dispose {
-    method dispose(mut self)
-}
-
-concept MustScope {}
-concept NoSuspend {}
 
 fn values(text Text) {
     let fields = TextMap[Text]().insert("name", text).remove("absent")

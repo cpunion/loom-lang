@@ -84,6 +84,45 @@ fn assert_compiler_owned_source(source: &loom_driver::SourceDocument) {
     assert!(!source.is_navigable());
 }
 
+fn assert_compiler_owned_overlays_are_ignored(
+    host: &mut AnalysisHost,
+    int_path: &Path,
+    resource_path: &Path,
+) {
+    host.set_overlay(
+        int_path,
+        "module standard.int\n\npub fn minimum(left Int, right Int) Int { 999 }\n",
+    )
+    .expect("install hostile synthetic-path overlay");
+    host.set_overlay(
+        resource_path,
+        "module standard.resource\n\npub concept ForgedResourceProtocol {}\n",
+    )
+    .expect("install hostile standard.resource overlay");
+
+    let protected = host.snapshot().expect("reload protected standard source");
+    for (path, expected, message) in [
+        (int_path, "Returns the smaller", "standard.int source"),
+        (
+            resource_path,
+            "Requires a value to transfer directly",
+            "standard.resource protocols",
+        ),
+    ] {
+        let source = protected
+            .sources()
+            .documents()
+            .iter()
+            .find(|source| source.absolute_path() == path)
+            .unwrap_or_else(|| panic!("missing protected {message}"));
+        assert!(
+            source.text().is_some_and(|text| text.contains(expected)),
+            "compiler-owned {message} must win over editor overlays"
+        );
+    }
+    assert!(!protected.has_errors(), "{:#?}", protected.diagnostics());
+}
+
 #[test]
 fn compiler_owned_standard_source_resolves_as_an_ordinary_direct_definition() {
     let project = TestProject::new();
@@ -119,16 +158,35 @@ test fn importedMinimum() {
     assert!(root_source.is_navigable());
     assert!(!root_source.is_read_only());
 
-    let standard_source = snapshot
+    let standard_sources = snapshot
         .sources()
         .documents()
         .iter()
-        .find(|source| {
+        .filter(|source| {
             source
                 .package()
                 .is_some_and(|package| package.name() == "standard")
         })
-        .expect("compiler-owned standard source");
+        .collect::<Vec<_>>();
+    assert!(
+        standard_sources
+            .iter()
+            .any(|source| source.relative_path().ends_with("src/resource.loom")),
+        "{standard_sources:#?}"
+    );
+    for source in &standard_sources {
+        assert_compiler_owned_source(source);
+    }
+    let resource_path = standard_sources
+        .iter()
+        .find(|source| source.relative_path().ends_with("src/resource.loom"))
+        .expect("compiler-owned standard.resource source")
+        .absolute_path()
+        .to_path_buf();
+    let standard_source = standard_sources
+        .into_iter()
+        .find(|source| source.relative_path().ends_with("src/int.loom"))
+        .expect("compiler-owned standard.int source");
     assert_compiler_owned_source(standard_source);
     assert_eq!(
         standard_source
@@ -171,29 +229,11 @@ test fn importedMinimum() {
 
     let standard_path = standard_source.absolute_path().to_path_buf();
     drop(snapshot);
-    host.set_overlay(
-        &standard_path,
-        "module standard.int\n\npub fn minimum(left Int, right Int) Int { 999 }\n",
-    )
-    .expect("install hostile synthetic-path overlay");
-    let protected = host.snapshot().expect("reload protected standard source");
-    let protected_source = protected
-        .sources()
-        .documents()
-        .iter()
-        .find(|source| source.absolute_path() == standard_path)
-        .expect("protected standard source");
-    assert!(
-        protected_source
-            .text()
-            .is_some_and(|text| text.contains("Returns the smaller")),
-        "compiler-owned source must win over editor overlays"
-    );
-    assert!(!protected.has_errors(), "{:#?}", protected.diagnostics());
+    assert_compiler_owned_overlays_are_ignored(&mut host, &standard_path, &resource_path);
 }
 
 #[test]
-fn standard_package_name_alias_and_embedded_modules_are_reserved() {
+fn standard_package_name_alias_and_complete_namespace_are_reserved() {
     let named_standard = TestProject::new();
     named_standard.write(
         "loom.toml",
@@ -220,18 +260,41 @@ fn standard_package_name_alias_and_embedded_modules_are_reserved() {
             .contains("dependency alias `standard` is reserved")
     );
 
-    let legacy_namespace = TestProject::new();
-    legacy_namespace.write("main.loom", "module standard.int\n\npub fn main() {}\n");
-    let snapshot = AnalysisHost::new(&legacy_namespace.root)
-        .expect("open legacy namespace project")
-        .snapshot()
-        .expect("analyze legacy namespace project");
-    assert!(
-        snapshot
-            .diagnostics()
-            .iter()
-            .any(|diagnostic| diagnostic.code == "ReservedStandardModule")
+    for module in [
+        "standard",
+        "standard.int",
+        "standard.resource",
+        "standard.future.nested",
+    ] {
+        let legacy_namespace = TestProject::new();
+        legacy_namespace.write(
+            "main.loom",
+            &format!("module {module}\n\npub fn main() {{}}\n"),
+        );
+        let snapshot = AnalysisHost::new(&legacy_namespace.root)
+            .expect("open legacy namespace project")
+            .snapshot()
+            .expect("analyze legacy namespace project");
+        assert!(
+            snapshot
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code == "ReservedStandardModule"),
+            "{module}: {:#?}",
+            snapshot.diagnostics()
+        );
+    }
+
+    let adjacent_namespace = TestProject::new();
+    adjacent_namespace.write(
+        "main.loom",
+        "module standardish.resource\n\npub fn main() {}\n",
     );
+    let snapshot = AnalysisHost::new(&adjacent_namespace.root)
+        .expect("open adjacent namespace project")
+        .snapshot()
+        .expect("analyze adjacent namespace project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
 }
 
 #[test]
@@ -434,16 +497,23 @@ fn manifest_resolves_path_dependencies_sources_and_targets() {
         .sources()
         .documents()
         .iter()
+        .filter(|source| !source.is_compiler_owned())
         .map(loom_driver::SourceDocument::relative_path)
         .collect::<Vec<_>>();
-    assert_eq!(
-        paths,
-        [
-            "deps/standard@0.3/src/int.loom",
-            "deps/utility@1.2.0/src/math.loom",
-            "src/main.loom",
-        ]
-    );
+    assert_eq!(paths, ["deps/utility@1.2.0/src/math.loom", "src/main.loom"]);
+    let standard_paths = snapshot
+        .sources()
+        .documents()
+        .iter()
+        .filter(|source| source.is_compiler_owned())
+        .map(loom_driver::SourceDocument::relative_path)
+        .collect::<Vec<_>>();
+    for expected in [
+        "deps/standard@0.3/src/int.loom",
+        "deps/standard@0.3/src/resource.loom",
+    ] {
+        assert!(standard_paths.contains(&expected), "{standard_paths:?}");
+    }
     assert!(!snapshot.has_errors(), "{:?}", snapshot.diagnostics());
     assert!(
         snapshot
@@ -726,14 +796,27 @@ fn portable_library_is_a_consumable_versioned_dependency() {
                 .is_some_and(|package| package.name() == "standard")
         })
         .collect::<Vec<_>>();
-    assert_eq!(standard_sources.len(), 1);
-    assert_compiler_owned_source(standard_sources[0]);
     assert!(
-        !standard_sources[0]
-            .absolute_path()
-            .to_string_lossy()
-            .contains("utility.loomlib")
+        standard_sources
+            .iter()
+            .any(|source| source.relative_path().ends_with("src/int.loom")),
+        "{standard_sources:#?}"
     );
+    assert!(
+        standard_sources
+            .iter()
+            .any(|source| source.relative_path().ends_with("src/resource.loom")),
+        "{standard_sources:#?}"
+    );
+    for source in standard_sources {
+        assert_compiler_owned_source(source);
+        assert!(
+            !source
+                .absolute_path()
+                .to_string_lossy()
+                .contains("utility.loomlib")
+        );
+    }
     let program = snapshot.executable().expect("consumer checked MIR");
     let entry = program.exports["application.main"];
     let value = Interpreter::new(program)
@@ -777,7 +860,11 @@ fn portable_library_is_a_consumable_versioned_dependency() {
         "{:#?}",
         incremental.diagnostics()
     );
-    assert_eq!(incremental.semantic_query_stats().modules_reused, 3);
+    assert_eq!(incremental.semantic_query_stats().modules_checked, 1);
+    assert_eq!(
+        incremental.semantic_query_stats().modules_reused,
+        incremental.hir().modules.len() - 1
+    );
     assert!(incremental.semantic_query_stats().bodies_reused >= 3);
     let program = incremental
         .executable()
@@ -1532,23 +1619,27 @@ fn per_source_parse_cache_skips_lexing_and_parsing_on_a_graph_miss() {
     let cache = PersistentCache::new(project.root.join("target/parse-cache"));
     let context = portable_cache_context();
 
+    let first_sources = host.load_sources().expect("load first source set");
+    let source_count = first_sources.documents().len();
     let (first, first_stats) = host.snapshot_from_sources_with_parse_cache(
-        host.load_sources().expect("load first source set"),
+        first_sources,
         &cache,
         &context.frontend_identity,
     );
     assert!(!first.has_errors(), "{:?}", first.diagnostics());
     assert_eq!(first_stats.hits, 0);
-    assert_eq!(first_stats.misses, 2);
+    assert_eq!(first_stats.misses, source_count);
 
+    let second_sources = host.load_sources().expect("load second source set");
+    assert_eq!(second_sources.documents().len(), source_count);
     let (second, second_stats) = host.snapshot_from_sources_with_parse_cache(
-        host.load_sources().expect("load second source set"),
+        second_sources,
         &cache,
         &context.frontend_identity,
     );
     assert!(!second.has_errors(), "{:?}", second.diagnostics());
     assert!(second_stats.is_full_hit());
-    assert_eq!(second_stats.hits, 2);
+    assert_eq!(second_stats.hits, source_count);
     let root_file = first
         .sources()
         .documents()
@@ -1563,12 +1654,8 @@ fn per_source_parse_cache_skips_lexing_and_parsing_on_a_graph_miss() {
 }
 
 #[test]
-fn persistent_semantic_reuse_rederives_must_scope_identity_from_current_hir() {
+fn persistent_semantic_reuse_rederives_compiler_owned_must_scope_identity() {
     let project = TestProject::new();
-    project.write(
-        "resource.loom",
-        "module standard.resource\n\nconcept MustScope {}\n\nrecord Resource {\n    value Int\n}\n\nimpl MustScope for Resource {}\n\nfn stable() {}\n",
-    );
     project.write(
         "main.loom",
         "module application\n\npub fn main() {\n    let value = 1\n}\n",
@@ -1594,7 +1681,11 @@ fn persistent_semantic_reuse_rederives_must_scope_identity_from_current_hir() {
         "must-scope-identity-test-v1",
     );
     assert!(!warm.has_errors(), "{:#?}", warm.diagnostics());
-    assert_eq!(warm.semantic_query_stats().modules_reused, 2);
+    assert_eq!(warm.semantic_query_stats().modules_checked, 1);
+    assert_eq!(
+        warm.semantic_query_stats().modules_reused,
+        warm.hir().modules.len() - 1
+    );
     let semantic_id = warm
         .semantic_analysis()
         .canonical_concepts
@@ -1636,7 +1727,11 @@ fn warm_semantic_reanalysis_preserves_task_standard_item_identity() {
     assert!(!cold.has_errors(), "{:#?}", cold.diagnostics());
     let warm = compile();
     assert!(!warm.has_errors(), "{:#?}", warm.diagnostics());
-    assert_eq!(warm.semantic_query_stats().modules_reused, 2);
+    assert_eq!(warm.semantic_query_stats().modules_checked, 0);
+    assert_eq!(
+        warm.semantic_query_stats().modules_reused,
+        warm.hir().modules.len()
+    );
 
     let items = |snapshot: &loom_driver::AnalysisSnapshot| {
         snapshot
@@ -1707,13 +1802,14 @@ fn typed_hir_queries_reuse_unmodified_modules() {
     let host = AnalysisHost::new(&project.root).expect("open incremental project");
     let first = host.snapshot().expect("compile initial graph");
     assert!(!first.has_errors(), "{:#?}", first.diagnostics());
+    let module_count = first.hir().modules.len();
     let first_stats = first.semantic_query_stats();
-    assert_eq!(first_stats.modules_checked, 3);
+    assert_eq!(first_stats.modules_checked, module_count);
     assert_eq!(first_stats.modules_reused, 0);
 
     let unchanged = host.snapshot().expect("compile unchanged graph");
     let unchanged_stats = unchanged.semantic_query_stats();
-    assert_eq!(unchanged_stats.modules_reused, 3);
+    assert_eq!(unchanged_stats.modules_reused, module_count);
     assert_eq!(unchanged_stats.bodies_checked, 0);
 
     project.write(
@@ -1724,7 +1820,7 @@ fn typed_hir_queries_reuse_unmodified_modules() {
     assert!(!changed.has_errors(), "{:#?}", changed.diagnostics());
     let changed_stats = changed.semantic_query_stats();
     assert_eq!(changed_stats.modules_checked, 1);
-    assert_eq!(changed_stats.modules_reused, 2);
+    assert_eq!(changed_stats.modules_reused, module_count - 1);
     assert!(changed_stats.bodies_reused >= 2);
     let program = changed.executable().expect("incremental checked MIR");
     let function = program.exports["sample.a.value"];
@@ -1851,14 +1947,18 @@ fn snapshot_assigns_file_ids_by_stable_relative_path_and_builds_executable_mir()
         .iter()
         .map(|source| (source.id(), source.relative_path()))
         .collect::<Vec<_>>();
-    assert_eq!(
-        paths,
-        [
-            (FileId(0), "a.loom"),
-            (FileId(1), "b.loom"),
-            (FileId(2), "deps/standard@0.3/src/int.loom"),
-        ]
-    );
+    assert!(paths.windows(2).all(|pair| pair[0].1 < pair[1].1));
+    assert!(paths.iter().enumerate().all(|(index, (file, _))| {
+        *file == FileId(u32::try_from(index).expect("source count fits FileId"))
+    }));
+    assert_eq!(paths[0], (FileId(0), "a.loom"));
+    assert_eq!(paths[1], (FileId(1), "b.loom"));
+    for expected in [
+        "deps/standard@0.3/src/int.loom",
+        "deps/standard@0.3/src/resource.loom",
+    ] {
+        assert!(paths.iter().any(|(_, path)| *path == expected), "{paths:?}");
+    }
     assert!(!snapshot.has_errors(), "{:?}", snapshot.diagnostics());
     assert_eq!(snapshot.completed_stage(), PipelineStage::Executable);
     snapshot
@@ -1985,14 +2085,10 @@ fn async_tasks_and_lexical_defer_execute_from_source() {
     let project = TestProject::new();
     project.write(
         "async.loom",
-        r#"module standard.resource
+        r#"module driver.async_cleanup
 
-concept Dispose {
-    method dispose(mut self)
-}
-
-concept MustScope {}
-concept NoSuspend {}
+import standard.resource.Dispose
+import standard.resource.MustScope
 
 record Resource {
     value Int

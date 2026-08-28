@@ -1,11 +1,7 @@
-module standard.resource
+module example.tasks
 
-concept Dispose {
-    method dispose(mut self)
-}
-
-concept MustScope {}
-concept NoSuspend {}
+import standard.resource.Dispose
+import standard.resource.MustScope
 
 record Resource {
     value Int

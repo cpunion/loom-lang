@@ -577,14 +577,7 @@ fn compound(flag Bool, value Option[Int]) {
 fn discarding_a_scoped_resource_has_one_primary_diagnostic() {
     let diagnostics = analyze_source(
         r"
-module standard.resource
-
-concept Dispose {
-    method dispose(mut self)
-}
-
-concept MustScope {}
-concept NoSuspend {}
+module scoped_discard
 
 fn invalid(file File) {
     scoped resource = file

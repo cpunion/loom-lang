@@ -19,7 +19,7 @@ use crate::{
 const MAX_VALIDATION_DEPTH: u16 = 64;
 const MAX_PATTERN_ANALYSIS_STEPS: usize = 4_096;
 const MAX_VALIDATION_TYPE_NODES: usize = 4_096;
-const MUST_SCOPE_MODULE: &str = "standard.resource";
+const RESOURCE_MODULE: &str = "standard.resource";
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum MirValidationCode {
@@ -257,6 +257,67 @@ pub fn check_program(program: Program) -> Result<CheckedProgram, MirValidationEr
         program,
         serialized_construction_proofs_distrusted: false,
     })
+}
+
+/// Requires compiler-produced resource identity metadata at a persistent
+/// interpreted-artifact boundary. Ordinary checked MIR deliberately keeps
+/// these entries optional for focused low-level producers and tests.
+pub(crate) fn validate_interpreted_artifact_profile(
+    program: &Program,
+) -> Result<(), MirValidationErrors> {
+    let dispose = resource_concept_identity(
+        program,
+        ConceptIdentity::Dispose,
+        program.prelude.dispose_concept,
+        "Dispose",
+    );
+    let must_scope = must_scope_identity(program);
+    let no_suspend = resource_concept_identity(
+        program,
+        ConceptIdentity::NoSuspend,
+        program.prelude.no_suspend_concept,
+        "NoSuspend",
+    );
+    let required = [
+        (
+            "Dispose",
+            matches!(dispose, ResourceConceptIdentity::Present(_))
+                && program.prelude.dispose_requirement.is_some(),
+            "prelude.dispose_concept",
+        ),
+        (
+            "MustScope",
+            matches!(must_scope, ResourceConceptIdentity::Present(_)),
+            "prelude.must_scope_concept",
+        ),
+        (
+            "NoSuspend",
+            matches!(no_suspend, ResourceConceptIdentity::Present(_)),
+            "prelude.no_suspend_concept",
+        ),
+    ];
+    let errors = required
+        .into_iter()
+        .filter_map(|(name, present, path)| {
+            if present {
+                None
+            } else {
+                Some(MirValidationError {
+                    code: MirValidationCode::ConceptShape,
+                    message: format!(
+                        "interpreted artifacts require the complete canonical {name} identity and prelude metadata"
+                    ),
+                    span: Span::default(),
+                    path: path.to_owned(),
+                })
+            }
+        })
+        .collect::<Vec<_>>();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(MirValidationErrors { errors })
+    }
 }
 
 #[derive(Clone)]
@@ -673,52 +734,84 @@ enum RequirementProofs<'proofs> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum MustScopeIdentity {
+enum ResourceConceptIdentity {
     Absent,
     Present(ConceptId),
     Invalid,
 }
 
-/// Resolves the resource marker only when its compiler-known identity, dense
-/// concept id, prelude pointer, and marker shape agree. Invalid metadata is a
-/// fail-closed state for every obligation walk as well as a validation error.
-fn must_scope_identity(program: &Program) -> MustScopeIdentity {
-    let mut qualified =
-        program.concepts.iter().enumerate().filter(|(_, concept)| {
-            concept.module == MUST_SCOPE_MODULE && concept.name == "MustScope"
-        });
-    let qualified_first = qualified.next();
-    if qualified.next().is_some() {
-        return MustScopeIdentity::Invalid;
-    }
+/// Resolves a compiler-known resource concept from its identity tag and
+/// prelude pointer. Source module/name metadata is only a consistency check:
+/// it can invalidate an asserted identity, but can never create one.
+fn resource_concept_identity(
+    program: &Program,
+    identity: ConceptIdentity,
+    prelude: Option<ConceptId>,
+    expected_name: &str,
+) -> ResourceConceptIdentity {
     let mut tagged = program
         .concepts
         .iter()
         .enumerate()
-        .filter(|(_, concept)| concept.identity == Some(ConceptIdentity::MustScope));
-    let first = tagged.next();
+        .filter(|(_, concept)| concept.identity == Some(identity));
+    let first_tagged = tagged.next();
     if tagged.next().is_some() {
-        return MustScopeIdentity::Invalid;
+        return ResourceConceptIdentity::Invalid;
     }
-    match (program.prelude.must_scope_concept, qualified_first, first) {
-        (None, None, None) => MustScopeIdentity::Absent,
-        (Some(id), Some((qualified_index, _)), Some((index, concept)))
-            if qualified_index == index
-                && id.0 as usize == index
-                && concept.id == id
-                && !concept.dynamic
-                && concept.associated_types.is_empty()
-                && concept.requirements.is_empty() =>
+
+    let (Some(prelude), Some((tagged_index, tagged_concept))) = (prelude, first_tagged) else {
+        return if prelude.is_none() && first_tagged.is_none() {
+            ResourceConceptIdentity::Absent
+        } else {
+            ResourceConceptIdentity::Invalid
+        };
+    };
+    if tagged_index != prelude.0 as usize || tagged_concept.id != prelude {
+        return ResourceConceptIdentity::Invalid;
+    }
+
+    let mut qualified =
+        program.concepts.iter().enumerate().filter(|(_, concept)| {
+            concept.module == RESOURCE_MODULE && concept.name == expected_name
+        });
+    let Some((qualified_index, _)) = qualified.next() else {
+        return ResourceConceptIdentity::Invalid;
+    };
+    if qualified_index != tagged_index || qualified.next().is_some() {
+        return ResourceConceptIdentity::Invalid;
+    }
+    ResourceConceptIdentity::Present(prelude)
+}
+
+/// Resolves the resource marker only when its compiler-known identity, dense
+/// concept id, prelude pointer, and marker shape agree. Invalid metadata is a
+/// fail-closed state for every obligation walk as well as a validation error.
+fn must_scope_identity(program: &Program) -> ResourceConceptIdentity {
+    match resource_concept_identity(
+        program,
+        ConceptIdentity::MustScope,
+        program.prelude.must_scope_concept,
+        "MustScope",
+    ) {
+        ResourceConceptIdentity::Present(id)
+            if program.concept(id).is_some_and(|concept| {
+                !concept.dynamic
+                    && concept.associated_types.is_empty()
+                    && concept.requirements.is_empty()
+            }) =>
         {
-            MustScopeIdentity::Present(id)
+            ResourceConceptIdentity::Present(id)
         }
-        _ => MustScopeIdentity::Invalid,
+        ResourceConceptIdentity::Present(_) | ResourceConceptIdentity::Invalid => {
+            ResourceConceptIdentity::Invalid
+        }
+        ResourceConceptIdentity::Absent => ResourceConceptIdentity::Absent,
     }
 }
 
 struct Validator<'program> {
     program: &'program Program,
-    must_scope_identity: MustScopeIdentity,
+    must_scope_identity: ResourceConceptIdentity,
     errors: Vec<MirValidationError>,
     nesting_failed: bool,
     function_tokens: BTreeSet<u32>,
@@ -1422,8 +1515,36 @@ impl<'program> Validator<'program> {
     }
 
     fn validate_resource_prelude_ids(&mut self) {
+        self.validate_dispose_identity();
+        self.validate_resource_marker_identity(
+            "MustScope",
+            ConceptIdentity::MustScope,
+            self.program.prelude.must_scope_concept,
+            "prelude.must_scope_concept",
+        );
+        self.validate_resource_marker_identity(
+            "NoSuspend",
+            ConceptIdentity::NoSuspend,
+            self.program.prelude.no_suspend_concept,
+            "prelude.no_suspend_concept",
+        );
+    }
+
+    fn validate_dispose_identity(&mut self) {
         let dispose = self.program.prelude.dispose_concept;
         let dispose_requirement = self.program.prelude.dispose_requirement;
+        let identity =
+            resource_concept_identity(self.program, ConceptIdentity::Dispose, dispose, "Dispose");
+        if identity == ResourceConceptIdentity::Invalid {
+            self.push(
+                MirValidationCode::ConceptShape,
+                "canonical Dispose identity tag must occur exactly once, match prelude.dispose_concept, and identify the unique standard.resource.Dispose declaration",
+                dispose
+                    .and_then(|id| self.program.concept(id))
+                    .map_or_else(Span::default, |concept| concept.span),
+                "prelude.dispose_concept",
+            );
+        }
         if dispose.is_some() != dispose_requirement.is_some() {
             self.push(
                 MirValidationCode::ConceptShape,
@@ -1432,13 +1553,12 @@ impl<'program> Validator<'program> {
                 "prelude.dispose_concept",
             );
         }
-        if let Some(dispose) = dispose {
+        if let ResourceConceptIdentity::Present(dispose) = identity {
             let Some(concept) = self.program.concept(dispose) else {
                 self.invalid_concept(dispose, Span::default(), "prelude.dispose_concept");
                 return;
             };
             let valid = !concept.dynamic
-                && concept.name == "Dispose"
                 && concept.associated_types.is_empty()
                 && dispose_requirement
                     .is_some_and(|requirement| concept.requirements.as_slice() == [requirement]);
@@ -1476,32 +1596,35 @@ impl<'program> Validator<'program> {
                 );
             }
         }
-        if self.must_scope_identity == MustScopeIdentity::Invalid {
+    }
+
+    fn validate_resource_marker_identity(
+        &mut self,
+        name: &str,
+        identity_tag: ConceptIdentity,
+        prelude_id: Option<ConceptId>,
+        path: &str,
+    ) {
+        let identity = resource_concept_identity(self.program, identity_tag, prelude_id, name);
+        if identity == ResourceConceptIdentity::Invalid {
             self.push(
                 MirValidationCode::ConceptShape,
-                "canonical MustScope identity must occur exactly once, match prelude.must_scope_concept, and identify the empty non-dynamic MustScope marker",
-                self.program
-                    .prelude
-                    .must_scope_concept
+                format!(
+                    "canonical {name} identity tag must occur exactly once, match {path}, and identify the unique standard.resource.{name} declaration"
+                ),
+                prelude_id
                     .and_then(|id| self.program.concept(id))
                     .map_or_else(Span::default, |concept| concept.span),
-                "prelude.must_scope_concept",
+                path,
             );
+            return;
         }
-        for (name, id, path) in [(
-            "NoSuspend",
-            self.program.prelude.no_suspend_concept,
-            "prelude.no_suspend_concept",
-        )] {
-            let Some(id) = id else {
-                continue;
-            };
+        if let ResourceConceptIdentity::Present(id) = identity {
             let Some(concept) = self.program.concept(id) else {
                 self.invalid_concept(id, Span::default(), path);
-                continue;
+                return;
             };
-            if concept.name != name
-                || concept.dynamic
+            if concept.dynamic
                 || !concept.associated_types.is_empty()
                 || !concept.requirements.is_empty()
             {
@@ -4514,13 +4637,13 @@ impl<'program> Validator<'program> {
         remaining: &mut usize,
     ) -> bool {
         let marker = match self.must_scope_identity {
-            MustScopeIdentity::Present(marker) => marker,
-            MustScopeIdentity::Absent => {
+            ResourceConceptIdentity::Present(marker) => marker,
+            ResourceConceptIdentity::Absent => {
                 // Built-in File/Socket containment remains covered by the
                 // representation-independent ValueObligations analysis.
                 return false;
             }
-            MustScopeIdentity::Invalid => return true,
+            ResourceConceptIdentity::Invalid => return true,
         };
         if !self
             .program

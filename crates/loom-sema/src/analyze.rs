@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use loom_core::{Diagnostic, Name, Severity, Span};
+use loom_core::{Diagnostic, LOOM_LANGUAGE_VERSION, Name, PackageId, Severity, Span};
 use loom_hir::{
     BinaryOp, BodyId, BodyKind, DefId, DefinitionKind, Expr, ExprId, GenericParamId, Literal,
     LocalId, MatchArm, ModuleId, ParamId, Path, Pattern, PatternId, Program, ReceiverKind,
@@ -45,8 +45,14 @@ pub struct Analysis {
 /// Canonical language concepts whose identity affects executable validation.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CanonicalConcepts {
+    /// The `standard.resource.Dispose` cleanup concept selected by semantic analysis.
+    pub dispose: Option<DefId>,
+    /// The canonical `Dispose.dispose(mut self)` requirement.
+    pub dispose_requirement: Option<DefId>,
     /// The `standard.resource.MustScope` marker selected by semantic analysis.
     pub must_scope: Option<DefId>,
+    /// The `standard.resource.NoSuspend` marker selected by semantic analysis.
+    pub no_suspend: Option<DefId>,
 }
 
 impl Analysis {
@@ -59,6 +65,11 @@ impl Analysis {
 }
 
 /// Resolves modules, declarations and all declared types, then checks bodies.
+///
+/// This is a trusted compiler-embedding boundary over already-lowered HIR. The
+/// caller must have validated package resolution and source ownership before
+/// constructing [`Program`]; semantic analysis treats each package id as
+/// nominal identity and does not authenticate untrusted package input.
 #[must_use]
 pub fn analyze(program: &Program) -> Analysis {
     analyze_with_reused_bodies(program, None)
@@ -97,14 +108,14 @@ fn analyze_with_reused_bodies(
             def_maps: &def_maps,
             typed,
             impl_index: crate::ImplIndex::default(),
+            canonical_concepts: CanonicalConcepts::default(),
             diagnostics,
         };
         analyzer.collect_signatures();
         analyzer.validate_dynamic_concepts();
         analyzer.build_conformances();
-        let canonical_concepts = CanonicalConcepts {
-            must_scope: analyzer.language_concept(MUST_SCOPE_CONCEPT),
-        };
+        let canonical_concepts = analyzer.resolve_canonical_concepts();
+        analyzer.canonical_concepts = canonical_concepts;
         analyzer.validate_resource_concepts(canonical_concepts);
         analyzer.check_bodies(previous);
         (
@@ -131,6 +142,7 @@ struct Analyzer<'a> {
     def_maps: &'a DefMapBuild,
     typed: TypedProgram,
     impl_index: crate::ImplIndex,
+    canonical_concepts: CanonicalConcepts,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -143,13 +155,15 @@ struct TypeContext {
 }
 
 impl Analyzer<'_> {
-    fn language_concept(&self, name: &str) -> Option<DefId> {
+    fn resolve_language_concept(&self, name: &str) -> Option<DefId> {
+        let standard = PackageId::compiler_standard(LOOM_LANGUAGE_VERSION);
         self.program
             .definitions
             .iter()
             .find_map(|(definition, item)| {
                 let module = &self.program.modules[item.module];
-                (module.name.as_str() == RESOURCE_MODULE
+                (module.package == standard
+                    && module.name.as_str() == RESOURCE_MODULE
                     && item
                         .name
                         .as_ref()
@@ -159,13 +173,33 @@ impl Analyzer<'_> {
             })
     }
 
-    fn validate_resource_concepts(&mut self, canonical: CanonicalConcepts) {
-        for marker in [MUST_SCOPE_CONCEPT, NO_SUSPEND_CONCEPT] {
-            let definition = if marker == MUST_SCOPE_CONCEPT {
-                canonical.must_scope
-            } else {
-                self.language_concept(marker)
+    fn resolve_canonical_concepts(&self) -> CanonicalConcepts {
+        let dispose = self.resolve_language_concept(DISPOSE_CONCEPT);
+        let dispose_requirement = dispose.and_then(|definition| {
+            let DefinitionKind::Concept(concept) = &self.program.definitions[definition].kind
+            else {
+                return None;
             };
+            concept.requirements.iter().copied().find(|requirement| {
+                self.program.definitions[*requirement]
+                    .name
+                    .as_ref()
+                    .is_some_and(|name| name.as_str() == "dispose")
+            })
+        });
+        CanonicalConcepts {
+            dispose,
+            dispose_requirement,
+            must_scope: self.resolve_language_concept(MUST_SCOPE_CONCEPT),
+            no_suspend: self.resolve_language_concept(NO_SUSPEND_CONCEPT),
+        }
+    }
+
+    fn validate_resource_concepts(&mut self, canonical: CanonicalConcepts) {
+        for (marker, definition) in [
+            (MUST_SCOPE_CONCEPT, canonical.must_scope),
+            (NO_SUSPEND_CONCEPT, canonical.no_suspend),
+        ] {
             let Some(definition) = definition else {
                 continue;
             };
@@ -185,7 +219,7 @@ impl Analyzer<'_> {
             }
         }
 
-        let Some(definition) = self.language_concept(DISPOSE_CONCEPT) else {
+        let Some(definition) = canonical.dispose else {
             return;
         };
         let DefinitionKind::Concept(concept) = &self.program.definitions[definition].kind else {
@@ -194,12 +228,15 @@ impl Analyzer<'_> {
         let valid_header = !concept.dyn_capable
             && concept.associated_types.is_empty()
             && concept.requirements.len() == 1;
-        let valid_method = concept.requirements.first().is_some_and(|requirement| {
-            let name_ok = self.program.definitions[*requirement]
+        let valid_method = canonical.dispose_requirement.is_some_and(|requirement| {
+            if concept.requirements.as_slice() != [requirement] {
+                return false;
+            }
+            let name_ok = self.program.definitions[requirement]
                 .name
                 .as_ref()
                 .is_some_and(|name| name.as_str() == "dispose");
-            let source_ok = match &self.program.definitions[*requirement].kind {
+            let source_ok = match &self.program.definitions[requirement].kind {
                 DefinitionKind::Method(method) => {
                     method.signature.receiver == Some(ReceiverKind::Mutable)
                         && method.signature.generic_params.is_empty()
@@ -210,7 +247,7 @@ impl Analyzer<'_> {
                 _ => false,
             };
             let signature_ok = matches!(
-                self.typed.signatures.get(*requirement),
+                self.typed.signatures.get(requirement),
                 Some(Signature::Callable(signature))
                     if !signature.is_async
                         && signature.return_ty == self.typed.types.builtin(BuiltinType::Unit)
@@ -2824,7 +2861,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     self.assume_established_type(ty, &local_term);
                     if scoped {
                         self.check_scoped_binding(*local, *value, ty, region);
-                    } else if self.has_marker_obligation(ty, MUST_SCOPE_CONCEPT) {
+                    } else if self.has_must_scope_obligation_root(ty) {
                         self.error(
                             "MustScopeRequiresScoped",
                             "this value has a MustScope obligation and must be bound with `scoped`",
@@ -2893,7 +2930,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                                 fields: Vec::new(),
                             }),
                         );
-                        if self.has_marker_obligation(element_ty, MUST_SCOPE_CONCEPT) {
+                        if self.has_must_scope_obligation_root(element_ty) {
                             self.error(
                                 "MustScopeRequiresScoped",
                                 "a tuple element with a MustScope obligation cannot be bound by ordinary `let`",
@@ -2976,7 +3013,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                         diverges = true;
                     } else if self.is_error(ty) {
                         // The operand already owns its diagnostic.
-                    } else if self.has_marker_obligation(ty, MUST_SCOPE_CONCEPT) {
+                    } else if self.has_must_scope_obligation_root(ty) {
                         self.error_at(
                             "MustScopeRequiresScoped",
                             "a value with a MustScope obligation cannot be discarded",
@@ -3012,7 +3049,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     {
                         // A failed expression already owns its diagnostic, and
                         // Unit is the ordinary statement result.
-                    } else if self.has_marker_obligation(ty, MUST_SCOPE_CONCEPT) {
+                    } else if self.has_must_scope_obligation_root(ty) {
                         self.error_at(
                             "MustScopeRequiresScoped",
                             "discarding a MustScope value would lose its cleanup obligation",
@@ -3099,7 +3136,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             self.scoped_locals.insert(local);
             return;
         }
-        let Some(dispose) = self.language_concept(DISPOSE_CONCEPT) else {
+        let Some(dispose) = self.analyzer.canonical_concepts.dispose else {
             self.error(
                 "MissingDisposeConcept",
                 "`scoped` requires the canonical standard.resource.Dispose concept",
@@ -3107,7 +3144,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             );
             return;
         };
-        let Some(requirement) = self.concept_method(dispose, &Name::new("dispose")) else {
+        let Some(requirement) = self.analyzer.canonical_concepts.dispose_requirement else {
             self.error(
                 "InvalidDisposeConcept",
                 "standard.resource.Dispose must declare `method dispose(mut self)`",
@@ -3138,10 +3175,8 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             },
         );
         self.scoped_locals.insert(local);
-        if self
-            .has_marker_conformance(ty, NO_SUSPEND_CONCEPT)
-            .is_some()
-        {
+        let no_suspend = self.analyzer.canonical_concepts.no_suspend;
+        if self.has_resource_conformance(ty, no_suspend).is_some() {
             self.active_no_suspend
                 .push((local, region, self.local_span(local)));
         }
@@ -3720,7 +3755,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 CheckedPattern::Invalid
             }
             Pattern::Wildcard => {
-                if self.has_marker_obligation(expected, MUST_SCOPE_CONCEPT) {
+                if self.has_must_scope_obligation_root(expected) {
                     self.error(
                         "MustScopeRequiresScoped",
                         "a pattern cannot discard a value containing a MustScope resource",
@@ -3851,7 +3886,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             .insert(pattern, Resolution::Local(local));
         self.semantics.local_types.insert(local, expected);
         self.register_task_local(local, expected);
-        if self.has_marker_obligation(expected, MUST_SCOPE_CONCEPT) {
+        if self.has_must_scope_obligation_root(expected) {
             self.pending_must_scope_locals.insert(local);
         }
         self.assume_established_type(
@@ -4001,7 +4036,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
     }
 
     fn reject_dyn_obligation(&mut self, concrete: TyId, expression: ExprId) -> bool {
-        let message = if self.has_marker_obligation(concrete, MUST_SCOPE_CONCEPT) {
+        let message = if self.has_must_scope_obligation_root(concrete) {
             Some("a value with a MustScope obligation cannot be erased to dyn")
         } else if self.has_task_obligation(concrete, &mut BTreeSet::new(), 0) {
             Some("a value containing an unconsumed Task cannot be erased to dyn")
@@ -5651,7 +5686,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         }
         for (argument, ty) in arguments.iter().zip(expected) {
             self.check_expr(*argument, Some(*ty), ExpressionContext::Value);
-            if self.has_marker_obligation(*ty, MUST_SCOPE_CONCEPT) {
+            if self.has_must_scope_obligation_root(*ty) {
                 self.error_at(
                     "MustScopeArgumentNotAllowed",
                     "a value containing a MustScope resource cannot be passed as an ordinary argument",
@@ -5729,7 +5764,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         }
         for (argument, actual, parameter_ty) in actual_types {
             let expected = self.types().substitute(parameter_ty, &substitution);
-            if self.has_marker_obligation(expected, MUST_SCOPE_CONCEPT) {
+            if self.has_must_scope_obligation_root(expected) {
                 self.error_at(
                     "MustScopeArgumentNotAllowed",
                     "a value containing a MustScope resource cannot be passed as an ordinary argument",
@@ -5957,7 +5992,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 _ => None,
             })
             .is_some_and(|local| self.scoped_locals.contains(&local));
-        if self.has_marker_obligation(receiver_ty, MUST_SCOPE_CONCEPT) && !scoped_receiver {
+        if self.has_must_scope_obligation_root(receiver_ty) && !scoped_receiver {
             self.error_at(
                 "MustScopeRequiresScoped",
                 "methods on a MustScope value require a receiver already bound with `scoped`",
@@ -6181,7 +6216,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                             Some(element),
                             ExpressionContext::Value,
                         );
-                        if checker.has_marker_obligation(element, MUST_SCOPE_CONCEPT) {
+                        if checker.has_must_scope_obligation_root(element) {
                             checker.error_at(
                                 "MustScopeArgumentNotAllowed",
                                 "a value containing a MustScope resource cannot be stored in a List",
@@ -7294,10 +7329,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
     }
 
     fn reject_manual_scoped_dispose(&mut self, requirement: DefId, receiver: ExprId) {
-        let Some(dispose) = self.language_concept(DISPOSE_CONCEPT) else {
-            return;
-        };
-        if self.concept_method(dispose, &Name::new("dispose")) != Some(requirement) {
+        if self.analyzer.canonical_concepts.dispose_requirement != Some(requirement) {
             return;
         }
         let Some(place) = self.semantics.expression_places.get(receiver) else {
@@ -7589,23 +7621,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         }
     }
 
-    fn language_concept(&self, name: &str) -> Option<DefId> {
-        self.analyzer
-            .program
-            .definitions
-            .iter()
-            .find_map(|(definition, item)| {
-                let module = &self.analyzer.program.modules[item.module];
-                (module.name.as_str() == RESOURCE_MODULE
-                    && item
-                        .name
-                        .as_ref()
-                        .is_some_and(|candidate| candidate.as_str() == name)
-                    && matches!(item.kind, DefinitionKind::Concept(_)))
-                .then_some(definition)
-            })
-    }
-
     fn solve_resource_witness(
         &mut self,
         self_ty: TyId,
@@ -7631,8 +7646,12 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         solver.solve(&goal, &environment).ok()
     }
 
-    fn has_marker_conformance(&mut self, ty: TyId, marker: &str) -> Option<WitnessSelection> {
-        let concept = self.language_concept(marker)?;
+    fn has_resource_conformance(
+        &mut self,
+        ty: TyId,
+        concept: Option<DefId>,
+    ) -> Option<WitnessSelection> {
+        let concept = concept?;
         self.solve_resource_witness(
             ty,
             ConceptInstance {
@@ -7642,11 +7661,8 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         )
     }
 
-    fn has_marker_obligation(&mut self, ty: TyId, marker: &str) -> bool {
-        if marker == MUST_SCOPE_CONCEPT {
-            return self.has_must_scope_obligation(ty, &mut BTreeSet::new(), 0);
-        }
-        self.has_marker_conformance(ty, marker).is_some()
+    fn has_must_scope_obligation_root(&mut self, ty: TyId) -> bool {
+        self.has_must_scope_obligation(ty, &mut BTreeSet::new(), 0)
     }
 
     fn has_must_scope_obligation(
@@ -7664,10 +7680,8 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             TyData::Builtin(BuiltinType::File | BuiltinType::Socket) => return true,
             _ => {}
         }
-        if self
-            .has_marker_conformance(ty, MUST_SCOPE_CONCEPT)
-            .is_some()
-        {
+        let must_scope = self.analyzer.canonical_concepts.must_scope;
+        if self.has_resource_conformance(ty, must_scope).is_some() {
             return true;
         }
         match self.types().data(ty).clone() {
@@ -9567,8 +9581,10 @@ fn sort_diagnostics(diagnostics: &mut [Diagnostic]) {
 
 #[cfg(test)]
 mod tests {
-    use loom_core::FileId;
-    use loom_hir::{Expr, Program, SourceUnit, lower_files};
+    use loom_core::{FileId, LOOM_LANGUAGE_VERSION, PackageId};
+    use loom_hir::{
+        Expr, PackageSourceUnit, Program, SourceUnit, lower_files, lower_package_files,
+    };
     use loom_syntax::parse_with_file;
 
     use super::{Analysis, analyze};
@@ -9621,6 +9637,62 @@ fn consume(source Source[Item = Int]) {
         );
         let analysis = analyze(&lowered.program);
         (lowered.program, analysis)
+    }
+
+    fn analyze_resource_module(package: PackageId) -> (Program, Analysis) {
+        let parsed = parse_with_file(
+            FileId(0),
+            r"module standard.resource
+
+pub concept Dispose {
+    method dispose(mut self)
+}
+
+pub concept MustScope {}
+pub concept NoSuspend {}
+",
+        );
+        assert!(
+            parsed.diagnostics().is_empty(),
+            "{:#?}",
+            parsed.diagnostics()
+        );
+        let lowered = lower_package_files([PackageSourceUnit {
+            file: FileId(0),
+            package,
+            syntax: parsed.ast(),
+        }]);
+        assert!(lowered.diagnostics.is_empty(), "{:#?}", lowered.diagnostics);
+        let analysis = analyze(&lowered.program);
+        (lowered.program, analysis)
+    }
+
+    #[test]
+    fn resource_language_items_require_the_exact_current_standard_package() {
+        let (_, canonical) =
+            analyze_resource_module(PackageId::compiler_standard(LOOM_LANGUAGE_VERSION));
+        assert!(
+            canonical.diagnostics.is_empty(),
+            "{:#?}",
+            canonical.diagnostics
+        );
+        assert!(canonical.canonical_concepts.dispose.is_some());
+        assert!(canonical.canonical_concepts.dispose_requirement.is_some());
+        assert!(canonical.canonical_concepts.must_scope.is_some());
+        assert!(canonical.canonical_concepts.no_suspend.is_some());
+
+        for wrong in [
+            PackageId::legacy(),
+            PackageId::with_language("standard", "0.4", "0.4"),
+            PackageId::with_language("standard", "0.4", LOOM_LANGUAGE_VERSION),
+            PackageId::with_language("standard", LOOM_LANGUAGE_VERSION, "0.4"),
+        ] {
+            let (_, ordinary) = analyze_resource_module(wrong);
+            assert_eq!(
+                ordinary.canonical_concepts,
+                super::CanonicalConcepts::default()
+            );
+        }
     }
 
     #[test]

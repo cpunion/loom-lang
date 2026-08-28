@@ -1280,7 +1280,7 @@ fn typed_async_cleanup_closes_real_check_build_test_and_run_commands() {
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
     assert!(
         String::from_utf8_lossy(&tests.stdout)
-            .contains("passed standard.resource.cleanupAcrossSuspension"),
+            .contains("passed lcir_async_cleanup.cleanupAcrossSuspension"),
         "{tests:?}"
     );
 
@@ -1915,7 +1915,8 @@ fn lexical_cleanup_and_source_contracts_close_real_check_build_test_and_run_comm
         .expect("test lexical-cleanup source through the production CLI");
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
     assert!(
-        String::from_utf8_lossy(&tests.stdout).contains("passed standard.resource.lexicalCleanup"),
+        String::from_utf8_lossy(&tests.stdout)
+            .contains("passed lcir_lexical_cleanup.lexicalCleanup"),
         "{tests:?}"
     );
 
@@ -4098,13 +4099,10 @@ fn core_examples_close_check_build_test_and_run() {
 #[test]
 fn must_scope_identity_closes_cached_check_build_test_run_and_artifact_decode() {
     let project = TestProject::new(
-        r"module standard.resource
+        r"module resource_identity
 
-concept Dispose {
-    method dispose(mut self)
-}
-
-concept MustScope {}
+import standard.resource.Dispose
+import standard.resource.MustScope
 
 record Resource {
     value Int

@@ -551,17 +551,19 @@ pub fn main() {
 
     let cold_host = AnalysisHost::new(project.path()).expect("load cold proof project");
     let cold_sources = cold_host.load_sources().expect("load cold proof sources");
+    let source_count = cold_sources.documents().len();
     let (cold, cold_parse) = cold_host.snapshot_from_sources_with_parse_cache(
         cold_sources,
         &cache,
         "proof-cache-parity-v1",
     );
     assert!(!cold.has_errors(), "{:#?}", cold.diagnostics());
-    assert_eq!(cold_parse.misses, 1);
+    assert_eq!(cold_parse.misses, source_count);
     let cold_program = cold.executable().expect("lower cold proof MIR");
 
     let warm_host = AnalysisHost::new(project.path()).expect("load warm proof project");
     let warm_sources = warm_host.load_sources().expect("load warm proof sources");
+    assert_eq!(warm_sources.documents().len(), source_count);
     let (warm, warm_parse) = warm_host.snapshot_from_sources_with_parse_cache(
         warm_sources,
         &cache,
