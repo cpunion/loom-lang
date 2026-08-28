@@ -59,6 +59,19 @@ jobs:
             --archive target/debug/libloom_runtime.a \
             --output "$runtime_bundle"
           echo "LOOM_RUNTIME_BUNDLE=$runtime_bundle" >> "$GITHUB_ENV"
+      - name: Close typed LCIR on a 1 MiB compiler stack
+        run: |
+          cargo test --locked -p loom-lowering --test source_programs \
+            logical_chains_lower_on_one_mib_stack_and_remain_balanced -- \
+            --exact
+          (
+            ulimit -s 1024
+            target/debug/loomc --no-cache check fixtures/lcir-typed-textmap
+            target/debug/loomc --no-cache build --emit object \
+              --output target/ci-low-stack-textmap.o fixtures/lcir-typed-textmap
+            target/debug/loomc --no-cache test fixtures/lcir-typed-textmap
+            target/debug/loomc --no-cache run fixtures/lcir-typed-textmap
+          )
       - name: Test workspace
         run: cargo test --locked --workspace --all-targets
       - name: Build complete workspace
@@ -292,6 +305,18 @@ jobs:
             --output "$runtime_bundle"
           export LOOM_RUNTIME_BUNDLE="$runtime_bundle"
           echo "LOOM_RUNTIME_BUNDLE=$LOOM_RUNTIME_BUNDLE" >> "$GITHUB_ENV"
+      - name: Close typed LCIR on the Windows compiler stack
+        shell: bash
+        run: |
+          cargo test --locked -p loom-lowering --test source_programs \
+            logical_chains_lower_on_one_mib_stack_and_remain_balanced -- \
+            --exact
+          target/debug/loomc.exe --no-cache check fixtures/lcir-typed-textmap
+          target/debug/loomc.exe --no-cache build --emit object \
+            --output target/ci-low-stack-textmap fixtures/lcir-typed-textmap
+          test -f target/ci-low-stack-textmap.obj
+          target/debug/loomc.exe --no-cache test fixtures/lcir-typed-textmap
+          target/debug/loomc.exe --no-cache run fixtures/lcir-typed-textmap
       - name: Verify the staged Windows LLVM-C dependency
         shell: pwsh
         run: |

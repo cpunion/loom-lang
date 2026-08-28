@@ -1594,11 +1594,16 @@ impl ContractLowerer<'_, '_> {
                 lower_unary(*op),
                 Box::new(self.lower_expr(*operand, old, bindings)?),
             ),
-            loom_hir::Expr::Binary { op, left, right } => ContractExprKind::Binary(
-                lower_binary(*op),
-                Box::new(self.lower_expr(*left, old, bindings)?),
-                Box::new(self.lower_expr(*right, old, bindings)?),
-            ),
+            loom_hir::Expr::Binary { op, left, right } => {
+                if matches!(op, HirBinaryOp::And | HirBinaryOp::Or) {
+                    return self.lower_logical_chain(id, *op, *left, *right, old, bindings);
+                }
+                ContractExprKind::Binary(
+                    lower_binary(*op),
+                    Box::new(self.lower_expr(*left, old, bindings)?),
+                    Box::new(self.lower_expr(*right, old, bindings)?),
+                )
+            }
             loom_hir::Expr::Call { arguments, .. } => {
                 let resolution = self.call(id, span)?;
                 if resolution.target != SemaCallTarget::Builtin(BuiltinValue::IsFinite)
@@ -1633,6 +1638,38 @@ impl ContractLowerer<'_, '_> {
             }
         };
         Ok(ContractExpr { kind, span })
+    }
+
+    fn lower_logical_chain(
+        &self,
+        id: ExprId,
+        operator: HirBinaryOp,
+        left: ExprId,
+        right: ExprId,
+        old: bool,
+        bindings: &BTreeMap<HirLocalId, u32>,
+    ) -> LowerResult<ContractExpr> {
+        let root_span = self.body.source_map.expr(id).unwrap_or_default();
+        let mut pending = vec![right, left];
+        let mut operands = Vec::new();
+
+        while let Some(current) = pending.pop() {
+            match &self.body.expressions[current] {
+                loom_hir::Expr::Binary { op, left, right } if *op == operator => {
+                    pending.push(*right);
+                    pending.push(*left);
+                }
+                _ => operands.push(self.lower_expr(current, old, bindings)?),
+            }
+        }
+
+        let mut expression = build_balanced_logical_contract_expression(
+            lower_binary(operator),
+            operands,
+            root_span,
+        )?;
+        expression.span = root_span;
+        Ok(expression)
     }
 
     fn lower_resolution(
@@ -2544,6 +2581,9 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                 }
             }
             loom_hir::Expr::Binary { op, left, right } => {
+                if matches!(op, HirBinaryOp::And | HirBinaryOp::Or) {
+                    return self.lower_logical_chain(id, op, left, right);
+                }
                 let numeric_operator = matches!(
                     op,
                     HirBinaryOp::Add
@@ -2598,6 +2638,49 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             }
         };
         Ok(Expr::new(kind, ty, span))
+    }
+
+    /// Lowers an associative short-circuit chain without retaining the parser's
+    /// left-deep shape in MIR.
+    ///
+    /// The parser deliberately builds binary operators iteratively, but a long
+    /// `&&` or `||` chain is still represented as a left-deep HIR tree. Walking
+    /// that tree recursively consumed the process stack in MIR lowering, and
+    /// every later recursive MIR visitor inherited the same depth. Logical
+    /// conjunction and disjunction may be re-associated without changing their
+    /// left-to-right evaluation or short-circuit behavior, so collect the
+    /// operands iteratively and construct a balanced MIR tree.
+    fn lower_logical_chain(
+        &mut self,
+        id: ExprId,
+        operator: HirBinaryOp,
+        left: ExprId,
+        right: ExprId,
+    ) -> LowerResult<Expr> {
+        let root_span = self.expr_span(id);
+        let root_ty = self.uncoerced_expression_ty(id)?;
+        let mut pending = vec![right, left];
+        let mut operands = Vec::new();
+
+        while let Some(current) = pending.pop() {
+            let source = self.body.expressions[current].clone();
+            match source {
+                loom_hir::Expr::Binary { op, left, right }
+                    if op == operator
+                        && self.semantics.expression_coercions.get(current).is_none() =>
+                {
+                    pending.push(right);
+                    pending.push(left);
+                }
+                _ => operands.push(self.lower_expr(current)?),
+            }
+        }
+
+        let mut expression =
+            build_balanced_logical_expression(lower_binary(operator), operands, root_span)?;
+        expression.ty = root_ty;
+        expression.span = root_span;
+        Ok(expression)
     }
 
     fn lower_propagate(&mut self, value: ExprId, ok_ty: Type, span: Span) -> LowerResult<Expr> {
@@ -4535,6 +4618,88 @@ const fn lower_unary(operator: HirUnaryOp) -> UnaryOp {
         HirUnaryOp::Negate => UnaryOp::Negate,
         HirUnaryOp::Not => UnaryOp::Not,
     }
+}
+
+fn build_balanced_logical_expression(
+    operator: BinaryOp,
+    mut operands: Vec<Expr>,
+    fallback_span: Span,
+) -> LowerResult<Expr> {
+    if operands.is_empty() {
+        return Err(defect("logical expression has no operands", fallback_span));
+    }
+
+    while operands.len() > 1 {
+        let mut next = Vec::with_capacity(operands.len().div_ceil(2));
+        let mut current = operands.into_iter();
+        while let Some(left) = current.next() {
+            let Some(right) = current.next() else {
+                next.push(left);
+                break;
+            };
+            let span = if left.span.file == right.span.file {
+                Span::new(
+                    left.span.file,
+                    left.span.range.start.min(right.span.range.start),
+                    left.span.range.end.max(right.span.range.end),
+                )
+            } else {
+                fallback_span
+            };
+            next.push(Expr::new(
+                ExprKind::Binary(operator, Box::new(left), Box::new(right)),
+                Type::Bool,
+                span,
+            ));
+        }
+        operands = next;
+    }
+
+    operands
+        .pop()
+        .ok_or_else(|| defect("logical expression has no result", fallback_span))
+}
+
+fn build_balanced_logical_contract_expression(
+    operator: BinaryOp,
+    mut operands: Vec<ContractExpr>,
+    fallback_span: Span,
+) -> LowerResult<ContractExpr> {
+    if operands.is_empty() {
+        return Err(defect(
+            "logical contract expression has no operands",
+            fallback_span,
+        ));
+    }
+
+    while operands.len() > 1 {
+        let mut next = Vec::with_capacity(operands.len().div_ceil(2));
+        let mut current = operands.into_iter();
+        while let Some(left) = current.next() {
+            let Some(right) = current.next() else {
+                next.push(left);
+                break;
+            };
+            let span = if left.span.file == right.span.file {
+                Span::new(
+                    left.span.file,
+                    left.span.range.start.min(right.span.range.start),
+                    left.span.range.end.max(right.span.range.end),
+                )
+            } else {
+                fallback_span
+            };
+            next.push(ContractExpr {
+                kind: ContractExprKind::Binary(operator, Box::new(left), Box::new(right)),
+                span,
+            });
+        }
+        operands = next;
+    }
+
+    operands
+        .pop()
+        .ok_or_else(|| defect("logical contract expression has no result", fallback_span))
 }
 
 const fn lower_binary(operator: HirBinaryOp) -> BinaryOp {

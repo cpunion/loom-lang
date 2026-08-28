@@ -123,6 +123,103 @@ fn core03_source_lowers_and_validates() {
 }
 
 #[test]
+fn logical_chains_lower_on_one_mib_stack_and_remain_balanced() {
+    let operand_count = loom_syntax::MAX_SYNTAX_NESTING - 8;
+    let and_values = (0..operand_count)
+        .map(|index| index % 3 != 1)
+        .collect::<Vec<_>>();
+    let or_values = (0..operand_count)
+        .map(|index| index % 4 == 2)
+        .collect::<Vec<_>>();
+    let and_source = and_values
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" && ");
+    let or_source = or_values
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" || ");
+    let contract_source = std::iter::repeat_n("flag", operand_count)
+        .collect::<Vec<_>>()
+        .join(" && ");
+    let source = format!(
+        "module low_stack\n\nfn all() Bool {{ {and_source} }}\n\nfn any() Bool {{ {or_source} }}\n\nfn guarded(flag Bool) Bool\n    requires {contract_source}\n{{\n    flag\n}}\n"
+    );
+
+    let program = std::thread::Builder::new()
+        .name("loom-low-stack-logical-lowering".into())
+        .stack_size(1024 * 1024)
+        .spawn(move || compile(&source))
+        .expect("spawn compiler on a Windows-sized stack")
+        .join()
+        .expect("compile near-limit logical chains on a Windows-sized stack");
+
+    for (name, operator, expected) in [
+        ("all", loom_mir::BinaryOp::And, and_values),
+        ("any", loom_mir::BinaryOp::Or, or_values),
+    ] {
+        let function = program
+            .functions
+            .iter()
+            .find(|function| function_has_name(function, name))
+            .expect("logical-chain function");
+        let root = function.body.tail.as_deref().expect("logical-chain tail");
+        let mut pending = vec![(root, 1_usize)];
+        let mut actual = Vec::new();
+        let mut maximum_depth = 0_usize;
+        while let Some((expression, depth)) = pending.pop() {
+            maximum_depth = maximum_depth.max(depth);
+            match &expression.kind {
+                loom_mir::ExprKind::Binary(actual_operator, left, right) => {
+                    assert_eq!(*actual_operator, operator);
+                    pending.push((right, depth + 1));
+                    pending.push((left, depth + 1));
+                }
+                loom_mir::ExprKind::Constant(loom_mir::Constant::Bool(value)) => {
+                    actual.push(*value);
+                }
+                other => panic!("unexpected logical-chain node: {other:#?}"),
+            }
+        }
+        assert_eq!(actual, expected, "logical operand order changed");
+        assert!(
+            maximum_depth <= 9,
+            "logical MIR remained too deep: {maximum_depth}"
+        );
+    }
+
+    let guarded = program
+        .functions
+        .iter()
+        .find(|function| function_has_name(function, "guarded"))
+        .expect("contract function");
+    let contract = &guarded.call_plan.requires[0].expression;
+    let mut pending = vec![(contract, 1_usize)];
+    let mut leaves = 0_usize;
+    let mut maximum_depth = 0_usize;
+    while let Some((expression, depth)) = pending.pop() {
+        maximum_depth = maximum_depth.max(depth);
+        match &expression.kind {
+            loom_mir::ContractExprKind::Binary(loom_mir::BinaryOp::And, left, right) => {
+                pending.push((right, depth + 1));
+                pending.push((left, depth + 1));
+            }
+            loom_mir::ContractExprKind::Value(loom_mir::ContractValue::Argument(0)) => {
+                leaves += 1;
+            }
+            other => panic!("unexpected logical-contract node: {other:#?}"),
+        }
+    }
+    assert_eq!(leaves, operand_count);
+    assert!(
+        maximum_depth <= 9,
+        "logical contract MIR remained too deep: {maximum_depth}"
+    );
+}
+
+#[test]
 fn scoped_source_lowers_to_first_class_mir_without_a_synthetic_defer() {
     let program = compile_and_validate(
         r"
