@@ -32,6 +32,7 @@ mod ir;
 mod lower;
 mod managed_roots;
 mod match_plan;
+mod mir_closure;
 mod place_plan;
 mod repr;
 mod source_graph;
@@ -75,6 +76,7 @@ pub use managed_roots::{
     MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE, ManagedRootPlan, ManagedRootProjection,
     ManagedRootSlot, ManagedSafepoint, plan_managed_roots,
 };
+pub use mir_closure::{MirClosureError, close_interpreted_executable};
 pub use repr::{
     DynamicRepr, ProductRepr, Repr, RepresentationPlan, ScalarRepr, SumRepr, SumTagRepr,
     SumVariantRepr, TargetLayout, TargetLayoutError, TypeRegistration, ValueType, ValueTypeKind,
