@@ -2393,6 +2393,78 @@ fn typed_logging_closes_real_check_build_test_and_run_commands() {
 }
 
 #[test]
+fn typed_json_format_closes_real_check_build_test_and_run_commands() {
+    let project = TestProject::new(include_str!("../../../fixtures/lcir-json-format/main.loom"));
+
+    let check = loomc()
+        .args(["--no-cache", "check"])
+        .arg(&project.0)
+        .output()
+        .expect("check typed JSON formatting source through the CLI");
+    assert_eq!(check.status.code(), Some(0), "{check:?}");
+    assert!(check.stderr.is_empty(), "{check:?}");
+
+    let object_path = project.0.join("typed-json-format.o");
+    let build = loomc()
+        .args(["--no-cache", "build", "--emit", "object", "--output"])
+        .arg(&object_path)
+        .arg(&project.0)
+        .output()
+        .expect("build typed JSON formatting source through the CLI");
+    assert_eq!(build.status.code(), Some(0), "{build:?}");
+    let object = fs::read(object_path).expect("read typed JSON formatting object");
+    for required in [
+        b"loom.lcir.fn".as_slice(),
+        b"loom_runtime_json_format_typed_v1",
+        b"loom.lcir.typed_json.layout",
+        b"loom_gc_typed_root_push_v1",
+        b"loom_gc_typed_root_pop_v1",
+    ] {
+        assert!(
+            contains_bytes(&object, required),
+            "typed JSON formatting object omitted `{}`",
+            String::from_utf8_lossy(required)
+        );
+    }
+    for forbidden in [
+        b"loom.fn.".as_slice(),
+        b"loom.Value",
+        b"ValueNode",
+        b"loom_runtime_json_format\0",
+        b"loom_runtime_json_parse",
+        b"loom_runtime_list_",
+        b"loom_runtime_text_map_",
+        b"loom_gc_root_push_v1",
+        b"loom_gc_root_pop_v1",
+        b"loom_executor_",
+    ] {
+        assert!(
+            !contains_bytes(&object, forbidden),
+            "typed JSON formatting object exposed `{}`",
+            String::from_utf8_lossy(forbidden)
+        );
+    }
+
+    let tests = loomc()
+        .args(["--no-cache", "test"])
+        .arg(&project.0)
+        .output()
+        .expect("test typed JSON formatting source through the CLI");
+    assert_eq!(tests.status.code(), Some(0), "{tests:?}");
+    assert_eq!(tests.stdout, b"passed lcir_json_format.typedJsonFormat\n");
+    assert!(tests.stderr.is_empty(), "{tests:?}");
+
+    let run = loomc()
+        .args(["--no-cache", "run"])
+        .arg(&project.0)
+        .output()
+        .expect("run typed JSON formatting source through the CLI");
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    assert_eq!(run.stdout, b"Unit\n");
+    assert!(run.stderr.is_empty(), "{run:?}");
+}
+
+#[test]
 fn cache_stat_and_prune_have_stable_json_reports() {
     let project = TestProject::new("module demo\n\npub fn main() {}\n");
     let check = loomc()

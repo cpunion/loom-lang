@@ -73,6 +73,24 @@ call does not enter the Loom collector or scheduler. This advances the current
 native runtime ABI to component 21 with `typed-log-v1` and `runtime-v15`; the
 exact identity remains compiler-private.
 
+## Typed JSON formatting
+
+Direct Json formatting uses the synchronous
+`loom_runtime_json_format_typed_v1` boundary. The compiler publishes one
+immutable `LoomTypedJsonLayout` whose target-derived offsets describe the
+complete recursive Json carrier plus its Text,
+`List[Json]`, and `TextMap[Json]` leaves. The call borrows the descriptor and
+input carrier and receives its managed Text through a stable output cell; it
+does not retain either input or consult a nominal type registry.
+
+The runtime validates the descriptor, traverses all six canonical variants,
+and stages the complete compact JSON byte sequence outside the moving heap.
+Only success allocates and publishes Text. Depth exhaustion and non-finite
+numbers return distinct statuses which LLVM maps into the exact direct
+`JsonError` variants. This advances the native runtime ABI to component 22
+with `typed-json-v1` and `runtime-v16`; Text remains v3, GC remains v9, and the
+public standard-library ABI remains v4.
+
 ## Legacy primitive and aggregate specialization
 
 Within a complete legacy object, `Unit`, `Bool`, `Int`, and `Float` can use

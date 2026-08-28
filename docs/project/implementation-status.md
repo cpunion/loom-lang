@@ -70,7 +70,8 @@ The following repository fixtures are run through real compiler stages:
 | `fixtures/lcir-typed-task-outcomes` | fixed and sole-List-literal `Task.settled`/`Task.race`, canonical completed/faulted/cancelled outcomes, fault Text roots across later capture safepoints, deterministic nonzero race winners, loser cleanup, typed-LCIR main/test native execution, and real `check/build/test/run` commands |
 | `fixtures/lcir-async-cleanup` | typed-LCIR `defer` and static-concept `scoped` cleanup across suspension, exact normal/fault/cancel live rows, LIFO normal cleanup, child-fault propagation, sibling cancellation, source-callback cancellation dispatch, interpreter/legacy/typed differentials, Linux/MSVC objects, and real `check/build/test/run` commands |
 | `fixtures/lcir-async-writeback` | synchronous functional inout calls inside typed coroutines, managed-Text writeback across moving collection, normal/fault/cancellation cleanup, fault writeback before lexical cleanup, by-value dynamic View parameters under mutable dispatch, recursive unique-witness `dyn` erasure across async parameters, results, and nested frames, multi-witness finite dynamic calls outside suspension rows, interpreter/typed differentials, Linux/MSVC objects, and real `check/build/test/run` commands |
-| `fixtures/lcir-typed-json` | canonical recursive `Json` construction and matching through `List[Json]`/`TextMap[Json]` cycle breakers, the general collision-free closed-sum byte-class carrier, exact repeated tracing, immutable map aliases, forced moving-GC relocation, interpreter/legacy/typed differential execution, Linux/MSVC objects, and real `check/build/test/run` commands; equality, parse, and format remain follow-up slices |
+| `fixtures/lcir-typed-json` | canonical recursive `Json` construction and matching through `List[Json]`/`TextMap[Json]` cycle breakers, the general collision-free closed-sum byte-class carrier, exact repeated tracing, immutable map aliases, forced moving-GC relocation, interpreter/legacy/typed differential execution, Linux/MSVC objects, and real `check/build/test/run` commands; equality and parse remain follow-up slices |
+| `fixtures/lcir-json-format` | direct typed formatting of all six canonical `Json` variants, canonical TextMap key order, exact string escaping and negative-zero spelling, ordinary `DepthLimit`/`NonFiniteNumber` errors for deep, NaN, and infinite inputs, and real main/test `check/build/test/run` commands without a universal value or executor |
 | `fixtures/lcir-sum-layout-collisions` | unrelated and nested closed sums, including opposing pointer-first/scalar-first record variants, with scalar, product, Text, List, TextMap, and recursive Json payloads; one target-data-derived carrier plan drives pack/unpack, exact repeated descriptors, and forced moving-GC relocation across interpreter/legacy/typed differential execution, Linux/MSVC objects, 32-bit fail-closed emission, artifact-wide placement/emission bounds, and real `check/build/test/run` commands |
 | `fixtures/lcir-fallible-async` | checked fallible stackless coroutines, ordinary managed `Result` completion, exact child source/contract fault propagation, cancellation, collision-free completed/live sum roots, balanced callback roots, forced moving-GC relocation, interpreter/legacy/typed differential execution, Linux/MSVC objects, 32-bit fail-closed behavior, and real `check/build/test/run` commands |
 | `fixtures/lcir-scalar-builtins` | exact parse-result sums, finite checks, managed Float formatting, direct Duration values, typed roots, and real check/build/test/run commands without universal values or an executor |
@@ -117,6 +118,9 @@ direct coverage includes:
 - scalar and managed Text operations, structural tuples, concrete records,
   refined values, closed sums, Lists, compiler-private TextMaps, and bounded
   concrete generic instances;
+- canonical recursive Json formatting into the exact
+  `Result[Text, JsonError]`, including typed Text publication and ordinary
+  depth/non-finite error values;
 - canonical structured logging with direct Text and `TextMap[Text]` values;
 - supported contracts and proof replay, static concepts, closed dynamic-concept
   catalogs, exact moving-GC roots, and static lexical cleanup;
@@ -155,12 +159,14 @@ process stack; Windows runs the same focused closure on its native compiler
 stack. The separate macOS job
 verifies the dSYM metadata and runs the LLDB parameter and step-out inspection.
 The controlled runner prepares every native object through the production
-router, and requires Core 0.1, Core 0.2, Core 0.3, the async generic-contract
-fixture, the typed logging fixture, and the complete C3 repository to select
-LCIR for their prepared main or test artifacts. The typed logging gate also
-checks the exact JSONL standard-error bytes for both run and test artifacts.
+router, and requires Core 0.1, Core 0.2, Core 0.3, the async generic-contract,
+typed logging, typed JSON formatting, and complete C3 fixtures to select LCIR
+for their prepared main or test artifacts. The typed logging gate also checks
+the exact JSONL standard-error bytes for both run and test artifacts; the typed
+JSON gate executes all canonical formatting and error cases through each
+artifact.
 The remaining reviewed legacy allowance covers the broader standard-library
-fixture's JSON parse/format and typed external I/O operations.
+fixture's JSON parsing and typed external I/O operations.
 
 The PR benchmark workflow compares the base and candidate merge revisions on
 one Ubuntu x86-64 runner and one macOS arm64 runner. A separate trusted workflow

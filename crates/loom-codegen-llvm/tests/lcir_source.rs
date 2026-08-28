@@ -30,7 +30,7 @@ use loom_mir::{
 };
 use loom_runtime_abi::{
     FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX, FORMAT_FLOAT_TYPED_SYMBOL,
-    PARSE_FLOAT_SYMBOL, PARSE_INT_SYMBOL,
+    PARSE_FLOAT_SYMBOL, PARSE_INT_SYMBOL, TYPED_JSON_FORMAT_SYMBOL,
 };
 
 mod support;
@@ -3094,6 +3094,230 @@ fn standard_library_text_map_segment_classifies_through_direct_lcir() {
         assert!(dump.contains(required), "missing `{required}`:\n{dump}");
     }
     assert!(!dump.contains("unsupported"), "{dump}");
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one source gate keeps the direct typed JSON boundary, run/test harnesses, runtime purity, and Linux/MSVC object ABIs together"
+)]
+fn typed_json_format_uses_one_direct_collecting_runtime_boundary() {
+    let source = include_str!("../../../fixtures/lcir-json-format/main.loom");
+    let program = compile_source(source);
+
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert_eq!(interpreted.len(), 1, "{interpreted:#?}");
+    assert_eq!(
+        interpreted[0].status,
+        TestStatus::Passed,
+        "{interpreted:#?}"
+    );
+
+    for (options, scenario) in [
+        (EmitOptions::run("main"), "run"),
+        (EmitOptions::tests(), "tests"),
+    ] {
+        for policy in [NativeRoutePolicy::Automatic, NativeRoutePolicy::LcirOnly] {
+            let prepared =
+                prepare_native_object(&program, options.clone(), policy).unwrap_or_else(|error| {
+                    panic!("prepare typed JSON format {scenario} with {policy:?}: {error}")
+                });
+            assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+        }
+    }
+
+    let run_artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(run_artifact.program());
+    assert_eq!(dump.matches("json.format").count(), 5, "{dump}");
+    let formatter = run_artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("formats"))
+        .expect("typed JSON formatter helper");
+    assert!(
+        formatter
+            .instructions()
+            .iter()
+            .any(|instruction| matches!(instruction.kind(), InstructionKind::JsonFormat { .. }))
+    );
+    assert!(formatter.effects().contains(Effects::MAY_COLLECT));
+    assert!(formatter.effects().contains(Effects::NEEDS_RUNTIME));
+    assert!(!formatter.effects().contains(Effects::MAY_FAULT));
+    assert!(!formatter.effects().contains(Effects::NEEDS_EXECUTOR));
+    assert!(!formatter.effects().contains(Effects::MAY_SUSPEND));
+
+    let assert_direct_json_ir = |ir: &str, scenario: &str| {
+        for required in [
+            TYPED_JSON_FORMAT_SYMBOL,
+            "@loom.lcir.typed_json.layout.",
+            "json.format.status",
+            "managed.root.reload",
+            "loom_gc_typed_root_push_v1",
+            "loom_gc_typed_root_pop_v1",
+        ] {
+            assert!(
+                ir.contains(required),
+                "typed JSON {scenario} IR omitted `{required}`:\n{ir}"
+            );
+        }
+        for forbidden in [
+            "@loom_runtime_json_format(",
+            "%loom.Value",
+            "ArgNode",
+            "ValueNode",
+            "@loom_gc_root_push_v1",
+            "loom_executor_",
+        ] {
+            assert!(
+                !ir.contains(forbidden),
+                "typed JSON {scenario} IR retained `{forbidden}`:\n{ir}"
+            );
+        }
+    };
+
+    let native_run = emit_and_run_lcir(&run_artifact, "source-typed-json-format-run");
+    assert!(
+        native_run.output.status.success(),
+        "{:#?}",
+        native_run.output
+    );
+    assert_eq!(native_run.output.stdout, b"Unit\n");
+    assert!(
+        native_run.output.stderr.is_empty(),
+        "{:#?}",
+        native_run.output
+    );
+    assert_direct_json_ir(&native_run.ir, "run");
+
+    let tests_artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let native_tests = emit_and_run_lcir(&tests_artifact, "source-typed-json-format-tests");
+    assert!(
+        native_tests.output.status.success(),
+        "{:#?}",
+        native_tests.output
+    );
+    assert!(
+        String::from_utf8_lossy(&native_tests.output.stdout)
+            .contains("passed lcir_json_format.typedJsonFormat"),
+        "{:#?}",
+        native_tests.output
+    );
+    assert!(
+        native_tests.output.stderr.is_empty(),
+        "{:#?}",
+        native_tests.output
+    );
+    assert_direct_json_ir(&native_tests.ir, "tests");
+
+    for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
+        let directory = tempfile::tempdir().expect("create typed JSON format target directory");
+        let object = directory.path().join(if target.contains("windows") {
+            "typed-json-format.obj"
+        } else {
+            "typed-json-format.o"
+        });
+        let ir_path = directory.path().join("typed-json-format.ll");
+        emit_lcir_native_object(
+            &tests_artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                emit_ir: Some(ir_path.clone()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit typed JSON format object for {target}: {error}"));
+        let bytes = std::fs::read(&object).expect("read typed JSON format target object");
+        if target.contains("windows") {
+            assert_eq!(bytes.get(..2), Some([0x64, 0x86].as_slice()));
+        } else {
+            assert_eq!(bytes.get(..4), Some(b"\x7fELF".as_slice()));
+        }
+        let ir = std::fs::read_to_string(ir_path).expect("read typed JSON format target IR");
+        assert_direct_json_ir(&ir, target);
+    }
+}
+
+#[test]
+fn typed_json_format_hoists_loop_storage_and_reloads_after_moving_collection() {
+    let half = "x".repeat(20 * 1024);
+    let source = format!(
+        r#"module lcir_json_format_relocation
+
+import standard.json.format_json
+
+fn verify(value Json, expectedLength Int) Bool {{
+    var valid = true
+    for index in 0..3 {{
+        let current = match format_json(value) {{
+            Ok(text) => text.length() == expectedLength
+            Err(_) => false
+        }}
+        valid = valid && current
+    }}
+    valid && match value {{
+        Json.Object(fields) => match fields.get("value") {{
+            Some(Json.Text(text)) => text.length() == 40960
+            _ => false
+        }}
+        _ => false
+    }}
+}}
+
+pub fn main() {{
+    let payload = "{half}".concat("{half}")
+    let value = Json.Object(TextMap[Json]().insert("value", Json.Text(payload)))
+    let valid = verify(value, 40972)
+    assert valid
+}}
+"#
+    );
+    let program = compile_source(&source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let native = emit_and_run_lcir(&artifact, "source-typed-json-format-relocation");
+    assert!(native.output.status.success(), "{:#?}", native.output);
+    assert_eq!(native.output.stdout, b"Unit\n");
+    assert!(native.output.stderr.is_empty(), "{:#?}", native.output);
+
+    let verify = emitted_lcir_function(&native.ir, &artifact, "verify");
+    let input_allocas = verify
+        .lines()
+        .filter(|line| line.contains("json.input.i") && line.contains("alloca"))
+        .count();
+    assert_eq!(
+        input_allocas, 1,
+        "one loop formatting site needs one reusable input cell:\n{verify}"
+    );
+    let input_alloca = verify
+        .find("json.input.i")
+        .expect("JSON input cell in verifier");
+    let first_branch = verify.find("\n  br ").expect("verifier entry branch");
+    let format_call = verify
+        .find("json.format.status")
+        .expect("JSON format call in loop body");
+    assert!(
+        input_alloca < first_branch && first_branch < format_call,
+        "the reusable JSON input cell must be allocated before entering the loop:\n{verify}"
+    );
+    for required in [
+        "managed.root.reload",
+        "loom_gc_typed_root_push_v1",
+        TYPED_JSON_FORMAT_SYMBOL,
+    ] {
+        assert!(verify.contains(required), "missing `{required}`:\n{verify}");
+    }
 }
 
 #[test]

@@ -65,11 +65,13 @@ use loom_runtime_abi::{
     TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES,
     TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION,
     TYPED_GC_ALLOC_SYMBOL, TYPED_GC_REPEATED_ABI_VERSION, TYPED_GC_REPEATED_ALLOC_SYMBOL,
-    TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_LOG_FIELD_ALIGNMENT,
-    TYPED_LOG_FIELD_KEY_OFFSET, TYPED_LOG_FIELD_SIZE, TYPED_LOG_FIELD_VALUE_OFFSET, TYPED_LOG_OK,
-    TYPED_LOG_WRITE_FAILED, TYPED_LOG_WRITE_SYMBOL, TYPED_RESOURCE_CLOSE_SYMBOL,
-    TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET, TYPED_SHADOW_STACK_ABI_VERSION,
-    TYPED_TASK_ABI_VERSION, TYPED_TASK_PUBLISH_ADOPTING_SYMBOL, TYPED_TASK_TAKE_OUTCOME_SYMBOL,
+    TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_JSON_ABI_VERSION,
+    TYPED_JSON_FORMAT_DEPTH_LIMIT, TYPED_JSON_FORMAT_NON_FINITE_NUMBER, TYPED_JSON_FORMAT_OK,
+    TYPED_JSON_FORMAT_SYMBOL, TYPED_LOG_FIELD_ALIGNMENT, TYPED_LOG_FIELD_KEY_OFFSET,
+    TYPED_LOG_FIELD_SIZE, TYPED_LOG_FIELD_VALUE_OFFSET, TYPED_LOG_OK, TYPED_LOG_WRITE_FAILED,
+    TYPED_LOG_WRITE_SYMBOL, TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE,
+    TYPED_RESOURCE_KIND_SOCKET, TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION,
+    TYPED_TASK_PUBLISH_ADOPTING_SYMBOL, TYPED_TASK_TAKE_OUTCOME_SYMBOL,
     TYPED_TIMER_TASK_CREATE_SYMBOL,
 };
 
@@ -4068,6 +4070,248 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         Ok(descriptor.as_pointer_value())
     }
 
+    fn sum_payload_field_offset(
+        &self,
+        ty: ValueTypeId,
+        variant: usize,
+        field: u32,
+    ) -> Result<u64, CodegenError> {
+        let layout = self.sum_layout(ty)?;
+        if layout.tag == SumTagRepr::Tagless {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!("typed JSON sum type {ty} is unexpectedly tagless"),
+            ));
+        }
+        let physical = layout.physical.into_struct_type();
+        let carrier = layout.carrier.ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                format!("typed JSON sum type {ty} has no payload carrier"),
+            )
+        })?;
+        let payload = layout.payloads.get(variant).copied().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                format!("typed JSON sum type {ty} has no variant {variant}"),
+            )
+        })?;
+        let carrier_base = self
+            .target_data
+            .offset_of_element(&physical, 1)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "JSON carrier offset is missing"))?;
+        let carrier_bytes = self
+            .target_data
+            .offset_of_element(&carrier, 1)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "JSON carrier byte offset is missing")
+            })?;
+        let payload_base = layout.payload_byte_offset(variant)?;
+        let field_base = self
+            .target_data
+            .offset_of_element(&payload, field)
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("typed JSON variant {variant} field {field} offset is missing"),
+                )
+            })?;
+        carrier_base
+            .checked_add(carrier_bytes)
+            .and_then(|offset| offset.checked_add(payload_base))
+            .and_then(|offset| offset.checked_add(field_base))
+            .ok_or_else(|| CodegenError::new("ProgramTooLarge", "typed JSON offset overflowed"))
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one compiler-private descriptor must prove the complete recursive JSON/List/TextMap target layout"
+    )]
+    fn typed_json_layout_descriptor(
+        &self,
+        json_ty: ValueTypeId,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let descriptor_name = format!("loom.lcir.typed_json.layout.{}", json_ty.raw());
+        if let Some(existing) = self.module.get_global(&descriptor_name) {
+            return Ok(existing.as_pointer_value());
+        }
+
+        let representations = self.artifact.representations();
+        let json_value = representations.value_type(json_ty).ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                format!("missing JSON value type {json_ty}"),
+            )
+        })?;
+        let json_semantic = json_value.semantic().clone();
+        let sum = self.sum_repr(json_ty)?;
+        let expected_fields = [0_usize, 1, 1, 1, 1, 1];
+        if sum.variants().len() != expected_fields.len()
+            || sum
+                .variants()
+                .iter()
+                .zip(expected_fields)
+                .any(|(variant, fields)| variant.fields().len() != fields)
+        {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "typed JSON requires the canonical six-variant payload shape",
+            ));
+        }
+        let field_type = |variant: usize| {
+            sum.variants()
+                .get(variant)
+                .and_then(|variant| variant.fields().first())
+                .copied()
+                .ok_or_else(|| {
+                    CodegenError::new(
+                        "LlvmAbiDefect",
+                        format!("typed JSON variant {variant} has no payload"),
+                    )
+                })
+        };
+        let bool_ty = field_type(1)?;
+        let number_ty = field_type(2)?;
+        let text_ty = field_type(3)?;
+        let list_ty = field_type(4)?;
+        let map_ty = field_type(5)?;
+        let semantic = |ty: ValueTypeId| {
+            representations
+                .value_type(ty)
+                .map(loom_codegen_ir::ValueType::semantic)
+        };
+        if semantic(bool_ty) != Some(&Type::Bool)
+            || semantic(number_ty) != Some(&Type::Float)
+            || semantic(text_ty) != Some(&Type::Text)
+            || self.list_element_type(list_ty)? != json_ty
+            || self.text_map_value_type(map_ty)? != json_ty
+            || !matches!(
+                semantic(list_ty),
+                Some(Type::List(element)) if element.as_ref() == &json_semantic
+            )
+        {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "typed JSON payload types do not match the canonical recursive shape",
+            ));
+        }
+
+        let json_layout = self.sum_layout(json_ty)?;
+        let json_physical = json_layout.physical.into_struct_type();
+        let json_size = self.target_data.get_abi_size(&json_physical);
+        let json_alignment = u64::from(self.target_data.get_abi_alignment(&json_physical));
+        let tag_offset = self
+            .target_data
+            .offset_of_element(&json_physical, 0)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "JSON tag offset is missing"))?;
+        let tag_type = self
+            .sum_tag_type(json_layout.tag)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "typed JSON tag type is missing"))?;
+        let tag_size = self.target_data.get_abi_size(&tag_type);
+        let bool_payload_offset = self.sum_payload_field_offset(json_ty, 1, 0)?;
+        let number_payload_offset = self.sum_payload_field_offset(json_ty, 2, 0)?;
+        let text_payload_offset = self.sum_payload_field_offset(json_ty, 3, 0)?;
+        let array_payload_offset = self.sum_payload_field_offset(json_ty, 4, 0)?;
+        let object_payload_offset = self.sum_payload_field_offset(json_ty, 5, 0)?;
+
+        let list = self.list_layout(list_ty)?;
+        let list_length_offset = self
+            .target_data
+            .offset_of_element(&list.object, 0)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "JSON List length offset is missing")
+            })?;
+        let list_capacity_offset = self
+            .target_data
+            .offset_of_element(&list.object, 1)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "JSON List capacity offset is missing")
+            })?;
+        let list_data_offset = self
+            .target_data
+            .offset_of_element(&list.object, 2)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "JSON List data offset is missing")
+            })?;
+
+        let map = self.text_map_layout(map_ty)?;
+        let map_length_offset = self
+            .target_data
+            .offset_of_element(&map.object, 0)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "JSON map length offset is missing")
+            })?;
+        let map_data_offset = self
+            .target_data
+            .offset_of_element(&map.object, 1)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "JSON map data offset is missing"))?;
+        let map_key_offset = self
+            .target_data
+            .offset_of_element(&map.entry, 0)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "JSON map key offset is missing"))?;
+        let map_value_offset = self
+            .target_data
+            .offset_of_element(&map.entry, 1)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "JSON map value offset is missing")
+            })?;
+
+        let descriptor_type = self.context.struct_type(
+            &std::iter::once(self.context.i32_type().into())
+                .chain(std::iter::once(self.context.i32_type().into()))
+                .chain(std::iter::repeat_n(self.context.i64_type().into(), 18))
+                .collect::<Vec<_>>(),
+            false,
+        );
+        let descriptor_size = self.target_data.get_abi_size(&descriptor_type);
+        let descriptor_alignment = self.target_data.get_abi_alignment(&descriptor_type);
+        if descriptor_size != 152 || descriptor_alignment != 8 {
+            return Err(CodegenError::new(
+                "LcirTypedJsonAbiMismatch",
+                format!(
+                    "LLVM target gives typed JSON descriptor size/alignment {descriptor_size}/{descriptor_alignment}, expected 152/8"
+                ),
+            ));
+        }
+        let u64_value = |value: u64| -> BasicValueEnum<'ctx> {
+            self.context.i64_type().const_int(value, false).into()
+        };
+        let descriptor = self
+            .module
+            .add_global(descriptor_type, None, &descriptor_name);
+        descriptor.set_initializer(
+            &descriptor_type.const_named_struct(&[
+                self.context
+                    .i32_type()
+                    .const_int(u64::from(TYPED_JSON_ABI_VERSION), false)
+                    .into(),
+                self.context.i32_type().const_zero().into(),
+                u64_value(json_size),
+                u64_value(json_alignment),
+                u64_value(tag_offset),
+                u64_value(tag_size),
+                u64_value(bool_payload_offset),
+                u64_value(number_payload_offset),
+                u64_value(text_payload_offset),
+                u64_value(array_payload_offset),
+                u64_value(object_payload_offset),
+                u64_value(list_length_offset),
+                u64_value(list_capacity_offset),
+                u64_value(list_data_offset),
+                u64_value(list.element_stride),
+                u64_value(map_length_offset),
+                u64_value(map_data_offset),
+                u64_value(map.entry_stride),
+                u64_value(map_key_offset),
+                u64_value(map_value_offset),
+            ]),
+        );
+        descriptor.set_constant(true);
+        descriptor.set_linkage(Linkage::Private);
+        descriptor.set_unnamed_address(UnnamedAddress::Global);
+        Ok(descriptor.as_pointer_value())
+    }
+
     fn dynamic_candidate_type(
         &self,
         view: ValueTypeId,
@@ -4600,6 +4844,23 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                 );
                 self.module
                     .add_function(FORMAT_FLOAT_TYPED_SYMBOL, function_type, None)
+            })
+    }
+
+    fn runtime_json_format_typed(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(TYPED_JSON_FORMAT_SYMBOL)
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function(TYPED_JSON_FORMAT_SYMBOL, function_type, None)
             })
     }
 
@@ -5187,6 +5448,69 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         self.builder.position_at_end(success);
         Ok((ok, out_of_range))
     }
+
+    fn require_json_format_status(
+        &self,
+        status: IntValue<'ctx>,
+    ) -> Result<(IntValue<'ctx>, IntValue<'ctx>, IntValue<'ctx>), CodegenError> {
+        let function = self
+            .builder
+            .get_insert_block()
+            .and_then(BasicBlock::get_parent)
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmBuilderFailed",
+                    "JSON format status guard has no active function",
+                )
+            })?;
+        let success = self
+            .context
+            .append_basic_block(function, "json.format.status.ok");
+        let failure = self
+            .context
+            .append_basic_block(function, "json.format.status.failed");
+        let equals = |expected: i32, name: &str| {
+            self.builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    status,
+                    self.context.i32_type().const_int(
+                        u64::try_from(expected)
+                            .expect("typed JSON public result statuses are nonnegative"),
+                        false,
+                    ),
+                    name,
+                )
+                .map_err(builder_error)
+        };
+        let ok = equals(TYPED_JSON_FORMAT_OK, "json.format.ok")?;
+        let depth = equals(TYPED_JSON_FORMAT_DEPTH_LIMIT, "json.format.depth_limit")?;
+        let non_finite = equals(
+            TYPED_JSON_FORMAT_NON_FINITE_NUMBER,
+            "json.format.non_finite",
+        )?;
+        let known_error = self
+            .builder
+            .build_or(depth, non_finite, "json.format.known_error")
+            .map_err(builder_error)?;
+        let valid = self
+            .builder
+            .build_or(ok, known_error, "json.format.status.valid")
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(valid, success, failure)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(failure);
+        let trap = inkwell::intrinsics::Intrinsic::find("llvm.trap")
+            .and_then(|intrinsic| intrinsic.get_declaration(&self.module, &[]))
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "missing llvm.trap"))?;
+        self.builder
+            .build_call(trap, &[], "json.format.status.trap")
+            .map_err(builder_error)?;
+        self.builder.build_unreachable().map_err(builder_error)?;
+        self.builder.position_at_end(success);
+        Ok((ok, depth, non_finite))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -5248,6 +5572,7 @@ struct FunctionEmitter<'backend, 'ctx, 'artifact> {
     root_state: Option<PointerValue<'ctx>>,
     resource_close_cells: Vec<Option<PointerValue<'ctx>>>,
     text_output_cells: Vec<Option<PointerValue<'ctx>>>,
+    json_input_cells: Vec<Option<PointerValue<'ctx>>>,
     parse_output_cells: Vec<Option<PointerValue<'ctx>>>,
 }
 
@@ -5400,6 +5725,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             root_state: None,
             resource_close_cells: vec![None; source.blocks().len()],
             text_output_cells: vec![None; source.instructions().len()],
+            json_input_cells: vec![None; source.instructions().len()],
             parse_output_cells: vec![None; source.instructions().len()],
         };
         emitter.prepare_parameters()?;
@@ -5774,6 +6100,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 InstructionKind::TextConcat { .. }
                     | InstructionKind::TextGet { .. }
                     | InstructionKind::FormatFloat { .. }
+                    | InstructionKind::JsonFormat { .. }
             ) {
                 continue;
             }
@@ -5802,6 +6129,57 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 CodegenError::new(
                     "LlvmAbiDefect",
                     format!("collecting Text instruction {instruction} has no output cell"),
+                )
+            })
+    }
+
+    fn prepare_json_input_cells(&mut self) -> Result<(), CodegenError> {
+        let entry = self.source.entry().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                format!("{} has no entry block", self.source.id()),
+            )
+        })?;
+        self.backend
+            .builder
+            .position_at_end(self.allocation_block(entry)?);
+        for instruction in self.source.instructions() {
+            let json = match instruction.kind() {
+                InstructionKind::JsonFormat { json, .. } => *json,
+                _ => continue,
+            };
+            let json_ty = self
+                .source
+                .value(json)
+                .ok_or_else(|| {
+                    CodegenError::new("LlvmAbiDefect", format!("JSON operand {json} is missing"))
+                })?
+                .ty();
+            let cell = self
+                .backend
+                .builder
+                .build_alloca(
+                    self.backend.llvm_type(json_ty)?,
+                    &format!("json.input.i{}", instruction.id().raw()),
+                )
+                .map_err(builder_error)?;
+            self.json_input_cells[instruction.id().index()] = Some(cell);
+        }
+        Ok(())
+    }
+
+    fn json_input_cell(
+        &self,
+        instruction: InstructionId,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        self.json_input_cells
+            .get(instruction.index())
+            .copied()
+            .flatten()
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("JSON formatting instruction {instruction} has no input cell"),
                 )
             })
     }
@@ -6678,6 +7056,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
     fn compile(mut self) -> Result<(), CodegenError> {
         self.prepare_resource_close_cells()?;
         self.prepare_text_output_cells()?;
+        self.prepare_json_input_cells()?;
         self.prepare_parse_output_cells()?;
         self.prepare_root_frame()?;
         self.finish_coroutine_prologue()?;
@@ -8157,6 +8536,20 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     .build_load(self.backend.ptr_type, output, "format.float.result")
                     .map_err(builder_error)?)
             }
+            InstructionKind::JsonFormat {
+                json,
+                ok_variant,
+                error_variant,
+                depth_limit_variant,
+                non_finite_number_variant,
+            } => one(self.emit_json_format(
+                instruction,
+                *json,
+                *ok_variant,
+                *error_variant,
+                *depth_limit_variant,
+                *non_finite_number_variant,
+            )?),
             InstructionKind::ProductConstruct { fields }
             | InstructionKind::InvariantRecordProven { fields } => {
                 let result = instruction.results().first().copied().ok_or_else(|| {
@@ -8487,6 +8880,75 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             self.record_value(result, value)?;
         }
         Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_json_format(
+        &self,
+        instruction: &Instruction,
+        json: ValueId,
+        ok_variant: u32,
+        error_variant: u32,
+        depth_limit_variant: u32,
+        non_finite_variant: u32,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let result = instruction.results().first().copied().ok_or_else(|| {
+            CodegenError::new("LlvmAbiDefect", "JSON formatting has no Result value")
+        })?;
+        let result_ty = self
+            .source
+            .value(result)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "JSON Result type is missing"))?
+            .ty();
+        let json_ty = self
+            .source
+            .value(json)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "JSON operand type is missing"))?
+            .ty();
+        let error_ty = self.sum_variant_field_type(result_ty, error_variant, 0)?;
+        let json_storage = self.json_input_cell(instruction.id())?;
+        self.backend
+            .builder
+            .build_store(json_storage, self.value(json)?)
+            .map_err(builder_error)?;
+        let output = self.text_output_cell(instruction.id())?;
+        self.backend
+            .builder
+            .build_store(output, self.backend.ptr_type.const_null())
+            .map_err(builder_error)?;
+        self.publish_root_state(ManagedSafepoint::Instruction(instruction.id()))?;
+        let descriptor = self.backend.typed_json_layout_descriptor(json_ty)?;
+        let status = call_int(
+            &self.backend.builder,
+            self.backend.runtime_json_format_typed(),
+            &[json_storage.into(), descriptor.into(), output.into()],
+            "json.format.status",
+        )?;
+        let (ok, _depth_limit, non_finite) = self.backend.require_json_format_status(status)?;
+        let text = self
+            .backend
+            .builder
+            .build_load(self.backend.ptr_type, output, "json.format.text")
+            .map_err(builder_error)?;
+        let ok_value = self.emit_sum_construct_values(result_ty, ok_variant, &[text])?;
+        let depth_error = self.emit_sum_construct_values(error_ty, depth_limit_variant, &[])?;
+        let non_finite_error = self.emit_sum_construct_values(error_ty, non_finite_variant, &[])?;
+        let selected_error = self
+            .backend
+            .builder
+            .build_select(
+                non_finite,
+                non_finite_error,
+                depth_error,
+                "json.format.error",
+            )
+            .map_err(builder_error)?;
+        let error_value =
+            self.emit_sum_construct_values(result_ty, error_variant, &[selected_error])?;
+        self.backend
+            .builder
+            .build_select(ok, ok_value, error_value, "json.format.result")
+            .map_err(builder_error)
     }
 
     #[expect(

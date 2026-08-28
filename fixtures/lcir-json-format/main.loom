@@ -1,0 +1,80 @@
+module lcir_json_format
+
+import standard.json.format_json
+
+enum Problem { WrongValue }
+
+fn formats(value Json, expected Text) Bool {
+    match format_json(value) {
+        Ok(actual) => actual == expected
+        Err(_) => false
+    }
+}
+
+fn deeplyNestedJson() Json {
+    var value = Json.Null
+    for index in 0..129 {
+        value = Json.Array([value])
+    }
+    value
+}
+
+fn verify() Result[Unit, Problem] {
+    let object = Json.Object(
+    TextMap[Json]().insert("z", Json.Number(-0.0)).insert(
+    "a\n\"key",
+    Json.Text("line\n\"quoted\"\\tail")
+    )
+    )
+    let sixVariants = (
+    formats(Json.Null, "null")
+    && formats(Json.Bool(true), "true")
+    && formats(Json.Number(42.5), "42.5")
+    && formats(Json.Text("text"), "\"text\"")
+    && formats(
+    Json.Array([Json.Null, Json.Bool(false), Json.Number(1.25)]),
+    "[null,false,1.25]"
+    )
+    && formats(
+    object,
+    "{\"a\\n\\\"key\":\"line\\n\\\"quoted\\\"\\\\tail\",\"z\":-0}"
+    )
+    )
+    let depthLimit = match format_json(deeplyNestedJson()) {
+        Err(JsonError.DepthLimit) => true
+        _ => false
+    }
+    let nanRejected = match format_json(Json.Number(0.0 / 0.0)) {
+        Err(JsonError.NonFiniteNumber) => true
+        _ => false
+    }
+    let positiveInfinityRejected = match format_json(Json.Number(1.0 / 0.0)) {
+        Err(JsonError.NonFiniteNumber) => true
+        _ => false
+    }
+    let negativeInfinityRejected = match format_json(Json.Number(-1.0 / 0.0)) {
+        Err(JsonError.NonFiniteNumber) => true
+        _ => false
+    }
+    if (
+    sixVariants
+    && depthLimit
+    && nanRejected
+    && positiveInfinityRejected
+    && negativeInfinityRejected
+    ) {
+        Ok(Unit)
+    } else {
+        Err(Problem.WrongValue)
+    }
+}
+
+pub fn main() {
+    let valid = match verify() {
+        Ok(_) => true
+        Err(_) => false
+    }
+    assert valid
+}
+
+test fn typedJsonFormat() Result[Unit, Problem] { verify() }
