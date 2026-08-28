@@ -34,7 +34,7 @@ const NATIVE_FAULT_FORMAT_ENV: &str = "LOOM_FAULT_FORMAT";
 const NATIVE_FAULT_JSON_PREFIX: &str = "LOOM_FAULT_JSON_V1:";
 const RUNTIME_BUNDLE_ENV: &str = "LOOM_RUNTIME_BUNDLE";
 const LINKER_ENV: &str = "LOOM_CC";
-const LLVM_OBJECT_CACHE_DOMAIN: &str = "loom-llvm-object-cache-v34";
+const LLVM_OBJECT_CACHE_DOMAIN: &str = "loom-llvm-object-cache-v35";
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const DEFAULT_DEBUGGER: &str = "lldb";
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -814,19 +814,11 @@ fn run_build(
                 stdout,
                 stderr,
                 "LibraryTargetIsPortable",
-                "library targets already emit portable checked MIR and do not accept --release, --emit object, --target-triple, or runtime link options",
+                "library targets emit portable source packages and do not accept --release, --emit object, --target-triple, or runtime link options",
             )?;
             return Ok(EXIT_USAGE);
         }
-        return build_library(
-            &compilation,
-            program,
-            name,
-            &output,
-            options,
-            stdout,
-            stderr,
-        );
+        return build_library(&compilation, name, &output, options, stdout, stderr);
     }
     let BuildTarget::Binary(entry) = target else {
         unreachable!("library target returned above")
@@ -923,7 +915,6 @@ fn run_build(
 
 fn build_library(
     compilation: &Compilation,
-    program: &loom_mir::CheckedProgram,
     target: &str,
     output: &Path,
     options: &Options,
@@ -948,23 +939,20 @@ fn build_library(
             return Ok(EXIT_USAGE);
         }
     }
-    let bytes = match loom_driver::encode_library_artifact(
-        compilation.project(),
-        compilation.sources(),
-        program,
-    ) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            emit_tool_error(
-                options.json,
-                stdout,
-                stderr,
-                "CompilerDefect",
-                &error.to_string(),
-            )?;
-            return Ok(EXIT_DEFECT);
-        }
-    };
+    let bytes =
+        match loom_driver::encode_library_artifact(compilation.project(), compilation.sources()) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                emit_tool_error(
+                    options.json,
+                    stdout,
+                    stderr,
+                    "CompilerDefect",
+                    &error.to_string(),
+                )?;
+                return Ok(EXIT_DEFECT);
+            }
+        };
     if let Err(error) = std::fs::write(output, bytes) {
         emit_tool_error(
             options.json,
@@ -1893,7 +1881,7 @@ fn cache_context(language_version: &str) -> CacheContext {
     CacheContext {
         language_version: language_version.to_owned(),
         frontend_identity,
-        standard_library_identity: format!("loom-embedded-builtins-v3/build-{frontend_build}"),
+        standard_library_identity: loom_driver::standard_library_identity(language_version),
         contract_mode: "checked".to_owned(),
     }
 }
@@ -1930,7 +1918,7 @@ fn library_artifact_key(compilation: &Compilation, target: &str) -> Option<Cache
     Some(PersistentCache::derived_key(
         compilation.key()?,
         &[
-            ("layer", "portable-library-artifact-v2"),
+            ("layer", "portable-library-artifact-v3"),
             ("target", target),
             ("format", loom_driver::LIBRARY_ARTIFACT_FORMAT),
             ("version", &version),
@@ -2038,15 +2026,42 @@ fn emit_options_with_debug(
     compilation: &Compilation,
     emit_options: &loom_codegen_llvm::EmitOptions,
 ) -> loom_codegen_llvm::EmitOptions {
-    let debug_sources = compilation
+    let mut debug_sources = compilation
         .sources()
         .documents()
         .iter()
         .filter_map(|source| {
             source.text().map(|text| {
-                loom_codegen_llvm::DebugSource::new(source.id().0, source.relative_path(), text)
+                let priority = if source.is_root_package() && source.is_navigable() {
+                    0
+                } else if source.is_navigable() {
+                    1
+                } else if source.is_embedded_dependency() {
+                    2
+                } else {
+                    3
+                };
+                (
+                    priority,
+                    source.relative_path(),
+                    loom_codegen_llvm::DebugSource::new(
+                        source.id().0,
+                        source.relative_path(),
+                        text,
+                    ),
+                )
             })
         })
+        .collect::<Vec<_>>();
+    debug_sources.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then(left.1.cmp(right.1))
+            .then(left.2.file.cmp(&right.2.file))
+    });
+    let debug_sources = debug_sources
+        .into_iter()
+        .map(|(_, _, source)| source)
         .collect();
     emit_options.clone().with_debug_sources(debug_sources)
 }
@@ -2869,7 +2884,7 @@ mod tests {
     fn llvm_object_cache_domain_is_pinned() {
         assert_eq!(
             super::LLVM_OBJECT_CACHE_DOMAIN,
-            "loom-llvm-object-cache-v34"
+            "loom-llvm-object-cache-v35"
         );
     }
 
@@ -2896,7 +2911,7 @@ mod tests {
 
     #[test]
     fn checked_mir_cache_identity_pins_interpreted_artifact_version() {
-        assert_eq!(loom_mir::INTERPRETED_ARTIFACT_VERSION, 23);
+        assert_eq!(loom_mir::INTERPRETED_ARTIFACT_VERSION, 24);
         let context = super::cache_context(loom_mir::LOOM_LANGUAGE_VERSION);
         let artifact_identity = format!(
             "/{}-{}",
@@ -2911,14 +2926,22 @@ mod tests {
     }
 
     #[test]
-    fn semantic_cache_identity_pins_the_standard_item_catalog() {
+    fn semantic_cache_identity_pins_embedded_loom_standard_sources() {
         let context = super::cache_context(loom_mir::LOOM_LANGUAGE_VERSION);
+        let Some(digest) = context
+            .standard_library_identity
+            .strip_prefix("loom-source-stdlib-v1/")
+        else {
+            panic!("{}", context.standard_library_identity);
+        };
         assert!(
-            context
-                .standard_library_identity
-                .starts_with("loom-embedded-builtins-v3/build-"),
+            valid_sha256(digest),
             "{}",
-            context.standard_library_identity
+            context.standard_library_identity,
+        );
+        assert_eq!(
+            context.standard_library_identity,
+            loom_driver::standard_library_identity(loom_mir::LOOM_LANGUAGE_VERSION)
         );
     }
 

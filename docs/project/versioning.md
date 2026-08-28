@@ -12,14 +12,15 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Manifest schema | `1` |
 | Lockfile schema | `1` |
 | Registry protocol/bundle | `1` |
-| Interpreted MIR artifact | format `loom.interpreted-mir`, version `23` |
-| Portable library artifact | version `1` |
+| Interpreted MIR artifact | format `loom.interpreted-mir`, version `24` |
+| Portable library artifact | source-package version `2` |
 | Persistent compiler cache | schema `4` |
-| LCIR textual dump | version `32` |
-| LCIR artifact identity | schema `33` |
-| LCIR native-object domain | `loom-lcir-native-object-v29` |
+| Portable-library final-cache layer | `portable-library-artifact-v3` |
+| LCIR textual dump | version `33` |
+| LCIR artifact identity | schema `34` |
+| LCIR native-object domain | `loom-lcir-native-object-v30` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v34` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v35` |
 | Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
 | Native runtime ABI component | `22` |
@@ -73,13 +74,28 @@ to 33, native-object domain to `loom-lcir-native-object-v29`, and object-cache
 domain to `loom-llvm-object-cache-v34`. The public standard-library ABI remains
 v4.
 
+Compiler-generated `StructuralEquality` instances subsequently close recursive
+List/TextMap-backed value equality through finite, type-specialized direct-call
+cycles. Because the new instance role participates in canonical callable
+identity, this advances the LCIR dump to 33, artifact schema to 34,
+native-object domain to `loom-lcir-native-object-v30`, and object-cache domain
+to `loom-llvm-object-cache-v35`. It adds no runtime ABI or LCIR instruction.
+
 Task composition and timer calls now remain ordinary HIR calls until semantic
 resolution selects a stable compiler-owned `StandardLibraryItem`. The item is
 serialized in typed body facts, so the persistent compiler cache advances to
 schema 4 and domain `loom-compilation-cache-v4`; the embedded standard-library
-identity advances to `loom-embedded-builtins-v3`. Older cache entries are
-misses, not upgraded. Checked MIR, LCIR, native objects, and runtime ABI remain
-unchanged because MIR retains the established `Sleep` and `TaskJoin` forms.
+identity advanced at that stage to `loom-embedded-builtins-v3`. Older cache
+entries are misses, not upgraded. Checked MIR, LCIR, native objects, and runtime
+ABI remain unchanged because MIR retains the established `Sleep` and
+`TaskJoin` forms.
+
+The source-backed standard-library foundation supersedes that historical
+builtin identity. The current identity is
+`loom-source-stdlib-v1/<sha256>` and covers the language version plus the
+ordered path, module name, and exact bytes of every compiler-distributed Loom
+source file. It is part of compiler-cache identity; a changed source library is
+therefore rechecked instead of reusing a builtin-era cache entry.
 
 Controlled quality evidence schema 2 adds an ordered native-route record for
 every prepared object. Each record carries the scenario, expected and actual
@@ -108,9 +124,9 @@ Missing, redirected, duplicated, or inconsistent metadata fails closed before
 execution. Persistent cache schema 3 invalidates older semantic and checked-MIR
 entries; cached typed body facts never supply this identity, which semantic
 analysis rederives from the current HIR. The portable-library envelope remains
-version 1 because its nested checked-MIR payload has its own version boundary.
-No source syntax, resource lifetime rule, LCIR, native ABI, or runtime boundary
-changes in version 22.
+independently versioned. Its current version 2 contains no checked MIR, so MIR
+version changes do not advance it. No source syntax, resource lifetime rule,
+LCIR, native ABI, or runtime boundary changes in version 22.
 
 Interpreted MIR version 23 makes the compiler-private `ConstraintError` record
 shape explicit and validator-enforced. Older artifacts are rejected because
@@ -119,7 +135,28 @@ persistent cache schema remains 3: cached checked-MIR envelopes already carry
 and validate the interpreted-artifact version, while semantic cache payloads
 do not encode this synthetic lowering shape.
 
-Nongeneric portable proof replay advances the LCIR dump to 18, artifact schema
+Interpreted MIR version 24 adds the checked `TextMapEntryAt` builtin for the
+source-level `TextMap.entry_at(index)` operation. Older artifacts are rejected
+because the serialized builtin enum has changed. The operation reuses LCIR's
+existing typed `TextMapEntryGet` instruction and the established TextMap
+layout, so LCIR, native-object, runtime, and cache schema versions do not
+advance.
+
+Portable library version 2 replaces version 1's checked-MIR payload with a
+source-and-interface package envelope. It stores the resolved non-standard
+package graph, exact source text, language version, and canonical public
+interfaces. Decoding validates structural and byte/count bounds, identities,
+graph closure, portable paths, and public-interface fingerprints recomputed
+from source. It stores neither producer-local proof state nor the
+compiler-owned standard-library implementation. Consumers supply the matching
+compiler-distributed standard library and repeat parsing, type checking, proof
+search, lowering, and MIR validation. Version 1 is rejected and must be
+rebuilt. The derived final-artifact cache layer advances to
+`portable-library-artifact-v3` and binds the source-package format/version;
+`.loomi` version 24, persistent compiler-cache schema 4, and the checked-MIR
+cache envelope are unchanged by this library-format replacement.
+
+Nongeneric `.loomi` proof replay advances the LCIR dump to 18, artifact schema
 to 19, native-object domain to v15, and LLVM object-cache domain to v20. The
 checked predicate is explicit typed CFG, rejection raises the canonical
 `ArtifactProofRejected` `RuntimeFault`, and the established nominal value is
@@ -422,7 +459,8 @@ must not be inferred from the toolchain package version.
 | --- | --- |
 | Manifest or lockfile | Reject with a configuration/version diagnostic. |
 | Registry index or bundle | Reject; never use package bytes under the wrong protocol/language identity. |
-| `.loomi` or `.loomlib` | Reject before execution/import, then run complete MIR validation for matching versions. |
+| `.loomi` | Reject before execution, then run complete MIR validation for matching versions. |
+| `.loomlib` | Reject before import; for matching version 2, validate bounded source-package structure and recomputed interface fingerprints before normal source compilation. |
 | Compiler cache | Treat as a miss; versioned roots prevent accidental reuse. |
 | Runtime bundle | Reject before linking on schema, target, data layout, ABI, digest, or tree mismatch. |
 | Native executable/object | Target-specific and not promised compatible with another runtime or toolchain. |
@@ -432,10 +470,10 @@ Regenerate the artifact with the intended compiler and review any source or
 dependency migration.
 
 MIR version `19` makes process-local construction proofs non-portable. A
-matching `.loomi` or nested `.loomlib` payload replays each serialized proof;
-the local compiler cache instead rebuilds proof-bearing semantic and MIR layers
-from source so a warm build retains the cold build's route and eliminated
-checks.
+matching `.loomi` replays each serialized proof. The local compiler cache and a
+version 2 `.loomlib` consumer instead rebuild proof-bearing semantic and MIR
+layers from source so a warm or artifact-backed build derives its own proof
+decisions.
 
 MIR version `21` defines projected `Move` as an ownership transfer of the
 selected leaf that consumes the complete root local. It deliberately does not

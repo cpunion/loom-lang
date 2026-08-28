@@ -8,11 +8,11 @@ use crate::ir::{
     JSON_ERROR_TYPE_ID, JSON_TYPE_ID, LOG_LEVEL_TYPE_ID, RESULT_TYPE_ID, TEXT_MAP_TYPE_ID,
 };
 use crate::{
-    AwaitMode, BlockId, Constant, Effects, Function, InstanceId, Instruction, InstructionId,
-    InstructionKind, ProductReprId, Program, Repr, RepresentationPlan, ResultTarget, SumReprId,
-    SumTagRepr, TASK_FAULT_TYPE_ID, TASK_OUTCOME_CANCELLED_VARIANT, TASK_OUTCOME_COMPLETED_VARIANT,
-    TASK_OUTCOME_FAULTED_VARIANT, TASK_OUTCOME_TYPE_ID, Terminator, TerminatorKind, UnwindTarget,
-    Value, ValueDefinition, ValueId, ValueTypeId, ValueTypeKind,
+    AwaitMode, BlockId, Constant, Effects, Function, InstanceId, InstanceRole, Instruction,
+    InstructionId, InstructionKind, Origin, ProductReprId, Program, Repr, RepresentationPlan,
+    ResultTarget, SumReprId, SumTagRepr, TASK_FAULT_TYPE_ID, TASK_OUTCOME_CANCELLED_VARIANT,
+    TASK_OUTCOME_COMPLETED_VARIANT, TASK_OUTCOME_FAULTED_VARIANT, TASK_OUTCOME_TYPE_ID, Terminator,
+    TerminatorKind, UnwindTarget, Value, ValueDefinition, ValueId, ValueTypeId, ValueTypeKind,
 };
 
 fn representation_pointer_kinds(
@@ -1223,6 +1223,7 @@ impl<'a> Validator<'a> {
     #[allow(clippy::too_many_lines)]
     fn validate_function(&mut self, function: &Function, function_index: usize) {
         let base = format!("function[{function_index}]");
+        self.validate_structural_equality_role(function, &base);
         self.validate_signature(function, &base);
         self.validate_coroutine_plan(function, &base);
         let exact_effects = self
@@ -1378,6 +1379,52 @@ impl<'a> Validator<'a> {
         self.validate_integer_proofs(function, &base, &reachable, &predecessors, &dominators);
         self.validate_list_uniqueness(function, &base, &reachable);
         self.validate_task_ownership(function, &base, &reachable);
+    }
+
+    fn validate_structural_equality_role(&mut self, function: &Function, base: &str) {
+        let Some(key) = self.program.instances.key(function.id()) else {
+            return;
+        };
+        if key.role() != InstanceRole::StructuralEquality {
+            return;
+        }
+        let compared = key
+            .structural_equality_type()
+            .and_then(|semantic| self.program.representations.type_id(semantic));
+        let boolean = self.program.representations.type_id(&Type::Bool);
+        let exact_signature = compared.is_some_and(|compared| {
+            function.signature.params() == [compared, compared]
+                && Some(function.signature.result()) == boolean
+                && function.signature.inout_params().is_empty()
+        });
+        if !exact_signature {
+            self.error(
+                ValidationCode::InstancePlan,
+                format!("{base}.signature"),
+                "structural-equality helper requires one closed registered key type and exact (T, T) -> Bool signature without inout parameters",
+            );
+        }
+        if function.effects != Effects::NONE {
+            self.error(
+                ValidationCode::InstancePlan,
+                format!("{base}.effects"),
+                "structural-equality helper must be effect-free",
+            );
+        }
+        if function.coroutine.is_some() {
+            self.error(
+                ValidationCode::InstancePlan,
+                format!("{base}.coroutine"),
+                "structural-equality helper cannot be a coroutine",
+            );
+        }
+        if function.origin != Origin::synthetic(key.source()) {
+            self.error(
+                ValidationCode::InstancePlan,
+                format!("{base}.origin"),
+                "structural-equality helper requires a synthetic origin",
+            );
+        }
     }
 
     fn validate_task_ownership(&mut self, function: &Function, base: &str, reachable: &[bool]) {
@@ -7032,7 +7079,7 @@ fn dominator_intervals(entry: usize, children: &[Vec<usize>]) -> Vec<Option<Domi
 
 #[cfg(test)]
 mod tests {
-    use loom_mir::{FunctionId as MirFunctionId, TypeId, WitnessId};
+    use loom_mir::{ExprId as MirExprId, FunctionId as MirFunctionId, TypeId, WitnessId};
 
     use super::*;
     use crate::{
@@ -7054,6 +7101,94 @@ mod tests {
                 .expect("declare");
         }
         builder.finish()
+    }
+
+    fn structural_equality_program() -> Program {
+        let source = MirFunctionId(89);
+        let origin = Origin::synthetic(source);
+        let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        let integer = builder.type_id(&Type::Int).expect("Int");
+        let boolean = builder.type_id(&Type::Bool).expect("Bool");
+        let helper = builder
+            .declare_instance(
+                InstanceKey::structural_equality(source, Type::Int),
+                origin,
+                "structural.eq.int",
+                Signature::new([integer, integer], boolean),
+                Effects::NONE,
+            )
+            .expect("declare structural equality helper");
+        {
+            let mut function = builder.function(helper).expect("function builder");
+            let entry = function.create_block().expect("entry");
+            function.set_entry(entry).expect("set entry");
+            function
+                .append_block_parameter(entry, integer)
+                .expect("left operand");
+            function
+                .append_block_parameter(entry, integer)
+                .expect("right operand");
+            let result = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::Constant(Constant::Bool(true)),
+                    &[boolean],
+                    origin,
+                )
+                .expect("result")[0];
+            function
+                .terminate(
+                    entry,
+                    Terminator::new(TerminatorKind::Return(result), origin),
+                )
+                .expect("return");
+        }
+        builder.finish()
+    }
+
+    #[test]
+    fn independent_validation_rechecks_structural_equality_role_contract() {
+        let valid = structural_equality_program();
+        validate_program(&valid).expect("valid structural equality helper");
+
+        let boolean = valid
+            .representations
+            .type_id(&Type::Bool)
+            .expect("Bool type");
+        let mut wrong_signature = valid.clone();
+        wrong_signature.functions[0].signature = Signature::new([], boolean);
+        let errors = validate_program(&wrong_signature).expect_err("wrong signature must fail");
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::InstancePlan && error.path() == "function[0].signature"
+        }));
+
+        let mut wrong_effect = valid.clone();
+        wrong_effect.functions[0].effects = Effects::MAY_COLLECT.with_implications();
+        let errors = validate_program(&wrong_effect).expect_err("wrong effect must fail");
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::InstancePlan && error.path() == "function[0].effects"
+        }));
+
+        let mut coroutine = valid.clone();
+        coroutine.functions[0].coroutine = Some(crate::CoroutinePlan::new(boolean, []));
+        let errors = validate_program(&coroutine).expect_err("coroutine helper must fail");
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::InstancePlan && error.path() == "function[0].coroutine"
+        }));
+
+        let mut sourced = valid.clone();
+        sourced.functions[0].origin.expression = Some(MirExprId(1));
+        let errors = validate_program(&sourced).expect_err("source expression must fail");
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::InstancePlan && error.path() == "function[0].origin"
+        }));
+
+        let mut spanned = valid;
+        spanned.functions[0].origin.span.range.end = 1;
+        let errors = validate_program(&spanned).expect_err("source span must fail");
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::InstancePlan && error.path() == "function[0].origin"
+        }));
     }
 
     #[test]

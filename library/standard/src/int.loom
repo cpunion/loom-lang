@@ -1,0 +1,11 @@
+module standard.int
+
+/// Returns the smaller of two Int values.
+pub fn minimum(left Int, right Int) Int {
+    if left < right { left } else { right }
+}
+
+/// Returns the larger of two Int values.
+pub fn maximum(left Int, right Int) Int {
+    if left > right { left } else { right }
+}

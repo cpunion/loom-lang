@@ -6,9 +6,10 @@ Status: **Accepted; implementation in progress**
 
 Loom will place a target-aware, typed SSA representation between checked MIR
 and native target emitters. This representation is Loom Codegen IR (LCIR).
-Checked MIR remains the portable semantic boundary shared with the interpreter;
-LCIR owns callable instances, physical value representations, explicit control
-flow, and the information needed for mechanical target emission.
+Checked MIR remains the backend-neutral semantic boundary shared with the
+interpreter; LCIR owns callable instances, physical value representations,
+explicit control flow, and the information needed for mechanical target
+emission.
 
 LCIR is compiler-private. Its Rust API, textual dump, physical ABI, and object
 symbols may change with the compiler build. It is not a source IR, a stable
@@ -99,10 +100,10 @@ For a statically established source predicate, fresh checked MIR is also the
 process-local proof boundary. The public raw LCIR builder cannot mint
 proof-bearing instructions, and LCIR validation checks their exact typed
 construction shape; it does not claim to reconstruct and re-prove a predicate
-that LCIR does not encode. Serialization replaces `Proven` with `Recheck`, and
-decoding normalizes a forged `Proven` spelling the same way. Supported
-nongeneric `Recheck` executes the predicate or invariant in typed LCIR before
-publishing a nominal value and raises the canonical
+that LCIR does not encode. Portable `.loomi` serialization replaces `Proven`
+with `Recheck`, and decoding normalizes a forged `Proven` spelling the same
+way. Supported nongeneric `Recheck` executes the predicate or invariant in
+typed LCIR before publishing a nominal value and raises the canonical
 `ArtifactProofRejected` runtime fault when replay fails. Generic or otherwise
 unsupported replay selects atomic legacy fallback. A checked-MIR wrapper is
 neither a portable proof certificate nor publisher authentication.
@@ -627,6 +628,15 @@ identity to schema 33, LCIR native-object domain to
 `loom-llvm-object-cache-v34`, and native runtime identity to component 22 with
 `typed-json-v1` and `runtime-v16`. It adds no executor, universal value, or
 public standard-library ABI revision.
+
+Recursive structural equality subsequently adds compiler-generated
+`StructuralEquality` callable instances. Each exact `(T, T) -> Bool` helper is
+effect-free, expands one representation layer, and reaches nested aggregate
+helpers through ordinary direct calls, so List/TextMap-backed nominal cycles
+close without a runtime type switch. This advances the canonical dump to
+`lcir 33`, artifact identity to schema 34, LCIR native-object domain to
+`loom-lcir-native-object-v30`, and CLI object-cache domain to
+`loom-llvm-object-cache-v35`. It adds no runtime ABI or new LCIR instruction.
 
 Calls to the C process entry, libc, and versioned Loom runtime functions are
 explicit external boundaries. They do not permit two source-function ABIs in

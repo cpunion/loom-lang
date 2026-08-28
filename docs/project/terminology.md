@@ -20,6 +20,8 @@ Use these terms consistently in code, diagnostics, and documentation.
 | Checked MIR | MIR that passed the independent validator; the backend trust boundary. |
 | Backend | An executor/code generator consuming checked MIR: interpreter or LLVM. |
 | Artifact | A concrete output. Qualify it as executable, object, `.loomi`, `.loomlib`, or runtime bundle. |
+| `.loomi` | A versioned interpreted executable containing checked MIR and one validated entry. |
+| `.loomlib` | A versioned source-and-interface package whose embedded Loom source is recompiled by the consumer. |
 | Root | A function selected by an executable/test build from which native reachability starts. |
 | Reachability | Closed-world traversal of functions, witnesses, builtins, and used method slots. |
 | DCE | Dead-code elimination. Use it for code/data removed from a native artifact, not for skipping frontend checks. |

@@ -14,7 +14,7 @@ pub const LOOM_LANGUAGE_VERSION: &str = "0.3";
 /// Package identity includes the resolved version so two versions of the same
 /// package can coexist without merging their modules or definitions.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PackageId {
     name: String,
     version: String,

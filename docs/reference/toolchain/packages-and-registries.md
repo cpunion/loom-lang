@@ -93,10 +93,23 @@ version is already present as a fully validated cache entry.
 
 ## Portable library dependencies
 
-A `.loomlib` contains versioned checked MIR plus package and public-export
-metadata. Loading it runs the ordinary decoder and MIR validator. It is
-portable across hosts at the language-artifact level, but it is not a native
-archive, dynamic library, stable FFI boundary, or plugin format.
+A version 2 `.loomlib` contains a resolved package graph, exact Loom source
+text, and canonical public-interface fingerprints. It deliberately contains no
+checked MIR, producer-local proof state, or compiler-owned standard-library
+implementation. The decoder rejects incompatible versions and languages,
+malformed or oversized graphs and sources, non-portable paths, reserved
+`standard` package or dependency identities, and interfaces that do not match
+the embedded source. The loader bounds the artifact before reading it into
+memory. Per-package Merkle identities include dependency identities and their
+content, so two artifacts may share an identical transitive package while a
+lockfile still detects any transitive source change. The consumer then supplies its matching
+compiler-distributed standard library and runs the normal parse, type-check,
+proof, and lowering pipeline over the complete source graph.
+
+Version 1 artifacts are not upgraded in place and must be rebuilt with the
+current compiler. A `.loomlib` is portable across hosts at the language-artifact
+level, but it is not a native archive, dynamic library, stable FFI boundary, or
+plugin format.
 
 See [Manifest and lockfile](manifest-and-lockfile.md) for dependency syntax and
 [Artifacts and cross-compilation](artifacts-and-cross-compilation.md) for the

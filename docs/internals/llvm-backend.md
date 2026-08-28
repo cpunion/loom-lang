@@ -38,13 +38,13 @@ may contain one another.
 The LCIR emitter accepts only a closed `CheckedArtifact`: its roots, callable
 closure, representations, CFG, types, proof-boundary shapes, and exact fault
 effects have already crossed independent validation. Predicate truth itself is
-a process-local conclusion supplied by fresh checked MIR. Supported portable
+a process-local conclusion supplied by fresh checked MIR. Supported `.loomi`
 nongeneric `Recheck` constructions re-evaluate their serialized predicate in
 LCIR and publish the nominal value only on the accepted path; generic or
-otherwise unsupported replay selects the complete legacy route. The emitter declares every
-source function with its typed LCIR ABI, keeps source symbols internal, emits a
-run or ordered test harness, verifies before and after optimization, and writes
-a relocatable object.
+otherwise unsupported replay selects the complete legacy route. The emitter
+declares every source function with its typed LCIR ABI, keeps source symbols
+internal, emits a run or ordered test harness, verifies before and after
+optimization, and writes a relocatable object.
 
 Ordinary `build`, `run`, and `test` use `NativeRoutePolicy::Automatic`. Route
 preparation creates one target machine and attempts the complete direct
@@ -332,7 +332,8 @@ leaves after a possible relocation. It copies the prefix and suffix and writes
 the replacement or inserted entry. It never mutates the source backing, so a
 shared alias retains its prior logical value. A future reuse path may be added
 only behind an independently validated uniqueness certificate. Length and
-`get -> Option[V]` do not allocate; lookup constructs the exact option carrier
+`get -> Option[V]` and `entry_at -> Option[(Text, V)]` do not allocate;
+lookup and canonical-order indexed access construct their exact option carriers
 without a universal `Value`, witness/executor pointer, tag registry, or stable
 address assumption.
 
@@ -342,9 +343,10 @@ source pointer, removing the sole entry returns null, and every other successful
 removal allocates `length - 1` entries, reloads the exactly rooted source map,
 then copies the prefix and suffix around the removed entry. The key is not used
 after allocation and therefore needs no forced root. Structural equality
-compares lengths and reads sorted entries positionally through a
-compiler-private exact `Option[(Text, V)]` operation. This keeps insertion order
-unobservable and recursively uses the ordinary typed equality CFG for `V`.
+compares lengths and reads sorted entries positionally through the same checked
+exact `Option[(Text, V)]` operation exposed by source `entry_at`. This keeps
+insertion order unobservable and recursively uses the ordinary typed equality
+CFG for `V`.
 
 ## Collision-free closed-sum storage
 
@@ -596,10 +598,10 @@ is correct.
 
 ## Object identity and linking
 
-The canonical textual dump is `lcir 32`, and the checked artifact identity uses
-schema 33. Object identities are route-separated:
+The canonical textual dump is `lcir 33`, and the checked artifact identity uses
+schema 34. Object identities are route-separated:
 
-- `loom-lcir-native-object-v29` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v30` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -611,7 +613,7 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v34` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v35` and never suppresses fingerprint
 errors.
 
 The current LCIR domains encode the explicit transitive effect lattice,

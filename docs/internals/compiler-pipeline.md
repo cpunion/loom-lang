@@ -7,6 +7,7 @@ through validated MIR.
 ```text
 project input
   -> package and source discovery
+     -> versioned compiler-distributed standard-library source
   -> lossless lexing and parsing
   -> HIR construction and name resolution
   -> static types, contracts, concepts, and witness proofs
@@ -41,6 +42,22 @@ source. Stable source paths, package identities, dependency aliases, selected
 features, targets, and the lockfile state are part of the project snapshot.
 Standalone file or directory inputs use a synthetic package identity and have
 no manifest features.
+
+The source-backed portion of the compiler-distributed standard library is a
+read-only `standard` package available through a reserved direct dependency. It
+is not concatenated with a root source file and it receives no privileged
+frontend pass: migrated modules are parsed, resolved, checked, lowered, and
+selected by the same reachability rules as user packages. The current package
+contains the foundational `standard.int` algorithms; JSON and other documented
+APIs still have transitional compiler-known or runtime paths. See
+[Core, standard library, and runtime boundary](core-library-runtime-boundary.md).
+
+A version 2 `.loomlib` dependency enters at this same source boundary. Its
+decoder validates the bounded package/source structure and recomputes the
+stored public interfaces, then exposes the embedded files as read-only package
+sources. It does not supply checked MIR, producer proof decisions, or a
+standard-library implementation. The consumer injects its compiler-distributed
+standard package and compiles the resulting graph normally.
 
 All source files in the selected graph are parsed and checked. Native
 reachability is a later code-generation concern; it never suppresses a type or
@@ -86,10 +103,15 @@ API.
 Expression identities are canonicalized per function. The independent MIR
 validator then checks indices, types, dataflow, contracts, witnesses, task
 liveness, and operation shapes. The driver snapshot and persistent checked-MIR
-cache retain that wrapper. The interpreter, portable-library encoder,
-interpreted-artifact encoder, source-reachability analysis, native-object
-fingerprint, and LLVM emission entry points accept only
-`loom_mir::CheckedProgram`.
+cache retain that wrapper. The interpreter, interpreted-artifact encoder,
+source-reachability analysis, native-object fingerprint, and LLVM emission
+entry points accept only `loom_mir::CheckedProgram`.
+
+A library build must still pass the complete producer frontend before it can
+publish an artifact. Its encoder receives the validated project/source
+snapshot, however, and serializes source plus canonical public interfaces—not
+the resulting `CheckedProgram`. The consuming frontend repeats parsing,
+semantic checks and proof search, MIR lowering, and MIR validation.
 
 ## Command roots
 
@@ -99,8 +121,8 @@ Frontend checking and backend roots are intentionally different:
 - a binary `build`, `run`, or `debug` selects one public entry;
 - `test` selects every MIR test in the chosen test graph;
 - an empty test set produces a successful empty harness;
-- a library target serializes portable checked MIR rather than selecting an
-  executable root.
+- a library target packages the resolved source graph and public interfaces;
+  it has no executable or code-generation root.
 
 For native code, root selection is followed by closed-world reachability.
 Direct calls, static witness calls, dynamic witness slots, builtins, and async

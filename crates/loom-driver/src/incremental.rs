@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use loom_core::{FileId, TextRange};
+use loom_core::{FileId, PackageId, TextRange};
 use loom_syntax::{
     Block, ConformanceMember, Decl, DeclKind, ImplKind, MethodDecl, Parse, Visibility,
 };
@@ -13,6 +13,7 @@ use crate::SourceMap;
 
 /// Source-independent public surface of one Loom module.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModuleInterface {
     pub module: String,
     pub files: Vec<String>,
@@ -35,6 +36,23 @@ pub(crate) fn module_interfaces(
         .into_iter()
         .map(|module| module.interface)
         .collect()
+}
+
+pub(crate) fn embedded_module_interfaces<'a>(
+    sources: impl IntoIterator<Item = (FileId, &'a PackageId, &'a str, &'a Parse)>,
+) -> Vec<ModuleInterface> {
+    module_query_data_from_sources(sources.into_iter().map(|(file, package, path, parse)| {
+        ModuleSource {
+            file,
+            package: Some(package),
+            path,
+            path_is_package_relative: true,
+            parse,
+        }
+    }))
+    .into_iter()
+    .map(|module| module.interface)
+    .collect()
 }
 
 pub(crate) fn module_query_keys(
@@ -65,6 +83,29 @@ fn module_query_data(
     sources: &SourceMap,
     parses: &BTreeMap<FileId, Parse>,
 ) -> Vec<ModuleQueryData> {
+    module_query_data_from_sources(parses.iter().map(|(file, parse)| {
+        let source = sources.document(*file);
+        ModuleSource {
+            file: *file,
+            package: source.and_then(crate::SourceDocument::package),
+            path: source.map_or("", crate::SourceDocument::relative_path),
+            path_is_package_relative: source.is_none_or(crate::SourceDocument::is_root_package),
+            parse,
+        }
+    }))
+}
+
+struct ModuleSource<'a> {
+    file: FileId,
+    package: Option<&'a PackageId>,
+    path: &'a str,
+    path_is_package_relative: bool,
+    parse: &'a Parse,
+}
+
+fn module_query_data_from_sources<'a>(
+    sources: impl IntoIterator<Item = ModuleSource<'a>>,
+) -> Vec<ModuleQueryData> {
     let mut modules = BTreeMap::<
         String,
         Vec<(
@@ -74,24 +115,20 @@ fn module_query_data(
             serde_json::Value,
         )>,
     >::new();
-    for (file, parse) in parses {
-        let ast = parse.ast();
+    for source in sources {
+        let ast = source.parse.ast();
         let source_module = ast.module.as_ref().map_or_else(
-            || format!("<missing:{}>", file.0),
+            || format!("<missing:{}>", source.file.0),
             |declaration| declaration.name.as_string(),
         );
-        let module = sources
-            .document(*file)
-            .map_or(source_module.clone(), |source| {
-                source.package().map_or(source_module.clone(), |package| {
-                    format!(
-                        "{}@{}+loom{}::{source_module}",
-                        package.name(),
-                        package.version(),
-                        package.language()
-                    )
-                })
-            });
+        let module = source.package.map_or(source_module.clone(), |package| {
+            format!(
+                "{}@{}+loom{}::{source_module}",
+                package.name(),
+                package.version(),
+                package.language()
+            )
+        });
         let imports = serde_json::to_value(&ast.imports).unwrap_or(serde_json::Value::Null);
         let interface_declarations = ast
             .declarations
@@ -118,10 +155,17 @@ fn module_query_data(
         erase_source_ranges(&mut interface);
         erase_source_ranges(&mut shape);
         erase_source_ranges(&mut body);
-        let path = sources.document(*file).map_or_else(
-            || format!("file-{}", file.0),
-            |source| source.relative_path().to_owned(),
-        );
+        let package_prefix = (!source.path_is_package_relative)
+            .then(|| source.package.map(|package| format!("deps/{package}/")))
+            .flatten();
+        let canonical_path = package_prefix.as_deref().map_or(source.path, |prefix| {
+            source.path.strip_prefix(prefix).unwrap_or(source.path)
+        });
+        let path = if canonical_path.is_empty() {
+            format!("file-{}", source.file.0)
+        } else {
+            canonical_path.to_owned()
+        };
         modules
             .entry(module)
             .or_default()

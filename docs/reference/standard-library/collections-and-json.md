@@ -52,6 +52,7 @@ let one = empty.insert("answer", 42)
 map.length() Int
 map.contains(key Text) Bool
 map.get(key Text) Option[V]
+map.entry_at(index Int) Option[(Text, V)]
 map.insert(key Text, value V) TextMap[V]
 map.remove(key Text) TextMap[V]
 ```
@@ -62,8 +63,10 @@ original map remains observably unchanged, so these methods do not require a
 `var` receiver.
 
 Map keys have a canonical order: lexicographic order of their UTF-8 encoding.
-This order determines canonical JSON object and structured-log output. There is
-no source iteration API in version 0.3.
+This order determines `entry_at`, canonical JSON object output, and structured
+logging. `entry_at` returns a logical copy of the key/value pair at a zero-based
+canonical-order index, or `None` for a negative or out-of-range index. It does
+not expose insertion history or a runtime-specific storage order.
 
 Map equality is available when `V` supports value equality. It compares the
 same key/value mapping, independent of the history of inserts and removals.

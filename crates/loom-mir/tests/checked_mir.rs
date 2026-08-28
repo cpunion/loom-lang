@@ -1759,6 +1759,71 @@ fn text_map_insert_rejects_a_wrong_value_type_at_the_checked_boundary() {
 }
 
 #[test]
+fn text_map_entry_at_rejects_a_non_integer_index_at_the_checked_boundary() {
+    let map = TypeId(0);
+    let map_int = Type::Nominal(map, vec![Type::Int]);
+    let program = Program {
+        types: vec![TypeDef {
+            id: map,
+            name: "TextMap".to_owned(),
+            span: span(),
+            type_parameters: 1,
+            kind: TypeDefKind::Record {
+                fields: vec![FieldDef {
+                    name: "raw".to_owned(),
+                    ty: Type::Int,
+                    span: span(),
+                }],
+                invariant: None,
+            },
+        }],
+        functions: vec![function(
+            0,
+            vec![
+                local(0, map_int.clone(), false),
+                local(1, Type::Text, false),
+            ],
+            Vec::new(),
+            Type::Int,
+            Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(Expr {
+                    id: ExprId::UNASSIGNED,
+                    kind: ExprKind::Call {
+                        target: CallTarget::Builtin(loom_mir::Builtin::TextMapEntryAt),
+                        type_arguments: Vec::new(),
+                        arguments: vec![
+                            CallArgument::Value(copy(0, map_int)),
+                            CallArgument::Value(copy(1, Type::Text)),
+                        ],
+                        witnesses: Vec::new(),
+                    },
+                    ty: Type::Int,
+                    span: span(),
+                })),
+                span: span(),
+            },
+        )],
+        prelude: PreludeIds {
+            text_map: Some(map),
+            ..PreludeIds::default()
+        },
+        ..Program::default()
+    };
+    assert!(validation_errors(&program).contains(MirValidationCode::BuiltinShape));
+}
+
+#[test]
+fn text_map_entry_at_has_an_explicit_interpreted_artifact_encoding() {
+    let encoded = serde_json::to_string(&loom_mir::Builtin::TextMapEntryAt)
+        .expect("encode TextMap.entry_at builtin");
+    assert_eq!(encoded, r#""text_map_entry_at""#);
+    let decoded = serde_json::from_str::<loom_mir::Builtin>(&encoded)
+        .expect("decode TextMap.entry_at builtin");
+    assert_eq!(decoded, loom_mir::Builtin::TextMapEntryAt);
+}
+
+#[test]
 fn text_map_equality_requires_value_equality_at_the_checked_boundary() {
     let map = TypeId(0);
     let file = TypeId(1);
@@ -1998,7 +2063,7 @@ fn resource_close_requires_an_inout_place() {
 }
 
 #[test]
-fn scoped_statement_and_canonical_resource_identity_round_trips_in_artifact_twenty_two() {
+fn scoped_statement_and_canonical_resource_identity_round_trips_in_current_artifact() {
     let main = function(
         1,
         Vec::new(),
@@ -2041,7 +2106,7 @@ fn artifact_twenty_does_not_cross_the_scoped_mir_boundary() {
     assert!(matches!(
         error,
         ArtifactError::VersionMismatch {
-            expected: 23,
+            expected: INTERPRETED_ARTIFACT_VERSION,
             found: 20
         }
     ));
@@ -2058,7 +2123,7 @@ fn artifact_twenty_one_does_not_cross_the_resource_identity_boundary() {
     assert!(matches!(
         error,
         ArtifactError::VersionMismatch {
-            expected: 23,
+            expected: INTERPRETED_ARTIFACT_VERSION,
             found: 21
         }
     ));
@@ -4075,7 +4140,7 @@ fn artifact_rejects_pre_witness_segmentation_version_sixteen_before_body_decode(
 
 #[test]
 fn artifact_rejects_raw_wait_version_seventeen_before_body_decode() {
-    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 23);
+    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 24);
     let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
     let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
     value["version"] = serde_json::json!(17);

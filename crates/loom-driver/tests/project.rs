@@ -3,18 +3,15 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 
-use loom_core::runtime_fault::{
-    ARTIFACT_PROOF_REJECTED_FAULT_CODE, ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
-};
 use loom_core::{FileId, Span};
 use loom_driver::{
-    AnalysisHost, CacheContext, CacheLookup, DiagnosticRecord, LockMode, PersistentCache,
-    PipelineStage, Position, ProjectGraph, ProjectOptions, RelatedDiagnostic, SpanRecord, SymbolId,
-    TargetKind, decode_library_artifact, discover_loom_files, encode_library_artifact,
-    format_source,
+    AnalysisHost, CacheContext, CacheLookup, DiagnosticRecord, LIBRARY_ARTIFACT_MAX_BYTES,
+    LockMode, PersistentCache, PipelineStage, Position, ProjectGraph, ProjectOptions,
+    RelatedDiagnostic, SourceOrigin, SpanRecord, SymbolId, TargetKind, decode_library_artifact,
+    discover_loom_files, encode_library_artifact, format_source,
 };
 use loom_hir::{SourceUnit, lower_files};
-use loom_interpreter::{ExecutionFailure, Interpreter, TestStatus, Value};
+use loom_interpreter::{Interpreter, TestStatus, Value};
 use loom_mir::ConceptIdentity;
 use loom_sema::{CallTarget, StandardLibraryItem};
 use loom_syntax::parse_with_file;
@@ -77,6 +74,164 @@ fn constrained_proof_project() -> TestProject {
         "module proofs\n\ntype Positive = Float where self >= 0.0\n\npub fn make() Positive { Positive(10.0) }\n",
     );
     project
+}
+
+fn assert_compiler_owned_source(source: &loom_driver::SourceDocument) {
+    assert_eq!(source.origin(), SourceOrigin::CompilerOwnedStandardLibrary);
+    assert!(source.is_compiler_owned());
+    assert!(!source.is_embedded_dependency());
+    assert!(source.is_read_only());
+    assert!(!source.is_navigable());
+}
+
+#[test]
+fn compiler_owned_standard_source_resolves_as_an_ordinary_direct_definition() {
+    let project = TestProject::new();
+    project.write(
+        "main.loom",
+        r"module embedded_standard_user
+
+import standard.int.minimum
+
+pub fn main() {
+    let value = minimum(9, 4)
+    assert value == 4
+}
+
+test fn importedMinimum() {
+    let value = minimum(-2, 3)
+    assert value == -2
+}
+",
+    );
+
+    let mut host = AnalysisHost::new(&project.root).expect("open embedded-standard project");
+    let snapshot = host.snapshot().expect("check embedded-standard project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+
+    let root_source = snapshot
+        .sources()
+        .documents()
+        .iter()
+        .find(|source| source.is_root_package())
+        .expect("root source");
+    assert_eq!(root_source.origin(), SourceOrigin::FileSystem);
+    assert!(root_source.is_navigable());
+    assert!(!root_source.is_read_only());
+
+    let standard_source = snapshot
+        .sources()
+        .documents()
+        .iter()
+        .find(|source| {
+            source
+                .package()
+                .is_some_and(|package| package.name() == "standard")
+        })
+        .expect("compiler-owned standard source");
+    assert_compiler_owned_source(standard_source);
+    assert_eq!(
+        standard_source
+            .package()
+            .expect("standard package")
+            .version(),
+        loom_core::LOOM_LANGUAGE_VERSION
+    );
+    assert_eq!(
+        standard_source.relative_path(),
+        "deps/standard@0.3/src/int.loom"
+    );
+
+    let program = snapshot.executable().expect("lower checked MIR");
+    let minimum = program
+        .functions
+        .iter()
+        .find(|function| function.name == "standard.int.minimum")
+        .expect("ordinary source minimum definition");
+    assert!(
+        program.functions.iter().any(|function| {
+            function.exprs_preorder().any(|expression| {
+                matches!(
+                    expression.kind,
+                    loom_mir::ExprKind::Call {
+                        target: loom_mir::CallTarget::Direct(target),
+                        ..
+                    } if target == minimum.id
+                )
+            })
+        }),
+        "the imported source function must lower to a direct DefId-derived call"
+    );
+
+    let results = snapshot
+        .run_tests()
+        .expect("run imported standard function");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].status, TestStatus::Passed);
+
+    let standard_path = standard_source.absolute_path().to_path_buf();
+    drop(snapshot);
+    host.set_overlay(
+        &standard_path,
+        "module standard.int\n\npub fn minimum(left Int, right Int) Int { 999 }\n",
+    )
+    .expect("install hostile synthetic-path overlay");
+    let protected = host.snapshot().expect("reload protected standard source");
+    let protected_source = protected
+        .sources()
+        .documents()
+        .iter()
+        .find(|source| source.absolute_path() == standard_path)
+        .expect("protected standard source");
+    assert!(
+        protected_source
+            .text()
+            .is_some_and(|text| text.contains("Returns the smaller")),
+        "compiler-owned source must win over editor overlays"
+    );
+    assert!(!protected.has_errors(), "{:#?}", protected.diagnostics());
+}
+
+#[test]
+fn standard_package_name_alias_and_embedded_modules_are_reserved() {
+    let named_standard = TestProject::new();
+    named_standard.write(
+        "loom.toml",
+        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"standard\"\nversion = \"1.0.0\"\n",
+    );
+    named_standard.write("src/main.loom", "module standard\n\npub fn main() {}\n");
+    let error = ProjectGraph::load(&named_standard.root).expect_err("reserved package name");
+    assert!(
+        error
+            .to_string()
+            .contains("package name `standard` is reserved")
+    );
+
+    let aliased_standard = TestProject::new();
+    aliased_standard.write(
+        "loom.toml",
+        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"application\"\nversion = \"1.0.0\"\n[dependencies]\nstandard = { path = \"../dependency\" }\n",
+    );
+    aliased_standard.write("src/main.loom", "module application\n\npub fn main() {}\n");
+    let error = ProjectGraph::load(&aliased_standard.root).expect_err("reserved dependency alias");
+    assert!(
+        error
+            .to_string()
+            .contains("dependency alias `standard` is reserved")
+    );
+
+    let legacy_namespace = TestProject::new();
+    legacy_namespace.write("main.loom", "module standard.int\n\npub fn main() {}\n");
+    let snapshot = AnalysisHost::new(&legacy_namespace.root)
+        .expect("open legacy namespace project")
+        .snapshot()
+        .expect("analyze legacy namespace project");
+    assert!(
+        snapshot
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.code == "ReservedStandardModule")
+    );
 }
 
 #[test]
@@ -281,7 +436,14 @@ fn manifest_resolves_path_dependencies_sources_and_targets() {
         .iter()
         .map(loom_driver::SourceDocument::relative_path)
         .collect::<Vec<_>>();
-    assert_eq!(paths, ["deps/utility@1.2.0/src/math.loom", "src/main.loom"]);
+    assert_eq!(
+        paths,
+        [
+            "deps/standard@0.3/src/int.loom",
+            "deps/utility@1.2.0/src/math.loom",
+            "src/main.loom",
+        ]
+    );
     assert!(!snapshot.has_errors(), "{:?}", snapshot.diagnostics());
     assert!(
         snapshot
@@ -298,11 +460,15 @@ fn portable_library_is_a_consumable_versioned_dependency() {
     let project = TestProject::new();
     project.write(
         "utility/loom.toml",
-        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"utility\"\nversion = \"1.2.0\"\n",
+        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"utility\"\nversion = \"1.2.0\"\nsources = [\"src\", \"deps\"]\n",
     );
     project.write(
         "utility/src/math.loom",
         "module utility.math\n\npub fn increment(value Int) Int { value + 1 }\n\nfn private_value() Int { 99 }\n",
+    );
+    project.write(
+        "utility/deps/utility@1.2.0/nested.loom",
+        "module utility.nested\n\npub fn nested_value() Int { 7 }\n",
     );
     let producer = AnalysisHost::new(project.root.join("utility")).expect("open producer");
     let producer_snapshot = producer.snapshot().expect("compile producer");
@@ -311,14 +477,174 @@ fn portable_library_is_a_consumable_versioned_dependency() {
         "{:#?}",
         producer_snapshot.diagnostics()
     );
-    let bytes = encode_library_artifact(
-        producer_snapshot.project(),
-        producer_snapshot.sources(),
-        producer_snapshot
-            .executable()
-            .expect("producer checked MIR"),
+    let bytes = encode_library_artifact(producer_snapshot.project(), producer_snapshot.sources())
+        .expect("encode package artifact");
+    let envelope: serde_json::Value = serde_json::from_slice(&bytes).expect("library JSON");
+    assert!(
+        envelope["sources"]
+            .as_array()
+            .expect("library sources")
+            .iter()
+            .all(|source| source["package"]["name"] != "standard"),
+        "compiler-owned standard sources must not be serialized into a portable package"
+    );
+    let mut reserved_package = envelope.clone();
+    reserved_package["packages"][0]["id"]["name"] = serde_json::json!("standard");
+    let error = decode_library_artifact(
+        &serde_json::to_vec(&reserved_package).expect("encode reserved package artifact"),
     )
-    .expect("encode package artifact");
+    .expect_err("the public decoder rejects the compiler-owned package name");
+    assert!(
+        error.to_string().contains("reserved package `standard`"),
+        "{error}"
+    );
+
+    let mut reserved_alias = envelope.clone();
+    let dependency_package = reserved_alias["packages"][0]["id"].clone();
+    reserved_alias["packages"][0]["dependencies"] = serde_json::json!([{
+        "alias": "standard",
+        "requirement": null,
+        "package": dependency_package,
+    }]);
+    let error = decode_library_artifact(
+        &serde_json::to_vec(&reserved_alias).expect("encode reserved alias artifact"),
+    )
+    .expect_err("the public decoder rejects the compiler-owned dependency alias");
+    assert!(
+        error
+            .to_string()
+            .contains("reserved dependency alias `standard`"),
+        "{error}"
+    );
+
+    let mut version_one = envelope.clone();
+    version_one["version"] = serde_json::json!(1);
+    version_one["checkedMir"] = serde_json::json!("legacy producer MIR");
+    let error =
+        decode_library_artifact(&serde_json::to_vec(&version_one).expect("encode v1 artifact"))
+            .expect_err("v1 artifact requires rebuilding");
+    assert_eq!(error.code(), "LibraryArtifactVersionMismatch");
+    assert!(error.to_string().contains("version 1"), "{error}");
+
+    let mut extra_mir = envelope.clone();
+    extra_mir["checkedMir"] = serde_json::json!("producer implementation");
+    let error = decode_library_artifact(
+        &serde_json::to_vec(&extra_mir).expect("encode v2 artifact with producer MIR"),
+    )
+    .expect_err("v2 artifact rejects producer implementation state");
+    assert_eq!(error.code(), "InvalidLibraryArtifact");
+
+    let mut nested_extra = envelope.clone();
+    nested_extra["rootPackage"]["producerState"] = serde_json::json!(true);
+    let error = decode_library_artifact(
+        &serde_json::to_vec(&nested_extra).expect("encode nested package extension"),
+    )
+    .expect_err("package identities reject unknown wire fields");
+    assert_eq!(error.code(), "InvalidLibraryArtifact");
+    let mut nested_extra = envelope.clone();
+    nested_extra["publicInterfaces"][0]["producerState"] = serde_json::json!(true);
+    let error = decode_library_artifact(
+        &serde_json::to_vec(&nested_extra).expect("encode nested interface extension"),
+    )
+    .expect_err("public interfaces reject unknown wire fields");
+    assert_eq!(error.code(), "InvalidLibraryArtifact");
+
+    let mut drive_relative_source = envelope.clone();
+    drive_relative_source["sources"][0]["path"] = serde_json::json!("C:escape.loom");
+    let error = decode_library_artifact(
+        &serde_json::to_vec(&drive_relative_source).expect("encode drive-relative source"),
+    )
+    .expect_err("portable paths reject Windows drive-relative spellings");
+    assert!(error.to_string().contains("not portable"), "{error}");
+
+    let mut reserved_windows_source = envelope.clone();
+    reserved_windows_source["sources"][0]["path"] = serde_json::json!("src/NUL.loom");
+    let error = decode_library_artifact(
+        &serde_json::to_vec(&reserved_windows_source).expect("encode reserved Windows source"),
+    )
+    .expect_err("portable paths reject reserved Windows components");
+    assert!(error.to_string().contains("not portable"), "{error}");
+
+    let mut invalid_semver = envelope.clone();
+    invalid_semver["rootPackage"]["version"] = serde_json::json!("invalid");
+    invalid_semver["packages"][0]["id"]["version"] = serde_json::json!("invalid");
+    let mut invalid_requirement = envelope.clone();
+    let package_id = invalid_requirement["packages"][0]["id"].clone();
+    invalid_requirement["packages"][0]["dependencies"] = serde_json::json!([{
+        "alias": "loopback",
+        "requirement": "not-semver",
+        "package": package_id,
+    }]);
+    let mut unsatisfied_requirement = envelope.clone();
+    let package_id = unsatisfied_requirement["packages"][0]["id"].clone();
+    unsatisfied_requirement["packages"][0]["dependencies"] = serde_json::json!([{
+        "alias": "loopback",
+        "requirement": "^999",
+        "package": package_id,
+    }]);
+    let mut absent_dependency = envelope.clone();
+    absent_dependency["packages"][0]["dependencies"] = serde_json::json!([{
+        "alias": "absent",
+        "requirement": null,
+        "package": {"name": "absent", "version": "1.0.0", "language": "0.3"},
+    }]);
+    let mut unreachable_package = envelope.clone();
+    unreachable_package["packages"]
+        .as_array_mut()
+        .expect("artifact packages")
+        .push(serde_json::json!({
+            "id": {"name": "orphan", "version": "1.0.0", "language": "0.3"},
+            "dependencies": [],
+        }));
+    let mut dependency_cycle = envelope.clone();
+    let package_id = dependency_cycle["packages"][0]["id"].clone();
+    dependency_cycle["packages"][0]["dependencies"] = serde_json::json!([{
+        "alias": "loopback",
+        "requirement": "*",
+        "package": package_id,
+    }]);
+    let mut malformed_source = envelope.clone();
+    malformed_source["sources"][0]["text"] = serde_json::json!("module {");
+    for (name, forged, expected) in [
+        ("invalid SemVer", invalid_semver, "invalid semantic version"),
+        (
+            "invalid requirement",
+            invalid_requirement,
+            "invalid requirement",
+        ),
+        (
+            "unsatisfied requirement",
+            unsatisfied_requirement,
+            "but resolves",
+        ),
+        ("absent dependency", absent_dependency, "depends on absent"),
+        (
+            "unreachable package",
+            unreachable_package,
+            "not reachable from root",
+        ),
+        ("dependency cycle", dependency_cycle, "contains a cycle"),
+        ("malformed source", malformed_source, "does not parse"),
+    ] {
+        let error = decode_library_artifact(
+            &serde_json::to_vec(&forged).expect("encode forged artifact graph"),
+        )
+        .expect_err("forged artifact graph must be rejected");
+        assert!(error.to_string().contains(expected), "{name}: {error}");
+    }
+
+    let mut forged_interface = envelope.clone();
+    forged_interface["publicInterfaces"][0]["fingerprint"] = serde_json::json!("forged");
+    let error = decode_library_artifact(
+        &serde_json::to_vec(&forged_interface).expect("encode forged interface artifact"),
+    )
+    .expect_err("public interfaces are derived from embedded source");
+    assert!(
+        error
+            .to_string()
+            .contains("public interfaces do not match embedded source"),
+        "{error}"
+    );
     let decoded = decode_library_artifact(&bytes).expect("decode package artifact");
     assert_eq!(decoded.root_package().name(), "utility");
     assert_eq!(decoded.root_package().version(), "1.2.0");
@@ -329,6 +655,18 @@ fn portable_library_is_a_consumable_versioned_dependency() {
             .iter()
             .any(|interface| { interface.module.ends_with("::utility.math") })
     );
+    assert!(
+        decoded
+            .interfaces()
+            .iter()
+            .all(|interface| !interface.module.starts_with("standard@")),
+        "compiler-owned standard interfaces must not be serialized into a portable package"
+    );
+    assert!(decoded.interfaces().iter().any(|interface| {
+        interface.module.ends_with("::utility.nested")
+            && interface.files == ["deps/utility@1.2.0/nested.loom"]
+    }));
+    let decoded_interfaces = decoded.interfaces().to_vec();
     fs::write(project.root.join("utility.loomlib"), bytes).expect("write package artifact");
 
     project.write(
@@ -347,19 +685,51 @@ fn portable_library_is_a_consumable_versioned_dependency() {
         .snapshot()
         .expect("compile from artifact dependency");
     assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let dependency_interfaces = snapshot
+        .module_interfaces()
+        .into_iter()
+        .filter(|interface| interface.module.starts_with("utility@"))
+        .collect::<Vec<_>>();
+    assert_eq!(dependency_interfaces, decoded_interfaces);
     let dependency = snapshot
         .sources()
         .documents()
         .iter()
-        .find(|source| !source.is_root_package())
+        .find(|source| {
+            source
+                .package()
+                .is_some_and(|package| package.name() == "utility")
+                && source.relative_path().ends_with("src/math.loom")
+        })
         .expect("embedded dependency source");
     assert!(dependency.is_embedded_dependency());
+    assert_eq!(dependency.origin(), SourceOrigin::PortableLibrary);
+    assert!(dependency.is_read_only());
+    assert!(!dependency.is_navigable());
     assert_eq!(
         dependency.relative_path(),
         "deps/utility@1.2.0/src/math.loom"
     );
     assert!(
         dependency
+            .absolute_path()
+            .to_string_lossy()
+            .contains("utility.loomlib")
+    );
+    let standard_sources = snapshot
+        .sources()
+        .documents()
+        .iter()
+        .filter(|source| {
+            source
+                .package()
+                .is_some_and(|package| package.name() == "standard")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(standard_sources.len(), 1);
+    assert_compiler_owned_source(standard_sources[0]);
+    assert!(
+        !standard_sources[0]
             .absolute_path()
             .to_string_lossy()
             .contains("utility.loomlib")
@@ -407,8 +777,8 @@ fn portable_library_is_a_consumable_versioned_dependency() {
         "{:#?}",
         incremental.diagnostics()
     );
-    assert_eq!(incremental.semantic_query_stats().modules_reused, 1);
-    assert!(incremental.semantic_query_stats().bodies_reused >= 2);
+    assert_eq!(incremental.semantic_query_stats().modules_reused, 3);
+    assert!(incremental.semantic_query_stats().bodies_reused >= 3);
     let program = incremental
         .executable()
         .expect("incremental artifact consumer");
@@ -439,7 +809,7 @@ fn portable_library_is_a_consumable_versioned_dependency() {
 }
 
 #[test]
-fn portable_library_rechecks_process_local_construction_proofs() {
+fn portable_library_carries_source_instead_of_process_local_proofs() {
     let project = constrained_proof_project();
     let host = AnalysisHost::new(&project.root).expect("open proof producer");
     let snapshot = host.snapshot().expect("compile proof producer");
@@ -454,78 +824,193 @@ fn portable_library_rechecks_process_local_construction_proofs() {
         .invoke(fresh.exports["make"], Vec::new(), Span::default())
         .expect("fresh proven construction succeeds");
 
-    let library = encode_library_artifact(snapshot.project(), snapshot.sources(), fresh)
+    let library = encode_library_artifact(snapshot.project(), snapshot.sources())
         .expect("encode proof library");
-    let mut library_json: serde_json::Value =
+    let library_json: serde_json::Value =
         serde_json::from_slice(&library).expect("proof library JSON");
-    let nested = library_json["checkedMir"]
-        .as_str()
-        .expect("nested checked MIR")
-        .to_owned();
-    assert_eq!(nested.matches("\"construction\":\"recheck\"").count(), 1);
-    library_json["checkedMir"] = serde_json::Value::String(nested.replace(
-        "\"construction\":\"recheck\"",
-        "\"construction\":\"proven\"",
-    ));
-    let decoded_library = decode_library_artifact(
-        &serde_json::to_vec(&library_json).expect("forge nested library proof flag"),
-    )
-    .expect("library decoder safely normalizes the forged proof flag");
-    let library_debug = format!("{:#?}", decoded_library.program());
+    assert_eq!(library_json["version"], 2);
     assert!(
-        library_debug.contains("construction: Recheck"),
-        "{library_debug}"
+        library_json.get("checkedMir").is_none(),
+        "portable libraries must not capture producer MIR or proof dispositions"
     );
     assert!(
-        !library_debug.contains("construction: Proven"),
-        "{library_debug}"
+        library_json["sources"]
+            .as_array()
+            .expect("library sources")
+            .iter()
+            .any(|source| source["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("Positive(10.0)")))
     );
-    Interpreter::new(decoded_library.program())
-        .invoke(
-            decoded_library.program().exports["make"],
-            Vec::new(),
-            Span::default(),
-        )
-        .expect("valid library proof recheck preserves source behavior");
 
-    let mut invalid_library_json = library_json.clone();
-    let mut invalid_mir: serde_json::Value = serde_json::from_str(
-        invalid_library_json["checkedMir"]
-            .as_str()
-            .expect("forged library checked MIR"),
-    )
-    .expect("nested checked MIR JSON");
-    let mut replaced = 0;
-    for bits in invalid_mir["floatBits"]
-        .as_array_mut()
-        .expect("nested Float table")
-    {
-        if bits.as_u64() == Some(10.0_f64.to_bits()) {
-            *bits = serde_json::json!((-1.0_f64).to_bits());
-            replaced += 1;
-        }
-    }
-    assert_eq!(replaced, 1);
-    invalid_library_json["checkedMir"] = serde_json::Value::String(
-        serde_json::to_string(&invalid_mir).expect("encode invalid nested checked MIR"),
+    fs::write(project.root.join("proofs.loomlib"), library).expect("write proof artifact");
+    project.write(
+        "consumer/loom.toml",
+        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"consumer\"\nversion = \"1.0.0\"\n[dependencies]\nproofs = { artifact = \"../proofs.loomlib\", version = \"^1\" }\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"consumer.main\"\n",
     );
-    let invalid_library = decode_library_artifact(
-        &serde_json::to_vec(&invalid_library_json).expect("encode invalid proof library"),
-    )
-    .expect("invalid proof value remains structurally valid MIR");
-    let failure = Interpreter::new(invalid_library.program())
+    project.write(
+        "consumer/src/main.loom",
+        "module consumer\n\nimport proofs.make\n\npub fn main() {\n    let value = make()\n    assert value >= 0.0\n}\n",
+    );
+    fs::remove_file(project.root.join("loom.toml")).expect("remove producer manifest");
+    fs::remove_dir_all(project.root.join("src")).expect("remove producer checkout");
+
+    let consumer = AnalysisHost::new(project.root.join("consumer"))
+        .expect("open proof artifact consumer")
+        .snapshot()
+        .expect("recheck proof source from artifact");
+    assert!(!consumer.has_errors(), "{:#?}", consumer.diagnostics());
+    let program = consumer.executable().expect("consumer checked MIR");
+    assert!(
+        format!("{program:#?}").contains("construction: Proven"),
+        "the consumer must derive proof dispositions from embedded source"
+    );
+    Interpreter::new(program)
         .invoke(
-            invalid_library.program().exports["make"],
+            program.exports["consumer.main"],
             Vec::new(),
             Span::default(),
         )
-        .expect_err("library proof replay must reject a tampered value");
-    assert!(matches!(
-        failure,
-        ExecutionFailure::Runtime { fault }
-            if fault.code == ARTIFACT_PROOF_REJECTED_FAULT_CODE
-                && fault.message == ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE
-    ));
+        .expect("source-recompiled proof library executes");
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn portable_libraries_compose_shared_transitive_package_content() {
+    let project = TestProject::new();
+    project.write(
+        "leaf/loom.toml",
+        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"leaf\"\nversion = \"1.0.0\"\n",
+    );
+    project.write(
+        "leaf/src/lib.loom",
+        "module leaf\n\npub fn base() Int { 40 }\n",
+    );
+    project.write(
+        "left/loom.toml",
+        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"left\"\nversion = \"1.0.0\"\n[dependencies]\nleaf = { path = \"../leaf\", version = \"^1\" }\n",
+    );
+    project.write(
+        "left/src/lib.loom",
+        "module left\n\nimport leaf.base\n\npub fn left_value() Int { base() + 1 }\n",
+    );
+    project.write(
+        "right/loom.toml",
+        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"right\"\nversion = \"1.0.0\"\n[dependencies]\nleaf = { path = \"../leaf\", version = \"^1\" }\n",
+    );
+    project.write(
+        "right/src/lib.loom",
+        "module right\n\nimport leaf.base\n\npub fn right_value() Int { base() + 2 }\n",
+    );
+
+    for package in ["leaf", "left", "right"] {
+        let host = AnalysisHost::new(project.root.join(package)).expect("open artifact producer");
+        let snapshot = host.snapshot().expect("check artifact producer");
+        assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+        let artifact = encode_library_artifact(snapshot.project(), snapshot.sources())
+            .expect("encode artifact producer");
+        fs::write(project.root.join(format!("{package}.loomlib")), artifact)
+            .expect("write portable artifact");
+    }
+    for package in ["leaf", "left", "right"] {
+        fs::remove_dir_all(project.root.join(package)).expect("remove producer checkout");
+    }
+
+    project.write(
+        "consumer/loom.toml",
+        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"consumer\"\nversion = \"1.0.0\"\n[dependencies]\nleaf = { artifact = \"../leaf.loomlib\", version = \"^1\" }\nleft = { artifact = \"../left.loomlib\", version = \"^1\" }\nright = { artifact = \"../right.loomlib\", version = \"^1\" }\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"consumer.main\"\n",
+    );
+    project.write(
+        "consumer/src/main.loom",
+        "module consumer\n\nimport leaf.base\nimport left.left_value\nimport right.right_value\n\npub fn main() {\n    let base_result = base()\n    let left_result = left_value()\n    let right_result = right_value()\n    assert base_result == 40\n    assert left_result == 41\n    assert right_result == 42\n}\n",
+    );
+
+    let host = AnalysisHost::new(project.root.join("consumer"))
+        .expect("compose direct and transitive artifacts");
+    assert_eq!(host.project().packages().count(), 4);
+    let snapshot = host.snapshot().expect("check composed artifacts");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let program = snapshot.executable().expect("composed artifact MIR");
+    assert_eq!(
+        Interpreter::new(program)
+            .invoke(
+                program.exports["consumer.main"],
+                Vec::new(),
+                Span::default(),
+            )
+            .expect("run composed artifacts"),
+        Value::Unit
+    );
+}
+
+#[test]
+fn portable_library_lock_closes_over_transitive_source_content() {
+    let project = TestProject::new();
+    project.write(
+        "leaf/loom.toml",
+        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"leaf\"\nversion = \"1.0.0\"\n",
+    );
+    project.write(
+        "leaf/src/lib.loom",
+        "module leaf\n\npub fn base() Int { 40 }\n",
+    );
+    project.write(
+        "bundle/loom.toml",
+        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"bundle\"\nversion = \"1.0.0\"\n[dependencies]\nleaf = { path = \"../leaf\", version = \"^1\" }\n",
+    );
+    project.write(
+        "bundle/src/lib.loom",
+        "module bundle\n\nimport leaf.base\n\npub fn answer() Int { base() + 1 }\n",
+    );
+
+    let artifact_path = project.root.join("bundle.loomlib");
+    let build_artifact = || {
+        let host = AnalysisHost::new(project.root.join("bundle")).expect("open bundle producer");
+        let snapshot = host.snapshot().expect("check bundle producer");
+        assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+        encode_library_artifact(snapshot.project(), snapshot.sources())
+            .expect("encode bundle artifact")
+    };
+    fs::write(&artifact_path, build_artifact()).expect("write original bundle");
+    project.write(
+        "consumer/loom.toml",
+        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"consumer\"\nversion = \"1.0.0\"\n[dependencies]\nbundle = { artifact = \"../bundle.loomlib\", version = \"^1\" }\n",
+    );
+    project.write("consumer/src/main.loom", "module consumer\n");
+    let locked =
+        ProjectGraph::load(project.root.join("consumer")).expect("resolve original bundle");
+    assert!(locked.write_lockfile().expect("write artifact lock"));
+
+    project.write(
+        "leaf/src/lib.loom",
+        "module leaf\n\npub fn base() Int { 41 }\n",
+    );
+    fs::write(&artifact_path, build_artifact()).expect("replace bundle transitive source");
+    let error = ProjectGraph::load(project.root.join("consumer"))
+        .expect_err("locked artifact rejects changed transitive content");
+    assert!(error.to_string().contains("checksum differs"), "{error}");
+}
+
+#[test]
+fn portable_library_is_bounded_before_file_allocation() {
+    let project = TestProject::new();
+    let artifact = project.root.join("oversized.loomlib");
+    fs::File::create(&artifact)
+        .expect("create sparse artifact")
+        .set_len(u64::try_from(LIBRARY_ARTIFACT_MAX_BYTES).unwrap() + 1)
+        .expect("size sparse artifact beyond the limit");
+    project.write(
+        "consumer/loom.toml",
+        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"consumer\"\nversion = \"1.0.0\"\n[dependencies]\noversized = { artifact = \"../oversized.loomlib\" }\n",
+    );
+    project.write("consumer/src/main.loom", "module consumer\n");
+
+    let error = ProjectGraph::load(project.root.join("consumer"))
+        .expect_err("oversized artifact is rejected before reading its contents");
+    assert!(
+        error.to_string().contains("exceeds the") && error.to_string().contains("byte limit"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -1054,7 +1539,7 @@ fn per_source_parse_cache_skips_lexing_and_parsing_on_a_graph_miss() {
     );
     assert!(!first.has_errors(), "{:?}", first.diagnostics());
     assert_eq!(first_stats.hits, 0);
-    assert_eq!(first_stats.misses, 1);
+    assert_eq!(first_stats.misses, 2);
 
     let (second, second_stats) = host.snapshot_from_sources_with_parse_cache(
         host.load_sources().expect("load second source set"),
@@ -1063,10 +1548,17 @@ fn per_source_parse_cache_skips_lexing_and_parsing_on_a_graph_miss() {
     );
     assert!(!second.has_errors(), "{:?}", second.diagnostics());
     assert!(second_stats.is_full_hit());
-    assert_eq!(second_stats.hits, 1);
+    assert_eq!(second_stats.hits, 2);
+    let root_file = first
+        .sources()
+        .documents()
+        .iter()
+        .find(|source| source.is_root_package())
+        .expect("root source")
+        .id();
     assert_eq!(
-        first.parse(FileId(0)).expect("first parse").ast(),
-        second.parse(FileId(0)).expect("cached parse").ast()
+        first.parse(root_file).expect("first parse").ast(),
+        second.parse(root_file).expect("cached parse").ast()
     );
 }
 
@@ -1102,7 +1594,7 @@ fn persistent_semantic_reuse_rederives_must_scope_identity_from_current_hir() {
         "must-scope-identity-test-v1",
     );
     assert!(!warm.has_errors(), "{:#?}", warm.diagnostics());
-    assert_eq!(warm.semantic_query_stats().modules_reused, 1);
+    assert_eq!(warm.semantic_query_stats().modules_reused, 2);
     let semantic_id = warm
         .semantic_analysis()
         .canonical_concepts
@@ -1144,7 +1636,7 @@ fn warm_semantic_reanalysis_preserves_task_standard_item_identity() {
     assert!(!cold.has_errors(), "{:#?}", cold.diagnostics());
     let warm = compile();
     assert!(!warm.has_errors(), "{:#?}", warm.diagnostics());
-    assert_eq!(warm.semantic_query_stats().modules_reused, 1);
+    assert_eq!(warm.semantic_query_stats().modules_reused, 2);
 
     let items = |snapshot: &loom_driver::AnalysisSnapshot| {
         snapshot
@@ -1216,12 +1708,12 @@ fn typed_hir_queries_reuse_unmodified_modules() {
     let first = host.snapshot().expect("compile initial graph");
     assert!(!first.has_errors(), "{:#?}", first.diagnostics());
     let first_stats = first.semantic_query_stats();
-    assert_eq!(first_stats.modules_checked, 2);
+    assert_eq!(first_stats.modules_checked, 3);
     assert_eq!(first_stats.modules_reused, 0);
 
     let unchanged = host.snapshot().expect("compile unchanged graph");
     let unchanged_stats = unchanged.semantic_query_stats();
-    assert_eq!(unchanged_stats.modules_reused, 2);
+    assert_eq!(unchanged_stats.modules_reused, 3);
     assert_eq!(unchanged_stats.bodies_checked, 0);
 
     project.write(
@@ -1232,7 +1724,7 @@ fn typed_hir_queries_reuse_unmodified_modules() {
     assert!(!changed.has_errors(), "{:#?}", changed.diagnostics());
     let changed_stats = changed.semantic_query_stats();
     assert_eq!(changed_stats.modules_checked, 1);
-    assert_eq!(changed_stats.modules_reused, 1);
+    assert_eq!(changed_stats.modules_reused, 2);
     assert!(changed_stats.bodies_reused >= 2);
     let program = changed.executable().expect("incremental checked MIR");
     let function = program.exports["sample.a.value"];
@@ -1324,7 +1816,22 @@ fn many_modules_and_call_edges_close_the_checked_mir_pipeline() {
         .expect("compile scale project");
     assert!(!snapshot.has_errors(), "{:?}", snapshot.diagnostics());
     let program = snapshot.executable().expect("scale project checked MIR");
-    assert_eq!(program.functions.len(), MODULES + 1);
+    assert_eq!(
+        program
+            .functions
+            .iter()
+            .filter(|function| !function.name.starts_with("standard."))
+            .count(),
+        MODULES + 1
+    );
+    assert_eq!(
+        program
+            .functions
+            .iter()
+            .filter(|function| function.name.starts_with("standard."))
+            .count(),
+        2
+    );
     assert!(program.exports.contains_key("stress.app.main"));
 }
 
@@ -1338,9 +1845,20 @@ fn snapshot_assigns_file_ids_by_stable_relative_path_and_builds_executable_mir()
         .expect("open host")
         .snapshot()
         .expect("build snapshot");
-    assert_eq!(snapshot.sources().documents()[0].relative_path(), "a.loom");
-    assert_eq!(snapshot.sources().documents()[0].id(), FileId(0));
-    assert_eq!(snapshot.sources().documents()[1].relative_path(), "b.loom");
+    let paths = snapshot
+        .sources()
+        .documents()
+        .iter()
+        .map(|source| (source.id(), source.relative_path()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        paths,
+        [
+            (FileId(0), "a.loom"),
+            (FileId(1), "b.loom"),
+            (FileId(2), "deps/standard@0.3/src/int.loom"),
+        ]
+    );
     assert!(!snapshot.has_errors(), "{:?}", snapshot.diagnostics());
     assert_eq!(snapshot.completed_stage(), PipelineStage::Executable);
     snapshot
@@ -1370,10 +1888,14 @@ fn overlays_and_cli_snapshots_use_the_same_source_map() {
         dirty.executable().is_err(),
         "an error-recovered source tree must never become executable"
     );
-    assert_eq!(dirty.sources().file_id(&path), Some(FileId(0)));
+    let dirty_file = dirty
+        .sources()
+        .file_id(&path)
+        .expect("overlay source remains in the source map");
 
     host.clear_overlay(&path).expect("clear overlay");
     let clean = host.snapshot().expect("clean snapshot");
+    assert_eq!(clean.sources().file_id(&path), Some(dirty_file));
     assert!(!clean.has_errors(), "{:?}", clean.diagnostics());
     clean
         .executable()
@@ -1406,7 +1928,12 @@ fn source_map_converts_utf16_positions_without_splitting_scalars() {
         .expect("open host")
         .snapshot()
         .expect("snapshot");
-    let source = &snapshot.sources().documents()[0];
+    let source = snapshot
+        .sources()
+        .documents()
+        .iter()
+        .find(|source| source.is_root_package())
+        .expect("root unicode source");
     let byte = source
         .byte_offset_utf16(Position {
             line: 0,
@@ -1939,7 +2466,13 @@ fn semantic_symbol_index_covers_generics_parameters_and_locals() {
         .snapshot()
         .expect("analyze symbol project");
     assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
-    let file = FileId(0);
+    let file = snapshot
+        .sources()
+        .documents()
+        .iter()
+        .find(|source| source.relative_path() == "main.loom")
+        .expect("symbol test source")
+        .id();
 
     let generic_declaration = u32::try_from(source.find("[T]").expect("generic declaration") + 1)
         .expect("source offset fits u32");

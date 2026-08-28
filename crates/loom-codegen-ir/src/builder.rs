@@ -6,9 +6,9 @@ use loom_mir::Type;
 use crate::ids::ProgramBrand;
 use crate::{
     Block, BlockId, CheckedProgram, CoroutinePlan, Effects, Function, InstanceId, InstanceKey,
-    InstancePlan, Instruction, InstructionId, InstructionKind, Origin, PlannedInstance, Program,
-    RepresentationPlan, Signature, TargetLayout, Terminator, Value, ValueDefinition, ValueId,
-    ValueTypeId, check_program,
+    InstancePlan, InstanceRole, Instruction, InstructionId, InstructionKind, Origin,
+    PlannedInstance, Program, RepresentationPlan, Signature, TargetLayout, Terminator, Value,
+    ValueDefinition, ValueId, ValueTypeId, check_program,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -465,6 +465,26 @@ impl ProgramBuilder {
                     "LCIR instance keys require fully substituted type and witness arguments",
                 ),
             });
+        }
+        if key.role() == InstanceRole::StructuralEquality {
+            let compared = key
+                .structural_equality_type()
+                .and_then(|semantic| self.type_id(semantic));
+            let boolean = self.type_id(&Type::Bool);
+            let valid_signature = compared.is_some_and(|compared| {
+                signature.params() == [compared, compared]
+                    && Some(signature.result()) == boolean
+                    && signature.inout_params().is_empty()
+            });
+            if !valid_signature
+                || effects != Effects::NONE
+                || origin != Origin::synthetic(key.source())
+            {
+                return Err(BuildError::new(
+                    BuildErrorCode::InvalidFunction,
+                    "LCIR structural-equality helpers require one closed registered type, exact (T, T) -> Bool signature, no inout parameters, no effects, and a synthetic origin",
+                ));
+            }
         }
         if let Some(existing) = self.instances.find(&key) {
             return Err(BuildError::new(

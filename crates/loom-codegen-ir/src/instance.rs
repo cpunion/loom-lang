@@ -62,6 +62,10 @@ pub enum InstanceRole {
     #[default]
     AssumedBody,
     CheckedRoot,
+    /// Compiler-generated, allocation-free value equality for one closed
+    /// semantic type. The first and only type argument is the compared type;
+    /// the source id is a deterministic diagnostic anchor in the artifact.
+    StructuralEquality,
 }
 
 impl InstanceKey {
@@ -95,9 +99,22 @@ impl InstanceKey {
         body
     }
 
+    /// Creates the compiler-private equality helper for one closed type.
+    #[must_use]
+    pub fn structural_equality(source: FunctionId, ty: Type) -> Self {
+        Self {
+            source,
+            role: InstanceRole::StructuralEquality,
+            type_arguments: vec![ty].into_boxed_slice(),
+            witness_arguments: Box::default(),
+        }
+    }
+
     #[must_use]
     pub fn assumed_body(mut self) -> Self {
-        self.role = InstanceRole::AssumedBody;
+        if self.role == InstanceRole::CheckedRoot {
+            self.role = InstanceRole::AssumedBody;
+        }
         self
     }
 
@@ -119,6 +136,19 @@ impl InstanceKey {
     #[must_use]
     pub const fn witness_arguments(&self) -> &[InstanceWitnessArgument] {
         &self.witness_arguments
+    }
+
+    /// Returns the exact semantic type owned by a well-shaped generated
+    /// structural-equality helper.
+    #[must_use]
+    pub fn structural_equality_type(&self) -> Option<&Type> {
+        if self.role != InstanceRole::StructuralEquality || !self.witness_arguments.is_empty() {
+            return None;
+        }
+        let [ty] = self.type_arguments.as_ref() else {
+            return None;
+        };
+        Some(ty)
     }
 
     #[must_use]
@@ -238,8 +268,12 @@ pub(crate) enum InstanceKeyStructureError {
 
 impl fmt::Display for InstanceKey {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.role == InstanceRole::CheckedRoot {
-            formatter.write_str("checked-root ")?;
+        match self.role {
+            InstanceRole::AssumedBody => {}
+            InstanceRole::CheckedRoot => formatter.write_str("checked-root ")?,
+            InstanceRole::StructuralEquality => {
+                formatter.write_str("structural-equality ")?;
+            }
         }
         write!(formatter, "source=f{} types=[", self.source.0)?;
         for (index, ty) in self.type_arguments.iter().enumerate() {

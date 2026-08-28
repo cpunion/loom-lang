@@ -164,6 +164,69 @@ fn builder_rejects_duplicate_mismatched_and_oversized_instance_keys() {
 }
 
 #[test]
+fn structural_equality_role_requires_exact_pure_helper_signature() {
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let source = FunctionId(9);
+    let key = InstanceKey::structural_equality(source, Type::Int);
+    assert_eq!(
+        key.to_string(),
+        "structural-equality source=f9 types=[Int] witnesses=[]"
+    );
+    assert_eq!(key.clone().assumed_body(), key);
+    let integer = builder.type_id(&Type::Int).expect("Int type");
+    let boolean = builder.type_id(&Type::Bool).expect("Bool type");
+    let wrong_signature = builder
+        .declare_instance(
+            key.clone(),
+            Origin::synthetic(source),
+            "wrong.signature",
+            Signature::new([integer], boolean),
+            Effects::NONE,
+        )
+        .expect_err("structural equality requires two exact operands");
+    assert_eq!(wrong_signature.code(), BuildErrorCode::InvalidFunction);
+
+    let wrong_effect = builder
+        .declare_instance(
+            key.clone(),
+            Origin::synthetic(source),
+            "wrong.effect",
+            Signature::new([integer, integer], boolean),
+            Effects::MAY_COLLECT.with_implications(),
+        )
+        .expect_err("structural equality cannot allocate or require runtime state");
+    assert_eq!(wrong_effect.code(), BuildErrorCode::InvalidFunction);
+
+    let wrong_origin = builder
+        .declare_instance(
+            key.clone(),
+            Origin {
+                source_function: source,
+                expression: Some(loom_mir::ExprId(1)),
+                span: loom_core::Span::default(),
+            },
+            "wrong.origin",
+            Signature::new([integer, integer], boolean),
+            Effects::NONE,
+        )
+        .expect_err("structural equality body has no source expression");
+    assert_eq!(wrong_origin.code(), BuildErrorCode::InvalidFunction);
+
+    let mut spanned_origin = Origin::synthetic(source);
+    spanned_origin.span.range.end = 1;
+    let wrong_span = builder
+        .declare_instance(
+            key,
+            spanned_origin,
+            "wrong.span",
+            Signature::new([integer, integer], boolean),
+            Effects::NONE,
+        )
+        .expect_err("structural equality requires the canonical synthetic span");
+    assert_eq!(wrong_span.code(), BuildErrorCode::InvalidFunction);
+}
+
+#[test]
 fn artifact_identity_includes_the_complete_instance_key() {
     fn artifact(key: InstanceKey) -> loom_codegen_ir::CheckedArtifact {
         let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));

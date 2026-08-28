@@ -1066,6 +1066,7 @@ fn values(text Text) {
     let count = fields.length()
     let present = fields.contains("name")
     let value = fields.get("name")
+    let first = fields.entry_at(0)
     let null = Json.Null
     let boolean = Json.Bool(true)
     let number = Json.Number(1.5)
@@ -1141,6 +1142,7 @@ async fn network(host Text, port Int) Result[Unit, IoError] {
         "TextMapLength",
         "TextMapContains",
         "TextMapGet",
+        "TextMapEntryAt",
         "TextMapInsert",
         "TextMapRemove",
         "JsonParse",

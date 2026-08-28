@@ -6126,6 +6126,22 @@ impl<'program> Validator<'program> {
                 )?;
                 self.expected_option_type(value, expression.span, path)
             }
+            Builtin::TextMapEntryAt
+                if Self::nominal_builtin_argument(&types, 0, self.program.prelude.text_map)
+                    && types_compatible(&Type::Int, types[1].as_ref()?) =>
+            {
+                let value = Self::nominal_builtin_type_argument(
+                    &types,
+                    0,
+                    self.program.prelude.text_map,
+                    0,
+                )?;
+                self.expected_option_type(
+                    Type::Tuple(vec![Type::Text, value]),
+                    expression.span,
+                    path,
+                )
+            }
             Builtin::TextMapInsert
                 if Self::nominal_builtin_argument(&types, 0, self.program.prelude.text_map)
                     && types_compatible(&Type::Text, types[1].as_ref()?)
@@ -6383,6 +6399,7 @@ impl<'program> Validator<'program> {
             | Builtin::SocketWriteText
             | Builtin::TextMapContains
             | Builtin::TextMapGet
+            | Builtin::TextMapEntryAt
             | Builtin::TextMapRemove
             | Builtin::FileTryWriteText
             | Builtin::SocketTryConnect
@@ -8582,6 +8599,7 @@ impl<'program> Validator<'program> {
             | Builtin::TextMapLength
             | Builtin::TextMapContains
             | Builtin::TextMapGet
+            | Builtin::TextMapEntryAt
             | Builtin::TextMapInsert
             | Builtin::TextMapRemove
             | Builtin::JsonParse

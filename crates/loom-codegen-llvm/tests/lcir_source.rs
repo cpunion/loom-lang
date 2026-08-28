@@ -1,12 +1,13 @@
 #![allow(clippy::default_trait_access)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::process::{Command, Output};
 
 use loom_codegen_ir::{
-    CheckedArtifact, Effects, InstructionKind, LoweringOutcome, Repr, SourceArtifactRequest,
-    TargetLayout, UnsupportedFeature, dump_program, lower_typed_artifact,
+    CheckedArtifact, Effects, InstanceId, InstanceRole, InstanceWitnessArgument, InstructionKind,
+    LoweringOutcome, Repr, SourceArtifactRequest, TargetLayout, UnsupportedFeature, dump_program,
+    lower_typed_artifact,
 };
 use loom_codegen_llvm::{
     DebugSource, EmitOptions, NativeObjectOptions, NativeRouteKind, NativeRoutePolicy,
@@ -47,7 +48,7 @@ struct NativeRun {
     output: Output,
 }
 
-fn compile_source(source: &str) -> CheckedProgram {
+fn analyze_source(source: &str) -> loom_driver::AnalysisSnapshot {
     let project = tempfile::tempdir().expect("create source project");
     std::fs::write(project.path().join("main.loom"), source).expect("write source fixture");
     let snapshot = AnalysisHost::new(project.path())
@@ -59,7 +60,36 @@ fn compile_source(source: &str) -> CheckedProgram {
         "source diagnostics: {:#?}",
         snapshot.diagnostics()
     );
-    snapshot.executable().expect("lower checked MIR").clone()
+    snapshot
+}
+
+fn snapshot_debug_sources(snapshot: &loom_driver::AnalysisSnapshot) -> Vec<DebugSource> {
+    snapshot
+        .sources()
+        .documents()
+        .iter()
+        .map(|document| {
+            DebugSource::new(
+                document.id().0,
+                document.relative_path(),
+                document.text().expect("checked source must be valid UTF-8"),
+            )
+        })
+        .collect()
+}
+
+fn compile_source(source: &str) -> CheckedProgram {
+    analyze_source(source)
+        .executable()
+        .expect("lower checked MIR")
+        .clone()
+}
+
+fn compile_source_with_debug_sources(source: &str) -> (CheckedProgram, Vec<DebugSource>) {
+    let snapshot = analyze_source(source);
+    let debug_sources = snapshot_debug_sources(&snapshot);
+    let program = snapshot.executable().expect("lower checked MIR").clone();
+    (program, debug_sources)
 }
 
 fn host_layout() -> TargetLayout {
@@ -541,7 +571,7 @@ fn emit_and_run_legacy_tests(program: &CheckedProgram, stem: &str) -> Output {
 #[test]
 fn fallible_debug_metadata_describes_the_physical_abi_and_visible_parameters() {
     let source = include_str!("../../../fixtures/lcir-debug-fallible/main.loom");
-    let program = compile_source(source);
+    let (program, debug_sources) = compile_source_with_debug_sources(source);
     let artifact = lower_source_artifact(
         &program,
         &SourceArtifactRequest::Run {
@@ -553,7 +583,7 @@ fn fallible_debug_metadata_describes_the_physical_abi_and_visible_parameters() {
     let ir_path = directory.path().join("fallible-debug.ll");
     let options = NativeObjectOptions {
         emit_ir: Some(ir_path.clone()),
-        debug_sources: vec![DebugSource::new(0, "main.loom", source)],
+        debug_sources,
         ..NativeObjectOptions::default()
     };
     emit_lcir_native_object(&artifact, &object, &options).expect("emit fallible debug object");
@@ -633,7 +663,7 @@ pub fn main() {
     discard gauge.value
 }
 ";
-    let program = compile_source(source);
+    let (program, debug_sources) = compile_source_with_debug_sources(source);
     let artifact = lower_source_artifact(
         &program,
         &SourceArtifactRequest::Run {
@@ -648,7 +678,7 @@ pub fn main() {
         &object,
         &NativeObjectOptions {
             emit_ir: Some(ir_path.clone()),
-            debug_sources: vec![DebugSource::new(0, "main.loom", source)],
+            debug_sources,
             ..NativeObjectOptions::default()
         },
     )
@@ -3788,6 +3818,71 @@ fn typed_text_map_source_is_direct_on_64_bit_and_fails_closed_on_32_bit() {
     }
 }
 
+fn generic_instance_plan(
+    program: &CheckedProgram,
+    artifact: &CheckedArtifact,
+) -> (BTreeMap<Type, InstanceId>, InstanceId) {
+    let source_function = |name: &str| {
+        program
+            .as_program()
+            .functions
+            .iter()
+            .find(|function| function.name == name)
+            .map_or_else(
+                || panic!("missing checked MIR function `{name}`"),
+                |function| function.id,
+            )
+    };
+    let identity_source = source_function("lcir_generics.identity");
+    let preserve_source = source_function("lcir_generics.preserve");
+    let dump = dump_program(artifact.program());
+    let mut identity_instances = BTreeMap::new();
+    let mut preserve_instance = None;
+    for function in artifact.functions() {
+        let key = artifact
+            .program()
+            .as_program()
+            .instance_key(function.id())
+            .expect("LCIR function instance key");
+        if key.source() == identity_source {
+            assert_eq!(key.role(), InstanceRole::AssumedBody, "{dump}");
+            let [ty] = key.type_arguments() else {
+                panic!("identity requires one exact type argument: {key}")
+            };
+            assert!(key.witness_arguments().is_empty(), "{key}");
+            assert!(
+                identity_instances
+                    .insert(ty.clone(), function.id())
+                    .is_none(),
+                "duplicate identity instance for {ty:?}: {dump}"
+            );
+        } else if key.source() == preserve_source {
+            assert_eq!(key.role(), InstanceRole::AssumedBody, "{dump}");
+            assert_eq!(key.type_arguments(), &[Type::Int], "{key}");
+            assert!(
+                matches!(
+                    key.witness_arguments(),
+                    [InstanceWitnessArgument::Concrete(_)]
+                ),
+                "{key}"
+            );
+            assert!(
+                preserve_instance.replace(function.id()).is_none(),
+                "duplicate preserve instance: {dump}"
+            );
+        }
+    }
+    assert_eq!(
+        identity_instances.keys().cloned().collect::<BTreeSet<_>>(),
+        BTreeSet::from([Type::Bool, Type::Float, Type::Int]),
+        "{dump}"
+    );
+    (
+        identity_instances,
+        preserve_instance.expect("reachable preserve[Int: Marker] instance"),
+    )
+}
+
 #[test]
 fn generic_instances_use_direct_host_and_msvc_target_abis() {
     let source = include_str!("../../../fixtures/lcir-generics/main.loom");
@@ -3799,15 +3894,7 @@ fn generic_instances_use_direct_host_and_msvc_target_abis() {
             entry: "main".into(),
         },
     );
-    let dump = dump_program(artifact.program());
-    for expected in [
-        "source=f0 types=[Bool] witnesses=[]",
-        "source=f0 types=[Float] witnesses=[]",
-        "source=f0 types=[Int] witnesses=[]",
-        "source=f1 types=[Int] witnesses=[Concrete#0]",
-    ] {
-        assert!(dump.contains(expected), "missing `{expected}`:\n{dump}");
-    }
+    let (identity_instances, preserve_instance) = generic_instance_plan(&program, &artifact);
 
     let native = emit_and_run_lcir_with_options(
         &artifact,
@@ -3819,18 +3906,34 @@ fn generic_instances_use_direct_host_and_msvc_target_abis() {
     );
     assert!(native.output.status.success(), "{:?}", native.output);
     assert_eq!(native.output.stdout, b"Unit\n");
-    for signature in [
-        "define internal i1 @loom.lcir.fn.0(i1",
-        "define internal double @loom.lcir.fn.1(double",
-        "define internal i64 @loom.lcir.fn.2(i64",
-        "define internal i64 @loom.lcir.fn.3(i64",
+    for (ty, abi) in [
+        (Type::Bool, "i1"),
+        (Type::Float, "double"),
+        (Type::Int, "i64"),
     ] {
+        let instance = identity_instances
+            .get(&ty)
+            .copied()
+            .expect("checked identity instance");
+        let signature = format!(
+            "define internal {abi} @loom.lcir.fn.{}({abi}",
+            instance.raw()
+        );
         assert!(
-            native.ir.contains(signature),
+            native.ir.contains(&signature),
             "missing `{signature}`:\n{}",
             native.ir
         );
     }
+    let preserve_signature = format!(
+        "define internal i64 @loom.lcir.fn.{}(i64",
+        preserve_instance.raw()
+    );
+    assert!(
+        native.ir.contains(&preserve_signature),
+        "missing `{preserve_signature}`:\n{}",
+        native.ir
+    );
     assert_pure_surface(&native.ir);
 
     let legacy = emit_and_run_legacy(&program, "main", "source-generics-legacy");
@@ -3859,7 +3962,10 @@ fn generic_instances_use_direct_host_and_msvc_target_abis() {
         "{msvc_ir}"
     );
     assert!(
-        msvc_ir.contains("define internal i64 @loom.lcir.fn.2(i64"),
+        msvc_ir.contains(&format!(
+            "define internal i64 @loom.lcir.fn.{}(i64",
+            identity_instances[&Type::Int].raw()
+        )),
         "{msvc_ir}"
     );
     assert_pure_surface(&msvc_ir);
@@ -4000,6 +4106,103 @@ fn structural_equality_executes_products_sums_contracts_and_lists_through_typed_
         .unwrap_or_else(|error| panic!("emit structural equality for {target}: {error}"));
         assert!(object.is_file(), "missing object for {target}");
     }
+}
+
+#[test]
+fn recursive_structural_equality_executes_typed_helper_cycles_without_runtime_type_dispatch() {
+    let source = include_str!("../../../fixtures/lcir-recursive-equality/main.loom");
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let interpreted_tests = Interpreter::new(&program).run_tests();
+    assert_eq!(interpreted_tests.len(), 1, "{interpreted_tests:#?}");
+    assert_eq!(interpreted_tests[0].status, TestStatus::Passed);
+
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let helpers = artifact
+        .functions()
+        .iter()
+        .filter(|function| {
+            artifact
+                .program()
+                .as_program()
+                .instance_key(function.id())
+                .is_some_and(|key| key.role() == InstanceRole::StructuralEquality)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        helpers.len(),
+        9,
+        "Node/List and complete Json/List/TextMap shapes must each share one exact helper:\n{}",
+        dump_program(artifact.program())
+    );
+    assert!(
+        helpers
+            .iter()
+            .all(|helper| helper.effects() == Effects::NONE)
+    );
+    let helper_ids = helpers
+        .iter()
+        .map(|helper| helper.id())
+        .collect::<BTreeSet<_>>();
+    let helper_calls = helpers
+        .iter()
+        .flat_map(|helper| helper.instructions())
+        .filter_map(|instruction| match instruction.kind() {
+            InstructionKind::DirectCall { callee, .. } if helper_ids.contains(callee) => {
+                Some(*callee)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        helper_calls.len() >= helpers.len(),
+        "{}",
+        dump_program(artifact.program())
+    );
+
+    let native = emit_and_run_lcir_with_options(
+        &artifact,
+        "source-recursive-structural-equality",
+        NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
+    );
+    let legacy = emit_and_run_legacy(&program, "main", "legacy-recursive-structural-equality");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert!(legacy.status.success(), "{legacy:?}");
+    assert_eq!(native.output.stdout, legacy.stdout);
+    assert_eq!(native.output.stderr, legacy.stderr);
+    for forbidden in [
+        "%loom.Value",
+        "@loom.fn.",
+        "loom_runtime_json_equal",
+        "loom_gc_root_push_v1",
+        "loom_gc_root_pop_v1",
+        "loom_executor_",
+    ] {
+        assert!(
+            !native.ir.contains(forbidden),
+            "unexpected `{forbidden}`:\n{}",
+            native.ir
+        );
+    }
+    assert_no_indirect_calls(&native.ir);
+
+    let tests = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let native_tests = emit_and_run_lcir(&tests, "source-recursive-structural-equality-tests");
+    let legacy_tests =
+        emit_and_run_legacy_tests(&program, "legacy-recursive-structural-equality-tests");
+    assert!(
+        native_tests.output.status.success(),
+        "{:?}",
+        native_tests.output
+    );
+    assert!(legacy_tests.status.success(), "{legacy_tests:?}");
+    assert_eq!(native_tests.output.stdout, legacy_tests.stdout);
+    assert_eq!(native_tests.output.stderr, legacy_tests.stderr);
 }
 
 fn static_concepts_test_artifact() -> CheckedArtifact {
@@ -6335,7 +6538,7 @@ pub fn main() {
     }
 }
 ";
-    let program = compile_source(source);
+    let (program, debug_sources) = compile_source_with_debug_sources(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let prepared = prepare_native_object(
         &program,
@@ -6354,7 +6557,7 @@ pub fn main() {
         &artifact,
         "source-tuples",
         NativeObjectOptions {
-            debug_sources: vec![DebugSource::new(0, "main.loom", source)],
+            debug_sources,
             ..NativeObjectOptions::default()
         },
     );
@@ -6444,7 +6647,7 @@ pub fn main() {
     }
 }
 ";
-    let program = compile_source(source);
+    let (program, debug_sources) = compile_source_with_debug_sources(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let prepared = prepare_native_object(
         &program,
@@ -6495,11 +6698,7 @@ pub fn main() {
     let debug = emit_and_run_lcir_with_options(
         &artifact,
         "source-refined-debug",
-        NativeObjectOptions::default().with_debug_sources(vec![DebugSource::new(
-            0,
-            "main.loom",
-            source,
-        )]),
+        NativeObjectOptions::default().with_debug_sources(debug_sources),
     );
     assert!(debug.output.status.success(), "{:?}", debug.output);
     assert_eq!(debug.output.stdout, legacy.stdout);
@@ -6704,7 +6903,7 @@ pub fn main() {
     requireEqual(container(Container.Paired((12, true))), 12)
 }
 ";
-    let program = compile_source(source);
+    let (program, debug_sources) = compile_source_with_debug_sources(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let prepared = prepare_native_object(
         &program,
@@ -6723,7 +6922,7 @@ pub fn main() {
         &artifact,
         "source-sums",
         NativeObjectOptions {
-            debug_sources: vec![DebugSource::new(0, "main.loom", source)],
+            debug_sources,
             ..NativeObjectOptions::default()
         },
     );
@@ -6983,7 +7182,7 @@ test fn faults() Result[Unit, Problem] {
     Ok(Unit)
 }
 ";
-    let program = compile_source(source);
+    let (program, debug_sources) = compile_source_with_debug_sources(source);
     let interpreted = Interpreter::new(&program).run_tests();
     assert_eq!(interpreted.len(), 2);
     assert_eq!(
@@ -7009,7 +7208,7 @@ test fn faults() Result[Unit, Problem] {
         &artifact,
         "fallible-result-tests",
         NativeObjectOptions {
-            debug_sources: vec![DebugSource::new(0, "main.loom", source)],
+            debug_sources,
             ..NativeObjectOptions::default()
         },
     );
@@ -7286,7 +7485,7 @@ fn typed_async_state_machines_survive_forced_relocation_on_all_targets() {
 )]
 fn managed_collections_are_exact_typed_coroutine_frame_carriers() {
     let source = include_str!("../../../fixtures/lcir-async-managed-collections/main.loom");
-    let program = compile_source(source);
+    let (program, debug_sources) = compile_source_with_debug_sources(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let interpreted = Interpreter::new(&program).run_tests();
     assert_eq!(interpreted.len(), 1, "{interpreted:#?}");
@@ -7364,11 +7563,7 @@ fn managed_collections_are_exact_typed_coroutine_frame_carriers() {
     let lcir = emit_and_run_lcir_with_options(
         &artifact,
         "source-async-managed-collections",
-        NativeObjectOptions::default().with_debug_sources(vec![DebugSource::new(
-            0,
-            "main.loom",
-            source,
-        )]),
+        NativeObjectOptions::default().with_debug_sources(debug_sources),
     );
     assert!(lcir.output.status.success(), "{:?}", lcir.output);
     assert_eq!(lcir.output.stdout, b"Unit\n");
@@ -7461,7 +7656,7 @@ fn managed_collections_are_exact_typed_coroutine_frame_carriers() {
 )]
 fn synchronous_task_helpers_borrow_one_checked_executor_context() {
     let source = include_str!("../../../fixtures/lcir-sync-task-helpers/main.loom");
-    let program = compile_source(source);
+    let (program, debug_sources) = compile_source_with_debug_sources(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let interpreted_tests = Interpreter::new(&program).run_tests();
     assert_eq!(interpreted_tests.len(), 1, "{interpreted_tests:#?}");
@@ -7528,11 +7723,7 @@ fn synchronous_task_helpers_borrow_one_checked_executor_context() {
     let lcir = emit_and_run_lcir_with_options(
         &artifact,
         "source-sync-task-helpers",
-        NativeObjectOptions::default().with_debug_sources(vec![DebugSource::new(
-            0,
-            "main.loom",
-            source,
-        )]),
+        NativeObjectOptions::default().with_debug_sources(debug_sources),
     );
     assert!(lcir.output.status.success(), "{:?}", lcir.output);
     assert_eq!(lcir.output.stdout, b"Unit\n");

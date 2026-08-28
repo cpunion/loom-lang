@@ -15,10 +15,19 @@ rather than assuming every build output is executable.
 | Runtime bundle | `runtime pack` or a release archive | target-specific | used by the linker |
 
 The interpreted artifact format is `loom.interpreted-mir`, currently version
-`23`. Portable libraries have format version `1`; their nested checked-MIR
-payload uses version `23`. The compiler does not append
-the `.loomlib` extension automatically. Both formats also record the Loom
-language version and are fully decoded and MIR-validated before use.
+`24`. Its complete checked MIR is decoded and validated before execution.
+
+Portable libraries use source-package format version `2`. They record the Loom
+language version, resolved package graph, exact non-standard-library Loom
+sources, and canonical public interfaces. The decoder enforces the format and
+language versions, structural and byte/count bounds, graph and identity rules,
+portable paths, and interface fingerprints recomputed from the embedded source.
+The consumer then supplies its matching compiler-distributed standard library
+and runs the normal parse, type-check, proof, and lowering pipeline. A
+`.loomlib` contains no checked MIR, producer-local proof state, or
+compiler-owned standard-library implementation. Version 1 artifacts must be
+rebuilt; they are not upgraded or interpreted as version 2. The compiler does
+not append the `.loomlib` extension automatically.
 
 Version 22 records the source-module provenance and compiler-known identity of
 the canonical `standard.resource.MustScope` marker. Decoding rejects missing,
@@ -29,13 +38,14 @@ authentication; artifact provenance still belongs to the distribution layer.
 Version 23 requires the canonical six-field compiler-private
 `ConstraintError` record and rejects the earlier empty synthetic shape.
 
-Source-local construction proofs are not portable certificates. `.loomi` and
-`.loomlib` encode them as mandatory predicate/invariant rechecks. A successful
-recheck publishes the original nominal value; a failed one raises the canonical
+Source-local construction proofs are not portable certificates. A `.loomi`
+encodes them as mandatory predicate/invariant rechecks. A successful recheck
+publishes the original nominal value; a failed one raises the canonical
 `ArtifactProofRejected` runtime fault instead of producing a source `Result`.
-The disposition cannot by itself bypass the embedded condition. Artifact
-authenticity still depends on the trusted registry or distribution channel,
-not on the MIR envelope.
+The disposition cannot by itself bypass the embedded condition. A version 2
+`.loomlib` instead carries source, so the consuming frontend derives fresh
+proof decisions. Artifact authenticity still depends on the trusted registry
+or distribution channel, not on either artifact envelope.
 
 These are internal toolchain formats, not long-term archival formats. Preserve
 the compiler version needed to reproduce important artifacts.

@@ -571,16 +571,15 @@ pub fn main() {
 
     let development = std::fs::read_to_string(development_ir).expect("read development IR");
     let release = std::fs::read_to_string(release_ir).expect("read release IR");
-    let development_definitions = development
-        .lines()
-        .filter(|line| line.starts_with("define "))
-        .collect::<Vec<_>>();
+    let folded = llvm_native_function(&development, "optimize_folded");
     assert!(
-        development.contains("define internal i64 @loom.native.fn.0.optimize_folded"),
-        "{development_definitions:#?}"
+        folded.lines().next().is_some_and(|definition| {
+            definition.starts_with("define internal i64 @loom.native.fn.")
+                && definition.contains(".optimize_folded()")
+        }),
+        "{folded}"
     );
     assert!(!development.contains("optimize_unreachable"));
-    let folded = llvm_native_function(&development, "optimize_folded");
     assert!(folded.contains("add nsw i64"), "{folded}");
     assert!(!folded.contains("with.overflow"), "{folded}");
     assert!(!folded.lines().next().unwrap_or_default().contains("ptr"));
@@ -643,6 +642,10 @@ fn checkedFibonacci(value Int) Int {
     let llvm = std::fs::read_to_string(ir).expect("read scalar Int LLVM IR");
     let fibonacci = llvm_native_function(&llvm, "scalar_int_fibonacci");
     let assumed_fibonacci = llvm_assumed_native_function(&llvm, "scalar_int_fibonacci");
+    let fibonacci_symbol = llvm_defined_symbol(fibonacci);
+    let assumed_fibonacci_symbol = llvm_defined_symbol(assumed_fibonacci);
+    let checked_fibonacci_call = format!("call {{ i32, i64 }} @{fibonacci_symbol}");
+    let assumed_fibonacci_call = format!("call i64 @{assumed_fibonacci_symbol}");
     assert!(
         fibonacci
             .lines()
@@ -651,16 +654,12 @@ fn checkedFibonacci(value Int) Int {
         "{fibonacci}"
     );
     assert_eq!(
-        fibonacci
-            .matches("call { i32, i64 } @loom.native.fn.0.scalar_int_fibonacci")
-            .count(),
+        fibonacci.matches(&checked_fibonacci_call).count(),
         2,
         "{fibonacci}"
     );
     assert_eq!(
-        fibonacci
-            .matches("call i64 @loom.native.assumed.fn.0.scalar_int_fibonacci")
-            .count(),
+        fibonacci.matches(&assumed_fibonacci_call).count(),
         1,
         "{fibonacci}"
     );
@@ -683,9 +682,7 @@ fn checkedFibonacci(value Int) Int {
         "{assumed_fibonacci}"
     );
     assert_eq!(
-        assumed_fibonacci
-            .matches("call i64 @loom.native.assumed.fn.0.scalar_int_fibonacci")
-            .count(),
+        assumed_fibonacci.matches(&assumed_fibonacci_call).count(),
         2,
         "{assumed_fibonacci}"
     );
@@ -734,9 +731,14 @@ fn checkedFibonacci(value Int) Int {
     );
     let wrapper = llvm_function(&llvm, "scalar_int_main");
     let native_main = llvm_native_function(&llvm, "scalar_int_main");
+    let native_main_symbol = llvm_defined_symbol(native_main);
     assert!(
-        native_main.contains("call i64 @loom.native.assumed.fn.0.scalar_int_fibonacci"),
+        native_main.contains(&assumed_fibonacci_call),
         "{native_main}"
+    );
+    assert!(
+        wrapper.contains(&format!("@{native_main_symbol}")),
+        "{wrapper}"
     );
     let wrapper_status = wrapper
         .lines()
@@ -751,7 +753,10 @@ fn checkedFibonacci(value Int) Int {
         contracted.contains("call i32 @loom_gc_clone_value_v1"),
         "{contracted}"
     );
-    assert!(llvm.contains("define internal i32 @loom.fn.2.scalar_int_main"));
+    assert!(
+        llvm_defined_symbol(wrapper).ends_with(".scalar_int_main"),
+        "{wrapper}"
+    );
     assert!(llvm.contains("call ptr @loom_runtime_create_v1"), "{llvm}");
     assert!(
         llvm.contains("call i32 @loom_runtime_activate_v1"),
@@ -847,25 +852,25 @@ pub fn main() {
     let recursive_llvm =
         std::fs::read_to_string(recursive_overflow_ir).expect("read recursive overflow LLVM IR");
     let amplified = llvm_native_function(&recursive_llvm, "scalar_recursive_fault_amplified");
+    let amplified_symbol = llvm_defined_symbol(amplified);
+    let checked_amplified_call = format!("call {{ i32, i64 }} @{amplified_symbol}");
+    let assumed_amplified =
+        llvm_assumed_native_function(&recursive_llvm, "scalar_recursive_fault_amplified");
+    let assumed_amplified_call = format!("call i64 @{}", llvm_defined_symbol(assumed_amplified));
     assert!(amplified.contains("icmp ule i64 %0, 3"), "{amplified}");
     assert_eq!(
-        amplified
-            .matches("call { i32, i64 } @loom.native.fn.0.scalar_recursive_fault_amplified")
-            .count(),
+        amplified.matches(&checked_amplified_call).count(),
         1,
         "{amplified}"
     );
     assert_eq!(
-        amplified
-            .matches("call i64 @loom.native.assumed.fn.0.scalar_recursive_fault_amplified",)
-            .count(),
+        amplified.matches(&assumed_amplified_call).count(),
         1,
         "{amplified}"
     );
     let recursive_main = llvm_native_function(&recursive_llvm, "scalar_recursive_fault_main");
     assert!(
-        recursive_main
-            .contains("call { i32, i64 } @loom.native.fn.0.scalar_recursive_fault_amplified"),
+        recursive_main.contains(&checked_amplified_call),
         "{recursive_main}"
     );
     let output = Command::new(recursive_overflow_executable)
@@ -918,6 +923,8 @@ pub fn main() {
     let identity = llvm_native_function(&llvm, "pure_scalar_int_identity");
     let choose = llvm_native_function(&llvm, "pure_scalar_int_choose");
     let main = llvm_native_function(&llvm, "pure_scalar_int_main");
+    let identity_symbol = llvm_defined_symbol(identity);
+    let choose_symbol = llvm_defined_symbol(choose);
     assert!(!llvm.contains("@loom.int.fn."), "{llvm}");
     assert!(
         identity
@@ -927,11 +934,11 @@ pub fn main() {
         "{identity}"
     );
     assert!(
-        choose.contains("call i64 @loom.native.fn.0.pure_scalar_int_identity"),
+        choose.contains(&format!("call i64 @{identity_symbol}")),
         "{choose}"
     );
     assert!(
-        main.contains("call i64 @loom.native.fn.1.pure_scalar_int_choose"),
+        main.contains(&format!("call i64 @{choose_symbol}")),
         "{main}"
     );
     assert!(!identity.lines().next().unwrap_or_default().contains("ptr"));
@@ -1668,6 +1675,9 @@ pub fn main() {
     let double = llvm_native_function(&llvm, "primitive_scalar_double");
     let unit = llvm_native_function(&llvm, "primitive_scalar_unitIdentity");
     let main = llvm_native_function(&llvm, "primitive_scalar_main");
+    let negate_symbol = llvm_defined_symbol(negate);
+    let double_symbol = llvm_defined_symbol(double);
+    let unit_symbol = llvm_defined_symbol(unit);
     assert!(
         negate.lines().next().unwrap_or_default().contains("i1 %0"),
         "{negate}"
@@ -1685,17 +1695,14 @@ pub fn main() {
         "{unit}"
     );
     assert!(
-        main.contains("call i1 @loom.native.fn.0.primitive_scalar_negate"),
+        main.contains(&format!("call i1 @{negate_symbol}")),
         "{main}"
     );
     assert!(
-        main.contains("call double @loom.native.fn.1.primitive_scalar_double"),
+        main.contains(&format!("call double @{double_symbol}")),
         "{main}"
     );
-    assert!(
-        main.contains("call i1 @loom.native.fn.2.primitive_scalar_unitIdentity"),
-        "{main}"
-    );
+    assert!(main.contains(&format!("call i1 @{unit_symbol}")), "{main}");
     assert!(!main.contains("%loom.ArgNode"), "{main}");
 
     let output = Command::new(executable)
@@ -1873,9 +1880,10 @@ pub fn main() {
     );
     assert!(modular_product.contains("mul nsw i64"), "{modular_product}");
     assert!(modular_product.contains("sdiv i64"), "{modular_product}");
+    let modular_product_symbol = llvm_defined_symbol(modular_product);
     let spin = llvm_native_function(&llvm, "stack_loop_spin");
     assert!(
-        spin.contains("call i64 @loom.native.fn.1.stack_loop_modularProduct"),
+        spin.contains(&format!("call i64 @{modular_product_symbol}")),
         "{spin}"
     );
     let record_method = llvm_native_function(&llvm, "stack_loop_recordMethod");
@@ -3603,6 +3611,16 @@ fn llvm_native_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'sou
     let rest = &ir[start + marker.len()..];
     let end = rest.find("\ndefine ").unwrap_or(rest.len());
     &ir[start..start + marker.len() + end]
+}
+
+fn llvm_defined_symbol(function: &str) -> &str {
+    function
+        .lines()
+        .next()
+        .and_then(|definition| definition.split_once('@'))
+        .and_then(|(_, symbol_and_parameters)| symbol_and_parameters.split_once('('))
+        .map(|(symbol, _)| symbol)
+        .expect("LLVM function definition must contain a symbol")
 }
 
 fn llvm_assumed_native_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'source str {

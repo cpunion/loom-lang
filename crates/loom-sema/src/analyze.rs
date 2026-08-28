@@ -5366,6 +5366,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::TextMapLength
             | BuiltinValue::TextMapContains
             | BuiltinValue::TextMapGet
+            | BuiltinValue::TextMapEntryAt
             | BuiltinValue::TextMapInsert
             | BuiltinValue::TextMapRemove
             | BuiltinValue::TaskFaultCode
@@ -6287,6 +6288,15 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 vec![text],
                 self.types().intern(TyData::Option(value)),
             ),
+            "entry_at" => {
+                let int = self.types().builtin(BuiltinType::Int);
+                let entry = self.types().intern(TyData::Tuple(vec![text, value]));
+                (
+                    BuiltinValue::TextMapEntryAt,
+                    vec![int],
+                    self.types().intern(TyData::Option(entry)),
+                )
+            }
             "insert" => (
                 BuiltinValue::TextMapInsert,
                 vec![text, value],
@@ -6307,8 +6317,11 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             );
         }
         self.check_fixed_arguments(expression, arguments, &parameters);
-        let result = if carries_task && matches!(method_name.as_str(), "get" | "insert" | "remove")
-        {
+        let result = if carries_task
+            && matches!(
+                method_name.as_str(),
+                "get" | "entry_at" | "insert" | "remove"
+            ) {
             self.error_at(
                 "TaskContainerExtractionUnsupported",
                 "this TextMap operation cannot transfer Task-carrying values before container ownership transfer is available",

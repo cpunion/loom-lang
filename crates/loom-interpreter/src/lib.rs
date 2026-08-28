@@ -3365,6 +3365,7 @@ impl<'program> Interpreter<'program> {
                 | Builtin::TextMapLength
                 | Builtin::TextMapContains
                 | Builtin::TextMapGet
+                | Builtin::TextMapEntryAt
                 | Builtin::TextMapInsert
                 | Builtin::TextMapRemove
         ) {
@@ -3536,6 +3537,18 @@ impl<'program> Interpreter<'program> {
                     .find(|(candidate, _)| candidate == key)
                     .map(|(_, value)| value);
                 self.option_value(value, span)
+            }
+            (Builtin::TextMapEntryAt, [map, Value::Int { value: index }]) => {
+                let entries = self.text_map_entries(map, span)?;
+                let entry = usize::try_from(*index)
+                    .ok()
+                    .and_then(|index| entries.get(index).cloned());
+                self.option_value(
+                    entry.map(|(key, value)| Value::Tuple {
+                        elements: vec![Value::Text { value: key }, value],
+                    }),
+                    span,
+                )
             }
             (Builtin::TextMapInsert, [map, Value::Text { value: key }, value]) => {
                 let mut entries = self.text_map_entries(map, span)?;

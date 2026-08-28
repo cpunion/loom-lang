@@ -24,6 +24,7 @@ sha2.workspace = true
 toml.workspace = true
 
 [dev-dependencies]
+loom-codegen-ir.workspace = true
 sha2.workspace = true
 toml.workspace = true
 

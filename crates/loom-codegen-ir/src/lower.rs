@@ -490,6 +490,25 @@ pub fn lower_typed_artifact(
             });
         }
     }
+    let equality_anchor = selected.ordered.first().copied();
+    for (ty, dependencies) in &classifier.equality_dependencies {
+        let anchor = equality_anchor.ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::SourceGraph,
+                "an equality-helper plan exists without a source artifact root",
+            )
+        })?;
+        summaries.push(InstanceEffectSummary {
+            key: InstanceKey::structural_equality(anchor, ty.clone()),
+            local: Effects::NONE,
+            calls: dependencies
+                .iter()
+                .cloned()
+                .map(|dependency| InstanceKey::structural_equality(anchor, dependency))
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        });
+    }
     let effects = solve_effects(summaries)?;
     for root in &root_keys {
         let function = mir.function(root.source()).ok_or_else(|| {
@@ -559,46 +578,67 @@ pub fn lower_typed_artifact(
                 format!("reachable function #{} disappeared", function_id.0),
             )
         })?;
-        let substitution = InstanceSubstitution::new(mir.as_program(), &planned.key);
-        let params = function
-            .params
-            .iter()
-            .map(|parameter| {
-                let ty = substitution
-                    .instantiate_type(&parameter.ty)
-                    .map_err(|error| instantiation_defect(function.id, None, error))?;
-                required_type(&builder, &dyn_concepts, &ty)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let result_ty = substitution
-            .instantiate_type(&function.return_ty)
-            .map_err(|error| instantiation_defect(function.id, None, error))?;
-        let result = required_type(&builder, &dyn_concepts, &result_ty)?;
-        let inout_params = function
-            .params
-            .iter()
-            .enumerate()
-            .filter_map(|(index, parameter)| {
-                let instantiated = substitution.instantiate_type(&parameter.ty).ok()?;
-                is_functional_inout_parameter(function, parameter, &instantiated)
-                    .then(|| u32::try_from(index).ok())
-                    .flatten()
-            })
-            .collect::<Vec<_>>();
-        let signature = if inout_params.is_empty() {
-            Signature::new(params, effect_result(result))
+        let (origin, name, signature) = if planned.key.role() == InstanceRole::StructuralEquality {
+            let compared = planned.key.structural_equality_type().ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    "structural-equality effect entry has a malformed instance key",
+                )
+            })?;
+            let compared = required_type(&builder, &dyn_concepts, compared)?;
+            let boolean = required_type(&builder, &dyn_concepts, &Type::Bool)?;
+            (
+                Origin::synthetic(function_id),
+                "$structuralEquality".to_owned(),
+                Signature::new([compared, compared], boolean),
+            )
         } else {
-            Signature::with_inout_params(params, effect_result(result), inout_params)
-        };
-        let instance = builder
-            .declare_instance(
-                planned.key.clone(),
+            let substitution = InstanceSubstitution::new(mir.as_program(), &planned.key);
+            let params = function
+                .params
+                .iter()
+                .map(|parameter| {
+                    let ty = substitution
+                        .instantiate_type(&parameter.ty)
+                        .map_err(|error| instantiation_defect(function.id, None, error))?;
+                    required_type(&builder, &dyn_concepts, &ty)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let result_ty = substitution
+                .instantiate_type(&function.return_ty)
+                .map_err(|error| instantiation_defect(function.id, None, error))?;
+            let result = required_type(&builder, &dyn_concepts, &result_ty)?;
+            let inout_params = function
+                .params
+                .iter()
+                .enumerate()
+                .filter_map(|(index, parameter)| {
+                    let instantiated = substitution.instantiate_type(&parameter.ty).ok()?;
+                    is_functional_inout_parameter(function, parameter, &instantiated)
+                        .then(|| u32::try_from(index).ok())
+                        .flatten()
+                })
+                .collect::<Vec<_>>();
+            let signature = if inout_params.is_empty() {
+                Signature::new(params, effect_result(result))
+            } else {
+                Signature::with_inout_params(params, effect_result(result), inout_params)
+            };
+            (
                 Origin {
                     source_function: function.id,
                     expression: None,
                     span: function.span,
                 },
-                &function.name,
+                function.name.clone(),
+                signature,
+            )
+        };
+        let instance = builder
+            .declare_instance(
+                planned.key.clone(),
+                origin,
+                name,
                 signature,
                 planned.effects,
             )
@@ -632,6 +672,32 @@ pub fn lower_typed_artifact(
                 format!("function #{} has no LCIR declaration", function_id.0),
             )
         })?;
+        if planned.key.role() == InstanceRole::StructuralEquality {
+            let compared = planned
+                .key
+                .structural_equality_type()
+                .cloned()
+                .ok_or_else(|| {
+                    LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        "structural-equality declaration has a malformed instance key",
+                    )
+                })?;
+            let function_builder = builder.function(instance).map_err(LoweringError::from)?;
+            FunctionLowerer::new(
+                mir.as_program(),
+                source,
+                &planned.key,
+                function_builder,
+                &instances,
+                &instance_effects,
+                &match_plans,
+                &dyn_concepts,
+                equality_anchor,
+            )
+            .lower_structural_equality_helper(&compared)?;
+            continue;
+        }
         let coroutine = if source.is_async {
             let substitution = InstanceSubstitution::new(mir.as_program(), &planned.key);
             let output = substitution
@@ -765,6 +831,7 @@ pub fn lower_typed_artifact(
             &instance_effects,
             &match_plans,
             &dyn_concepts,
+            equality_anchor,
         )
         .lower()?;
     }
@@ -1460,107 +1527,70 @@ const fn is_scalar_type(ty: &Type) -> bool {
     is_direct_scalar(ty)
 }
 
-/// Returns the extra direct types needed to expand equality for one concrete
-/// value into a bounded LCIR CFG. Lists and `TextMap` values use finite loops with
-/// canonical `Option[element]` or `Option[(Text, V)]` reads. Re-entering a
-/// nominal equality through either container is rejected here because
-/// recursively cloning that element CFG would not be a finite lowering plan.
-fn direct_structural_equality_dependencies(
-    program: &mir::Program,
-    ty: &Type,
-) -> Option<BTreeSet<Type>> {
-    fn visit(
-        program: &mir::Program,
-        ty: &Type,
-        active: &mut BTreeSet<Type>,
-        dependencies: &mut BTreeSet<Type>,
-        remaining: &mut usize,
-    ) -> bool {
-        if *remaining == 0 {
-            return false;
-        }
-        *remaining -= 1;
-        match ty {
-            Type::Unit | Type::Bool | Type::Int | Type::Float | Type::Text => true,
-            Type::Tuple(elements) => elements
-                .iter()
-                .all(|element| visit(program, element, active, dependencies, remaining)),
-            Type::List(element) => {
-                let Some(option) = program.prelude.option else {
-                    return false;
-                };
-                dependencies.insert(Type::Nominal(option, vec![(**element).clone()]));
-                visit(program, element, active, dependencies, remaining)
-            }
-            Type::Nominal(id, arguments) if program.prelude.text_map == Some(*id) => {
-                let [value] = arguments.as_slice() else {
-                    return false;
-                };
-                if !active.insert(ty.clone()) {
-                    return false;
-                }
-                let Some(option) = program.prelude.option else {
-                    active.remove(ty);
-                    return false;
-                };
-                let entry = Type::Tuple(vec![Type::Text, value.clone()]);
-                dependencies.insert(entry.clone());
-                dependencies.insert(Type::Nominal(option, vec![entry]));
-                let result = visit(program, value, active, dependencies, remaining);
-                active.remove(ty);
-                result
-            }
-            Type::Nominal(_, _) => {
-                if !active.insert(ty.clone()) {
-                    return false;
-                }
-                let result = if let Some(fields) = concrete_any_record_fields(program, ty) {
-                    fields
-                        .iter()
-                        .all(|field| visit(program, field, active, dependencies, remaining))
-                } else if let Some(base) = concrete_refined_base(program, ty) {
-                    visit(program, &base, active, dependencies, remaining)
-                } else if let Some(variants) = closed_enum_variants(program, ty) {
-                    let Some(case_cost) = variants.len().checked_mul(variants.len()) else {
-                        active.remove(ty);
-                        return false;
-                    };
-                    if *remaining < case_cost {
-                        active.remove(ty);
-                        return false;
-                    }
-                    *remaining -= case_cost;
-                    variants.iter().all(|variant| {
-                        variant
-                            .iter()
-                            .all(|payload| visit(program, payload, active, dependencies, remaining))
-                    })
-                } else {
-                    false
-                };
-                active.remove(ty);
-                result
-            }
-            Type::Never
-            | Type::Parameter(_)
-            | Type::AssociatedProjection { .. }
-            | Type::Task(_)
-            | Type::TaskOutcome(_)
-            | Type::View { .. }
-            | Type::Error => false,
-        }
-    }
-
-    let mut remaining = DIRECT_EQUALITY_MAX_CFG_NODES;
-    let mut dependencies = BTreeSet::new();
-    visit(
-        program,
+const fn is_direct_equality_leaf(ty: &Type) -> bool {
+    matches!(
         ty,
-        &mut BTreeSet::new(),
-        &mut dependencies,
-        &mut remaining,
+        Type::Unit | Type::Bool | Type::Int | Type::Float | Type::Text
     )
-    .then_some(dependencies)
+}
+
+/// Returns the exact child comparison types used by one specialized equality
+/// helper. The helper expands only this single representation layer; every
+/// non-leaf child is another ordinary LCIR helper call. A repeated closed type
+/// therefore closes a finite call-graph cycle instead of recursively cloning
+/// an unbounded CFG.
+fn direct_structural_equality_children(program: &mir::Program, ty: &Type) -> Option<Vec<Type>> {
+    Some(match ty {
+        Type::Unit | Type::Bool | Type::Int | Type::Float | Type::Text => Vec::new(),
+        Type::Tuple(elements) => elements.clone(),
+        Type::List(element) => vec![Type::Nominal(
+            program.prelude.option?,
+            vec![(**element).clone()],
+        )],
+        Type::Nominal(id, arguments) if program.prelude.text_map == Some(*id) => {
+            let [value] = arguments.as_slice() else {
+                return None;
+            };
+            let entry = Type::Tuple(vec![Type::Text, value.clone()]);
+            vec![Type::Nominal(program.prelude.option?, vec![entry])]
+        }
+        Type::Nominal(_, _) => {
+            if let Some(fields) = concrete_any_record_fields(program, ty) {
+                fields.into_vec()
+            } else if let Some(base) = concrete_refined_base(program, ty) {
+                vec![base]
+            } else if let Some(variants) = closed_enum_variants(program, ty) {
+                // `branch_on_sum_equality` emits one complete right-hand
+                // switch for every left-hand variant. Keep that quadratic
+                // one-helper CFG inside the same explicit 4096-node gate that
+                // bounded the former inline lowering. Payload comparisons are
+                // delegated to child helpers, but their branch sites still
+                // contribute one bounded node each in this helper.
+                let case_cost = variants.len().checked_mul(variants.len())?;
+                let payload_cost = variants
+                    .iter()
+                    .try_fold(0_usize, |cost, variant| cost.checked_add(variant.len()))?;
+                let helper_cost = 1_usize.checked_add(case_cost)?.checked_add(payload_cost)?;
+                if helper_cost > DIRECT_EQUALITY_MAX_CFG_NODES {
+                    return None;
+                }
+                variants
+                    .into_vec()
+                    .into_iter()
+                    .flat_map(Vec::from)
+                    .collect()
+            } else {
+                return None;
+            }
+        }
+        Type::Never
+        | Type::Parameter(_)
+        | Type::AssociatedProjection { .. }
+        | Type::Task(_)
+        | Type::TaskOutcome(_)
+        | Type::View { .. }
+        | Type::Error => return None,
+    })
 }
 
 fn runtime_constraint_result_type(program: &mir::Program, success: Type) -> Option<Type> {
@@ -1584,6 +1614,7 @@ struct Classifier<'program, 'plan> {
     immortal_text: bool,
     managed_text: bool,
     task_handles: BTreeSet<Type>,
+    equality_dependencies: BTreeMap<Type, BTreeSet<Type>>,
 }
 
 #[derive(Clone, Copy)]
@@ -1636,6 +1667,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             immortal_text: false,
             managed_text: false,
             task_handles: BTreeSet::new(),
+            equality_dependencies: BTreeMap::new(),
         }
     }
 
@@ -1746,13 +1778,43 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
     }
 
     fn supported_equality_type(&mut self, ty: &Type) -> bool {
-        let Some(dependencies) = direct_structural_equality_dependencies(self.program, ty) else {
-            return false;
-        };
-        self.supported_value_type(ty)
-            && dependencies
+        let mut pending = vec![ty.clone()];
+        let mut discovered = BTreeMap::<Type, BTreeSet<Type>>::new();
+        let mut visited = 0_usize;
+        while let Some(current) = pending.pop() {
+            if is_direct_equality_leaf(&current)
+                || self.equality_dependencies.contains_key(&current)
+                || discovered.contains_key(&current)
+            {
+                if !self.supported_value_type(&current) {
+                    return false;
+                }
+                continue;
+            }
+            visited = visited.saturating_add(1);
+            if self
+                .equality_dependencies
+                .len()
+                .checked_add(discovered.len())
+                .is_none_or(|count| count >= DIRECT_EQUALITY_MAX_CFG_NODES)
+                || visited > DIRECT_EQUALITY_MAX_CFG_NODES
+                || !self.supported_value_type(&current)
+            {
+                return false;
+            }
+            let Some(children) = direct_structural_equality_children(self.program, &current) else {
+                return false;
+            };
+            let dependencies = children
                 .iter()
-                .all(|dependency| self.supported_value_type(dependency))
+                .filter(|child| !is_direct_equality_leaf(child))
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            pending.extend(dependencies.iter().cloned());
+            discovered.insert(current, dependencies);
+        }
+        self.equality_dependencies.extend(discovered);
+        true
     }
 
     fn admit_generated_text_literals(&mut self, literals: &[&str]) -> bool {
@@ -3202,6 +3264,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         | mir::Builtin::TextMapLength
                         | mir::Builtin::TextMapContains
                         | mir::Builtin::TextMapGet
+                        | mir::Builtin::TextMapEntryAt
                         | mir::Builtin::TextMapRemove
                         | mir::Builtin::IsFinite
                         | mir::Builtin::ParseInt
@@ -3225,6 +3288,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                                     | mir::Builtin::TextMapLength
                                     | mir::Builtin::TextMapContains
                                     | mir::Builtin::TextMapGet
+                                    | mir::Builtin::TextMapEntryAt
                                     | mir::Builtin::TextMapRemove
                                     | mir::Builtin::TaskFaultCode
                                     | mir::Builtin::TaskFaultMessage
@@ -4789,6 +4853,7 @@ struct FunctionLowerer<'function, 'builder, 'plan> {
     builder: FunctionBuilder<'builder>,
     instances: &'plan InstanceLookup,
     effects: &'plan [Effects],
+    equality_anchor: Option<FunctionId>,
     match_plans: Option<&'plan BTreeMap<ExprId, MatchPlan>>,
     local_types: BTreeMap<LocalId, Type>,
     inout_locals: Box<[LocalId]>,
@@ -4811,6 +4876,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         effects: &'plan [Effects],
         match_plans: &'plan BTreeMap<String, BTreeMap<ExprId, MatchPlan>>,
         dyn_concepts: &'plan DynConceptPlan,
+        equality_anchor: Option<FunctionId>,
     ) -> Self {
         let local_types = source
             .params
@@ -4839,6 +4905,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             builder,
             instances,
             effects,
+            equality_anchor,
             match_plans: match_plans.get(&key.canonical_identity()),
             local_types,
             inout_locals,
@@ -4914,6 +4981,71 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             }
             EvalFlow::Terminated => Ok(()),
         }
+    }
+
+    fn lower_structural_equality_helper(mut self, compared: &Type) -> Result<(), LoweringError> {
+        let entry = self.create_block()?;
+        self.builder.set_entry(entry).map_err(LoweringError::from)?;
+        let compared_type = self.type_id(compared)?;
+        let left = self
+            .builder
+            .append_block_parameter(entry, compared_type)
+            .map_err(LoweringError::from)?;
+        let right = self
+            .builder
+            .append_block_parameter(entry, compared_type)
+            .map_err(LoweringError::from)?;
+        let equal = self.create_block()?;
+        let not_equal = self.create_block()?;
+        let origin = Origin::synthetic(self.source.id);
+        self.branch_on_structural_equality_body(
+            Flow {
+                block: entry,
+                env: EMPTY_ENVIRONMENT,
+            },
+            left,
+            right,
+            compared_type,
+            equal,
+            not_equal,
+            origin,
+        )?;
+        let true_value = match self.constant(
+            Flow {
+                block: equal,
+                env: EMPTY_ENVIRONMENT,
+            },
+            Constant::Bool(true),
+            &Type::Bool,
+            origin,
+        )? {
+            EvalFlow::Continue { value, .. } => value,
+            EvalFlow::Terminated => {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::Builder,
+                    "structural-equality helper true result unexpectedly terminated",
+                ));
+            }
+        };
+        self.terminate(equal, TerminatorKind::Return(true_value), origin)?;
+        let false_value = match self.constant(
+            Flow {
+                block: not_equal,
+                env: EMPTY_ENVIRONMENT,
+            },
+            Constant::Bool(false),
+            &Type::Bool,
+            origin,
+        )? {
+            EvalFlow::Continue { value, .. } => value,
+            EvalFlow::Terminated => {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::Builder,
+                    "structural-equality helper false result unexpectedly terminated",
+                ));
+            }
+        };
+        self.terminate(not_equal, TerminatorKind::Return(false_value), origin)
     }
 
     fn type_id(&self, ty: &Type) -> Result<ValueTypeId, LoweringError> {
@@ -8969,10 +9101,95 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
 
     #[expect(
         clippy::too_many_arguments,
-        clippy::too_many_lines,
-        reason = "recursive representation dispatch keeps each exact typed equality shape auditable in one boundary"
+        reason = "typed equality branching keeps the exact helper-call boundary explicit"
     )]
     fn branch_on_structural_equality(
+        &mut self,
+        flow: Flow,
+        left: ValueId,
+        right: ValueId,
+        ty: ValueTypeId,
+        equal: BlockId,
+        not_equal: BlockId,
+        origin: Origin,
+    ) -> Result<(), LoweringError> {
+        for (side, value) in [("left", left), ("right", right)] {
+            if self.builder.value_type(value) != Some(ty) {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!("structural equality {side} operand has the wrong LCIR value type"),
+                ));
+            }
+        }
+        let semantic = self
+            .builder
+            .representations()
+            .value_type(ty)
+            .map(|value| value.semantic().clone())
+            .ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!("structural equality references missing value type {ty}"),
+                )
+            })?;
+        if is_direct_equality_leaf(&semantic) {
+            return self.branch_on_structural_equality_body(
+                flow, left, right, ty, equal, not_equal, origin,
+            );
+        }
+        let anchor = self.equality_anchor.ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "structural equality has no artifact helper anchor",
+            )
+        })?;
+        let key = InstanceKey::structural_equality(anchor, semantic);
+        let callee = self.instances.get(&key).ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                format!("structural equality has no planned helper for {key}"),
+            )
+        })?;
+        if effect_for(self.effects, callee)? != Effects::NONE {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                format!("structural-equality helper {callee} is not effect-free"),
+            ));
+        }
+        let condition = match self.one_instruction(
+            flow,
+            InstructionKind::DirectCall {
+                callee,
+                arguments: vec![left, right].into_boxed_slice(),
+            },
+            self.type_id(&Type::Bool)?,
+            origin,
+        )? {
+            EvalFlow::Continue { value, .. } => value,
+            EvalFlow::Terminated => {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::Builder,
+                    "structural-equality helper call unexpectedly terminated",
+                ));
+            }
+        };
+        self.terminate(
+            flow.block,
+            TerminatorKind::Branch {
+                condition,
+                then_target: BlockTarget::new(equal, []),
+                else_target: BlockTarget::new(not_equal, []),
+            },
+            origin,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "one helper expands exactly one representation layer and delegates every nested aggregate to another typed helper"
+    )]
+    fn branch_on_structural_equality_body(
         &mut self,
         flow: Flow,
         left: ValueId,
@@ -10134,6 +10351,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 | mir::Builtin::TextMapLength
                 | mir::Builtin::TextMapContains
                 | mir::Builtin::TextMapGet
+                | mir::Builtin::TextMapEntryAt
                 | mir::Builtin::TextMapRemove => {
                     self.lower_text_map_builtin(flow, *builtin, arguments, expression)
                 }
@@ -11282,6 +11500,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             (mir::Builtin::TextMapGet, [map, key]) => InstructionKind::TextMapGet {
                 map: *map,
                 key: *key,
+            },
+            (mir::Builtin::TextMapEntryAt, [map, index]) => InstructionKind::TextMapEntryGet {
+                map: *map,
+                index: *index,
             },
             (mir::Builtin::TextMapRemove, [map, key]) => InstructionKind::TextMapRemove {
                 map: *map,

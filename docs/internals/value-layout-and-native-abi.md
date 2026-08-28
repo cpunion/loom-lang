@@ -11,7 +11,7 @@ LCIR for primitive values, literal or concat-produced direct `Text`, structural 
 closed records, compile-time-established refined values, and eligible closed
 enums. Any reachable feature outside current LCIR coverage selects the complete
 legacy layout below; the two callable ABIs are never mixed in one object. In
-particular, supported nongeneric portable MIR `Recheck` constructions replay
+particular, supported nongeneric `.loomi` MIR `Recheck` constructions replay
 their predicate in typed LCIR before entering the transparent representation.
 Generic or otherwise unsupported proof replay uses the legacy checker.
 

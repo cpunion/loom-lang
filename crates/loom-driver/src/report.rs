@@ -127,7 +127,7 @@ impl DiagnosticRecord {
             .documents()
             .iter()
             .find(|source| source.relative_path() == self.primary_span.path)
-            .filter(|source| !source.is_embedded_dependency())
+            .filter(|source| source.is_navigable())
             && let Some(text) = source.text()
             && let Some(line) = text.lines().nth(
                 usize::try_from(self.primary_span.start_line.saturating_sub(1))

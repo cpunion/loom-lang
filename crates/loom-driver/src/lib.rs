@@ -13,6 +13,7 @@ mod project;
 mod registry;
 mod report;
 mod source;
+mod standard_library;
 mod symbols;
 
 pub use analysis::{
@@ -26,8 +27,8 @@ pub use cache::{
 pub use format::{FormatResult, format_source};
 pub use incremental::ModuleInterface;
 pub use library::{
-    LIBRARY_ARTIFACT_FORMAT, LIBRARY_ARTIFACT_VERSION, LibraryArtifact, LibraryArtifactError,
-    decode_library_artifact, encode_library_artifact,
+    LIBRARY_ARTIFACT_FORMAT, LIBRARY_ARTIFACT_MAX_BYTES, LIBRARY_ARTIFACT_VERSION, LibraryArtifact,
+    LibraryArtifactError, decode_library_artifact, encode_library_artifact,
 };
 pub use project::{
     CURRENT_LANGUAGE_VERSION, LOCK_FILE, LOCK_SCHEMA_VERSION, LockMode, MANIFEST_FILE, Package,
@@ -35,7 +36,8 @@ pub use project::{
 };
 pub use registry::{RegistryPublish, publish_registry_package};
 pub use report::{DiagnosticRecord, Position, Range, RelatedDiagnostic, SpanRecord};
-pub use source::{DriverError, SourceDocument, SourceMap, discover_loom_files};
+pub use source::{DriverError, SourceDocument, SourceMap, SourceOrigin, discover_loom_files};
+pub use standard_library::identity as standard_library_identity;
 pub use symbols::{SymbolId, SymbolInfo, SymbolReference, is_valid_identifier};
 
 /// Successful command completion.

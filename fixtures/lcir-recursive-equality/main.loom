@@ -1,0 +1,47 @@
+module lcir_recursive_equality
+
+record Node {
+    value Int
+    children List[Node]
+}
+
+fn nestedNode(depth Int, leaf Int) Node {
+    var current = Node { value = leaf, children = [] }
+    for index in 0..depth {
+        current = Node { value = index, children = [current] }
+    }
+    current
+}
+
+fn nestedJson(depth Int, leaf Text) Json {
+    var current = Json.Text(leaf)
+    for index in 0..depth {
+        discard index
+        current = Json.Object(TextMap[Json]().insert("next", current))
+    }
+    current
+}
+
+fn verify() {
+    let leftNode = nestedNode(96, 7)
+    let rightNode = nestedNode(96, 7)
+    let changedNode = nestedNode(96, 8)
+    let shorterNode = nestedNode(95, 7)
+    assert leftNode == rightNode
+    assert leftNode != changedNode
+    assert leftNode != shorterNode
+
+    let leftJson = nestedJson(96, "same")
+    let rightJson = nestedJson(96, "same")
+    let changedJson = nestedJson(96, "changed")
+    assert leftJson == rightJson
+    assert leftJson != changedJson
+}
+
+pub fn main() {
+    verify()
+}
+
+test fn recursiveEquality() {
+    verify()
+}

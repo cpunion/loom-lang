@@ -152,18 +152,19 @@ neither a checked-overflow fault nor a runtime helper. Reads create no
 alias-visible mutation and cross no collection safepoint; List and TextMap value
 semantics and typed GC roots are unchanged.
 
-Planning bounds the expanded equality CFG to 4,096 structural units and
-registers every implicit `Option[T]` or `Option[(Text, V)]` before LCIR
-construction. Re-entering one nominal type through a List or TextMap remains
-whole-artifact unsupported: inlining that coinductive semantic equality would
-make an unbounded CFG. A future reusable recursive comparison-instance plan can
-close that case without changing the source equality rule.
+Planning admits at most 4,096 concrete equality-helper types and registers
+every implicit `Option[T]` or `Option[(Text, V)]` before LCIR construction.
+Each compiler-generated `StructuralEquality` instance has the exact signature
+`(T, T) -> Bool`, no effects, no coroutine plan, and expands one representation
+layer. Non-leaf children use ordinary direct calls to their own exact helpers.
+A nominal type reached again through List or TextMap therefore closes a finite
+call-graph cycle instead of cloning an unbounded CFG. Helpers are planned only
+from reachable equality sites, participate in normal artifact reachability and
+DCE, and require no universal comparison instruction or runtime type switch.
 
-The representation-only recursive `Json` slice therefore supports
-construction, exhaustive matching, List/TextMap storage, copying, and precise
-moving-GC relocation. `Json == Json` and parsing remain outside that slice;
-their later typed operations must not route through the legacy universal-value
-helpers.
+The recursive `Json` carrier therefore receives ordinary structural equality
+through the same generated List/TextMap helper cycles as user-defined recursive
+types. JSON parsing remains a separate standard-library coverage boundary.
 
 ## Typed JSON formatting
 
@@ -539,8 +540,8 @@ refined construction, exact unrefinement, and compile-time-proven record
 invariants are representation-preserving typed operations. Unknown nongeneric
 refined predicates and record invariants remain normal typed
 `Result[..., ConstraintError]` constructions; generic or unsupported-shape
-runtime construction selects whole-artifact fallback. A portable MIR proof
-replay (`ConstructionMode::Recheck`) for a refined type or concrete
+runtime construction selects whole-artifact fallback. A decoded `.loomi` MIR
+proof replay (`ConstructionMode::Recheck`) for a refined type or concrete
 invariant-record instantiation re-evaluates the embedded predicate in typed
 LCIR, raises the canonical `ArtifactProofRejected` runtime fault on rejection,
 and creates the established nominal value only in the accepted block. Generic
@@ -681,11 +682,13 @@ entry values, copies, calls, aggregate embedding, projections, and ambiguous
 joins are `Shared`. Raw LCIR builders cannot forge this certificate.
 
 `TextMapConstruct`, immutable `TextMapInsert`, `TextMapLength`,
-`TextMapContains`, `TextMapGet`, and immutable `TextMapRemove` are likewise
-first-class typed instructions. The semantic value argument is part of the
-concrete map type, `get` must return the exact canonical `Option[V]`, and
-independent validation requires canonical managed `Text` keys. Construct uses
-the null empty representation. Insert and successful multi-entry removal
+`TextMapContains`, `TextMapGet`, checked indexed `TextMapEntryGet`, and
+immutable `TextMapRemove` are likewise first-class typed instructions. The
+semantic value argument is part of the concrete map type; `get` must return the
+exact canonical `Option[V]`, while source `entry_at` must return the exact
+canonical `Option[(Text, V)]`. Independent validation requires canonical
+managed `Text` keys. Construct uses the null empty representation. Insert and
+successful multi-entry removal
 perform functional copies, so aliases keep their previous logical value; a
 missing removal reuses the original pointer and removing the final entry
 returns the canonical null value. Future in-place update requires a
@@ -696,12 +699,12 @@ Insertion roots and reloads the old map, Text key, and every managed leaf of
 `V`. Removal locates and consumes its key before allocation, roots exactly the
 source map, reloads it after possible relocation, and copies the entry ranges
 on either side of the removed position. Length, containment, lookup, and the
-compiler-private indexed entry read do not allocate. Structural equality first
+checked indexed entry read do not allocate. Structural equality first
 compares lengths and then walks the canonical sorted entries as exact
 `Option[(Text, V)]` values; it therefore ignores insertion history while
 recursively preserving the normal scalar, product, sum, List, and TextMap
-equality rules. A nominal cycle reached again through List or TextMap remains a
-whole-artifact fallback rather than generating an unbounded comparison graph.
+equality rules. A nominal cycle reached again through List or TextMap closes
+through the corresponding compiler-generated structural-equality helper.
 The compiler emits no universal map value, runtime type tag, executor, or
 global layout registry.
 
@@ -1094,7 +1097,7 @@ predicate. Its independent validator checks the certificate's structural
 boundary: exact base/result types, protected construction kind, protection on
 every representation alternative, representation identity, and the usual SSA
 rules. Thus `CheckedProgram` certifies valid LCIR structure while trusting that
-fresh frontend conclusion for predicate truth. Portable MIR decoding replaces
+fresh frontend conclusion for predicate truth. `.loomi` MIR decoding replaces
 it with `Recheck`. For supported nongeneric shapes the lowerer reconstructs the
 typed predicate CFG and emits an explicit runtime-fault guard before the
 crate-private established-value instruction. The raw builder still cannot mint
@@ -1194,7 +1197,7 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 32` text includes
+text even when the graphs are otherwise equivalent. The `lcir 33` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys including their contract-boundary role, every function's
 selected entry block and ordered effect set,

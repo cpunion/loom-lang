@@ -55,16 +55,21 @@ prebuilt = { artifact = "../prebuilt.loomlib", version = "^0.4" }
 
 - `path` resolves another `loom.toml` relative to the current manifest.
 - `registry` resolves a package from a named filesystem or HTTPS registry.
-- `artifact` consumes a validated portable `.loomlib` without producer source.
+- `artifact` consumes a validated portable `.loomlib` without a separate
+  producer checkout.
 
 The dependency table key is its local alias. Add `package = "real-name"` when
 the registry or path package name differs from that alias. The declared name,
 version requirement, language version, and resolved package identity must agree.
 
 An artifact dependency cannot combine with `path` or `registry`, and cannot
-request source features from already-built code. `.loomlib` contains versioned,
-validated checked MIR and public interfaces; it is not a stable native, dynamic
-library, plugin, or FFI ABI.
+request source features from the packaged graph. A version 2 `.loomlib`
+contains the resolved package graph, exact Loom sources, and canonical public
+interfaces. It contains no checked MIR, producer-local proof state, or copy of
+the compiler-distributed standard library. The consumer validates the envelope
+and interface fingerprints, supplies its matching standard library, and then
+parses, type-checks, proves, and lowers the packaged sources normally. It is
+not a stable native or dynamic library, plugin, or FFI ABI.
 
 Dependencies only make package modules available. Source still imports names
 explicitly:
