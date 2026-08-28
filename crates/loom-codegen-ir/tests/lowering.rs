@@ -2727,6 +2727,81 @@ pub fn main() Unit { Unit }
 }
 
 #[test]
+fn unreachable_task_policy_items_create_no_executor_or_artifact_identity_edge() {
+    let any_source = r"module dead_task_policy
+
+pub fn main() Unit { Unit }
+
+async fn child() Int { 1 }
+
+async fn deadPolicy() Unit {
+    discard Task.any(child(), child()).await
+}
+";
+    let race_source = r"module dead_task_policy
+
+pub fn main() Unit { Unit }
+
+async fn child() Int { 1 }
+
+async fn deadPolicy() Unit {
+    discard Task.race(child(), child()).await
+}
+";
+    let LoweringOutcome::Complete(any) = lower_run(any_source) else {
+        panic!("an unreachable Task.any policy must not select fallback")
+    };
+    let LoweringOutcome::Complete(race) = lower_run(race_source) else {
+        panic!("an unreachable Task.race policy must not select fallback")
+    };
+    assert_eq!(dump_program(any.program()), dump_program(race.program()));
+    assert_eq!(artifact_identity(&any), artifact_identity(&race));
+    assert_eq!(any.functions().len(), 1);
+    assert!(
+        any.functions()
+            .iter()
+            .all(|function| !function.effects().contains(Effects::NEEDS_EXECUTOR))
+    );
+    let dump = dump_program(any.program());
+    assert!(!dump.contains("deadPolicy"), "{dump}");
+    assert!(!dump.contains("await_tasks"), "{dump}");
+}
+
+#[test]
+fn user_methods_on_a_value_named_task_remain_plain_reachable_calls() {
+    let outcome = lower_run(
+        r"module user_task_methods
+
+record Scheduler {}
+
+impl Scheduler {
+    method any(self, value Int) Int { value }
+    method race(self, value Int) Int { value }
+}
+
+pub fn main() Unit {
+    let Task = Scheduler {}
+    discard Task.any(1)
+    discard Task.race(2)
+}
+",
+    );
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("ordinary user methods named like Task policies must lower completely")
+    };
+    let dump = dump_program(artifact.program());
+    assert!(!dump.contains("await_tasks"), "{dump}");
+    assert!(!dump.contains("task.join"), "{dump}");
+    assert!(
+        artifact
+            .functions()
+            .iter()
+            .all(|function| !function.effects().contains(Effects::NEEDS_EXECUTOR))
+    );
+    assert_eq!(artifact.functions().len(), 3, "{dump}");
+}
+
+#[test]
 fn nonregular_generic_recursion_selects_atomic_unsupported() {
     let outcome = lower_run(
         r"module nonregular_generic

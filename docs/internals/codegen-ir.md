@@ -746,9 +746,8 @@ no payload, and existing live outcomes are rooted across later captures.
 A sole nonempty List literal is flattened to the same static child row without
 constructing the input List. `all` and `settled` build a fresh result List from
 the ordered resumed values; `any` and `race` retain their scalar result. Version
-0.3 still reaches this path through temporary qualified-name recognition. The
-target design resolves ordinary standard-library declarations first and
-selects specialization by their stable intrinsic identity. Its private
+0.3 reaches this path only after semantic resolution has selected a stable
+`StandardLibraryItem`; LCIR lowering never checks the source name. Its private
 substrate is limited to typed join/select readiness, exact value or outcome
 extraction, and structured cancellation-and-drain; it does not encode public
 policy names as source operators. Empty, stored, computed, and runtime-sized

@@ -16,6 +16,7 @@ use loom_driver::{
 use loom_hir::{SourceUnit, lower_files};
 use loom_interpreter::{ExecutionFailure, Interpreter, TestStatus, Value};
 use loom_mir::ConceptIdentity;
+use loom_sema::{CallTarget, StandardLibraryItem};
 use loom_syntax::parse_with_file;
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -1125,6 +1126,49 @@ fn persistent_semantic_reuse_rederives_must_scope_identity_from_current_hir() {
         .expect("MIR MustScope concept");
     assert_eq!(marker.module, "standard.resource");
     assert_eq!(marker.identity, Some(ConceptIdentity::MustScope));
+}
+
+#[test]
+fn warm_semantic_reanalysis_preserves_task_standard_item_identity() {
+    let project = TestProject::new();
+    project.write(
+        "main.loom",
+        "module cached_task_item\n\nasync fn child() Int { 1 }\n\npub async fn main() Unit {\n    discard Task.any(child(), child()).await\n}\n",
+    );
+    let cache = PersistentCache::new(project.root.join("target/task-item-cache"));
+    let compile = || {
+        let host = AnalysisHost::new(&project.root).expect("open task item project");
+        host.snapshot_from_sources_with_parse_cache(
+            host.load_sources().expect("load task item source"),
+            &cache,
+            "task-standard-item-test-v1",
+        )
+        .0
+    };
+
+    let cold = compile();
+    assert!(!cold.has_errors(), "{:#?}", cold.diagnostics());
+    let warm = compile();
+    assert!(!warm.has_errors(), "{:#?}", warm.diagnostics());
+    assert_eq!(warm.semantic_query_stats().modules_reused, 1);
+
+    let items = |snapshot: &loom_driver::AnalysisSnapshot| {
+        snapshot
+            .semantic_analysis()
+            .typed
+            .bodies
+            .values()
+            .flat_map(|body| body.calls.values())
+            .filter_map(|call| match call.target {
+                CallTarget::StandardLibrary(item) => Some(item),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(items(&cold), [StandardLibraryItem::TaskAny]);
+    assert_eq!(items(&warm), [StandardLibraryItem::TaskAny]);
+    warm.executable()
+        .expect("cached task item identity must lower to checked MIR");
 }
 
 #[test]

@@ -183,14 +183,17 @@ root, or new scheduler protocol.
 ## Private primitives for static standard-library joins
 
 The source names `Task.all`, `Task.any`, `Task.settled`, and `Task.race` define
-standard-library policies. Version 0.3 source lowering still recognizes those
-qualified names directly; this temporary name match must be replaced by
-ordinary library resolution followed by stable compiler-private intrinsic
-identity. The target private substrate exposes only typed join/select readiness,
-exact result or outcome extraction, and structured cancellation-and-drain. It
-does not make the four public policy names source-language constructs. The
-current `AwaitMode` variants are the migration representation of those policies,
-not the intended public or long-term library boundary.
+standard-library policies. Source lowering emits ordinary method-call HIR.
+Semantic resolution first excludes local, parameter, and module value bindings,
+imports, generic parameters, and user types, then maps a canonical Task member
+through the version 0.3 embedded standard-item catalog. Type checking and MIR
+specialization consume only that stable identity. Source-compiled standard
+library declarations will replace this catalog lookup with trusted definition
+identity; the downstream boundary does not change.
+The private substrate exposes typed join/select readiness, exact result or
+outcome extraction, and structured cancellation-and-drain. It does not make the
+four public policy names source-language constructs. `AwaitMode` is an internal
+execution representation, not a public coroutine protocol.
 
 Inside an admitted async function, a nonempty fixed argument list preserves its
 heterogeneous child outputs as `Task[(T0, ..., Tn)]`. Children are evaluated

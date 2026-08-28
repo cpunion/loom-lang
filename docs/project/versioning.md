@@ -14,7 +14,7 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Registry protocol/bundle | `1` |
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `23` |
 | Portable library artifact | version `1` |
-| Persistent compiler cache | schema `3` |
+| Persistent compiler cache | schema `4` |
 | LCIR textual dump | version `30` |
 | LCIR artifact identity | schema `31` |
 | LCIR native-object domain | `loom-lcir-native-object-v27` |
@@ -44,6 +44,14 @@ runtime or executor requirements. LCIR serialization and artifact schema do not
 change because harness output is not part of LCIR. Native-object and
 object-cache domains do not advance because native fingerprints and
 runtime-bundle checks already include the exact runtime ABI identity.
+
+Task composition and timer calls now remain ordinary HIR calls until semantic
+resolution selects a stable compiler-owned `StandardLibraryItem`. The item is
+serialized in typed body facts, so the persistent compiler cache advances to
+schema 4 and domain `loom-compilation-cache-v4`; the embedded standard-library
+identity advances to `loom-embedded-builtins-v3`. Older cache entries are
+misses, not upgraded. Checked MIR, LCIR, native objects, and runtime ABI remain
+unchanged because MIR retains the established `Sleep` and `TaskJoin` forms.
 
 Controlled quality evidence schema 2 adds an ordered native-route record for
 every prepared object. Each record carries the scenario, expected and actual

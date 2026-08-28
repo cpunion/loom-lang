@@ -11,12 +11,16 @@ or a public coroutine protocol:
 - `Task.settled` observes every terminal state;
 - `Task.race` observes the first terminal state.
 
-The semantic boundary is an ordinary standard-library declaration. An
-implementation may attach compiler-private intrinsic identity to that resolved
-declaration to specialize a fixed heterogeneous row; source spelling must not
-be semantic identity. Version 0.3 has one known implementation gap here: its
-frontend still recognizes the exact qualified names before ordinary declaration
-resolution. Evaluation order, types, cancellation, cleanup, and fault behavior
+The semantic boundary is a standard-library API item. HIR retains an ordinary
+method call. Version 0.3 resolves a canonical, unshadowed receiver namespace and
+member through an embedded compiler-owned catalog, and only that stable item may
+select a specialized fixed heterogeneous row. A local, parameter, generic,
+imported or user-defined type, or third-party method with the same spelling
+cannot be mistaken for that item. Source spelling is never inspected by MIR or
+code generation. Future source-compiled standard-library declarations will map
+their trusted definition identities to the same standard-item catalog; they do
+not require new source syntax. Evaluation order, types, cancellation, cleanup,
+and fault behavior
 remain the source API contract described here, and programs cannot name or
 depend on the private join substrate.
 

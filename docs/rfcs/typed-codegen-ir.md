@@ -468,12 +468,15 @@ static child row without constructing the input List; `all` and `settled`
 construct their List result after resume. These are compiler specializations of
 standard-library APIs, not additional language syntax.
 
-Version 0.3 still selects these specializations by recognizing the qualified
-source names. The target pipeline will first perform ordinary standard-library
-resolution, then select specialization through stable intrinsic identity on the
-resolved declaration. Its minimum private substrate provides typed join/select
-readiness, exact result or outcome extraction, and structured
-cancellation-and-drain. Public policy names do not become LCIR source operators.
+The frontend keeps an ordinary method call through HIR. Version 0.3 maps a
+canonical, unshadowed standard Task API member through its embedded catalog to
+stable `StandardLibraryItem` identity, and only then constructs specialized
+MIR. Future source-library definitions map their trusted identity to the same
+item. LCIR therefore receives policy mode, exact child types, and control flow
+without receiving or matching a public source name. Its minimum private
+substrate provides typed join/select readiness, exact result or outcome
+extraction, and structured cancellation-and-drain. Public policy names do not
+become LCIR source operators.
 
 The remaining fallback boundary includes explicit mutable coroutine
 parameters, finite-catalog or open dynamic-concept frame values, raw readiness,

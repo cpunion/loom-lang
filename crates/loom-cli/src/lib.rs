@@ -1893,7 +1893,7 @@ fn cache_context(language_version: &str) -> CacheContext {
     CacheContext {
         language_version: language_version.to_owned(),
         frontend_identity,
-        standard_library_identity: format!("loom-embedded-builtins-v2/build-{frontend_build}"),
+        standard_library_identity: format!("loom-embedded-builtins-v3/build-{frontend_build}"),
         contract_mode: "checked".to_owned(),
     }
 }
@@ -2907,6 +2907,18 @@ mod tests {
             context.frontend_identity.ends_with(&artifact_identity),
             "{}",
             context.frontend_identity
+        );
+    }
+
+    #[test]
+    fn semantic_cache_identity_pins_the_standard_item_catalog() {
+        let context = super::cache_context(loom_mir::LOOM_LANGUAGE_VERSION);
+        assert!(
+            context
+                .standard_library_identity
+                .starts_with("loom-embedded-builtins-v3/build-"),
+            "{}",
+            context.standard_library_identity
         );
     }
 

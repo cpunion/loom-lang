@@ -73,11 +73,14 @@ user-callable cancellation, or source-level task handle duplication.
 
 `Task.all`, `Task.any`, `Task.settled`, and `Task.race` form the standard Task
 source API. They are not reserved syntax and user code cannot invoke the
-compiler/runtime join protocol directly. The semantic identity is the resolved
-standard-library declaration, which implementations may specialize without
+compiler/runtime join protocol directly. The semantic boundary is a
+standard-library API item, which implementations may specialize without
 changing the source types, evaluation order, or fault semantics below. Version
-0.3 still has a temporary implementation gap: the frontend recognizes these
-exact qualified names before ordinary declaration resolution.
+0.3 resolves the canonical, unshadowed Task namespace and member through an
+embedded compiler-owned catalog before applying its variadic type rule. Future
+source-library declarations will map their trusted definition identities to the
+same stable items. Same-spelled methods on ordinary values do not acquire Task
+policy behavior.
 
 A tuple of tasks can be awaited as one all-success operation:
 
@@ -172,7 +175,7 @@ the join; it does not add a source operation to resume or rethrow that task.
 
 ## Timers and I/O tasks
 
-The built-in task constructors are:
+The standard Task API provides:
 
 ```text
 Task.sleep(milliseconds Int) Task[Unit]

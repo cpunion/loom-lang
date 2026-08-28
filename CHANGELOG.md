@@ -42,6 +42,16 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- `Task.sleep`, `Task.all`, `Task.settled`, `Task.any`, and `Task.race` now stay
+  ordinary method calls in HIR. Semantic analysis resolves only canonical Task
+  members to stable compiler-owned standard-library identities, and MIR
+  specialization consumes those identities without matching source spelling.
+  Local variables, parameters, and user methods named `Task` or like a Task
+  policy retain ordinary call semantics. Unreachable policy calls create no
+  executor or LCIR artifact-identity edge. Typed semantic facts now encode the
+  new identity, advancing persistent cache schema/domain to 4/v4 and the embedded
+  standard-library identity to v3; checked MIR, LCIR, native-object, and runtime
+  ABI versions are unchanged.
 - Compiler-generated native run and test output now uses the versioned
   `loom_runtime_stdout_write_v1(data, length)` boundary in both the typed LCIR
   and legacy emitters. Each call supplies the complete UTF-8 line, including a

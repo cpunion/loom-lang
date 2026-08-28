@@ -121,9 +121,12 @@ direct coverage includes:
 Async `requires` checks run in child state zero. A created Task carries its
 creation-site blame, an async root carries its declaration span, and
 `TaskCreate` does not inherit child fault effects. Core gains no `all`, `any`,
-`settled`, or `race` syntax. Version 0.3 still recognizes those qualified names
-during source lowering; resolved standard-library intrinsic identity is the
-target boundary.
+`settled`, or `race` syntax. HIR keeps these as ordinary method calls; semantic
+resolution maps only canonical, unshadowed Task API members through the current
+embedded catalog to stable `StandardLibraryItem` identities, and MIR
+specialization consumes those identities without re-reading source names.
+Trusted source-library definitions remain the next replacement for the catalog
+lookup, not a change to the language or MIR boundary.
 
 Remaining atomic fallback includes open or prerequisite-dependent dynamic
 concepts, unsupported proof or contract value shapes, recursive nominal

@@ -129,6 +129,19 @@ pub enum BuiltinValue {
     SocketClose,
 }
 
+/// Stable semantic identity for a compiler-known standard-library API item.
+/// Version 0.3 obtains this identity from the embedded standard-item catalog;
+/// future source-library definitions can map their trusted definition identity
+/// to the same value without changing MIR.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub enum StandardLibraryItem {
+    TaskSleep,
+    TaskAll,
+    TaskSettled,
+    TaskAny,
+    TaskRace,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum CallTarget {
     Function(DefId),
@@ -136,6 +149,7 @@ pub enum CallTarget {
     EnumVariant(DefId),
     RefinedConstructor(DefId),
     Builtin(BuiltinValue),
+    StandardLibrary(StandardLibraryItem),
     StaticConcept { requirement: DefId },
     DynamicConcept { requirement: DefId },
     Error,
