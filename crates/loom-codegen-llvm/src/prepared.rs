@@ -188,6 +188,7 @@ const fn invalid_root_error_code(code: InvalidRootCode) -> &'static str {
         InvalidRootCode::InvalidFunction => "NativePreparationInvalidRootFunction",
         InvalidRootCode::DuplicateTest => "NativePreparationDuplicateTestRoot",
         InvalidRootCode::RootSignature => "NativePreparationRootSignature",
+        InvalidRootCode::RootCapability => "NativePreparationRootCapability",
     }
 }
 

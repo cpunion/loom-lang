@@ -67,6 +67,7 @@ pub enum InvalidRootCode {
     InvalidFunction,
     DuplicateTest,
     RootSignature,
+    RootCapability,
 }
 
 impl InvalidRootCode {
@@ -77,6 +78,7 @@ impl InvalidRootCode {
             Self::InvalidFunction => "LcirLoweringInvalidRootFunction",
             Self::DuplicateTest => "LcirLoweringDuplicateTestRoot",
             Self::RootSignature => "LcirLoweringRootSignature",
+            Self::RootCapability => "LcirLoweringRootCapability",
         }
     }
 }
@@ -407,6 +409,7 @@ pub fn lower_typed_artifact(
     {
         InstanceClosureOutcome::Complete(closure) => closure,
         InstanceClosureOutcome::Unsupported(issue) => {
+            reject_executor_dependent_roots_before_fallback(mir, &selected, &graph)?;
             let feature = match issue.kind {
                 InstanceClosureUnsupportedKind::InstanceBudget => {
                     UnsupportedFeature::GenericInstanceBudget
@@ -439,26 +442,6 @@ pub fn lower_typed_artifact(
         })?;
         classifier.classify_function(source, key);
     }
-    if !classifier.items.is_empty() {
-        return Ok(LoweringOutcome::Unsupported(SupportReport {
-            items: classifier.items,
-        }));
-    }
-    let Classifier {
-        aggregates,
-        match_plans,
-        immortal_text,
-        managed_text,
-        task_handles,
-        ..
-    } = classifier;
-    // Aggregate-contained Text uses the managed-capable pointer provenance mode
-    // even when every current value is a compiler literal. This keeps the
-    // product representation exact without expanding the separate immortal
-    // provenance proof through aggregate construction, projection, and phi
-    // flow. A literal pointer remains a valid typed managed-root cell value.
-    let managed_text = managed_text || aggregates.uses_text_aggregate_leaf();
-    let aggregate_plan = aggregates.finish();
     let root_keys = selected
         .ordered
         .iter()
@@ -508,6 +491,43 @@ pub fn lower_typed_artifact(
         }
     }
     let effects = solve_effects(summaries)?;
+    for root in &root_keys {
+        let function = mir.function(root.source()).ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::SourceGraph,
+                format!("root function #{} disappeared", root.source().0),
+            )
+        })?;
+        let planned = effects.get(root).ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                format!("root instance {root} has no solved effect row"),
+            )
+        })?;
+        if !function.is_async && planned.effects.contains(Effects::NEEDS_EXECUTOR) {
+            return Err(executor_root_capability_error(function));
+        }
+    }
+    if !classifier.items.is_empty() {
+        return Ok(LoweringOutcome::Unsupported(SupportReport {
+            items: classifier.items,
+        }));
+    }
+    let Classifier {
+        aggregates,
+        match_plans,
+        immortal_text,
+        managed_text,
+        task_handles,
+        ..
+    } = classifier;
+    // Aggregate-contained Text uses the managed-capable pointer provenance mode
+    // even when every current value is a compiler literal. This keeps the
+    // product representation exact without expanding the separate immortal
+    // provenance proof through aggregate construction, projection, and phi
+    // flow. A literal pointer remains a valid typed managed-root cell value.
+    let managed_text = managed_text || aggregates.uses_text_aggregate_leaf();
+    let aggregate_plan = aggregates.finish();
     let mut builder = ProgramBuilder::new(target);
     if managed_text {
         builder
@@ -1143,6 +1163,84 @@ fn select_roots(
         tests,
         test_outcomes,
     })
+}
+
+fn reject_executor_dependent_roots_before_fallback(
+    checked: &mir::CheckedProgram,
+    selected: &SelectedRoots,
+    reachable: &crate::ReachableSourceGraph,
+) -> Result<(), LoweringError> {
+    if !reachable_source_needs_executor(checked, reachable)? {
+        return Ok(());
+    }
+    if let [root] = selected.ordered.as_slice() {
+        let function = checked.function(*root).ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::SourceGraph,
+                format!("root function #{} disappeared", root.0),
+            )
+        })?;
+        return if function.is_async {
+            Ok(())
+        } else {
+            Err(executor_root_capability_error(function))
+        };
+    }
+    for root in selected.ordered.iter().copied() {
+        let function = checked.function(root).ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::SourceGraph,
+                format!("root function #{} disappeared", root.0),
+            )
+        })?;
+        if function.is_async {
+            continue;
+        }
+        let graph =
+            analyze_source_reachability(checked, &SourceRoots::one(root)).map_err(|error| {
+                LoweringError::defect(
+                    LoweringDefectCode::SourceGraph,
+                    format!("checked-MIR root reachability failed: {error}"),
+                )
+            })?;
+        if reachable_source_needs_executor(checked, &graph)? {
+            return Err(executor_root_capability_error(function));
+        }
+    }
+    Ok(())
+}
+
+fn reachable_source_needs_executor(
+    checked: &mir::CheckedProgram,
+    reachable: &crate::ReachableSourceGraph,
+) -> Result<bool, LoweringError> {
+    for function_id in reachable.functions.iter().copied() {
+        let function = checked.function(function_id).ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::SourceGraph,
+                format!("reachable function #{} disappeared", function_id.0),
+            )
+        })?;
+        if function.is_async {
+            return Ok(true);
+        }
+        let mut summary = EffectSummary::default();
+        scan_effect_block(checked.as_program(), &function.body, &mut summary);
+        if summary.local.contains(Effects::NEEDS_EXECUTOR) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn executor_root_capability_error(function: &mir::Function) -> LoweringError {
+    LoweringError::invalid_root(
+        InvalidRootCode::RootCapability,
+        format!(
+            "synchronous artifact root `{}` cannot require an executor; executor-dependent synchronous helpers must be reached from an async root",
+            function.name
+        ),
+    )
 }
 
 fn is_valid_test_return(program: &mir::Program, ty: &Type) -> bool {
@@ -2960,8 +3058,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         .function(callee_key.source())
                         .is_some_and(|callee| {
                             callee.is_async
-                                && (!function.is_async
-                                    || callee.params.iter().any(|parameter| parameter.mutable))
+                                && callee.params.iter().any(|parameter| parameter.mutable)
                         })
                 }) {
                     self.expression_item(
@@ -3370,7 +3467,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     result,
                     Some(Type::Task(output)) if output.as_ref() == &Type::Unit
                 );
-                if !function.is_async || !valid_duration || !valid_result {
+                if !valid_duration || !valid_result {
                     self.expression_item(
                         UnsupportedFeature::TaskOperation,
                         function,
@@ -3407,8 +3504,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     expression.span,
                     &format!("{path}.ty"),
                 );
-                let supported = function.is_async
-                    && *mode == mir::TaskJoinMode::All
+                let supported = *mode == mir::TaskJoinMode::All
                     && outputs
                         .filter(|outputs| !outputs.is_empty())
                         .is_some_and(|outputs| {
@@ -3506,11 +3602,18 @@ struct EffectPlanEntry {
 #[derive(Clone, Debug)]
 struct EffectPlan {
     entries: Vec<EffectPlanEntry>,
+    indexes: BTreeMap<String, usize>,
 }
 
 impl EffectPlan {
     fn entries(&self) -> &[EffectPlanEntry] {
         &self.entries
+    }
+
+    fn get(&self, key: &InstanceKey) -> Option<&EffectPlanEntry> {
+        self.indexes
+            .get(&key.canonical_identity())
+            .and_then(|index| self.entries.get(*index))
     }
 }
 
@@ -4353,7 +4456,7 @@ fn solve_effects(summaries: Vec<InstanceEffectSummary>) -> Result<EffectPlan, Lo
             effects,
         })
         .collect();
-    Ok(EffectPlan { entries })
+    Ok(EffectPlan { entries, indexes })
 }
 
 fn allocated_slots<T: Clone>(

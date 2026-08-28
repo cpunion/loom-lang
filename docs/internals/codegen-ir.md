@@ -699,8 +699,10 @@ instance. The handle is a stable opaque pointer, not a moving object and not a
 Promise or universal value. It carries the instruction's source span into a
 callee frame only when the checked coroutine plan requires dynamic precondition
 blame; this does not copy the callee's fault effects to `TaskCreate`. The hidden
-executor comes only from the active coroutine callback or the async root
-harness. `AwaitTasks` stores all ordered
+executor is the current checked execution context. A coroutine callback may
+forward it through any number of synchronous helpers whose transitive effects
+contain `NEEDS_EXECUTOR`; those helpers borrow the pointer and never create or
+drive an executor. `AwaitTasks` stores all ordered
 children and the row's live values, prepares one structured mode-specific join,
 publishes the frame/root state, and exposes explicit normal, child-fault, and
 cancellation edges: `normal` is a `ResultTarget`, `fault` is an `UnwindTarget`,
@@ -714,10 +716,11 @@ A join-suspend status of one returns `pending`; zero means the child was already
 terminal, so the runtime removes the redundant wake-up, keeps the active parent
 `Running`, and enters the same checked result/reload edge in the current
 callback. Any other status is a runtime/compiler defect. Ordinary expression
-evaluation never creates or runs a synchronous executor.
+evaluation never creates or runs a second executor; synchronous helpers only
+borrow the executor already driving their async caller.
 
-`TaskSleep` is a separate explicit fallible terminator admitted only inside a
-checked coroutine. Its input is canonical `Int` milliseconds; a source
+`TaskSleep` is a separate explicit fallible terminator admitted in any checked
+executor context. Its input is canonical `Int` milliseconds; a source
 `Duration` is normalized first with `ProductExtract`. The normal edge receives
 the canonical `Task[Unit]` handle, while the fault edge preserves the source
 origin. LLVM rejects a negative duration, checks the signed conversion from
@@ -811,10 +814,14 @@ raw readiness, stored or computed dynamic Task collections, first-class
 remain atomic whole-artifact fallback. Fixed arguments and a sole nonempty List
 literal are admitted when the join is consumed immediately by `.await`; `any`
 and `race` additionally require one homogeneous output type.
-Because this slice does not add a hidden executor to synchronous function ABIs,
-any reachable synchronous function that calls an async callee also selects that
-fallback before emitter selection, including a synchronous helper reached from
-an async caller.
+An exact transitive `NEEDS_EXECUTOR` effect adds one compiler-private executor
+parameter to a synchronous function after its optional fault context. Direct
+calls and invokes forward the caller's current executor in that fixed ABI
+order. The helper remains non-suspending: `.await`, terminal outcome taking,
+and cancellation dispatch still require a checked coroutine. A synchronous
+run or test root may not require the hidden capability; this is validated before
+an unsupported LCIR site can select fallback and proves every admitted helper
+chain originates at an async-root executor.
 The callback forwards child fault/cancel terminal states without turning them
 into source `Result` values. Established cancellation remains primary if a
 cleanup action faults; the existing runtime suppression rule continues older

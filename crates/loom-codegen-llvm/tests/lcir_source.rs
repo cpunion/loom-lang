@@ -7304,6 +7304,227 @@ fn managed_collections_are_exact_typed_coroutine_frame_carriers() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one source gate proves direct, transitive, fallible, composite, debug, native, and cross-target hidden-executor ABI behavior"
+)]
+fn synchronous_task_helpers_borrow_one_checked_executor_context() {
+    let source = include_str!("../../../fixtures/lcir-sync-task-helpers/main.loom");
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let interpreted_tests = Interpreter::new(&program).run_tests();
+    assert_eq!(interpreted_tests.len(), 1, "{interpreted_tests:#?}");
+    assert_eq!(
+        interpreted_tests[0].status,
+        TestStatus::Passed,
+        "{interpreted_tests:#?}"
+    );
+
+    let prepared = prepare_native_object(
+        &program,
+        EmitOptions::run("main"),
+        NativeRoutePolicy::Automatic,
+    )
+    .expect("prepare automatic synchronous Task-helper route");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let function = |suffix: &str| {
+        artifact
+            .functions()
+            .iter()
+            .find(|function| function.name().ends_with(suffix))
+            .unwrap_or_else(|| panic!("missing synchronous Task helper `{suffix}`"))
+    };
+    let direct = function("direct");
+    let nested = function("nested");
+    let timer = function("timer");
+    let nested_timer = function("nestedTimer");
+    let combined = function("combined");
+    for helper in [direct, nested, timer, nested_timer, combined] {
+        assert!(helper.coroutine().is_none(), "{}", helper.name());
+        assert!(
+            helper.effects().contains(Effects::NEEDS_EXECUTOR)
+                && helper.effects().contains(Effects::NEEDS_RUNTIME),
+            "{} has {}",
+            helper.name(),
+            helper.effects()
+        );
+        assert!(
+            !helper.effects().contains(Effects::MAY_SUSPEND),
+            "a Task-producing helper must not become a coroutine: {}",
+            helper.name()
+        );
+    }
+    for helper in [timer, nested_timer] {
+        assert!(helper.effects().contains(Effects::MAY_FAULT));
+    }
+    for helper in [direct, nested, combined] {
+        assert!(!helper.effects().contains(Effects::MAY_FAULT));
+    }
+    assert!(
+        combined
+            .instructions()
+            .iter()
+            .any(|instruction| matches!(instruction.kind(), InstructionKind::TaskJoinAll { .. }))
+    );
+
+    let lcir = emit_and_run_lcir_with_options(
+        &artifact,
+        "source-sync-task-helpers",
+        NativeObjectOptions::default().with_debug_sources(vec![DebugSource::new(
+            0,
+            "main.loom",
+            source,
+        )]),
+    );
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert_eq!(lcir.output.stdout, b"Unit\n");
+    assert!(lcir.output.stderr.is_empty(), "{:?}", lcir.output);
+    assert!(!lcir.ir.contains("%loom.Value"), "{}", lcir.ir);
+    let direct_symbol = format!("@loom.lcir.fn.{}", direct.id().raw());
+    let nested_symbol = format!("@loom.lcir.fn.{}", nested.id().raw());
+    let timer_symbol = format!("@loom.lcir.fn.{}", timer.id().raw());
+    let nested_timer_symbol = format!("@loom.lcir.fn.{}", nested_timer.id().raw());
+    let combined_symbol = format!("@loom.lcir.fn.{}", combined.id().raw());
+    assert!(
+        lcir.ir.contains(&format!(
+            "define internal ptr {direct_symbol}(i64 %arg0, ptr %__loom_executor)"
+        )),
+        "{}",
+        lcir.ir
+    );
+    assert!(
+        lcir.ir.contains(&format!(
+            "define internal ptr {nested_symbol}(i64 %arg0, ptr %__loom_executor)"
+        )),
+        "{}",
+        lcir.ir
+    );
+    assert!(
+        lcir.ir.contains(&format!(
+            "define internal ptr {combined_symbol}(i64 %arg0, i64 %arg1, ptr %__loom_executor)"
+        )),
+        "{}",
+        lcir.ir
+    );
+    assert!(
+        lcir.ir.contains(&format!(
+            "define internal {{ i32, ptr }} {timer_symbol}(i64 %arg0, ptr %__loom_fault_context, ptr %__loom_executor)"
+        )),
+        "{}",
+        lcir.ir
+    );
+    assert!(
+        lcir.ir.contains(&format!(
+            "define internal {{ i32, ptr }} {nested_timer_symbol}(i64 %arg0, ptr %__loom_fault_context, ptr %__loom_executor)"
+        )),
+        "{}",
+        lcir.ir
+    );
+    let nested_ir = lcir
+        .ir
+        .split("\ndefine ")
+        .find(|body| body.contains(&format!("{nested_symbol}(")))
+        .expect("nested helper IR");
+    assert!(
+        nested_ir.contains(&format!(
+            "call ptr {direct_symbol}(i64 %arg0, ptr %__loom_executor)"
+        )),
+        "{nested_ir}"
+    );
+    let nested_timer_ir = lcir
+        .ir
+        .split("\ndefine ")
+        .find(|body| body.contains(&format!("{nested_timer_symbol}(")))
+        .expect("nested fallible timer helper IR");
+    assert!(
+        nested_timer_ir.contains(&format!(
+            "call {{ i32, ptr }} {timer_symbol}(i64 %arg0, ptr %__loom_fault_context, ptr %__loom_executor)"
+        )),
+        "{nested_timer_ir}"
+    );
+    assert!(!nested_ir.contains("loom_executor_create"), "{nested_ir}");
+    assert!(!nested_ir.contains("loom_executor_destroy"), "{nested_ir}");
+    assert!(
+        !nested_timer_ir.contains("loom_executor_create"),
+        "{nested_timer_ir}"
+    );
+    assert!(
+        !nested_timer_ir.contains("loom_executor_destroy"),
+        "{nested_timer_ir}"
+    );
+    for metadata in [
+        "name: \"__loom_executor\", arg: 2",
+        "name: \"__loom_executor\", arg: 3",
+        "name: \"__loom_fault_context\", arg: 2",
+        "name: \"LoomFallible<Task>\"",
+    ] {
+        assert!(
+            lcir.ir.contains(metadata),
+            "missing `{metadata}` in {}",
+            lcir.ir
+        );
+    }
+
+    let test_artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let native_tests = emit_and_run_lcir(&test_artifact, "source-sync-task-helper-tests");
+    assert!(
+        native_tests.output.status.success(),
+        "{:?}",
+        native_tests.output
+    );
+    assert!(
+        String::from_utf8_lossy(&native_tests.output.stdout)
+            .contains("synchronousTaskHelpersBorrowTheCurrentExecutor"),
+        "{:?}",
+        native_tests.output
+    );
+
+    let expected_fault = serde_json::to_value(
+        interpret_run(&program, "negativeSleepMain")
+            .expect_err("negative synchronous Task.sleep helper must fault"),
+    )
+    .expect("serialize interpreter fault");
+    let fault_artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "negativeSleepMain".into(),
+        },
+    );
+    let fault = emit_and_run_lcir_machine_fault(&fault_artifact, "sync-task-helper-fault");
+    assert!(!fault.output.status.success(), "{:?}", fault.output);
+    assert_eq!(machine_fault(&fault.output), expected_fault);
+
+    for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
+        let directory = tempfile::tempdir().expect("create sync-helper target output");
+        let object = directory.path().join(if target.contains("windows") {
+            "sync-task-helpers.obj"
+        } else {
+            "sync-task-helpers.o"
+        });
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit sync Task-helper object for {target}: {error}"));
+        assert!(
+            object.is_file(),
+            "missing sync Task-helper object for {target}"
+        );
+    }
+}
+
+#[test]
 fn typed_sleep_uses_checked_lcir_and_the_narrow_timer_runtime_abi() {
     let source = include_str!("../../../fixtures/lcir-typed-sleep/main.loom");
     let program = compile_source(source);

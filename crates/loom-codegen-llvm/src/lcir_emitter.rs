@@ -16,8 +16,8 @@ use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::debug_info::{
-    AsDIScope, DIFile, DIFlags, DIFlagsConstants, DILocalVariable, DILocation, DIType,
-    DWARFEmissionKind, DWARFSourceLanguage, DebugInfoBuilder,
+    AsDIScope, DIFile, DIFlags, DIFlagsConstants, DILocalVariable, DILocation, DISubprogram,
+    DIType, DWARFEmissionKind, DWARFSourceLanguage, DebugInfoBuilder,
 };
 use inkwell::module::{Linkage, Module};
 use inkwell::passes::PassBuilderOptions;
@@ -26,8 +26,8 @@ use inkwell::types::{
     AnyType, BasicMetadataTypeEnum, BasicType, BasicTypeEnum, IntType, StructType,
 };
 use inkwell::values::{
-    ArrayValue, AsValueRef, BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue,
-    PhiValue, PointerValue, UnnamedAddress,
+    ArrayValue, AsValueRef, BasicMetadataValueEnum, BasicValueEnum, FunctionValue,
+    InstructionValue, IntValue, PhiValue, PointerValue, UnnamedAddress,
 };
 use inkwell::{FloatPredicate as LlvmFloatPredicate, IntPredicate};
 use llvm_sys::debuginfo::LLVMDIBuilderInsertDbgValueRecordBefore;
@@ -213,6 +213,7 @@ struct DebugState<'ctx> {
     dynamic_type: DIType<'ctx>,
     status_type: DIType<'ctx>,
     fault_context_pointer_type: DIType<'ctx>,
+    executor_pointer_type: DIType<'ctx>,
     fallible_unit_type: DIType<'ctx>,
     fallible_bool_type: DIType<'ctx>,
     fallible_int_type: DIType<'ctx>,
@@ -220,6 +221,15 @@ struct DebugState<'ctx> {
     product_types: RefCell<BTreeMap<u32, DIType<'ctx>>>,
     sum_types: RefCell<BTreeMap<u32, DIType<'ctx>>>,
     optimized: bool,
+}
+
+struct DebugParameterSite<'ctx> {
+    function: FunctionValue<'ctx>,
+    scope: DISubprogram<'ctx>,
+    file: DIFile<'ctx>,
+    line: u32,
+    location: DILocation<'ctx>,
+    first: InstructionValue<'ctx>,
 }
 
 impl<'ctx> DebugState<'ctx> {
@@ -466,6 +476,31 @@ impl<'ctx> DebugState<'ctx> {
                 AddressSpace::default(),
             )
             .as_type();
+        let executor_object_type = builder
+            .create_struct_type(
+                file.as_debug_info_scope(),
+                "LoomExecutor",
+                file,
+                0,
+                0,
+                8,
+                DIFlags::ARTIFICIAL,
+                None,
+                &[],
+                0,
+                None,
+                "loom.compiler.LoomExecutor",
+            )
+            .as_type();
+        let executor_pointer_type = builder
+            .create_pointer_type(
+                "LoomExecutor*",
+                executor_object_type,
+                target_data.get_bit_size(&ptr_type),
+                abi_alignment_bits(target_data, &ptr_type)?,
+                AddressSpace::default(),
+            )
+            .as_type();
         let fallible_unit_type = create_fallible_debug_type(
             context,
             &builder,
@@ -522,6 +557,7 @@ impl<'ctx> DebugState<'ctx> {
             dynamic_type,
             status_type,
             fault_context_pointer_type,
+            executor_pointer_type,
             fallible_unit_type,
             fallible_bool_type,
             fallible_int_type,
@@ -853,10 +889,16 @@ impl<'ctx> DebugState<'ctx> {
                     self.status_type,
                 )
             }
-            Some(Repr::TaskHandle) => Err(CodegenError::new(
-                "LlvmDebugInfoFailed",
-                "Task handles cannot appear in a fallible synchronous signature",
-            )),
+            Some(Repr::TaskHandle) => create_fallible_debug_type(
+                backend.context,
+                &self.builder,
+                self.type_file,
+                &backend.target_data,
+                "Task",
+                self.task_type,
+                backend.ptr_type.into(),
+                self.status_type,
+            ),
             Some(Repr::Product(_)) => create_fallible_debug_type(
                 backend.context,
                 &self.builder,
@@ -909,10 +951,13 @@ impl<'ctx> DebugState<'ctx> {
         if source.effects().contains(Effects::MAY_FAULT) {
             parameters.push(self.fault_context_pointer_type);
         }
+        if source.effects().contains(Effects::NEEDS_EXECUTOR) {
+            parameters.push(self.executor_pointer_type);
+        }
         // This describes the exact callable ABI: direct results stay direct,
         // inout writebacks extend the physical return aggregate, and fallible
         // returns prepend status. Hidden status/writeback fields and the
-        // fault-context parameter are marked artificial.
+        // fault-context and executor parameters are marked artificial.
         let signature =
             self.builder
                 .create_subroutine_type(file, Some(result), &parameters, DIFlags::PUBLIC);
@@ -1073,29 +1118,82 @@ impl<'ctx> DebugState<'ctx> {
             insert_dbg_value_before(&self.builder, value, variable, location, first);
         }
 
+        self.attach_hidden_parameter_values(
+            source,
+            &DebugParameterSite {
+                function,
+                scope,
+                file,
+                line,
+                location,
+                first,
+            },
+        )
+    }
+
+    fn attach_hidden_parameter_values(
+        &self,
+        source: &Function,
+        site: &DebugParameterSite<'ctx>,
+    ) -> Result<(), CodegenError> {
+        if !source.effects().contains(Effects::MAY_FAULT)
+            && !source.effects().contains(Effects::NEEDS_EXECUTOR)
+        {
+            return Ok(());
+        }
         if source.effects().contains(Effects::MAY_FAULT) {
             let llvm_index = u32::try_from(source.signature().params().len())
                 .map_err(|_| CodegenError::new("ProgramTooLarge", "too many LCIR parameters"))?;
             let argument_number = llvm_index
                 .checked_add(1)
                 .ok_or_else(|| CodegenError::new("ProgramTooLarge", "too many LCIR parameters"))?;
-            let value = function.get_nth_param(llvm_index).ok_or_else(|| {
+            let value = site.function.get_nth_param(llvm_index).ok_or_else(|| {
                 CodegenError::new(
                     "LlvmAbiDefect",
                     format!("{} is missing its fault-context pointer", source.id()),
                 )
             })?;
             let variable = self.builder.create_parameter_variable(
-                scope.as_debug_info_scope(),
+                site.scope.as_debug_info_scope(),
                 "__loom_fault_context",
                 argument_number,
-                file,
-                line,
+                site.file,
+                site.line,
                 self.fault_context_pointer_type,
                 true,
                 DIFlags::ARTIFICIAL,
             );
-            insert_dbg_value_before(&self.builder, value, variable, location, first);
+            insert_dbg_value_before(&self.builder, value, variable, site.location, site.first);
+        }
+        if source.effects().contains(Effects::NEEDS_EXECUTOR) {
+            let llvm_index = source
+                .signature()
+                .params()
+                .len()
+                .checked_add(usize::from(source.effects().contains(Effects::MAY_FAULT)))
+                .ok_or_else(|| CodegenError::new("ProgramTooLarge", "too many LCIR parameters"))?;
+            let llvm_index = u32::try_from(llvm_index)
+                .map_err(|_| CodegenError::new("ProgramTooLarge", "too many LCIR parameters"))?;
+            let argument_number = llvm_index
+                .checked_add(1)
+                .ok_or_else(|| CodegenError::new("ProgramTooLarge", "too many LCIR parameters"))?;
+            let value = site.function.get_nth_param(llvm_index).ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("{} is missing its executor pointer", source.id()),
+                )
+            })?;
+            let variable = self.builder.create_parameter_variable(
+                site.scope.as_debug_info_scope(),
+                "__loom_executor",
+                argument_number,
+                site.file,
+                site.line,
+                self.executor_pointer_type,
+                true,
+                DIFlags::ARTIFICIAL,
+            );
+            insert_dbg_value_before(&self.builder, value, variable, site.location, site.first);
         }
         Ok(())
     }
@@ -1915,44 +2013,55 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                 self.coroutine_layouts.push(Some(layout));
                 continue;
             }
-            let mut params = source
-                .signature()
-                .params()
-                .iter()
-                .copied()
-                .map(|ty| self.llvm_type(ty).map(Into::into))
-                .collect::<Result<Vec<BasicMetadataTypeEnum<'ctx>>, _>>()?;
-            if source.effects().contains(Effects::MAY_FAULT) {
-                params.push(self.ptr_type.into());
-            }
-            let results = self.logical_result_types(source)?;
-            let function_type = if source.effects().contains(Effects::MAY_FAULT) {
-                let mut fields = Vec::with_capacity(1 + results.len());
-                fields.push(self.context.i32_type().into());
-                fields.extend(results);
-                self.context
-                    .struct_type(&fields, false)
-                    .fn_type(&params, false)
-            } else if let [result] = results.as_slice() {
-                result.fn_type(&params, false)
-            } else {
-                self.context
-                    .struct_type(&results, false)
-                    .fn_type(&params, false)
-            };
-            let function = self.module.add_function(
-                &format!("loom.lcir.fn.{}", source.id().raw()),
-                function_type,
-                Some(Linkage::Internal),
-            );
-            if let Some(debug) = &self.debug {
-                debug.attach_function(self, source, function)?;
-            }
+            let function = self.declare_synchronous_function(source)?;
             self.functions.push(function);
             self.coroutine_callbacks.push(None);
             self.coroutine_layouts.push(None);
         }
         self.declare_task_join_all_layouts()
+    }
+
+    fn declare_synchronous_function(
+        &self,
+        source: &Function,
+    ) -> Result<FunctionValue<'ctx>, CodegenError> {
+        let mut params = source
+            .signature()
+            .params()
+            .iter()
+            .copied()
+            .map(|ty| self.llvm_type(ty).map(Into::into))
+            .collect::<Result<Vec<BasicMetadataTypeEnum<'ctx>>, _>>()?;
+        if source.effects().contains(Effects::MAY_FAULT) {
+            params.push(self.ptr_type.into());
+        }
+        if source.effects().contains(Effects::NEEDS_EXECUTOR) {
+            params.push(self.ptr_type.into());
+        }
+        let results = self.logical_result_types(source)?;
+        let function_type = if source.effects().contains(Effects::MAY_FAULT) {
+            let mut fields = Vec::with_capacity(1 + results.len());
+            fields.push(self.context.i32_type().into());
+            fields.extend(results);
+            self.context
+                .struct_type(&fields, false)
+                .fn_type(&params, false)
+        } else if let [result] = results.as_slice() {
+            result.fn_type(&params, false)
+        } else {
+            self.context
+                .struct_type(&results, false)
+                .fn_type(&params, false)
+        };
+        let function = self.module.add_function(
+            &format!("loom.lcir.fn.{}", source.id().raw()),
+            function_type,
+            Some(Linkage::Internal),
+        );
+        if let Some(debug) = &self.debug {
+            debug.attach_function(self, source, function)?;
+        }
+        Ok(function)
     }
 
     fn declare_task_join_all_layouts(&mut self) -> Result<(), CodegenError> {
@@ -5131,6 +5240,7 @@ struct FunctionEmitter<'backend, 'ctx, 'artifact> {
     phis: Vec<Option<PhiValue<'ctx>>>,
     values: Vec<Option<BasicValueEnum<'ctx>>>,
     fault_context: Option<PointerValue<'ctx>>,
+    executor_context: Option<PointerValue<'ctx>>,
     root_plan: ManagedRootPlan,
     root_slot_ranges: Vec<Option<(usize, usize)>>,
     root_cells: Vec<Option<PointerValue<'ctx>>>,
@@ -5150,7 +5260,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         backend: &'backend Backend<'ctx, 'artifact>,
         source: &'artifact Function,
     ) -> Result<Self, CodegenError> {
-        let (function, coroutine) = if source.coroutine().is_some() {
+        let (function, coroutine, executor_context) = if source.coroutine().is_some() {
             let function = backend.coroutine_callback(source.id())?;
             let layout = backend.coroutine_layout(source.id())?.clone();
             let task = function
@@ -5224,9 +5334,10 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     executor,
                     frame,
                 }),
+                Some(executor),
             )
         } else {
-            (backend.function(source.id())?, None)
+            (backend.function(source.id())?, None, None)
         };
         let root_plan =
             plan_managed_roots(backend.artifact.program(), source.id()).ok_or_else(|| {
@@ -5281,6 +5392,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             phis: vec![None; source.values().len()],
             values: vec![None; source.values().len()],
             fault_context: None,
+            executor_context,
             root_plan,
             root_slot_ranges,
             root_cells: vec![None; root_slot_count],
@@ -5390,6 +5502,27 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 value.set_name("__loom_fault_context");
             }
             self.fault_context = Some(value.into_pointer_value());
+        }
+        if self.source.effects().contains(Effects::NEEDS_EXECUTOR) {
+            let index = self
+                .source
+                .signature()
+                .params()
+                .len()
+                .checked_add(usize::from(
+                    self.source.effects().contains(Effects::MAY_FAULT),
+                ))
+                .ok_or_else(|| CodegenError::new("ProgramTooLarge", "too many LCIR parameters"))?;
+            let index = u32::try_from(index)
+                .map_err(|_| CodegenError::new("ProgramTooLarge", "too many LCIR parameters"))?;
+            let value = self.function.get_nth_param(index).ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("{} is missing its executor pointer", self.source.id()),
+                )
+            })?;
+            value.set_name("__loom_executor");
+            self.executor_context = Some(value.into_pointer_value());
         }
         Ok(())
     }
@@ -7761,13 +7894,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 coroutine,
                 arguments,
             } => {
-                let active = self.coroutine.as_ref().ok_or_else(|| {
-                    CodegenError::new(
-                        "LlvmAbiDefect",
-                        "task construction has no active coroutine executor",
-                    )
-                })?;
-                let mut arguments = self.call_arguments(arguments, false)?;
+                let executor = self.executor_context()?;
+                let mut arguments = self.call_arguments(arguments, Effects::NONE)?;
                 let callee = self.backend.artifact.function(*coroutine).ok_or_else(|| {
                     CodegenError::new(
                         "InvalidFunctionReference",
@@ -7789,7 +7917,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                         );
                     }
                 }
-                arguments.push(active.executor.into());
+                arguments.push(executor.into());
                 one(call_pointer(
                     &self.backend.builder,
                     self.backend.function(*coroutine)?,
@@ -8316,7 +8444,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 if callee_source.effects().contains(Effects::MAY_COLLECT) {
                     self.publish_root_state(ManagedSafepoint::Instruction(instruction.id()))?;
                 }
-                let arguments = self.call_arguments(arguments, false)?;
+                let arguments = self.call_arguments(arguments, callee_source.effects())?;
                 let returned = call_basic(
                     &self.backend.builder,
                     self.backend.function(*callee)?,
@@ -11249,12 +11377,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         instruction: &Instruction,
         tasks: &[ValueId],
     ) -> Result<PointerValue<'ctx>, CodegenError> {
-        let coroutine = self.coroutine.as_ref().ok_or_else(|| {
-            CodegenError::new(
-                "LlvmAbiDefect",
-                "typed Task.all construction has no active coroutine executor",
-            )
-        })?;
+        let executor = self.executor_context()?;
         let layout = self.backend.task_join_all_layout(instruction.id())?;
         if tasks.is_empty()
             || tasks.len() != layout.child_fields.len()
@@ -11276,7 +11399,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         let composite = call_pointer(
             &self.backend.builder,
             self.backend.typed_task_create(),
-            &[coroutine.executor.into(), layout.descriptor.into()],
+            &[executor.into(), layout.descriptor.into()],
             "task.all.create",
         )?;
         self.backend.require_nonnull(composite, "task.all.create")?;
@@ -11356,7 +11479,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             &self.backend.builder,
             self.backend.typed_task_publish_adopting(),
             &[
-                coroutine.executor.into(),
+                executor.into(),
                 composite.into(),
                 child_array.into(),
                 count.into(),
@@ -11389,7 +11512,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         let _aborted = call_int(
             &self.backend.builder,
             self.backend.typed_task_abort_unpublished(),
-            &[coroutine.executor.into(), composite.into()],
+            &[executor.into(), composite.into()],
             "task.all.abort_unpublished",
         )?;
         let trap = inkwell::intrinsics::Intrinsic::find("llvm.trap")
@@ -11827,12 +11950,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         normal: &ResultTarget,
         fault: &UnwindTarget,
     ) -> Result<(), CodegenError> {
-        let coroutine = self.coroutine.as_ref().ok_or_else(|| {
-            CodegenError::new(
-                "LlvmAbiDefect",
-                "task.sleep terminator has no active coroutine executor",
-            )
-        })?;
+        let executor = self.executor_context()?;
         let milliseconds = self.int(milliseconds)?;
         let check_duration = self
             .backend
@@ -11904,7 +12022,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         let task = call_pointer(
             &self.backend.builder,
             self.backend.typed_timer_task_create(),
-            &[coroutine.executor.into(), deadline.into()],
+            &[executor.into(), deadline.into()],
             "task.sleep.create",
         )?;
         self.backend.require_nonnull(task, "task.sleep.create")?;
@@ -12065,7 +12183,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         if callee_source.effects().contains(Effects::MAY_COLLECT) {
             self.publish_root_state(ManagedSafepoint::Terminator(block))?;
         }
-        let arguments = self.call_arguments(arguments, true)?;
+        let arguments = self.call_arguments(arguments, callee_source.effects())?;
         let aggregate = call_basic(
             &self.backend.builder,
             self.backend.function(callee)?,
@@ -12681,14 +12799,14 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
     fn call_arguments(
         &self,
         arguments: &[ValueId],
-        with_fault_context: bool,
+        effects: Effects,
     ) -> Result<Vec<BasicMetadataValueEnum<'ctx>>, CodegenError> {
         let mut values = arguments
             .iter()
             .copied()
             .map(|value| self.value(value).map(Into::into))
             .collect::<Result<Vec<_>, _>>()?;
-        if with_fault_context {
+        if effects.contains(Effects::MAY_FAULT) {
             values.push(
                 self.fault_context
                     .ok_or_else(|| {
@@ -12700,7 +12818,19 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     .into(),
             );
         }
+        if effects.contains(Effects::NEEDS_EXECUTOR) {
+            values.push(self.executor_context()?.into());
+        }
         Ok(values)
+    }
+
+    fn executor_context(&self) -> Result<PointerValue<'ctx>, CodegenError> {
+        self.executor_context.ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                format!("{} has no active executor context", self.source.id()),
+            )
+        })
     }
 
     fn branch(&self, target: &BlockTarget) -> Result<(), CodegenError> {

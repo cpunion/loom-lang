@@ -42,6 +42,21 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- Synchronous functions may now construct and return typed Tasks while staying
+  ordinary non-suspending LCIR functions. Exact `NEEDS_EXECUTOR` effects add a
+  compiler-private executor parameter after any fault context, and direct or
+  fallible synchronous calls forward the current coroutine's executor through
+  arbitrarily nested helpers. `TaskCreate`, first-class fixed `Task.all`, and
+  `Task.sleep` reuse that borrowed context; helpers never create, drive, or
+  destroy an executor, and `.await` remains async-only. Non-coroutine run/test
+  roots requiring an executor fail closed before unsupported-route fallback and
+  again at the checked-artifact boundary. The `lcir-sync-task-helpers` fixture
+  covers interpreter and typed native execution, exact fault propagation,
+  debug metadata,
+  Linux/MSVC objects, real `check/build/test/run`, and the production quality
+  gate without a universal value. Existing LCIR effects and the backend build
+  fingerprint already distinguish the admitted ABI, so serialized, object,
+  cache, and runtime versions do not change.
 - All five canonical structured-logging calls now lower through typed LCIR.
   `LogWrite` is an explicit fallible normal/fault terminator, and LLVM passes
   direct Text plus canonical `TextMap[Text]` entries to the synchronous,

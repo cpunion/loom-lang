@@ -771,8 +771,9 @@ pub enum InstructionKind {
         index: ValueId,
     },
     /// Allocates, initializes, and publishes one structured typed Task for a
-    /// checked coroutine instance. The hidden executor comes from the active
-    /// coroutine callback or executable async-root harness.
+    /// checked coroutine instance. The current checked executor may come
+    /// directly from a coroutine callback or through one or more synchronous
+    /// helper calls; helpers borrow it and never create or drive an executor.
     TaskCreate {
         coroutine: InstanceId,
         arguments: Box<[ValueId]>,

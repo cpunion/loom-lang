@@ -1,0 +1,54 @@
+module lcir_sync_task_helpers
+
+async fn child(value Int) Int {
+    value
+}
+
+fn direct(value Int) Task[Int] {
+    child(value)
+}
+
+fn nested(value Int) Task[Int] {
+    direct(value)
+}
+
+fn timer(delay Int) Task[Unit] {
+    Task.sleep(delay)
+}
+
+fn nestedTimer(delay Int) Task[Unit] {
+    timer(delay)
+}
+
+fn combined(left Int, right Int) Task[(Int, Int)] {
+    Task.all(direct(left), nested(right))
+}
+
+async fn exercise() {
+    let first = direct(7)
+    let second = nested(9)
+    let pause = nestedTimer(0)
+    let pair = combined(11, 13)
+
+    pause.await
+    let firstValue = first.await
+    let secondValue = second.await
+    let left, right = pair.await
+
+    assert firstValue == 7
+    assert secondValue == 9
+    assert left == 11
+    assert right == 13
+}
+
+pub async fn main() {
+    exercise().await
+}
+
+pub async fn negativeSleepMain() {
+    nestedTimer(-1).await
+}
+
+test async fn synchronousTaskHelpersBorrowTheCurrentExecutor() {
+    exercise().await
+}

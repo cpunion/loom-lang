@@ -119,6 +119,15 @@ the existing checked MIR and LCIR identities. The LCIR dump, artifact schema,
 native-object domain, object-cache domain, and runtime ABI therefore do not
 advance again.
 
+Synchronous Task-producing helpers likewise reuse existing `NEEDS_EXECUTOR`,
+`TaskCreate`, `TaskJoinAll`, and `TaskSleep` identities. The exact transitive
+effect already participates in the canonical LCIR artifact identity, and the
+LLVM backend build fingerprint covers the derived hidden executor parameter
+and forwarding implementation. Older validators could not produce a checked
+synchronous executor-dependent LCIR object, so no previously valid callable
+ABI can collide. The LCIR dump remains 31, artifact schema 32, native-object
+domain v28, object-cache domain v33, and native runtime ABI component 21.
+
 Typed scalar builtins advance the LCIR dump to 19, artifact schema to 20,
 native-object domain to v16, and LLVM object-cache domain to v21. `ParseInt`
 and `ParseFloat` reuse their existing closed status ABI; `IsFinite` and

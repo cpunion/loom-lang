@@ -89,12 +89,71 @@ async fn child() Int {{ 1 }}
 
 {helper}
 
-pub async fn main() Unit {{
+pub async fn main() {{
     discard helper().await
-    Unit
 }}
 "
     ))
+}
+
+fn sync_executor_root_with_unsupported_site_program() -> CheckedProgram {
+    compile_source(
+        r"module prepared_invalid_sync_executor_root
+
+enum Chain {
+    End
+    Next(Chain)
+}
+
+async fn child() Int { 1 }
+
+fn consume(task Task[Int], chain Chain) {
+    consume(task, Chain.Next(chain))
+}
+
+pub fn main() {
+    consume(child(), Chain.End)
+}
+",
+    )
+}
+
+fn sync_executor_root_with_nonregular_instance_program() -> CheckedProgram {
+    compile_source(
+        r"module prepared_invalid_sync_executor_nonregular
+
+async fn child() Int { 1 }
+
+fn consume(task Task[Int]) {
+    consume(task)
+}
+
+fn spiral[T](value T) {
+    spiral((value, value))
+}
+
+pub fn main() {
+    consume(child())
+    spiral(0)
+}
+",
+    )
+}
+
+fn recursive_sum_program() -> CheckedProgram {
+    compile_source(
+        r"module prepared_recursive_sum
+
+enum Chain {
+    End
+    Next(Chain)
+}
+
+pub fn main() {
+    discard Chain.End
+}
+",
+    )
 }
 
 #[test]
@@ -206,42 +265,66 @@ test async fn timer() Unit {
 }
 
 #[test]
-fn sync_task_creation_selects_legacy_before_the_emitter_is_committed() {
+fn sync_task_creation_uses_the_typed_hidden_executor_abi() {
     let directory = tempfile::tempdir().expect("create sync-task output directory");
-    for (name, program) in [
-        ("direct", sync_task_creation_program(false)),
-        ("nested", sync_task_creation_program(true)),
+    for (name, helper_count, program) in [
+        ("direct", 1, sync_task_creation_program(false)),
+        ("nested", 2, sync_task_creation_program(true)),
     ] {
         let ir = directory.path().join(format!("sync-task-{name}.ll"));
         let object = directory.path().join(format!("sync-task-{name}.o"));
         let mut options = EmitOptions::run("main");
         options.emit_ir = Some(ir.clone());
         let prepared = prepare_native_object(&program, options, NativeRoutePolicy::Automatic)
-            .expect("prepare atomic legacy fallback");
-        assert_eq!(prepared.route_kind(), NativeRouteKind::Legacy);
-        emit_prepared_native_object(&prepared, &object).expect("emit selected legacy artifact");
+            .expect("prepare typed sync Task helper");
+        assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+        emit_prepared_native_object(&prepared, &object).expect("emit typed LCIR artifact");
         assert!(object.is_file());
-        let ir = std::fs::read_to_string(ir).expect("read selected legacy IR");
-        assert!(ir.contains("%loom.Value"), "{ir}");
-        assert!(!ir.contains("loom.lcir"), "{ir}");
+        let ir = std::fs::read_to_string(ir).expect("read selected LCIR IR");
+        assert!(ir.contains("loom.lcir"), "{ir}");
+        assert!(!ir.contains("%loom.Value"), "{ir}");
+        assert_eq!(
+            ir.lines()
+                .filter(|line| {
+                    line.starts_with("define internal ptr @loom.lcir.fn.")
+                        && line.contains("(ptr %__loom_executor)")
+                })
+                .count(),
+            helper_count,
+            "{ir}"
+        );
 
-        let error = prepare_native_object(
+        let forced = prepare_native_object(
             &program,
             EmitOptions::run("main"),
             NativeRoutePolicy::LcirOnly,
         )
-        .err()
-        .expect("forced LCIR must reject missing sync executor threading");
-        assert_eq!(error.kind(), NativePreparationErrorKind::Unsupported);
-        assert!(
-            error
-                .support_report()
-                .expect("structured unsupported report")
-                .items()
-                .iter()
-                .any(|item| item.feature() == UnsupportedFeature::AsyncFunction),
-            "{error}"
-        );
+        .expect("forced LCIR must accept typed sync executor threading");
+        assert_eq!(forced.route_kind(), NativeRouteKind::Lcir);
+    }
+}
+
+#[test]
+fn sync_executor_roots_never_fallback_around_unsupported_sites() {
+    for (name, program) in [
+        (
+            "classifier",
+            sync_executor_root_with_unsupported_site_program(),
+        ),
+        (
+            "instance-closure",
+            sync_executor_root_with_nonregular_instance_program(),
+        ),
+    ] {
+        for policy in [NativeRoutePolicy::Automatic, NativeRoutePolicy::LcirOnly] {
+            let error = prepare_native_object(&program, EmitOptions::run("main"), policy)
+                .err()
+                .unwrap_or_else(|| {
+                    panic!("{name} executor-dependent synchronous root selected fallback")
+                });
+            assert_eq!(error.kind(), NativePreparationErrorKind::InvalidRoot);
+            assert_eq!(error.code(), "NativePreparationRootCapability");
+        }
     }
 }
 
@@ -291,7 +374,7 @@ fn lcir_only_accepts_a_complete_typed_artifact() {
 
 #[test]
 fn lcir_only_preserves_a_deterministic_structured_support_report() {
-    let program = sync_task_creation_program(false);
+    let program = recursive_sum_program();
     let prepare = || {
         prepare_native_object(
             &program,
@@ -312,20 +395,13 @@ fn lcir_only_preserves_a_deterministic_structured_support_report() {
         .expect("unsupported preparation carries its support report");
     assert!(!report.is_empty());
     assert!(
-        report.items().iter().any(|item| matches!(
-            item.feature(),
-            UnsupportedFeature::AsyncFunction
-                | UnsupportedFeature::Suspension
-                | UnsupportedFeature::TaskOperation
-        )),
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::ExpressionType),
         "{report:#?}"
     );
-    assert!(
-        ["AsyncFunction", "Suspension", "TaskOperation"]
-            .iter()
-            .any(|feature| first.message().contains(feature)),
-        "{first}"
-    );
+    assert!(first.message().contains("ExpressionType"), "{first}");
     assert!(
         first.message().contains(report.items()[0].path()),
         "{first}"
