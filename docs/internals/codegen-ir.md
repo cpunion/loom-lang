@@ -161,9 +161,33 @@ close that case without changing the source equality rule.
 
 The representation-only recursive `Json` slice therefore supports
 construction, exhaustive matching, List/TextMap storage, copying, and precise
-moving-GC relocation. `Json == Json`, parsing, and formatting remain outside
-that slice; their later typed operations must not route through the legacy
-universal-value helpers.
+moving-GC relocation. `Json == Json` and parsing remain outside that slice;
+their later typed operations must not route through the legacy universal-value
+helpers.
+
+## Typed JSON formatting
+
+The compiler-known `format_json` operation lowers to one `JsonFormat`
+instruction only when its input is the canonical recursive `Json` type and its
+result is the canonical `Result[Text, JsonError]`. The instruction records the
+checked `Ok`, `Err`, `DepthLimit`, and `NonFiniteNumber` variant identities;
+independent validation rederives those relationships and rejects a raw builder
+which substitutes a layout-compatible sum.
+
+The instruction is a collection safepoint because a successful result owns a
+new managed Text. Exact live-after root planning protects only the Json leaves
+and other values which remain live across that point. The runtime first walks
+the complete direct Json carrier through the compiler-supplied
+`LoomTypedJsonLayout`, writes canonical compact bytes into non-GC staging
+storage, and only then allocates and publishes the Text object. Object fields
+follow the TextMap's canonical key order. Invalid recursion depth or a
+non-finite number returns an ordinary error selector without publishing a
+partial Text or activating source fault state.
+
+LLVM consumes the runtime status and constructs the exact direct Result sum in
+SSA. The boundary contains no universal `ValueSlot`, source type identifier,
+runtime layout registry, scheduler, executor, or source-visible address. JSON
+parsing and recursive Json equality remain separate coverage boundaries.
 
 Support classification first builds one concrete aggregate plan, without
 allocating LCIR. The plan covers every reachable structural tuple, closed
@@ -455,6 +479,14 @@ adds only `MAY_FAULT`. This advances the artifact identity to schema 32, the
 dump to `lcir 31`, the LCIR native-object domain to
 `loom-lcir-native-object-v28`, and the CLI object-cache domain to
 `loom-llvm-object-cache-v33`.
+
+Typed Json formatting subsequently adds `JsonFormat`, rendered as
+`json.format` in the canonical dump. The instruction has one direct Json
+operand, produces the exact canonical `Result[Text, JsonError]`, and carries
+the four checked result/error selectors required by independent validation.
+This advances the artifact identity to schema 33, the dump to `lcir 32`, the
+LCIR native-object domain to `loom-lcir-native-object-v29`, and the CLI
+object-cache domain to `loom-llvm-object-cache-v34`.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
@@ -1162,7 +1194,7 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 31` text includes
+text even when the graphs are otherwise equivalent. The `lcir 32` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys including their contract-boundary role, every function's
 selected entry block and ordered effect set,
@@ -1174,7 +1206,8 @@ typed runtime/contract fault identity including proof-replay and Duration
 guards, closed parse operations, and managed Float formatting,
 managed-pointer representations, finite dynamic candidate catalogs,
 `dyn.construct`, `dyn.switch`, and
-`text.concat`, `text.get`, typed resource-close and structured-log edges, transient
+`text.concat`, `text.get`, `json.format`, typed resource-close and structured-log
+edges, transient
 protected-receiver updates, typed TextMap containment/removal/indexed-entry
 operations, and the checked value type of every block parameter and instruction
 result. Representation semantic

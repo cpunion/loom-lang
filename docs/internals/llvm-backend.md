@@ -388,9 +388,29 @@ Json-specific condition, universal envelope, runtime tag registry, tracing
 callback, or executor. Unsupported 32-bit managed layouts fail closed.
 
 Canonical Json construction, copying, List/TextMap operations, exhaustive
-matching, and exact moving-GC roots are direct. Json equality, parsing, and
-formatting are separate coverage boundaries and still select whole-artifact
+matching, exact moving-GC roots, and formatting are direct. Json equality and
+parsing remain separate coverage boundaries and still select whole-artifact
 fallback when reachable.
+
+## Direct JSON formatting
+
+`JsonFormat` receives the canonical 24-byte recursive Json carrier and returns
+the exact direct `Result[Text, JsonError]` sum. LLVM publishes one immutable
+`LoomTypedJsonLayout` containing the target-data-derived offsets needed to
+traverse Text, List, and TextMap
+payloads. LLVM passes that descriptor, the direct carrier, and one stable
+output cell to `loom_runtime_json_format_typed_v1`; the boundary does not
+inspect a source nominal identifier or a universal value tag.
+
+The runtime formats Null, Bool, finite Number, Text, Array, and Object values
+into non-GC staging storage. Object traversal preserves the map's canonical
+key order, strings use the standard JSON escapes, and finite numbers retain
+the standard formatter's canonical spelling, including `-0`. Only a successful
+format crosses the final typed Text-allocation safepoint. The LLVM emitter then
+constructs `Ok(Text)` directly; depth exhaustion and NaN or infinity construct
+the exact `Err(DepthLimit)` or `Err(NonFiniteNumber)` carrier without a source
+fault edge. Root liveness and relocation use the ordinary typed shadow-stack
+plan, and no executor is created.
 
 ## Direct typed Tasks and fixed joins
 
@@ -576,10 +596,10 @@ is correct.
 
 ## Object identity and linking
 
-The canonical textual dump is `lcir 31`, and the checked artifact identity uses
-schema 32. Object identities are route-separated:
+The canonical textual dump is `lcir 32`, and the checked artifact identity uses
+schema 33. Object identities are route-separated:
 
-- `loom-lcir-native-object-v28` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v29` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -591,7 +611,7 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v33` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v34` and never suppresses fingerprint
 errors.
 
 The current LCIR domains encode the explicit transitive effect lattice,
@@ -704,6 +724,13 @@ an executor. Status `0` enters the Unit normal edge, status `2` records
 trap. The runtime boundary advances the native identity to component 21 with
 `typed-log-v1` and `runtime-v15`; the compiler-private terminator advances the
 LCIR, artifact, object, and cache domains listed above.
+
+Direct Json formatting adds the collecting
+`loom_runtime_json_format_typed_v1` boundary and the immutable
+`LoomTypedJsonLayout` descriptor. It advances the native runtime identity to
+component 22 with `typed-json-v1` and `runtime-v16`; the compiler-private
+instruction advances the LCIR, artifact, object, and cache domains listed
+above. Text v3 and GC v9 remain unchanged.
 
 They also encode closed static-witness method selection and normalized
 associated types. Those proofs are absent from the machine ABI: LLVM receives

@@ -53,7 +53,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 31")?;
+    writeln!(output, "lcir 32")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -284,6 +284,16 @@ fn write_instruction(
             "parse.float %{text}, ok {ok_variant}, error {error_variant}, invalid_syntax {invalid_syntax_variant}, out_of_range {out_of_range_variant}"
         ),
         InstructionKind::FormatFloat { value } => write!(output, "format.float %{value}"),
+        InstructionKind::JsonFormat {
+            json,
+            ok_variant,
+            error_variant,
+            depth_limit_variant,
+            non_finite_number_variant,
+        } => write!(
+            output,
+            "json.format %{json}, ok {ok_variant}, error {error_variant}, depth_limit {depth_limit_variant}, non_finite_number {non_finite_number_variant}"
+        ),
         InstructionKind::ProductConstruct { fields } => {
             write!(output, "product.construct (")?;
             write_arguments(output, fields)?;

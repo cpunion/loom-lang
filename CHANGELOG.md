@@ -42,6 +42,20 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- `format_json` now lowers through the typed LCIR `json.format` instruction.
+  The LLVM backend supplies an exact `LoomTypedJsonLayout` for the canonical
+  recursive `Json` carrier and calls `loom_runtime_json_format_typed_v1`;
+  traversal and canonical byte staging do not construct a universal value,
+  and only the final Text publication crosses one typed-GC allocation
+  safepoint. `DepthLimit` and `NonFiniteNumber` remain ordinary `JsonError`
+  values in the exact `Result[Text, JsonError]` sum. The
+  `lcir-json-format` fixture covers all six Json variants, canonical object-key
+  order, string escaping, negative zero, the depth limit, NaN, and both
+  infinities through real main/test `check/build/test/run` closure. This
+  advances the LCIR dump to 32, artifact schema to 33, native-object domain to
+  v29, LLVM object-cache domain to v34, and native runtime ABI to component 22
+  with `typed-json-v1` and `runtime-v16`; the public standard-library ABI
+  remains v4.
 - `Unit` remains the user-visible zero-sized type and value, including in
   fields, parameters, tuples, `Task[Unit]`, `Result[Unit, E]`, and `Ok(Unit)`.
   Callable syntax now treats only the fixed `Unit` result as implicit:
@@ -172,8 +186,8 @@ artifact, or runtime compatibility.
   allocator and shadow stack; it adds no universal value, executor, registry,
   or runtime symbol. The compiler-private identity advances monotonically to
   LCIR dump 22, artifact schema 23, native-object domain v19, and LLVM
-  object-cache domain v24. Json equality, parsing, and formatting remain
-  separate typed-LCIR slices. Carrier storage is capped at 64 KiB. Independent
+  object-cache domain v24. Json equality and parsing remain separate typed-LCIR
+  slices. Carrier storage is capped at 64 KiB. Independent
   artifact-wide 65,536-step placement and 65,536-payload-byte pack/unpack
   budgets prevent many legal wide sums or construct sites from multiplying
   search and bytewise LLVM IR work; checked source regressions exhaust both

@@ -359,8 +359,8 @@ Lowering and independent validation separately compute the least transitive
 closure over direct and invoke edges. A synchronous caller inherits the effect
 of a precondition it evaluates. An async precondition belongs to the child
 coroutine's state-zero path, so `TaskCreate` does not inherit child effects.
-`TextConcat` and
-`TextGet` are collecting opcodes. `TaskCreate` and `TaskJoinAll` require an
+`TextConcat`, `TextGet`, `FormatFloat`, and `JsonFormat` are collecting
+opcodes. `TaskCreate` and `TaskJoinAll` require an
 executor; neither operation itself suspends. `AwaitTasks` contributes both
 `MAY_FAULT` and `MAY_SUSPEND` and accepts one or more ordered children. The
 explicit fallible `TaskSleep` terminator requires `MAY_FAULT` and
@@ -615,6 +615,18 @@ canonical `TextMap[Text]` entries. This advances the canonical dump to
 `loom-llvm-object-cache-v33`, and native runtime identity to component 21 with
 `typed-log-v1` and `runtime-v15`. It does not add an executor, Loom GC
 safepoint, universal value, or public standard-library ABI revision.
+
+Typed JSON formatting subsequently adds the collecting `JsonFormat`
+instruction and `loom_runtime_json_format_typed_v1` boundary over the direct
+recursive Json carrier plus one compiler-supplied target-layout descriptor.
+The runtime stages the complete canonical byte sequence before its sole managed
+Text allocation; depth exhaustion and non-finite numbers remain ordinary
+`JsonError` values. This advances the canonical dump to `lcir 32`, artifact
+identity to schema 33, LCIR native-object domain to
+`loom-lcir-native-object-v29`, CLI object-cache domain to
+`loom-llvm-object-cache-v34`, and native runtime identity to component 22 with
+`typed-json-v1` and `runtime-v16`. It adds no executor, universal value, or
+public standard-library ABI revision.
 
 Calls to the C process entry, libc, and versioned Loom runtime functions are
 explicit external boundaries. They do not permit two source-function ABIs in

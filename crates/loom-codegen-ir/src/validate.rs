@@ -4,7 +4,9 @@ use std::fmt;
 
 use loom_mir::Type;
 
-use crate::ir::{LOG_LEVEL_TYPE_ID, TEXT_MAP_TYPE_ID};
+use crate::ir::{
+    JSON_ERROR_TYPE_ID, JSON_TYPE_ID, LOG_LEVEL_TYPE_ID, RESULT_TYPE_ID, TEXT_MAP_TYPE_ID,
+};
 use crate::{
     AwaitMode, BlockId, Constant, Effects, Function, InstanceId, Instruction, InstructionId,
     InstructionKind, ProductReprId, Program, Repr, RepresentationPlan, ResultTarget, SumReprId,
@@ -2767,6 +2769,22 @@ impl<'a> Validator<'a> {
                     &path,
                 );
             }
+            InstructionKind::JsonFormat {
+                json,
+                ok_variant,
+                error_variant,
+                depth_limit_variant,
+                non_finite_number_variant,
+            } => self.validate_json_format_instruction(
+                function,
+                instruction,
+                *json,
+                *ok_variant,
+                *error_variant,
+                *depth_limit_variant,
+                *non_finite_number_variant,
+                &path,
+            ),
             InstructionKind::ProductConstruct { fields }
             | InstructionKind::InvariantRecordProven { fields } => {
                 self.require_results(function, instruction, &[None], &path);
@@ -5568,6 +5586,245 @@ impl<'a> Validator<'a> {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the JSON formatter's closed input, Result, and JsonError identities are validated at one boundary"
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the recursive Json and nested Result[Text, JsonError] shapes are checked atomically"
+    )]
+    fn validate_json_format_instruction(
+        &mut self,
+        function: &Function,
+        instruction: &Instruction,
+        json: ValueId,
+        ok_variant: u32,
+        error_variant: u32,
+        depth_limit_variant: u32,
+        non_finite_number_variant: u32,
+        path: &str,
+    ) {
+        self.require_results(function, instruction, &[None], path);
+
+        let Some(json_ty) = function.value(json).map(Value::ty) else {
+            return;
+        };
+        let canonical_json_semantic = Type::Nominal(JSON_TYPE_ID, Vec::new());
+        let json_semantic = self
+            .program
+            .representations
+            .value_type(json_ty)
+            .map(crate::ValueType::semantic);
+        let Some(json_sum) = self.sum_repr(json_ty) else {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.json"),
+                "JSON formatting requires the canonical recursive Json sum",
+            );
+            return;
+        };
+        if json_semantic != Some(&canonical_json_semantic)
+            || self.scalar_type(&canonical_json_semantic) != Some(json_ty)
+        {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.json"),
+                "JSON formatting requires canonical prelude Json#16",
+            );
+        }
+        let variants = self
+            .program
+            .representations
+            .sum(json_sum)
+            .map_or(0, |sum| sum.variants().len());
+        let boolean = self.scalar_type(&Type::Bool);
+        let float = self.scalar_type(&Type::Float);
+        let text = self.scalar_type(&Type::Text);
+        let array_semantic = Type::List(Box::new(canonical_json_semantic.clone()));
+        let object_semantic =
+            Type::Nominal(TEXT_MAP_TYPE_ID, vec![canonical_json_semantic.clone()]);
+        let exact_scalar_variant = |validator: &Self, variant: usize, expected| {
+            validator.sum_variant_field_count(json_sum, variant) == Some(1)
+                && validator.sum_variant_field(json_sum, variant, 0) == expected
+        };
+        let array_ty = self.sum_variant_field(json_sum, 4, 0);
+        let object_ty = self.sum_variant_field(json_sum, 5, 0);
+        let canonical_json = variants == 6
+            && self.sum_variant_field_count(json_sum, 0) == Some(0)
+            && exact_scalar_variant(self, 1, boolean)
+            && exact_scalar_variant(self, 2, float)
+            && exact_scalar_variant(self, 3, text)
+            && self.sum_variant_field_count(json_sum, 4) == Some(1)
+            && array_ty == self.scalar_type(&array_semantic)
+            && array_ty.and_then(|ty| self.list_element(ty)) == Some(json_ty)
+            && self.sum_variant_field_count(json_sum, 5) == Some(1)
+            && object_ty == self.scalar_type(&object_semantic)
+            && object_ty.and_then(|ty| self.text_map_value(ty)) == Some(json_ty);
+        if !canonical_json {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.json"),
+                "Json must contain Null, Bool(Bool), Number(Float), Text(Text), Array(List[Json]), and Object(TextMap[Json]) in canonical order",
+            );
+        }
+
+        let Some(result_ty) = instruction
+            .results
+            .first()
+            .and_then(|result| function.value(*result))
+            .map(Value::ty)
+        else {
+            return;
+        };
+        let result_semantic = self
+            .program
+            .representations
+            .value_type(result_ty)
+            .map(|value_type| value_type.semantic().clone());
+        let error_semantic = Type::Nominal(JSON_ERROR_TYPE_ID, Vec::new());
+        let canonical_result_semantic =
+            Type::Nominal(RESULT_TYPE_ID, vec![Type::Text, error_semantic.clone()]);
+        if result_semantic.as_ref() != Some(&canonical_result_semantic)
+            || self.scalar_type(&canonical_result_semantic) != Some(result_ty)
+        {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.result[0]"),
+                "JSON formatting result must be canonical prelude Result#1[Text, JsonError#17]",
+            );
+        }
+
+        let Some(result_sum) = self.sum_repr(result_ty) else {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.result[0]"),
+                "JSON formatting result must use a closed sum representation",
+            );
+            return;
+        };
+        if self
+            .program
+            .representations
+            .sum(result_sum)
+            .map_or(0, |sum| sum.variants().len())
+            != 2
+        {
+            self.error(
+                ValidationCode::InstructionShape,
+                format!("{path}.result[0]"),
+                "JSON formatting Result must contain exactly two variants",
+            );
+        }
+        if (ok_variant, error_variant) != (0, 1) {
+            self.error(
+                ValidationCode::InstructionShape,
+                format!("{path}.variants"),
+                "JSON formatting Result requires canonical Ok=0 and Err=1 variants",
+            );
+        }
+        let ok = usize::try_from(ok_variant).ok();
+        if ok.map(|variant| {
+            (
+                self.sum_variant_field_count(result_sum, variant),
+                self.sum_variant_field(result_sum, variant, 0),
+            )
+        }) != Some((Some(1), text))
+        {
+            self.error(
+                ValidationCode::InstructionShape,
+                format!("{path}.ok_variant"),
+                "JSON formatting success variant must exist and carry exactly Text",
+            );
+        }
+        let error = usize::try_from(error_variant).ok();
+        let error_ty = error.and_then(|variant| {
+            (self.sum_variant_field_count(result_sum, variant) == Some(1))
+                .then(|| self.sum_variant_field(result_sum, variant, 0))
+                .flatten()
+        });
+        let Some(error_ty) = error_ty else {
+            self.error(
+                ValidationCode::InstructionShape,
+                format!("{path}.error_variant"),
+                "JSON formatting error variant must exist and carry exactly one JsonError",
+            );
+            return;
+        };
+        if self
+            .program
+            .representations
+            .value_type(error_ty)
+            .is_none_or(|value_type| value_type.semantic() != &error_semantic)
+            || self.scalar_type(&error_semantic) != Some(error_ty)
+        {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.error_variant"),
+                "JSON formatting error payload must match the Result error argument exactly",
+            );
+        }
+        let Some(error_sum) = self.sum_repr(error_ty) else {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.error_variant"),
+                "JsonError payload must use a closed sum representation",
+            );
+            return;
+        };
+        if self
+            .program
+            .representations
+            .sum(error_sum)
+            .map_or(0, |sum| sum.variants().len())
+            != 4
+        {
+            self.error(
+                ValidationCode::InstructionShape,
+                format!("{path}.error_variant"),
+                "JsonError must contain exactly four variants",
+            );
+        }
+        if (depth_limit_variant, non_finite_number_variant) != (2, 3) {
+            self.error(
+                ValidationCode::InstructionShape,
+                format!("{path}.error_variants"),
+                "JSON formatting requires canonical JsonError DepthLimit=2 and NonFiniteNumber=3 variants",
+            );
+        }
+        for (name, variant) in [
+            ("depth_limit_variant", depth_limit_variant),
+            ("non_finite_number_variant", non_finite_number_variant),
+        ] {
+            if usize::try_from(variant)
+                .ok()
+                .and_then(|variant| self.sum_variant_field_count(error_sum, variant))
+                != Some(0)
+            {
+                self.error(
+                    ValidationCode::InstructionShape,
+                    format!("{path}.{name}"),
+                    "JsonError status variant must exist and carry no payload",
+                );
+            }
+        }
+        let integer = self.scalar_type(&Type::Int);
+        for variant in 0..4 {
+            let mapped_status = usize::try_from(depth_limit_variant).ok() == Some(variant)
+                || usize::try_from(non_finite_number_variant).ok() == Some(variant);
+            if !mapped_status
+                && (self.sum_variant_field_count(error_sum, variant) != Some(1)
+                    || self.sum_variant_field(error_sum, variant, 0) != integer)
+            {
+                self.error(
+                    ValidationCode::InstructionShape,
+                    format!("{path}.error_variant[{variant}]"),
+                    "each non-status JsonError variant must carry exactly one Int offset",
+                );
+            }
+        }
+    }
+
     fn signature_writeback_types(function: &Function) -> Vec<ValueTypeId> {
         function
             .signature
@@ -5664,6 +5921,7 @@ fn instruction_direct_effects(kind: &InstructionKind) -> Effects {
         InstructionKind::TextConcat { .. }
             | InstructionKind::TextGet { .. }
             | InstructionKind::FormatFloat { .. }
+            | InstructionKind::JsonFormat { .. }
             | InstructionKind::ListAppend { .. }
             | InstructionKind::ListAppendUnique { .. }
             | InstructionKind::TextMapInsert { .. }

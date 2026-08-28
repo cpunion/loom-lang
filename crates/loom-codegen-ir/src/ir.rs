@@ -637,6 +637,18 @@ pub enum InstructionKind {
     FormatFloat {
         value: ValueId,
     },
+    /// Formats one canonical recursive `Json` sum into compact Text and
+    /// constructs its exact closed `Result[Text, JsonError]`. The runtime
+    /// stages the complete formatted byte sequence before the single typed
+    /// Text-allocation safepoint; `DepthLimit` and `NonFiniteNumber` remain
+    /// ordinary error values rather than fault edges.
+    JsonFormat {
+        json: ValueId,
+        ok_variant: u32,
+        error_variant: u32,
+        depth_limit_variant: u32,
+        non_finite_number_variant: u32,
+    },
     /// Constructs an immutable product value from fields in representation
     /// order. The result's checked value type selects the product definition.
     ProductConstruct {
@@ -869,6 +881,7 @@ impl InstructionKind {
             | Self::FloatNegate { value }
             | Self::FormatFloat { value }
             | Self::DynConstruct { value, .. } => vec![*value],
+            Self::JsonFormat { json, .. } => vec![*json],
             Self::SumConstruct { payload, .. } => payload.to_vec(),
             Self::TextConcat { left, right }
             | Self::TextCompare { left, right, .. }
@@ -1032,10 +1045,13 @@ pub const TASK_OUTCOME_COMPLETED_VARIANT: u32 = 0;
 pub const TASK_OUTCOME_FAULTED_VARIANT: u32 = 1;
 pub const TASK_OUTCOME_CANCELLED_VARIANT: u32 = 2;
 
-/// Canonical prelude identities and ordered variants consumed by typed
-/// logging. These synthetic ids are fixed by checked MIR lowering; independent
-/// LCIR validation rechecks both the semantic identity and physical shape.
+/// Canonical prelude identities consumed by typed standard-library opcodes.
+/// These synthetic ids are fixed by checked MIR lowering; independent LCIR
+/// validation rechecks both semantic identity and physical shape.
+pub(crate) const RESULT_TYPE_ID: TypeId = TypeId(1);
 pub(crate) const TEXT_MAP_TYPE_ID: TypeId = TypeId(15);
+pub(crate) const JSON_TYPE_ID: TypeId = TypeId(16);
+pub(crate) const JSON_ERROR_TYPE_ID: TypeId = TypeId(17);
 pub(crate) const LOG_LEVEL_TYPE_ID: TypeId = TypeId(20);
 pub(crate) const LOG_LEVEL_DEBUG_VARIANT: u32 = 0;
 pub(crate) const LOG_LEVEL_INFO_VARIANT: u32 = 1;

@@ -3207,6 +3207,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         | mir::Builtin::ParseInt
                         | mir::Builtin::ParseFloat
                         | mir::Builtin::FormatFloat
+                        | mir::Builtin::JsonFormat
                         | mir::Builtin::TaskFaultCode
                         | mir::Builtin::TaskFaultMessage
                         | mir::Builtin::DurationMilliseconds
@@ -3218,6 +3219,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                                 mir::Builtin::TextConcat
                                     | mir::Builtin::TextGet
                                     | mir::Builtin::FormatFloat
+                                    | mir::Builtin::JsonFormat
                                     | mir::Builtin::TextMapNew
                                     | mir::Builtin::TextMapInsert
                                     | mir::Builtin::TextMapLength
@@ -3958,6 +3960,7 @@ fn scan_effect_expr(
                         | mir::Builtin::TextMapInsert
                         | mir::Builtin::TextMapRemove
                         | mir::Builtin::FormatFloat
+                        | mir::Builtin::JsonFormat
                 )
             ) {
                 summary.include(Effects::MAY_COLLECT);
@@ -11063,6 +11066,14 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             (mir::Builtin::FormatFloat, [value]) => {
                 InstructionKind::FormatFloat { value: *value }.into()
             }
+            (mir::Builtin::JsonFormat, [json]) => InstructionKind::JsonFormat {
+                json: *json,
+                ok_variant: 0,
+                error_variant: 1,
+                depth_limit_variant: 2,
+                non_finite_number_variant: 3,
+            }
+            .into(),
             (mir::Builtin::IsFinite, [value]) => {
                 return self.lower_float_is_finite(flow, *value, origin);
             }

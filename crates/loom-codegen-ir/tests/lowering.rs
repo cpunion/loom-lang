@@ -4789,6 +4789,85 @@ fn recursive_json_sum_registers_through_list_and_text_map_cycle_breakers() {
 }
 
 #[test]
+fn canonical_json_format_lowers_to_one_collecting_typed_instruction() {
+    let outcome = lower_run(
+        r"module typed_json_format
+
+import standard.json.format_json
+
+pub fn main() {
+    let valid = match format_json(Json.Null) {
+        Ok(_) => true
+        Err(_) => false
+    }
+    discard valid
+}
+",
+    );
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("canonical format_json must lower completely: {outcome:?}")
+    };
+    let main = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("main instance");
+    assert_eq!(
+        main.effects(),
+        Effects::MAY_COLLECT.with_implications(),
+        "{}",
+        dump_program(artifact.program())
+    );
+    let formats = main
+        .instructions()
+        .iter()
+        .filter_map(|instruction| match instruction.kind() {
+            InstructionKind::JsonFormat {
+                ok_variant,
+                error_variant,
+                depth_limit_variant,
+                non_finite_number_variant,
+                ..
+            } => Some((
+                *ok_variant,
+                *error_variant,
+                *depth_limit_variant,
+                *non_finite_number_variant,
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(formats, [(0, 1, 2, 3)]);
+    assert!(
+        dump_program(artifact.program())
+            .contains("json.format %v0, ok 0, error 1, depth_limit 2, non_finite_number 3")
+    );
+}
+
+#[test]
+fn json_parse_remains_outside_the_json_format_lcir_slice() {
+    let outcome = lower_run(
+        r#"module typed_json_parse
+
+import standard.json.parse_json
+
+pub fn main() {
+    let valid = match parse_json("null") {
+        Ok(_) => true
+        Err(_) => false
+    }
+    discard valid
+}
+"#,
+    );
+    let LoweringOutcome::Unsupported(report) = outcome else {
+        panic!("parse_json must remain outside this typed LCIR slice: {outcome:?}")
+    };
+    assert_eq!(report.items().len(), 1, "{report:?}");
+    assert_eq!(report.items()[0].feature(), UnsupportedFeature::BuiltinCall);
+}
+
+#[test]
 fn closed_sums_and_ordered_nested_matches_lower_to_exhaustive_sum_cfg() {
     let dump = complete_dump(
         r"module closed_sums

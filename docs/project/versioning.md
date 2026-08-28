@@ -15,14 +15,14 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted MIR artifact | format `loom.interpreted-mir`, version `23` |
 | Portable library artifact | version `1` |
 | Persistent compiler cache | schema `4` |
-| LCIR textual dump | version `31` |
-| LCIR artifact identity | schema `32` |
-| LCIR native-object domain | `loom-lcir-native-object-v28` |
+| LCIR textual dump | version `32` |
+| LCIR artifact identity | schema `33` |
+| LCIR native-object domain | `loom-lcir-native-object-v29` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v33` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v34` |
 | Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
-| Native runtime ABI component | `21` |
+| Native runtime ABI component | `22` |
 | Coroutine/Task ABI component | `2` |
 | Typed Task ABI component | `1` |
 | Wait ABI component | `1` |
@@ -57,6 +57,21 @@ standard-library ABI remains v4. The new `LogWrite` terminator advances the
 LCIR dump to 31, artifact schema to 32, native-object domain to
 `loom-lcir-native-object-v28`, and object-cache domain to
 `loom-llvm-object-cache-v33`.
+
+Typed JSON formatting adds the collecting
+`loom_runtime_json_format_typed_v1(json, layout, out_text)` boundary. Generated
+code passes the exact recursive `Json`, `List[Json]`, and `TextMap[Json]`
+target layout in a compiler-private descriptor; neither a universal value nor
+an executor crosses the call. The runtime validates that descriptor, requires
+the TextMap's canonical strictly increasing UTF-8 key order, and stages the
+complete JSON text before its sole managed Text allocation. Depth-limit and
+non-finite-number statuses become ordinary `JsonError` variants; malformed ABI
+inputs and unknown statuses trap as compiler/runtime defects. This advances
+the runtime identity to component 22 with `typed-json-v1` and `runtime-v16`.
+The new `JsonFormat` instruction advances the LCIR dump to 32, artifact schema
+to 33, native-object domain to `loom-lcir-native-object-v29`, and object-cache
+domain to `loom-llvm-object-cache-v34`. The public standard-library ABI remains
+v4.
 
 Task composition and timer calls now remain ordinary HIR calls until semantic
 resolution selects a stable compiler-owned `StandardLibraryItem`. The item is

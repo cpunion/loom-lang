@@ -40,6 +40,7 @@ const TYPED_LCIR_FIXTURE: &str = "fixtures/typed-lcir";
 const TYPED_LOGGING_FIXTURE: &str = "fixtures/lcir-typed-logging";
 const TYPED_LOGGING_STDERR: &[u8] =
     include_bytes!("../../../fixtures/lcir-typed-logging/expected.stderr");
+const TYPED_JSON_FORMAT_FIXTURE: &str = "fixtures/lcir-json-format";
 const TYPED_ASYNC_FIXTURE: &str = "fixtures/lcir-typed-async";
 const ASYNC_MANAGED_COLLECTIONS_FIXTURE: &str = "fixtures/lcir-async-managed-collections";
 const TYPED_SLEEP_FIXTURE: &str = "fixtures/lcir-typed-sleep";
@@ -55,7 +56,7 @@ const QUALITY_EVIDENCE_SCHEMA_VERSION: u32 = 2;
 const STANDARD_LIBRARY_LEGACY_ROUTE: NativeRouteExpectation =
     NativeRouteExpectation::LegacyAllowed {
         name: "standard-library-managed-runtime",
-        reason: "JSON parse/format and typed external I/O are not yet complete in typed LCIR",
+        reason: "JSON parsing and typed external I/O are not yet complete in typed LCIR",
     };
 
 const TASKS: &[TaskSpec] = &[
@@ -375,6 +376,16 @@ fn main() {
         &mut report.native_routes,
     ) {
         report.failures.push(format!("typed-logging: {error}"));
+    }
+    if let Err(error) = typed_async_gate(
+        &workspace,
+        &runtime,
+        &mut report.gates,
+        &mut report.native_routes,
+        TYPED_JSON_FORMAT_FIXTURE,
+        "typed-json-format",
+    ) {
+        report.failures.push(format!("typed-json-format: {error}"));
     }
     if let Err(error) = typed_async_gate(
         &workspace,
@@ -834,7 +845,7 @@ fn typed_async_gate(
         .current_dir(&project)
         .output()
         .map_err(|error| format!("execute {scenario} fixture: {error}"))?;
-    if !output.status.success() || output.stdout != b"Unit\n" {
+    if !output.status.success() || output.stdout != b"Unit\n" || !output.stderr.is_empty() {
         return Err(format!(
             "native main mismatch: status={:?}, stdout={}, stderr={}",
             output.status.code(),
@@ -850,6 +861,7 @@ fn typed_async_gate(
     if !output.status.success()
         || stdout.lines().count() != program.tests.len()
         || !stdout.lines().all(|line| line.starts_with("passed "))
+        || !output.stderr.is_empty()
     {
         return Err(format!(
             "native test mismatch: status={:?}, stdout={}, stderr={}",
