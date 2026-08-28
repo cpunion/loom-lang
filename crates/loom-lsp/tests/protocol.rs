@@ -173,6 +173,7 @@ fn inspect(problem IoError, value Json) {
         "JsonError",
         "IoError",
         "IoErrorKind",
+        "entry_at",
         "LogLevel",
         "parse_json",
         "format_json",
@@ -188,6 +189,80 @@ fn inspect(problem IoError, value Json) {
     ] {
         assert!(labels.contains(&expected), "missing {expected}: {labels:?}");
     }
+}
+
+#[test]
+fn compiler_owned_standard_sources_report_distinct_navigation_and_mutation_policy() {
+    let source = r"module editor.compiler_owned
+
+import standard.int.minimum
+
+pub fn main() {
+    let selected = minimum(2, 1)
+    assert selected == 1
+}
+";
+    let project = TestProject::new(source);
+    let root_uri = loom_lsp::path_to_file_uri(&project.0);
+    let file_uri = loom_lsp::path_to_file_uri(&project.0.join("main.loom"));
+    let position = source_position(source, "minimum(2");
+    let messages = [
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":root_uri}}),
+        json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+        json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":file_uri,"languageId":"loom","version":1,"text":source}}}),
+        json!({"jsonrpc":"2.0","id":2,"method":"textDocument/definition","params":{"textDocument":{"uri":file_uri},"position":position}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"textDocument/prepareRename","params":{"textDocument":{"uri":file_uri},"position":position}}),
+        json!({"jsonrpc":"2.0","id":4,"method":"textDocument/rename","params":{"textDocument":{"uri":file_uri},"position":position,"newName":"smaller"}}),
+        json!({"jsonrpc":"2.0","id":5,"method":"workspace/symbol","params":{"query":"minimum"}}),
+        json!({"jsonrpc":"2.0","id":6,"method":"shutdown","params":null}),
+        json!({"jsonrpc":"2.0","method":"exit","params":null}),
+    ];
+    let input = messages.iter().flat_map(frame).collect::<Vec<_>>();
+    let mut output = Vec::new();
+    loom_lsp::run(BufReader::new(input.as_slice()), &mut output).expect("run LSP session");
+    let responses = decode_frames(&output);
+
+    let definition = responses
+        .iter()
+        .find(|message| message.get("id") == Some(&json!(2)))
+        .expect("definition response");
+    assert_eq!(
+        definition.pointer("/error/data/code"),
+        Some(&json!("CompilerOwnedSourceNotNavigable")),
+        "{definition:#?}"
+    );
+    assert_eq!(
+        definition.pointer("/error/message"),
+        Some(&json!(
+            "compiler-owned standard library source is not a workspace document"
+        )),
+        "{definition:#?}"
+    );
+    for id in [3, 4] {
+        let response = responses
+            .iter()
+            .find(|message| message.get("id") == Some(&json!(id)))
+            .unwrap_or_else(|| panic!("missing response {id}"));
+        assert_eq!(
+            response.pointer("/error/data/code"),
+            Some(&json!("CompilerOwnedSourceReadOnly")),
+            "{response:#?}"
+        );
+        assert_eq!(
+            response.pointer("/error/message"),
+            Some(&json!(
+                "compiler-owned standard library sources are read-only"
+            )),
+            "{response:#?}"
+        );
+    }
+    let symbols = responses
+        .iter()
+        .find(|message| message.get("id") == Some(&json!(5)))
+        .and_then(|message| message.get("result"))
+        .and_then(Value::as_array)
+        .expect("workspace symbol response");
+    assert!(symbols.is_empty(), "{symbols:#?}");
 }
 
 #[test]
@@ -662,12 +737,8 @@ fn portable_dependency_implementations_are_opaque_and_read_only() {
     );
     let producer = AnalysisHost::new(project.0.join("utility")).expect("open producer");
     let snapshot = producer.snapshot().expect("compile producer");
-    let artifact = encode_library_artifact(
-        snapshot.project(),
-        snapshot.sources(),
-        snapshot.executable().expect("producer checked MIR"),
-    )
-    .expect("encode producer artifact");
+    let artifact = encode_library_artifact(snapshot.project(), snapshot.sources())
+        .expect("encode producer artifact");
     let artifact_path = project.0.join("utility.loomlib");
     fs::write(&artifact_path, &artifact).expect("write artifact");
     fs::remove_dir_all(project.0.join("utility")).expect("remove producer checkout");
@@ -738,6 +809,13 @@ fn portable_dependency_implementations_are_opaque_and_read_only() {
     assert_eq!(
         rename.pointer("/error/data/code"),
         Some(&json!("DependencySourceReadOnly")),
+        "{rename:#?}"
+    );
+    assert_eq!(
+        rename.pointer("/error/message"),
+        Some(&json!(
+            "portable library implementation sources are read-only"
+        )),
         "{rename:#?}"
     );
     let (symbols, _) = read_until_id(&mut stdout, 5);

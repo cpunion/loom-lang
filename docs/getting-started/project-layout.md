@@ -82,7 +82,7 @@ The manifest supports three target kinds:
 | --- | --- | --- |
 | `bin` | Executable selected by `build` or `run` | Required for a non-default exported entry |
 | `test` | Harness containing reachable `test fn` declarations | Not used |
-| `lib` | Portable, validated `.loomlib` checked-MIR artifact | Not used |
+| `lib` | Portable, validated `.loomlib` source package | Not used |
 
 Select a named target with `--target`:
 
@@ -95,8 +95,10 @@ loomc test --target unit .
 An exported executable entry must take no parameters and return `Unit`. The
 `entry` value is a fully qualified module function such as `hello.main`.
 
-A `.loomlib` is a versioned compiler artifact for Loom package dependencies. It
-is not a stable native ABI, shared library, or FFI format.
+A `.loomlib` is a versioned source-and-interface artifact for Loom package
+dependencies. The consuming compiler checks and lowers its embedded sources
+with the rest of the project; it is not a stable native ABI, shared library,
+or FFI format.
 
 ## Dependencies and lockfiles
 

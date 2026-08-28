@@ -31,6 +31,7 @@ The workspace is split into narrow crates:
 ## Contents
 
 - [Compiler pipeline](compiler-pipeline.md)
+- [Core, standard library, and runtime boundary](core-library-runtime-boundary.md)
 - [MIR and validation](mir-and-validation.md)
 - [Reachability and dead-code elimination](reachability-and-dce.md)
 - [Code generation IR](codegen-ir.md)

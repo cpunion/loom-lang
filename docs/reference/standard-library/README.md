@@ -8,6 +8,17 @@ as user declarations. Standard functions are available only after an explicit
 import; standard value types and their built-in constructors and methods are in
 the prelude.
 
+The source-backed migration has begun: migrated modules are distributed as Loom
+source and compile through the ordinary module, type, MIR, reachability, and
+native pipelines. The current source package contains the foundational
+`standard.int` algorithms. Other documented APIs, including JSON, still have
+transitional compiler-known or runtime implementations and must pass the
+migration gates before those paths are deleted. The target boundary permits
+only irreducible GC, scheduler, platform, and generic construction services to
+cross into the compiler-private runtime. The implementation rule and migration
+gates are documented in
+[Core, standard library, and runtime boundary](../../internals/core-library-runtime-boundary.md).
+
 ## Library map
 
 - [Text, Bytes, and Path](text-bytes-and-paths.md)

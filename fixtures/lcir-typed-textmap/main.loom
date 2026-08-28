@@ -19,11 +19,36 @@ fn verdict(condition Bool) Result[Unit, Problem] {
     if condition { Ok(Unit) } else { Err(Problem.WrongValue) }
 }
 
+fn intEntry(map TextMap[Int], index Int, expectedKey Text, expectedValue Int) Bool {
+    match map.entry_at(index) {
+        Some(entry) => {
+            let key, value = entry
+            key == expectedKey && value == expectedValue
+        }
+        None => false
+    }
+}
+
+fn noIntEntry(map TextMap[Int], index Int) Bool {
+    match map.entry_at(index) { None => true, Some(_) => false }
+}
+
+fn pairEntry(map TextMap[Pair], index Int) Bool {
+    match map.entry_at(index) {
+        Some(entry) => {
+            let key, value = entry
+            key == "pair" && value.label == "Pair" && value.count == 7
+        }
+        None => false
+    }
+}
+
 fn verify() Result[Unit, Problem] {
     let empty = TextMap[Int]()
     let first = empty.insert("z", 9)
     let alias = first
     let ordered = first.insert("a", 1)
+    let orderedFirst = ordered.entry_at(0)
     let replaced = ordered.insert("z", 10)
     let reverse_order = TextMap[Int]().insert("a", 1).insert("z", 9)
     let missing_removed = ordered.remove("missing")
@@ -92,11 +117,19 @@ fn verify() Result[Unit, Problem] {
     && match ordered.get("a") { Some(value) => value == 1, None => false }
     && match replaced.get("z") { Some(value) => value == 10, None => false }
     && match replaced.get("missing") { None => true, Some(_) => false }
+    && match orderedFirst { Some(_) => true, None => false }
+    && intEntry(ordered, 0, "a", 1)
+    && intEntry(ordered, 1, "z", 9)
+    && intEntry(replaced, 1, "z", 10)
+    && noIntEntry(empty, 0)
+    && noIntEntry(ordered, -1)
+    && noIntEntry(ordered, 2)
     && match text.get("name") { Some(value) => value == "Loom", None => false }
     && match pairs.get("pair") {
         Some(value) => value.label == "Pair" && value.count == 7,
         None => false
     }
+    && pairEntry(pairs, 0)
     && match choices.get("number") {
         Some(Choice.Number(value)) => value == 12,
         _ => false

@@ -1035,9 +1035,10 @@ const fn builtin_requirements(builtin: Builtin) -> RuntimeRequirements {
         | Builtin::LogWarn
         | Builtin::LogError
         | Builtin::LogWrite => RuntimeRequirements::MAY_FAULT,
-        Builtin::ParseFloat | Builtin::ParseInt | Builtin::TextEncodeUtf8 => {
-            RuntimeRequirements::MAY_COLLECT
-        }
+        Builtin::ParseFloat
+        | Builtin::ParseInt
+        | Builtin::TextEncodeUtf8
+        | Builtin::TextMapEntryAt => RuntimeRequirements::MAY_COLLECT,
         Builtin::FormatFloat
         | Builtin::TextGet
         | Builtin::TextConcat
@@ -1419,6 +1420,7 @@ mod tests {
             Builtin::FormatFloat,
             Builtin::ListGet,
             Builtin::TextMapGet,
+            Builtin::TextMapEntryAt,
             Builtin::JsonParse,
         ] {
             assert!(
@@ -1433,6 +1435,9 @@ mod tests {
         let get = builtin_requirements(Builtin::TextMapGet);
         assert!(get.may_fault());
         assert!(get.may_collect());
+        let entry_at = builtin_requirements(Builtin::TextMapEntryAt);
+        assert!(!entry_at.may_fault());
+        assert!(entry_at.may_collect());
 
         for builtin in [Builtin::FileClose, Builtin::SocketClose] {
             let requirements = builtin_requirements(builtin);

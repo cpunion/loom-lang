@@ -76,11 +76,13 @@ semantic entries that lacked this standard-item identity. Whether a body is
 reused or conservatively reanalyzed, MIR lowering consumes only the resolved
 identity; it never reconstructs a policy from source spelling.
 
-Checked-MIR cache envelopes use artifact version 23 for the canonical
-six-field `ConstraintError` shape. That shape change did not advance the cache
-schema: artifact-version validation invalidates older checked-MIR entries, and
-typed semantic cache payloads do not contain the synthetic prelude record. The
-separate standard-item change above is why the current schema is 4.
+Checked-MIR cache envelopes use artifact version 24. Version 24 adds the
+compiler-known `TextMap.entry_at` builtin; artifact-version validation rejects
+older enum encodings rather than guessing their meaning. The earlier canonical
+six-field `ConstraintError` shape remains validator-enforced. Neither change
+requires another cache-schema advance because typed semantic cache payloads do
+not encode MIR builtins or the synthetic prelude record. The separate
+standard-item change above is why the current cache schema is 4.
 
 The complete compilation key includes the normalized project graph, exact
 sources, language and frontend build identities, embedded standard library,
@@ -88,8 +90,19 @@ and contract mode. A checked-MIR cache hit still runs the artifact decoder and
 MIR validator before execution or code generation. Proof-bearing checked MIR is
 not published; a forged or legacy proof-bearing payload loads as a miss. Source
 reanalysis reconstructs the same fresh `Proven` MIR as a cold build instead of
-permanently replacing its process-local proof with portable `Recheck`. Supported
-nongeneric replay is typed LCIR; generic or unsupported replay remains legacy.
+permanently replacing its process-local proof with serialized `.loomi`
+`Recheck`. Supported nongeneric replay is typed LCIR; generic or unsupported
+replay remains legacy.
+
+A version 2 `.loomlib` final artifact is a separate source/interface blob, not
+a checked-MIR cache entry. Its `portable-library-artifact-v3` derived cache
+identity includes the complete compilation key, selected library target,
+library format, and format version. Consequently a compiler or
+compiler-distributed standard-library identity change cannot restore an
+artifact whose producer checks have not run under the current inputs, even
+though the deterministic `.loomlib` bytes themselves omit the standard-library
+implementation. This format replacement does not change persistent cache
+schema 4 or the checked-MIR cache envelope.
 
 ## Native object reuse
 

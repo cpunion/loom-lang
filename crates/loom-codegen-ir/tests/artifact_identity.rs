@@ -27,8 +27,8 @@ impl BodyOrigins {
 }
 
 #[test]
-fn identity_schema_is_pinned_after_typed_json_format() {
-    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 33);
+fn identity_schema_is_pinned_after_structural_equality_helpers() {
+    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 34);
 }
 
 fn origin(expression: Option<u32>, file: u32, start: u32, end: u32) -> Origin {
@@ -559,7 +559,7 @@ fn complete_tuple_semantics_are_dump_and_artifact_identity_inputs() {
     assert_ne!(boolean_dump, floating_dump);
     assert_ne!(artifact_identity(&boolean), artifact_identity(&floating));
     assert_eq!(
-        ARTIFACT_IDENTITY_SCHEMA, 33,
+        ARTIFACT_IDENTITY_SCHEMA, 34,
         "complete tuple semantics use the current artifact identity schema"
     );
 }

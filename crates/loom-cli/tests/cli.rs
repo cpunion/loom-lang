@@ -487,6 +487,61 @@ fn clean_check_uses_the_real_semantic_pipeline() {
 }
 
 #[test]
+fn embedded_loom_standard_source_checks_builds_and_closes_only_reachable_definitions() {
+    let project = TestProject::new(
+        r"module standard_source_client
+
+import standard.int.minimum
+
+pub fn main() {
+    let value = minimum(9, 4)
+    assert value == 4
+}
+",
+    );
+
+    for command in ["check", "build"] {
+        let output = loomc_without_test_runtime()
+            .args(["--backend", "interpreter", "--no-cache", command])
+            .arg(&project.0)
+            .output()
+            .expect("run standard-source command");
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{command}: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let snapshot = loom_driver::AnalysisHost::new(&project.0)
+        .expect("open embedded-standard client")
+        .snapshot()
+        .expect("compile embedded-standard client");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let program = snapshot.executable().expect("checked MIR");
+    let minimum = program
+        .functions
+        .iter()
+        .find(|function| function.name == "standard.int.minimum")
+        .expect("minimum source definition")
+        .id;
+    let maximum = program
+        .functions
+        .iter()
+        .find(|function| function.name == "standard.int.maximum")
+        .expect("maximum source definition")
+        .id;
+    let roots = loom_codegen_ir::SourceRoots::for_entry(program, "main").expect("main root");
+    let reachable = loom_codegen_ir::analyze_source_reachability(program, &roots)
+        .expect("close source call graph");
+    assert!(reachable.functions.contains(&minimum));
+    assert!(!reachable.functions.contains(&maximum));
+    assert_eq!(reachable.functions.len(), 2);
+}
+
+#[test]
 fn persistent_cache_hits_content_keys_and_final_artifacts() {
     let project = TestProject::new("module demo\n\npub fn main() {\n}\n");
 
@@ -2694,17 +2749,12 @@ fn library_targets_build_portable_validated_artifacts() {
         cache_status(&first.stdout, "final_artifact").as_deref(),
         Some("miss")
     );
-    let checked = loom_driver::decode_library_artifact(
-        &fs::read(&first_artifact).expect("read portable library"),
-    )
-    .expect("decode and validate portable library");
-    assert!(
-        checked
-            .program()
-            .as_program()
-            .exports
-            .contains_key("sample.answer")
-    );
+    let artifact_bytes = fs::read(&first_artifact).expect("read portable library");
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&artifact_bytes).expect("portable library JSON");
+    assert!(envelope.get("checkedMir").is_none());
+    let checked = loom_driver::decode_library_artifact(&artifact_bytes)
+        .expect("decode and validate portable library");
     assert_eq!(checked.root_package().name(), "sample");
     assert_eq!(checked.root_package().language(), "0.3");
     assert_eq!(checked.interfaces().len(), 1);

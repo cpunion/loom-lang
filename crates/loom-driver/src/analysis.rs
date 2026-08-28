@@ -700,17 +700,33 @@ fn validate_package_module(
     parse: &Parse,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let Some(package) = source.package() else {
-        return;
-    };
     let Some(declaration) = &parse.ast().module else {
         return;
     };
+    let module_name = declaration.name.as_string();
+    if crate::standard_library::owns_module(&module_name)
+        && source
+            .package()
+            .is_none_or(|package| package.name() != crate::standard_library::STANDARD_PACKAGE_NAME)
+    {
+        diagnostics.push(Diagnostic::error(
+            "ReservedStandardModule",
+            format!("module `{module_name}` is supplied by the compiler-owned standard library"),
+            Span {
+                file: source.id(),
+                range: declaration.range,
+            },
+        ));
+        return;
+    }
     let first = declaration
         .name
         .segments
         .first()
         .map(|segment| segment.text.as_str());
+    let Some(package) = source.package() else {
+        return;
+    };
     if first == Some(package.name()) {
         return;
     }

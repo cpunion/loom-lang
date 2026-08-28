@@ -126,8 +126,8 @@ the completed staging directory, and publishes a new destination directory.
 It rejects symlinks, oversized inputs, unexpected bundle entries, and an
 existing output path.
 
-A `lib` target produces a portable checked-MIR library artifact. Use an
-explicit `--output NAME.loomlib`; `.loomlib` is the convention, not an
+A `lib` target produces a portable source-and-interface package artifact. Use
+an explicit `--output NAME.loomlib`; `.loomlib` is the convention, not an
 automatically appended extension. Library targets reject `--release`,
 `--emit object`, `--target-triple`, and runtime-link options because they do not
 produce native code.

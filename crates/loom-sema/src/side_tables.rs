@@ -51,6 +51,7 @@ pub enum BuiltinValue {
     TextMapLength,
     TextMapContains,
     TextMapGet,
+    TextMapEntryAt,
     TextMapInsert,
     TextMapRemove,
     JsonNull,

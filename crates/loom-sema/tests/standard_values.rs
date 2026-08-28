@@ -165,6 +165,7 @@ fn values(text Text) {
     let count = removed.length()
     let present = removed.contains("name")
     let value = removed.get("name")
+    let first = removed.entry_at(0)
     assert removed == removed
 
     let null = Json.Null
@@ -270,6 +271,7 @@ fn genericEquality[T](left TextMap[T], right TextMap[T]) Bool {
 
 fn wrong(text Text) {
     let map = TextMap[Int]().insert(1, text)
+    let entry = map.entry_at("zero")
     let missing = Json.Null()
     let badJson = Json.Bool(text)
     let formatted = format_json(text)

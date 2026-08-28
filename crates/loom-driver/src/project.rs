@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use semver::{Version, VersionReq};
@@ -16,6 +16,7 @@ use crate::registry::{RegistryConfig, fetch_http_registry_package};
 use crate::source::{
     discover_loom_files, has_loom_extension, is_ignored_relative, normalize_absolute, relative_key,
 };
+use crate::standard_library::{self, STANDARD_PACKAGE_NAME};
 
 pub const MANIFEST_FILE: &str = "loom.toml";
 pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
@@ -245,6 +246,7 @@ pub(crate) struct ProjectSource {
     pub package: Option<PackageId>,
     pub is_root_package: bool,
     pub embedded_text: Option<String>,
+    pub origin: crate::SourceOrigin,
 }
 
 impl ProjectGraph {
@@ -470,8 +472,8 @@ impl ProjectGraph {
     }
 
     pub(crate) fn source_files(&self) -> Result<Vec<ProjectSource>, DriverError> {
-        match &self.kind {
-            ProjectKind::Legacy { input } => legacy_sources(&self.root, input),
+        let mut sources = match &self.kind {
+            ProjectKind::Legacy { input } => legacy_sources(&self.root, input)?,
             ProjectKind::Manifest { root_package } => {
                 let mut sources =
                     BTreeMap::<PathBuf, (String, PackageId, bool, Option<String>)>::new();
@@ -537,20 +539,32 @@ impl ProjectGraph {
                     .into_iter()
                     .map(
                         |(absolute, (stable_path, package, is_root_package, embedded_text))| {
+                            let origin = if embedded_text.is_some() {
+                                crate::SourceOrigin::PortableLibrary
+                            } else {
+                                crate::SourceOrigin::FileSystem
+                            };
                             ProjectSource {
                                 absolute,
                                 stable_path,
                                 package: Some(package),
                                 is_root_package,
                                 embedded_text,
+                                origin,
                             }
                         },
                     )
                     .collect::<Vec<_>>();
                 result.sort_by(|left, right| left.stable_path.cmp(&right.stable_path));
-                Ok(result)
+                result
             }
-        }
+        };
+        sources.extend(standard_library::project_sources(
+            &self.root,
+            self.language_version(),
+        ));
+        sources.sort_by(|left, right| left.stable_path.cmp(&right.stable_path));
+        Ok(sources)
     }
 
     pub(crate) fn overlay_stable_path(&self, path: &Path) -> Option<String> {
@@ -620,20 +634,33 @@ impl ProjectGraph {
     }
 
     pub(crate) fn configure_hir_packages(&self, program: &mut loom_hir::Program) {
+        let standard = standard_library::package_id(self.language_version());
+        program.register_package(standard.clone(), [], false);
         match &self.kind {
             ProjectKind::Legacy { .. } => {
-                program.register_package(PackageId::legacy(), [], true);
+                program.register_package(
+                    PackageId::legacy(),
+                    [(loom_core::Name::new(STANDARD_PACKAGE_NAME), standard)],
+                    true,
+                );
             }
             ProjectKind::Manifest { root_package } => {
                 for package in self.packages.values() {
                     program.register_package(
                         package.id.clone(),
-                        package.dependencies.iter().map(|dependency| {
-                            (
-                                loom_core::Name::new(dependency.alias.clone()),
-                                dependency.package.clone(),
-                            )
-                        }),
+                        package
+                            .dependencies
+                            .iter()
+                            .map(|dependency| {
+                                (
+                                    loom_core::Name::new(dependency.alias.clone()),
+                                    dependency.package.clone(),
+                                )
+                            })
+                            .chain(std::iter::once((
+                                loom_core::Name::new(STANDARD_PACKAGE_NAME),
+                                standard.clone(),
+                            ))),
                         &package.id == root_package,
                     );
                 }
@@ -870,6 +897,12 @@ impl Resolver {
         let mut dependencies = Vec::with_capacity(raw.dependencies.len());
         for (alias, dependency) in &raw.dependencies {
             validate_name("dependency alias", alias, manifest)?;
+            if alias == STANDARD_PACKAGE_NAME {
+                return Err(manifest_error(
+                    manifest,
+                    "dependency alias `standard` is reserved for the compiler-owned standard library",
+                ));
+            }
             if dependency.optional && !enabled_features.contains(&format!("dep:{alias}")) {
                 continue;
             }
@@ -998,10 +1031,46 @@ impl Resolver {
                 format!("dependency `{alias}` artifact must be a readable .loomlib file"),
             ));
         }
-        let bytes = fs::read(&artifact_path).map_err(|source| DriverError::Io {
+        let metadata = fs::metadata(&artifact_path).map_err(|source| DriverError::Io {
             path: artifact_path.clone(),
             source,
         })?;
+        if metadata.len()
+            > u64::try_from(crate::LIBRARY_ARTIFACT_MAX_BYTES).expect("artifact limit fits u64")
+        {
+            return Err(manifest_error(
+                &artifact_path,
+                format!(
+                    ".loomlib exceeds the {}-byte limit",
+                    crate::LIBRARY_ARTIFACT_MAX_BYTES
+                ),
+            ));
+        }
+        let file = fs::File::open(&artifact_path).map_err(|source| DriverError::Io {
+            path: artifact_path.clone(),
+            source,
+        })?;
+        let read_limit = u64::try_from(crate::LIBRARY_ARTIFACT_MAX_BYTES)
+            .expect("artifact limit fits u64")
+            .saturating_add(1);
+        let mut bytes = Vec::with_capacity(
+            usize::try_from(metadata.len()).unwrap_or(crate::LIBRARY_ARTIFACT_MAX_BYTES),
+        );
+        file.take(read_limit)
+            .read_to_end(&mut bytes)
+            .map_err(|source| DriverError::Io {
+                path: artifact_path.clone(),
+                source,
+            })?;
+        if bytes.len() > crate::LIBRARY_ARTIFACT_MAX_BYTES {
+            return Err(manifest_error(
+                &artifact_path,
+                format!(
+                    ".loomlib exceeds the {}-byte limit",
+                    crate::LIBRARY_ARTIFACT_MAX_BYTES
+                ),
+            ));
+        }
         let artifact = crate::decode_library_artifact(&bytes).map_err(|error| {
             manifest_error(
                 manifest,
@@ -1011,7 +1080,6 @@ impl Resolver {
                 ),
             )
         })?;
-        let checksum = format!("{:x}", Sha256::digest(&bytes));
         let (root_package, packages, sources) = artifact.into_dependency_parts();
         let mut sources_by_package = BTreeMap::<PackageId, Vec<EmbeddedSource>>::new();
         for source in sources {
@@ -1023,8 +1091,19 @@ impl Resolver {
                     text: source.text,
                 });
         }
+        let package_checksums = artifact_package_checksums(&packages, &sources_by_package);
+        let root_checksum = package_checksums
+            .get(&root_package)
+            .expect("decoded artifact root belongs to its package graph")
+            .clone();
         for package in &packages {
             validate_name("artifact package", package.id.name(), &artifact_path)?;
+            if package.id.name() == STANDARD_PACKAGE_NAME {
+                return Err(manifest_error(
+                    &artifact_path,
+                    "portable libraries cannot define the reserved package `standard`",
+                ));
+            }
             Version::parse(package.id.version()).map_err(|error| {
                 manifest_error(
                     &artifact_path,
@@ -1040,9 +1119,16 @@ impl Resolver {
                     &dependency.alias,
                     &artifact_path,
                 )?;
+                if dependency.alias == STANDARD_PACKAGE_NAME {
+                    return Err(manifest_error(
+                        &artifact_path,
+                        "portable libraries cannot define the reserved dependency alias `standard`",
+                    ));
+                }
             }
         }
         for package in packages {
+            let checksum = &package_checksums[&package.id];
             if let Some(previous) = self.packages.get(&package.id) {
                 if previous.source == "artifact"
                     && previous.checksum.as_deref() == Some(checksum.as_str())
@@ -1096,7 +1182,7 @@ impl Resolver {
                 "artifact contains sources for packages absent from its package graph",
             ));
         }
-        self.verify_locked_checksum(manifest, &root_package, "artifact", Some(&checksum))?;
+        self.verify_locked_checksum(manifest, &root_package, "artifact", Some(&root_checksum))?;
         Ok(root_package)
     }
 
@@ -1300,6 +1386,12 @@ fn read_manifest(manifest: &Path) -> Result<RawManifest, DriverError> {
         });
     }
     validate_name("package", &raw.package.name, manifest)?;
+    if raw.package.name == STANDARD_PACKAGE_NAME {
+        return Err(manifest_error(
+            manifest,
+            "package name `standard` is reserved for the compiler-owned standard library",
+        ));
+    }
     Version::parse(&raw.package.version).map_err(|error| {
         manifest_error(
             manifest,
@@ -1522,6 +1614,109 @@ fn package_checksum(
         );
     }
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn artifact_package_checksums(
+    packages: &[crate::library::LibraryPackage],
+    sources: &BTreeMap<PackageId, Vec<EmbeddedSource>>,
+) -> BTreeMap<PackageId, String> {
+    let packages_by_id = packages
+        .iter()
+        .map(|package| (package.id.clone(), package))
+        .collect::<BTreeMap<_, _>>();
+    let mut unresolved = packages
+        .iter()
+        .map(|package| (package.id.clone(), package.dependencies.len()))
+        .collect::<BTreeMap<_, _>>();
+    let mut dependents = BTreeMap::<PackageId, Vec<PackageId>>::new();
+    for package in packages {
+        for dependency in &package.dependencies {
+            dependents
+                .entry(dependency.package.clone())
+                .or_default()
+                .push(package.id.clone());
+        }
+    }
+    let mut ready = unresolved
+        .iter()
+        .filter_map(|(package, count)| (*count == 0).then_some(package.clone()))
+        .collect::<Vec<_>>();
+    let mut checksums = BTreeMap::new();
+    while let Some(id) = ready.pop() {
+        let package = packages_by_id[&id];
+        let package_sources = sources.get(&id).map_or(&[][..], Vec::as_slice);
+        let checksum = artifact_package_checksum(package, package_sources, &checksums);
+        checksums.insert(id.clone(), checksum);
+        for dependent in dependents.get(&id).into_iter().flatten() {
+            let count = unresolved
+                .get_mut(dependent)
+                .expect("decoded artifact dependency belongs to its graph");
+            *count -= 1;
+            if *count == 0 {
+                ready.push(dependent.clone());
+            }
+        }
+    }
+    assert_eq!(
+        checksums.len(),
+        packages.len(),
+        "decoded artifact package graph is acyclic"
+    );
+    checksums
+}
+
+fn artifact_package_checksum(
+    package: &crate::library::LibraryPackage,
+    sources: &[EmbeddedSource],
+    dependency_checksums: &BTreeMap<PackageId, String>,
+) -> String {
+    let mut hasher = Sha256::new();
+    hash_field(&mut hasher, b"loom-library-package-merkle-v1");
+    hash_field(&mut hasher, package.id.name().as_bytes());
+    hash_field(&mut hasher, package.id.version().as_bytes());
+    hash_field(&mut hasher, package.id.language().as_bytes());
+
+    let mut dependencies = package.dependencies.iter().collect::<Vec<_>>();
+    dependencies.sort_by(|left, right| {
+        left.alias
+            .cmp(&right.alias)
+            .then(left.package.cmp(&right.package))
+    });
+    hash_field(&mut hasher, b"dependencies");
+    hasher.update(
+        u64::try_from(dependencies.len())
+            .unwrap_or(u64::MAX)
+            .to_le_bytes(),
+    );
+    for dependency in dependencies {
+        hash_field(&mut hasher, dependency.alias.as_bytes());
+        hash_field(&mut hasher, &[u8::from(dependency.requirement.is_some())]);
+        hash_field(
+            &mut hasher,
+            dependency.requirement.as_deref().unwrap_or("").as_bytes(),
+        );
+        hash_field(&mut hasher, dependency.package.name().as_bytes());
+        hash_field(&mut hasher, dependency.package.version().as_bytes());
+        hash_field(&mut hasher, dependency.package.language().as_bytes());
+        hash_field(
+            &mut hasher,
+            dependency_checksums[&dependency.package].as_bytes(),
+        );
+    }
+
+    let mut sources = sources.iter().collect::<Vec<_>>();
+    sources.sort_by(|left, right| left.path.cmp(&right.path));
+    hash_field(&mut hasher, b"sources");
+    hasher.update(
+        u64::try_from(sources.len())
+            .unwrap_or(u64::MAX)
+            .to_le_bytes(),
+    );
+    for source in sources {
+        hash_field(&mut hasher, source.path.as_bytes());
+        hash_field(&mut hasher, source.text.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 fn hash_field(hasher: &mut Sha256, bytes: &[u8]) {
@@ -1870,6 +2065,7 @@ fn legacy_sources(root: &Path, input: &Path) -> Result<Vec<ProjectSource>, Drive
                 package: None,
                 is_root_package: true,
                 embedded_text: None,
+                origin: crate::SourceOrigin::FileSystem,
             })
         })
         .collect()

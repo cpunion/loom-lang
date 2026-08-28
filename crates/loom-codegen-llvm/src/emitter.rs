@@ -10576,6 +10576,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 | Builtin::TextMapLength
                 | Builtin::TextMapContains
                 | Builtin::TextMapGet
+                | Builtin::TextMapEntryAt
                 | Builtin::TextMapInsert
                 | Builtin::TextMapRemove
                 | Builtin::JsonParse
@@ -11208,6 +11209,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 }
                 Ok(true)
             }
+            (Builtin::TextMapEntryAt, [map, index]) => {
+                self.emit_text_map_entry_at(*map, *index, destination)?;
+                Ok(true)
+            }
             (Builtin::TextMapInsert, [map, key, value]) => {
                 let owned = self.alloc_value("text.map.insert.owned");
                 self.clone_value(owned, *value)?;
@@ -11342,6 +11347,194 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 "structured value builtin argument shape does not match checked MIR",
             )),
         }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "legacy universal-value map traversal, rooted cloning, and Option construction share one GC-safety boundary"
+    )]
+    fn emit_text_map_entry_at(
+        &self,
+        map: PointerValue<'ctx>,
+        index: PointerValue<'ctx>,
+        destination: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let option = self
+            .backend
+            .program
+            .prelude
+            .option
+            .ok_or_else(|| CodegenError::new("InvalidPrelude", "Option is missing"))?;
+        let map = self.unwrap(map)?;
+        let index = self.int_scalar(index)?;
+        let slots = self.backend.load_i64_field(
+            self.backend.value_type,
+            map,
+            VALUE_FIELD_AUX,
+            "text.map.entry.slots",
+        )?;
+        let length = self
+            .backend
+            .builder
+            .build_int_unsigned_div(
+                slots,
+                self.backend.i64_type.const_int(2, false),
+                "text.map.entry.length",
+            )
+            .map_err(builder_error)?;
+        let nonnegative = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::SGE,
+                index,
+                self.backend.i64_type.const_zero(),
+                "text.map.entry.nonnegative",
+            )
+            .map_err(builder_error)?;
+        let in_bounds = self
+            .backend
+            .builder
+            .build_int_compare(IntPredicate::ULT, index, length, "text.map.entry.in.bounds")
+            .map_err(builder_error)?;
+        let valid = self
+            .backend
+            .builder
+            .build_and(nonnegative, in_bounds, "text.map.entry.valid")
+            .map_err(builder_error)?;
+
+        let search = self.append_block("text.map.entry.search");
+        let absent = self.append_block("text.map.entry.none");
+        let header = self.append_block("text.map.entry.header");
+        let advance = self.append_block("text.map.entry.advance");
+        let selected = self.append_block("text.map.entry.selected");
+        let merge = self.append_block("text.map.entry.merge");
+        self.backend
+            .builder
+            .build_conditional_branch(valid, search, absent)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(absent);
+        self.emit_variant_from_pointers(option, 0, &[], destination)?;
+        self.backend.branch(merge)?;
+
+        self.backend.builder.position_at_end(search);
+        let first = self.backend.load_pointer_field(
+            self.backend.value_type,
+            map,
+            VALUE_FIELD_DATA,
+            "text.map.entry.first",
+        )?;
+        self.backend.branch(header)?;
+
+        self.backend.builder.position_at_end(header);
+        let node_phi = self
+            .backend
+            .builder
+            .build_phi(self.backend.ptr_type, "text.map.entry.node")
+            .map_err(builder_error)?;
+        let remaining_phi = self
+            .backend
+            .builder
+            .build_phi(self.backend.i64_type, "text.map.entry.remaining")
+            .map_err(builder_error)?;
+        node_phi.add_incoming(&[(&first, search)]);
+        remaining_phi.add_incoming(&[(&index, search)]);
+        let node = node_phi.as_basic_value().into_pointer_value();
+        let remaining = remaining_phi.as_basic_value().into_int_value();
+        let done = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                remaining,
+                self.backend.i64_type.const_zero(),
+                "text.map.entry.done",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(done, selected, advance)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(advance);
+        let value_node = self.backend.load_pointer_field(
+            self.backend.value_node_type,
+            node,
+            VALUE_NODE_FIELD_NEXT,
+            "text.map.entry.value.node",
+        )?;
+        let next_node = self.backend.load_pointer_field(
+            self.backend.value_node_type,
+            value_node,
+            VALUE_NODE_FIELD_NEXT,
+            "text.map.entry.next.node",
+        )?;
+        let next_remaining = self
+            .backend
+            .builder
+            .build_int_sub(
+                remaining,
+                self.backend.i64_type.const_int(1, false),
+                "text.map.entry.next.remaining",
+            )
+            .map_err(builder_error)?;
+        self.backend.branch(header)?;
+        node_phi.add_incoming(&[(&next_node, advance)]);
+        remaining_phi.add_incoming(&[(&next_remaining, advance)]);
+
+        self.backend.builder.position_at_end(selected);
+        let selected_node = node_phi.as_basic_value().into_pointer_value();
+        let selected_value_node = self.backend.load_pointer_field(
+            self.backend.value_node_type,
+            selected_node,
+            VALUE_NODE_FIELD_NEXT,
+            "text.map.entry.selected.value.node",
+        )?;
+        let key_source = self.backend.struct_pointer(
+            self.backend.value_node_type,
+            selected_node,
+            VALUE_NODE_FIELD_VALUE,
+            "text.map.entry.key.source",
+        )?;
+        let value_source = self.backend.struct_pointer(
+            self.backend.value_node_type,
+            selected_value_node,
+            VALUE_NODE_FIELD_VALUE,
+            "text.map.entry.value.source",
+        )?;
+
+        // No interior map pointer may cross a collecting clone. Publish both
+        // selected slots into compiler-owned roots before cloning either one.
+        let key_snapshot = self.alloc_value("text.map.entry.key.snapshot");
+        let value_snapshot = self.alloc_value("text.map.entry.value.snapshot");
+        self.shallow_copy_named(key_snapshot, key_source, "text.map.entry.key.snapshot")?;
+        self.shallow_copy_named(
+            value_snapshot,
+            value_source,
+            "text.map.entry.value.snapshot",
+        )?;
+        let key = self.alloc_value("text.map.entry.key");
+        let value = self.alloc_value("text.map.entry.value");
+        self.clone_value(key, key_snapshot)?;
+        self.clone_value(value, value_snapshot)?;
+
+        let entry = self.alloc_value("text.map.entry.tuple");
+        self.initialize(entry, VALUE_TAG_TUPLE)?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            entry,
+            VALUE_FIELD_AUX,
+            self.backend.i64_type.const_int(2, false),
+        )?;
+        let head = self.build_value_nodes(&[key, value])?;
+        self.backend
+            .store_pointer_field(self.backend.value_type, entry, VALUE_FIELD_DATA, head)?;
+        self.emit_variant_from_pointers(option, 1, &[entry], destination)?;
+        self.backend.branch(merge)?;
+
+        self.backend.builder.position_at_end(merge);
+        Ok(())
     }
 
     fn json_type_ids(&self) -> Result<(TypeId, TypeId, TypeId, TypeId), CodegenError> {

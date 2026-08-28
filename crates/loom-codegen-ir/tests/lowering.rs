@@ -1,9 +1,15 @@
-use std::{collections::BTreeMap, fmt::Write as _, process::Command, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt::Write as _,
+    process::Command,
+    time::Duration,
+};
 
 use loom_codegen_ir::{
-    AwaitMode, CheckedIntBinaryOp, Effects, InstanceKey, InstructionKind, InvalidRootCode,
-    LoweringErrorCode, LoweringOutcome, ResourceLimitCode, SourceArtifactRequest, TargetLayout,
-    TerminatorKind, UnsupportedFeature, artifact_identity, dump_program, lower_typed_artifact,
+    AwaitMode, CheckedIntBinaryOp, Effects, InstanceKey, InstanceRole, InstructionKind,
+    InvalidRootCode, LoweringErrorCode, LoweringOutcome, ResourceLimitCode, SourceArtifactRequest,
+    TargetLayout, TerminatorKind, UnsupportedFeature, artifact_identity, dump_program,
+    lower_typed_artifact,
 };
 use loom_core::{FileId, Span};
 use loom_hir::{SourceUnit, lower_files};
@@ -4584,8 +4590,12 @@ pub fn main() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one source fixture keeps every supported structural-equality shape and its helper-call assertions together"
+)]
 fn structural_equality_lowers_products_refinements_and_active_sum_payloads() {
-    let dump = complete_dump(
+    let outcome = lower_run(
         r"module structural_equality
 
 record Pair {
@@ -4657,7 +4667,46 @@ pub fn main() {
 ",
     );
 
-    assert!(dump.matches("product.extract").count() >= 12, "{dump}");
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("bounded structural equality must lower through typed helpers: {outcome:?}")
+    };
+    let helper_ids = artifact
+        .functions()
+        .iter()
+        .filter_map(|function| {
+            artifact
+                .program()
+                .as_program()
+                .instance_key(function.id())
+                .is_some_and(|key| key.role() == InstanceRole::StructuralEquality)
+                .then_some(function.id())
+        })
+        .collect::<BTreeSet<_>>();
+    assert!(!helper_ids.is_empty());
+    assert!(artifact.functions().iter().all(|function| {
+        !helper_ids.contains(&function.id()) || function.effects() == Effects::NONE
+    }));
+    assert!(artifact.functions().iter().any(|function| {
+        !helper_ids.contains(&function.id())
+            && function.instructions().iter().any(|instruction| {
+                matches!(
+                    instruction.kind(),
+                    InstructionKind::DirectCall { callee, .. } if helper_ids.contains(callee)
+                )
+            })
+    }));
+    assert!(artifact.functions().iter().any(|function| {
+        helper_ids.contains(&function.id())
+            && function.instructions().iter().any(|instruction| {
+                matches!(
+                    instruction.kind(),
+                    InstructionKind::DirectCall { callee, .. } if helper_ids.contains(callee)
+                )
+            })
+    }));
+
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("product.extract"), "{dump}");
     assert!(dump.matches("sum.switch").count() >= 4, "{dump}");
     assert!(dump.contains("unrefine"), "{dump}");
     assert!(dump.contains("int.compare.equal"), "{dump}");
@@ -4666,6 +4715,27 @@ pub fn main() {
     assert!(dump.matches("list.length").count() >= 6, "{dump}");
     assert!(dump.matches("list.get").count() >= 6, "{dump}");
     assert!(dump.contains("int.successor_below"), "{dump}");
+}
+
+#[test]
+fn wide_sum_structural_equality_fails_closed_before_a_quadratic_helper_cfg() {
+    const VARIANTS: usize = 64;
+    let mut variants = String::new();
+    for index in 0..VARIANTS {
+        writeln!(variants, "    V{index}").expect("variant declaration");
+    }
+    let source = format!(
+        "module wide_sum_equality\n\nenum Wide {{\n{variants}}}\n\npub fn main() {{\n    let left = Wide.V0\n    let right = Wide.V63\n    discard left == right\n}}\n"
+    );
+    let outcome = lower_run(&source);
+    let LoweringOutcome::Unsupported(report) = outcome else {
+        panic!("quadratic wide-sum equality must fail closed before LCIR allocation")
+    };
+    assert_eq!(report.len(), 1, "{report:?}");
+    assert_eq!(
+        report.items()[0].feature(),
+        UnsupportedFeature::NominalValue
+    );
 }
 
 #[test]
@@ -4711,7 +4781,25 @@ pub fn main() {
 }
 
 #[test]
-fn recursive_list_backed_structural_equality_remains_one_atomic_fallback() {
+fn text_map_entry_at_lowers_to_the_generic_checked_entry_operation() {
+    let dump = complete_dump(
+        r#"module typed_text_map_entry_at
+
+pub fn main() {
+    let values = TextMap[Int]().insert("z", 9).insert("a", 1)
+    discard values.entry_at(0)
+    discard values.entry_at(-1)
+    discard values.entry_at(2)
+}
+"#,
+    );
+
+    assert_eq!(dump.matches("text_map.entry_get").count(), 3, "{dump}");
+    assert!(!dump.contains("fallback"), "{dump}");
+}
+
+#[test]
+fn recursive_list_backed_structural_equality_closes_one_finite_helper_cycle() {
     let outcome = lower_run(
         r"module recursive_equality
 
@@ -4726,18 +4814,50 @@ pub fn main() {
 }
 ",
     );
-    let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("recursive structural equality must not clone an unbounded LCIR CFG")
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("recursive structural equality must lower through typed helpers: {outcome:?}")
     };
-    assert_eq!(report.items().len(), 1, "{report:?}");
+    let helpers = artifact
+        .functions()
+        .iter()
+        .filter(|function| {
+            artifact
+                .program()
+                .as_program()
+                .instance_key(function.id())
+                .is_some_and(|key| key.role() == InstanceRole::StructuralEquality)
+        })
+        .collect::<Vec<_>>();
     assert_eq!(
-        report.items()[0].feature(),
-        UnsupportedFeature::NominalValue
+        helpers.len(),
+        3,
+        "Node, List[Node], and Option[Node] require one helper each:\n{}",
+        dump_program(artifact.program())
     );
+    assert!(
+        helpers
+            .iter()
+            .all(|helper| helper.effects() == Effects::NONE)
+    );
+    let helper_ids = helpers
+        .iter()
+        .map(|helper| helper.id())
+        .collect::<BTreeSet<_>>();
+    let helper_edges = helpers
+        .iter()
+        .flat_map(|helper| helper.instructions())
+        .filter_map(|instruction| match instruction.kind() {
+            InstructionKind::DirectCall { callee, .. } if helper_ids.contains(callee) => {
+                Some(*callee)
+            }
+            _ => None,
+        })
+        .count();
+    assert_eq!(helper_edges, 3, "{}", dump_program(artifact.program()));
 }
 
 #[test]
-fn recursive_text_map_backed_structural_equality_remains_one_atomic_fallback() {
+fn recursive_text_map_backed_structural_equality_closes_one_finite_helper_cycle() {
     let outcome = lower_run(
         r"module recursive_text_map_equality
 
@@ -4752,14 +4872,46 @@ pub fn main() {
 }
 ",
     );
-    let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("recursive TextMap structural equality must not clone an unbounded LCIR CFG")
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("recursive TextMap equality must lower through typed helpers: {outcome:?}")
     };
-    assert_eq!(report.items().len(), 1, "{report:?}");
+    let helpers = artifact
+        .functions()
+        .iter()
+        .filter(|function| {
+            artifact
+                .program()
+                .as_program()
+                .instance_key(function.id())
+                .is_some_and(|key| key.role() == InstanceRole::StructuralEquality)
+        })
+        .collect::<Vec<_>>();
     assert_eq!(
-        report.items()[0].feature(),
-        UnsupportedFeature::NominalValue
+        helpers.len(),
+        4,
+        "Node, TextMap[Node], Option[(Text, Node)], and (Text, Node) require one helper each:\n{}",
+        dump_program(artifact.program())
     );
+    assert!(
+        helpers
+            .iter()
+            .all(|helper| helper.effects() == Effects::NONE)
+    );
+    let helper_ids = helpers
+        .iter()
+        .map(|helper| helper.id())
+        .collect::<BTreeSet<_>>();
+    let helper_edges = helpers
+        .iter()
+        .flat_map(|helper| helper.instructions())
+        .filter(|instruction| {
+            matches!(
+                instruction.kind(),
+                InstructionKind::DirectCall { callee, .. } if helper_ids.contains(callee)
+            )
+        })
+        .count();
+    assert_eq!(helper_edges, 4, "{}", dump_program(artifact.program()));
 }
 
 #[test]

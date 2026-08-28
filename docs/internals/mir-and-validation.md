@@ -1,8 +1,8 @@
 # MIR and validation
 
 Loom MIR is the typed executable contract between semantic analysis and every
-execution backend. It is compiler-private, but its serialized forms are
-versioned because caches and portable artifacts cross process boundaries.
+execution backend. It is compiler-private, but its checked-MIR cache and
+`.loomi` serializations are versioned because they cross process boundaries.
 
 ## Program model
 
@@ -40,12 +40,14 @@ lexical block, and shares one LIFO stack with `defer`.
 
 `Program::into_checked` consumes unchecked MIR and returns `CheckedProgram`
 only after all validators succeed. The interpreter, LLVM pipeline, checked-MIR
-cache, `.loomi` loader, and `.loomlib` loader use this boundary. Typed-HIR
-lowering returns the wrapper directly; driver snapshots and cache hits retain
-it; source reachability, both execution backends, native-object identity and
-emission, interpreted-artifact encoding, and portable-library encoding require
-it in their public APIs. Decoding remains an untrusted boundary and validates
-the embedded raw program before returning the wrapper.
+cache, and `.loomi` loader use this boundary. Typed-HIR lowering returns the
+wrapper directly; driver snapshots and cache hits retain it; source
+reachability, both execution backends, native-object identity and emission, and
+interpreted-artifact encoding require it in their public APIs. Decoding remains
+an untrusted boundary and validates the embedded raw program before returning
+the wrapper. A `.loomlib` version 2 decoder instead validates source-package
+structure and interfaces; its consumer creates fresh checked MIR through the
+normal frontend.
 
 Validation covers:
 
@@ -116,10 +118,11 @@ construction as `Proven`. That mark is a process-local compiler conclusion,
 not a portable proof certificate. Fresh source keeps the direct nominal result
 and emits no predicate or invariant check.
 
-Portable checked-MIR serialization writes `Recheck`. Decoding also changes a
-forged `Proven` spelling to `Recheck` before MIR validation. This rule applies
-to standalone `.loomi` envelopes and the checked-MIR payload inside
-`.loomlib`.
+Portable `.loomi` serialization writes `Recheck`. Decoding also changes a
+forged `Proven` spelling to `Recheck` before MIR validation. A version 2
+`.loomlib` carries no MIR or construction disposition: its source is analyzed
+again and the consuming frontend derives a fresh `Proven` or runtime-checked
+construction as appropriate.
 
 `Recheck` retains the direct nominal result type; it is not the source-facing
 `Result[T, ConstraintError]` produced by an ordinary runtime-checked
@@ -185,23 +188,38 @@ root merely because storage still exists.
 The interpreted MIR envelope currently uses:
 
 - format `loom.interpreted-mir`;
-- artifact version `23`;
+- artifact version `24`;
 - Loom language version `0.3`.
 
 Executable `.loomi` artifacts additionally bind one validated exported entry.
 The decoder checks the envelope, format and language versions, nesting bounds,
 numeric encodings, the entry, and the complete MIR program.
 
-Portable library artifacts use a separate versioned envelope (`.loomlib`
-version `1`) around checked MIR and package/public-interface metadata. Its
-nested checked-MIR envelope is version `23` and uses the construction
-proof rule above.
+Portable library artifacts use a separate source-package envelope
+(`.loomlib` version `2`). It contains the resolved non-standard package graph,
+exact Loom source text, and canonical public interfaces. It contains no checked
+MIR, producer-local construction dispositions, or compiler-owned
+standard-library implementation. Decoding enforces structural and byte/count
+bounds, package/dependency identities, graph closure, portable unique paths,
+and the format and language versions. It parses the embedded source to
+recompute and compare every public-interface fingerprint. The loader reads no
+more than the encoded artifact bound and derives a deterministic
+per-package Merkle identity whose dependency edges include the dependency
+content identity. Diamond-shaped artifact graphs can therefore deduplicate
+identical packages without weakening transitive lockfile integrity. The
+consumer pipeline then supplies its matching compiler-distributed standard
+library and
+repeats parsing, type checking, proof search, lowering, and MIR validation.
+Version 1 artifacts are rejected and must be rebuilt.
 
-Neither serialization is a public extension API. Tools must use the project
-decoder and validator rather than constructing JSON that happens to match the
-current wire shape. The wire format is not an authenticated proof interchange:
-even a wire spelling of `Proven` is normalized to `Recheck`, while trust in the
-artifact's source and publisher remains a separate distribution concern.
+Neither `.loomi` nor `.loomlib` is a public extension API. Tools must use the
+corresponding project decoder rather than constructing JSON that happens to
+match the current wire shape. The `.loomi` wire format is not an authenticated
+proof interchange: even a wire spelling of `Proven` is normalized to
+`Recheck`. A `.loomlib` stores no proof claim at all. Trust in either artifact's
+source and publisher remains a separate distribution concern. The persistent
+compiler checked-MIR cache keeps its existing versioned decoder and validation
+boundary; `.loomlib` version 2 does not alter that cache format.
 
 ## Failure policy
 

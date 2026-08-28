@@ -133,6 +133,17 @@ impl std::error::Error for DriverError {
     }
 }
 
+/// Provenance of one source document in a compiler snapshot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SourceOrigin {
+    /// A real source file selected from the root package or a source dependency.
+    FileSystem,
+    /// An implementation source decoded from a portable `.loomlib` artifact.
+    PortableLibrary,
+    /// A standard-library source embedded in and owned by the compiler.
+    CompilerOwnedStandardLibrary,
+}
+
 /// One source document in a snapshot.
 #[derive(Clone, Debug)]
 pub struct SourceDocument {
@@ -141,7 +152,7 @@ pub struct SourceDocument {
     relative_path: String,
     package: Option<PackageId>,
     is_root_package: bool,
-    embedded_dependency: bool,
+    origin: SourceOrigin,
     text: Option<String>,
     byte_len: u32,
     line_starts: Vec<u32>,
@@ -170,17 +181,44 @@ impl SourceDocument {
         self.package.as_ref()
     }
 
-    /// Whether source-mutating tools may edit this document by default.
+    /// Whether this source belongs to the selected root package.
+    ///
+    /// Use [`Self::is_read_only`] for source-mutation policy: compiler-owned
+    /// and portable-library sources remain immutable regardless of package
+    /// ownership.
     #[must_use]
     pub const fn is_root_package(&self) -> bool {
         self.is_root_package
     }
 
-    /// Whether this document is a compiler-private source payload decoded from
-    /// a `.loomlib`, rather than a user-navigable file on disk.
+    /// The source's explicit compiler provenance.
+    #[must_use]
+    pub const fn origin(&self) -> SourceOrigin {
+        self.origin
+    }
+
+    /// Whether this document was decoded from a portable `.loomlib` dependency.
     #[must_use]
     pub const fn is_embedded_dependency(&self) -> bool {
-        self.embedded_dependency
+        matches!(self.origin, SourceOrigin::PortableLibrary)
+    }
+
+    /// Whether this document is part of the compiler-owned standard library.
+    #[must_use]
+    pub const fn is_compiler_owned(&self) -> bool {
+        matches!(self.origin, SourceOrigin::CompilerOwnedStandardLibrary)
+    }
+
+    /// Whether an editor can navigate to a real backing source file.
+    #[must_use]
+    pub const fn is_navigable(&self) -> bool {
+        matches!(self.origin, SourceOrigin::FileSystem)
+    }
+
+    /// Whether source-mutating tools must reject edits to this document.
+    #[must_use]
+    pub const fn is_read_only(&self) -> bool {
+        !self.is_root_package || !self.is_navigable()
     }
 
     /// Returns source text, or `None` when the file contains invalid UTF-8.
@@ -343,6 +381,7 @@ impl SourceMap {
                         source.package,
                         source.is_root_package,
                         source.embedded_text,
+                        source.origin,
                     ),
                 )
             })
@@ -357,7 +396,10 @@ impl SourceMap {
             }
             if let Some(stable_path) = project.overlay_stable_path(&overlay) {
                 let package = project.root_package().map(|package| package.id().clone());
-                paths.insert(overlay, (stable_path, package, true, None));
+                paths.insert(
+                    overlay,
+                    (stable_path, package, true, None, SourceOrigin::FileSystem),
+                );
             }
         }
         let mut paths = paths.into_iter().collect::<Vec<_>>();
@@ -369,15 +411,18 @@ impl SourceMap {
 
         let mut documents = Vec::with_capacity(paths.len());
         let mut by_path = BTreeMap::new();
-        for (index, (path, (relative_path, package, is_root_package, embedded_text))) in
+        for (index, (path, (relative_path, package, is_root_package, embedded_text, origin))) in
             paths.into_iter().enumerate()
         {
             let id = FileId(u32::try_from(index).expect("file count was checked"));
-            let embedded_dependency = embedded_text.is_some();
-            let bytes = if let Some(text) = overlays.get(&path) {
-                text.as_bytes().to_vec()
-            } else if let Some(text) = embedded_text {
+            // Compiler-owned standard sources and portable-library payloads
+            // are immutable inputs. Their synthetic paths live below the
+            // project root for stable diagnostics, but an editor overlay at
+            // that path must never replace trusted embedded bytes.
+            let bytes = if let Some(text) = embedded_text {
                 text.into_bytes()
+            } else if let Some(text) = overlays.get(&path) {
+                text.as_bytes().to_vec()
             } else {
                 fs::read(&path).map_err(|error| DriverError::io(path.clone(), error))?
             };
@@ -409,7 +454,7 @@ impl SourceMap {
                 relative_path,
                 package,
                 is_root_package,
-                embedded_dependency,
+                origin,
                 text,
                 byte_len,
                 line_starts,

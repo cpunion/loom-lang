@@ -99,7 +99,7 @@ input tests.
 | Code generation IR foundation | Implemented for the direct slices listed below. Native preparation is atomic and fails closed to the complete legacy route when any reachable operation is unsupported. |
 | Native LLVM executable | Implemented and CI-tested on Linux x86-64 and macOS arm64; a complete Windows x86-64 native CI gate is configured and must pass before release support is claimed. |
 | Interpreted executable artifact | Implemented, versioned, decoded, validated, and exercised by CLI tests/CI. |
-| Portable `.loomlib` | Implemented and release-gated; not a native library or stable ABI. |
+| Portable `.loomlib` | Source/interface format v2 is implemented and release-gated; consumers recompile packaged source, and the artifact is not a native library or stable ABI. |
 | Manifest/lock/features/path dependencies | Implemented with resolver and CLI integration tests. |
 | Local and HTTPS registry | Implemented with authentication, digest verification, bounded downloads, offline validated cache, and hostile-cache tests. Registry-version immutability remains a server protocol requirement. |
 | Persistent compiler cache | Implemented for parse/interface/typed state/checked MIR/route-specific native object/portable artifacts; proof-bearing typed/MIR layers intentionally rebuild from source to preserve cold/warm proof elimination and route identity, canonical `MustScope` identity is rederived from current module-qualified HIR rather than trusted from typed-state bytes, and native final link is intentionally uncached. |

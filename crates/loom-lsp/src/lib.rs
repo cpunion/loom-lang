@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 
 use loom_core::{Diagnostic, FileId, Severity};
 use loom_driver::{
-    AnalysisHost, AnalysisSnapshot, Position, SourceMap, format_source, is_valid_identifier,
+    AnalysisHost, AnalysisSnapshot, Position, SourceDocument, SourceMap, SourceOrigin,
+    format_source, is_valid_identifier,
 };
 use serde_json::{Value, json};
 
@@ -415,13 +416,9 @@ impl<R: BufRead, W: Write> Server<R, W> {
         let Some(source) = snapshot.sources().document(symbol.definition.file) else {
             return self.respond(id, Value::Null);
         };
-        if source.is_embedded_dependency() {
-            return self.respond_error(
-                id,
-                INVALID_REQUEST,
-                "portable library implementation sources are compiler-private",
-                Some(json!({"code": "DependencyArtifactOpaque"})),
-            );
+        if !source.is_navigable() {
+            let (message, code) = non_navigable_source_diagnostic(source);
+            return self.respond_error(id, INVALID_REQUEST, message, Some(json!({"code": code})));
         }
         self.respond(
             id,
@@ -494,7 +491,7 @@ impl<R: BufRead, W: Write> Server<R, W> {
             .into_iter()
             .filter_map(|reference| {
                 let source = snapshot.sources().document(reference.span.file)?;
-                if source.is_embedded_dependency() {
+                if !source.is_navigable() {
                     return None;
                 }
                 Some(json!({
@@ -577,7 +574,7 @@ impl<R: BufRead, W: Write> Server<R, W> {
         let Some(source) = snapshot.sources().document(file) else {
             return self.respond(id, json!([]));
         };
-        if source.is_embedded_dependency() {
+        if !source.is_navigable() {
             return self.respond(id, json!([]));
         }
         let symbols = snapshot
@@ -641,7 +638,7 @@ impl<R: BufRead, W: Write> Server<R, W> {
                     })
                     .filter_map(|symbol| {
                         let source = snapshot.sources().document(symbol.definition.file)?;
-                        if source.is_embedded_dependency() {
+                        if !source.is_navigable() {
                             return None;
                         }
                         Some(json!({
@@ -691,13 +688,9 @@ impl<R: BufRead, W: Write> Server<R, W> {
         let Some(source) = snapshot.sources().document(symbol.definition.file) else {
             return self.respond(id, Value::Null);
         };
-        if !source.is_root_package() {
-            return self.respond_error(
-                id,
-                INVALID_REQUEST,
-                "dependency sources are read-only",
-                Some(json!({"code": "DependencySourceReadOnly"})),
-            );
+        if source.is_read_only() {
+            let (message, code) = read_only_source_diagnostic(source);
+            return self.respond_error(id, INVALID_REQUEST, message, Some(json!({"code": code})));
         }
         self.respond(
             id,
@@ -742,23 +735,18 @@ impl<R: BufRead, W: Write> Server<R, W> {
             .iter()
             .find(|reference| reference.is_declaration)
             .map(|reference| reference.span.file);
-        if definition_file
-            .and_then(|file| snapshot.sources().document(file))
-            .is_some_and(|source| !source.is_root_package())
+        if let Some(source) = definition_file.and_then(|file| snapshot.sources().document(file))
+            && source.is_read_only()
         {
-            return self.respond_error(
-                id,
-                INVALID_REQUEST,
-                "dependency sources are read-only",
-                Some(json!({"code": "DependencySourceReadOnly"})),
-            );
+            let (message, code) = read_only_source_diagnostic(source);
+            return self.respond_error(id, INVALID_REQUEST, message, Some(json!({"code": code})));
         }
         let mut changes = serde_json::Map::new();
         for reference in references {
             let Some(source) = snapshot.sources().document(reference.span.file) else {
                 continue;
             };
-            if !source.is_root_package() {
+            if source.is_read_only() {
                 continue;
             }
             let uri = self.uri_for_path(source.absolute_path());
@@ -793,13 +781,9 @@ impl<R: BufRead, W: Write> Server<R, W> {
         let Some(source) = snapshot.sources().document(file) else {
             return self.respond(id, json!([]));
         };
-        if !source.is_root_package() {
-            return self.respond_error(
-                id,
-                INVALID_REQUEST,
-                "dependency sources are read-only",
-                Some(json!({"code": "DependencySourceReadOnly"})),
-            );
+        if source.is_read_only() {
+            let (message, code) = read_only_source_diagnostic(source);
+            return self.respond_error(id, INVALID_REQUEST, message, Some(json!({"code": code})));
         }
         let Some(text) = source.text() else {
             return self.respond_error(
@@ -856,7 +840,7 @@ impl<R: BufRead, W: Write> Server<R, W> {
         let mut current = BTreeSet::new();
         for snapshot in &snapshots {
             for source in snapshot.sources().documents() {
-                if source.is_embedded_dependency() {
+                if !source.is_navigable() {
                     continue;
                 }
                 let uri = self.uri_for_path(source.absolute_path());
@@ -987,6 +971,40 @@ impl<R: BufRead, W: Write> Server<R, W> {
         write!(self.writer, "Content-Length: {}\r\n\r\n", bytes.len())?;
         self.writer.write_all(&bytes)?;
         self.writer.flush()
+    }
+}
+
+fn non_navigable_source_diagnostic(source: &SourceDocument) -> (&'static str, &'static str) {
+    match source.origin() {
+        SourceOrigin::PortableLibrary => (
+            "portable library implementation sources are compiler-private",
+            "DependencyArtifactOpaque",
+        ),
+        SourceOrigin::CompilerOwnedStandardLibrary => (
+            "compiler-owned standard library source is not a workspace document",
+            "CompilerOwnedSourceNotNavigable",
+        ),
+        SourceOrigin::FileSystem => (
+            "source has no navigable workspace document",
+            "SourceNotNavigable",
+        ),
+    }
+}
+
+fn read_only_source_diagnostic(source: &SourceDocument) -> (&'static str, &'static str) {
+    match source.origin() {
+        SourceOrigin::PortableLibrary => (
+            "portable library implementation sources are read-only",
+            "DependencySourceReadOnly",
+        ),
+        SourceOrigin::CompilerOwnedStandardLibrary => (
+            "compiler-owned standard library sources are read-only",
+            "CompilerOwnedSourceReadOnly",
+        ),
+        SourceOrigin::FileSystem => (
+            "dependency sources are read-only",
+            "DependencySourceReadOnly",
+        ),
     }
 }
 
@@ -1154,6 +1172,12 @@ const STANDARD_SYMBOLS: &[StandardSymbol] = &[
         kind: "method",
         module: "standard.prelude.TextMap",
         signature: "method get[V](self TextMap[V], key Text) Option[V]",
+    },
+    StandardSymbol {
+        name: "entry_at",
+        kind: "method",
+        module: "standard.prelude.TextMap",
+        signature: "method entry_at[V](self TextMap[V], index Int) Option[(Text, V)]",
     },
     StandardSymbol {
         name: "insert",

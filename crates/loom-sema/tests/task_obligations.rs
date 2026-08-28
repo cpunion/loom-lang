@@ -528,6 +528,11 @@ fn mapGet() {
     let tasks = TextMap[Task[Int]]()
     let extracted = tasks.get("key")
 }
+
+fn mapEntryAt() {
+    let tasks = TextMap[Task[Int]]()
+    let extracted = tasks.entry_at(0)
+}
 "#,
     );
     let diagnostics = codes(&diagnostics);
@@ -544,7 +549,7 @@ fn mapGet() {
             .iter()
             .filter(|code| **code == "TaskContainerExtractionUnsupported")
             .count(),
-        2,
+        3,
         "{diagnostics:#?}"
     );
 }

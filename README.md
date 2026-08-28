@@ -110,8 +110,9 @@ The workspace provides:
   document/workspace symbols;
 - an LLVM 19 native backend and an explicit interpreter backend;
 - ordinary `.loom` source, `loom.toml` manifests, and `loom.lock` lockfiles;
-- portable, versioned `.loomlib` checked-MIR libraries. These are not stable
-  native or FFI libraries.
+- portable, versioned `.loomlib` source-and-interface packages. Consumers
+  recompile their embedded Loom source; these are not stable native or FFI
+  libraries.
 
 ## Platform evidence
 

@@ -3262,6 +3262,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             | BuiltinValue::TextMapLength
             | BuiltinValue::TextMapContains
             | BuiltinValue::TextMapGet
+            | BuiltinValue::TextMapEntryAt
             | BuiltinValue::TextMapInsert
             | BuiltinValue::TextMapRemove
             | BuiltinValue::JsonParse
@@ -3740,6 +3741,7 @@ fn executable_builtin(builtin: BuiltinValue) -> Option<Builtin> {
         BuiltinValue::TextMapLength => Builtin::TextMapLength,
         BuiltinValue::TextMapContains => Builtin::TextMapContains,
         BuiltinValue::TextMapGet => Builtin::TextMapGet,
+        BuiltinValue::TextMapEntryAt => Builtin::TextMapEntryAt,
         BuiltinValue::TextMapInsert => Builtin::TextMapInsert,
         BuiltinValue::TextMapRemove => Builtin::TextMapRemove,
         BuiltinValue::JsonParse => Builtin::JsonParse,

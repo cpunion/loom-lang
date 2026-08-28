@@ -26,6 +26,7 @@ fn main() {
         workspace.join("Cargo.lock"),
         manifest.join("build.rs"),
         workspace.join("build-support/fingerprint.rs"),
+        workspace.join("library/standard"),
     ];
     for name in FRONTEND_CRATES {
         let root = workspace.join("crates").join(name);

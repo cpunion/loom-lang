@@ -1059,6 +1059,7 @@ pub enum Builtin {
     TextMapLength,
     TextMapContains,
     TextMapGet,
+    TextMapEntryAt,
     TextMapInsert,
     TextMapRemove,
     JsonParse,

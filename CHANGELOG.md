@@ -39,9 +39,49 @@ artifact, or runtime compatibility.
   publishes a direct managed Text pointer without a universal `Value`. This
   advances Text identity to `text-v3` and native runtime ABI to component 14
   with `runtime-v8`; the collector remains `gc-v9`.
+- A compiler-distributed, read-only `standard` source package compiled through
+  the ordinary frontend, MIR, reachability, and native pipelines. The initial
+  `standard.int` module provides `minimum` and `maximum`; unreachable functions
+  are absent from native artifacts. Exact embedded source bytes and the
+  language version form the versioned `loom-source-stdlib-v1/<sha256>` cache
+  identity, and the `standard` package name, dependency alias, and distributed
+  module names are reserved from user replacement.
+- `TextMap.entry_at(index) -> Option[(Text, V)]`, exposing checked read-only
+  enumeration in canonical UTF-8 key order. Negative and out-of-range indices
+  return `None`; typed LCIR reuses the existing exact indexed-entry operation,
+  so this adds no JSON special case or runtime ABI.
 
 ### Changed
 
+- Portable `.loomlib` artifacts now use source-package format version 2. They
+  contain the resolved non-standard package graph, exact Loom sources, and
+  canonical public interfaces, but no checked MIR, producer-local proof state,
+  or compiler-owned standard-library implementation. The decoder validates
+  bounded structure, identities, portable paths, and interface fingerprints;
+  artifact reads are bounded before allocation, and per-package Merkle
+  identities close lockfile checks over shared transitive source content;
+  the consumer supplies its matching standard library and repeats parsing,
+  type checking, proof search, lowering, and MIR validation. Version 1
+  artifacts must be rebuilt. The final-artifact cache layer advances to
+  `portable-library-artifact-v3`; this redesign does not change `.loomi` proof
+  replay or further advance persistent cache schema 4 or the checked-MIR cache
+  envelope.
+- Source snapshots now distinguish filesystem, portable-library, and
+  compiler-owned standard-library provenance. LSP navigation and mutation
+  errors preserve read-only policy while reporting the actual source owner
+  instead of describing compiler-owned standard code as a portable artifact.
+- Native debug compile units choose a root workspace source before dependency
+  or compiler-owned sources, preserving user source paths after the standard
+  library became an ordinary embedded Loom package.
+- Recursive structural equality now closes through compiler-generated,
+  type-specialized `StructuralEquality` LCIR functions. Each helper expands one
+  representation layer and uses ordinary effect-free direct calls for nested
+  products, sums, Lists, and TextMaps, so recursive user records and `Json`
+  require no universal comparison value or JSON-specific runtime ABI. The
+  recursive-equality fixture executes deep Node/List and Json/TextMap cases in
+  interpreter and native main/test modes. Callable identity changes advance
+  the LCIR dump to 33, artifact schema to 34, native-object domain to v30, and
+  LLVM object-cache domain to v35.
 - `format_json` now lowers through the typed LCIR `json.format` instruction.
   The LLVM backend supplies an exact `LoomTypedJsonLayout` for the canonical
   recursive `Json` carrier and calls `loom_runtime_json_format_typed_v1`;
@@ -293,7 +333,7 @@ artifact, or runtime compatibility.
   collection counts, or nested business data. This advances interpreted MIR to
   version 23; persistent-cache schema 3 remains valid because checked-MIR cache
   envelopes independently carry the artifact version.
-- Portable refined and concrete invariant-record proof rechecks now remain on
+- Serialized refined and concrete invariant-record proof rechecks now remain on
   the typed LCIR route, including generic record instantiations. Generic
   function arguments and record-definition parameters are substituted in
   their separate namespaces, including lexical contract-match bindings. The
@@ -405,9 +445,9 @@ artifact, or runtime compatibility.
   from the compiler build. Source builds must create a portable runtime archive
   and pack it beside `loomc`, or select a validated bundle explicitly.
 - Interpreted MIR version 19 now treats source construction proofs as
-  process-local: `.loomi` and nested `.loomlib` payloads replay their embedded
-  predicate or invariant, while proof-bearing persistent compiler-cache layers
-  rebuild from source to preserve cold/warm route and optimization behavior.
+  process-local: `.loomi` payloads replay their embedded predicate or
+  invariant, while proof-bearing persistent compiler-cache layers rebuild from
+  source to preserve cold/warm route and optimization behavior.
 - Fresh-source proven refinements and record invariants use zero-check typed
   LCIR representations. Serialized proof rechecks preserve concrete nominal
   identity and use guarded typed LCIR whenever their representation and
