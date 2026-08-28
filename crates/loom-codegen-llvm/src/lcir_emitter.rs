@@ -32,15 +32,16 @@ use inkwell::values::{
 use inkwell::{FloatPredicate as LlvmFloatPredicate, IntPredicate};
 use llvm_sys::debuginfo::LLVMDIBuilderInsertDbgValueRecordBefore;
 use loom_codegen_ir::{
-    AwaitMode, BlockId, BlockTarget, BoolPredicate, CheckedArtifact, CheckedIntBinaryOp, Constant,
-    ContractFaultBlame, ContractFaultMetadata, CoroutinePlan, CoroutineSuspension, Effects,
-    FaultCode, FaultMetadata, FloatBinaryOp, FloatPredicate as LcirFloatPredicate, Function,
-    InstanceId, Instruction, InstructionId, InstructionKind, IntPredicate as LcirIntPredicate,
-    MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE, ManagedRootPlan, ManagedRootProjection,
-    ManagedRootSlot, ManagedSafepoint, Origin, Repr, ResourceKind, ResultTarget, ScalarRepr,
-    SumRepr, SumTagRepr, TASK_OUTCOME_CANCELLED_VARIANT, TASK_OUTCOME_COMPLETED_VARIANT,
-    TASK_OUTCOME_FAULTED_VARIANT, Terminator, TerminatorKind, TestOutcomePlan, UnwindTarget,
-    ValueDefinition, ValueId, ValueTypeId, ValueTypeKind, plan_managed_roots,
+    AwaitMode, BYTES_TYPE_ID, BlockId, BlockTarget, BoolPredicate, CheckedArtifact,
+    CheckedIntBinaryOp, Constant, ContractFaultBlame, ContractFaultMetadata, CoroutinePlan,
+    CoroutineSuspension, Effects, FaultCode, FaultMetadata, FloatBinaryOp,
+    FloatPredicate as LcirFloatPredicate, Function, InstanceId, Instruction, InstructionId,
+    InstructionKind, IntPredicate as LcirIntPredicate, MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE,
+    ManagedRootPlan, ManagedRootProjection, ManagedRootSlot, ManagedSafepoint, Origin, Repr,
+    ResourceKind, ResultTarget, ScalarRepr, SumRepr, SumTagRepr, TASK_OUTCOME_CANCELLED_VARIANT,
+    TASK_OUTCOME_COMPLETED_VARIANT, TASK_OUTCOME_FAULTED_VARIANT, Terminator, TerminatorKind,
+    TestOutcomePlan, UnwindTarget, ValueDefinition, ValueId, ValueTypeId, ValueTypeKind,
+    plan_managed_roots,
 };
 use loom_core::runtime_fault::{
     ARTIFACT_PROOF_REJECTED_FAULT_CODE, ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
@@ -55,23 +56,24 @@ use loom_core::runtime_fault::{
 };
 use loom_mir::Type;
 use loom_runtime_abi::{
-    FORMAT_FLOAT_TYPED_SYMBOL, GC_MAX_OBJECT_ALIGNMENT, GC_MAX_OBJECT_BYTES,
-    GC_MAX_OBJECT_POINTERS, GC_MAX_REPEATED_POINTER_CELLS, GC_MAX_ROOT_BITMAP_WORDS,
-    GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, PARSE_FLOAT_SYMBOL, PARSE_INT_SYMBOL,
-    PARSE_STATUS_INVALID_SYNTAX, PARSE_STATUS_OK, PARSE_STATUS_OUT_OF_RANGE, STDOUT_WRITE_SYMBOL,
-    TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL, TASK_JOIN_ANY, TASK_JOIN_RACE,
-    TASK_JOIN_SETTLED, TASK_PENDING, TEXT_CONCAT_TYPED_SYMBOL, TEXT_CONTAINS_SYMBOL,
-    TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_MISSING, TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL,
-    TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES,
-    TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION,
-    TYPED_GC_ALLOC_SYMBOL, TYPED_GC_REPEATED_ABI_VERSION, TYPED_GC_REPEATED_ALLOC_SYMBOL,
-    TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_JSON_ABI_VERSION,
-    TYPED_JSON_FORMAT_DEPTH_LIMIT, TYPED_JSON_FORMAT_NON_FINITE_NUMBER, TYPED_JSON_FORMAT_OK,
-    TYPED_JSON_FORMAT_SYMBOL, TYPED_LOG_FIELD_ALIGNMENT, TYPED_LOG_FIELD_KEY_OFFSET,
-    TYPED_LOG_FIELD_SIZE, TYPED_LOG_FIELD_VALUE_OFFSET, TYPED_LOG_OK, TYPED_LOG_WRITE_FAILED,
-    TYPED_LOG_WRITE_SYMBOL, TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE,
-    TYPED_RESOURCE_KIND_SOCKET, TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION,
-    TYPED_TASK_PUBLISH_ADOPTING_SYMBOL, TYPED_TASK_TAKE_OUTCOME_SYMBOL,
+    BYTES_APPEND_TYPED_SYMBOL, BYTES_DECODE_UTF8_TYPED_INVALID_UTF8,
+    BYTES_DECODE_UTF8_TYPED_SYMBOL, FORMAT_FLOAT_TYPED_SYMBOL, GC_MAX_OBJECT_ALIGNMENT,
+    GC_MAX_OBJECT_BYTES, GC_MAX_OBJECT_POINTERS, GC_MAX_REPEATED_POINTER_CELLS,
+    GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, PARSE_FLOAT_SYMBOL,
+    PARSE_INT_SYMBOL, PARSE_STATUS_INVALID_SYNTAX, PARSE_STATUS_OK, PARSE_STATUS_OUT_OF_RANGE,
+    STDOUT_WRITE_SYMBOL, TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL,
+    TASK_JOIN_ANY, TASK_JOIN_RACE, TASK_JOIN_SETTLED, TASK_PENDING, TEXT_CONCAT_TYPED_SYMBOL,
+    TEXT_CONTAINS_SYMBOL, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_MISSING, TEXT_GET_TYPED_SYMBOL,
+    TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_BYTE_LENGTH,
+    TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE,
+    TYPED_GC_ABI_VERSION, TYPED_GC_ALLOC_SYMBOL, TYPED_GC_REPEATED_ABI_VERSION,
+    TYPED_GC_REPEATED_ALLOC_SYMBOL, TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL,
+    TYPED_JSON_ABI_VERSION, TYPED_JSON_FORMAT_DEPTH_LIMIT, TYPED_JSON_FORMAT_NON_FINITE_NUMBER,
+    TYPED_JSON_FORMAT_OK, TYPED_JSON_FORMAT_SYMBOL, TYPED_LOG_FIELD_ALIGNMENT,
+    TYPED_LOG_FIELD_KEY_OFFSET, TYPED_LOG_FIELD_SIZE, TYPED_LOG_FIELD_VALUE_OFFSET, TYPED_LOG_OK,
+    TYPED_LOG_WRITE_FAILED, TYPED_LOG_WRITE_SYMBOL, TYPED_RESOURCE_CLOSE_SYMBOL,
+    TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET, TYPED_SHADOW_STACK_ABI_VERSION,
+    TYPED_TASK_ABI_VERSION, TYPED_TASK_PUBLISH_ADOPTING_SYMBOL, TYPED_TASK_TAKE_OUTCOME_SYMBOL,
     TYPED_TIMER_TASK_CREATE_SYMBOL,
 };
 
@@ -209,6 +211,7 @@ struct DebugState<'ctx> {
     int_type: DIType<'ctx>,
     float_type: DIType<'ctx>,
     text_type: DIType<'ctx>,
+    bytes_type: DIType<'ctx>,
     list_type: DIType<'ctx>,
     text_map_type: DIType<'ctx>,
     task_type: DIType<'ctx>,
@@ -339,6 +342,31 @@ impl<'ctx> DebugState<'ctx> {
             .create_pointer_type(
                 "Text",
                 text_object_type,
+                target_data.get_bit_size(&ptr_type),
+                abi_alignment_bits(target_data, &ptr_type)?,
+                AddressSpace::default(),
+            )
+            .as_type();
+        let bytes_object_type = builder
+            .create_struct_type(
+                file.as_debug_info_scope(),
+                "BytesObject",
+                file,
+                0,
+                TEXT_OBJECT_HEADER_SIZE.saturating_mul(8),
+                text_alignment_bits,
+                DIFlags::ARTIFICIAL,
+                None,
+                &[],
+                0,
+                None,
+                "loom.compiler.BytesObject",
+            )
+            .as_type();
+        let bytes_type = builder
+            .create_pointer_type(
+                "Bytes",
+                bytes_object_type,
                 target_data.get_bit_size(&ptr_type),
                 abi_alignment_bits(target_data, &ptr_type)?,
                 AddressSpace::default(),
@@ -553,6 +581,7 @@ impl<'ctx> DebugState<'ctx> {
             int_type,
             float_type,
             text_type,
+            bytes_type,
             list_type,
             text_map_type,
             task_type,
@@ -605,6 +634,35 @@ impl<'ctx> DebugState<'ctx> {
         self.value_type_with_stack(backend, ty, &mut BTreeSet::new())
     }
 
+    fn managed_pointer_debug_type(
+        &self,
+        backend: &Backend<'ctx, '_>,
+        ty: ValueTypeId,
+    ) -> Result<(&'static str, DIType<'ctx>), CodegenError> {
+        let value_type = backend
+            .artifact
+            .representations()
+            .value_type(ty)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmDebugInfoFailed", format!("missing LCIR type {ty}"))
+            })?;
+        if backend.artifact.representations().is_managed_bytes_type(ty) {
+            Ok(("Bytes", self.bytes_type))
+        } else if value_type.kind() == ValueTypeKind::ManagedTextMap {
+            Ok(("TextMap", self.text_map_type))
+        } else {
+            match value_type.semantic() {
+                Type::Text => Ok(("Text", self.text_type)),
+                Type::List(_) => Ok(("List", self.list_type)),
+                Type::View { .. } => Ok(("Dynamic", self.dynamic_type)),
+                semantic => Err(CodegenError::new(
+                    "LlvmDebugInfoFailed",
+                    format!("managed LCIR type {semantic:?} has no debug representation"),
+                )),
+            }
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "the exhaustive debug-type mapping keeps every physical LCIR representation and recursive guard in one audited boundary"
@@ -633,21 +691,9 @@ impl<'ctx> DebugState<'ctx> {
             Some(Repr::Scalar(ScalarRepr::I64)) => Ok(self.int_type),
             Some(Repr::Scalar(ScalarRepr::F64)) => Ok(self.float_type),
             Some(Repr::ImmortalText) => Ok(self.text_type),
-            Some(Repr::ManagedPointer) => {
-                if value_type.kind() == ValueTypeKind::ManagedTextMap {
-                    Ok(self.text_map_type)
-                } else {
-                    match value_type.semantic() {
-                        Type::Text => Ok(self.text_type),
-                        Type::List(_) => Ok(self.list_type),
-                        Type::View { .. } => Ok(self.dynamic_type),
-                        semantic => Err(CodegenError::new(
-                            "LlvmDebugInfoFailed",
-                            format!("managed LCIR type {semantic:?} has no debug representation"),
-                        )),
-                    }
-                }
-            }
+            Some(Repr::ManagedPointer) => self
+                .managed_pointer_debug_type(backend, ty)
+                .map(|(_, debug_type)| debug_type),
             Some(Repr::TaskHandle) => Ok(self.task_type),
             Some(Repr::Product(product)) => {
                 if let Some(existing) = self.product_types.borrow().get(&ty.raw()).copied() {
@@ -863,23 +909,7 @@ impl<'ctx> DebugState<'ctx> {
                 self.status_type,
             ),
             Some(Repr::ManagedPointer) => {
-                let (name, debug_type) = if value_type.kind() == ValueTypeKind::ManagedTextMap {
-                    ("TextMap", self.text_map_type)
-                } else {
-                    match value_type.semantic() {
-                        Type::Text => ("Text", self.text_type),
-                        Type::List(_) => ("List", self.list_type),
-                        Type::View { .. } => ("Dynamic", self.dynamic_type),
-                        semantic => {
-                            return Err(CodegenError::new(
-                                "LlvmDebugInfoFailed",
-                                format!(
-                                    "managed LCIR type {semantic:?} has no fallible debug representation"
-                                ),
-                            ));
-                        }
-                    }
-                };
+                let (name, debug_type) = self.managed_pointer_debug_type(backend, ty)?;
                 create_fallible_debug_type(
                     backend.context,
                     &self.builder,
@@ -1846,19 +1876,24 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             ],
             false,
         );
-        if artifact
+        let has_text = artifact
             .representations()
             .value_types()
             .iter()
-            .any(|value| value.semantic() == &Type::Text)
-        {
+            .any(|value| value.semantic() == &Type::Text);
+        let bytes_semantic = Type::Nominal(BYTES_TYPE_ID, Vec::new());
+        let has_bytes = artifact
+            .representations()
+            .type_id(&bytes_semantic)
+            .is_some_and(|ty| artifact.representations().is_managed_bytes_type(ty));
+        if has_text || has_bytes {
             let actual_size = target_data.get_abi_size(&text_object_type);
             let actual_alignment = u64::from(target_data.get_abi_alignment(&text_object_type));
             if actual_size != TEXT_OBJECT_HEADER_SIZE || actual_alignment != TEXT_OBJECT_ALIGNMENT {
                 return Err(CodegenError::new(
-                    "LcirTextAbiMismatch",
+                    "LcirByteSequenceAbiMismatch",
                     format!(
-                        "LLVM target {} gives the runtime Text header size/alignment {actual_size}/{actual_alignment}, expected {TEXT_OBJECT_HEADER_SIZE}/{TEXT_OBJECT_ALIGNMENT}",
+                        "LLVM target {} gives the runtime Text/Bytes header size/alignment {actual_size}/{actual_alignment}, expected {TEXT_OBJECT_HEADER_SIZE}/{TEXT_OBJECT_ALIGNMENT}",
                         target.triple
                     ),
                 ));
@@ -4800,6 +4835,36 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             })
     }
 
+    fn runtime_bytes_append_typed(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(BYTES_APPEND_TYPED_SYMBOL)
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function(BYTES_APPEND_TYPED_SYMBOL, function_type, None)
+            })
+    }
+
+    fn runtime_bytes_decode_utf8_typed(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(BYTES_DECODE_UTF8_TYPED_SYMBOL)
+            .unwrap_or_else(|| {
+                let function_type = self
+                    .context
+                    .i32_type()
+                    .fn_type(&[self.ptr_type.into(), self.ptr_type.into()], false);
+                self.module
+                    .add_function(BYTES_DECODE_UTF8_TYPED_SYMBOL, function_type, None)
+            })
+    }
+
     fn typed_repeated_alloc(&self) -> FunctionValue<'ctx> {
         self.module
             .get_function(TYPED_GC_REPEATED_ALLOC_SYMBOL)
@@ -5367,6 +5432,69 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         Ok(found)
     }
 
+    fn require_bytes_decode_status(
+        &self,
+        status: IntValue<'ctx>,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        let function = self
+            .builder
+            .get_insert_block()
+            .and_then(BasicBlock::get_parent)
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmBuilderFailed",
+                    "Bytes.decode_utf8 status guard has no active function",
+                )
+            })?;
+        let accepted = self
+            .context
+            .append_basic_block(function, "bytes.decode_utf8.status.ok");
+        let failure = self
+            .context
+            .append_basic_block(function, "bytes.decode_utf8.status.failed");
+        let valid_utf8 = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.context.i32_type().const_zero(),
+                "bytes.decode_utf8.valid",
+            )
+            .map_err(builder_error)?;
+        let invalid_utf8_status = self.context.i32_type().const_int(
+            u64::from(u32::from_ne_bytes(
+                BYTES_DECODE_UTF8_TYPED_INVALID_UTF8.to_ne_bytes(),
+            )),
+            false,
+        );
+        let invalid_utf8 = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                invalid_utf8_status,
+                "bytes.decode_utf8.invalid_utf8",
+            )
+            .map_err(builder_error)?;
+        let recognized = self
+            .builder
+            .build_or(valid_utf8, invalid_utf8, "bytes.decode_utf8.status.valid")
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(recognized, accepted, failure)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(failure);
+        let trap = inkwell::intrinsics::Intrinsic::find("llvm.trap")
+            .and_then(|intrinsic| intrinsic.get_declaration(&self.module, &[]))
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "missing llvm.trap"))?;
+        self.builder
+            .build_call(trap, &[], "bytes.decode_utf8.status.trap")
+            .map_err(builder_error)?;
+        self.builder.build_unreachable().map_err(builder_error)?;
+        self.builder.position_at_end(accepted);
+        Ok(valid_utf8)
+    }
+
     fn require_parse_status(
         &self,
         status: IntValue<'ctx>,
@@ -5571,7 +5699,7 @@ struct FunctionEmitter<'backend, 'ctx, 'artifact> {
     root_frame: Option<PointerValue<'ctx>>,
     root_state: Option<PointerValue<'ctx>>,
     resource_close_cells: Vec<Option<PointerValue<'ctx>>>,
-    text_output_cells: Vec<Option<PointerValue<'ctx>>>,
+    managed_output_cells: Vec<Option<PointerValue<'ctx>>>,
     json_input_cells: Vec<Option<PointerValue<'ctx>>>,
     parse_output_cells: Vec<Option<PointerValue<'ctx>>>,
 }
@@ -5724,7 +5852,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             root_frame: None,
             root_state: None,
             resource_close_cells: vec![None; source.blocks().len()],
-            text_output_cells: vec![None; source.instructions().len()],
+            managed_output_cells: vec![None; source.instructions().len()],
             json_input_cells: vec![None; source.instructions().len()],
             parse_output_cells: vec![None; source.instructions().len()],
         };
@@ -6084,7 +6212,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         Ok(())
     }
 
-    fn prepare_text_output_cells(&mut self) -> Result<(), CodegenError> {
+    fn prepare_managed_output_cells(&mut self) -> Result<(), CodegenError> {
         let entry = self.source.entry().ok_or_else(|| {
             CodegenError::new(
                 "LlvmAbiDefect",
@@ -6099,6 +6227,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 instruction.kind(),
                 InstructionKind::TextConcat { .. }
                     | InstructionKind::TextGet { .. }
+                    | InstructionKind::BytesAppend { .. }
+                    | InstructionKind::BytesDecodeUtf8 { .. }
                     | InstructionKind::FormatFloat { .. }
                     | InstructionKind::JsonFormat { .. }
             ) {
@@ -6109,26 +6239,26 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 .builder
                 .build_alloca(
                     self.backend.ptr_type,
-                    &format!("text.output.i{}", instruction.id().raw()),
+                    &format!("managed.output.i{}", instruction.id().raw()),
                 )
                 .map_err(builder_error)?;
-            self.text_output_cells[instruction.id().index()] = Some(cell);
+            self.managed_output_cells[instruction.id().index()] = Some(cell);
         }
         Ok(())
     }
 
-    fn text_output_cell(
+    fn managed_output_cell(
         &self,
         instruction: InstructionId,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
-        self.text_output_cells
+        self.managed_output_cells
             .get(instruction.index())
             .copied()
             .flatten()
             .ok_or_else(|| {
                 CodegenError::new(
                     "LlvmAbiDefect",
-                    format!("collecting Text instruction {instruction} has no output cell"),
+                    format!("collecting managed instruction {instruction} has no output cell"),
                 )
             })
     }
@@ -7055,7 +7185,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
 
     fn compile(mut self) -> Result<(), CodegenError> {
         self.prepare_resource_close_cells()?;
-        self.prepare_text_output_cells()?;
+        self.prepare_managed_output_cells()?;
         self.prepare_json_input_cells()?;
         self.prepare_parse_output_cells()?;
         self.prepare_root_frame()?;
@@ -8269,6 +8399,58 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             InstructionKind::TextLiteral { utf8 } => {
                 one(self.backend.emit_text_literal(utf8)?.into())
             }
+            InstructionKind::TextEncodeUtf8 { text } => one(self.value(*text)?),
+            InstructionKind::BytesLength { bytes } => {
+                let (_, length) = self
+                    .backend
+                    .text_parts(self.value(*bytes)?.into_pointer_value(), "bytes.length")?;
+                one(length.into())
+            }
+            InstructionKind::BytesGet {
+                bytes,
+                index,
+                missing_variant,
+                found_variant,
+            } => {
+                let result =
+                    instruction.results().first().copied().ok_or_else(|| {
+                        CodegenError::new("LlvmAbiDefect", "Bytes.get has no result")
+                    })?;
+                let result_ty = self
+                    .source
+                    .value(result)
+                    .ok_or_else(|| {
+                        CodegenError::new("LlvmAbiDefect", "Bytes.get result is missing")
+                    })?
+                    .ty();
+                one(self.emit_bytes_get(
+                    *bytes,
+                    *index,
+                    result_ty,
+                    *missing_variant,
+                    *found_variant,
+                )?)
+            }
+            InstructionKind::BytesAppend { left, right } => {
+                one(self.emit_bytes_append(instruction, *left, *right)?.into())
+            }
+            InstructionKind::BytesDecodeUtf8 {
+                bytes,
+                ok_variant,
+                error_variant,
+                invalid_utf8_variant,
+            } => one(self.emit_bytes_decode_utf8(
+                instruction,
+                *bytes,
+                *ok_variant,
+                *error_variant,
+                *invalid_utf8_variant,
+            )?),
+            InstructionKind::BytesCompare {
+                predicate,
+                left,
+                right,
+            } => one(self.emit_bytes_compare(*predicate, *left, *right)?.into()),
             InstructionKind::TaskCreate {
                 coroutine,
                 arguments,
@@ -8321,7 +8503,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 let output = if let Some(cell) = self.direct_root_cell(result)? {
                     cell
                 } else {
-                    self.text_output_cell(instruction.id())?
+                    self.managed_output_cell(instruction.id())?
                 };
                 self.backend
                     .builder
@@ -8359,7 +8541,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 let text = self.value(*text)?.into_pointer_value();
                 let index = self.int(*index)?;
                 self.publish_root_state(ManagedSafepoint::Instruction(instruction.id()))?;
-                let output = self.text_output_cell(instruction.id())?;
+                let output = self.managed_output_cell(instruction.id())?;
                 self.backend
                     .builder
                     .build_store(output, self.backend.ptr_type.const_null())
@@ -8517,7 +8699,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 let output = if let Some(cell) = self.direct_root_cell(result)? {
                     cell
                 } else {
-                    self.text_output_cell(instruction.id())?
+                    self.managed_output_cell(instruction.id())?
                 };
                 self.backend
                     .builder
@@ -8882,6 +9064,262 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         Ok(())
     }
 
+    fn emit_bytes_append(
+        &self,
+        instruction: &Instruction,
+        left: ValueId,
+        right: ValueId,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let result = instruction
+            .results()
+            .first()
+            .copied()
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "Bytes.append has no result"))?;
+        let left = self.value(left)?.into_pointer_value();
+        let right = self.value(right)?.into_pointer_value();
+        self.publish_root_state(ManagedSafepoint::Instruction(instruction.id()))?;
+        let output = if let Some(cell) = self.direct_root_cell(result)? {
+            cell
+        } else {
+            self.managed_output_cell(instruction.id())?
+        };
+        self.backend
+            .builder
+            .build_store(output, self.backend.ptr_type.const_null())
+            .map_err(builder_error)?;
+        let status = call_int(
+            &self.backend.builder,
+            self.backend.runtime_bytes_append_typed(),
+            &[left.into(), right.into(), output.into()],
+            "bytes.append.status",
+        )?;
+        self.backend.require_zero_status(status, "bytes.append")?;
+        self.backend
+            .builder
+            .build_load(self.backend.ptr_type, output, "bytes.append.result")
+            .map_err(builder_error)
+            .map(BasicValueEnum::into_pointer_value)
+    }
+
+    fn emit_bytes_decode_utf8(
+        &self,
+        instruction: &Instruction,
+        bytes: ValueId,
+        ok_variant: u32,
+        error_variant: u32,
+        invalid_utf8_variant: u32,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let result =
+            instruction.results().first().copied().ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "Bytes.decode_utf8 has no result")
+            })?;
+        let result_ty = self
+            .source
+            .value(result)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "Bytes.decode_utf8 result is missing")
+            })?
+            .ty();
+        let error_ty = self.sum_variant_field_type(result_ty, error_variant, 0)?;
+        let output = self.managed_output_cell(instruction.id())?;
+        self.backend
+            .builder
+            .build_store(output, self.backend.ptr_type.const_null())
+            .map_err(builder_error)?;
+        self.publish_root_state(ManagedSafepoint::Instruction(instruction.id()))?;
+        let status = call_int(
+            &self.backend.builder,
+            self.backend.runtime_bytes_decode_utf8_typed(),
+            &[
+                self.value(bytes)?.into_pointer_value().into(),
+                output.into(),
+            ],
+            "bytes.decode_utf8.status",
+        )?;
+        let valid = self.backend.require_bytes_decode_status(status)?;
+        let text = self
+            .backend
+            .builder
+            .build_load(self.backend.ptr_type, output, "bytes.decode_utf8.text")
+            .map_err(builder_error)?;
+        let ok_value = self.emit_sum_construct_values(result_ty, ok_variant, &[text])?;
+        let invalid_error = self.emit_sum_construct_values(error_ty, invalid_utf8_variant, &[])?;
+        let error_value =
+            self.emit_sum_construct_values(result_ty, error_variant, &[invalid_error])?;
+        self.backend
+            .builder
+            .build_select(valid, ok_value, error_value, "bytes.decode_utf8.result")
+            .map_err(builder_error)
+    }
+
+    #[expect(
+        unsafe_code,
+        reason = "the checked unsigned index is proven below the exact immutable Bytes payload length before forming one i8 GEP"
+    )]
+    fn emit_bytes_get(
+        &self,
+        bytes: ValueId,
+        index: ValueId,
+        result_ty: ValueTypeId,
+        missing_variant: u32,
+        found_variant: u32,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let (data, length) = self
+            .backend
+            .text_parts(self.value(bytes)?.into_pointer_value(), "bytes.get.source")?;
+        let index = self.int(index)?;
+        let source = self.current_block()?;
+        let function = source
+            .get_parent()
+            .ok_or_else(|| CodegenError::new("LlvmBuilderFailed", "Bytes.get has no function"))?;
+        let found = self
+            .backend
+            .context
+            .append_basic_block(function, "bytes.get.found");
+        let missing = self
+            .backend
+            .context
+            .append_basic_block(function, "bytes.get.missing");
+        let merge = self
+            .backend
+            .context
+            .append_basic_block(function, "bytes.get.merge");
+        let in_bounds = self
+            .backend
+            .builder
+            .build_int_compare(IntPredicate::ULT, index, length, "bytes.get.in_bounds")
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(in_bounds, found, missing)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(missing);
+        let missing_value = self.emit_sum_construct_values(result_ty, missing_variant, &[])?;
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(found);
+        // SAFETY: this block is reached only when the unsigned i64 `index` is
+        // strictly below the validated payload length. `data` is the first
+        // byte of that immutable allocation, so this one-element i8 GEP stays
+        // within the same allocated object and retains its pointer provenance.
+        let pointer = unsafe {
+            self.backend
+                .builder
+                .build_gep(
+                    self.backend.context.i8_type(),
+                    data,
+                    &[index],
+                    "bytes.get.pointer",
+                )
+                .map_err(builder_error)?
+        };
+        let byte = self
+            .backend
+            .builder
+            .build_load(self.backend.context.i8_type(), pointer, "bytes.get.byte")
+            .map_err(builder_error)?
+            .into_int_value();
+        let byte = self
+            .backend
+            .builder
+            .build_int_z_extend(byte, self.backend.context.i64_type(), "bytes.get.int")
+            .map_err(builder_error)?;
+        let found_value =
+            self.emit_sum_construct_values(result_ty, found_variant, &[byte.into()])?;
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(merge);
+        let phi = self
+            .backend
+            .builder
+            .build_phi(self.backend.llvm_type(result_ty)?, "bytes.get.result")
+            .map_err(builder_error)?;
+        phi.add_incoming(&[(&missing_value, missing), (&found_value, found)]);
+        Ok(phi.as_basic_value())
+    }
+
+    fn emit_bytes_compare(
+        &self,
+        predicate: BoolPredicate,
+        left: ValueId,
+        right: ValueId,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        let (left_data, left_length) = self
+            .backend
+            .text_parts(self.value(left)?.into_pointer_value(), "bytes.compare.left")?;
+        let (right_data, right_length) = self.backend.text_parts(
+            self.value(right)?.into_pointer_value(),
+            "bytes.compare.right",
+        )?;
+        let same_length = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                left_length,
+                right_length,
+                "bytes.compare.same_length",
+            )
+            .map_err(builder_error)?;
+        let left_is_shorter = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::ULE,
+                left_length,
+                right_length,
+                "bytes.compare.left_is_shorter",
+            )
+            .map_err(builder_error)?;
+        let compared_length = self
+            .backend
+            .builder
+            .build_select(
+                left_is_shorter,
+                left_length,
+                right_length,
+                "bytes.compare.length",
+            )
+            .map_err(builder_error)?
+            .into_int_value();
+        let comparison = call_int(
+            &self.backend.builder,
+            self.backend.libc_memcmp(),
+            &[left_data.into(), right_data.into(), compared_length.into()],
+            "bytes.compare.memcmp",
+        )?;
+        let bytes_equal = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                comparison,
+                self.backend.context.i32_type().const_zero(),
+                "bytes.compare.equal_prefix",
+            )
+            .map_err(builder_error)?;
+        let equal = self
+            .backend
+            .builder
+            .build_and(same_length, bytes_equal, "bytes.compare.equal")
+            .map_err(builder_error)?;
+        match predicate {
+            BoolPredicate::Equal => Ok(equal),
+            BoolPredicate::NotEqual => self
+                .backend
+                .builder
+                .build_not(equal, "bytes.compare.not_equal")
+                .map_err(builder_error),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn emit_json_format(
         &self,
@@ -8911,7 +9349,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .builder
             .build_store(json_storage, self.value(json)?)
             .map_err(builder_error)?;
-        let output = self.text_output_cell(instruction.id())?;
+        let output = self.managed_output_cell(instruction.id())?;
         self.backend
             .builder
             .build_store(output, self.backend.ptr_type.const_null())

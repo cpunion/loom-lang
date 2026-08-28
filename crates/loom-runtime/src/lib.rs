@@ -77,21 +77,23 @@ pub use standard::{
     parse_json, path_contains_nul, path_join, text_concat, text_contains, text_get, text_length,
     text_map_get, text_map_insert, text_map_remove,
 };
-pub use text::{concat_typed_v1, get_typed_v1};
+pub use text::{bytes_append_typed_v1, bytes_decode_utf8_typed_v1, concat_typed_v1, get_typed_v1};
 pub use typed_json::json_format_typed_v1;
 
 pub use loom_runtime_abi::{
-    COROUTINE_ABI_VERSION, DYN_FLAG_MUTABLE, FAULT_FORMAT_ENV, FAULT_FORMAT_JSON,
-    FAULT_JSON_PREFIX, FAULT_SCHEMA_VERSION, FORMAT_FLOAT_TYPED_SYMBOL, GC_ABI_MISMATCH,
-    GC_DESCRIPTOR_INVALID, GC_FRAME_ORDER, GC_INVALID_ARGUMENT, GC_MAX_OBJECT_ALIGNMENT,
-    GC_MAX_OBJECT_BYTES, GC_MAX_OBJECT_POINTERS, GC_MAX_REPEATED_POINTER_CELLS,
-    GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_DEPTH, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, GC_OK,
-    GC_RESOURCE_LIMIT, GC_ROOT_FRAME_LINKED, GC_ROOT_STACK_NOT_EMPTY, LAYOUT_ABI_VERSION,
-    LAYOUT_FLAG_LEAF, LAYOUT_FLAG_MANAGED_POINTER, LAYOUT_FLAG_TRAILING_BYTES, LAYOUT_KIND_BYTES,
-    LAYOUT_KIND_TEXT, LoomByteView, LoomGcObjectDescriptor, LoomGcRepeatedObjectDescriptor,
-    LoomGcRootDescriptor, LoomGcRootFrame, LoomGcTypedRootDescriptor, LoomGcTypedRootFrame,
-    LoomLayoutDescriptor, LoomTypedCoroutineDescriptor, LoomTypedJsonLayout, LoomTypedLogField,
-    LoomTypedTaskCallback, LoomTypedTaskFaultView, LoomWitnessDescriptor, LoomWitnessInstance,
+    BYTES_APPEND_TYPED_SYMBOL, BYTES_DECODE_UTF8_TYPED_INVALID_UTF8,
+    BYTES_DECODE_UTF8_TYPED_SYMBOL, BYTES_LAYOUT_SYMBOL, COROUTINE_ABI_VERSION, DYN_FLAG_MUTABLE,
+    FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX, FAULT_SCHEMA_VERSION,
+    FORMAT_FLOAT_TYPED_SYMBOL, GC_ABI_MISMATCH, GC_DESCRIPTOR_INVALID, GC_FRAME_ORDER,
+    GC_INVALID_ARGUMENT, GC_MAX_OBJECT_ALIGNMENT, GC_MAX_OBJECT_BYTES, GC_MAX_OBJECT_POINTERS,
+    GC_MAX_REPEATED_POINTER_CELLS, GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_DEPTH, GC_MAX_ROOT_SLOTS,
+    GC_MAX_ROOT_STATES, GC_OK, GC_RESOURCE_LIMIT, GC_ROOT_FRAME_LINKED, GC_ROOT_STACK_NOT_EMPTY,
+    LAYOUT_ABI_VERSION, LAYOUT_FLAG_LEAF, LAYOUT_FLAG_MANAGED_POINTER, LAYOUT_FLAG_TRAILING_BYTES,
+    LAYOUT_KIND_BYTES, LAYOUT_KIND_TEXT, LoomByteView, LoomGcObjectDescriptor,
+    LoomGcRepeatedObjectDescriptor, LoomGcRootDescriptor, LoomGcRootFrame,
+    LoomGcTypedRootDescriptor, LoomGcTypedRootFrame, LoomLayoutDescriptor,
+    LoomTypedCoroutineDescriptor, LoomTypedJsonLayout, LoomTypedLogField, LoomTypedTaskCallback,
+    LoomTypedTaskFaultView, LoomWitnessDescriptor, LoomWitnessInstance,
     NATIVE_RUNTIME_ABI_IDENTITY, READY_CLOSED, READY_COMPLETED, READY_ERROR, READY_READABLE,
     READY_TIMER, READY_WRITABLE, RUNTIME_ABI_VERSION, SHADOW_STACK_ABI_VERSION,
     STANDARD_LIBRARY_ABI_VERSION, STDOUT_WRITE_FAILED, STDOUT_WRITE_INVALID_ARGUMENT,

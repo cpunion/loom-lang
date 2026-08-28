@@ -6,10 +6,10 @@ use std::{
 };
 
 use loom_codegen_ir::{
-    AwaitMode, CheckedIntBinaryOp, Effects, InstanceKey, InstanceRole, InstructionKind,
-    InvalidRootCode, LoweringErrorCode, LoweringOutcome, ResourceLimitCode, SourceArtifactRequest,
-    TargetLayout, TerminatorKind, UnsupportedFeature, artifact_identity, dump_program,
-    lower_typed_artifact,
+    AwaitMode, BYTES_TYPE_ID, CheckedIntBinaryOp, Effects, InstanceKey, InstanceRole,
+    InstructionKind, InvalidRootCode, LoweringErrorCode, LoweringOutcome, ManagedSafepoint,
+    ResourceLimitCode, SourceArtifactRequest, TargetLayout, TerminatorKind, UnsupportedFeature,
+    artifact_identity, dump_program, lower_typed_artifact, plan_managed_roots,
 };
 use loom_core::{FileId, LOOM_LANGUAGE_VERSION, Name, PackageId, Span};
 use loom_hir::{PackageSourceUnit, SourceUnit, lower_files, lower_package_files};
@@ -126,6 +126,139 @@ fn complete_dump(source: &str) -> String {
         panic!("source should be completely supported: {outcome:?}")
     };
     dump_program(artifact.program())
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one source fixture verifies the complete Bytes lowering, effect, root, equality, and dump closure"
+)]
+fn canonical_bytes_lower_to_exact_typed_operations_effects_roots_and_content_equality() {
+    let outcome = lower_run(
+        r#"module typed_bytes
+
+fn exercise(left Text, right Text) Bool {
+    let bytes = left.encode_utf8()
+    let appended = bytes.append("!".encode_utf8())
+    let count = appended.length()
+    let selected = appended.get(0)
+    let decoded = appended.decode_utf8()
+    discard count
+    discard selected
+    discard decoded
+    bytes == right.encode_utf8()
+}
+
+pub fn main() {
+    discard exercise("loom", "loom")
+}
+"#,
+    );
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("canonical Bytes source must lower completely: {outcome:?}")
+    };
+
+    let bytes_semantic = Type::Nominal(BYTES_TYPE_ID, Vec::new());
+    let bytes = artifact
+        .representations()
+        .type_id(&bytes_semantic)
+        .expect("canonical Bytes value type");
+    assert!(artifact.representations().is_managed_bytes_type(bytes));
+
+    let mut saw_encode = false;
+    let mut saw_length = false;
+    let mut saw_get = false;
+    let mut saw_append = false;
+    let mut saw_decode = false;
+    let mut saw_compare = false;
+    let mut collecting_sites = 0_usize;
+    for function in artifact.functions() {
+        let roots = function.effects().contains(Effects::MAY_COLLECT).then(|| {
+            plan_managed_roots(artifact.program(), function.id())
+                .expect("collecting Bytes function has an exact root plan")
+        });
+        for instruction in function.instructions() {
+            match instruction.kind() {
+                InstructionKind::TextEncodeUtf8 { .. } => saw_encode = true,
+                InstructionKind::BytesLength { .. } => saw_length = true,
+                InstructionKind::BytesGet {
+                    missing_variant,
+                    found_variant,
+                    ..
+                } => {
+                    assert_eq!((*missing_variant, *found_variant), (0, 1));
+                    saw_get = true;
+                }
+                InstructionKind::BytesAppend { .. } => {
+                    assert!(
+                        roots.as_ref().is_some_and(|roots| {
+                            roots
+                                .state(ManagedSafepoint::Instruction(instruction.id()))
+                                .is_some()
+                        }),
+                        "Bytes.append is an explicit managed safepoint"
+                    );
+                    collecting_sites = collecting_sites.saturating_add(1);
+                    saw_append = true;
+                }
+                InstructionKind::BytesDecodeUtf8 {
+                    ok_variant,
+                    error_variant,
+                    invalid_utf8_variant,
+                    ..
+                } => {
+                    assert_eq!(
+                        (*ok_variant, *error_variant, *invalid_utf8_variant),
+                        (0, 1, 0)
+                    );
+                    assert!(
+                        roots.as_ref().is_some_and(|roots| {
+                            roots
+                                .state(ManagedSafepoint::Instruction(instruction.id()))
+                                .is_some()
+                        }),
+                        "Bytes.decode_utf8 is an explicit managed safepoint"
+                    );
+                    collecting_sites = collecting_sites.saturating_add(1);
+                    saw_decode = true;
+                }
+                InstructionKind::BytesCompare { .. } => saw_compare = true,
+                _ => {}
+            }
+        }
+    }
+    assert!(
+        saw_encode && saw_length && saw_get && saw_append && saw_decode && saw_compare,
+        "{}",
+        dump_program(artifact.program())
+    );
+    assert!(collecting_sites >= 2, "append and decode are safepoints");
+
+    let dump = dump_program(artifact.program());
+    for opcode in [
+        "text.encode_utf8",
+        "bytes.length",
+        "bytes.get",
+        "bytes.append",
+        "bytes.decode_utf8",
+        "bytes.compare.equal",
+    ] {
+        assert!(dump.contains(opcode), "missing {opcode}: {dump}");
+    }
+    let helper = artifact.functions().iter().find(|function| {
+        artifact
+            .program()
+            .as_program()
+            .instance_key(function.id())
+            .is_some_and(|key| {
+                key.role() == InstanceRole::StructuralEquality
+                    && key.structural_equality_type() == Some(&bytes_semantic)
+            })
+    });
+    assert_eq!(
+        helper.map(loom_codegen_ir::Function::effects),
+        Some(Effects::NONE)
+    );
 }
 
 #[test]

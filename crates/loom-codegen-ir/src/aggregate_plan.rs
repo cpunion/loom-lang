@@ -3,14 +3,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use loom_mir::{self as mir, Type, TypeId};
 
 use crate::dyn_plan::DynConceptPlan;
-use crate::{BuildError, ProgramBuilder, ValueTypeId};
+use crate::{BYTES_TYPE_ID, BuildError, ProgramBuilder, ValueTypeId};
 
 pub(crate) const fn is_direct_scalar(ty: &Type) -> bool {
     matches!(ty, Type::Unit | Type::Bool | Type::Int | Type::Float)
 }
 
 const fn is_direct_product_leaf(ty: &Type) -> bool {
-    is_direct_scalar(ty) || matches!(ty, Type::Text | Type::View { .. })
+    is_direct_scalar(ty)
+        || matches!(ty, Type::Text | Type::View { .. })
+        || is_managed_bytes_semantic(ty)
+}
+
+const fn is_managed_bytes_semantic(ty: &Type) -> bool {
+    matches!(ty, Type::Nominal(id, arguments) if id.0 == BYTES_TYPE_ID.0 && arguments.is_empty())
 }
 
 /// Upper bound for every semantic-type tree copied into the direct aggregate
@@ -442,6 +448,7 @@ enum AggregateShape {
     InvariantProduct(Box<[Type]>),
     Transparent(Type),
     Sum(Box<[Box<[Type]>]>),
+    ManagedBytes,
     ManagedList(Type),
     ManagedTextMap(Type),
     ManagedDynamic(Box<[Type]>),
@@ -455,7 +462,9 @@ impl AggregateShape {
             Self::Sum(variants) => Box::new(variants.iter().flat_map(|variant| variant.iter())),
             // A List is one pointer in its containing value. Its element graph
             // is checked independently, not as a by-value registration edge.
-            Self::ManagedList(_) | Self::ManagedTextMap(_) => Box::new(std::iter::empty()),
+            Self::ManagedBytes | Self::ManagedList(_) | Self::ManagedTextMap(_) => {
+                Box::new(std::iter::empty())
+            }
             Self::ManagedDynamic(candidates) => Box::new(candidates.iter()),
         }
     }
@@ -471,7 +480,10 @@ impl AggregateShape {
                 .try_fold(1_usize.checked_add(variants.len())?, |nodes, variant| {
                     nodes.checked_add(variant.len())
                 }),
-            Self::ManagedList(_) | Self::ManagedTextMap(_) | Self::ManagedDynamic(_) => Some(1),
+            Self::ManagedBytes
+            | Self::ManagedList(_)
+            | Self::ManagedTextMap(_)
+            | Self::ManagedDynamic(_) => Some(1),
         }
     }
 }
@@ -495,6 +507,9 @@ fn direct_aggregate_shape(
     concrete_type_node_count(ty)?;
     match ty {
         Type::Tuple(elements) => Some(AggregateShape::Product(elements.clone().into_boxed_slice())),
+        Type::Nominal(id, arguments) if *id == BYTES_TYPE_ID && arguments.is_empty() => {
+            Some(AggregateShape::ManagedBytes)
+        }
         Type::Nominal(id, arguments) if program.prelude.text_map == Some(*id) => {
             let [value] = arguments.as_slice() else {
                 return None;
@@ -809,6 +824,15 @@ impl<'program, 'plan> AggregatePlanner<'program, 'plan> {
                     break;
                 }
                 structural_nodes = next_structural_nodes;
+                if matches!(shape, AggregateShape::ManagedBytes) {
+                    if !managed_path {
+                        supported = false;
+                        break;
+                    }
+                    discovered.entry(semantic.clone()).or_insert(shape);
+                    visiting.remove(&semantic);
+                    continue;
+                }
                 if let AggregateShape::ManagedList(element)
                 | AggregateShape::ManagedTextMap(element) = &shape
                 {
@@ -1003,6 +1027,11 @@ impl AggregatePlan {
                 }
                 (Type::Nominal(_, _), AggregateShape::Sum(variants)) => {
                     builder.add_sum_type(semantic.clone(), variants)
+                }
+                (Type::Nominal(id, arguments), AggregateShape::ManagedBytes)
+                    if *id == BYTES_TYPE_ID && arguments.is_empty() =>
+                {
+                    builder.add_managed_bytes_type(semantic.clone())
                 }
                 (Type::List(element), AggregateShape::ManagedList(planned))
                     if element.as_ref() == planned =>

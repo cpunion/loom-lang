@@ -5,7 +5,7 @@ use std::fmt;
 use loom_mir::Type;
 
 use crate::ids::ProgramBrand;
-use crate::{ProductReprId, ReprId, SumReprId, ValueTypeId};
+use crate::{BYTES_TYPE_ID, ProductReprId, ReprId, SumReprId, ValueTypeId};
 
 pub(crate) const DIRECT_PRODUCT_MAX_NESTING_DEPTH: usize = 256;
 pub(crate) const DIRECT_PRODUCT_MAX_STRUCTURAL_NODES: usize = 256;
@@ -124,7 +124,7 @@ pub enum ScalarRepr {
 /// admitted values can originate only in compiler-emitted literal objects, so
 /// no moving-GC root is required. `ManagedPointer` is one precisely rooted,
 /// direct managed-object base pointer; this slice registers it for dynamic
-/// Text and concrete managed List values.
+/// Text, canonical immutable Bytes, and concrete managed collection values.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Repr {
     /// Control-flow vocabulary for semantic `Never`. The direct foundation
@@ -484,6 +484,17 @@ impl RepresentationPlan {
         self.canonical_types.get(semantic).copied()
     }
 
+    /// Returns whether `ty` is the canonical direct managed representation of
+    /// the compiler-known immutable Bytes type.
+    #[must_use]
+    pub fn is_managed_bytes_type(&self, ty: ValueTypeId) -> bool {
+        self.type_id(&Type::Nominal(BYTES_TYPE_ID, Vec::new())) == Some(ty)
+            && self.value_type(ty).is_some_and(|value_type| {
+                value_type.kind() == ValueTypeKind::Direct
+                    && self.repr(value_type.repr()) == Some(&Repr::ManagedPointer)
+            })
+    }
+
     /// Returns whether an already checked representation graph contains an
     /// immortal Text and/or managed pointer. Missing or cyclic references are
     /// rejected instead of being guessed; independent validation repeats the
@@ -643,6 +654,29 @@ impl RepresentationPlan {
             value_type: ty,
         });
         self.canonical_types.insert(Type::Text, ty);
+        Some(ty)
+    }
+
+    pub(crate) fn add_managed_bytes(&mut self, semantic: Type) -> Option<ValueTypeId> {
+        if self.target.pointer_bits() != 64
+            || semantic != Type::Nominal(BYTES_TYPE_ID, Vec::new())
+            || self.type_id(&semantic).is_some()
+        {
+            return None;
+        }
+        let repr = ReprId::from_index(self.brand, self.reprs.len())?;
+        let ty = ValueTypeId::from_index(self.brand, self.types.len())?;
+        self.reprs.push(Repr::ManagedPointer);
+        self.types.push(ValueType {
+            semantic: semantic.clone(),
+            repr,
+            kind: ValueTypeKind::Direct,
+        });
+        self.registrations.push(TypeRegistration {
+            semantic: semantic.clone(),
+            value_type: ty,
+        });
+        self.canonical_types.insert(semantic, ty);
         Some(ty)
     }
 

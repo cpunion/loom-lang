@@ -1,6 +1,6 @@
 use loom_codegen_ir::{
-    BuildErrorCode, Effects, Origin, ProgramBuilder, Repr, RepresentationPlan, ScalarRepr,
-    Signature, TargetLayout,
+    BYTES_TYPE_ID, BuildErrorCode, Effects, Origin, ProgramBuilder, Repr, RepresentationPlan,
+    ScalarRepr, Signature, TargetLayout,
 };
 use loom_mir::{FunctionId, Type, TypeId};
 
@@ -102,6 +102,60 @@ fn managed_lists_are_distinct_direct_pointers_and_64_bit_only() {
             .expect_err("32-bit List must fail closed")
             .code(),
         BuildErrorCode::InvalidListType
+    );
+}
+
+#[test]
+fn managed_bytes_registration_is_exact_canonical_and_64_bit_only() {
+    let semantic = Type::Nominal(BYTES_TYPE_ID, Vec::new());
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let bytes = builder
+        .add_managed_bytes_type(semantic.clone())
+        .expect("canonical Bytes");
+    let value_type = builder
+        .representations()
+        .value_type(bytes)
+        .expect("Bytes value type");
+    assert_eq!(value_type.semantic(), &semantic);
+    assert_eq!(
+        builder.representations().repr(value_type.repr()),
+        Some(&Repr::ManagedPointer)
+    );
+    assert!(builder.representations().is_managed_bytes_type(bytes));
+    builder
+        .add_tuple_type(std::slice::from_ref(&semantic))
+        .expect("Bytes is one managed-pointer aggregate leaf");
+    assert_eq!(
+        builder
+            .add_managed_bytes_type(semantic.clone())
+            .expect_err("duplicate Bytes")
+            .code(),
+        BuildErrorCode::InvalidBytesType
+    );
+
+    let mut wrong = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    assert_eq!(
+        wrong
+            .add_managed_bytes_type(Type::Nominal(TypeId(12), Vec::new()))
+            .expect_err("noncanonical nominal")
+            .code(),
+        BuildErrorCode::InvalidBytesType
+    );
+    assert_eq!(
+        wrong
+            .add_managed_bytes_type(Type::Nominal(BYTES_TYPE_ID, vec![Type::Int]))
+            .expect_err("open Bytes")
+            .code(),
+        BuildErrorCode::InvalidBytesType
+    );
+
+    let mut narrow = ProgramBuilder::new(TargetLayout::new(32).expect("target"));
+    assert_eq!(
+        narrow
+            .add_managed_bytes_type(semantic)
+            .expect_err("32-bit Bytes")
+            .code(),
+        BuildErrorCode::InvalidBytesType
     );
 }
 

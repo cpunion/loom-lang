@@ -57,6 +57,7 @@ The following repository fixtures are run through real compiler stages:
 | `fixtures/lcir-projected-places` | exact nested and generic-instance projected receiver writeback, sibling evaluation order, aggregate loop phis, and real `check/build/test/run` commands |
 | `fixtures/lcir-text` | literal-proven one-pointer `Text`, allocation-free length/containment/content comparison, direct generic flow, host execution, and direct 64-bit Linux/MSVC object emission |
 | `fixtures/lcir-managed-text` | artifact-wide direct managed `Text`, dynamic concat, exact typed shadow roots, semantic alias preservation, and real check/build/test/run commands |
+| `fixtures/lcir-managed-bytes` | one-pointer typed `Bytes`, zero-allocation Text-backed UTF-8 sharing, content equality, Unicode byte indexing, checked negative and upper-bound misses, append, decode, moving-GC publication, and real check/build/test/run commands |
 | `fixtures/lcir-managed-products` | unboxed nested record/tuple products with managed Text leaves, direct product calls/returns, semantic aliases, and real check/build/test/run commands |
 | `fixtures/lcir-managed-sums` | closed unboxed sums with active-variant Text roots, nested product payloads, contract matches over managed leaves, forced collection between call arguments, and real check/build/test/run commands |
 | `fixtures/lcir-managed-lists` | direct repeated storage for scalar/Text/product/sum/nested-List elements, immutable aliases, checked reads, geometric unique append, moving-GC roots, and real check/build/test/run commands |
@@ -115,9 +116,9 @@ Production native preparation performs one whole-artifact MIR-to-LCIR attempt
 and independently validates the result before typed LLVM emission. Current
 direct coverage includes:
 
-- scalar and managed Text operations, structural tuples, concrete records,
-  refined values, closed sums, Lists, compiler-private TextMaps, and bounded
-  concrete generic instances;
+- scalar, managed Text, and typed Bytes operations, structural tuples, concrete
+  records, refined values, closed sums, Lists, compiler-private TextMaps, and
+  bounded concrete generic instances;
 - canonical recursive Json formatting into the exact
   `Result[Text, JsonError]`, including typed Text publication and ordinary
   depth/non-finite error values;

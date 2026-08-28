@@ -58,7 +58,7 @@ pub use instance::{
 };
 pub use instance_closure::{INSTANCE_CLOSURE_MAX_CALL_EDGES, INSTANCE_CLOSURE_MAX_INSTANCES};
 pub use ir::{
-    AwaitMode, Block, BlockTarget, BoolPredicate, CONTRACT_FAULT_TEXT_MAX_BYTES,
+    AwaitMode, BYTES_TYPE_ID, Block, BlockTarget, BoolPredicate, CONTRACT_FAULT_TEXT_MAX_BYTES,
     CheckedIntBinaryOp, Constant, ContractFaultBlame, ContractFaultKind, ContractFaultMetadata,
     CoroutinePlan, CoroutineSuspension, Effects, FaultCode, FaultMetadata, FloatBinaryOp,
     FloatPredicate, Function, Instruction, InstructionKind, IntPredicate,

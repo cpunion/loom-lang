@@ -1765,6 +1765,123 @@ fn immortal_text_uses_one_pointer_and_allocation_free_runtime_abi_on_all_targets
 #[test]
 #[expect(
     clippy::too_many_lines,
+    reason = "one differential gate keeps the complete existing Bytes API, managed roots, direct byte operations, and cross-target objects together"
+)]
+fn managed_bytes_close_the_typed_lcir_route_on_all_supported_targets() {
+    let source = include_str!("../../../fixtures/lcir-managed-bytes/main.loom");
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert!(
+        interpreted
+            .iter()
+            .all(|test| test.status == TestStatus::Passed),
+        "{interpreted:?}"
+    );
+
+    let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let dump = dump_program(artifact.program());
+    for required in [
+        "Nominal#11[] =>",
+        "managed_ptr",
+        "text.encode_utf8",
+        "bytes.length",
+        "bytes.get",
+        "bytes.append",
+        "bytes.decode_utf8",
+        "bytes.compare.equal",
+    ] {
+        assert!(dump.contains(required), "missing `{required}`:\n{dump}");
+    }
+    let verifier = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("verifyBytes"))
+        .expect("Bytes verifier instance");
+    assert!(verifier.effects().contains(Effects::MAY_COLLECT));
+    assert!(verifier.effects().contains(Effects::NEEDS_RUNTIME));
+    assert!(verifier.effects().contains(Effects::MAY_FAULT));
+    assert!(!verifier.effects().contains(Effects::NEEDS_EXECUTOR));
+    assert!(!verifier.effects().contains(Effects::MAY_SUSPEND));
+    let equality = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name() == "$structuralEquality")
+        .expect("Bytes equality helper");
+    assert!(equality.effects().is_empty());
+
+    let native = emit_and_run_lcir(&artifact, "source-managed-bytes-tests");
+    let legacy = emit_and_run_legacy_tests(&program, "legacy-managed-bytes-tests");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert_eq!(native.output.stdout, legacy.stdout);
+    assert_eq!(native.output.stderr, legacy.stderr);
+    for required in [
+        "declare i32 @loom_runtime_bytes_append_typed_v1(ptr, ptr, ptr)",
+        "declare i32 @loom_runtime_bytes_decode_utf8_typed_v1(ptr, ptr)",
+        "declare i32 @memcmp(ptr, ptr, i64)",
+        "bytes.get.in_bounds",
+        "bytes.get.pointer = getelementptr i8",
+        "bytes.decode_utf8.status",
+        "loom_gc_typed_root_push_v1",
+        "loom_gc_typed_root_pop_v1",
+    ] {
+        assert!(
+            native.ir.contains(required),
+            "missing `{required}`:\n{}",
+            native.ir
+        );
+    }
+    assert!(!native.ir.contains("loom_gc_root_push_v1"), "{}", native.ir);
+    assert!(!native.ir.contains("loom_executor_"), "{}", native.ir);
+    assert!(!native.ir.contains("%loom.Value"), "{}", native.ir);
+
+    for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
+        let directory = tempfile::tempdir().expect("create managed Bytes target directory");
+        let object = directory.path().join(if target.contains("windows") {
+            "managed-bytes.obj"
+        } else {
+            "managed-bytes.o"
+        });
+        let ir_path = directory.path().join("managed-bytes.ll");
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                emit_ir: Some(ir_path.clone()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit managed Bytes object for {target}: {error}"));
+        assert!(
+            object.is_file(),
+            "missing managed Bytes object for {target}"
+        );
+        let ir = std::fs::read_to_string(ir_path).expect("read managed Bytes target IR");
+        for required in [
+            "loom_runtime_bytes_append_typed_v1",
+            "loom_runtime_bytes_decode_utf8_typed_v1",
+            "loom_gc_typed_root_push_v1",
+            "@memcmp",
+        ] {
+            assert!(
+                ir.contains(required),
+                "{target} omitted `{required}`:\n{ir}"
+            );
+        }
+        assert!(
+            ir.contains(&format!("target triple = \"{target}\"")),
+            "{ir}"
+        );
+        assert!(!ir.contains("loom_gc_root_push_v1"), "{ir}");
+        assert!(!ir.contains("loom_executor_"), "{ir}");
+        assert!(!ir.contains("%loom.Value"), "{ir}");
+    }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
     reason = "one source fixture keeps interpreter/native semantics, forced relocation, IR shape, and cross-target objects in one differential gate"
 )]
 fn managed_text_concat_runs_tests_reloads_roots_and_emits_on_all_supported_targets() {
