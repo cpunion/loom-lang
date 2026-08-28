@@ -57,6 +57,11 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- Interpreted MIR advances to version 26. Generic compiler-cache artifacts now
+  require a null `entry`, while executable artifacts require a fixed string
+  entry. The two decoders reject the opposite artifact kind explicitly before
+  validating its program body.
+
 - Interpreted MIR advances to version 25. Semantic analysis now resolves
   `Dispose`, `MustScope`, and `NoSuspend` only from the compiler-owned standard
   package, lowering consumes those nominal `DefId` identities without

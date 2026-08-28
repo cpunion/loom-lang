@@ -4208,6 +4208,18 @@ fn interpreted_executable_artifact_round_trips_and_validates_its_fixed_entry() {
     assert_eq!(entry, "main");
     assert!(decoded.exports.contains_key(&entry));
 
+    let generic_error = decode_interpreted_artifact(&bytes)
+        .expect_err("generic decoder must reject executable artifact bytes");
+    assert!(matches!(
+        generic_error,
+        ArtifactError::UnexpectedEntry { entry } if entry == "main"
+    ));
+
+    let generic_bytes = encode_interpreted_artifact(&program).expect("encode generic artifact");
+    let executable_error = decode_interpreted_executable_artifact(&generic_bytes)
+        .expect_err("executable decoder must reject generic artifact bytes");
+    assert!(matches!(executable_error, ArtifactError::MissingEntry));
+
     let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
     value["entry"] = serde_json::json!("missing");
     let error = decode_interpreted_executable_artifact(
@@ -4218,6 +4230,60 @@ fn interpreted_executable_artifact_round_trips_and_validates_its_fixed_entry() {
         error,
         ArtifactError::UnknownEntry { entry } if entry == "missing"
     ));
+}
+
+#[test]
+fn interpreted_artifact_kind_is_rejected_before_program_body_decode() {
+    let program = float_program(1.0_f64.to_bits());
+    let executable =
+        encode_interpreted_executable_artifact(&program, "main").expect("encode executable");
+    let mut executable_value: serde_json::Value =
+        serde_json::from_slice(&executable).expect("executable JSON");
+    executable_value["program"] = serde_json::json!("invalid body must remain unread");
+    let generic_error = decode_interpreted_artifact(
+        &serde_json::to_vec(&executable_value).expect("encode wrong-kind executable"),
+    )
+    .expect_err("generic decoder must reject executable kind before its body");
+    assert!(matches!(
+        generic_error,
+        ArtifactError::UnexpectedEntry { entry } if entry == "main"
+    ));
+
+    let generic = encode_interpreted_artifact(&program).expect("encode generic artifact");
+    let mut generic_value: serde_json::Value =
+        serde_json::from_slice(&generic).expect("generic JSON");
+    generic_value["program"] = serde_json::json!("invalid body must remain unread");
+    let executable_error = decode_interpreted_executable_artifact(
+        &serde_json::to_vec(&generic_value).expect("encode wrong-kind generic artifact"),
+    )
+    .expect_err("executable decoder must reject generic kind before its body");
+    assert!(matches!(executable_error, ArtifactError::MissingEntry));
+}
+
+#[test]
+fn interpreted_artifact_kind_discriminator_is_explicit_and_typed() {
+    let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits()))
+        .expect("encode generic artifact");
+    let mut missing: serde_json::Value = serde_json::from_slice(&bytes).expect("artifact JSON");
+    missing
+        .as_object_mut()
+        .expect("artifact object")
+        .remove("entry");
+    let missing_error =
+        decode_interpreted_artifact(&serde_json::to_vec(&missing).expect("missing entry JSON"))
+            .expect_err("artifact kind discriminator must be explicit");
+    assert!(
+        matches!(missing_error, ArtifactError::Malformed(message) if message.contains("missing field `entry`"))
+    );
+
+    let mut mistyped: serde_json::Value = serde_json::from_slice(&bytes).expect("artifact JSON");
+    mistyped["entry"] = serde_json::json!(7);
+    let mistyped_error =
+        decode_interpreted_artifact(&serde_json::to_vec(&mistyped).expect("mistyped entry JSON"))
+            .expect_err("artifact kind discriminator must be string or null");
+    assert!(
+        matches!(mistyped_error, ArtifactError::Malformed(message) if message.contains("string or null"))
+    );
 }
 
 #[test]
@@ -4296,7 +4362,7 @@ fn artifact_rejects_pre_witness_segmentation_version_sixteen_before_body_decode(
 
 #[test]
 fn artifact_rejects_raw_wait_version_seventeen_before_body_decode() {
-    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 25);
+    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 26);
     let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
     let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
     value["version"] = serde_json::json!(17);
