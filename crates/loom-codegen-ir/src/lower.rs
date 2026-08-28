@@ -19,7 +19,7 @@ use crate::instance_closure::{
     InstanceSubstitution, InstantiationError, plan_instance_closure,
 };
 use crate::ir::{
-    LOG_LEVEL_DEBUG_VARIANT, LOG_LEVEL_ERROR_VARIANT, LOG_LEVEL_INFO_VARIANT,
+    BYTES_TYPE_ID, LOG_LEVEL_DEBUG_VARIANT, LOG_LEVEL_ERROR_VARIANT, LOG_LEVEL_INFO_VARIANT,
     LOG_LEVEL_WARN_VARIANT,
 };
 use crate::match_plan::{MatchNode, MatchPlan, plan_contract_match, plan_match};
@@ -1547,6 +1547,7 @@ fn direct_structural_equality_children(program: &mir::Program, ty: &Type) -> Opt
             program.prelude.option?,
             vec![(**element).clone()],
         )],
+        Type::Nominal(id, arguments) if *id == BYTES_TYPE_ID && arguments.is_empty() => Vec::new(),
         Type::Nominal(id, arguments) if program.prelude.text_map == Some(*id) => {
             let [value] = arguments.as_slice() else {
                 return None;
@@ -1725,7 +1726,12 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     .iter()
                     .all(|element| visit(program, dyn_concepts, element, false, active, remaining)),
                 Type::Task(_) => allow_task_handle,
-                Type::Nominal(id, _) if program.prelude.text_map == Some(*id) => true,
+                Type::Nominal(id, arguments)
+                    if (*id == BYTES_TYPE_ID && arguments.is_empty())
+                        || program.prelude.text_map == Some(*id) =>
+                {
+                    true
+                }
                 Type::Nominal(_, _) => {
                     if !active.insert(ty.clone()) {
                         return false;
@@ -3256,6 +3262,11 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         | mir::Builtin::TextContains
                         | mir::Builtin::TextGet
                         | mir::Builtin::TextConcat
+                        | mir::Builtin::TextEncodeUtf8
+                        | mir::Builtin::BytesLength
+                        | mir::Builtin::BytesGet
+                        | mir::Builtin::BytesAppend
+                        | mir::Builtin::BytesDecodeUtf8
                         | mir::Builtin::ListAdd
                         | mir::Builtin::ListLength
                         | mir::Builtin::ListGet
@@ -4020,6 +4031,8 @@ fn scan_effect_expr(
                 CallTarget::Builtin(
                     mir::Builtin::TextConcat
                         | mir::Builtin::TextGet
+                        | mir::Builtin::BytesAppend
+                        | mir::Builtin::BytesDecodeUtf8
                         | mir::Builtin::ListAdd
                         | mir::Builtin::TextMapInsert
                         | mir::Builtin::TextMapRemove
@@ -9291,6 +9304,36 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     origin,
                 )
             }
+            crate::Repr::ManagedPointer if matches!(value_type.semantic(), Type::Nominal(id, arguments) if *id == BYTES_TYPE_ID && arguments.is_empty()) =>
+            {
+                let condition = match self.one_instruction(
+                    flow,
+                    InstructionKind::BytesCompare {
+                        predicate: BoolPredicate::Equal,
+                        left,
+                        right,
+                    },
+                    self.type_id(&Type::Bool)?,
+                    origin,
+                )? {
+                    EvalFlow::Continue { value, .. } => value,
+                    EvalFlow::Terminated => {
+                        return Err(LoweringError::defect(
+                            LoweringDefectCode::Builder,
+                            "Bytes structural comparison unexpectedly terminated",
+                        ));
+                    }
+                };
+                self.terminate(
+                    flow.block,
+                    TerminatorKind::Branch {
+                        condition,
+                        then_target: BlockTarget::new(equal, []),
+                        else_target: BlockTarget::new(not_equal, []),
+                    },
+                    origin,
+                )
+            }
             crate::Repr::ManagedPointer
                 if value_type.kind() == crate::ValueTypeKind::ManagedTextMap =>
             {
@@ -11263,6 +11306,31 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             (mir::Builtin::TextContains, [text, needle]) => InstructionKind::TextContains {
                 text: *text,
                 needle: *needle,
+            }
+            .into(),
+            (mir::Builtin::TextEncodeUtf8, [text]) => {
+                InstructionKind::TextEncodeUtf8 { text: *text }.into()
+            }
+            (mir::Builtin::BytesLength, [bytes]) => {
+                InstructionKind::BytesLength { bytes: *bytes }.into()
+            }
+            (mir::Builtin::BytesGet, [bytes, index]) => InstructionKind::BytesGet {
+                bytes: *bytes,
+                index: *index,
+                missing_variant: 0,
+                found_variant: 1,
+            }
+            .into(),
+            (mir::Builtin::BytesAppend, [left, right]) => InstructionKind::BytesAppend {
+                left: *left,
+                right: *right,
+            }
+            .into(),
+            (mir::Builtin::BytesDecodeUtf8, [bytes]) => InstructionKind::BytesDecodeUtf8 {
+                bytes: *bytes,
+                ok_variant: 0,
+                error_variant: 1,
+                invalid_utf8_variant: 0,
             }
             .into(),
             (mir::Builtin::ParseInt, [text]) => InstructionKind::ParseInt {

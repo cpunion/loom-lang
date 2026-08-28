@@ -5,7 +5,8 @@ use std::fmt;
 use loom_mir::Type;
 
 use crate::ir::{
-    JSON_ERROR_TYPE_ID, JSON_TYPE_ID, LOG_LEVEL_TYPE_ID, RESULT_TYPE_ID, TEXT_MAP_TYPE_ID,
+    BYTES_TYPE_ID, DECODE_TEXT_ERROR_TYPE_ID, JSON_ERROR_TYPE_ID, JSON_TYPE_ID, LOG_LEVEL_TYPE_ID,
+    OPTION_TYPE_ID, RESULT_TYPE_ID, TEXT_MAP_TYPE_ID,
 };
 use crate::{
     AwaitMode, BlockId, Constant, Effects, Function, InstanceId, InstanceRole, Instruction,
@@ -631,6 +632,17 @@ impl<'a> Validator<'a> {
                     "transparent values must retain a pointer-free base representation",
                 );
             }
+            if value_type.semantic() == &Type::Nominal(BYTES_TYPE_ID, Vec::new())
+                && (value_type.kind() != ValueTypeKind::Direct
+                    || representations.repr(value_type.repr()) != Some(&Repr::ManagedPointer)
+                    || representations.target().pointer_bits() != 64)
+            {
+                self.error(
+                    ValidationCode::RepresentationPlan,
+                    format!("representations.type[{index}].bytes_pointer"),
+                    "canonical Bytes must be one direct managed pointer on a 64-bit target",
+                );
+            }
             match representations.repr(value_type.repr()).copied() {
                 Some(Repr::Product(product)) => {
                     match value_type.semantic() {
@@ -704,6 +716,11 @@ impl<'a> Validator<'a> {
                 Some(Repr::ManagedPointer) => {
                     let valid_semantic = match value_type.semantic() {
                         Type::Text => value_type.kind() == ValueTypeKind::Direct,
+                        Type::Nominal(id, arguments)
+                            if *id == BYTES_TYPE_ID && arguments.is_empty() =>
+                        {
+                            value_type.kind() == ValueTypeKind::Direct
+                        }
                         Type::List(element) => {
                             value_type.kind() == ValueTypeKind::Direct
                                 && representations.type_id(element).is_some_and(|element_id| {
@@ -765,7 +782,7 @@ impl<'a> Validator<'a> {
                         self.error(
                             ValidationCode::RepresentationPlan,
                             format!("representations.type[{index}].managed_pointer"),
-                            "managed pointers must be direct Text, concrete closed List, compiler-private closed TextMap, or cataloged closed dynamic View values on a 64-bit target",
+                            "managed pointers must be direct Text, canonical Bytes, concrete closed List, compiler-private closed TextMap, or cataloged closed dynamic View values on a 64-bit target",
                         );
                     }
                 }
@@ -799,6 +816,7 @@ impl<'a> Validator<'a> {
                 }
                 Some(Repr::Uninhabited | Repr::Zst | Repr::Scalar(_)) | None => {
                     if value_type.semantic() == &Type::Text
+                        || value_type.semantic() == &Type::Nominal(BYTES_TYPE_ID, Vec::new())
                         || matches!(value_type.semantic(), Type::List(_))
                         || value_type.kind() == ValueTypeKind::ManagedTextMap
                         || matches!(value_type.semantic(), Type::Task(_))
@@ -806,7 +824,7 @@ impl<'a> Validator<'a> {
                         self.error(
                             ValidationCode::RepresentationPlan,
                             format!("representations.type[{index}]"),
-                            "Text, List, Task, and managed TextMap values must use their canonical pointer representations",
+                            "Text, Bytes, List, Task, and managed TextMap values must use their canonical pointer representations",
                         );
                     }
                 }
@@ -2523,6 +2541,7 @@ impl<'a> Validator<'a> {
         let integer = self.scalar_type(&Type::Int);
         let float = self.scalar_type(&Type::Float);
         let text = self.scalar_type(&Type::Text);
+        let bytes = self.managed_bytes_type();
         let text_is_managed = text.is_some_and(|text| {
             self.program
                 .representations
@@ -2765,6 +2784,164 @@ impl<'a> Validator<'a> {
                     ValidationCode::TypeMismatch,
                     format!("{path}.right"),
                 );
+                self.require_results(function, instruction, &[boolean], &path);
+            }
+            InstructionKind::TextEncodeUtf8 { text: value } => {
+                if text.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.text"),
+                        "UTF-8 encoding requires the canonical Text pointer representation",
+                    );
+                }
+                if bytes.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.result[0]"),
+                        "UTF-8 encoding requires canonical managed Bytes#11",
+                    );
+                }
+                self.require_known_value_type(
+                    function,
+                    *value,
+                    text,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.text"),
+                );
+                self.require_results(function, instruction, &[bytes], &path);
+            }
+            InstructionKind::BytesLength { bytes: value } => {
+                if bytes.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.bytes"),
+                        "Bytes length requires canonical managed Bytes#11",
+                    );
+                }
+                self.require_known_value_type(
+                    function,
+                    *value,
+                    bytes,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.bytes"),
+                );
+                self.require_results(function, instruction, &[integer], &path);
+            }
+            InstructionKind::BytesGet {
+                bytes: value,
+                index,
+                missing_variant,
+                found_variant,
+            } => {
+                if bytes.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.bytes"),
+                        "Bytes selection requires canonical managed Bytes#11",
+                    );
+                }
+                self.require_known_value_type(
+                    function,
+                    *value,
+                    bytes,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.bytes"),
+                );
+                self.require_known_value_type(
+                    function,
+                    *index,
+                    integer,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.index"),
+                );
+                self.require_results(function, instruction, &[None], &path);
+                if (*missing_variant, *found_variant) != (0, 1) {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        format!("{path}.variants"),
+                        "Bytes selection requires canonical None=0 and Some=1 variants",
+                    );
+                }
+                if let Some(result_ty) = instruction
+                    .results
+                    .first()
+                    .and_then(|result| function.value(*result))
+                    .map(Value::ty)
+                {
+                    let option_int = Type::Nominal(OPTION_TYPE_ID, vec![Type::Int]);
+                    let exact_semantic = self
+                        .program
+                        .representations
+                        .value_type(result_ty)
+                        .is_some_and(|value_type| value_type.semantic() == &option_int)
+                        && self.scalar_type(&option_int) == Some(result_ty);
+                    let exact_shape = self.sum_repr(result_ty).is_some_and(|sum| {
+                        self.program.representations.sum(sum).is_some_and(|sum| {
+                            sum.variants().len() == 2
+                                && sum.variants()[0].fields().is_empty()
+                                && integer
+                                    .is_some_and(|integer| sum.variants()[1].fields() == [integer])
+                        })
+                    });
+                    if !exact_semantic || !exact_shape {
+                        self.error(
+                            ValidationCode::TypeMismatch,
+                            format!("{path}.result[0]"),
+                            "Bytes selection result must be canonical prelude Option#0[Int] with None=0 and Some(Int)=1",
+                        );
+                    }
+                }
+            }
+            InstructionKind::BytesAppend { left, right } => {
+                if bytes.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.result[0]"),
+                        "Bytes append requires canonical managed Bytes#11",
+                    );
+                }
+                for (name, value) in [("left", left), ("right", right)] {
+                    self.require_known_value_type(
+                        function,
+                        *value,
+                        bytes,
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.{name}"),
+                    );
+                }
+                self.require_results(function, instruction, &[bytes], &path);
+            }
+            InstructionKind::BytesDecodeUtf8 {
+                bytes: value,
+                ok_variant,
+                error_variant,
+                invalid_utf8_variant,
+            } => self.validate_bytes_decode_utf8_instruction(
+                function,
+                instruction,
+                *value,
+                *ok_variant,
+                *error_variant,
+                *invalid_utf8_variant,
+                &path,
+            ),
+            InstructionKind::BytesCompare { left, right, .. } => {
+                if bytes.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.left"),
+                        "Bytes comparison requires canonical managed Bytes#11",
+                    );
+                }
+                for (name, value) in [("left", left), ("right", right)] {
+                    self.require_known_value_type(
+                        function,
+                        *value,
+                        bytes,
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.{name}"),
+                    );
+                }
                 self.require_results(function, instruction, &[boolean], &path);
             }
             InstructionKind::ParseInt {
@@ -5341,6 +5518,17 @@ impl<'a> Validator<'a> {
         self.program.representations.type_id(semantic)
     }
 
+    fn managed_bytes_type(&self) -> Option<ValueTypeId> {
+        let bytes = self
+            .program
+            .representations
+            .type_id(&Type::Nominal(BYTES_TYPE_ID, Vec::new()))?;
+        self.program
+            .representations
+            .is_managed_bytes_type(bytes)
+            .then_some(bytes)
+    }
+
     fn product_fields(&self, ty: ValueTypeId) -> Option<&[ValueTypeId]> {
         let value_type = self.program.representations.value_type(ty)?;
         let Repr::Product(product) = self
@@ -5630,6 +5818,164 @@ impl<'a> Validator<'a> {
                     "ParseError status variant must exist and carry no payload",
                 );
             }
+        }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the decode opcode's complete closed-result identity is validated at one boundary"
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the complete nested Result and DecodeTextError shape is checked atomically"
+    )]
+    fn validate_bytes_decode_utf8_instruction(
+        &mut self,
+        function: &Function,
+        instruction: &Instruction,
+        bytes_value: ValueId,
+        ok_variant: u32,
+        error_variant: u32,
+        invalid_utf8_variant: u32,
+        path: &str,
+    ) {
+        let bytes = self.managed_bytes_type();
+        if bytes.is_none() {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.bytes"),
+                "UTF-8 decoding requires canonical managed Bytes#11",
+            );
+        }
+        self.require_known_value_type(
+            function,
+            bytes_value,
+            bytes,
+            ValidationCode::TypeMismatch,
+            format!("{path}.bytes"),
+        );
+        self.require_results(function, instruction, &[None], path);
+
+        let text = self.scalar_type(&Type::Text);
+        let managed_text = text.filter(|text| {
+            self.program
+                .representations
+                .value_type(*text)
+                .is_some_and(|value_type| {
+                    self.program.representations.repr(value_type.repr())
+                        == Some(&Repr::ManagedPointer)
+                })
+        });
+        if managed_text.is_none() {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.result[0]"),
+                "UTF-8 decoding requires the canonical managed Text representation",
+            );
+        }
+
+        let Some(result_ty) = instruction
+            .results
+            .first()
+            .and_then(|result| function.value(*result))
+            .map(Value::ty)
+        else {
+            return;
+        };
+        let error_semantic = Type::Nominal(DECODE_TEXT_ERROR_TYPE_ID, Vec::new());
+        let result_semantic =
+            Type::Nominal(RESULT_TYPE_ID, vec![Type::Text, error_semantic.clone()]);
+        if self
+            .program
+            .representations
+            .value_type(result_ty)
+            .is_none_or(|value_type| value_type.semantic() != &result_semantic)
+            || self.scalar_type(&result_semantic) != Some(result_ty)
+        {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.result[0]"),
+                "UTF-8 decoding result must be canonical prelude Result#1[Text, DecodeTextError#13]",
+            );
+        }
+
+        let Some(result_sum) = self.sum_repr(result_ty) else {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.result[0]"),
+                "UTF-8 decoding result must use a closed sum representation",
+            );
+            return;
+        };
+        if (ok_variant, error_variant) != (0, 1) {
+            self.error(
+                ValidationCode::InstructionShape,
+                format!("{path}.variants"),
+                "UTF-8 decoding requires canonical Ok=0 and Err=1 variants",
+            );
+        }
+        let variants = self
+            .program
+            .representations
+            .sum(result_sum)
+            .map(crate::SumRepr::variants)
+            .unwrap_or_default();
+        if variants.len() != 2 {
+            self.error(
+                ValidationCode::InstructionShape,
+                format!("{path}.result[0]"),
+                "UTF-8 decoding Result must contain exactly two variants",
+            );
+            return;
+        }
+        if managed_text.is_none_or(|text| variants[0].fields() != [text]) {
+            self.error(
+                ValidationCode::InstructionShape,
+                format!("{path}.ok_variant"),
+                "UTF-8 decoding success variant must carry exactly managed Text",
+            );
+        }
+        let error_ty = variants[1].fields().first().copied();
+        if variants[1].fields().len() != 1
+            || error_ty.is_none_or(|error_ty| {
+                self.program
+                    .representations
+                    .value_type(error_ty)
+                    .is_none_or(|value_type| value_type.semantic() != &error_semantic)
+                    || self.scalar_type(&error_semantic) != Some(error_ty)
+            })
+        {
+            self.error(
+                ValidationCode::InstructionShape,
+                format!("{path}.error_variant"),
+                "UTF-8 decoding error variant must carry exactly canonical DecodeTextError#13",
+            );
+            return;
+        }
+        let Some(error_sum) = error_ty.and_then(|error_ty| self.sum_repr(error_ty)) else {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.error_variant"),
+                "DecodeTextError#13 must use a closed sum representation",
+            );
+            return;
+        };
+        let invalid_utf8 = usize::try_from(invalid_utf8_variant).ok();
+        let exact_error = self
+            .program
+            .representations
+            .sum(error_sum)
+            .is_some_and(|sum| {
+                sum.variants().len() == 1
+                    && invalid_utf8 == Some(0)
+                    && sum.variants()[0].fields().is_empty()
+            });
+        if !exact_error {
+            self.error(
+                ValidationCode::InstructionShape,
+                format!("{path}.invalid_utf8_variant"),
+                "DecodeTextError#13 must contain only canonical InvalidUtf8=0 without payload",
+            );
         }
     }
 
@@ -5967,6 +6313,8 @@ fn instruction_direct_effects(kind: &InstructionKind) -> Effects {
         kind,
         InstructionKind::TextConcat { .. }
             | InstructionKind::TextGet { .. }
+            | InstructionKind::BytesAppend { .. }
+            | InstructionKind::BytesDecodeUtf8 { .. }
             | InstructionKind::FormatFloat { .. }
             | InstructionKind::JsonFormat { .. }
             | InstructionKind::ListAppend { .. }

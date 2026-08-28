@@ -22,6 +22,7 @@ pub enum BuildErrorCode {
     InvalidBlock,
     InvalidValueType,
     InvalidTextType,
+    InvalidBytesType,
     InvalidListType,
     InvalidTextMapType,
     InvalidTaskType,
@@ -145,6 +146,31 @@ impl ProgramBuilder {
                 "LCIR managed Text requires one unique registration on a 64-bit target",
             )
         })
+    }
+
+    /// Registers the exact compiler-known immutable Bytes type as one direct
+    /// moving-GC object-base pointer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after function declaration, for a non-64-bit target,
+    /// for any semantic type other than canonical Bytes, for duplicate
+    /// registration, or when an identity table is exhausted.
+    pub fn add_managed_bytes_type(&mut self, semantic: Type) -> Result<ValueTypeId, BuildError> {
+        if !self.functions.is_empty() {
+            return Err(BuildError::new(
+                BuildErrorCode::InvalidBytesType,
+                "LCIR managed Bytes must be registered before functions",
+            ));
+        }
+        self.representations
+            .add_managed_bytes(semantic)
+            .ok_or_else(|| {
+                BuildError::new(
+                    BuildErrorCode::InvalidBytesType,
+                    "LCIR managed Bytes requires one unique canonical Bytes#11 registration on a 64-bit target",
+                )
+            })
     }
 
     /// Registers one concrete immutable List as an exact managed object-base

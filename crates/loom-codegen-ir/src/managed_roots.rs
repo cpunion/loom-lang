@@ -104,8 +104,8 @@ impl ManagedRootPlan {
 /// A collecting call's ordinary arguments are deliberately added only after
 /// recording its live-after set. They need no caller root unless independently
 /// live after the call: ordinary callees publish parameters before their first
-/// collection, while the typed Text helper stages both inputs before it can
-/// collect.
+/// collection, while typed Text/Bytes helpers stage their inputs before they
+/// can collect.
 #[must_use]
 pub fn plan_managed_roots(
     program: &CheckedProgram,
@@ -337,6 +337,8 @@ fn collect_safepoint_values(
                 instruction.kind(),
                 InstructionKind::TextConcat { .. }
                     | InstructionKind::TextGet { .. }
+                    | InstructionKind::BytesAppend { .. }
+                    | InstructionKind::BytesDecodeUtf8 { .. }
                     | InstructionKind::FormatFloat { .. }
                     | InstructionKind::JsonFormat { .. }
                     | InstructionKind::TaskOutcomeTake { .. }

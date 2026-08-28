@@ -53,7 +53,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 33")?;
+    writeln!(output, "lcir 34")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -261,6 +261,40 @@ fn write_instruction(
         } => write!(
             output,
             "text.compare.{} %{left}, %{right}",
+            bool_predicate_name(*predicate)
+        ),
+        InstructionKind::TextEncodeUtf8 { text } => {
+            write!(output, "text.encode_utf8 %{text}")
+        }
+        InstructionKind::BytesLength { bytes } => write!(output, "bytes.length %{bytes}"),
+        InstructionKind::BytesGet {
+            bytes,
+            index,
+            missing_variant,
+            found_variant,
+        } => write!(
+            output,
+            "bytes.get %{bytes}, %{index}, missing {missing_variant}, found {found_variant}"
+        ),
+        InstructionKind::BytesAppend { left, right } => {
+            write!(output, "bytes.append %{left}, %{right}")
+        }
+        InstructionKind::BytesDecodeUtf8 {
+            bytes,
+            ok_variant,
+            error_variant,
+            invalid_utf8_variant,
+        } => write!(
+            output,
+            "bytes.decode_utf8 %{bytes}, ok {ok_variant}, error {error_variant}, invalid_utf8 {invalid_utf8_variant}"
+        ),
+        InstructionKind::BytesCompare {
+            predicate,
+            left,
+            right,
+        } => write!(
+            output,
+            "bytes.compare.{} %{left}, %{right}",
             bool_predicate_name(*predicate)
         ),
         InstructionKind::ParseInt {
