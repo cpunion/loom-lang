@@ -6841,6 +6841,181 @@ fn typed_async_state_machines_survive_forced_relocation_on_all_targets() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one differential gate keeps List/TextMap coroutine signatures, suspension roots, debug types, relocation pressure, and cross-target objects together"
+)]
+fn managed_collections_are_exact_typed_coroutine_frame_carriers() {
+    let source = include_str!("../../../fixtures/lcir-async-managed-collections/main.loom");
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert_eq!(interpreted.len(), 1, "{interpreted:#?}");
+    assert_eq!(
+        interpreted[0].status,
+        TestStatus::Passed,
+        "{interpreted:#?}"
+    );
+
+    let prepared = prepare_native_object(
+        &program,
+        EmitOptions::run("main"),
+        NativeRoutePolicy::Automatic,
+    )
+    .expect("prepare automatic managed-collection coroutine route");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+
+    let request = SourceArtifactRequest::Run {
+        entry: "main".into(),
+    };
+    let unsupported = lower_typed_artifact(
+        &program,
+        &request,
+        TargetLayout::new(32).expect("32-bit target layout"),
+    )
+    .expect("classify managed-collection coroutine for a 32-bit target");
+    let LoweringOutcome::Unsupported(report) = unsupported else {
+        panic!(
+            "managed coroutine pointers must fail closed outside the pinned 64-bit ABI: {unsupported:?}"
+        )
+    };
+    assert!(
+        report.items().iter().any(|item| matches!(
+            item.feature(),
+            UnsupportedFeature::SignatureType
+                | UnsupportedFeature::ExpressionType
+                | UnsupportedFeature::Suspension
+        )),
+        "32-bit managed coroutine report omitted the rejected pointer site: {report:#?}"
+    );
+
+    let artifact = lower_source_artifact(&program, &request);
+    let carry = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("carry"))
+        .expect("managed-collection carrier coroutine");
+    let carry_plan = carry.coroutine().expect("checked carrier coroutine plan");
+    assert_eq!(carry_plan.suspensions().len(), 2);
+    let first_live = carry_plan.suspensions()[0]
+        .live()
+        .iter()
+        .filter_map(|ty| artifact.representations().value_type(*ty))
+        .collect::<Vec<_>>();
+    assert!(
+        first_live
+            .iter()
+            .any(|value| matches!(value.semantic(), Type::List(_)))
+    );
+    assert!(
+        first_live
+            .iter()
+            .any(|value| { value.kind() == loom_codegen_ir::ValueTypeKind::ManagedTextMap })
+    );
+    for value in first_live.iter().filter(|value| {
+        matches!(value.semantic(), Type::List(_))
+            || value.kind() == loom_codegen_ir::ValueTypeKind::ManagedTextMap
+    }) {
+        assert_eq!(
+            artifact.representations().repr(value.repr()),
+            Some(&Repr::ManagedPointer)
+        );
+    }
+
+    let lcir = emit_and_run_lcir_with_options(
+        &artifact,
+        "source-async-managed-collections",
+        NativeObjectOptions::default().with_debug_sources(vec![DebugSource::new(
+            0,
+            "main.loom",
+            source,
+        )]),
+    );
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert_eq!(lcir.output.stdout, b"Unit\n");
+    for required in [
+        "loom.lcir.coroutine.resume.",
+        "loom.lcir.coroutine.descriptor.",
+        "loom.lcir.list.descriptor",
+        "loom.lcir.text_map.descriptor",
+        "loom_gc_typed_repeated_alloc_v1",
+        "task.await.live.",
+        "managed.root.reload",
+        "TextMapObject",
+    ] {
+        assert!(
+            lcir.ir.contains(required),
+            "managed coroutine IR omitted `{required}`:\n{}",
+            lcir.ir
+        );
+    }
+    let text_map_debug_type = lcir
+        .ir
+        .lines()
+        .find(|line| line.contains("name: \"TextMapObject\""))
+        .expect("TextMap debug object type");
+    assert!(
+        text_map_debug_type.contains("size: 64") && text_map_debug_type.contains("align: 64"),
+        "TextMap debug header must match its one-i64 repeated-object prefix: {text_map_debug_type}"
+    );
+    let carry_offsets = format!(
+        "@loom.lcir.coroutine.root_offsets.{} = private unnamed_addr constant [8 x i64] [i64 8, i64 16, i64 32, i64 40, i64 56, i64 64, i64 80, i64 88]",
+        carry.id().raw()
+    );
+    let carry_bitmaps = format!(
+        "@loom.lcir.coroutine.live_bitmaps.{} = private unnamed_addr constant [4 x i64] [i64 3, i64 12, i64 48, i64 192]",
+        carry.id().raw()
+    );
+    assert!(
+        lcir.ir.contains(&carry_offsets),
+        "List/TextMap frame root offsets changed unexpectedly:\n{}",
+        lcir.ir
+    );
+    assert!(
+        lcir.ir.contains(&carry_bitmaps),
+        "each carry suspension must publish exactly its checked List/TextMap pair:\n{}",
+        lcir.ir
+    );
+    assert!(!lcir.ir.contains("%loom.Value"), "{}", lcir.ir);
+
+    let test_artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let native_tests = emit_and_run_lcir(&test_artifact, "source-async-managed-collections-tests");
+    assert!(
+        native_tests.output.status.success(),
+        "{:?}",
+        native_tests.output
+    );
+    assert!(
+        String::from_utf8_lossy(&native_tests.output.stdout)
+            .contains("managedCollectionsCrossAwait"),
+        "{:?}",
+        native_tests.output
+    );
+
+    for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
+        let directory = tempfile::tempdir().expect("create managed coroutine target output");
+        let object = directory.path().join(if target.contains("windows") {
+            "async-managed-collections.obj"
+        } else {
+            "async-managed-collections.o"
+        });
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit managed coroutine object for {target}: {error}"));
+        assert!(
+            object.is_file(),
+            "missing managed coroutine object for {target}"
+        );
+    }
+}
+
+#[test]
 fn typed_sleep_uses_checked_lcir_and_the_narrow_timer_runtime_abi() {
     let source = include_str!("../../../fixtures/lcir-typed-sleep/main.loom");
     let program = compile_source(source);

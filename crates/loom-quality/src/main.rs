@@ -38,6 +38,7 @@ const ASYNC_GENERIC_FIXTURE: &str = "fixtures/async-generic-contracts";
 const STANDARD_LIBRARY_FIXTURE: &str = "fixtures/standard-library/main.loom";
 const TYPED_LCIR_FIXTURE: &str = "fixtures/typed-lcir";
 const TYPED_ASYNC_FIXTURE: &str = "fixtures/lcir-typed-async";
+const ASYNC_MANAGED_COLLECTIONS_FIXTURE: &str = "fixtures/lcir-async-managed-collections";
 const TYPED_SLEEP_FIXTURE: &str = "fixtures/lcir-typed-sleep";
 const TYPED_TASK_ALL_FIXTURE: &str = "fixtures/lcir-typed-task-all";
 const TYPED_TASK_ANY_FIXTURE: &str = "fixtures/lcir-typed-task-any";
@@ -50,7 +51,7 @@ const QUALITY_EVIDENCE_SCHEMA_VERSION: u32 = 2;
 const STANDARD_LIBRARY_LEGACY_ROUTE: NativeRouteExpectation =
     NativeRouteExpectation::LegacyAllowed {
         name: "standard-library-managed-runtime",
-        reason: "dynamic collections, JSON, async I/O, and Task operations are not yet complete in typed LCIR",
+        reason: "JSON parse/format, typed external I/O, and logging are not yet complete in typed LCIR",
     };
 
 const TASKS: &[TaskSpec] = &[
@@ -372,6 +373,18 @@ fn main() {
         "typed-async",
     ) {
         report.failures.push(format!("typed-async: {error}"));
+    }
+    if let Err(error) = typed_async_gate(
+        &workspace,
+        &runtime,
+        &mut report.gates,
+        &mut report.native_routes,
+        ASYNC_MANAGED_COLLECTIONS_FIXTURE,
+        "async-managed-collections",
+    ) {
+        report
+            .failures
+            .push(format!("async-managed-collections: {error}"));
     }
     if let Err(error) = typed_async_gate(
         &workspace,

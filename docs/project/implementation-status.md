@@ -57,6 +57,7 @@ The following repository fixtures are run through real compiler stages:
 | `fixtures/lcir-managed-lists` | direct repeated storage for scalar/Text/product/sum/nested-List elements, immutable aliases, checked reads, geometric unique append, moving-GC roots, and real check/build/test/run commands |
 | `fixtures/lcir-typed-textmap` | compiler-private direct `TextMap[V]` storage for scalar/Text/product/sum/List/nested-map values, immutable insertion/replacement/removal, containment, exact `Option[V]` lookup, insertion-order-independent structural equality, removal during forced moving-GC relocation, interpreter/legacy/typed differential execution, release IR, Linux/MSVC objects, 32-bit fail-close classification, and real `check/build/test/run` commands |
 | `fixtures/lcir-typed-async` | checked stackless coroutine frames for infallible scalar/product/Text async functions, typed Task handles and one-child await joins, exact suspension root maps, forced parent-Text relocation, interpreter/legacy/typed differential execution, Linux/MSVC objects, and real `check/build/test/run` commands |
+| `fixtures/lcir-async-managed-collections` | exact one-pointer `List[T]` and compiler-private `TextMap[V]` values in async parameters, results, nested products, and live suspension rows; moving-GC pressure, checked frame bitmaps, debug metadata, Linux/MSVC objects, 32-bit fail-close classification, and real `check/build/test/run` commands |
 | `fixtures/lcir-typed-sleep` | first-class checked `Task.sleep` with `Int` and `Duration` inputs, zero and positive deadlines, managed values live across later awaits, and typed-LCIR main/test native execution |
 | `fixtures/lcir-typed-task-all` | direct multi-child awaits and stored exact heterogeneous `Task.all`, one-field and mixed Text/Int/Unit tuples, shared static-shape descriptors, atomic child adoption, moving-GC survival, interpreter/typed execution plus legacy/typed child-fault and sibling-cancellation comparison, release IR, Linux/MSVC objects, and real `check/build/test/run` commands |
 | `fixtures/lcir-typed-task-any` | nonempty immediately awaited fixed homogeneous `Task.any`, deterministic nonzero winner selection, managed Text results, repeated loser cancellation and retirement, typed-object surface inspection, and real `check/build/test/run` commands |
@@ -126,10 +127,10 @@ target boundary.
 
 Remaining atomic fallback includes open or prerequisite-dependent dynamic
 concepts, unsupported proof or contract value shapes, recursive nominal
-equality through managed collections, unsupported managed carriers, explicit
-mutable coroutine parameters, raw readiness, empty/stored/computed/runtime-sized
-Task List joins, first-class `Task.any`/`Task.settled`/`Task.race` results,
-List/TextMap or open-dynamic coroutine frames, and unsupported projected inout
+equality through managed collections, finite/open dynamic managed carriers,
+explicit mutable coroutine parameters, raw readiness,
+empty/stored/computed/runtime-sized Task List joins, first-class
+`Task.any`/`Task.settled`/`Task.race` results, and unsupported projected inout
 shapes.
 
 ## CI quality evidence
@@ -143,8 +144,8 @@ The controlled runner prepares every native object through the production
 router, and requires Core 0.1, Core 0.2, Core 0.3, the async generic-contract
 fixture, and the complete C3 repository to select LCIR for their prepared main
 or test artifacts. The remaining reviewed legacy allowance covers the broader
-standard-library fixture's dynamic collections, JSON, async I/O, and dynamic
-Task operations.
+standard-library fixture's JSON parse/format, typed external I/O, and logging
+operations.
 
 The PR benchmark workflow compares the base and candidate merge revisions on
 one Ubuntu x86-64 runner and one macOS arm64 runner. A separate trusted workflow

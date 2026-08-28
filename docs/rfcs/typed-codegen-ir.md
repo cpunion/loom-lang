@@ -465,12 +465,14 @@ readiness, exact result or outcome extraction, and structured
 cancellation-and-drain. Public policy names do not become LCIR source operators.
 
 The remaining fallback boundary includes explicit mutable coroutine
-parameters, Lists, TextMaps, finite-catalog or open dynamic-concept frame values,
-raw readiness, empty/stored/computed/runtime-sized Task List joins, and
-first-class `Task.any`, `Task.settled`, or `Task.race` results. Static joins are
-admitted only when a nonempty fixed argument row or sole List literal is
-consumed immediately by `.await`; `any` and `race` require one exact output
-type.
+parameters, finite-catalog or open dynamic-concept frame values, raw readiness,
+empty/stored/computed/runtime-sized Task List joins, and first-class
+`Task.any`, `Task.settled`, or `Task.race` results. Concrete closed `List[T]`
+and compiler-private `TextMap[V]` values are canonical one-pointer frame
+carriers in parameters, results, nested products, and suspension-live rows.
+Static joins are admitted only when a nonempty fixed argument row or sole List
+literal is consumed immediately by `.await`; `any` and `race` require one exact
+output type.
 
 Managed Text concat calls
 `loom_runtime_text_concat_typed_v1(left, right, output)`. The helper must stage

@@ -42,6 +42,16 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- Typed coroutine frames now admit canonical one-pointer `List[T]` and
+  compiler-private `TextMap[V]` values in parameters, results, nested products,
+  and suspension-live rows. Their repeated element graphs remain governed by
+  the existing exact collection descriptors; the frame records only the
+  managed pointer and its per-state liveness. The
+  `lcir-async-managed-collections` fixture closes moving-GC pressure, debug
+  metadata, 32-bit fail-close classification, Linux/MSVC object emission, and
+  real `check/build/test/run`. This is an admission change over existing LCIR
+  representations and typed-task/GC wires, so no serialized format, cache
+  schema, object domain, or runtime ABI version changes.
 - Typed LCIR now carries `MAY_FAULT` through cleanup-free, non-inout stackless
   coroutines. Checked arithmetic, assertions, ordinary fallible invokes, and
   caller-side `requires` or callee-side `ensures` report their exact primary
@@ -74,8 +84,8 @@ artifact, or runtime compatibility.
   second child, and forced moving-GC relocation of a parent Text root while its
   child runs. A zero join-suspend result now preserves the current `Running`
   activation and removes its redundant ready-queue entry before inline result
-  taking. Async cleanup, inout/writeback, sleep/readiness, Task combinators,
-  List/TextMap frame values and dynamic concepts remain the
+  taking. At that stage, async cleanup, inout/writeback, sleep/readiness, Task
+  combinators, List/TextMap frame values, and dynamic concepts remained the
   reviewed Core03 legacy allowance. Together with the previously deferred
   typed-TextMap vocabulary, this advances the LCIR dump to 20, artifact
   identity to schema 21, native-object domain to v17, and LLVM object-cache

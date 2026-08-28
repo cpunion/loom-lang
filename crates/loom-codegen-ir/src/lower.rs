@@ -1578,11 +1578,20 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 return false;
             };
             match &ty {
-                Type::Unit | Type::Bool | Type::Int | Type::Float | Type::Text => true,
+                // A List is one exact managed pointer in a coroutine frame.
+                // Its element graph is validated independently by the
+                // aggregate plan; recursively embedding that graph here would
+                // incorrectly treat repeated storage as by-value frame
+                // storage. The compiler-private TextMap case below follows
+                // the same rule.
+                Type::Unit | Type::Bool | Type::Int | Type::Float | Type::Text | Type::List(_) => {
+                    true
+                }
                 Type::Tuple(elements) => elements
                     .iter()
                     .all(|element| visit(program, dyn_concepts, element, false, active, remaining)),
                 Type::Task(_) => allow_task_handle,
+                Type::Nominal(id, _) if program.prelude.text_map == Some(*id) => true,
                 Type::Nominal(_, _) => {
                     if !active.insert(ty.clone()) {
                         return false;
@@ -1607,7 +1616,6 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 }
                 Type::Never
                 | Type::Parameter(_)
-                | Type::List(_)
                 | Type::AssociatedProjection { .. }
                 | Type::TaskOutcome(_)
                 | Type::View { .. }

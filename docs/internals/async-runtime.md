@@ -66,8 +66,12 @@ runtime cleanup stack, runtime symbol, or runtime ABI revision.
 
 Current typed coverage includes coroutines without explicit mutable parameters
 whose parameters, results, and live values use direct scalar/refined/product/Text
-shapes or closed sums over those shapes, plus the closed static Task joins
-described below. A synchronous callee may still use Loom's functional
+shapes, closed sums over those shapes, or concrete closed `List[T]` and
+compiler-private `TextMap[V]` carriers. Each collection occupies one exact
+managed-pointer frame cell; its repeated element graph remains in the ordinary
+typed allocation descriptor rather than being embedded by value in the frame.
+The same representation composes inside products and sums. Closed static Task
+joins are described below. A synchronous callee may still use Loom's functional
 inout ABI. The coroutine caller applies every normal or fault writeback to its
 current SSA environment before continuing; on fault, this happens before the
 coroutine's active lexical cleanup suffix. The coroutine itself does not expose
@@ -100,9 +104,9 @@ suspension bookkeeping.
 Selected async functions with explicit mutable coroutine parameters, raw
 readiness, dynamically sized or computed-List Task joins, `Task.any`,
 `Task.settled`, or `Task.race` whose result is stored or otherwise used
-first-class, List/TextMap frame values, and finite-catalog or open
-dynamic-concept frame values still select the complete legacy route. Async
-roots with `requires` use the same typed state-zero check as child Tasks.
+first-class, and finite-catalog or open dynamic-concept frame values still
+select the complete legacy route. Async roots with `requires` use the same
+typed state-zero check as child Tasks.
 
 ## Runtime and executor
 

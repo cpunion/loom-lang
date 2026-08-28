@@ -104,11 +104,11 @@ and test artifacts. Tuple construction and `let` destructuring are direct SSA
 construction and extraction; they do not allocate tuple nodes. Invariant-free
 record projections and eligible projected mutable receivers use exact typed
 extraction and functional root reconstruction on normal and fault edges.
-Generic records, managed values other than Text leaves in products, protected projections,
-runtime-checked construction, concepts, contract or cleanup shapes outside the
-direct slices, and unsupported async shapes still select the complete universal
-route. Typed LCIR does not change the legacy runtime ABI or make either object
-ABI public.
+Shapes outside the current typed-LCIR SupportReport—including non-regular
+generic expansion, protected projections, unsupported contract/cleanup forms,
+explicit mutable coroutine parameters, and finite/open dynamic coroutine
+carriers—still select the complete universal route. Typed LCIR does not change
+the legacy runtime ABI or make either object ABI public.
 
 See [Code generation IR](codegen-ir.md) for the implemented foundation and the
 [typed code generation IR RFC](../rfcs/typed-codegen-ir.md) for the accepted
@@ -131,6 +131,13 @@ the output type of every awaited child before the forwarded live types. The
 descriptor lists managed-leaf offsets only for values live in each state and
 for the completed result; opaque child handles are scheduler bookkeeping, not
 GC pointer cells.
+
+A concrete closed `List[T]` or compiler-private `TextMap[V]` contributes one
+managed-pointer cell at every frame occurrence, including nested product/sum
+leaves. The collection's element pointer map remains in its typed repeated
+descriptor. Frame validation accepts only canonical direct List and
+`ManagedTextMap` registrations; a finite/open dynamic box cannot be relabeled as
+a collection carrier.
 
 An immediately awaited fixed tuple or fixed-argument `Task.all` uses that
 multi-child suspension row directly. A first-class stored `Task.all` uses a
