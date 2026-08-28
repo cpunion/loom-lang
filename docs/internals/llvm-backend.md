@@ -284,6 +284,42 @@ scheduler, suspension, or catchable fault channel. Other dynamic Text
 producers and Text inside a transparent/refined carrier remain atomic
 whole-artifact fallback.
 
+### Direct managed Bytes
+
+Canonical `Bytes` is one opaque managed pointer. `Text.encode_utf8` forwards
+the exact immutable Text object pointer and performs no allocation. A Bytes
+value may therefore carry the Text descriptor, while bytes materialized by
+append carry the distinct `loom_layout_bytes_v1` ByteObject descriptor. The
+shared 32-byte prefix provides allocation and byte lengths; the descriptor and
+the ByteObject's required-zero reserved field prevent arbitrary byte storage
+from masquerading as Text. Descriptor identity remains compiler/runtime
+metadata and is not source RTTI.
+
+Length and checked indexing load the header and trailing byte range directly.
+Equality and inequality compare byte lengths and contents, never pointer
+identity. These operations do not publish a root row or reach a moving-GC
+safepoint. Negative and out-of-range indexes construct `None`; a found byte is
+zero-extended to the source `Int` carried by `Some`.
+
+Append calls
+`loom_runtime_bytes_append_typed_v1(left, right, out_bytes)`. The runtime
+validates both admitted descriptors, copies both complete immutable payloads to
+non-GC staging storage, then allocates and publishes one initialized ByteObject.
+Decode calls
+`loom_runtime_bytes_decode_utf8_typed_v1(bytes, out_text)`. A valid Text-backed
+value returns the same pointer without allocation; a standalone ByteObject is
+staged and validated before a possible Text allocation; invalid UTF-8 selects
+the ordinary nested `DecodeTextError.InvalidUtf8` variant. Positive or unknown
+ABI statuses trap as compiler/runtime defects. LCIR conservatively treats both
+instructions as collection safepoints: the emitter publishes the exact live
+root state before the call and passes a stable output cell. Each runtime helper
+publishes its fully initialized pointer as its final operation, so relocation
+cannot stale an input or expose a partial result. Append may reuse the result's
+direct root cell when one exists and otherwise uses a temporary. Decode always
+uses a stable temporary; after the call, LLVM constructs and publishes the
+exact Result without an intervening safepoint. No universal value, executor,
+JSON policy, or ownership/borrow syntax is involved.
+
 ## Direct managed Lists
 
 A concrete closed `List[T]` is a direct managed pointer. Null is the canonical
@@ -598,10 +634,10 @@ is correct.
 
 ## Object identity and linking
 
-The canonical textual dump is `lcir 33`, and the checked artifact identity uses
-schema 34. Object identities are route-separated:
+The canonical textual dump is `lcir 34`, and the checked artifact identity uses
+schema 35. Object identities are route-separated:
 
-- `loom-lcir-native-object-v30` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v31` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -613,13 +649,14 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v35` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v36` and never suppresses fingerprint
 errors.
 
 The current LCIR domains encode the explicit transitive effect lattice,
 canonical typed fault metadata, concrete proof-replay guards,
 source-contract placement, direct managed
-Text semantics, managed leaves inside unboxed products and closed sums,
+Text semantics, one-pointer typed Bytes and its descriptor provenance, managed
+leaves inside unboxed products and closed sums,
 monomorphized managed Lists, compiler-private concrete TextMaps, the generic
 collision-free closed-sum carrier, the canonical recursive Json graph, List
 uniqueness certificates, lexical cleanup, and checked coroutine plans with
@@ -733,6 +770,18 @@ Direct Json formatting adds the collecting
 component 22 with `typed-json-v1` and `runtime-v16`; the compiler-private
 instruction advances the LCIR, artifact, object, and cache domains listed
 above. Text v3 and GC v9 remain unchanged.
+
+Typed Bytes adds the collecting
+`loom_runtime_bytes_append_typed_v1` and
+`loom_runtime_bytes_decode_utf8_typed_v1` boundaries plus the distinct
+`loom_layout_bytes_v1` descriptor. The descriptor is consumed inside the
+runtime implementation; generated objects reference only the two operation
+symbols and the established typed-root wire, not the allocator or descriptor
+symbol. This advances the native runtime identity to component 23 with
+`typed-bytes-v1` and `runtime-v17`; `text-v3`, `gc-v9`, and public
+standard-library ABI v4 remain unchanged. The five typed Bytes source APIs
+advance the LCIR, artifact, native-object, and object-cache domains listed
+above without adding a JSON policy or ownership syntax.
 
 They also encode closed static-witness method selection and normalized
 associated types. Those proofs are absent from the machine ABI: LLVM receives

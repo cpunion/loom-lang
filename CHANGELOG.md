@@ -57,6 +57,24 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- Typed LCIR now covers the existing `Text.encode_utf8`, `Bytes.length`,
+  `Bytes.get`, `Bytes.append`, and `Bytes.decode_utf8` APIs. A `Bytes` value is
+  one direct managed pointer: encoding shares the immutable Text object without
+  allocating, while append publishes an object with a distinct Bytes
+  descriptor so arbitrary bytes cannot masquerade as Text. Length, checked
+  indexing, and content comparison do not reach a moving-GC safepoint. Append
+  and decode use the typed `loom_runtime_bytes_append_typed_v1` and
+  `loom_runtime_bytes_decode_utf8_typed_v1` boundaries, stage source bytes
+  before any collection, and publish fully initialized pointers last through
+  stable output cells.
+  Text-backed decode can return the shared Text pointer; decoding a valid
+  standalone Bytes object allocates a canonical Text, and invalid UTF-8 remains
+  the ordinary `DecodeTextError.InvalidUtf8` result. This primitive slice adds
+  no JSON policy and no ownership or borrow syntax. It advances the LCIR dump
+  to 34, artifact schema to 35, native-object domain to v31, LLVM object-cache
+  domain to v36, and native runtime ABI to component 23 with `typed-bytes-v1`
+  and `runtime-v17`; the public standard-library ABI remains v4.
+
 - Interpreted MIR advances to version 26. Generic compiler-cache artifacts now
   require a null `entry`, while executable artifacts require a fixed string
   entry. The two decoders reject the opposite artifact kind explicitly before

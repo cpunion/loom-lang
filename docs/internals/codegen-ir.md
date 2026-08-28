@@ -4,11 +4,11 @@
 selects checked-MIR function roots and computes the closed-world source graph
 used by production native compilation. Separately, its LCIR foundation
 provides target-aware scalar, direct Text, closed-product, closed-sum,
-transparent nominal, managed List, compiler-private typed TextMap and typed
-Task-handle representations, canonical structured logging, compiler-private
-finite dynamic catalogs, whole-artifact checked-MIR lowering, typed SSA data
-structures and builders, independent program and artifact-root validators, and
-a textual dump for tests and review.
+transparent nominal, managed Bytes and List, compiler-private typed TextMap and
+typed Task-handle representations, canonical structured logging,
+compiler-private finite dynamic catalogs, whole-artifact checked-MIR lowering,
+typed SSA data structures and builders, independent program and artifact-root
+validators, and a textual dump for tests and review.
 
 `loom-codegen-llvm` consumes the resulting `CheckedArtifact` directly and emits
 its typed functions and run/test harness without the universal value ABI.
@@ -56,6 +56,7 @@ explicit byte or address-space layout must add its deciding facts here. The cano
 | `Float` | `Scalar(F64)` |
 | literal-only `Text` on a 64-bit target | `ImmortalText`, one opaque pointer |
 | artifact containing `Text.concat` or a Text-bearing product on a 64-bit target | `ManagedPointer`, one opaque pointer for every Text |
+| canonical `Bytes` on a 64-bit target | `ManagedPointer`, one opaque pointer to immutable Text-backed or standalone byte storage |
 | structural tuple | `Product(element value types...)` |
 | closed invariant-free record | `Product(field value types...)` |
 | closed record with a proven invariant | protected `Product(field value types...)` |
@@ -128,6 +129,30 @@ One UTF-8 literal may contain at most 1 MiB, and all literal instructions in
 one artifact may contain at most 16 MiB in total. Crossing either bound is
 unsupported coverage and selects the complete legacy route. Independent LCIR
 validation repeats both limits before LLVM constructs any constant object.
+
+Canonical `Bytes` has one tagless managed-pointer representation. The exact
+`Text.encode_utf8` instruction preserves the immutable Text object pointer, so
+encoding allocates nothing and the resulting Bytes retains a Text descriptor.
+Bytes created by append instead use a distinct ByteObject descriptor with no
+Unicode-scalar claim. Both proven descriptor forms share the checked prefix and
+trailing-byte layout; no raw pointer, foreign descriptor, or user nominal type
+can enter this representation.
+
+`BytesLength`, `BytesGet`, and `BytesCompare` inspect immutable headers and byte
+ranges without a moving-GC safepoint. Checked indexing widens the selected
+unsigned byte to `Int` and returns the canonical `Option[Int]`; a negative or
+out-of-range index returns `None`. Equality is content equality rather than
+managed-pointer identity. `BytesAppend` and `BytesDecodeUtf8` are explicit
+`MAY_COLLECT` instructions. Append returns a fresh ByteObject. Decode returns
+the shared pointer for a valid Text-backed value, allocates a canonical Text for
+a valid standalone ByteObject, and otherwise constructs the exact
+`Result[Text, DecodeTextError]` invalid-UTF-8 variant. The root plan protects
+live inputs across either typed boundary. Each runtime helper publishes its
+fully initialized pointer last through a stable output cell. Append may reuse
+the result's direct root cell when one exists; decode uses a stable temporary,
+then constructs and publishes the exact Result without an intervening
+safepoint. These five existing source APIs introduce no JSON-specific operation
+or runtime type registry, and require no ownership or borrow syntax.
 
 ## Structural equality lowering
 
@@ -1125,6 +1150,10 @@ not repair a malformed program. Current checks include:
   a Text-bearing product/sum or TextMap is present; literal budgets, concat/get
   operand/result types, canonical `Option[Text]` shape, collection effects, and immortal
   literal/closed-flow provenance where that narrower representation applies;
+- the exact canonical `Bytes` nominal registration as one `ManagedPointer`,
+  including Text-backed encode provenance, operation operand/result types,
+  canonical `Option[Int]` and `Result[Text, DecodeTextError]` shapes, and exact
+  append/decode collection effects;
 - exact concrete closed `List[T]` and compiler-private `TextMap[V]`
   registrations, including repeated-storage pointer leaves, matching operation
   operands, canonical `Option[T]`/`Option[V]` results, and allocation effects;
@@ -1197,7 +1226,7 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 33` text includes
+text even when the graphs are otherwise equivalent. The `lcir 34` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys including their contract-boundary role, every function's
 selected entry block and ordered effect set,
@@ -1209,7 +1238,8 @@ typed runtime/contract fault identity including proof-replay and Duration
 guards, closed parse operations, and managed Float formatting,
 managed-pointer representations, finite dynamic candidate catalogs,
 `dyn.construct`, `dyn.switch`, and
-`text.concat`, `text.get`, `json.format`, typed resource-close and structured-log
+`text.concat`, `text.get`, `text.encode_utf8`, the typed Bytes operations,
+`json.format`, typed resource-close and structured-log
 edges, transient
 protected-receiver updates, typed TextMap containment/removal/indexed-entry
 operations, and the checked value type of every block parameter and instruction

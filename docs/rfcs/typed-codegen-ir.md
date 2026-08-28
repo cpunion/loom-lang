@@ -18,27 +18,26 @@ artifact format, an ownership system, or a public FFI ABI.
 The direct foundation and its first production route are described in the
 current [Code generation IR internals](../internals/codegen-ir.md). Ordinary
 native build, run, and test preparation now selects complete supported
-primitive, direct literal/concat/get Text, structural-tuple, closed-record, and
-compile-time-established refined artifacts, plus bounded concrete direct
-generic instances over those representations and eligible concrete
-closed-enum artifacts including managed Text payloads, lexical cleanup, and
-the supported source-contract subset, plus checked stackless coroutines with
-typed Task handles, `Task.sleep`, and nonempty static forms of the standard
-`Task.all`, `Task.any`, `Task.settled`, and `Task.race` APIs into typed LCIR.
-Coroutine coverage includes exact terminal-outcome capture, static lexical
-cleanup across suspension and cancellation, plus synchronous functional inout
-calls from coroutine bodies. Reachable unsupported features fall back atomically.
-The broader representation migration and legacy deletion gates in this record
-are not complete.
+primitive, direct Text, one-pointer typed Bytes, structural-tuple,
+closed-record, and compile-time-established refined artifacts, plus bounded
+concrete direct generic instances over those representations and eligible
+concrete closed-enum artifacts including managed Text payloads, lexical
+cleanup, and the supported source-contract subset, plus checked stackless
+coroutines with typed Task handles, `Task.sleep`, and nonempty static forms of
+the standard `Task.all`, `Task.any`, `Task.settled`, and `Task.race` APIs into
+typed LCIR. Coroutine coverage includes exact terminal-outcome capture, static
+lexical cleanup across suspension and cancellation, plus synchronous
+functional inout calls from coroutine bodies. Reachable unsupported features
+fall back atomically. The broader representation migration and legacy deletion
+gates in this record are not complete.
 
 ## Motivation
 
 The production LLVM backend still lowers artifacts outside current direct LCIR
 coverage through a universal value implementation and several closed-world
-native specializations. Managed values other than direct Text values and
-Text-bearing products/sums,
-unsupported or recursive enums,
-runtime-checked constraints and dynamic concepts,
+native specializations. Unsupported managed and projected shapes,
+nonregular generic expansion, open or prerequisite-dependent dynamic concepts,
+runtime-checked generic constraints,
 cleanup shapes outside the direct lexical slice, async shapes outside the
 checked coroutine slice, and private-list paths still repeat representation, proof,
 call-compatibility, and runtime-requirement decisions inside the legacy target
@@ -124,6 +123,8 @@ vocabulary is:
 - one opaque `ManagedPointer` for every Text in an artifact where concat or a
   Text-bearing product is reachable; literals remain static objects and concat
   results are typed moving-GC leaves in the same direct pointer ABI;
+- one opaque `ManagedPointer` for canonical `Bytes`; `Text.encode_utf8` shares
+  the immutable Text object, while append materializes a distinct ByteObject;
 - `Product(element value types...)` for a structural tuple whose transitive
   elements are direct values;
 - `Product(field value types...)` for a closed, invariant-free record whose
@@ -165,13 +166,30 @@ carriers remain whole-artifact fallback. Concrete closed managed Lists are
 direct repeated allocations. Literal planning is bounded to
 1 MiB of UTF-8 for one literal and 16 MiB across one LCIR artifact.
 
+The direct Bytes slice covers the existing `Text.encode_utf8`, `Bytes.length`,
+`Bytes.get`, `Bytes.append`, and `Bytes.decode_utf8` APIs plus content equality.
+Encode preserves the Text pointer without allocating. Length, checked byte
+indexing, and equality inspect immutable headers and byte ranges without a
+moving-GC safepoint. Append and decode add `MAY_COLLECT`; their typed runtime
+boundaries stage source bytes before collection and publish fully initialized
+pointers last through stable output cells. Append may reuse the result's direct
+root cell when one exists. Decode uses a stable temporary, then constructs and
+publishes its exact Result without an intervening safepoint. A Text-backed
+decode returns the shared Text pointer, while a valid standalone ByteObject
+produces a newly allocated canonical Text.
+Invalid UTF-8 remains the ordinary `DecodeTextError.InvalidUtf8` value. The
+distinct ByteObject descriptor is runtime layout metadata, not source RTTI.
+This primitive representation adds no JSON policy and no ownership or borrow
+syntax.
+
 Concrete structural equality is generated from this same representation plan.
 Products compare exact fields, transparent values compare their declared base,
 and sums dispatch both tags before observing a matching active payload. Lists
 compare length and then canonical `Option[T]` reads in a nonallocating proved
 loop. Ordinary expressions and contracts share the lowering. Recursive nominal
-equality that re-enters through a List remains atomic fallback until comparison
-instances can be recursive without cloning an unbounded CFG.
+equality that re-enters through a List or TextMap closes through finite,
+type-specialized `StructuralEquality` callable cycles rather than cloning an
+unbounded CFG or using a runtime type switch.
 
 Transparent representation reuse is not an arbitrary layout cast. The plan
 records the exact base type, `RefineProven` requires that base and a distinct
@@ -335,6 +353,7 @@ source function:
 | `Scalar(I64)` | `i64` |
 | `Scalar(F64)` | `double` |
 | `ImmortalText` or `ManagedPointer` Text | opaque pointer |
+| `ManagedPointer` Bytes | opaque pointer |
 | `TaskHandle` | opaque scheduler-owned pointer |
 | `Product(fields...)` | literal LLVM struct of the recursively mapped fields |
 | tagless `Sum` | its sole variant payload struct |
@@ -360,8 +379,8 @@ Lowering and independent validation separately compute the least transitive
 closure over direct and invoke edges. A synchronous caller inherits the effect
 of a precondition it evaluates. An async precondition belongs to the child
 coroutine's state-zero path, so `TaskCreate` does not inherit child effects.
-`TextConcat`, `TextGet`, `FormatFloat`, and `JsonFormat` are collecting
-opcodes. `TaskCreate` and `TaskJoinAll` require an
+`TextConcat`, `TextGet`, `BytesAppend`, `BytesDecodeUtf8`, `FormatFloat`, and
+`JsonFormat` are collecting opcodes. `TaskCreate` and `TaskJoinAll` require an
 executor; neither operation itself suspends. `AwaitTasks` contributes both
 `MAY_FAULT` and `MAY_SUSPEND` and accepts one or more ordered children. The
 explicit fallible `TaskSleep` terminator requires `MAY_FAULT` and
@@ -505,8 +524,9 @@ allocate a 32-byte, 8-aligned, pointer-free typed prefix with trailing bytes,
 initialize it without a safepoint, and publish the result last. OOM is an
 uncatchable process-level fault; every other nonzero status fails closed. LLVM
 publishes exact typed-root states before concat and transitively collecting
-calls. A direct Text value has one stable cell; a live unboxed product has one
-cell per deterministic Text-leaf projection. A closed sum catalogs candidate
+calls. A direct managed Text or Bytes value has one stable cell; a live unboxed
+product has one cell per deterministic managed-pointer projection. A closed sum
+catalogs candidate
 cells for every variant, conjoins nested tag predicates, publishes only the
 active variant, and clears all inactive candidates. Definitions and phis
 publish the leaves, aggregate uses are reconstructed progressively from
@@ -637,6 +657,18 @@ close without a runtime type switch. This advances the canonical dump to
 `lcir 33`, artifact identity to schema 34, LCIR native-object domain to
 `loom-lcir-native-object-v30`, and CLI object-cache domain to
 `loom-llvm-object-cache-v35`. It adds no runtime ABI or new LCIR instruction.
+
+Typed Bytes subsequently adds the `TextEncodeUtf8`, `BytesLength`, `BytesGet`,
+`BytesAppend`, `BytesDecodeUtf8`, and `BytesCompare` instructions. Generated
+objects call `loom_runtime_bytes_append_typed_v1` and
+`loom_runtime_bytes_decode_utf8_typed_v1`; the ByteObject descriptor and typed
+allocator remain internal to the runtime object. This advances the canonical
+dump to `lcir 34`, artifact identity to schema 35, LCIR native-object domain to
+`loom-lcir-native-object-v31`, CLI object-cache domain to
+`loom-llvm-object-cache-v36`, and native runtime identity to component 23 with
+`typed-bytes-v1` and `runtime-v17`. It leaves `text-v3`, `gc-v9`, and public
+standard-library ABI v4 unchanged and introduces no JSON-specific policy or
+source ownership model.
 
 Calls to the C process entry, libc, and versioned Loom runtime functions are
 explicit external boundaries. They do not permit two source-function ABIs in

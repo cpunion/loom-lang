@@ -17,14 +17,14 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Persistent compiler cache | schema `4` |
 | Interpreted final-cache layer | `final-artifact-v3` / writer v3 |
 | Portable-library final-cache layer | `portable-library-artifact-v3` |
-| LCIR textual dump | version `33` |
-| LCIR artifact identity | schema `34` |
-| LCIR native-object domain | `loom-lcir-native-object-v30` |
+| LCIR textual dump | version `34` |
+| LCIR artifact identity | schema `35` |
+| LCIR native-object domain | `loom-lcir-native-object-v31` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v35` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v36` |
 | Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
-| Native runtime ABI component | `22` |
+| Native runtime ABI component | `23` |
 | Coroutine/Task ABI component | `2` |
 | Typed Task ABI component | `1` |
 | Wait ABI component | `1` |
@@ -81,6 +81,28 @@ cycles. Because the new instance role participates in canonical callable
 identity, this advances the LCIR dump to 33, artifact schema to 34,
 native-object domain to `loom-lcir-native-object-v30`, and object-cache domain
 to `loom-llvm-object-cache-v35`. It adds no runtime ABI or LCIR instruction.
+
+Typed Bytes adds the collecting
+`loom_runtime_bytes_append_typed_v1(left, right, out_bytes)` and
+`loom_runtime_bytes_decode_utf8_typed_v1(bytes, out_text)` boundaries. The
+runtime accepts either an immutable Text-backed byte sequence or a standalone
+ByteObject, stages every source payload before a possible moving collection,
+and publishes a fully initialized direct managed pointer last through a stable
+output cell. Append may reuse the result's direct root cell when one exists;
+decode uses a stable temporary, after which generated code constructs and
+publishes the exact Result without an intervening safepoint.
+`Text.encode_utf8` itself shares the existing Text object without allocating;
+decode returns that same pointer for a valid Text-backed value and allocates
+canonical Text only for a valid standalone ByteObject.
+The distinct Bytes descriptor prevents arbitrary bytes from being accepted as
+Text without UTF-8 validation. Length, checked indexing, and content comparison
+remain non-collecting compiler operations. This advances the runtime identity
+to component 23 with `typed-bytes-v1` and `runtime-v17`; `text-v3`, `gc-v9`,
+and the public standard-library ABI v4 remain unchanged. The five existing
+source APIs gain typed LCIR instructions, advancing the dump to 34, artifact
+schema to 35, native-object domain to `loom-lcir-native-object-v31`, and
+object-cache domain to `loom-llvm-object-cache-v36`. Bytes defines neither a
+JSON policy nor ownership or borrow syntax.
 
 Task composition and timer calls now remain ordinary HIR calls until semantic
 resolution selects a stable compiler-owned `StandardLibraryItem`. The item is

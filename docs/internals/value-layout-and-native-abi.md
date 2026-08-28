@@ -7,13 +7,14 @@ conventions, and external code must not depend on them.
 
 Production native compilation selects one representation boundary for an
 entire reachable artifact. A completely supported direct artifact uses typed
-LCIR for primitive values, literal or concat-produced direct `Text`, structural tuples,
-closed records, compile-time-established refined values, and eligible closed
-enums. Any reachable feature outside current LCIR coverage selects the complete
-legacy layout below; the two callable ABIs are never mixed in one object. In
-particular, supported nongeneric `.loomi` MIR `Recheck` constructions replay
-their predicate in typed LCIR before entering the transparent representation.
-Generic or otherwise unsupported proof replay uses the legacy checker.
+LCIR for primitive values, direct `Text`, one-pointer typed `Bytes`, structural
+tuples, closed records, compile-time-established refined values, and eligible
+closed enums. Any reachable feature outside current LCIR coverage selects the
+complete legacy layout below; the two callable ABIs are never mixed in one
+object. In particular, supported nongeneric `.loomi` MIR `Recheck`
+constructions replay their predicate in typed LCIR before entering the
+transparent representation. Generic or otherwise unsupported proof replay
+uses the legacy checker.
 
 ## Universal value envelope
 
@@ -91,6 +92,42 @@ numbers return distinct statuses which LLVM maps into the exact direct
 with `typed-json-v1` and `runtime-v16`; Text remains v3, GC remains v9, and the
 public standard-library ABI remains v4.
 
+## Typed Bytes
+
+Canonical `Bytes` uses one direct managed pointer on supported 64-bit targets.
+`Text.encode_utf8` preserves the exact immutable Text object pointer, so this
+conversion allocates nothing and the resulting Bytes retains the Text layout
+descriptor. Bytes materialized by append instead use a distinct ByteObject and
+`loom_layout_bytes_v1` descriptor. Both forms have the same checked 32-byte
+prefix and trailing-byte position, but only the Text descriptor carries a
+validated Unicode-scalar count. Arbitrary byte storage therefore cannot
+masquerade as Text.
+
+Length and checked indexing load the immutable header and trailing byte range
+directly. Content comparison examines byte lengths and contents rather than
+pointer identity. None of these operations reaches a moving-GC safepoint.
+Append calls `loom_runtime_bytes_append_typed_v1`; decode calls
+`loom_runtime_bytes_decode_utf8_typed_v1`. Each runtime boundary validates its
+admitted descriptor forms and stages every source byte before an allocation can
+move the heap. Append publishes a fully initialized ByteObject last through a
+stable output cell, which generated code may reuse as the result's direct root
+cell when one exists. Decode publishes through a stable temporary, then
+generated code constructs and publishes the exact Result without an intervening
+safepoint. It returns the shared pointer for a valid Text-backed value, allocates
+canonical Text for a valid standalone ByteObject, and reports invalid UTF-8 as
+the ordinary `DecodeTextError.InvalidUtf8` result.
+
+Generated objects reference the two operation symbols and the established
+typed-root wire. The Bytes descriptor and typed allocator remain runtime
+implementation details rather than code-generation dependencies. This boundary
+advances the native runtime ABI to component 23 with `typed-bytes-v1` and
+`runtime-v17`; `text-v3`, `gc-v9`, and public standard-library ABI v4 remain
+unchanged. Its five typed source APIs advance the canonical dump to `lcir 34`,
+the checked artifact identity to schema 35, the LCIR native-object domain to
+`loom-lcir-native-object-v31`, and the CLI object-cache domain to
+`loom-llvm-object-cache-v36`. Bytes adds neither a JSON policy nor ownership or
+borrow syntax.
+
 ## Legacy primitive and aggregate specialization
 
 Within a complete legacy object, `Unit`, `Bool`, `Int`, and `Float` can use
@@ -116,17 +153,18 @@ internally.
 ## Typed LCIR representations
 
 The independent `loom-codegen-ir` foundation catalogs `Unit` as `Zst`, `Bool`
-as `I1`, `Int` as `I64`, `Float` as `F64`, and `Text` as one opaque pointer on
-64-bit targets. Text uses `ImmortalText` for a literal-only, product-free
-artifact and `ManagedPointer` for the entire artifact when concat or a
-Text-bearing product is reachable. Each supported structural tuple or closed
-record is an immutable `Product` of canonical element or field value types.
-Tuples and records may contain one another and managed Text leaves as long as
-the representation graph is acyclic. The product itself remains an unboxed
-aggregate; `ManagedPointer` describes only the canonical Text leaf
-representation. An explicit registration table chooses the canonical value
-representation for a semantic type; other representation alternatives do not
-compete merely because they have the same semantic type.
+as `I1`, `Int` as `I64`, `Float` as `F64`, and `Text` and canonical `Bytes` as
+opaque pointers on 64-bit targets. Text uses `ImmortalText` for a literal-only,
+product-free artifact and `ManagedPointer` for the entire artifact when concat
+or a Text-bearing product is reachable. Bytes always uses `ManagedPointer` and
+admits only the compiler-proven Text-backed and ByteObject descriptor forms.
+Each supported structural tuple or closed record is an immutable `Product` of
+canonical element or field value types. Tuples and records may contain one
+another and managed leaves as long as the representation graph is acyclic. The
+product itself remains an unboxed aggregate. An explicit registration table
+chooses the canonical value representation for a semantic type; other
+representation alternatives do not compete merely because they have the same
+semantic type.
 
 An established monomorphic refined type receives its own semantic
 `ValueTypeId` and reuses the exact `ReprId` of its declared base. The checked
@@ -247,7 +285,7 @@ uncatchable process fault; malformed ABI status fails closed.
 
 Every direct managed SSA value live after a collecting operation receives a
 stable pointer cell in a typed shadow frame. A live unboxed product/sum expands
-to deterministic candidate cells for its managed Text leaves; active tags
+to deterministic candidate cells for its managed-pointer leaves; active tags
 guard sum publication, definitions and phis publish the projections, and later
 aggregate uses are rebuilt from possibly moved leaf reloads. Per-site bitmaps
 are exact and results are excluded at their defining safepoint. Functions with
