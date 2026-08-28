@@ -167,7 +167,7 @@ fn checked(secret Text) Result[Token, ConstraintError] {
     Token { secret = secret }
 }
 
-pub fn main() Unit {
+pub fn main() {
     match checked("customer-token-do-not-disclose") {
         Err(_) => Unit
         Ok(_) => {
@@ -254,9 +254,8 @@ fn decoded_refinement_proof_rechecks_before_interpreter_or_typed_execution() {
 
 type Positive = Float where self >= 0.0
 
-pub fn main() Unit {
+pub fn main() {
     discard Positive(10.0)
-    Unit
 }
 ";
     let fresh = compile_source(source);
@@ -365,9 +364,8 @@ record NonNegative {
     invariant self.value >= 0.0
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard NonNegative { value = 11.0 }
-    Unit
 }
 ";
     let fresh = compile_source(source);
@@ -416,9 +414,8 @@ record Boxed[T] {
     invariant self.marker >= 0.0
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard Boxed { payload = 7, marker = 9.0 }
-    Unit
 }
 ";
     let fresh = compile_source(source);
@@ -485,9 +482,8 @@ record Boxed[T] {
     invariant self.marker >= 0.0
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard Boxed { payload = 7, marker = 9.0 }
-    Unit
 }
 ";
     let fresh = compile_source(source);
@@ -545,9 +541,8 @@ fn proof_bearing_disk_cache_reanalysis_preserves_native_route_and_ir() {
 
 type Positive = Float where self >= 0.0
 
-pub fn main() Unit {
+pub fn main() {
     discard Positive(10.0)
-    Unit
 }
 ";
     let project = tempfile::tempdir().expect("create proof cache parity project");
@@ -617,7 +612,7 @@ async fn invalid() Positive {
     Positive(10.0)
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     let first, second = Task.settled(invalid(), invalid()).await
     match first {
         Completed(_) => {
@@ -670,7 +665,6 @@ pub async fn main() Unit {
             Unit
         }
     }
-    Unit
 }
 "#
     .replace("__PROOF_CODE__", ARTIFACT_PROOF_REJECTED_FAULT_CODE)

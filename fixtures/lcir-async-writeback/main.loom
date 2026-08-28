@@ -39,10 +39,9 @@ impl ManagedLabel {
         self.value
     }
 
-    method appendThenFail(mut self, suffix Text) Unit {
+    method appendThenFail(mut self, suffix Text) {
         self.value = self.value.concat(suffix)
         discard 1 / 0
-        Unit
     }
 }
 
@@ -101,7 +100,7 @@ async fn makeOwnedSource() dyn Source {
     OwnedCounter { value = 4, label = "re".concat("turned") }
 }
 
-async fn verifyWriteback() Unit {
+async fn verifyWriteback() {
     var counter = Counter { value = 1 }
     let before = counter.add(2)
     let beforeStored = counter.value
@@ -141,10 +140,9 @@ async fn verifyWriteback() Unit {
     let returnedLabel = returned.label()
     assert returnedValue == 5
     assert returnedLabel == "returned"
-    Unit
 }
 
-pub async fn faultWritebackMain() Unit {
+pub async fn faultWritebackMain() {
     var label = ManagedLabel { value = "fault" }
     defer {
         let cleaned = label.value
@@ -153,20 +151,17 @@ pub async fn faultWritebackMain() Unit {
     }
     Task.sleep(0).await
     label.appendThenFail(" writeback")
-    Unit
 }
 
-async fn completesOnce() Unit {
-    Unit
+async fn completesOnce() {
 }
 
-async fn failsAfterSuspension() Unit {
+async fn failsAfterSuspension() {
     completesOnce().await
     assert false
-    Unit
 }
 
-async fn waitsAfterWriteback() Unit {
+async fn waitsAfterWriteback() {
     var label = ManagedLabel { value = "ready" }
     let appended = label.append(" cancellation")
     assert appended == "ready cancellation"
@@ -178,17 +173,16 @@ async fn waitsAfterWriteback() Unit {
     completesOnce().await
 }
 
-pub async fn cancellationAfterWritebackMain() Unit {
+pub async fn cancellationAfterWritebackMain() {
     let failed, waited = Task.all(failsAfterSuspension(), waitsAfterWriteback()).await
     discard failed
     discard waited
-    Unit
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     verifyWriteback().await
 }
 
-test async fn synchronousWritebackInsideCoroutine() Unit {
+test async fn synchronousWritebackInsideCoroutine() {
     verifyWriteback().await
 }

@@ -168,7 +168,7 @@ fn verify() Result[Unit, Problem] {
     if valid { Ok(Unit) } else { Err(Problem.WrongValue) }
 }
 
-pub fn main() Unit {
+pub fn main() {
     match verify() {
         Ok(_) => Unit
         Err(_) => {

@@ -10,7 +10,7 @@ fn score(value Text) Int {
     }
 }
 
-fn verify() Unit {
+fn verify() {
     if score(identity("hello界")) == 42 {
         Unit
     } else {
@@ -19,10 +19,10 @@ fn verify() Unit {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     verify()
 }
 
-test fn immortalText() Unit {
+test fn immortalText() {
     verify()
 }

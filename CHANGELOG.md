@@ -42,6 +42,16 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- `Unit` remains the user-visible zero-sized type and value, including in
+  fields, parameters, tuples, `Task[Unit]`, `Result[Unit, E]`, and `Ok(Unit)`.
+  Callable syntax now treats only the fixed `Unit` result as implicit:
+  functions, tests, async functions, methods, and concept requirements must
+  omit a bare `Unit` return annotation, and callable bodies must omit a direct
+  final bare `Unit` expression. An omitted return is still statically fixed to
+  `Unit`; it is not inferred from the body. The parser reports both prohibited
+  forms as ordinary syntax errors while preserving lossless recovery. This is
+  a source-syntax change only and does not change HIR/MIR/LCIR, serialized
+  artifacts, native ABI, runtime ABI, or cache schemas.
 - Synchronous functions may now construct and return typed Tasks while staying
   ordinary non-suspending LCIR functions. Exact `NEEDS_EXECUTOR` effects add a
   compiler-private executor parameter after any fault context, and direct or

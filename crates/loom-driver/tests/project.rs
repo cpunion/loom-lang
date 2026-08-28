@@ -84,7 +84,7 @@ fn human_diagnostics_use_scalar_columns_and_keep_machine_records_stable() {
     let project = TestProject::new();
     project.write(
         "main.loom",
-        "module demo\n\npub fn main() Unit {\n    let 价格 = 1\n    Unit\n}\n",
+        "module demo\n\npub fn main() {\n    let 价格 = 1\n}\n",
     );
     let snapshot = AnalysisHost::new(&project.root)
         .expect("open source")
@@ -261,7 +261,7 @@ fn manifest_resolves_path_dependencies_sources_and_targets() {
     );
     project.write(
         "application/src/main.loom",
-        "module application\n\nimport utility.math.increment\n\npub fn start() Unit {\n    let value = increment(1)\n    assert value == 2\n    Unit\n}\n\ntest fn dependency_works() {\n    let value = increment(4)\n    assert value == 5\n    Unit\n}\n",
+        "module application\n\nimport utility.math.increment\n\npub fn start() {\n    let value = increment(1)\n    assert value == 2\n}\n\ntest fn dependency_works() {\n    let value = increment(4)\n    assert value == 5\n}\n",
     );
 
     let host = AnalysisHost::new(project.root.join("application")).expect("open manifest project");
@@ -337,7 +337,7 @@ fn portable_library_is_a_consumable_versioned_dependency() {
     );
     project.write(
         "application/src/main.loom",
-        "module application\n\nimport utility.math.increment\n\npub fn main() Unit {\n    let answer = increment(41)\n    assert answer == 42\n    Unit\n}\n",
+        "module application\n\nimport utility.math.increment\n\npub fn main() {\n    let answer = increment(41)\n    assert answer == 42\n}\n",
     );
     fs::remove_dir_all(project.root.join("utility")).expect("remove producer checkout");
 
@@ -390,7 +390,7 @@ fn portable_library_is_a_consumable_versioned_dependency() {
 
     project.write(
         "application/src/main.loom",
-        "module application\n\nimport utility.math.increment\n\npub fn main() Unit {\n    let answer = increment(40)\n    assert answer == 41\n    Unit\n}\n",
+        "module application\n\nimport utility.math.increment\n\npub fn main() {\n    let answer = increment(40)\n    assert answer == 41\n}\n",
     );
     let second_process =
         AnalysisHost::new(project.root.join("application")).expect("open second cached consumer");
@@ -422,7 +422,7 @@ fn portable_library_is_a_consumable_versioned_dependency() {
 
     project.write(
         "application/src/main.loom",
-        "module application\n\nimport utility.math.private_value\n\npub fn main() Unit {\n    let hidden = private_value()\n    assert hidden == 99\n    Unit\n}\n",
+        "module application\n\nimport utility.math.private_value\n\npub fn main() {\n    let hidden = private_value()\n    assert hidden == 99\n}\n",
     );
     let private_import = AnalysisHost::new(project.root.join("application"))
         .expect("open private-import consumer")
@@ -600,7 +600,7 @@ fn package_imports_are_limited_to_direct_dependencies() {
     );
     project.write(
         "root/src/main.loom",
-        "module root\n\nimport leaf.api.value\n\npub fn main() Unit {\n    let answer = value()\n    assert answer == 1\n    Unit\n}\n",
+        "module root\n\nimport leaf.api.value\n\npub fn main() {\n    let answer = value()\n    assert answer == 1\n}\n",
     );
 
     let snapshot = AnalysisHost::new(project.root.join("root"))
@@ -633,7 +633,7 @@ fn dependency_aliases_resolve_without_exposing_the_package_name() {
     );
     project.write(
         "application/src/main.loom",
-        "module application\n\nimport util.math.increment\n\npub fn main() Unit {\n    let answer = increment(1)\n    assert answer == 2\n    Unit\n}\n",
+        "module application\n\nimport util.math.increment\n\npub fn main() {\n    let answer = increment(1)\n    assert answer == 2\n}\n",
     );
 
     let snapshot = AnalysisHost::new(project.root.join("application"))
@@ -652,7 +652,7 @@ fn package_sources_cannot_claim_another_package_namespace() {
     );
     project.write(
         "dependency/src/lib.loom",
-        "module application\n\npub fn hijack() Unit { Unit }\n",
+        "module application\n\npub fn hijack() {}\n",
     );
     project.write(
         "application/loom.toml",
@@ -660,7 +660,7 @@ fn package_sources_cannot_claim_another_package_namespace() {
     );
     project.write(
         "application/src/main.loom",
-        "module application\n\npub fn main() Unit { Unit }\n",
+        "module application\n\npub fn main() {}\n",
     );
 
     let snapshot = AnalysisHost::new(project.root.join("application"))
@@ -818,7 +818,7 @@ fn manifest_target_declarations_do_not_change_compilation_identity() {
     );
     project.write(
         "src/main.loom",
-        "module sample\n\npub fn start() Unit {\n    Unit\n}\n\npub fn alternate() Unit {\n    Unit\n}\n",
+        "module sample\n\npub fn start() {\n}\n\npub fn alternate() {\n}\n",
     );
     let first_host = AnalysisHost::new(&project.root).expect("open first target graph");
     let first_sources = first_host
@@ -875,7 +875,7 @@ fn registry_features_and_lockfile_form_a_reproducible_graph() {
     );
     project.write(
         "application/src/main.loom",
-        "module application\n\npub fn main() Unit {\n    Unit\n}\n",
+        "module application\n\npub fn main() {\n}\n",
     );
     let root = project.root.join("application");
 
@@ -971,10 +971,7 @@ fn persistent_cache_is_relocatable_and_corruption_is_a_safe_miss() {
             "loom.toml",
             "schema = 1\n[package]\nname = \"sample\"\nversion = \"0.1.0\"\n",
         );
-        project.write(
-            "src/main.loom",
-            "module sample\n\npub fn main() Unit {\n    Unit\n}\n",
-        );
+        project.write("src/main.loom", "module sample\n\npub fn main() {\n}\n");
     }
 
     let first_host = AnalysisHost::new(&first.root).expect("open first relocation");
@@ -1033,7 +1030,7 @@ fn persistent_cache_is_relocatable_and_corruption_is_a_safe_miss() {
 
     first.write(
         "src/main.loom",
-        "module sample\n\npub fn main() Unit {\n    assert true\n    Unit\n}\n",
+        "module sample\n\npub fn main() {\n    assert true\n}\n",
     );
     let changed_host = AnalysisHost::new(&first.root).expect("reopen changed project");
     let changed_sources = changed_host.load_sources().expect("load changed source");
@@ -1045,10 +1042,7 @@ fn persistent_cache_is_relocatable_and_corruption_is_a_safe_miss() {
 #[test]
 fn per_source_parse_cache_skips_lexing_and_parsing_on_a_graph_miss() {
     let project = TestProject::new();
-    project.write(
-        "main.loom",
-        "module sample\n\npub fn main() Unit {\n    Unit\n}\n",
-    );
+    project.write("main.loom", "module sample\n\npub fn main() {\n}\n");
     let host = AnalysisHost::new(&project.root).expect("open cached parse project");
     let cache = PersistentCache::new(project.root.join("target/parse-cache"));
     let context = portable_cache_context();
@@ -1081,11 +1075,11 @@ fn persistent_semantic_reuse_rederives_must_scope_identity_from_current_hir() {
     let project = TestProject::new();
     project.write(
         "resource.loom",
-        "module standard.resource\n\nconcept MustScope {}\n\nrecord Resource {\n    value Int\n}\n\nimpl MustScope for Resource {}\n\nfn stable() Unit { Unit }\n",
+        "module standard.resource\n\nconcept MustScope {}\n\nrecord Resource {\n    value Int\n}\n\nimpl MustScope for Resource {}\n\nfn stable() {}\n",
     );
     project.write(
         "main.loom",
-        "module application\n\npub fn main() Unit {\n    let value = 1\n    Unit\n}\n",
+        "module application\n\npub fn main() {\n    let value = 1\n}\n",
     );
     let cache = PersistentCache::new(project.root.join("target/semantic-resource-cache"));
 
@@ -1099,7 +1093,7 @@ fn persistent_semantic_reuse_rederives_must_scope_identity_from_current_hir() {
 
     project.write(
         "main.loom",
-        "module application\n\npub fn main() Unit {\n    let value = 2\n    Unit\n}\n",
+        "module application\n\npub fn main() {\n    let value = 2\n}\n",
     );
     let warm_host = AnalysisHost::new(&project.root).expect("open warm resource project");
     let (warm, _) = warm_host.snapshot_from_sources_with_parse_cache(
@@ -1133,7 +1127,7 @@ fn warm_semantic_reanalysis_preserves_task_standard_item_identity() {
     let project = TestProject::new();
     project.write(
         "main.loom",
-        "module cached_task_item\n\nasync fn child() Int { 1 }\n\npub async fn main() Unit {\n    discard Task.any(child(), child()).await\n}\n",
+        "module cached_task_item\n\nasync fn child() Int { 1 }\n\npub async fn main() {\n    discard Task.any(child(), child()).await\n}\n",
     );
     let cache = PersistentCache::new(project.root.join("target/task-item-cache"));
     let compile = || {
@@ -1216,7 +1210,7 @@ fn typed_hir_queries_reuse_unmodified_modules() {
     );
     project.write(
         "b.loom",
-        "module sample.b\n\nimport sample.a.value\n\npub fn main() Unit {\n    let output = value(1)\n    assert output > 0\n    Unit\n}\n\ntest fn calls_dependency() {\n    main()\n}\n",
+        "module sample.b\n\nimport sample.a.value\n\npub fn main() {\n    let output = value(1)\n    assert output > 0\n}\n\ntest fn calls_dependency() {\n    main()\n}\n",
     );
     let host = AnalysisHost::new(&project.root).expect("open incremental project");
     let first = host.snapshot().expect("compile initial graph");
@@ -1251,10 +1245,7 @@ fn typed_hir_queries_reuse_unmodified_modules() {
 #[test]
 fn concurrent_cache_writers_publish_only_complete_blobs_and_refs() {
     let project = TestProject::new();
-    project.write(
-        "main.loom",
-        "module sample\n\npub fn main() Unit {\n    Unit\n}\n",
-    );
+    project.write("main.loom", "module sample\n\npub fn main() {\n}\n");
     let host = AnalysisHost::new(&project.root).expect("open concurrent cache project");
     let sources = host.load_sources().expect("load concurrent cache sources");
     let context = portable_cache_context();
@@ -1322,7 +1313,7 @@ fn many_modules_and_call_edges_close_the_checked_mir_pipeline() {
     project.write(
         "src/main.loom",
         &format!(
-            "module stress.app\n\nimport stress.m0.f0\n\npub fn main() Unit {{\n    let answer = f0(0)\n    assert answer == {MODULES_MINUS_ONE}\n    Unit\n}}\n",
+            "module stress.app\n\nimport stress.m0.f0\n\npub fn main() {{\n    let answer = f0(0)\n    assert answer == {MODULES_MINUS_ONE}\n}}\n",
             MODULES_MINUS_ONE = MODULES - 1
         ),
     );
@@ -1340,8 +1331,8 @@ fn many_modules_and_call_edges_close_the_checked_mir_pipeline() {
 #[test]
 fn snapshot_assigns_file_ids_by_stable_relative_path_and_builds_executable_mir() {
     let project = TestProject::new();
-    project.write("b.loom", "module b\n\nfn b() Unit {\n    Unit\n}\n");
-    project.write("a.loom", "module a\n\nfn a() Unit {\n    Unit\n}\n");
+    project.write("b.loom", "module b\n\nfn b() {\n}\n");
+    project.write("a.loom", "module a\n\nfn a() {\n}\n");
 
     let snapshot = AnalysisHost::new(&project.root)
         .expect("open host")
@@ -1368,10 +1359,7 @@ fn snapshot_assigns_file_ids_by_stable_relative_path_and_builds_executable_mir()
 #[test]
 fn overlays_and_cli_snapshots_use_the_same_source_map() {
     let project = TestProject::new();
-    project.write(
-        "main.loom",
-        "module demo\n\nfn main() Unit {\n    Unit\n}\n",
-    );
+    project.write("main.loom", "module demo\n\nfn main() {\n}\n");
     let path = project.root.join("main.loom");
     let mut host = AnalysisHost::new(&project.root).expect("open host");
     host.set_overlay(&path, "module demo\n\nfn broken(")
@@ -1394,12 +1382,12 @@ fn overlays_and_cli_snapshots_use_the_same_source_map() {
 
 #[test]
 fn formatter_is_canonical_idempotent_and_refuses_broken_source() {
-    let source = "module demo\r\n\r\nfn value() Int { 1 }\r\n\r\nfn main() Unit {\r\n\tdiscard value()   \r\n}\r\n\r\n";
+    let source = "module demo\r\n\r\nfn value() Int { 1 }\r\n\r\nfn main() {\r\n\tdiscard value()   \r\n}\r\n\r\n";
     let first = format_source(FileId(0), source);
     assert!(first.diagnostics.is_empty());
     assert_eq!(
         first.text,
-        "module demo\n\nfn value() Int { 1 }\n\nfn main() Unit {\n    discard value()\n}\n"
+        "module demo\n\nfn value() Int { 1 }\n\nfn main() {\n    discard value()\n}\n"
     );
     let second = format_source(FileId(0), &first.text);
     assert_eq!(second.text, first.text);
@@ -1473,7 +1461,7 @@ fn async_tasks_and_lexical_defer_execute_from_source() {
         r#"module standard.resource
 
 concept Dispose {
-    method dispose(mut self) Unit
+    method dispose(mut self)
 }
 
 concept MustScope {}
@@ -1484,9 +1472,8 @@ record Resource {
 }
 
 impl Dispose for Resource {
-    method dispose(mut self) Unit {
+    method dispose(mut self) {
         self.value = 0
-        Unit
     }
 }
 
@@ -1528,7 +1515,6 @@ test async fn task_and_cleanup() {
     let number, text = Task.all(child(), label()).await
     assert number == 7
     assert text == "loom"
-    Unit
 }
 "#,
     );
@@ -1580,7 +1566,6 @@ test async fn stored_and_dynamic_joins() {
 
     let raced = Task.race([one(), two()])
     let outcome = raced.await
-    Unit
 }
 ",
     );
@@ -1644,7 +1629,6 @@ test async fn inspect_outcomes() {
             Unit
         }
     }
-    Unit
 }
 "#,
     );
@@ -1705,7 +1689,6 @@ test async fn real_io() {{
         assert response == "pong"
         Unit
     }}
-    Unit
 }}
 "#,
         file.display(),
@@ -1736,20 +1719,17 @@ fn compiler_known_resources_require_scoped_and_reject_manual_close() {
 import standard.file.open_read
 import standard.net.connect
 
-async fn leakedFile() Unit {
+async fn leakedFile() {
     let file = open_read("missing.txt").await
-    Unit
 }
 
-async fn discardedSocket() Unit {
+async fn discardedSocket() {
     connect("127.0.0.1", 1).await
-    Unit
 }
 
-async fn closedTwice() Unit {
+async fn closedTwice() {
     scoped file = open_read("missing.txt").await
     file.close()
-    Unit
 }
 "#,
     );
@@ -1790,7 +1770,6 @@ async fn fast() Int {
 test async fn cancellation_cleanup() {
     let winner = Task.any(slow(), fast()).await
     assert winner == 2
-    Unit
 }
 ",
     );
@@ -1809,7 +1788,7 @@ fn nested_control_await_executes_through_resume_dispatch() {
     let project = TestProject::new();
     project.write(
         "async.loom",
-        "module sample\n\nasync fn child() Int { 1 }\n\nasync fn pending(flag Bool) Int {\n    if flag { child().await } else { 0 }\n}\n\ntest async fn nested_control() {\n    let value = pending(true).await\n    assert value == 1\n    Unit\n}\n",
+        "module sample\n\nasync fn child() Int { 1 }\n\nasync fn pending(flag Bool) Int {\n    if flag { child().await } else { 0 }\n}\n\ntest async fn nested_control() {\n    let value = pending(true).await\n    assert value == 1\n}\n",
     );
     let snapshot = AnalysisHost::new(&project.root)
         .expect("open nested async project")
@@ -1883,20 +1862,19 @@ fn task_sleep_validates_consumption_argument_and_async_context() {
         "sleep.loom",
         r#"module sample
 
-async fn unawaited() Unit {
+async fn unawaited() {
     let task = Task.sleep(1)
-    Unit
 }
 
-async fn wrongType() Unit {
+async fn wrongType() {
     Task.sleep("soon").await
 }
 
-async fn wrongArity() Unit {
+async fn wrongArity() {
     Task.sleep().await
 }
 
-fn synchronous() Unit {
+fn synchronous() {
     Task.sleep(1).await
 }
 "#,
@@ -1938,7 +1916,7 @@ fn conditional_conformance_proof_executes_from_source() {
     let project = TestProject::new();
     project.write(
         "main.loom",
-        "module sample\n\nconcept Equivalent {\n    method equivalent(self, other Self) Bool\n}\n\nrecord Atom { value Int }\n\nimpl Equivalent for Atom {\n    method equivalent(self, other Atom) Bool { self.value == other.value }\n}\n\nrecord Boxed[T] { value T }\n\nimpl[T: Equivalent] Equivalent for Boxed[T] {\n    method equivalent(self, other Boxed[T]) Bool {\n        self.value.equivalent(other.value)\n    }\n}\n\nfn same[T: Equivalent](left T, right T) Bool {\n    left.equivalent(right)\n}\n\ntest fn recursive_proof() {\n    let left = Boxed { value = Atom { value = 7 } }\n    let right = Boxed { value = Atom { value = 7 } }\n    let equal = same(left, right)\n    assert equal\n    Unit\n}\n",
+        "module sample\n\nconcept Equivalent {\n    method equivalent(self, other Self) Bool\n}\n\nrecord Atom { value Int }\n\nimpl Equivalent for Atom {\n    method equivalent(self, other Atom) Bool { self.value == other.value }\n}\n\nrecord Boxed[T] { value T }\n\nimpl[T: Equivalent] Equivalent for Boxed[T] {\n    method equivalent(self, other Boxed[T]) Bool {\n        self.value.equivalent(other.value)\n    }\n}\n\nfn same[T: Equivalent](left T, right T) Bool {\n    left.equivalent(right)\n}\n\ntest fn recursive_proof() {\n    let left = Boxed { value = Atom { value = 7 } }\n    let right = Boxed { value = Atom { value = 7 } }\n    let equal = same(left, right)\n    assert equal\n}\n",
     );
     let snapshot = AnalysisHost::new(&project.root)
         .expect("open host")

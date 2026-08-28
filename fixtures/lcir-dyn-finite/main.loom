@@ -70,14 +70,14 @@ fn advanceOne(value Advance) Int {
     value.advance()
 }
 
-fn forceRelocation() Unit {
+fn forceRelocation() {
     for index in 0..5000 {
         discard eraseCounter(Counter { value = index, label = "pressure" })
         Unit
     }
 }
 
-fn verify() Unit {
+fn verify() {
     let first = Counter { value = 41, label = "first" }
     let second = Offset { value = 1 }
     let firstValue = measure(first)
@@ -122,7 +122,7 @@ fn verify() Unit {
     assert offsetFirst == 102
 }
 
-pub fn main() Unit {
+pub fn main() {
     verify()
 }
 

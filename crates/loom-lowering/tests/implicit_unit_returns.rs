@@ -41,7 +41,7 @@ record R {}
 pub fn omitted() { return }
 async fn omittedAsync() {}
 test fn omittedTest() { return }
-fn explicit() Unit { Unit }
+fn anotherOmitted() {}
 pub fn contracted(flag Bool)
     requires flag
     ensures true
@@ -76,7 +76,7 @@ impl C for R {
         "omitted",
         "omittedAsync",
         "omittedTest",
-        "explicit",
+        "anotherOmitted",
         "contracted",
         "inherent",
     ] {

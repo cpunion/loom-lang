@@ -49,7 +49,7 @@ fn stress_lists() Bool {
     left == right
 }
 
-fn verify() Unit {
+fn verify() {
     let first = Pair { label = "lo".concat("om"), count = 7 }
     let same_first = Pair { label = "l".concat("oom"), count = 7 }
     let second = Pair { label = "pair", count = 8 }
@@ -81,10 +81,10 @@ fn verify() Unit {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     verify()
 }
 
-test fn structuralEquality() Unit {
+test fn structuralEquality() {
     verify()
 }

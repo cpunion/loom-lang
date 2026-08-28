@@ -41,7 +41,7 @@ fn raw_legacy_codegen_rejects_non_language_run_roots_before_fingerprinting_or_em
         ),
         (
             "parameter",
-            "module invalid_parameter\n\npub fn main(value Int) Unit { discard value\nUnit }\n",
+            "module invalid_parameter\n\npub fn main(value Int) { discard value\n}\n",
         ),
     ] {
         let project = tempfile::tempdir().expect("create invalid root project");
@@ -148,16 +148,14 @@ fn legacy_passing_tests_return_failure_when_exact_stdout_is_not_writable() {
 fn unit_output_runs_after_its_runtime_is_destroyed() {
     let source = r"module root_result_lifetime
 
-pub fn main() Unit {
+pub fn main() {
     var values = List[Int]()
     values.add(1)
-    Unit
 }
 
 test fn list_result_lifetime() {
     var values = List[Int]()
     values.add(2)
-    Unit
 }
 ";
     let project = tempfile::tempdir().expect("create root lifetime project");
@@ -310,7 +308,7 @@ fn universal_value_abi_rejects_32_bit_targets() {
 fn text_literals_are_immortal_versioned_objects_across_a_gc_safepoint() {
     let source = r#"module text_literal_object
 
-pub async fn main() Unit {
+pub async fn main() {
     let empty = ""
     let unicode = "a界🙂"
     let with_nul = "a\0b"
@@ -324,7 +322,6 @@ pub async fn main() Unit {
     assert empty == ""
     assert unicode == "a界🙂"
     assert with_nul == "a\0b"
-    Unit
 }
 "#;
     let project = tempfile::tempdir().expect("create Text literal project");
@@ -412,7 +409,7 @@ fn stable_output_runtime_abis_publish_roots_and_run() {
 import standard.float.format_float
 import standard.process.environment
 
-pub fn main() Unit {
+pub fn main() {
     let formatted = format_float(2.5)
     assert formatted == "2.5"
 
@@ -461,7 +458,6 @@ pub fn main() Unit {
             Unit
         }
     }
-    Unit
 }
 "#;
     let project = tempfile::tempdir().expect("create stable-output ABI project");
@@ -547,10 +543,9 @@ fn unreachable() Int {
     100 + 23
 }
 
-pub fn main() Unit {
+pub fn main() {
     let value = folded()
     assert value == 42
-    Unit
 }
 ";
     let project = tempfile::tempdir().expect("create optimization project");
@@ -614,14 +609,13 @@ fn contracted(value Int) Int
     value + 1
 }
 
-pub fn main() Unit {
+pub fn main() {
     let recursive = fibonacci(20)
     assert recursive == 6765
     let negative = checkedFibonacci(-1)
     assert negative == -1
     let answer = contracted(41)
     assert answer == 42
-    Unit
 }
 
 fn checkedFibonacci(value Int) Int {
@@ -783,9 +777,8 @@ fn checkedAdd(left Int, right Int) Int {
     left + right
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard checkedAdd(9223372036854775807, 1)
-    Unit
 }
 ";
     let overflow_project = tempfile::tempdir().expect("create scalar Int fault project");
@@ -823,9 +816,8 @@ fn amplified(value Int) Int {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard amplified(4)
-    Unit
 }
 ";
     let recursive_overflow_project =
@@ -903,9 +895,8 @@ fn choose(value Int) Int {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard choose(42)
-    Unit
 }
 ";
     let project = tempfile::tempdir().expect("create pure scalar Int project");
@@ -980,9 +971,8 @@ fn copiedLiteralLength() Int {
     copied.length()
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard copiedLiteralLength()
-    Unit
 }
 "#;
     let (project, _program, llvm) = emit_source_with_ir(source);
@@ -1018,11 +1008,10 @@ fn moveCall(value Pair) Int { read(value) }
 
 fn copyCall(value Pair) Int { read(value) }
 
-pub fn main() Unit {
+pub fn main() {
     let moved = moveCall(Pair { value = 41 })
     let copied = copyCall(Pair { value = 42 })
     discard moved + copied
-    Unit
 }
 ";
     let project = tempfile::tempdir().expect("create universal call project");
@@ -1100,14 +1089,13 @@ fn allocate(count Int) List[Text] {
     values
 }
 
-pub fn main() Unit {
+pub fn main() {
     let values = allocate(4)
     let count = values.length()
     let expected = identity(4)
     assert count == expected
     let equal = scalarEqual(count, expected)
     assert equal
-    Unit
 }
 "#;
     let (project, _program, llvm) = emit_source_with_ir(source);
@@ -1171,12 +1159,11 @@ fn concatenate(value Text) Text {
     value.concat("!")
 }
 
-pub fn main() Unit {
+pub fn main() {
     let count = inspect("loom")
     assert count == 4
     let joined = concatenate("loom")
     assert joined == "loom!"
-    Unit
 }
 "#;
     let (project, _program, llvm) = emit_source_with_ir(source);
@@ -1224,9 +1211,9 @@ fn emptyMapCount() Int {
 
 fn pathText(value Path) Text { value.as_text() }
 
-fn logText(value Text) Unit { debug(value) }
+fn logText(value Text) { debug(value) }
 
-pub fn main() Unit {
+pub fn main() {
     let bytes = "abc".encode_utf8()
     let byteCountValue = byteCount(bytes)
     assert byteCountValue == 3
@@ -1247,7 +1234,6 @@ pub fn main() Unit {
         }
     }
     logText("readonly")
-    Unit
 }
 "#;
     let (project, _program, llvm) = emit_source_with_ir(source);
@@ -1300,12 +1286,11 @@ fn large() Int {{
     values.length()
 }}
 
-pub fn main() Unit {{
+pub fn main() {{
     let smallCount = small()
     let largeCount = large()
     assert smallCount == 4
     assert largeCount == 256
-    Unit
 }}
 "
     );
@@ -1344,10 +1329,9 @@ fn retain({parameters}, count Int) Text {{
     value65
 }}
 
-pub fn main() Unit {{
+pub fn main() {{
     let retained = retain({arguments}, 4)
     assert retained == "root"
-    Unit
 }}
 "#
     );
@@ -1394,10 +1378,9 @@ fn retain(value Text, count Int) Text {
     copied
 }
 
-pub fn main() Unit {
+pub fn main() {
     let retained = retain("kept", 4096)
     assert retained == "kept"
-    Unit
 }
 "#;
     let (project, _program, llvm) = emit_source_with_ir(source);
@@ -1464,7 +1447,7 @@ fn dynamicAdd(counter dyn CounterOps, amount Int, count Int) Int {
     counter.allocateAndAdd(amount, count)
 }
 
-pub fn main() Unit {
+pub fn main() {
     var projected = Holder { counter = Counter { value = 10 } }
     let projectedResult = projected.nested(5, 4096)
     assert projectedResult == 15
@@ -1476,7 +1459,6 @@ pub fn main() Unit {
     assert dynamicResult == 27
     let dynamicValue = dynamic.counter.value
     assert dynamicValue == 27
-    Unit
 }
 "#;
     let (project, _program, llvm) = emit_source_with_ir(source);
@@ -1556,12 +1538,11 @@ fn matchRetainsSecond(count Int) Text {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     let tupleValue = tupleRetainsSecond(4096)
     assert tupleValue == "tuple-kept"
     let matchValue = matchRetainsSecond(4096)
     assert matchValue == "match-kept"
-    Unit
 }
 "#;
     let (project, _program, llvm) = emit_source_with_ir(source);
@@ -1615,10 +1596,9 @@ async fn allocateAcrossAwait(count Int) Int {
     values.length()
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     let count = allocateAcrossAwait(4096).await
     assert count == 8192
-    Unit
 }
 "#;
     let (project, _program, llvm) = emit_source_with_ir(source);
@@ -1655,11 +1635,11 @@ fn double(value Float) Float {
     value * 2.0
 }
 
-fn unitIdentity(value Unit) Unit {
+fn unitIdentity(value Unit) {
     value
 }
 
-pub fn main() Unit {
+pub fn main() {
     let negated = negate(false)
     assert negated
     let doubled = double(2.5)
@@ -1736,10 +1716,9 @@ record Counter {
 }
 
 impl Counter {
-    method add(mut self, value Int) Unit {
+    method add(mut self, value Int) {
         self.total = self.total + value
         self.calls = self.calls + 1
-        Unit
     }
 }
 
@@ -1803,7 +1782,7 @@ fn nestedLoops(size Int) Int {
     total
 }
 
-pub fn main() Unit {
+pub fn main() {
     let state = spin(100000)
     assert state == 1405402365
     let counter = recordMethod(100000)
@@ -1828,7 +1807,6 @@ pub fn main() Unit {
     assert originalCalls == 0
     assert copiedTotal == 7
     assert copiedCalls == 1
-    Unit
 }
 "#;
     let project = tempfile::tempdir().expect("create loop stack project");
@@ -2038,7 +2016,7 @@ fn choose(value Int, left Bool) Pair {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     let checked = checkedMake(7, true)
     assert checked.value == 7
     let forwarded = forward(42)
@@ -2047,13 +2025,11 @@ pub fn main() Unit {
     assert returned.value == 43
     let selected = choose(44, true)
     assert selected.value == 44
-    Unit
 }
 
-pub fn faultMain() Unit {
+pub fn faultMain() {
     let rejected = checkedMake(9, false)
     assert rejected.value == 9
-    Unit
 }
 ";
     let (project, program, llvm) = emit_source_with_ir(source);
@@ -2159,13 +2135,12 @@ impl Pair {
         self
     }
 
-    method addToLeft(mut self, amount Int) Unit {
+    method addToLeft(mut self, amount Int) {
         self.left = self.left + amount
-        Unit
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     let original = Pair { left = 3, right = 4 }
     let summed = sum(original)
     assert summed == 7
@@ -2193,21 +2168,18 @@ pub fn main() Unit {
 
     let boundary = publicBoundary("")
     assert boundary == 24
-    Unit
 }
 
-pub fn faultMain() Unit {
+pub fn faultMain() {
     let original = Pair { left = 3, right = 4 }
     let rejected = original.checkedCopy(false)
     assert rejected.left == 3
-    Unit
 }
 
-pub fn overflowMain() Unit {
+pub fn overflowMain() {
     let overflowing = Pair { left = 9223372036854775807, right = 1 }
     let impossible = sum(overflowing)
     assert impossible == 0
-    Unit
 }
 
 pub fn publicBoundary(ignored Text) Int {
@@ -2376,22 +2348,20 @@ fn private_pod_inout_writes_back_before_fault_status_propagates() {
 record Counter { value Int }
 
 impl Counter {
-    method setThenAssert(mut self, accepted Bool) Unit {
+    method setThenAssert(mut self, accepted Bool) {
         self.value = 9
         assert accepted
-        Unit
     }
 }
 
-fn exercise() Unit {
+fn exercise() {
     var counter = Counter { value = 1 }
     counter.setThenAssert(true)
     let observed = counter.value
     assert observed == 9
-    Unit
 }
 
-pub fn main() Unit {
+pub fn main() {
     exercise()
 }
 ";
@@ -2444,10 +2414,9 @@ record Counter {
 }
 
 impl Counter {
-    method add(mut self, value Int) Unit {
+    method add(mut self, value Int) {
         self.total = self.total + value
         self.calls = self.calls + 1
-        Unit
     }
 }
 
@@ -2464,11 +2433,10 @@ fn recordMethod(size Int) Counter {
     counter
 }
 
-pub fn main() Unit {
+pub fn main() {
     let counter = recordMethod(100000)
     assert counter.total == 51031728
     assert counter.calls == 100000
-    Unit
 }
 ";
     let project = tempfile::tempdir().expect("create private POD release project");
@@ -2547,13 +2515,12 @@ fn select() Pair {
     holder.selected
 }
 
-pub fn main() Unit {
+pub fn main() {
     let keepRoot = "projected-pod"
     let pair = select()
     assert pair.left == 11
     assert pair.right == 29
     discard keepRoot
-    Unit
 }
 "#;
     let (copy_project, copy_program, copy_ir) = emit_source_with_ir(source);
@@ -2613,9 +2580,8 @@ record Boxed {
 }
 
 impl Boxed {
-    method bump(mut self) Unit {
+    method bump(mut self) {
         self.value = self.value + 1
-        Unit
     }
 }
 
@@ -2644,7 +2610,7 @@ async fn delayedIndex() Int {
     0
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     var numbers = List[Int]()
     numbers.add(7)
     numbers.add(9)
@@ -2692,7 +2658,6 @@ pub async fn main() Unit {
             Unit
         }
     }
-    Unit
 }
 ";
     let project = tempfile::tempdir().expect("create readonly List project");
@@ -2971,7 +2936,7 @@ fn noneSideEffectFallsBack(buildSize Int, scanSize Int) Int {
     noneCount
 }
 
-pub fn main() Unit {
+pub fn main() {
     let scan = renamedSameShape(40)
     let empty = renamedSameShape(0)
     let emptyAppend = appendOnly(0)
@@ -3004,13 +2969,11 @@ pub fn main() Unit {
     assert cleanup == 42
     assert intervening == 780
     assert noneEffects == 1
-    Unit
 }
 
-pub fn faultMain() Unit {
+pub fn faultMain() {
     let count = faultableAppend(40, false)
     assert count == 40
-    Unit
 }
 ";
     let project = tempfile::tempdir().expect("create native Int list project");
@@ -3302,7 +3265,7 @@ async fn asynchronous() Int {
     values.length()
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     let escaped = escaping()
     let text = textList()
     let observed = receiverObservationHazard()
@@ -3311,7 +3274,6 @@ pub async fn main() Unit {
     assert text == 1
     assert observed == 1
     assert waited == 1
-    Unit
 }
 "#;
     let project = tempfile::tempdir().expect("create native Int list fallback project");
@@ -3384,7 +3346,7 @@ fn checked(raw Float) Result[Money, ConstraintError] {
     Money(raw)
 }
 
-pub fn main() Unit {
+pub fn main() {
     let money = direct()
     assert money == 10.0
     match checked(-97531.125) {
@@ -3492,10 +3454,9 @@ test async fn f_async_second() {
     discard asynchronous(0).await
 }
 
-test fn g_root_boundary() Unit
+test fn g_root_boundary()
     requires false
 {
-    Unit
 }
 "#;
     let project = tempfile::tempdir().expect("create requires blame project");
@@ -4200,7 +4161,7 @@ async fn two() Int {
     2
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     Task.sleep(1).await
     let first = one()
     let second = two()
@@ -4219,7 +4180,6 @@ pub async fn main() Unit {
 
     let raced = Task.race([one(), two()])
     let outcome = raced.await
-    Unit
 }
 ";
     let project = tempfile::tempdir().expect("create join project");
@@ -4256,7 +4216,7 @@ async fn faulted() Int {
     0
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     let success, failure = Task.settled(completed(), faulted()).await
     match success {
         Completed(value) => {
@@ -4289,7 +4249,6 @@ pub async fn main() Unit {
             Unit
         }
     }
-    Unit
 }
 "#;
     let project = tempfile::tempdir().expect("create outcome project");
@@ -4338,7 +4297,7 @@ import standard.file.open_read
 import standard.file.create
 import standard.net.connect
 
-pub async fn main() Unit {{
+pub async fn main() {{
     let delay = milliseconds(1)
     let observed = delay.as_milliseconds()
     assert observed == 1
@@ -4361,7 +4320,6 @@ pub async fn main() Unit {{
         assert response == "pong"
         Unit
     }}
-    Unit
 }}
 "#,
         file.display(),
@@ -4408,10 +4366,9 @@ async fn fast() Int {
     2
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     let winner = Task.any(slow(), fast()).await
     assert winner == 2
-    Unit
 }
 ";
     let project = tempfile::tempdir().expect("create cancellation project");
@@ -4461,10 +4418,9 @@ async fn choose(flag Bool) Int {
     }
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     let selected = choose(true).await
     assert selected == 7
-    Unit
 }
 ";
     let project = tempfile::tempdir().expect("create nested await project");
@@ -4509,10 +4465,9 @@ async fn delayedCheck[T: Check](value T) Bool {
     value.check()
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     let checked = delayedCheck(Number { value = 7 }).await
     assert checked
-    Unit
 }
 ";
     let (project, _program, llvm) = emit_source_with_ir(source);
@@ -4567,12 +4522,11 @@ fn same[T: Equivalent](left T, right T) Bool {
     left.equivalent(right)
 }
 
-pub fn main() Unit {
+pub fn main() {
     let left = Boxed { value = Atom { value = 7 } }
     let right = Boxed { value = Atom { value = 7 } }
     let equal = same(left, right)
     assert equal
-    Unit
 }
 
 test fn conditional_witness() {
@@ -4580,7 +4534,6 @@ test fn conditional_witness() {
     let right = Boxed { value = Atom { value = 7 } }
     let equal = same(left, right)
     assert equal
-    Unit
 }
 ";
     let project = tempfile::tempdir().expect("create source project");
@@ -4640,12 +4593,11 @@ impl[T: Check] Combine for Holder[T] {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     let holder = Holder { value = Left { value = 1 } }
     let other = Right { value = "ok" }
     let combined = holder.both(other)
     assert combined
-    Unit
 }
 "#;
     let project = tempfile::tempdir().expect("create source project");
@@ -4746,11 +4698,10 @@ impl Visible for Message {
 
 fn eraseMessage(value Message) dyn Visible { value }
 
-pub fn main() Unit {
+pub fn main() {
     let erased = eraseMessage(Message { text = "live" })
     let text = erased.visibleText()
     assert text == "live"
-    Unit
 }
 "#;
     let (project, program, llvm) = emit_source_with_ir(source);
@@ -4837,11 +4788,10 @@ fn produce() dyn Render {
     eraseWrapped(Wrapped { value = Label { text = "survived" } })
 }
 
-pub fn main() Unit {
+pub fn main() {
     let erased = produce()
     let text = erased.render()
     assert text == "survived"
-    Unit
 }
 "#;
     let (project, program, llvm) = emit_source_with_ir(source);
@@ -4932,9 +4882,8 @@ impl Holder {
         self.counter.add(amount)
     }
 
-    method failProjected(mut self) Unit {
+    method failProjected(mut self) {
         discard self.counter.add(-1)
-        Unit
     }
 
     method addAfterAllocation(mut self) Int {
@@ -4959,7 +4908,7 @@ fn observeReadonly(holder Holder) Int {
     readDynamic(holder.counter)
 }
 
-pub fn main() Unit {
+pub fn main() {
     var projected = Holder { counter = Counter { value = 10 } }
     let projectedValue = projected.addProjected(2)
     assert projectedValue == 12
@@ -4981,7 +4930,6 @@ pub fn main() Unit {
     } else {
         Unit
     }
-    Unit
 }
 "#;
     let (project, _program, llvm) = emit_source_with_ir(source);
@@ -5059,21 +5007,19 @@ record Cell { value Int }
 record Holder { cell Cell }
 
 impl Cell {
-    method mutateThenFail(mut self) Unit {
+    method mutateThenFail(mut self) {
         self.value = 9
         assert false
-        Unit
     }
 }
 
 impl Holder {
-    method invokeFailure(mut self) Unit {
+    method invokeFailure(mut self) {
         self.cell.mutateThenFail()
-        Unit
     }
 }
 
-async fn failAndCleanup() Unit {
+async fn failAndCleanup() {
     var holder = Holder { cell = Cell { value = 1 } }
     defer {
         let observed = holder.cell.value
@@ -5086,12 +5032,11 @@ async fn failAndCleanup() Unit {
         }
     }
     holder.invokeFailure()
-    Unit
 }
 
-async fn complete() Unit { Unit }
+async fn complete() {}
 
-pub async fn main() Unit {
+pub async fn main() {
     let failed, completed = Task.settled(failAndCleanup(), complete()).await
     match failed {
         Faulted(fault) => {
@@ -5119,7 +5064,6 @@ pub async fn main() Unit {
             Unit
         }
     }
-    Unit
 }
 "#;
     let (project, _program, llvm) = emit_source_with_ir(source);
@@ -5160,8 +5104,7 @@ fn native_int_is_checked_i64_even_after_llvm_optimization() {
         ),
     ];
     for (name, statement, expected) in cases {
-        let source =
-            format!("module sample\n\npub fn main() Unit {{\n    {statement}\n    Unit\n}}\n");
+        let source = format!("module sample\n\npub fn main() {{\n    {statement}\n}}\n");
         let project = tempfile::tempdir().expect("create source project");
         std::fs::write(project.path().join("main.loom"), source).expect("write source");
         let snapshot = AnalysisHost::new(project.path())
@@ -5194,7 +5137,7 @@ fn native_int_is_checked_i64_even_after_llvm_optimization() {
 fn deferred_integer_checks_use_cleanup_execution_order_not_registration_order() {
     let source = r"module deferred_overflow
 
-pub fn main() Unit {
+pub fn main() {
     var value = 0
     defer {
         value = value * 9223372036854775807
@@ -5204,7 +5147,6 @@ pub fn main() Unit {
         value = 2
         Unit
     }
-    Unit
 }
 ";
     let project = tempfile::tempdir().expect("create deferred overflow project");
@@ -5240,7 +5182,7 @@ fn float_text_builtins_compile_and_run_natively() {
 import standard.float.parse_float
 import standard.float.format_float
 
-pub fn main() Unit {
+pub fn main() {
     let finite = format_float(1.25)
     assert finite == "1.25"
     let large = format_float(1e20)
@@ -5280,7 +5222,6 @@ pub fn main() Unit {
             Unit
         }
     }
-    Unit
 }
 
 "#;

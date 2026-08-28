@@ -42,7 +42,7 @@ impl Order {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     let subtotal = Price(100.0)
     let discount = Price(20.0)
     let order = Order {
@@ -51,7 +51,6 @@ pub fn main() Unit {
     }
     let total = order.total()
     assert total == 80.0
-    Unit
 }
 ```
 
@@ -61,6 +60,8 @@ Some important properties are visible in the example:
 - `Price` is a nominal constrained type, not an alias for `Float`;
 - record invariants and function contracts are checked in every build profile;
 - methods are read-only unless their receiver is written as `mut self`;
+- Unit-returning callables omit both the return annotation and a direct bare
+  `Unit` body tail;
 - a block's final expression is its result, and semicolons are not used.
 
 Loom also implements closed enums and exhaustive matching, rank-1 generics,

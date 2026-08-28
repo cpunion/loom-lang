@@ -122,7 +122,6 @@ test fn text_bytes_and_paths() {{
             Unit
         }}
     }}
-    Unit
 }}
 
 test async fn path_file_round_trip() {{
@@ -146,7 +145,6 @@ test async fn path_file_round_trip() {{
             Unit
         }}
     }}
-    Unit
 }}
 "#,
     );

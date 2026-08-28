@@ -36,7 +36,7 @@ pub fn public() { return }
 async fn asynchronous() {}
 pub async fn publicAsynchronous() { return }
 test fn omittedTest() {}
-fn explicit() Unit { return }
+fn anotherOmitted() { return }
 pub fn contracted(flag Bool)
     requires flag
     ensures true

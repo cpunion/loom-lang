@@ -90,7 +90,7 @@ pub fn erase_source(value Counter) dyn Source[Item = Int] {
     value
 }
 
-pub fn main() Unit {
+pub fn main() {
     let label = Label { text = "loom" }
     let rendered = static_label(label)
     assert rendered == "loom"

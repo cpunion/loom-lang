@@ -99,7 +99,7 @@ pub struct PreludeIds {
     /// present in the checked program.
     #[serde(default)]
     pub dispose_concept: Option<ConceptId>,
-    /// Canonical `Dispose.dispose(mut self) Unit` requirement.
+    /// Canonical `Dispose.dispose(mut self)` requirement.
     #[serde(default)]
     pub dispose_requirement: Option<RequirementId>,
     /// Canonical empty `standard.resource.MustScope` marker concept.

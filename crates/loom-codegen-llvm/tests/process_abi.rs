@@ -12,7 +12,7 @@ fn process_arguments_declaration_matches_the_runtime_abi() {
 
 import standard.process.arguments
 
-pub fn main() Unit {
+pub fn main() {
     let values = arguments()
     let length = values.length()
     assert length == 2
@@ -26,7 +26,6 @@ pub fn main() Unit {
             Unit
         }
     }
-    Unit
 }
 "#;
     let project = tempfile::tempdir().expect("create process ABI project");

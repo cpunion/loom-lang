@@ -64,7 +64,6 @@ async fn verify() Bool {
 pub async fn main() {
     let valid = verify().await
     assert valid
-    Unit
 }
 
 test async fn fallibleTaskAndResult() Result[Unit, Problem] {

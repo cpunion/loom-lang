@@ -11,12 +11,11 @@ async fn allocationPressure() Bool {
     allocated.length() == 131072
 }
 
-async fn waitInt(delay Int) Unit {
+async fn waitInt(delay Int) {
     let timer = Task.sleep(delay)
     let marker = "typed ".concat("int")
     timer.await
     assert marker == "typed int"
-    Unit
 }
 
 async fn waitDuration(delay Int) Int {
@@ -28,7 +27,7 @@ async fn waitDuration(delay Int) Int {
     42
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     let immediate = Task.sleep(0)
     let integer = waitInt(1)
     let duration = waitDuration(1)
@@ -39,10 +38,9 @@ pub async fn main() Unit {
     let survived = pressure.await
     assert answer == 42
     assert survived
-    Unit
 }
 
-test async fn sleepsWithIntAndDuration() Unit {
+test async fn sleepsWithIntAndDuration() {
     let immediate = Task.sleep(0)
     let integer = waitInt(1)
     let duration = waitDuration(1)
@@ -53,5 +51,4 @@ test async fn sleepsWithIntAndDuration() Unit {
     let survived = pressure.await
     assert answer == 42
     assert survived
-    Unit
 }

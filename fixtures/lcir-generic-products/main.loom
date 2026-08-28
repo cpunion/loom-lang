@@ -20,7 +20,7 @@ fn unwrap(value PositiveBox) Boxed[Int] {
     value
 }
 
-fn verify() Unit {
+fn verify() {
     let first, second = swap(Boxed { value = 1 }, Boxed { value = 2 })
     let text = Boxed { value = "lo".concat("om") }
     let pressure = "x".concat("y")
@@ -35,10 +35,10 @@ fn verify() Unit {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     verify()
 }
 
-test fn genericProducts() Unit {
+test fn genericProducts() {
     verify()
 }

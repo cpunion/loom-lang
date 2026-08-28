@@ -44,7 +44,7 @@ fn advance_once(counter Advance) Int {
     counter.advance()
 }
 
-fn verify() Unit {
+fn verify() {
     let measured = measure(Counter { value = 41 })
     assert measured == 41
 
@@ -55,7 +55,7 @@ fn verify() Unit {
     assert counter_value == 42
 }
 
-pub fn main() Unit {
+pub fn main() {
     verify()
 }
 

@@ -32,9 +32,8 @@ fn choose(flag Bool) Int {
     if flag { 7 } else { 9 }
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard choose(true)
-    Unit
 }
 ",
     )
@@ -44,9 +43,8 @@ fn allocating_text_program() -> CheckedProgram {
     compile_source(
         r#"module prepared_text
 
-pub fn main() Unit {
+pub fn main() {
     discard "left".concat("right")
-    Unit
 }
 "#,
     )
@@ -56,9 +54,8 @@ fn text_get_program() -> CheckedProgram {
     compile_source(
         r#"module prepared_text_get
 
-pub fn main() Unit {
+pub fn main() {
     discard "value".get(0)
-    Unit
 }
 "#,
     )
@@ -68,9 +65,8 @@ fn typed_timer_program() -> CheckedProgram {
     compile_source(
         r"module prepared_timer
 
-pub async fn main() Unit {
+pub async fn main() {
     Task.sleep(1).await
-    Unit
 }
 ",
     )
@@ -190,11 +186,10 @@ fn automatic_route_is_atomic_over_the_reachable_artifact() {
 
 fn make() (Int, Text) { (1, "legacy") }
 
-pub fn main() Unit {
+pub fn main() {
     let number, label = make()
     discard number
     discard label
-    Unit
 }
 "#,
     );
@@ -213,9 +208,8 @@ record Label { value Text }
 
 enum Message { Textual(Label) }
 
-pub fn main() Unit {
+pub fn main() {
     discard Message.Textual(Label { value = "legacy" })
-    Unit
 }
 "#,
     );
@@ -230,7 +224,7 @@ pub fn main() Unit {
     let dead_text = compile_source(
         r#"module prepared_dead_text
 
-pub fn main() Unit { Unit }
+pub fn main() {}
 
 fn dead() Text { "unreachable" }
 "#,
@@ -249,11 +243,10 @@ fn typed_timer_test_keeps_the_ordered_test_artifact_on_lcir() {
     let program = compile_source(
         r"module prepared_tests
 
-test fn scalar() Unit { Unit }
+test fn scalar() {}
 
-test async fn timer() Unit {
+test async fn timer() {
     Task.sleep(1).await
-    Unit
 }
 ",
     );
@@ -532,9 +525,8 @@ fn fingerprints_separate_routes_and_all_codegen_inputs() {
     let changed = compile_source(
         r"module prepared_scalar_changed
 
-pub fn main() Unit {
+pub fn main() {
     discard 8
-    Unit
 }
 ",
     );
@@ -566,17 +558,17 @@ fn tuple_semantics_participate_in_the_lcir_object_cache_identity() {
     let boolean = fingerprint(
         r"module prepared_tuple_identity
 
-fn consume(value (Int, Bool)) Unit { discard value }
+fn consume(value (Int, Bool)) { discard value }
 
-pub fn main() Unit { consume((1, true)) }
+pub fn main() { consume((1, true)) }
 ",
     );
     let floating = fingerprint(
         r"module prepared_tuple_identity
 
-fn consume(value (Int, Float)) Unit { discard value }
+fn consume(value (Int, Float)) { discard value }
 
-pub fn main() Unit { consume((1, 1.0)) }
+pub fn main() { consume((1, 1.0)) }
 ",
     );
 
@@ -601,7 +593,7 @@ fn closed_sum_semantics_participate_in_the_lcir_object_cache_identity() {
 
 enum Choice { Empty, Value(Bool) }
 
-pub fn main() Unit { discard Choice.Value(true) }
+pub fn main() { discard Choice.Value(true) }
 ",
     );
     let floating = fingerprint(
@@ -609,7 +601,7 @@ pub fn main() Unit { discard Choice.Value(true) }
 
 enum Choice { Empty, Value(Float) }
 
-pub fn main() Unit { discard Choice.Value(1.0) }
+pub fn main() { discard Choice.Value(1.0) }
 ",
     );
 

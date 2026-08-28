@@ -42,20 +42,17 @@ record TaskBox {
 
 async fn work() Int { 42 }
 
-fn direct() Unit {
+fn direct() {
     let pending = work()
-    Unit
 }
 
-fn wrapped() Unit {
+fn wrapped() {
     let boxed = TaskBox { task = work(), label = 1 }
-    Unit
 }
 
-fn ordinaryFieldReadDoesNotConsume() Unit {
+fn ordinaryFieldReadDoesNotConsume() {
     let boxed = TaskBox { task = work(), label = 1 }
     discard boxed.label
-    Unit
 }
 ",
     );
@@ -89,8 +86,7 @@ fn ignored(
     option Option[Task[Int]],
     outcome Result[Task[Int], Failure],
     boxed TaskBox
-) Unit {
-    Unit
+) {
 }
 ",
     );
@@ -137,7 +133,7 @@ fn select(value Option[Task[Int]]) Task[Int] {
     }
 }
 
-async fn consume() Unit {
+async fn consume() {
     let direct = work()
     discard direct.await
 
@@ -157,7 +153,6 @@ async fn consume() Unit {
         inner
     }
     discard fromBlock.await
-    Unit
 }
 ",
     );
@@ -172,49 +167,44 @@ module task_flow
 
 async fn work() Int { 42 }
 
-async fn repeated() Unit {
+async fn repeated() {
     let pending = work()
     discard pending.await
     discard pending.await
-    Unit
 }
 
-async fn conditional(flag Bool) Unit {
+async fn conditional(flag Bool) {
     let pending = work()
     if flag {
         discard pending.await
     } else {
         Unit
     }
-    Unit
 }
 
-async fn both(flag Bool) Unit {
+async fn both(flag Bool) {
     let pending = work()
     if flag {
         discard pending.await
     } else {
         discard pending.await
     }
-    Unit
 }
 
-async fn loopIsNotGuaranteed() Unit {
+async fn loopIsNotGuaranteed() {
     let pending = work()
     for index in 0..1 {
         discard pending.await
     }
-    Unit
 }
 
-async fn shortCircuit(flag Bool) Unit {
+async fn shortCircuit(flag Bool) {
     let pending = work()
     let combined = flag && pending.await == 42
     discard combined
-    Unit
 }
 
-async fn conditionThenConsume(flag Bool) Unit {
+async fn conditionThenConsume(flag Bool) {
     let pending = work()
     if flag {
         discard pending.await
@@ -222,15 +212,13 @@ async fn conditionThenConsume(flag Bool) Unit {
         Unit
     }
     discard pending.await
-    Unit
 }
 
-async fn reusedList() Unit {
+async fn reusedList() {
     var tasks = List[Task[Int]]()
     tasks.add(work())
     discard Task.all(tasks).await
     tasks.add(work())
-    Unit
 }
 ",
     );
@@ -313,13 +301,12 @@ module task_return
 
 async fn work() Int { 42 }
 
-async fn early(flag Bool) Unit {
+async fn early(flag Bool) {
     let pending = work()
     if flag {
         return
     }
     discard pending.await
-    Unit
 }
 ",
     );
@@ -334,9 +321,9 @@ module task_boundaries
 
 async fn work() Int { 42 }
 
-fn sink[T](value T) Unit { Unit }
+fn sink[T](value T) {}
 
-async fn asyncSink(value Task[Int]) Unit {
+async fn asyncSink(value Task[Int]) {
     discard value.await
 }
 
@@ -344,10 +331,9 @@ async fn nestedResult() Task[Int] {
     work()
 }
 
-async fn caller() Unit {
+async fn caller() {
     sink(work())
     discard asyncSink(work()).await
-    Unit
 }
 ",
     );
@@ -381,37 +367,37 @@ record ConceptBox[T] {
 }
 
 concept Forget {
-    method forget(self) Unit
+    method forget(self)
 }
 
 impl[T] GenericBox[T] {
-    method forget(self) Unit { Unit }
+    method forget(self) {}
 }
 
 impl[T] Forget for ConceptBox[T] {
-    method forget(self) Unit { Unit }
+    method forget(self) {}
 }
 
 async fn work() Int { 42 }
 
 async fn maybe[T]() Option[T] { None }
 
-fn inherentReceiver() Unit {
+fn inherentReceiver() {
     let boxed = GenericBox { value = work() }
     boxed.forget()
 }
 
-fn conceptReceiver() Unit {
+fn conceptReceiver() {
     let boxed = ConceptBox { value = work() }
     boxed.forget()
 }
 
-fn qualifiedConceptReceiver() Unit {
+fn qualifiedConceptReceiver() {
     let boxed = ConceptBox { value = work() }
     <ConceptBox[Task[Int]] as Forget>.forget(boxed)
 }
 
-async fn instantiatedAsyncResult() Unit {
+async fn instantiatedAsyncResult() {
     discard maybe[Task[Int]]().await
 }
 ",
@@ -467,7 +453,7 @@ fn match_transfers_whole_carrier_and_checks_payloads() {
         r"
 module task_patterns
 
-async fn consume(value Option[Task[Int]]) Unit {
+async fn consume(value Option[Task[Int]]) {
     match value {
         Some(task) => {
             discard task.await
@@ -476,14 +462,14 @@ async fn consume(value Option[Task[Int]]) Unit {
     }
 }
 
-fn wildcard(value Option[Task[Int]]) Unit {
+fn wildcard(value Option[Task[Int]]) {
     match value {
         Some(_) => Unit
         None => Unit
     }
 }
 
-fn unusedBinding(value Option[Task[Int]]) Unit {
+fn unusedBinding(value Option[Task[Int]]) {
     match value {
         Some(task) => Unit
         None => Unit
@@ -523,28 +509,24 @@ record Pair {
 
 async fn work() Int { 42 }
 
-async fn partial(value Pair) Unit {
+async fn partial(value Pair) {
     discard value.left.await
-    Unit
 }
 
-fn overwrite() Unit {
+fn overwrite() {
     var pending = work()
     pending = work()
-    Unit
 }
 
-fn listGet() Unit {
+fn listGet() {
     var tasks = List[Task[Int]]()
     tasks.add(work())
     let extracted = tasks.get(0)
-    Unit
 }
 
-fn mapGet() Unit {
+fn mapGet() {
     let tasks = TextMap[Task[Int]]()
     let extracted = tasks.get("key")
-    Unit
 }
 "#,
     );
@@ -573,14 +555,13 @@ fn discard_accepts_compound_expression_operands() {
         r"
 module discard_compound
 
-fn compound(flag Bool, value Option[Int]) Unit {
+fn compound(flag Bool, value Option[Int]) {
     discard { 1 }
     discard if flag { 1 } else { 2 }
     discard match value {
         Some(item) => item
         None => 0
     }
-    Unit
 }
 ",
     );
@@ -594,16 +575,15 @@ fn discarding_a_scoped_resource_has_one_primary_diagnostic() {
 module standard.resource
 
 concept Dispose {
-    method dispose(mut self) Unit
+    method dispose(mut self)
 }
 
 concept MustScope {}
 concept NoSuspend {}
 
-fn invalid(file File) Unit {
+fn invalid(file File) {
     scoped resource = file
     discard resource
-    Unit
 }
 ",
     );
@@ -616,10 +596,9 @@ fn raw_handle_wait_constructors_are_not_language_builtins() {
         r"
 module raw_waits
 
-async fn invalid() Unit {
+async fn invalid() {
     Task.waitReadable(1).await
     Task.waitWritable(1).await
-    Unit
 }
 ",
     );

@@ -74,7 +74,7 @@ custom resource uses the canonical concepts in module `standard.resource`:
 
 ```loom
 concept Dispose {
-    method dispose(mut self) Unit
+    method dispose(mut self)
 }
 
 concept MustScope {}
@@ -89,7 +89,7 @@ they do not create a runtime resource registry.
 
 ```loom
 impl Dispose for Resource {
-    method dispose(mut self) Unit {
+    method dispose(mut self) {
         self.value = 0
     }
 }

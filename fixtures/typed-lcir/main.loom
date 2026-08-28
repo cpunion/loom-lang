@@ -4,7 +4,7 @@ fn double(value Int) Int {
     value * 2
 }
 
-pub fn main() Unit {
+pub fn main() {
     let answer = double(21)
     if answer == 42 {
         Unit

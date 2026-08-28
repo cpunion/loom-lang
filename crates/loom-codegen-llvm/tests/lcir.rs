@@ -1795,11 +1795,7 @@ fn debug_sources_emit_function_abi_and_expression_locations() {
     let ir_path = directory.path().join("debug.ll");
     let options = NativeObjectOptions {
         emit_ir: Some(ir_path.clone()),
-        debug_sources: vec![DebugSource::new(
-            0,
-            "src/main.loom",
-            "fn main() Unit { Unit }\n",
-        )],
+        debug_sources: vec![DebugSource::new(0, "src/main.loom", "fn main() {}\n")],
         ..NativeObjectOptions::default()
     };
     emit_lcir_native_object(&artifact, &object, &options).expect("emit debug LCIR object");
@@ -1820,8 +1816,8 @@ fn debug_sources_fail_closed_on_duplicate_and_missing_file_ids() {
         (
             "duplicate",
             vec![
-                DebugSource::new(0, "src/main.loom", "fn main() Unit { Unit }\n"),
-                DebugSource::new(0, "src/alias.loom", "fn alias() Unit { Unit }\n"),
+                DebugSource::new(0, "src/main.loom", "fn main() {}\n"),
+                DebugSource::new(0, "src/alias.loom", "fn alias() {}\n"),
             ],
             "duplicate debug source file id #0",
         ),
@@ -1830,7 +1826,7 @@ fn debug_sources_fail_closed_on_duplicate_and_missing_file_ids() {
             vec![DebugSource::new(
                 7,
                 "src/unrelated.loom",
-                "fn unrelated() Unit { Unit }\n",
+                "fn unrelated() {}\n",
             )],
             "debug source table does not contain file id #0",
         ),
@@ -1857,11 +1853,7 @@ fn msvc_debug_sources_emit_codeview_module_flags() {
     let ir_path = directory.path().join("debug-msvc.ll");
     let options = NativeObjectOptions {
         emit_ir: Some(ir_path.clone()),
-        debug_sources: vec![DebugSource::new(
-            0,
-            "src/main.loom",
-            "fn main() Unit { Unit }\n",
-        )],
+        debug_sources: vec![DebugSource::new(0, "src/main.loom", "fn main() {}\n")],
         target_triple: Some("x86_64-pc-windows-msvc".to_owned()),
         ..NativeObjectOptions::default()
     };

@@ -226,7 +226,7 @@ fn scoped_source_lowers_to_first_class_mir_without_a_synthetic_defer() {
 module standard.resource
 
 concept Dispose {
-    method dispose(mut self) Unit
+    method dispose(mut self)
 }
 
 concept MustScope {}
@@ -237,17 +237,15 @@ record Resource {
 }
 
 impl Dispose for Resource {
-    method dispose(mut self) Unit {
+    method dispose(mut self) {
         self.value = 0
-        Unit
     }
 }
 
 impl MustScope for Resource {}
 
-fn main() Unit {
+fn main() {
     scoped resource = Resource { value = 1 }
-    Unit
 }
 ",
     );
@@ -281,7 +279,7 @@ fn source_and_portable_mir_independently_reject_unscoped_must_scope_state() {
 module standard.resource
 
 concept Dispose {
-    method dispose(mut self) Unit
+    method dispose(mut self)
 }
 
 concept MustScope {}
@@ -292,16 +290,14 @@ record Resource {
 }
 
 impl Dispose for Resource {
-    method dispose(mut self) Unit {
-        Unit
+    method dispose(mut self) {
     }
 }
 
 impl MustScope for Resource {}
 
-fn invalid() Unit {
+fn invalid() {
     let resource = Resource { value = 1 }
-    Unit
 }
 ",
     );
@@ -327,7 +323,7 @@ fn proof_dispositions_survive_lowering_as_checked_mir_modes() {
 #[test]
 fn contract_and_assert_proofs_remove_only_established_runtime_checks() {
     let program = compile_and_validate(
-        "module sample\n\ntype Money = Float where self >= 0.0\n\nfn established(value Money) Money\n    requires value >= 0.0\n    ensures result >= 0.0\n{\n    assert value >= 0.0\n    Money(value)\n}\n\nfn dynamic(raw Float) Float\n    requires raw >= 0.0\n    ensures result >= 0.0\n{\n    assert raw >= 0.0\n    raw\n}\n\nfn unchecked_assert(raw Float) Unit {\n    assert raw >= 0.0\n    Unit\n}\n",
+        "module sample\n\ntype Money = Float where self >= 0.0\n\nfn established(value Money) Money\n    requires value >= 0.0\n    ensures result >= 0.0\n{\n    assert value >= 0.0\n    Money(value)\n}\n\nfn dynamic(raw Float) Float\n    requires raw >= 0.0\n    ensures result >= 0.0\n{\n    assert raw >= 0.0\n    raw\n}\n\nfn unchecked_assert(raw Float) {\n    assert raw >= 0.0\n}\n",
     );
     let established = program
         .functions
@@ -434,7 +430,7 @@ fn checked_mir_accepts_the_total_unary_contract_matrix() {
 #[test]
 fn mutable_receiver_requires_only_proves_the_entry_snapshot() {
     let program = compile_and_validate(
-        "module sample\n\nrecord Boxed { value Float }\n\nimpl Boxed {\n    method change(mut self) Unit\n        requires self.value >= 0.0\n        ensures old(self.value) >= 0.0\n        ensures self.value >= 0.0\n    {\n        self.value = -1.0\n        Unit\n    }\n}\n",
+        "module sample\n\nrecord Boxed { value Float }\n\nimpl Boxed {\n    method change(mut self)\n        requires self.value >= 0.0\n        ensures old(self.value) >= 0.0\n        ensures self.value >= 0.0\n    {\n        self.value = -1.0\n    }\n}\n",
     );
     let change = program
         .functions
@@ -487,7 +483,7 @@ fn lowering_and_artifact_are_deterministic() {
 #[test]
 fn generic_data_and_function_lower_without_monomorphizing() {
     let program = compile_and_validate(
-        "module sample\n\nrecord Boxed[T] { value T }\n\nfn wrap[T](value T) Boxed[T] { Boxed { value = value } }\n\ntest fn wraps_text() {\n    let boxed = wrap(\"loom\")\n    assert boxed.value == \"loom\"\n    Unit\n}\n",
+        "module sample\n\nrecord Boxed[T] { value T }\n\nfn wrap[T](value T) Boxed[T] { Boxed { value = value } }\n\ntest fn wraps_text() {\n    let boxed = wrap(\"loom\")\n    assert boxed.value == \"loom\"\n}\n",
     );
     assert!(
         program
@@ -500,7 +496,7 @@ fn generic_data_and_function_lower_without_monomorphizing() {
 #[test]
 fn conditional_conformance_builds_recursive_proof_application() {
     let program = compile_and_validate(
-        "module sample\n\nconcept Equivalent {\n    method equivalent(self, other Self) Bool\n}\n\nrecord Atom { value Int }\n\nimpl Equivalent for Atom {\n    method equivalent(self, other Atom) Bool { self.value == other.value }\n}\n\nrecord Boxed[T] { value T }\n\nimpl[T: Equivalent] Equivalent for Boxed[T] {\n    method equivalent(self, other Boxed[T]) Bool {\n        self.value.equivalent(other.value)\n    }\n}\n\nfn same[T: Equivalent](left T, right T) Bool {\n    left.equivalent(right)\n}\n\ntest fn conditional_witness() {\n    let left = Boxed { value = Atom { value = 7 } }\n    let right = Boxed { value = Atom { value = 7 } }\n    let equal = same(left, right)\n    assert equal\n    Unit\n}\n",
+        "module sample\n\nconcept Equivalent {\n    method equivalent(self, other Self) Bool\n}\n\nrecord Atom { value Int }\n\nimpl Equivalent for Atom {\n    method equivalent(self, other Atom) Bool { self.value == other.value }\n}\n\nrecord Boxed[T] { value T }\n\nimpl[T: Equivalent] Equivalent for Boxed[T] {\n    method equivalent(self, other Boxed[T]) Bool {\n        self.value.equivalent(other.value)\n    }\n}\n\nfn same[T: Equivalent](left T, right T) Bool {\n    left.equivalent(right)\n}\n\ntest fn conditional_witness() {\n    let left = Boxed { value = Atom { value = 7 } }\n    let right = Boxed { value = Atom { value = 7 } }\n    let equal = same(left, right)\n    assert equal\n}\n",
     );
     assert!(
         program
@@ -531,7 +527,7 @@ fn conditional_conformance_builds_recursive_proof_application() {
 #[test]
 fn generic_associated_projection_is_preserved_in_function_mir() {
     let program = compile_and_validate(
-        "module sample\n\nconcept Source {\n    associated type Item\n    method first(self) Self.Item\n}\n\nrecord Number { value Int }\n\nimpl Source for Number {\n    associated type Item = Int\n    method first(self) Int { self.value }\n}\n\nfn read[T: Source](source T) T.Item { source.first() }\n\ntest fn reads_associated() {\n    let value = read(Number { value = 3 })\n    assert value == 3\n    Unit\n}\n",
+        "module sample\n\nconcept Source {\n    associated type Item\n    method first(self) Self.Item\n}\n\nrecord Number { value Int }\n\nimpl Source for Number {\n    associated type Item = Int\n    method first(self) Int { self.value }\n}\n\nfn read[T: Source](source T) T.Item { source.first() }\n\ntest fn reads_associated() {\n    let value = read(Number { value = 3 })\n    assert value == 3\n}\n",
     );
     assert!(program.functions.iter().any(|function| matches!(
         function.return_ty,
@@ -563,7 +559,7 @@ fn returning_branch_preserves_never_flow() {
 #[test]
 fn generic_witness_and_method_generics_keep_separate_alpha_spaces() {
     let program = compile_and_validate(
-        "module sample\n\nrecord Boxed[T] { value T }\nrecord Holder[T] { value T }\n\nconcept Wrapper {\n    method wrap[U](self, value U) Boxed[U]\n}\n\nimpl[T] Wrapper for Holder[T] {\n    method wrap[U](self, value U) Boxed[U] { Boxed { value = value } }\n}\n\ntest fn generic_method() {\n    let holder = Holder { value = 1 }\n    let boxed = holder.wrap(\"loom\")\n    assert boxed.value == \"loom\"\n    Unit\n}\n",
+        "module sample\n\nrecord Boxed[T] { value T }\nrecord Holder[T] { value T }\n\nconcept Wrapper {\n    method wrap[U](self, value U) Boxed[U]\n}\n\nimpl[T] Wrapper for Holder[T] {\n    method wrap[U](self, value U) Boxed[U] { Boxed { value = value } }\n}\n\ntest fn generic_method() {\n    let holder = Holder { value = 1 }\n    let boxed = holder.wrap(\"loom\")\n    assert boxed.value == \"loom\"\n}\n",
     );
     let witness = program.witnesses.first().expect("generic witness");
     assert_eq!(witness.type_parameters, 1);
@@ -659,7 +655,7 @@ fn generic_concept_contracts_use_the_implementation_alpha_space() {
 #[test]
 fn generic_receiver_invariant_is_instantiated_from_the_impl_target() {
     let program = compile_and_validate(
-        "module sample\n\nrecord Pair[A, B] {\n    left Option[A]\n    right Option[B]\n\n    invariant match self.left {\n        Some(value) => true\n        None => true\n    }\n}\n\nimpl[X, Y] Pair[Y, X] {\n    method touch(self) Unit { Unit }\n}\n",
+        "module sample\n\nrecord Pair[A, B] {\n    left Option[A]\n    right Option[B]\n\n    invariant match self.left {\n        Some(value) => true\n        None => true\n    }\n}\n\nimpl[X, Y] Pair[Y, X] {\n    method touch(self) {}\n}\n",
     );
     let method = program
         .functions
@@ -687,7 +683,7 @@ fn old_match_bindings_remain_lexical_snapshot_values() {
 #[test]
 fn receiverless_static_requirement_carries_an_explicit_dispatch_type() {
     compile_and_validate(
-        "module sample\n\nconcept Zero {\n    static method zero() Self\n}\n\nimpl Zero for Int {\n    static method zero() Int { 0 }\n}\n\nfn make_zero[T: Zero]() T { <T as Zero>.zero() }\n\ntest fn makes_zero() {\n    let zero = make_zero[Int]()\n    assert zero == 0\n    Unit\n}\n",
+        "module sample\n\nconcept Zero {\n    static method zero() Self\n}\n\nimpl Zero for Int {\n    static method zero() Int { 0 }\n}\n\nfn make_zero[T: Zero]() T { <T as Zero>.zero() }\n\ntest fn makes_zero() {\n    let zero = make_zero[Int]()\n    assert zero == 0\n}\n",
     );
 }
 
@@ -749,7 +745,6 @@ async fn measured[T: Measure](value T, minimum Int) Int
 test async fn generic_async_contracts() {
     let observed = measured(Number { value = 2 }, 3).await
     assert observed == 5
-    Unit
 }
 ",
     );
@@ -774,7 +769,7 @@ module canonical_task_items
 
 async fn child() Int { 1 }
 
-pub async fn main() Unit {
+pub async fn main() {
     discard Task.sleep(0).await
     discard Task.all(child()).await
     discard Task.settled(child()).await
@@ -804,7 +799,7 @@ impl Scheduler {
     method sleep(self, value Int) Int { value }
 }
 
-pub fn main() Unit {
+pub fn main() {
     let Task = Scheduler {}
     discard Task.all(1)
     discard Task.settled(2)
@@ -833,7 +828,7 @@ async fn constrained(ignored Int, required Int, oldRequired Int) Int
     7
 }
 
-test async fn callConstrained() Unit {
+test async fn callConstrained() {
     discard constrained(99, 3, 4).await
 }
 ",
@@ -970,13 +965,13 @@ import standard.file.open_read_path
 import standard.file.create_path
 
 concept Dispose {
-    method dispose(mut self) Unit
+    method dispose(mut self)
 }
 
 concept MustScope {}
 concept NoSuspend {}
 
-fn values(text Text, bytes Bytes, base Path, child Path, index Int) Unit {
+fn values(text Text, bytes Bytes, base Path, child Path, index Int) {
     let scalar_count = text.length()
     let scalar = text.get(index)
     let concatenated = text.concat("!")
@@ -991,10 +986,9 @@ fn values(text Text, bytes Bytes, base Path, child Path, index Int) Unit {
     let parsed = Path.from_text(text)
     assert bytes == bytes
     assert base == base
-    Unit
 }
 
-fn decodeOutcome(value Result[Text, DecodeTextError]) Unit {
+fn decodeOutcome(value Result[Text, DecodeTextError]) {
     match value {
         Ok(_) => Unit
         Err(error) => match error {
@@ -1003,7 +997,7 @@ fn decodeOutcome(value Result[Text, DecodeTextError]) Unit {
     }
 }
 
-fn pathOutcome(value Result[Path, PathError]) Unit {
+fn pathOutcome(value Result[Path, PathError]) {
     match value {
         Ok(_) => Unit
         Err(error) => match error {
@@ -1013,10 +1007,9 @@ fn pathOutcome(value Result[Path, PathError]) Unit {
     }
 }
 
-async fn pathFiles(path Path) Unit {
+async fn pathFiles(path Path) {
     scoped input = open_read_path(path).await
     scoped output = create_path(path).await
-    Unit
 }
 "#,
     );
@@ -1062,13 +1055,13 @@ import standard.log.error
 import standard.log.write
 
 concept Dispose {
-    method dispose(mut self) Unit
+    method dispose(mut self)
 }
 
 concept MustScope {}
 concept NoSuspend {}
 
-fn values(text Text) Unit {
+fn values(text Text) {
     let fields = TextMap[Text]().insert("name", text).remove("absent")
     let count = fields.length()
     let present = fields.contains("name")
@@ -1088,10 +1081,9 @@ fn values(text Text) Unit {
     warn("warn")
     error("error")
     write(LogLevel.Info, "event", fields)
-    Unit
 }
 
-fn jsonValue(value Json) Unit {
+fn jsonValue(value Json) {
     match value {
         Null => Unit
         Bool(_) => Unit
@@ -1102,7 +1094,7 @@ fn jsonValue(value Json) Unit {
     }
 }
 
-fn jsonFailure(value JsonError) Unit {
+fn jsonFailure(value JsonError) {
     match value {
         InvalidSyntax(_) => Unit
         NumberOutOfRange(_) => Unit
@@ -1111,7 +1103,7 @@ fn jsonFailure(value JsonError) Unit {
     }
 }
 
-fn ioFailure(error IoError) Unit {
+fn ioFailure(error IoError) {
     let message = error.message()
     match error.kind() {
         NotFound => Unit

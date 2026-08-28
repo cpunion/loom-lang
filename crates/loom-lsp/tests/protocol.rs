@@ -112,11 +112,10 @@ fn structured_standard_values_are_discoverable_through_completion_and_hover() {
 import standard.json.parse_json
 import standard.log.write
 
-fn inspect(problem IoError, value Json) Unit {
+fn inspect(problem IoError, value Json) {
     let fields = TextMap[Text]().insert("key", "value")
     let parsed = parse_json("null")
     write(LogLevel.Info, problem.message(), fields)
-    Unit
 }
 "#;
     let project = TestProject::new(source);
@@ -130,7 +129,7 @@ fn inspect(problem IoError, value Json) Unit {
         json!({"jsonrpc":"2.0","id":3,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "parse_json")}}),
         json!({"jsonrpc":"2.0","id":4,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "insert")}}),
         json!({"jsonrpc":"2.0","id":5,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "IoError")}}),
-        json!({"jsonrpc":"2.0","id":6,"method":"textDocument/completion","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "Unit\n}")}}),
+        json!({"jsonrpc":"2.0","id":6,"method":"textDocument/completion","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "\n}")}}),
         json!({"jsonrpc":"2.0","id":7,"method":"shutdown","params":null}),
         json!({"jsonrpc":"2.0","method":"exit","params":null}),
     ];
@@ -194,7 +193,7 @@ fn inspect(problem IoError, value Json) Unit {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn stdio_session_exposes_semantic_navigation_and_refuses_an_incomplete_index() {
-    let source = "module demo\n\npub fn identity[T](value T) T {\n    let copy = value\n    copy\n}\n\npub fn main() Unit {\n    let answer = identity(42)\n    assert answer == 42  \n    Unit\n}\n";
+    let source = "module demo\n\npub fn identity[T](value T) T {\n    let copy = value\n    copy\n}\n\npub fn main() {\n    let answer = identity(42)\n    assert answer == 42  \n}\n";
     let project = TestProject::new(source);
     let root_uri = loom_lsp::path_to_file_uri(&project.0);
     let file_uri = loom_lsp::path_to_file_uri(&project.0.join("main.loom"));
@@ -677,7 +676,7 @@ fn portable_dependency_implementations_are_opaque_and_read_only() {
         "consumer/loom.toml",
         "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"consumer\"\nversion = \"1.0.0\"\n[dependencies]\nutility = { artifact = \"../utility.loomlib\", version = \"^1\" }\n",
     );
-    let consumer_source = "module consumer\n\nimport utility.increment\n\npub fn main() Unit {\n    let value = increment(41)\n    assert value == 42\n    Unit\n}\n";
+    let consumer_source = "module consumer\n\nimport utility.increment\n\npub fn main() {\n    let value = increment(41)\n    assert value == 42\n}\n";
     project.write("consumer/src/main.loom", consumer_source);
     let root_uri = loom_lsp::path_to_file_uri(&project.0.join("consumer"));
     let file_uri = loom_lsp::path_to_file_uri(&project.0.join("consumer/src/main.loom"));

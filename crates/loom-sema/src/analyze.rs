@@ -220,7 +220,7 @@ impl Analyzer<'_> {
         if !valid_header || !valid_method {
             self.error(
                 "InvalidDisposeConcept",
-                "standard.resource.Dispose must be a non-dyn concept containing only `method dispose(mut self) Unit` without contracts",
+                "standard.resource.Dispose must be a non-dyn concept containing only `method dispose(mut self)` without contracts",
                 self.definition_span(definition),
             );
         }
@@ -3110,7 +3110,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         let Some(requirement) = self.concept_method(dispose, &Name::new("dispose")) else {
             self.error(
                 "InvalidDisposeConcept",
-                "standard.resource.Dispose must declare `method dispose(mut self) Unit`",
+                "standard.resource.Dispose must declare `method dispose(mut self)`",
                 self.local_span(local),
             );
             return;
@@ -9587,7 +9587,6 @@ impl Source for Counter {
 
 fn consume(source Source[Item = Int]) {
     let ignored = source.next()
-    Unit
 }
 ";
 
@@ -9621,15 +9620,13 @@ fn typed(
     first view[dyn C],
     second box[dyn C],
     third shared[dyn C],
-) Unit {
-    Unit
+) {
 }
 
-fn constructed(value Int) Unit {
+fn constructed(value Int) {
     discard view(value)
     discard box(value)
     discard shared(value)
-    Unit
 }
 ";
         let (_, analysis) = analyze_source(source);
@@ -9681,10 +9678,10 @@ fn constructed(value Int) Unit {
     }
 
     #[test]
-    fn test_signature_accepts_unit_and_rejects_parameters() {
+    fn test_signature_uses_implicit_unit_and_rejects_parameters() {
         let parsed = parse_with_file(
             FileId(0),
-            "module sample\n\ntest fn ok() { Unit }\n\ntest fn bad(value Int) { Unit }\n",
+            "module sample\n\ntest fn ok() {}\n\ntest fn bad(value Int) {}\n",
         );
         let lowered = lower_files([SourceUnit {
             file: FileId(0),
@@ -9815,7 +9812,6 @@ fn constructed(value Int) Unit {
                  consume(counter)\n\
                  let observed = counter.value\n\
                  assert observed == 1\n\
-                 Unit\n\
              }}\n"
         );
         let (_, analysis) = analyze_source(&source);
@@ -9849,7 +9845,6 @@ fn constructed(value Int) Unit {
              test fn immutable_argument() {{\n\
                  let counter = Counter {{ value = 0 }}\n\
                  consume(counter)\n\
-                 Unit\n\
              }}\n"
         );
         let (_, analysis) = analyze_source(&source);
@@ -9874,7 +9869,6 @@ pub record Pair {
 
 impl Pair {
     method observe(self) {
-        Unit
     }
 
     method mutate(mut self) {
@@ -9884,7 +9878,6 @@ impl Pair {
             self.observe()
         }
         self.observe()
-        Unit
     }
 }
 ",
@@ -9909,15 +9902,13 @@ pub record Counter {
 }
 
 impl Counter {
-    method observe(self) Unit {
-        Unit
+    method observe(self) {
     }
 
-    method repair(mut self, next Int) Unit {
+    method repair(mut self, next Int) {
         self.value = next
         assert self.value >= 0
         self.observe()
-        Unit
     }
 }
 ",
@@ -10430,7 +10421,6 @@ fn read[T: Source](source T) T.Item {
 test fn concrete_projection() {
     let value = read(Number { value = 3 })
     assert value == 3
-    Unit
 }
 ",
         );
@@ -10798,9 +10788,8 @@ impl Cell {
         true
     }
 
-    method make_positive(mut self) Unit {
+    method make_positive(mut self) {
         self.value = 1.0
-        Unit
     }
 }
 
@@ -10813,7 +10802,7 @@ fn after_loop(raw Float, count Int) Result[Money, ConstraintError] {
     Money(value)
 }
 
-fn after_impure_condition(raw Float) Unit {
+fn after_impure_condition(raw Float) {
     var cell = Cell { value = raw }
     if cell.value >= 0.0 && cell.make_negative() {
         let checked = Money(cell.value)
@@ -10823,7 +10812,7 @@ fn after_impure_condition(raw Float) Unit {
     }
 }
 
-fn copied_before_mutation(raw Float) Unit {
+fn copied_before_mutation(raw Float) {
     var cell = Cell { value = raw }
     let snapshot = cell.value
     cell.make_positive()

@@ -31,18 +31,18 @@ fn choose(flag Bool) Int {
 ```
 
 Omitting the return type means `Unit`; it does not infer a type from the body.
-Both of these functions return `Unit`:
+The return annotation and the callable body's direct bare `Unit` tail are both
+omitted:
 
 ```loom
 fn empty() {}
-
-fn explicit() Unit {
-    Unit
-}
 ```
 
-`Unit` must still be written when it is a type argument, field, or parameter,
-as in `Result[Unit, E]` and `Task[Unit]`.
+Writing `fn empty() Unit` or ending its body directly with bare `Unit` is a
+syntax error. `Unit` remains a user-visible type and value: it must still be
+written when it is a type argument, field, or parameter, and may be used in
+ordinary expressions such as `Ok(Unit)`. Examples include `Result[Unit, E]`
+and `Task[Unit]`.
 
 The built-in scalar types are `Bool`, fixed-width checked signed `Int`, IEEE 754
 binary64 `Float`, `Text`, and `Unit`. `Int` is always signed 64-bit; it does not

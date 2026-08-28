@@ -73,9 +73,8 @@ fn retainNested(input Nested, takeInput Bool) Nested {
 }
 
 impl Holder {
-    method relocate(mut self) Unit {
+    method relocate(mut self) {
         self.state = retainNested(self.state, true)
-        Unit
     }
 }
 
@@ -192,9 +191,8 @@ test fn pointerFreeSum() Result[Unit, Problem] {
     verdict(pointerFree(Plain.One(42)) == 42)
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard verify()
-    Unit
 }
 
 test fn managedSums() Result[Unit, Problem] { verify() }

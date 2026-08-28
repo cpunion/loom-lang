@@ -10,7 +10,7 @@ async fn numberChild(value Int) Int {
     value * 2
 }
 
-async fn unitChild() Unit {
+async fn unitChild() {
     Task.sleep(1).await
 }
 
@@ -32,7 +32,7 @@ async fn allocationPressure() Bool {
     allocated.length() == 131072
 }
 
-async fn exerciseJoins() Unit {
+async fn exerciseJoins() {
     let tupleText, tupleNumber = (textChild("tuple"), numberChild(20)).await
     assert tupleText == "tuple child"
     assert tupleNumber == 40
@@ -60,13 +60,12 @@ async fn exerciseJoins() Unit {
     let readyNumber, readyFlag = alreadyReady.await
     assert readyNumber == 47
     assert readyFlag
-    Unit
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     exerciseJoins().await
 }
 
-test async fn staticTaskAllUsesDirectAndFirstClassPaths() Unit {
+test async fn staticTaskAllUsesDirectAndFirstClassPaths() {
     exerciseJoins().await
 }

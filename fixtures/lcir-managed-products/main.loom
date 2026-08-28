@@ -64,9 +64,8 @@ fn verify() Result[Unit, Problem] {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     discard verify()
-    Unit
 }
 
 test fn managedProducts() Result[Unit, Problem] { verify() }

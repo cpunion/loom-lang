@@ -1,7 +1,7 @@
 module standard.resource
 
 concept Dispose {
-    method dispose(mut self) Unit
+    method dispose(mut self)
 }
 
 concept MustScope {}
@@ -12,19 +12,17 @@ record Resource {
 }
 
 impl Dispose for Resource {
-    method dispose(mut self) Unit {
+    method dispose(mut self) {
         assert self.value > 0
         self.value = 0
-        Unit
     }
 }
 
 impl MustScope for Resource {}
 
-fn requireEqual(actual Int, expected Int) Unit
+fn requireEqual(actual Int, expected Int)
     requires actual == expected
 {
-    Unit
 }
 
 record Counter {
@@ -33,7 +31,7 @@ record Counter {
 }
 
 impl Counter {
-    method replaceAfterCleanup(mut self, target Int) Unit
+    method replaceAfterCleanup(mut self, target Int)
         requires target >= 0
         ensures old(self.value) == 1
         ensures self.value == target
@@ -46,7 +44,7 @@ impl Counter {
     }
 }
 
-fn exercise() Unit {
+fn exercise() {
     var order = 0
     {
         defer {
@@ -75,16 +73,15 @@ fn exercise() Unit {
     requireEqual(counter.value, 8)
 
     scoped resource = Resource { value = 7 }
-    Unit
 }
 
-pub fn main() Unit
+pub fn main()
     requires true
     ensures true
 {
     exercise()
 }
 
-test fn lexicalCleanup() Unit {
+test fn lexicalCleanup() {
     exercise()
 }

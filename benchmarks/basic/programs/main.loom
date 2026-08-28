@@ -9,10 +9,9 @@ record Counter {
 }
 
 impl Counter {
-    method add(mut self, value Int) Unit {
+    method add(mut self, value Int) {
         self.total = self.total + value
         self.calls = self.calls + 1
-        Unit
     }
 }
 
@@ -104,7 +103,7 @@ fn fibonacci(value Int) Int {
     }
 }
 
-fn run(benchmarkName Text, size Int, expected Int) Unit {
+fn run(benchmarkName Text, size Int, expected Int) {
     assert size >= 0
     if benchmarkName == "int_lcg" {
         assert size <= 100000000
@@ -139,7 +138,7 @@ fn run(benchmarkName Text, size Int, expected Int) Unit {
     }
 }
 
-pub fn main() Unit {
+pub fn main() {
     let values = arguments()
     let length = values.length()
     assert length == 3
