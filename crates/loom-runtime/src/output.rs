@@ -11,60 +11,84 @@ use std::os::fd::AsFd;
 #[cfg(windows)]
 use std::os::windows::io::AsHandle;
 
-use loom_runtime_abi::{STDOUT_WRITE_FAILED, STDOUT_WRITE_INVALID_ARGUMENT, STDOUT_WRITE_OK};
+use loom_runtime_abi::{
+    STDOUT_WRITE_FAILED, STDOUT_WRITE_INVALID_ARGUMENT, STDOUT_WRITE_OK, TYPED_LOG_OK,
+    TYPED_LOG_WRITE_FAILED,
+};
 
-fn write_exact(mut writer: impl Write, bytes: &[u8]) -> i32 {
-    if writer
-        .write_all(bytes)
-        .and_then(|()| writer.flush())
-        .is_ok()
-    {
-        STDOUT_WRITE_OK
-    } else {
-        STDOUT_WRITE_FAILED
-    }
+fn write_exact(mut writer: impl Write, bytes: &[u8]) -> io::Result<()> {
+    writer.write_all(bytes).and_then(|()| writer.flush())
+}
+
+#[cfg(unix)]
+fn pipe_failures_are_reportable() -> bool {
+    static SIGPIPE_IGNORED: OnceLock<bool> = OnceLock::new();
+    *SIGPIPE_IGNORED.get_or_init(|| {
+        // SAFETY: installing SIG_IGN is process-global but uses no borrowed
+        // state. Loom defines a broken process-output pipe as an I/O failure
+        // instead of allowing SIGPIPE to terminate generated entry points.
+        unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) != libc::SIG_ERR }
+    })
+}
+
+#[cfg(unix)]
+fn write_locked_stream(lock: &mut (impl Write + AsFd), bytes: &[u8]) -> io::Result<()> {
+    lock.flush()?;
+    let stream = lock.as_fd().try_clone_to_owned().map(File::from)?;
+    write_exact(stream, bytes)
+}
+
+#[cfg(windows)]
+fn write_locked_stream(lock: &mut (impl Write + AsHandle), bytes: &[u8]) -> io::Result<()> {
+    lock.flush()?;
+    let stream = lock.as_handle().try_clone_to_owned().map(File::from)?;
+    write_exact(stream, bytes)
 }
 
 #[cfg(unix)]
 fn write_process_stdout(bytes: &[u8]) -> i32 {
-    static SIGPIPE_IGNORED: OnceLock<bool> = OnceLock::new();
-    let ignored = SIGPIPE_IGNORED.get_or_init(|| {
-        // SAFETY: installing SIG_IGN is process-global but uses no borrowed
-        // state. Loom defines a broken stdout pipe as an I/O failure instead
-        // of allowing SIGPIPE to terminate compiler-generated entry points.
-        unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) != libc::SIG_ERR }
-    });
-    if !*ignored {
+    if !pipe_failures_are_reportable() {
         return STDOUT_WRITE_FAILED;
     }
     let stdout = io::stdout();
     let mut lock = stdout.lock();
-    if lock.flush().is_err() {
-        return STDOUT_WRITE_FAILED;
-    }
-    let Ok(stdout) = lock.as_fd().try_clone_to_owned().map(File::from) else {
-        return STDOUT_WRITE_FAILED;
-    };
     // File reports EBADF instead of applying std::io::Stdout's deliberate
     // missing-stream success policy. Keep the stdout lock live for the entire
     // raw write so distinct ABI calls cannot interleave through this process.
-    write_exact(stdout, bytes)
+    write_locked_stream(&mut lock, bytes).map_or(STDOUT_WRITE_FAILED, |()| STDOUT_WRITE_OK)
 }
 
 #[cfg(windows)]
 fn write_process_stdout(bytes: &[u8]) -> i32 {
     let stdout = io::stdout();
     let mut lock = stdout.lock();
-    if lock.flush().is_err() {
-        return STDOUT_WRITE_FAILED;
-    }
-    let Ok(stdout) = lock.as_handle().try_clone_to_owned().map(File::from) else {
-        return STDOUT_WRITE_FAILED;
-    };
     // The owned clone lets File issue raw WriteFile-backed writes without
     // transferring or closing the original process handle. Keep the standard
     // stdout lock live so distinct ABI calls cannot interleave.
-    write_exact(stdout, bytes)
+    write_locked_stream(&mut lock, bytes).map_or(STDOUT_WRITE_FAILED, |()| STDOUT_WRITE_OK)
+}
+
+/// Writes one already-formatted log line to standard error while holding the
+/// process-local Rust stderr lock for the complete raw write and flush.
+///
+/// This serializes Loom logging calls within one process. It does not claim
+/// kernel-level atomicity against unrelated writers which bypass that lock.
+#[cfg(unix)]
+pub fn write_process_stderr(bytes: &[u8]) -> i32 {
+    if !pipe_failures_are_reportable() {
+        return TYPED_LOG_WRITE_FAILED;
+    }
+    let stderr = io::stderr();
+    let mut lock = stderr.lock();
+    write_locked_stream(&mut lock, bytes).map_or(TYPED_LOG_WRITE_FAILED, |()| TYPED_LOG_OK)
+}
+
+/// Windows counterpart of the exact, process-serialized stderr boundary.
+#[cfg(windows)]
+pub fn write_process_stderr(bytes: &[u8]) -> i32 {
+    let stderr = io::stderr();
+    let mut lock = stderr.lock();
+    write_locked_stream(&mut lock, bytes).map_or(TYPED_LOG_WRITE_FAILED, |()| TYPED_LOG_OK)
 }
 
 /// Writes one exact byte range to standard output without C text-mode
@@ -123,10 +147,10 @@ mod tests {
     #[test]
     fn exact_writer_preserves_nul_and_lf_and_reports_failures() {
         let mut output = Vec::new();
-        assert_eq!(write_exact(&mut output, b"left\0right\n"), STDOUT_WRITE_OK);
+        assert!(write_exact(&mut output, b"left\0right\n").is_ok());
         assert_eq!(output, b"left\0right\n");
-        assert_eq!(write_exact(AlwaysFails, b"data"), STDOUT_WRITE_FAILED);
-        assert_eq!(write_exact(FlushFails, b"data"), STDOUT_WRITE_FAILED);
+        assert!(write_exact(AlwaysFails, b"data").is_err());
+        assert!(write_exact(FlushFails, b"data").is_err());
     }
 
     #[test]

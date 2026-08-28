@@ -4,7 +4,7 @@
 //! values crossing the runtime boundary are defined here once and consumed by
 //! both generated-code declarations and the Rust runtime implementation.
 
-pub const RUNTIME_ABI_VERSION: u32 = 20;
+pub const RUNTIME_ABI_VERSION: u32 = 21;
 pub const COROUTINE_ABI_VERSION: u32 = 2;
 pub const TYPED_TASK_ABI_VERSION: u32 = 1;
 pub const WAIT_ABI_VERSION: u32 = 1;
@@ -15,7 +15,7 @@ pub const TYPED_GC_ABI_VERSION: u32 = 1;
 pub const TYPED_GC_REPEATED_ABI_VERSION: u32 = 1;
 pub const TYPED_SHADOW_STACK_ABI_VERSION: u32 = 1;
 pub const WITNESS_ABI_VERSION: u32 = 1;
-pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-timer-v1/typed-resource-v1/format-float-v1/stdout-v1/runtime-v14/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4";
+pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-timer-v1/typed-resource-v1/format-float-v1/typed-log-v1/stdout-v1/runtime-v15/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4";
 
 /// Writes exactly `length` bytes to the process standard-output stream.
 ///
@@ -31,6 +31,23 @@ pub const STDOUT_WRITE_SYMBOL: &str = "loom_runtime_stdout_write_v1";
 pub const STDOUT_WRITE_OK: i32 = 0;
 pub const STDOUT_WRITE_INVALID_ARGUMENT: i32 = 1;
 pub const STDOUT_WRITE_FAILED: i32 = 2;
+
+/// Writes one canonical structured-log line from direct typed Text values.
+///
+/// The synchronous boundary takes `(level, message, fields, field_count)`.
+/// `message` and every field pointer name complete canonical Text objects;
+/// `fields` borrows a contiguous array of [`LoomTypedLogField`] for the call.
+/// The runtime neither retains these pointers nor enters a Loom GC safepoint.
+/// A failed write may have emitted a prefix, so generated callers must not
+/// retry it.
+pub const TYPED_LOG_WRITE_SYMBOL: &str = "loom_runtime_log_typed_v1";
+pub const TYPED_LOG_OK: i32 = 0;
+pub const TYPED_LOG_INVALID_ARGUMENT: i32 = 1;
+pub const TYPED_LOG_WRITE_FAILED: i32 = 2;
+pub const TYPED_LOG_FIELD_SIZE: u64 = 16;
+pub const TYPED_LOG_FIELD_ALIGNMENT: u64 = 8;
+pub const TYPED_LOG_FIELD_KEY_OFFSET: u64 = 0;
+pub const TYPED_LOG_FIELD_VALUE_OFFSET: u64 = 8;
 
 pub const GC_OK: i32 = 0;
 pub const GC_INVALID_ARGUMENT: i32 = 1;
@@ -355,6 +372,18 @@ pub struct LoomByteView {
     pub length: u64,
 }
 
+/// One borrowed canonical `TextMap[Text]` entry for typed structured logging.
+///
+/// Both pointers name complete direct Text objects. Generated code passes a
+/// view over the map's immutable canonical-order entry storage, not the map
+/// object itself, so this wire does not expose or require a universal value.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct LoomTypedLogField {
+    pub key: *const core::ffi::c_void,
+    pub value: *const core::ffi::c_void,
+}
+
 impl Default for LoomByteView {
     fn default() -> Self {
         Self {
@@ -480,29 +509,31 @@ mod tests {
         GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, GC_RESOURCE_LIMIT, LAYOUT_ABI_VERSION, LoomByteView,
         LoomGcObjectDescriptor, LoomGcRepeatedObjectDescriptor, LoomGcRootDescriptor,
         LoomGcRootFrame, LoomGcTypedRootDescriptor, LoomGcTypedRootFrame,
-        LoomTypedCoroutineDescriptor, LoomTypedTaskFaultView, LoomWitnessDescriptor,
-        LoomWitnessInstance, NATIVE_RUNTIME_ABI_IDENTITY, PARSE_FLOAT_SYMBOL, PARSE_INT_SYMBOL,
-        PARSE_STATUS_INVALID_SYNTAX, PARSE_STATUS_OK, PARSE_STATUS_OUT_OF_RANGE,
-        RUNTIME_ABI_VERSION, SHADOW_STACK_ABI_VERSION, STANDARD_LIBRARY_ABI_VERSION,
-        STDOUT_WRITE_FAILED, STDOUT_WRITE_INVALID_ARGUMENT, STDOUT_WRITE_OK, STDOUT_WRITE_SYMBOL,
-        TEXT_CONTAINS_SYMBOL, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_INVALID, TEXT_GET_TYPED_MISSING,
-        TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT,
-        TEXT_OBJECT_FIELD_ALLOCATION_SIZE, TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES,
-        TEXT_OBJECT_FIELD_LAYOUT, TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE,
-        TYPED_GC_ABI_VERSION, TYPED_GC_ALLOC_SYMBOL, TYPED_GC_REPEATED_ABI_VERSION,
-        TYPED_GC_REPEATED_ALLOC_SYMBOL, TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL,
-        TYPED_RESOURCE_CLOSE_FAILED, TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT,
-        TYPED_RESOURCE_CLOSE_OK, TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE,
-        TYPED_RESOURCE_KIND_SOCKET, TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION,
-        TYPED_TASK_CLEANUP_FAULTED, TYPED_TASK_INVALID_ARGUMENT, TYPED_TASK_MAX_FAULT_TEXT_BYTES,
-        TYPED_TASK_NO_MEMORY, TYPED_TASK_OK, TYPED_TASK_PUBLISH_ADOPTING_SYMBOL,
-        TYPED_TASK_STATUS_INVALID, TYPED_TASK_TAKE_OUTCOME_SYMBOL, TYPED_TIMER_TASK_CREATE_SYMBOL,
-        WITNESS_ABI_VERSION,
+        LoomTypedCoroutineDescriptor, LoomTypedLogField, LoomTypedTaskFaultView,
+        LoomWitnessDescriptor, LoomWitnessInstance, NATIVE_RUNTIME_ABI_IDENTITY,
+        PARSE_FLOAT_SYMBOL, PARSE_INT_SYMBOL, PARSE_STATUS_INVALID_SYNTAX, PARSE_STATUS_OK,
+        PARSE_STATUS_OUT_OF_RANGE, RUNTIME_ABI_VERSION, SHADOW_STACK_ABI_VERSION,
+        STANDARD_LIBRARY_ABI_VERSION, STDOUT_WRITE_FAILED, STDOUT_WRITE_INVALID_ARGUMENT,
+        STDOUT_WRITE_OK, STDOUT_WRITE_SYMBOL, TEXT_CONTAINS_SYMBOL, TEXT_GET_TYPED_FOUND,
+        TEXT_GET_TYPED_INVALID, TEXT_GET_TYPED_MISSING, TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL,
+        TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_ALLOCATION_SIZE, TEXT_OBJECT_FIELD_BYTE_LENGTH,
+        TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_LAYOUT, TEXT_OBJECT_FIELD_SCALAR_LENGTH,
+        TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION, TYPED_GC_ALLOC_SYMBOL,
+        TYPED_GC_REPEATED_ABI_VERSION, TYPED_GC_REPEATED_ALLOC_SYMBOL, TYPED_GC_ROOT_POP_SYMBOL,
+        TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_LOG_FIELD_ALIGNMENT, TYPED_LOG_FIELD_KEY_OFFSET,
+        TYPED_LOG_FIELD_SIZE, TYPED_LOG_FIELD_VALUE_OFFSET, TYPED_LOG_INVALID_ARGUMENT,
+        TYPED_LOG_OK, TYPED_LOG_WRITE_FAILED, TYPED_LOG_WRITE_SYMBOL, TYPED_RESOURCE_CLOSE_FAILED,
+        TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT, TYPED_RESOURCE_CLOSE_OK,
+        TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET,
+        TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION, TYPED_TASK_CLEANUP_FAULTED,
+        TYPED_TASK_INVALID_ARGUMENT, TYPED_TASK_MAX_FAULT_TEXT_BYTES, TYPED_TASK_NO_MEMORY,
+        TYPED_TASK_OK, TYPED_TASK_PUBLISH_ADOPTING_SYMBOL, TYPED_TASK_STATUS_INVALID,
+        TYPED_TASK_TAKE_OUTCOME_SYMBOL, TYPED_TIMER_TASK_CREATE_SYMBOL, WITNESS_ABI_VERSION,
     };
 
     #[test]
     fn native_runtime_identity_is_pinned() {
-        assert_eq!(RUNTIME_ABI_VERSION, 20);
+        assert_eq!(RUNTIME_ABI_VERSION, 21);
         assert_eq!(COROUTINE_ABI_VERSION, 2);
         assert_eq!(TYPED_TASK_ABI_VERSION, 1);
         assert_eq!(LAYOUT_ABI_VERSION, 1);
@@ -542,6 +573,14 @@ mod tests {
         assert_eq!(STDOUT_WRITE_OK, 0);
         assert_eq!(STDOUT_WRITE_INVALID_ARGUMENT, 1);
         assert_eq!(STDOUT_WRITE_FAILED, 2);
+        assert_eq!(TYPED_LOG_WRITE_SYMBOL, "loom_runtime_log_typed_v1");
+        assert_eq!(TYPED_LOG_OK, 0);
+        assert_eq!(TYPED_LOG_INVALID_ARGUMENT, 1);
+        assert_eq!(TYPED_LOG_WRITE_FAILED, 2);
+        assert_eq!(TYPED_LOG_FIELD_SIZE, 16);
+        assert_eq!(TYPED_LOG_FIELD_ALIGNMENT, 8);
+        assert_eq!(TYPED_LOG_FIELD_KEY_OFFSET, 0);
+        assert_eq!(TYPED_LOG_FIELD_VALUE_OFFSET, 8);
         assert_eq!(
             TYPED_RESOURCE_CLOSE_SYMBOL,
             "loom_runtime_resource_close_typed_v1"
@@ -559,7 +598,7 @@ mod tests {
         assert_eq!(STANDARD_LIBRARY_ABI_VERSION, 4);
         assert_eq!(
             NATIVE_RUNTIME_ABI_IDENTITY,
-            "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-timer-v1/typed-resource-v1/format-float-v1/stdout-v1/runtime-v14/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4",
+            "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-timer-v1/typed-resource-v1/format-float-v1/typed-log-v1/stdout-v1/runtime-v15/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v4",
         );
     }
 
@@ -588,6 +627,19 @@ mod tests {
         );
         assert_eq!(size_of::<LoomByteView>(), 16);
         assert_eq!(align_of::<LoomByteView>(), 8);
+        assert_eq!(size_of::<LoomTypedLogField>() as u64, TYPED_LOG_FIELD_SIZE);
+        assert_eq!(
+            align_of::<LoomTypedLogField>() as u64,
+            TYPED_LOG_FIELD_ALIGNMENT
+        );
+        assert_eq!(
+            offset_of!(LoomTypedLogField, key) as u64,
+            TYPED_LOG_FIELD_KEY_OFFSET
+        );
+        assert_eq!(
+            offset_of!(LoomTypedLogField, value) as u64,
+            TYPED_LOG_FIELD_VALUE_OFFSET
+        );
         assert_eq!(size_of::<LoomTypedTaskFaultView>(), 48);
         assert_eq!(align_of::<LoomTypedTaskFaultView>(), 8);
     }

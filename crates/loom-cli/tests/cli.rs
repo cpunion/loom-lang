@@ -2261,6 +2261,77 @@ fn typed_text_maps_close_real_check_build_test_and_run_commands() {
 }
 
 #[test]
+fn typed_logging_closes_real_check_build_test_and_run_commands() {
+    let project = TestProject::new(include_str!(
+        "../../../fixtures/lcir-typed-logging/main.loom"
+    ));
+    let expected = include_bytes!("../../../fixtures/lcir-typed-logging/expected.stderr");
+
+    let check = loomc()
+        .args(["--no-cache", "check"])
+        .arg(&project.0)
+        .output()
+        .expect("check typed logging source through the CLI");
+    assert_eq!(check.status.code(), Some(0), "{check:?}");
+    assert!(check.stderr.is_empty(), "{check:?}");
+
+    let object_path = project.0.join("typed-logging.o");
+    let build = loomc()
+        .args(["--no-cache", "build", "--emit", "object", "--output"])
+        .arg(&object_path)
+        .arg(&project.0)
+        .output()
+        .expect("build typed logging source through the CLI");
+    assert_eq!(build.status.code(), Some(0), "{build:?}");
+    let object = fs::read(object_path).expect("read typed logging object");
+    for required in [
+        b"loom.lcir.fn".as_slice(),
+        b"loom_runtime_log_typed_v1",
+        b"loom_gc_typed_repeated_alloc_v1",
+    ] {
+        assert!(
+            contains_bytes(&object, required),
+            "typed logging object omitted `{}`",
+            String::from_utf8_lossy(required)
+        );
+    }
+    for forbidden in [
+        b"loom.fn.".as_slice(),
+        b"loom.Value",
+        b"ValueNode",
+        b"loom_runtime_log\0",
+        b"loom_runtime_text_map_",
+        b"loom_gc_root_push_v1",
+        b"loom_gc_root_pop_v1",
+        b"loom_executor_",
+    ] {
+        assert!(
+            !contains_bytes(&object, forbidden),
+            "typed logging object exposed `{}`",
+            String::from_utf8_lossy(forbidden)
+        );
+    }
+
+    let tests = loomc()
+        .args(["--no-cache", "test"])
+        .arg(&project.0)
+        .output()
+        .expect("test typed logging source through the CLI");
+    assert_eq!(tests.status.code(), Some(0), "{tests:?}");
+    assert_eq!(tests.stdout, b"passed lcir_typed_logging.typedLogging\n");
+    assert_eq!(tests.stderr, expected);
+
+    let run = loomc()
+        .args(["--no-cache", "run"])
+        .arg(&project.0)
+        .output()
+        .expect("run typed logging source through the CLI");
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    assert_eq!(run.stdout, b"Unit\n");
+    assert_eq!(run.stderr, expected);
+}
+
+#[test]
 fn cache_stat_and_prune_have_stable_json_reports() {
     let project = TestProject::new("module demo\n\npub fn main() Unit { Unit }\n");
     let check = loomc()

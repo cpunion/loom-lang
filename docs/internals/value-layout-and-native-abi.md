@@ -61,9 +61,17 @@ fail even though its null data pointer is valid.
 This is an output-only runtime boundary. It does not give a pure typed LCIR
 source function a runtime context, GC capability, or executor requirement. A
 pure executable object may nevertheless reference this symbol from its native
-harness. The boundary advances the current native runtime ABI to component 20
-with `stdout-v1` and `runtime-v14`; the exact identity remains
-compiler-private.
+harness. That boundary advanced the native runtime ABI to component 20 with
+`stdout-v1` and `runtime-v14`.
+
+Typed logging uses a separate synchronous, non-retaining ABI. Its message is a
+complete direct Text object pointer, and its optional fields are a contiguous
+view of canonical `TextMap[Text]` entries, each exactly two pointers. Empty
+fields use a null pointer and zero count. The runtime validates Text headers,
+UTF-8, field ordering, and bounds before producing one compact JSONL line. The
+call does not enter the Loom collector or scheduler. This advances the current
+native runtime ABI to component 21 with `typed-log-v1` and `runtime-v15`; the
+exact identity remains compiler-private.
 
 ## Legacy primitive and aggregate specialization
 

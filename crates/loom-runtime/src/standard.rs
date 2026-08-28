@@ -7,7 +7,6 @@
 
 use std::collections::BTreeMap;
 use std::ffi::c_void;
-use std::io::Write as _;
 
 use loom_runtime_abi::{
     GC_OK, VALUE_TAG_BOOL, VALUE_TAG_ENUM, VALUE_TAG_FLOAT, VALUE_TAG_INT, VALUE_TAG_LIST,
@@ -16,7 +15,7 @@ use loom_runtime_abi::{
 
 use crate::gc::{NodeStream, RuntimeRootScope};
 use crate::scheduler::{ValueNode, ValueSlot};
-use crate::{gc, text};
+use crate::{gc, text, write_process_stderr};
 
 const STANDARD_INVALID_ARGUMENT: i32 = -1;
 pub const JSON_DEPTH_LIMIT: usize = 128;
@@ -1166,10 +1165,7 @@ pub unsafe extern "C" fn log_write(
         line.push_str(&escape_json_text(value));
     }
     line.push_str("}}\n");
-    match std::io::stderr().lock().write_all(line.as_bytes()) {
-        Ok(()) => 0,
-        Err(_) => 1,
-    }
+    i32::from(write_process_stderr(line.as_bytes()) != loom_runtime_abi::TYPED_LOG_OK)
 }
 
 #[cfg(test)]

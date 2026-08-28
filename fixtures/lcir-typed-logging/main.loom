@@ -1,0 +1,28 @@
+module lcir_typed_logging
+
+import standard.log.debug
+import standard.log.error
+import standard.log.info
+import standard.log.warn
+import standard.log.write
+
+fn selectedLevel(useWarn Bool) LogLevel {
+    if useWarn { LogLevel.Warn } else { LogLevel.Info }
+}
+
+fn emitCanonicalLogs() Unit {
+    debug("debug \"line\"")
+    info("information")
+    warn("warning")
+    error("error")
+    write(
+        selectedLevel(true),
+        "event\nline",
+        TextMap[Text]().insert("z", "last").insert("a", "first")
+    )
+    Unit
+}
+
+pub fn main() Unit { emitCanonicalLogs() }
+
+test fn typedLogging() Unit { emitCanonicalLogs() }

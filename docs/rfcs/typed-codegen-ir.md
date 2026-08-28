@@ -598,6 +598,15 @@ Native-object and object-cache domains do not advance because the exact runtime
 identity already participates in object fingerprints and runtime-bundle
 validation.
 
+Typed structured logging later adds the fallible `LogWrite` terminator and the
+non-collecting `loom_runtime_log_typed_v1` boundary over direct Text and
+canonical `TextMap[Text]` entries. This advances the canonical dump to
+`lcir 31`, artifact identity to schema 32, LCIR native-object domain to
+`loom-lcir-native-object-v28`, CLI object-cache domain to
+`loom-llvm-object-cache-v33`, and native runtime identity to component 21 with
+`typed-log-v1` and `runtime-v15`. It does not add an executor, Loom GC
+safepoint, universal value, or public standard-library ABI revision.
+
 Calls to the C process entry, libc, and versioned Loom runtime functions are
 explicit external boundaries. They do not permit two source-function ABIs in
 one artifact.

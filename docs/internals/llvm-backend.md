@@ -28,10 +28,11 @@ workspace does not silently fall back to another LLVM major version.
 The workspace contains a direct typed-SSA foundation in `loom-codegen-ir` for
 primitive values, literal or concat-produced `Text`, structural tuples, closed
 records, established transparent refined values, concrete managed Lists, and
-compiler-private concrete `TextMap[V]` values. Its checked coroutine slice also
-covers ordered multi-child awaits, nonempty static forms of all four standard
-Task composition policies, exact terminal outcomes, and async state-zero
-preconditions with creation-site blame.
+compiler-private concrete `TextMap[V]` values, plus canonical structured
+logging over direct `Text` and `TextMap[Text]` values. Its checked coroutine
+slice also covers ordered multi-child awaits, nonempty static forms of all four
+standard Task composition policies, exact terminal outcomes, and async
+state-zero preconditions with creation-site blame.
 Tuples and records are recursive acyclic products of other direct values and
 may contain one another.
 The LCIR emitter accepts only a closed `CheckedArtifact`: its roots, callable
@@ -567,10 +568,10 @@ is correct.
 
 ## Object identity and linking
 
-The canonical textual dump is `lcir 30`, and the checked artifact identity uses
-schema 31. Object identities are route-separated:
+The canonical textual dump is `lcir 31`, and the checked artifact identity uses
+schema 32. Object identities are route-separated:
 
-- `loom-lcir-native-object-v27` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v28` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -582,7 +583,7 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v32` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v33` and never suppresses fingerprint
 errors.
 
 The current LCIR domains encode the explicit transitive effect lattice,
@@ -684,6 +685,17 @@ identity, so the artifact, native-object, and object-cache domains above do not
 advance. The legacy arbitrary-value run-root printer is removed; both object
 routes independently validate the complete executable root as `() -> Unit` at
 their public raw-object boundary.
+
+Typed structured logging adds one non-collecting
+`loom_runtime_log_typed_v1` call. The emitter passes the canonical LogLevel tag,
+the complete direct Text object, and either a null/zero empty field view or the
+contiguous `{Text*, Text*}` entries of `TextMap[Text]`. It forms no pointer into
+a null empty-map object, publishes no GC roots for the call, and never creates
+an executor. Status `0` enters the Unit normal edge, status `2` records
+`LogWriteFault` and enters lexical cleanup, and invalid or unknown statuses
+trap. The runtime boundary advances the native identity to component 21 with
+`typed-log-v1` and `runtime-v15`; the compiler-private terminator advances the
+LCIR, artifact, object, and cache domains listed above.
 
 They also encode closed static-witness method selection and normalized
 associated types. Those proofs are absent from the machine ABI: LLVM receives

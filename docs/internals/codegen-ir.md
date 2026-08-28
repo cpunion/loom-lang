@@ -5,10 +5,10 @@ selects checked-MIR function roots and computes the closed-world source graph
 used by production native compilation. Separately, its LCIR foundation
 provides target-aware scalar, direct Text, closed-product, closed-sum,
 transparent nominal, managed List, compiler-private typed TextMap and typed
-Task-handle representations, plus compiler-private finite dynamic catalogs,
-whole-artifact
-checked-MIR lowering, typed SSA data structures, builders, independent program
-and artifact-root validators, and a textual dump for tests and review.
+Task-handle representations, canonical structured logging, compiler-private
+finite dynamic catalogs, whole-artifact checked-MIR lowering, typed SSA data
+structures and builders, independent program and artifact-root validators, and
+a textual dump for tests and review.
 
 `loom-codegen-llvm` consumes the resulting `CheckedArtifact` directly and emits
 its typed functions and run/test harness without the universal value ABI.
@@ -446,6 +446,15 @@ frame carries a caller span, and precondition metadata distinguishes a static
 span from that dynamic coroutine creation span. Async roots receive their
 declaration span from the harness. This reuses the existing fault-context entry
 points and does not change native runtime ABI component 19 or `runtime-v13`.
+
+Typed structured logging subsequently adds `LogWrite`, a fallible terminator
+with an implicit Unit normal result and an activating fault edge. Its operands
+are the canonical four-variant `LogLevel`, a direct Text message, and an
+optional canonical `TextMap[Text]`; logging is not a moving-GC safepoint and
+adds only `MAY_FAULT`. This advances the artifact identity to schema 32, the
+dump to `lcir 31`, the LCIR native-object domain to
+`loom-lcir-native-object-v28`, and the CLI object-cache domain to
+`loom-llvm-object-cache-v33`.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
@@ -1141,7 +1150,7 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 30` text includes
+text even when the graphs are otherwise equivalent. The `lcir 31` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys including their contract-boundary role, every function's
 selected entry block and ordered effect set,
@@ -1153,7 +1162,7 @@ typed runtime/contract fault identity including proof-replay and Duration
 guards, closed parse operations, and managed Float formatting,
 managed-pointer representations, finite dynamic candidate catalogs,
 `dyn.construct`, `dyn.switch`, and
-`text.concat`, `text.get`, typed resource-close edges, transient
+`text.concat`, `text.get`, typed resource-close and structured-log edges, transient
 protected-receiver updates, typed TextMap containment/removal/indexed-entry
 operations, and the checked value type of every block parameter and instruction
 result. Representation semantic

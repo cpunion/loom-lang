@@ -37,6 +37,9 @@ const C3_TARGET: &str = "app";
 const ASYNC_GENERIC_FIXTURE: &str = "fixtures/async-generic-contracts";
 const STANDARD_LIBRARY_FIXTURE: &str = "fixtures/standard-library/main.loom";
 const TYPED_LCIR_FIXTURE: &str = "fixtures/typed-lcir";
+const TYPED_LOGGING_FIXTURE: &str = "fixtures/lcir-typed-logging";
+const TYPED_LOGGING_STDERR: &[u8] =
+    include_bytes!("../../../fixtures/lcir-typed-logging/expected.stderr");
 const TYPED_ASYNC_FIXTURE: &str = "fixtures/lcir-typed-async";
 const ASYNC_MANAGED_COLLECTIONS_FIXTURE: &str = "fixtures/lcir-async-managed-collections";
 const TYPED_SLEEP_FIXTURE: &str = "fixtures/lcir-typed-sleep";
@@ -51,7 +54,7 @@ const QUALITY_EVIDENCE_SCHEMA_VERSION: u32 = 2;
 const STANDARD_LIBRARY_LEGACY_ROUTE: NativeRouteExpectation =
     NativeRouteExpectation::LegacyAllowed {
         name: "standard-library-managed-runtime",
-        reason: "JSON parse/format, typed external I/O, and logging are not yet complete in typed LCIR",
+        reason: "JSON parse/format and typed external I/O are not yet complete in typed LCIR",
     };
 
 const TASKS: &[TaskSpec] = &[
@@ -364,6 +367,14 @@ fn main() {
     ) {
         report.failures.push(format!("typed-lcir: {error}"));
     }
+    if let Err(error) = typed_logging_gate(
+        &workspace,
+        &runtime,
+        &mut report.gates,
+        &mut report.native_routes,
+    ) {
+        report.failures.push(format!("typed-logging: {error}"));
+    }
     if let Err(error) = typed_async_gate(
         &workspace,
         &runtime,
@@ -662,6 +673,99 @@ fn typed_lcir_gate(
     upper_gate(
         gates,
         "typed-lcir.native-execution",
+        run_started.elapsed(),
+        EXECUTION_BUDGET,
+    );
+    Ok(())
+}
+
+fn typed_logging_gate(
+    workspace: &Path,
+    runtime: &NativeRuntime,
+    gates: &mut Vec<GateEvidence>,
+    routes: &mut Vec<NativeRouteEvidence>,
+) -> Result<(), String> {
+    let project = workspace.join(TYPED_LOGGING_FIXTURE);
+    let analysis_started = Instant::now();
+    let snapshot = AnalysisHost::new(&project)
+        .map_err(|error| error.to_string())?
+        .snapshot()
+        .map_err(|error| error.to_string())?;
+    upper_gate(
+        gates,
+        "typed-logging.analysis",
+        analysis_started.elapsed(),
+        ANALYSIS_BUDGET,
+    );
+    if snapshot.has_errors() {
+        return Err(format!("source diagnostics: {:#?}", snapshot.diagnostics()));
+    }
+    let program = snapshot.executable().map_err(|error| error.to_string())?;
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let executable = directory.path().join("main");
+    let tests = directory.path().join("tests");
+
+    let build_started = Instant::now();
+    emit_routed_native(
+        program,
+        &executable,
+        EmitOptions::run("main").with_optimization(OptimizationProfile::Release),
+        runtime,
+        "typed-logging.main",
+        NativeRouteExpectation::Lcir,
+        routes,
+    )?;
+    emit_routed_native(
+        program,
+        &tests,
+        EmitOptions::tests().with_optimization(OptimizationProfile::Release),
+        runtime,
+        "typed-logging.tests",
+        NativeRouteExpectation::Lcir,
+        routes,
+    )?;
+    upper_gate(
+        gates,
+        "typed-logging.native-build",
+        build_started.elapsed(),
+        NATIVE_BUILD_BUDGET,
+    );
+
+    let run_started = Instant::now();
+    let output = Command::new(&executable)
+        .current_dir(&project)
+        .output()
+        .map_err(|error| format!("execute typed logging fixture: {error}"))?;
+    if !output.status.success()
+        || output.stdout != b"Unit\n"
+        || output.stderr.as_slice() != TYPED_LOGGING_STDERR
+    {
+        return Err(format!(
+            "native main mismatch: status={:?}, stdout={}, stderr={}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        ));
+    }
+
+    let output = Command::new(&tests)
+        .current_dir(&project)
+        .output()
+        .map_err(|error| format!("execute typed logging tests: {error}"))?;
+    if !output.status.success()
+        || output.stdout != b"passed lcir_typed_logging.typedLogging\n"
+        || output.stderr.as_slice() != TYPED_LOGGING_STDERR
+    {
+        return Err(format!(
+            "native test mismatch: status={:?}, stdout={}, stderr={}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        ));
+    }
+    upper_gate(
+        gates,
+        "typed-logging.native-execution",
         run_started.elapsed(),
         EXECUTION_BUDGET,
     );

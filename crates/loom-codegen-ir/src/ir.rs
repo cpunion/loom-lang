@@ -998,6 +998,7 @@ pub enum FaultCode {
     SleepDurationOverflow,
     TaskAnyFailed,
     ResourceClose,
+    LogWrite,
 }
 
 /// Structured join semantics for one directly awaited fixed child set.
@@ -1029,6 +1030,16 @@ pub const TASK_OUTCOME_TYPE_ID: TypeId = TypeId(7);
 pub const TASK_OUTCOME_COMPLETED_VARIANT: u32 = 0;
 pub const TASK_OUTCOME_FAULTED_VARIANT: u32 = 1;
 pub const TASK_OUTCOME_CANCELLED_VARIANT: u32 = 2;
+
+/// Canonical prelude identities and ordered variants consumed by typed
+/// logging. These synthetic ids are fixed by checked MIR lowering; independent
+/// LCIR validation rechecks both the semantic identity and physical shape.
+pub(crate) const TEXT_MAP_TYPE_ID: TypeId = TypeId(15);
+pub(crate) const LOG_LEVEL_TYPE_ID: TypeId = TypeId(20);
+pub(crate) const LOG_LEVEL_DEBUG_VARIANT: u32 = 0;
+pub(crate) const LOG_LEVEL_INFO_VARIANT: u32 = 1;
+pub(crate) const LOG_LEVEL_WARN_VARIANT: u32 = 2;
+pub(crate) const LOG_LEVEL_ERROR_VARIANT: u32 = 3;
 
 /// Statically known external-resource class for typed lexical disposal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1370,6 +1381,18 @@ pub enum TerminatorKind {
         normal: ResultTarget,
         fault: UnwindTarget,
     },
+    /// Writes one structured JSON log line through the direct Text ABI.
+    /// `fields=None` is the canonical empty map used by the four fixed-level
+    /// helpers. A successful operation defines Unit only on `normal`; a device
+    /// failure activates [`FaultCode::LogWrite`] and enters `fault` so lexical
+    /// cleanup can run before propagation.
+    LogWrite {
+        level: ValueId,
+        message: ValueId,
+        fields: Option<ValueId>,
+        normal: ResultTarget,
+        fault: UnwindTarget,
+    },
     /// Continues through `success` when true or activates the checked fault
     /// metadata and enters `fault` when false.
     Assert {
@@ -1507,6 +1530,25 @@ impl TerminatorKind {
                 operands.extend_from_slice(&fault.arguments);
                 operands
             }
+            Self::LogWrite {
+                level,
+                message,
+                fields,
+                normal,
+                fault,
+            } => {
+                let mut operands = Vec::with_capacity(
+                    2 + usize::from(fields.is_some())
+                        + normal.arguments.len()
+                        + fault.arguments.len(),
+                );
+                operands.push(*level);
+                operands.push(*message);
+                operands.extend(*fields);
+                operands.extend_from_slice(&normal.arguments);
+                operands.extend_from_slice(&fault.arguments);
+                operands
+            }
             Self::Assert {
                 condition,
                 success,
@@ -1556,7 +1598,8 @@ impl TerminatorKind {
             Self::TaskSleep { normal, fault, .. }
             | Self::CheckedIntNegate { normal, fault, .. }
             | Self::CheckedIntBinary { normal, fault, .. }
-            | Self::ResourceClose { normal, fault, .. } => {
+            | Self::ResourceClose { normal, fault, .. }
+            | Self::LogWrite { normal, fault, .. } => {
                 vec![preserve(normal.block), activate(fault.block)]
             }
             Self::Invoke { normal, unwind, .. } => {

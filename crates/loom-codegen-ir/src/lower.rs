@@ -18,6 +18,10 @@ use crate::instance_closure::{
     InstanceClosureError, InstanceClosureOutcome, InstanceClosureUnsupportedKind,
     InstanceSubstitution, InstantiationError, plan_instance_closure,
 };
+use crate::ir::{
+    LOG_LEVEL_DEBUG_VARIANT, LOG_LEVEL_ERROR_VARIANT, LOG_LEVEL_INFO_VARIANT,
+    LOG_LEVEL_WARN_VARIANT,
+};
 use crate::match_plan::{MatchNode, MatchPlan, plan_contract_match, plan_match};
 use crate::place_plan::{PlaceBudget, PlacePlan, PlaceUse};
 use crate::text_plan::TextLiteralBudget;
@@ -3076,6 +3080,27 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     }
                     CallTarget::Dynamic { .. } => Some(UnsupportedFeature::DynamicWitnessSet),
                     CallTarget::Builtin(
+                        mir::Builtin::LogDebug
+                        | mir::Builtin::LogInfo
+                        | mir::Builtin::LogWarn
+                        | mir::Builtin::LogError
+                        | mir::Builtin::LogWrite,
+                    ) => {
+                        let log_level = self
+                            .program
+                            .prelude
+                            .log_level
+                            .map(|id| Type::Nominal(id, Vec::new()));
+                        if log_level
+                            .as_ref()
+                            .is_some_and(|ty| self.supported_value_type(ty))
+                        {
+                            None
+                        } else {
+                            Some(UnsupportedFeature::BuiltinCall)
+                        }
+                    }
+                    CallTarget::Builtin(
                         mir::Builtin::TextLength
                         | mir::Builtin::TextContains
                         | mir::Builtin::TextGet
@@ -3843,7 +3868,14 @@ fn scan_effect_expr(
                 summary.include(Effects::MAY_COLLECT);
             } else if matches!(
                 target,
-                CallTarget::Builtin(mir::Builtin::DurationMilliseconds)
+                CallTarget::Builtin(
+                    mir::Builtin::DurationMilliseconds
+                        | mir::Builtin::LogDebug
+                        | mir::Builtin::LogInfo
+                        | mir::Builtin::LogWarn
+                        | mir::Builtin::LogError
+                        | mir::Builtin::LogWrite
+                )
             ) {
                 summary.include(Effects::MAY_FAULT);
             }
@@ -10011,6 +10043,13 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 | mir::Builtin::TextMapRemove => {
                     self.lower_text_map_builtin(flow, *builtin, arguments, expression)
                 }
+                mir::Builtin::LogDebug
+                | mir::Builtin::LogInfo
+                | mir::Builtin::LogWarn
+                | mir::Builtin::LogError
+                | mir::Builtin::LogWrite => {
+                    self.lower_log_builtin(flow, *builtin, arguments, expression)
+                }
                 _ => self.lower_builtin(flow, *builtin, arguments, expression),
             };
         }
@@ -11154,6 +11193,91 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             self.type_id(&expression.ty)?,
             self.expression_origin(expression),
         )
+    }
+
+    fn lower_log_builtin(
+        &mut self,
+        mut flow: Flow,
+        builtin: mir::Builtin,
+        arguments: &[CallArgument],
+        expression: &mir::Expr,
+    ) -> Result<EvalFlow, LoweringError> {
+        let mut lowered = Vec::with_capacity(arguments.len());
+        for argument in arguments {
+            let CallArgument::Value(value) = argument else {
+                return Err(self.unsupported_reached("logging builtin inout argument"));
+            };
+            let EvalFlow::Continue {
+                flow: next_flow,
+                value,
+            } = self.lower_expr(flow, value)?
+            else {
+                return Ok(EvalFlow::Terminated);
+            };
+            flow = next_flow;
+            lowered.push(value);
+        }
+
+        let origin = self.expression_origin(expression);
+        let fixed_variant = match builtin {
+            mir::Builtin::LogDebug => Some(LOG_LEVEL_DEBUG_VARIANT),
+            mir::Builtin::LogInfo => Some(LOG_LEVEL_INFO_VARIANT),
+            mir::Builtin::LogWarn => Some(LOG_LEVEL_WARN_VARIANT),
+            mir::Builtin::LogError => Some(LOG_LEVEL_ERROR_VARIANT),
+            mir::Builtin::LogWrite => None,
+            _ => return Err(self.unsupported_reached("non-logging builtin in log lowering")),
+        };
+        let (flow, level, message, fields) = if let Some(variant) = fixed_variant {
+            let [message] = lowered.as_slice() else {
+                return Err(self.unsupported_reached("fixed-level logging argument shape"));
+            };
+            let log_level = self.program.prelude.log_level.ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    "typed logging requires the canonical LogLevel prelude type",
+                )
+            })?;
+            let (flow, level) = self.required_instruction(
+                flow,
+                InstructionKind::SumConstruct {
+                    variant,
+                    payload: Box::new([]),
+                },
+                &Type::Nominal(log_level, Vec::new()),
+                origin,
+            )?;
+            (flow, level, *message, None)
+        } else {
+            let [level, message, fields] = lowered.as_slice() else {
+                return Err(self.unsupported_reached("structured logging argument shape"));
+            };
+            (flow, *level, *message, Some(*fields))
+        };
+
+        let normal = self.create_block()?;
+        let unit = self
+            .builder
+            .append_block_parameter(normal, self.type_id(&Type::Unit)?)
+            .map_err(LoweringError::from)?;
+        let fault = self.fault_target(flow)?;
+        self.terminate(
+            flow.block,
+            TerminatorKind::LogWrite {
+                level,
+                message,
+                fields,
+                normal: ResultTarget::new(normal, []),
+                fault,
+            },
+            origin,
+        )?;
+        Ok(EvalFlow::Continue {
+            flow: Flow {
+                block: normal,
+                env: flow.env,
+            },
+            value: unit,
+        })
     }
 
     fn unsupported_reached(&self, what: &str) -> LoweringError {

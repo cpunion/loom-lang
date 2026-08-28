@@ -15,8 +15,8 @@ use loom_core::runtime_fault::{
     ARTIFACT_PROOF_REJECTED_FAULT_CODE, ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
     INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE, INVALID_DURATION_FAULT_CODE,
     INVALID_DURATION_FAULT_MESSAGE, INVALID_SLEEP_DURATION_FAULT_CODE,
-    INVALID_SLEEP_DURATION_FAULT_MESSAGE, SLEEP_DURATION_OVERFLOW_FAULT_CODE,
-    SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE,
+    INVALID_SLEEP_DURATION_FAULT_MESSAGE, LOG_WRITE_FAULT_CODE, LOG_WRITE_FAULT_MESSAGE,
+    SLEEP_DURATION_OVERFLOW_FAULT_CODE, SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE,
 };
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, CheckedProgram, Constant, ConstructionMode,
@@ -3845,16 +3845,11 @@ impl<'program> Interpreter<'program> {
             line.push_str(&loom_runtime::escape_json_text(&value));
         }
         line.push_str("}}\n");
-        std::io::stderr()
-            .lock()
-            .write_all(line.as_bytes())
-            .map_err(|error| {
-                self.runtime_fault(
-                    "LogWriteFault",
-                    format!("could not write log: {error}"),
-                    span,
-                )
-            })?;
+        if loom_runtime::write_process_stderr(line.as_bytes()) != loom_runtime::TYPED_LOG_OK {
+            return Err(self
+                .runtime_fault(LOG_WRITE_FAULT_CODE, LOG_WRITE_FAULT_MESSAGE, span)
+                .into());
+        }
         Ok(Value::Unit)
     }
 

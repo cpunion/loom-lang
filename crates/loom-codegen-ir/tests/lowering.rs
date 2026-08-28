@@ -63,6 +63,87 @@ fn complete_dump(source: &str) -> String {
     dump_program(artifact.program())
 }
 
+#[test]
+fn canonical_logging_builtins_lower_to_typed_fault_control_flow() {
+    let outcome = lower_run(
+        r#"module typed_logging
+
+import standard.log.debug
+import standard.log.info
+import standard.log.warn
+import standard.log.error
+import standard.log.write
+
+pub fn main() Unit {
+    debug("debug")
+    info("info")
+    warn("warn")
+    error("error")
+    write(LogLevel.Warn, "event", TextMap[Text]())
+    Unit
+}
+"#,
+    );
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("canonical logging source must lower completely: {outcome:?}")
+    };
+    let main = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("main instance");
+    assert_eq!(main.effects(), Effects::MAY_FAULT);
+
+    let writes = main
+        .blocks()
+        .iter()
+        .filter_map(
+            |block| match block.terminator().map(loom_codegen_ir::Terminator::kind) {
+                Some(TerminatorKind::LogWrite {
+                    level,
+                    message,
+                    fields,
+                    normal,
+                    fault,
+                }) => Some((*level, *message, *fields, normal, fault)),
+                _ => None,
+            },
+        )
+        .collect::<Vec<_>>();
+    assert_eq!(writes.len(), 5, "{}", dump_program(artifact.program()));
+    assert!(
+        writes[..4]
+            .iter()
+            .all(|(_, _, fields, _, _)| fields.is_none())
+    );
+    assert!(writes[4].2.is_some());
+    for (_, _, _, normal, fault) in &writes {
+        assert_eq!(
+            main.block(normal.block)
+                .expect("log normal block")
+                .params()
+                .len(),
+            1
+        );
+        assert!(matches!(
+            main.block(fault.block)
+                .and_then(loom_codegen_ir::Block::terminator)
+                .map(loom_codegen_ir::Terminator::kind),
+            Some(TerminatorKind::ResumeFault)
+        ));
+    }
+
+    let dump = dump_program(artifact.program());
+    assert_eq!(dump.matches("log.write ").count(), 5, "{dump}");
+    assert_eq!(dump.matches("fields none").count(), 4, "{dump}");
+    for variant in 0..=3 {
+        assert!(
+            dump.contains(&format!("sum.construct variant {variant} ()")),
+            "{dump}"
+        );
+    }
+}
+
 const TYPED_ASYNC_SOURCE: &str = r"module lcir_typed_async
 
 async fn echo(value Bool) Bool {

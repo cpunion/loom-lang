@@ -48,9 +48,10 @@ use loom_core::runtime_fault::{
     INVALID_DURATION_FAULT_MESSAGE,
 };
 use loom_core::runtime_fault::{
-    INVALID_SLEEP_DURATION_FAULT_CODE, INVALID_SLEEP_DURATION_FAULT_MESSAGE,
-    SLEEP_DURATION_OVERFLOW_FAULT_CODE, SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE,
-    TASK_ANY_FAILED_FAULT_CODE, TASK_ANY_FAILED_FAULT_MESSAGE,
+    INVALID_SLEEP_DURATION_FAULT_CODE, INVALID_SLEEP_DURATION_FAULT_MESSAGE, LOG_WRITE_FAULT_CODE,
+    LOG_WRITE_FAULT_MESSAGE, SLEEP_DURATION_OVERFLOW_FAULT_CODE,
+    SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE, TASK_ANY_FAILED_FAULT_CODE,
+    TASK_ANY_FAILED_FAULT_MESSAGE,
 };
 use loom_mir::Type;
 use loom_runtime_abi::{
@@ -64,7 +65,9 @@ use loom_runtime_abi::{
     TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES,
     TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION,
     TYPED_GC_ALLOC_SYMBOL, TYPED_GC_REPEATED_ABI_VERSION, TYPED_GC_REPEATED_ALLOC_SYMBOL,
-    TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_RESOURCE_CLOSE_SYMBOL,
+    TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_LOG_FIELD_ALIGNMENT,
+    TYPED_LOG_FIELD_KEY_OFFSET, TYPED_LOG_FIELD_SIZE, TYPED_LOG_FIELD_VALUE_OFFSET, TYPED_LOG_OK,
+    TYPED_LOG_WRITE_FAILED, TYPED_LOG_WRITE_SYMBOL, TYPED_RESOURCE_CLOSE_SYMBOL,
     TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET, TYPED_SHADOW_STACK_ABI_VERSION,
     TYPED_TASK_ABI_VERSION, TYPED_TASK_PUBLISH_ADOPTING_SYMBOL, TYPED_TASK_TAKE_OUTCOME_SYMBOL,
     TYPED_TIMER_TASK_CREATE_SYMBOL,
@@ -4530,6 +4533,24 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             })
     }
 
+    fn runtime_log_write_typed(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(TYPED_LOG_WRITE_SYMBOL)
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.context.i32_type().into(),
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                        self.context.i64_type().into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function(TYPED_LOG_WRITE_SYMBOL, function_type, None)
+            })
+    }
+
     fn typed_task_create(&self) -> FunctionValue<'ctx> {
         self.module
             .get_function(TYPED_TASK_CREATE_SYMBOL)
@@ -7686,7 +7707,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 TerminatorKind::CheckedIntNegate { normal, fault, .. }
                 | TerminatorKind::CheckedIntBinary { normal, fault, .. }
                 | TerminatorKind::TaskSleep { normal, fault, .. }
-                | TerminatorKind::ResourceClose { normal, fault, .. } => {
+                | TerminatorKind::ResourceClose { normal, fault, .. }
+                | TerminatorKind::LogWrite { normal, fault, .. } => {
                     pending.push(fault.block);
                     pending.push(normal.block);
                 }
@@ -9361,6 +9383,141 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         Ok(phi.as_basic_value().into_int_value())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the null-safe TextMap branch and exact cross-target field-layout proof form one typed ABI projection"
+    )]
+    fn typed_log_fields(
+        &self,
+        fields: Option<ValueId>,
+    ) -> Result<(PointerValue<'ctx>, IntValue<'ctx>), CodegenError> {
+        let Some(fields) = fields else {
+            return Ok((
+                self.backend.ptr_type.const_null(),
+                self.backend.context.i64_type().const_zero(),
+            ));
+        };
+        let ty = self.text_map_type_of_value(fields)?;
+        let value_ty = self.backend.text_map_value_type(ty)?;
+        let value_type = self
+            .backend
+            .artifact
+            .representations()
+            .value_type(value_ty)
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("typed log TextMap {ty} has no value type {value_ty}"),
+                )
+            })?;
+        let layout = self.backend.text_map_layout(ty)?;
+        let key_offset = self
+            .backend
+            .target_data
+            .offset_of_element(&layout.entry, 0)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "typed log key offset is missing"))?;
+        let value_offset = self
+            .backend
+            .target_data
+            .offset_of_element(&layout.entry, 1)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "typed log value offset is missing")
+            })?;
+        let direct_text = matches!(
+            layout.value,
+            BasicTypeEnum::PointerType(pointer) if pointer == self.backend.ptr_type
+        );
+        if value_type.semantic() != &Type::Text
+            || !direct_text
+            || layout.entry_stride != TYPED_LOG_FIELD_SIZE
+            || u64::from(layout.entry_align) != TYPED_LOG_FIELD_ALIGNMENT
+            || key_offset != TYPED_LOG_FIELD_KEY_OFFSET
+            || value_offset != TYPED_LOG_FIELD_VALUE_OFFSET
+        {
+            return Err(CodegenError::new(
+                "LcirTypedLogAbiMismatch",
+                format!(
+                    "TextMap type {ty} has typed-log value/layout {:?}/{}/{}/{key_offset}/{value_offset}, expected Text/pointer/{TYPED_LOG_FIELD_SIZE}/{TYPED_LOG_FIELD_KEY_OFFSET}/{TYPED_LOG_FIELD_VALUE_OFFSET} with alignment {TYPED_LOG_FIELD_ALIGNMENT}",
+                    value_type.semantic(),
+                    layout.entry_stride,
+                    layout.entry_align,
+                ),
+            ));
+        }
+
+        let object = self.value(fields)?.into_pointer_value();
+        let source = self.current_block()?;
+        let function = source.get_parent().ok_or_else(|| {
+            CodegenError::new("LlvmBuilderFailed", "typed logging has no active function")
+        })?;
+        let empty = self
+            .backend
+            .context
+            .append_basic_block(function, "log.fields.empty");
+        let present = self
+            .backend
+            .context
+            .append_basic_block(function, "log.fields.present");
+        let merge = self
+            .backend
+            .context
+            .append_basic_block(function, "log.fields.merge");
+        let is_null = self
+            .backend
+            .builder
+            .build_is_null(object, "log.fields.is_null")
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(is_null, empty, present)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(empty);
+        let empty_pointer = self.backend.ptr_type.const_null();
+        let empty_count = self.backend.context.i64_type().const_zero();
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(present);
+        let length_pointer =
+            self.text_map_field_pointer(&layout, object, 0, "log.fields.length.pointer")?;
+        let count = self
+            .backend
+            .builder
+            .build_load(
+                self.backend.context.i64_type(),
+                length_pointer,
+                "log.fields.length",
+            )
+            .map_err(builder_error)?
+            .into_int_value();
+        let entries = self.text_map_field_pointer(&layout, object, 1, "log.fields.entries")?;
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(merge);
+        let pointer_phi = self
+            .backend
+            .builder
+            .build_phi(self.backend.ptr_type, "log.fields.pointer")
+            .map_err(builder_error)?;
+        pointer_phi.add_incoming(&[(&empty_pointer, empty), (&entries, present)]);
+        let count_phi = self
+            .backend
+            .builder
+            .build_phi(self.backend.context.i64_type(), "log.fields.count")
+            .map_err(builder_error)?;
+        count_phi.add_incoming(&[(&empty_count, empty), (&count, present)]);
+        Ok((
+            pointer_phi.as_basic_value().into_pointer_value(),
+            count_phi.as_basic_value().into_int_value(),
+        ))
+    }
+
     fn compare_text_keys(
         &self,
         left: PointerValue<'ctx>,
@@ -10874,6 +11031,20 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 normal,
                 fault,
             ),
+            TerminatorKind::LogWrite {
+                level,
+                message,
+                fields,
+                normal,
+                fault,
+            } => self.emit_log_write(
+                *level,
+                *message,
+                *fields,
+                terminator.origin(),
+                normal,
+                fault,
+            ),
             TerminatorKind::Assert {
                 condition,
                 metadata,
@@ -12102,6 +12273,95 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .build_unconditional_branch(self.block(fault.block)?)
             .map_err(builder_error)?;
         Ok(())
+    }
+
+    fn emit_log_write(
+        &mut self,
+        level: ValueId,
+        message: ValueId,
+        fields: Option<ValueId>,
+        origin: Origin,
+        normal: &ResultTarget,
+        fault: &UnwindTarget,
+    ) -> Result<(), CodegenError> {
+        let level_ty = self
+            .source
+            .value(level)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "typed log level is missing"))?
+            .ty();
+        let level_layout = self.backend.sum_layout(level_ty)?;
+        if level_layout.tag != SumTagRepr::I8 || level_layout.carrier.is_some() {
+            return Err(CodegenError::new(
+                "LcirTypedLogAbiMismatch",
+                format!("typed log level {level_ty} is not a payload-free i8 sum"),
+            ));
+        }
+        let level = self.value(level)?.into_int_value();
+        let level = self
+            .backend
+            .builder
+            .build_int_z_extend(level, self.backend.context.i32_type(), "log.level")
+            .map_err(builder_error)?;
+        let message = self.value(message)?.into_pointer_value();
+        let (fields, field_count) = self.typed_log_fields(fields)?;
+        let status = call_int(
+            &self.backend.builder,
+            self.backend.runtime_log_write_typed(),
+            &[
+                level.into(),
+                message.into(),
+                fields.into(),
+                field_count.into(),
+            ],
+            "log.write",
+        )?;
+
+        let succeeded = self
+            .backend
+            .context
+            .append_basic_block(self.function, "log.write.succeeded");
+        let write_failed = self
+            .backend
+            .context
+            .append_basic_block(self.function, "log.write.failed");
+        let invalid = self
+            .backend
+            .context
+            .append_basic_block(self.function, "log.write.invalid_status");
+        let status_type = self.backend.context.i32_type();
+        let ok = status_type.const_int(
+            u64::try_from(TYPED_LOG_OK).expect("typed log success status is non-negative"),
+            false,
+        );
+        let failed = status_type.const_int(
+            u64::try_from(TYPED_LOG_WRITE_FAILED)
+                .expect("typed log write-failed status is non-negative"),
+            false,
+        );
+        self.backend
+            .builder
+            .build_switch(status, invalid, &[(ok, succeeded), (failed, write_failed)])
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(invalid);
+        let trap = inkwell::intrinsics::Intrinsic::find("llvm.trap")
+            .and_then(|intrinsic| intrinsic.get_declaration(&self.backend.module, &[]))
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "missing llvm.trap"))?;
+        self.backend
+            .builder
+            .build_call(trap, &[], "log.write.invalid_status.trap")
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_unreachable()
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(write_failed);
+        self.emit_source_fault(FaultCode::LogWrite, origin)?;
+        self.unwind_branch(fault)?;
+
+        self.backend.builder.position_at_end(succeeded);
+        self.result_branch(normal, self.backend.unit_type.const_zero().into())
     }
 
     fn emit_source_fault(&self, code: FaultCode, origin: Origin) -> Result<(), CodegenError> {
@@ -13357,6 +13617,7 @@ impl<'ctx> Backend<'ctx, '_> {
                 | FaultCode::InvalidSleepDuration
                 | FaultCode::SleepDurationOverflow
                 | FaultCode::TaskAnyFailed
+                | FaultCode::LogWrite
         ) {
             serde_json::json!({
                 "channel": "runtime",
@@ -13701,6 +13962,7 @@ fn fault_properties(code: FaultCode) -> (&'static str, &'static str) {
         ),
         FaultCode::TaskAnyFailed => (TASK_ANY_FAILED_FAULT_CODE, TASK_ANY_FAILED_FAULT_MESSAGE),
         FaultCode::ResourceClose => ("ResourceCloseFault", "resource close failed"),
+        FaultCode::LogWrite => (LOG_WRITE_FAULT_CODE, LOG_WRITE_FAULT_MESSAGE),
     }
 }
 
