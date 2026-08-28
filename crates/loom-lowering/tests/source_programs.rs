@@ -670,6 +670,60 @@ test async fn generic_async_contracts() {
 }
 
 #[test]
+fn only_resolved_task_standard_items_specialize_to_task_mir() {
+    let canonical = compile_and_validate(
+        r"
+module canonical_task_items
+
+async fn child() Int { 1 }
+
+pub async fn main() Unit {
+    discard Task.sleep(0).await
+    discard Task.all(child()).await
+    discard Task.settled(child()).await
+    discard Task.any(child()).await
+    discard Task.race(child()).await
+}
+",
+    );
+    let canonical_dump = format!("{canonical:#?}");
+    assert!(canonical_dump.contains("Sleep"));
+    assert!(canonical_dump.contains("TaskJoin"));
+    assert!(canonical_dump.contains("Settled"));
+    assert!(canonical_dump.contains("Any"));
+    assert!(canonical_dump.contains("Race"));
+
+    let shadowed = compile_and_validate(
+        r"
+module shadowed_task_items
+
+record Scheduler {}
+
+impl Scheduler {
+    method all(self, value Int) Int { value }
+    method settled(self, value Int) Int { value }
+    method any(self, value Int) Int { value }
+    method race(self, value Int) Int { value }
+    method sleep(self, value Int) Int { value }
+}
+
+pub fn main() Unit {
+    let Task = Scheduler {}
+    discard Task.all(1)
+    discard Task.settled(2)
+    discard Task.any(3)
+    discard Task.race(4)
+    discard Task.sleep(5)
+}
+",
+    );
+    let shadowed_dump = format!("{shadowed:#?}");
+    assert!(!shadowed_dump.contains("TaskJoin"));
+    assert!(!shadowed_dump.contains("Sleep {"));
+    assert!(shadowed_dump.contains("Inherent"));
+}
+
+#[test]
 fn async_exit_contracts_add_only_referenced_parameters_to_suspension_metadata() {
     let program = compile_and_validate(
         r"

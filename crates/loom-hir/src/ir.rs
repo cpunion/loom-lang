@@ -424,24 +424,8 @@ pub enum Expr {
         fields: Vec<RecordFieldValue>,
     },
     Await(ExprId),
-    /// Compiler-known timer task constructor: `Task.sleep(milliseconds)`.
-    Sleep(Vec<ExprId>),
-    /// Compiler-known Task join constructor. Unlike tuple/list literals, this
-    /// value carries scheduler mode semantics and must be consumed by await.
-    TaskJoin {
-        mode: TaskJoinMode,
-        arguments: Vec<ExprId>,
-    },
     Propagate(ExprId),
     Return(Option<ExprId>),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TaskJoinMode {
-    All,
-    Settled,
-    Any,
-    Race,
 }
 
 #[derive(Clone, Debug)]

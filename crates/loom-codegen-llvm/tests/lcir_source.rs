@@ -1150,6 +1150,66 @@ pub fn main() Unit {
 }
 
 #[test]
+fn user_task_policy_method_names_stay_on_the_pure_native_call_path() {
+    let source = r"module lcir_user_task_methods
+
+record Scheduler { base Int }
+
+impl Scheduler {
+    method any(self, value Int) Int { value }
+    method race(self, value Int) Int {
+        discard value
+        self.base
+    }
+}
+
+pub fn main() Unit {
+    let Task = Scheduler { base = 10 }
+    discard Task.any(2)
+    discard Task.race(3)
+    Unit
+}
+";
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    assert!(
+        artifact
+            .functions()
+            .iter()
+            .all(|function| !function.effects().contains(Effects::NEEDS_EXECUTOR)),
+        "ordinary user methods must not acquire executor effects: {:#?}",
+        artifact.functions()
+    );
+    let dump = dump_program(artifact.program());
+    for forbidden in ["await_tasks", "task.join", "task.sleep"] {
+        assert!(
+            !dump.contains(forbidden),
+            "ordinary user methods lowered as `{forbidden}`:\n{dump}"
+        );
+    }
+
+    let native = emit_and_run_lcir(&artifact, "source-user-task-methods");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert_eq!(native.output.stdout, b"Unit\n");
+    assert!(native.output.stderr.is_empty(), "{:?}", native.output);
+    assert_pure_surface(&native.ir);
+    for forbidden in ["loom_executor_", "loom_task_join_", "loom_typed_task_"] {
+        assert!(
+            !native.ir.contains(forbidden),
+            "ordinary user methods emitted `{forbidden}`:\n{}",
+            native.ir
+        );
+    }
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "one differential gate covers every scalar builtin status, managed Text input, target object, and legacy-surface exclusion"

@@ -832,31 +832,6 @@ impl<'a> BodyLower<'a> {
             .iter()
             .map(|argument| self.lower_expr(argument))
             .collect::<Vec<_>>();
-        if type_arguments.is_empty()
-            && let syntax::ExprKind::Member { receiver, name } = &callee.kind
-            && matches!(name.text.as_str(), "all" | "settled" | "any" | "race")
-            && let syntax::ExprKind::Name(path) = &receiver.kind
-            && path.segments.len() == 1
-            && path.segments[0].text == "Task"
-        {
-            let mode = match name.text.as_str() {
-                "all" => crate::TaskJoinMode::All,
-                "settled" => crate::TaskJoinMode::Settled,
-                "any" => crate::TaskJoinMode::Any,
-                "race" => crate::TaskJoinMode::Race,
-                _ => unreachable!(),
-            };
-            return Expr::TaskJoin { mode, arguments };
-        }
-        if type_arguments.is_empty()
-            && let syntax::ExprKind::Member { receiver, name } = &callee.kind
-            && name.text == "sleep"
-            && let syntax::ExprKind::Name(path) = &receiver.kind
-            && path.segments.len() == 1
-            && path.segments[0].text == "Task"
-        {
-            return Expr::Sleep(arguments);
-        }
         match &callee.kind {
             syntax::ExprKind::Member { receiver, name } => Expr::MethodCall {
                 receiver: self.lower_expr(receiver),
@@ -1247,5 +1222,53 @@ impl C for R {
         };
         assert!(tail.is_none());
         assert!(matches!(statements.as_slice(), [Statement::Discard(_)]));
+    }
+
+    #[test]
+    fn task_library_calls_remain_ordinary_method_calls_in_hir() {
+        let parsed = parse_with_file(
+            FileId(0),
+            r"module task_calls
+
+fn calls(task Task[Int]) Unit {
+    discard Task.sleep(1)
+    discard Task.all(task)
+    discard Task.settled(task)
+    discard Task.any(task)
+    discard Task.race(task)
+}
+",
+        );
+        assert!(
+            parsed.diagnostics().is_empty(),
+            "{:?}",
+            parsed.diagnostics()
+        );
+        let lowered = lower_files([SourceUnit {
+            file: FileId(0),
+            syntax: parsed.ast(),
+        }]);
+        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+
+        let function = lowered
+            .program
+            .definitions
+            .iter()
+            .find_map(|(_, definition)| match &definition.kind {
+                DefinitionKind::Function(function) => Some(function),
+                _ => None,
+            })
+            .expect("calls function");
+        let body = &lowered.program.bodies[function.body];
+        let mut methods = body
+            .expressions
+            .values()
+            .filter_map(|expression| match expression {
+                Expr::MethodCall { method, .. } => Some(method.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        methods.sort_unstable();
+        assert_eq!(methods, ["all", "any", "race", "settled", "sleep"]);
     }
 }

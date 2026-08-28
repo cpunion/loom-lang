@@ -6,7 +6,7 @@ use loom_core::{Diagnostic, Name, Severity, Span};
 use loom_hir::{
     BinaryOp, BodyId, BodyKind, DefId, DefinitionKind, Expr, ExprId, GenericParamId, Literal,
     LocalId, MatchArm, ModuleId, ParamId, Path, Pattern, PatternId, Program, ReceiverKind,
-    Statement, TaskJoinMode, TypeArgumentRef, TypeRef, TypeRefId, UnaryOp,
+    Statement, TypeArgumentRef, TypeRef, TypeRefId, UnaryOp,
 };
 
 use crate::proof::{
@@ -17,8 +17,8 @@ use crate::{
     CallTarget, CallableSignature, Coercion, ConceptInstance, ConstructionCheck, DefMapBuild, Goal,
     ImplHeader, ModuleGraph, ModuleGraphBuild, Mutability, Namespace, ParamEnv, Place,
     PlaceProjection, PlaceRoot, ReceiverPassing, RegionId, Resolution, ResolveError, RuntimeCheck,
-    ScopedDisposal, Signature, SolveFailure, Substitution, TyData, TyId, TypedProgram,
-    ViewResolution, ViewSource, ViewTokenId, WitnessSelection, WitnessSource,
+    ScopedDisposal, Signature, SolveFailure, StandardLibraryItem, Substitution, TyData, TyId,
+    TypedProgram, ViewResolution, ViewSource, ViewTokenId, WitnessSelection, WitnessSource,
 };
 
 const RESOURCE_MODULE: &str = "standard.resource";
@@ -2054,6 +2054,21 @@ enum TaskObligationState {
     Conditional,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TaskJoinPolicy {
+    All,
+    Settled,
+    Any,
+    Race,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ValuePathLookup {
+    Missing,
+    Bound,
+    Invalid,
+}
+
 #[allow(clippy::struct_excessive_bools)]
 struct BodyChecker<'a, 'program> {
     analyzer: &'a mut Analyzer<'program>,
@@ -2212,10 +2227,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 self.check_record_literal(expression, &ty, &fields, expected)
             }
             Expr::Await(value) => self.check_await(expression, value, await_allowed),
-            Expr::Sleep(arguments) => self.check_sleep(expression, &arguments),
-            Expr::TaskJoin { mode, arguments } => {
-                self.check_task_join(expression, mode, &arguments)
-            }
             Expr::Propagate(value) => self.check_propagate(expression, value),
             Expr::Return(value) => self.check_return(value),
         };
@@ -2342,7 +2353,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
     fn check_task_join(
         &mut self,
         expression: ExprId,
-        mode: TaskJoinMode,
+        mode: TaskJoinPolicy,
         arguments: &[ExprId],
     ) -> TyId {
         if arguments.is_empty() {
@@ -2360,6 +2371,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         for argument in arguments {
             self.consume_task_obligation(*argument);
         }
+        self.finish_call_arguments(arguments);
 
         if let [argument] = argument_types.as_slice()
             && let TyData::List(element) = self.types().data(*argument).clone()
@@ -2373,17 +2385,17 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 return self.types().error();
             };
             let output = match mode {
-                TaskJoinMode::All => {
+                TaskJoinPolicy::All => {
                     let list = self.types().intern(TyData::List(output));
                     self.types().intern(TyData::Task(list))
                 }
-                TaskJoinMode::Settled => {
+                TaskJoinPolicy::Settled => {
                     let outcome = self.types().intern(TyData::TaskOutcome(output));
                     let list = self.types().intern(TyData::List(outcome));
                     self.types().intern(TyData::Task(list))
                 }
-                TaskJoinMode::Any => self.types().intern(TyData::Task(output)),
-                TaskJoinMode::Race => {
+                TaskJoinPolicy::Any => self.types().intern(TyData::Task(output)),
+                TaskJoinPolicy::Race => {
                     let outcome = self.types().intern(TyData::TaskOutcome(output));
                     self.types().intern(TyData::Task(outcome))
                 }
@@ -2405,15 +2417,15 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             }
         }
         let logical_output = match mode {
-            TaskJoinMode::All => self.types().intern(TyData::Tuple(outputs)),
-            TaskJoinMode::Settled => {
+            TaskJoinPolicy::All => self.types().intern(TyData::Tuple(outputs)),
+            TaskJoinPolicy::Settled => {
                 let outcomes = outputs
                     .into_iter()
                     .map(|output| self.types().intern(TyData::TaskOutcome(output)))
                     .collect();
                 self.types().intern(TyData::Tuple(outcomes))
             }
-            TaskJoinMode::Any | TaskJoinMode::Race => {
+            TaskJoinPolicy::Any | TaskJoinPolicy::Race => {
                 let first = outputs[0];
                 if outputs.iter().any(|output| *output != first) {
                     self.error_at(
@@ -2422,7 +2434,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                         expression,
                     );
                 }
-                if mode == TaskJoinMode::Race {
+                if mode == TaskJoinPolicy::Race {
                     self.types().intern(TyData::TaskOutcome(first))
                 } else {
                     first
@@ -3552,24 +3564,24 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
 
     fn check_field(&mut self, expression: ExprId, receiver: ExprId, name: &Name) -> TyId {
         if let Expr::Path(type_path) = self.source().expressions[receiver].clone()
-            && let Some((variant, owner)) = self.resolve_qualified_variant(&type_path, name)
+            && self.value_path_lookup(&type_path) == ValuePathLookup::Missing
         {
-            return self.check_variant_constructor(expression, variant, owner, &[], None);
-        }
-        if let Expr::Path(type_path) = self.source().expressions[receiver].clone()
-            && let Some((builtin, ty)) = Self::standard_static_value(&type_path, name)
-        {
-            self.semantics.calls.insert(
-                expression,
-                CallResolution {
-                    target: CallTarget::Builtin(builtin),
-                    substitution: Substitution::default(),
-                    dispatch_witness: None,
-                    witnesses: Vec::new(),
-                    receiver: None,
-                },
-            );
-            return self.types().builtin(ty);
+            if let Some((variant, owner)) = self.resolve_qualified_variant(&type_path, name) {
+                return self.check_variant_constructor(expression, variant, owner, &[], None);
+            }
+            if let Some((builtin, ty)) = Self::standard_static_value(&type_path, name) {
+                self.semantics.calls.insert(
+                    expression,
+                    CallResolution {
+                        target: CallTarget::Builtin(builtin),
+                        substitution: Substitution::default(),
+                        dispatch_witness: None,
+                        witnesses: Vec::new(),
+                        receiver: None,
+                    },
+                );
+                return self.types().builtin(ty);
+            }
         }
         let previous = self.allow_dirty_self_projection;
         let previous_scoped = self.checking_scoped_receiver;
@@ -4773,8 +4785,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | Expr::QualifiedMethodCall { .. }
             | Expr::Assign { .. }
             | Expr::Await(_)
-            | Expr::Sleep(_)
-            | Expr::TaskJoin { .. }
             | Expr::Propagate(_)
             | Expr::Return(_)
             | Expr::Error => ProofTerm::Unknown,
@@ -5036,8 +5046,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | Expr::Assign { .. }
             | Expr::RecordLiteral { .. }
             | Expr::Await(_)
-            | Expr::Sleep(_)
-            | Expr::TaskJoin { .. }
             | Expr::Propagate(_)
             | Expr::Return(_)
             | Expr::Block { .. } => ProofTerm::Unknown,
@@ -5803,6 +5811,61 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         self.has_task_obligation(target, &mut BTreeSet::new(), 0)
     }
 
+    fn value_path_lookup(&self, path: &Path) -> ValuePathLookup {
+        let module = self.analyzer.program.definitions[self.environment.owner].module;
+        if let [segment] = path.segments.as_slice()
+            && (self
+                .scopes
+                .iter()
+                .rev()
+                .any(|scope| scope.contains_key(&segment.name))
+                || self.environment.params.contains_key(&segment.name))
+        {
+            return ValuePathLookup::Bound;
+        }
+        match crate::Resolver::new(self.analyzer.program, self.analyzer.def_maps, module)
+            .resolve_definition(path, Namespace::Value)
+        {
+            Ok(_) => ValuePathLookup::Bound,
+            Err(ResolveError::Missing) => ValuePathLookup::Missing,
+            Err(
+                ResolveError::Duplicate(_)
+                | ResolveError::Private(_)
+                | ResolveError::UnknownModule(_),
+            ) => ValuePathLookup::Invalid,
+        }
+    }
+
+    fn resolved_standard_namespace(
+        &self,
+        path: &Path,
+    ) -> Option<crate::standard_items::StandardNamespace> {
+        let namespace = crate::standard_items::resolve_namespace(path)?;
+        let module = self.analyzer.program.definitions[self.environment.owner].module;
+        if self.value_path_lookup(path) != ValuePathLookup::Missing {
+            return None;
+        }
+        let [segment] = path.segments.as_slice() else {
+            return None;
+        };
+        if self.analyzer.program.modules[module]
+            .imports
+            .iter()
+            .any(|import| crate::module_graph::imported_name(import) == Some(&segment.name))
+        {
+            return None;
+        }
+        let mut resolver =
+            crate::Resolver::new(self.analyzer.program, self.analyzer.def_maps, module);
+        for parameter in self.analyzer.generic_ids_for(self.environment.owner) {
+            resolver.add_generic_param(
+                self.analyzer.program.generic_params[parameter].name.clone(),
+                parameter,
+            );
+        }
+        matches!(resolver.resolve_type(path), Err(ResolveError::Missing)).then_some(namespace)
+    }
+
     #[allow(clippy::too_many_lines)]
     fn check_method_call(
         &mut self,
@@ -5813,7 +5876,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         arguments: &[ExprId],
         expected: Option<TyId>,
     ) -> TyId {
-        if let Expr::Path(type_path) = self.source().expressions[receiver].clone() {
+        if let Expr::Path(type_path) = self.source().expressions[receiver].clone()
+            && self.value_path_lookup(&type_path) == ValuePathLookup::Missing
+        {
             if let Some((variant, owner)) = self.resolve_qualified_variant(&type_path, method_name)
             {
                 return self
@@ -6305,6 +6370,57 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         Some(self.types().builtin(BuiltinType::Text))
     }
 
+    fn check_standard_library_item_call(
+        &mut self,
+        expression: ExprId,
+        type_path: &Path,
+        method_name: &Name,
+        type_arguments: &[TypeRefId],
+        arguments: &[ExprId],
+    ) -> Option<TyId> {
+        let standard_item = self
+            .resolved_standard_namespace(type_path)
+            .and_then(|namespace| {
+                crate::standard_items::resolve_static_item(namespace, method_name)
+            });
+        if let Some(item) = standard_item {
+            if !type_arguments.is_empty() {
+                self.error_at(
+                    "TypeMismatch",
+                    "Task standard-library functions do not accept explicit type arguments",
+                    expression,
+                );
+            }
+            let result = match item {
+                StandardLibraryItem::TaskSleep => self.check_sleep(expression, arguments),
+                StandardLibraryItem::TaskAll => {
+                    self.check_task_join(expression, TaskJoinPolicy::All, arguments)
+                }
+                StandardLibraryItem::TaskSettled => {
+                    self.check_task_join(expression, TaskJoinPolicy::Settled, arguments)
+                }
+                StandardLibraryItem::TaskAny => {
+                    self.check_task_join(expression, TaskJoinPolicy::Any, arguments)
+                }
+                StandardLibraryItem::TaskRace => {
+                    self.check_task_join(expression, TaskJoinPolicy::Race, arguments)
+                }
+            };
+            self.semantics.calls.insert(
+                expression,
+                CallResolution {
+                    target: CallTarget::StandardLibrary(item),
+                    substitution: Substitution::default(),
+                    dispatch_witness: None,
+                    witnesses: Vec::new(),
+                    receiver: None,
+                },
+            );
+            return Some(result);
+        }
+        None
+    }
+
     fn check_standard_static_method_call(
         &mut self,
         expression: ExprId,
@@ -6313,6 +6429,15 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         type_arguments: &[TypeRefId],
         arguments: &[ExprId],
     ) -> Option<TyId> {
+        if let Some(result) = self.check_standard_library_item_call(
+            expression,
+            type_path,
+            method_name,
+            type_arguments,
+            arguments,
+        ) {
+            return Some(result);
+        }
         let [segment] = type_path.segments.as_slice() else {
             return None;
         };
@@ -8169,10 +8294,17 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
 
     fn resolve_qualified_variant(&self, type_path: &Path, name: &Name) -> Option<(DefId, DefId)> {
         let module = self.analyzer.program.definitions[self.environment.owner].module;
-        let resolver = crate::Resolver::new(self.analyzer.program, self.analyzer.def_maps, module);
-        let owner = resolver
-            .resolve_definition(type_path, Namespace::Type)
-            .ok()?;
+        let mut resolver =
+            crate::Resolver::new(self.analyzer.program, self.analyzer.def_maps, module);
+        for parameter in self.analyzer.generic_ids_for(self.environment.owner) {
+            resolver.add_generic_param(
+                self.analyzer.program.generic_params[parameter].name.clone(),
+                parameter,
+            );
+        }
+        let Resolution::Definition(owner) = resolver.resolve_type(type_path).ok()? else {
+            return None;
+        };
         let DefinitionKind::Enum(enumeration) = &self.analyzer.program.definitions[owner].kind
         else {
             return None;
@@ -8680,8 +8812,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | Expr::Assign { .. }
             | Expr::RecordLiteral { .. }
             | Expr::Await(_)
-            | Expr::Sleep(_)
-            | Expr::TaskJoin { .. }
             | Expr::Propagate(_)
             | Expr::Return(_) => false,
         };

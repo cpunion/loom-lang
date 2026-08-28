@@ -604,7 +604,7 @@ const fn call_target_definition(target: &CallTarget) -> Option<DefId> {
         CallTarget::StaticConcept { requirement } | CallTarget::DynamicConcept { requirement } => {
             Some(*requirement)
         }
-        CallTarget::Builtin(_) | CallTarget::Error => None,
+        CallTarget::Builtin(_) | CallTarget::StandardLibrary(_) | CallTarget::Error => None,
     }
 }
 

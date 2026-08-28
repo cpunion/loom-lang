@@ -48,7 +48,7 @@ larger graph.
 
 ## Persistent layers
 
-The persistent cache schema is `3`. Current layers include source parse,
+The persistent cache schema is `4`. Current layers include source parse,
 module-interface presence, typed module state, complete checked MIR, target
 objects, and portable final artifacts.
 
@@ -70,10 +70,17 @@ current HIR. Checked-MIR cache entries carry the resulting concept module and
 identity under artifact version 22 and cross the ordinary MIR validator before
 reuse; inconsistent identity metadata is a cache miss.
 
+Task policy and timer calls store their resolved `StandardLibraryItem` in typed
+body facts. Cache schema 4 and `loom-compilation-cache-v4` reject earlier
+semantic entries that lacked this standard-item identity. Whether a body is
+reused or conservatively reanalyzed, MIR lowering consumes only the resolved
+identity; it never reconstructs a policy from source spelling.
+
 Checked-MIR cache envelopes use artifact version 23 for the canonical
-six-field `ConstraintError` shape. This does not advance the cache schema:
-artifact-version validation invalidates older checked-MIR entries, and typed
-semantic cache payloads do not contain the synthetic prelude record.
+six-field `ConstraintError` shape. That shape change did not advance the cache
+schema: artifact-version validation invalidates older checked-MIR entries, and
+typed semantic cache payloads do not contain the synthetic prelude record. The
+separate standard-item change above is why the current schema is 4.
 
 The complete compilation key includes the normalized project graph, exact
 sources, language and frontend build identities, embedded standard library,

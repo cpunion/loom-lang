@@ -22,7 +22,7 @@ use loom_sema::{
     Analysis, BodySemantics, BuiltinType, BuiltinValue, CallResolution,
     CallTarget as SemaCallTarget, Coercion, ConstructionCheck, Mutability, Place as SemaPlace,
     PlaceProjection, PlaceRoot, Resolution, RuntimeCheck, ScopedDisposal as SemaScopedDisposal,
-    Signature, TyData, TyId, ViewSource, WitnessSelection, WitnessSource,
+    Signature, StandardLibraryItem, TyData, TyId, ViewSource, WitnessSelection, WitnessSource,
 };
 
 const RESOURCE_MODULE: &str = "standard.resource";
@@ -1624,8 +1624,6 @@ impl ContractLowerer<'_, '_> {
             | loom_hir::Expr::Assign { .. }
             | loom_hir::Expr::RecordLiteral { .. }
             | loom_hir::Expr::Await(_)
-            | loom_hir::Expr::Sleep(_)
-            | loom_hir::Expr::TaskJoin { .. }
             | loom_hir::Expr::Propagate(_)
             | loom_hir::Expr::Return(_) => {
                 return Err(defect(
@@ -2592,26 +2590,6 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                     task: Box::new(self.lower_expr(value)?),
                 }
             }
-            loom_hir::Expr::Sleep(arguments) => {
-                let [milliseconds] = arguments.as_slice() else {
-                    return Err(defect("checked Task.sleep call has invalid arity", span));
-                };
-                ExprKind::Sleep {
-                    milliseconds: Box::new(self.lower_expr(*milliseconds)?),
-                }
-            }
-            loom_hir::Expr::TaskJoin { mode, arguments } => ExprKind::TaskJoin {
-                mode: match mode {
-                    loom_hir::TaskJoinMode::All => loom_mir::TaskJoinMode::All,
-                    loom_hir::TaskJoinMode::Settled => loom_mir::TaskJoinMode::Settled,
-                    loom_hir::TaskJoinMode::Any => loom_mir::TaskJoinMode::Any,
-                    loom_hir::TaskJoinMode::Race => loom_mir::TaskJoinMode::Race,
-                },
-                arguments: arguments
-                    .into_iter()
-                    .map(|argument| self.lower_expr(argument))
-                    .collect::<LowerResult<_>>()?,
-            },
             loom_hir::Expr::Propagate(value) => {
                 return self.lower_propagate(value, ty, span);
             }
@@ -2883,6 +2861,15 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                 let receiver = resolution.receiver.and(receiver);
                 return self.lower_builtin_call(id, builtin, receiver, source_arguments);
             }
+            SemaCallTarget::StandardLibrary(item) => {
+                if resolution.receiver.is_some() {
+                    return Err(defect(
+                        "standard-library static call unexpectedly carries a receiver",
+                        span,
+                    ));
+                }
+                return self.lower_standard_library_call(id, item, source_arguments);
+            }
             _ => {}
         }
 
@@ -3018,7 +3005,8 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             ),
             SemaCallTarget::EnumVariant(_)
             | SemaCallTarget::RefinedConstructor(_)
-            | SemaCallTarget::Builtin(_) => unreachable!("handled above"),
+            | SemaCallTarget::Builtin(_)
+            | SemaCallTarget::StandardLibrary(_) => unreachable!("handled above"),
             SemaCallTarget::Error => {
                 return Err(defect("error call target reached MIR lowering", span));
             }
@@ -3034,6 +3022,43 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             ty,
             span,
         })
+    }
+
+    fn lower_standard_library_call(
+        &mut self,
+        id: ExprId,
+        item: StandardLibraryItem,
+        arguments: &[ExprId],
+    ) -> LowerResult<Expr> {
+        let span = self.expr_span(id);
+        let ty = self.uncoerced_expression_ty(id)?;
+        let kind = match item {
+            StandardLibraryItem::TaskSleep => {
+                let [milliseconds] = arguments else {
+                    return Err(defect("checked Task.sleep call has invalid arity", span));
+                };
+                ExprKind::Sleep {
+                    milliseconds: Box::new(self.lower_expr(*milliseconds)?),
+                }
+            }
+            StandardLibraryItem::TaskAll
+            | StandardLibraryItem::TaskSettled
+            | StandardLibraryItem::TaskAny
+            | StandardLibraryItem::TaskRace => ExprKind::TaskJoin {
+                mode: match item {
+                    StandardLibraryItem::TaskAll => loom_mir::TaskJoinMode::All,
+                    StandardLibraryItem::TaskSettled => loom_mir::TaskJoinMode::Settled,
+                    StandardLibraryItem::TaskAny => loom_mir::TaskJoinMode::Any,
+                    StandardLibraryItem::TaskRace => loom_mir::TaskJoinMode::Race,
+                    StandardLibraryItem::TaskSleep => unreachable!(),
+                },
+                arguments: arguments
+                    .iter()
+                    .map(|argument| self.lower_expr(*argument))
+                    .collect::<LowerResult<_>>()?,
+            },
+        };
+        Ok(Expr::new(kind, ty, span))
     }
 
     #[allow(clippy::too_many_lines)]

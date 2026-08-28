@@ -2278,7 +2278,7 @@ fn cache_stat_and_prune_have_stable_json_reports() {
     assert_eq!(stat.status.code(), Some(0));
     let stdout = String::from_utf8(stat.stdout).expect("UTF-8 stat output");
     assert!(stdout.contains("\"category\":\"cache_stat\""), "{stdout}");
-    assert!(stdout.contains("\"schema_version\":3"), "{stdout}");
+    assert!(stdout.contains("\"schema_version\":4"), "{stdout}");
 
     let prune = loomc()
         .args(["--json", "cache", "prune"])

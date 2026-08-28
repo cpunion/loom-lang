@@ -462,12 +462,13 @@ literal is flattened into the same child row without an input List allocation;
 `all` and `settled` build their List result after resume. Empty, stored,
 computed, or runtime-sized List joins and first-class `any`, `settled`, or
 `race` results remain reachable `Unsupported` input and select the complete
-legacy object. Version 0.3 still selects these specializations through temporary
-qualified-name recognition. The target design resolves ordinary
-standard-library declarations and selects a stable intrinsic identity. Its
-minimum private substrate provides typed join/select readiness, exact result or
-outcome extraction, and structured cancellation-and-drain; public policy names
-are not language operators.
+legacy object. The version 0.3 frontend maps canonical, unshadowed Task API
+members through its embedded catalog to a stable `StandardLibraryItem` before
+MIR construction; LLVM never inspects their source spelling. Future trusted
+source-library definitions map to the same items. The minimum private substrate
+provides typed join/select readiness, exact result or outcome extraction, and
+structured cancellation-and-drain; public policy names are not language
+operators.
 
 ## Direct lexical cleanup
 
