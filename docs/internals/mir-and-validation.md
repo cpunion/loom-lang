@@ -201,12 +201,26 @@ root merely because storage still exists.
 The interpreted MIR envelope currently uses:
 
 - format `loom.interpreted-mir`;
-- artifact version `25`;
+- artifact version `26`;
 - Loom language version `0.3`.
 
-Executable `.loomi` artifacts additionally bind one validated exported entry.
-The decoder checks the envelope, format and language versions, nesting bounds,
-numeric encodings, the entry, and the complete MIR program.
+Generic compiler-cache envelopes carry an explicit null `entry`. Executable
+`.loomi` envelopes instead bind one exported entry string. Their decoder APIs
+reject the opposite envelope kind before deserializing the MIR program. The
+matching decoder then checks nesting bounds, numeric encodings, the executable
+entry when present, and the complete MIR program.
+
+The compiler does not encode its complete cached program as an executable.
+Before writing a `.loomi`, it starts from the selected export's executable
+reachability, closes every reference still present in the retained serialized
+definitions, and densely remaps type, function, concept, requirement, and
+witness identities. This second closure deliberately includes references in a
+retained body even when control-flow reachability proves that syntax cannot
+execute; retaining the whole body while dropping such a reference would create
+malformed MIR. The result exports only the selected entry, has no test roots,
+and crosses `check_program` again before artifact encoding. The original full
+checked program remains unchanged for incremental reuse and other entry
+selections.
 
 Portable library artifacts use a separate source-package envelope
 (`.loomlib` version `2`). It contains the resolved non-standard package graph,

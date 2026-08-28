@@ -98,7 +98,7 @@ input tests.
 | `check/build/test/run` | Implemented for the tested Core and package fixtures on both backends. |
 | Code generation IR foundation | Implemented for the direct slices listed below. Native preparation is atomic and fails closed to the complete legacy route when any reachable operation is unsupported. |
 | Native LLVM executable | Implemented and CI-tested on Linux x86-64 and macOS arm64; a complete Windows x86-64 native CI gate is configured and must pass before release support is claimed. |
-| Interpreted executable artifact | Implemented, versioned, decoded, validated, and exercised by CLI tests/CI. |
+| Interpreted executable artifact | Implemented with strict cache/executable kind separation, selected-entry definition closure, dense identity remapping, deterministic bytes, complete decode validation, and CLI tests. |
 | Portable `.loomlib` | Source/interface format v2 is implemented and release-gated; consumers recompile packaged source, and the artifact is not a native library or stable ABI. |
 | Manifest/lock/features/path dependencies | Implemented with resolver and CLI integration tests. |
 | Local and HTTPS registry | Implemented with authentication, digest verification, bounded downloads, offline validated cache, and hostile-cache tests. Registry-version immutability remains a server protocol requirement. |

@@ -883,7 +883,22 @@ fn run_build(
             }
         }
         Backend::Interpreter => {
-            let bytes = match loom_mir::encode_interpreted_executable_artifact(program, &entry) {
+            let closed = match loom_codegen_ir::close_interpreted_executable(program, &entry) {
+                Ok(program) => program,
+                Err(error) => {
+                    emit_tool_error(
+                        options.json,
+                        stdout,
+                        stderr,
+                        "CompilerDefect",
+                        &format!(
+                            "could not close interpreted executable definitions for `{entry}`: {error}"
+                        ),
+                    )?;
+                    return Ok(EXIT_DEFECT);
+                }
+            };
+            let bytes = match loom_mir::encode_interpreted_executable_artifact(&closed, &entry) {
                 Ok(bytes) => bytes,
                 Err(error) => {
                     emit_tool_error(
@@ -1904,10 +1919,10 @@ fn final_artifact_key(
     Some(PersistentCache::derived_key(
         &parent,
         &[
-            ("layer", "final-artifact-v2"),
+            ("layer", "final-artifact-v3"),
             ("mode", mode),
             ("entry", entry.unwrap_or("")),
-            ("artifact-toolchain", "loom-interpreted-artifact-writer-v2"),
+            ("artifact-toolchain", "loom-interpreted-artifact-writer-v3"),
             ("runtime", "loom-interpreter-runtime-v1"),
         ],
     ))
@@ -2911,7 +2926,7 @@ mod tests {
 
     #[test]
     fn checked_mir_cache_identity_pins_interpreted_artifact_version() {
-        assert_eq!(loom_mir::INTERPRETED_ARTIFACT_VERSION, 25);
+        assert_eq!(loom_mir::INTERPRETED_ARTIFACT_VERSION, 26);
         let context = super::cache_context(loom_mir::LOOM_LANGUAGE_VERSION);
         let artifact_identity = format!(
             "/{}-{}",

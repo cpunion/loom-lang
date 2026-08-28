@@ -10,7 +10,7 @@ use crate::{
 };
 
 pub const INTERPRETED_ARTIFACT_FORMAT: &str = "loom.interpreted-mir";
-pub const INTERPRETED_ARTIFACT_VERSION: u32 = 25;
+pub const INTERPRETED_ARTIFACT_VERSION: u32 = 26;
 pub const LOOM_LANGUAGE_VERSION: &str = loom_core::LOOM_LANGUAGE_VERSION;
 const CANONICAL_NAN_BITS: u64 = 0x7ff8_0000_0000_0000;
 const MAX_ARTIFACT_JSON_NESTING: usize = 512;
@@ -43,6 +43,9 @@ pub enum ArtifactError {
         expected: &'static str,
         found: String,
     },
+    UnexpectedEntry {
+        entry: String,
+    },
     MissingEntry,
     UnknownEntry {
         entry: String,
@@ -73,6 +76,10 @@ impl fmt::Display for ArtifactError {
             Self::LanguageVersionMismatch { expected, found } => write!(
                 formatter,
                 "artifact language version `{found}` is incompatible with supported version `{expected}`"
+            ),
+            Self::UnexpectedEntry { entry } => write!(
+                formatter,
+                "generic interpreted artifact unexpectedly fixes executable entry `{entry}`"
             ),
             Self::MissingEntry => write!(formatter, "executable artifact has no fixed entry"),
             Self::UnknownEntry { entry } => {
@@ -118,6 +125,12 @@ struct Envelope {
     entry: Option<String>,
     program: Program,
     float_bits: Vec<u64>,
+}
+
+#[derive(Clone, Copy)]
+enum ExpectedArtifactKind {
+    Generic,
+    Executable,
 }
 
 /// Encodes a checked, interpreted MIR artifact entirely in memory.
@@ -186,28 +199,37 @@ fn encode_interpreted_artifact_envelope(
 /// # Errors
 ///
 /// Rejects malformed envelopes, format/version mismatches, non-canonical Float
-/// tables, incomplete canonical resource identities, and any decoded program
-/// which fails MIR validation.
+/// tables, incomplete canonical resource identities, executable envelopes with
+/// [`ArtifactError::UnexpectedEntry`], and any decoded program which fails MIR
+/// validation.
 pub fn decode_interpreted_artifact(bytes: &[u8]) -> Result<CheckedProgram, ArtifactError> {
-    decode_interpreted_artifact_envelope(bytes).map(|(program, _entry)| program)
+    let (program, entry) =
+        decode_interpreted_artifact_envelope(bytes, ExpectedArtifactKind::Generic)?;
+    if let Some(entry) = entry {
+        return Err(ArtifactError::UnexpectedEntry { entry });
+    }
+    Ok(program)
 }
 
 /// Decodes an interpreted executable and returns its build-time entry.
 ///
 /// # Errors
 ///
-/// Returns [`ArtifactError::MissingEntry`] for a validated MIR/cache artifact
-/// which was not built as an executable, or any ordinary artifact error.
+/// Returns [`ArtifactError::MissingEntry`] for a generic MIR/cache artifact
+/// which was not built as an executable. The kind mismatch is rejected before
+/// deserializing its MIR program body.
 pub fn decode_interpreted_executable_artifact(
     bytes: &[u8],
 ) -> Result<(CheckedProgram, String), ArtifactError> {
-    let (program, entry) = decode_interpreted_artifact_envelope(bytes)?;
+    let (program, entry) =
+        decode_interpreted_artifact_envelope(bytes, ExpectedArtifactKind::Executable)?;
     let entry = entry.ok_or(ArtifactError::MissingEntry)?;
     Ok((program, entry))
 }
 
 fn decode_interpreted_artifact_envelope(
     bytes: &[u8],
+    expected_kind: ExpectedArtifactKind,
 ) -> Result<(CheckedProgram, Option<String>), ArtifactError> {
     validate_json_nesting(bytes).map_err(ArtifactError::Malformed)?;
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
@@ -218,6 +240,7 @@ fn decode_interpreted_artifact_envelope(
         .end()
         .map_err(|error| ArtifactError::Malformed(error.to_string()))?;
     validate_header(&value)?;
+    validate_artifact_kind(&value, expected_kind)?;
     let mut envelope: Envelope = serde_json::from_value(value)
         .map_err(|error| ArtifactError::Malformed(error.to_string()))?;
 
@@ -337,6 +360,33 @@ fn validate_header(value: &serde_json::Value) -> Result<(), ArtifactError> {
         });
     }
     Ok(())
+}
+
+fn validate_artifact_kind(
+    value: &serde_json::Value,
+    expected: ExpectedArtifactKind,
+) -> Result<(), ArtifactError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| ArtifactError::Malformed("top level must be an object".to_owned()))?;
+    let entry = object
+        .get("entry")
+        .ok_or_else(|| ArtifactError::Malformed("missing field `entry`".to_owned()))?;
+    match (expected, entry) {
+        (ExpectedArtifactKind::Generic, serde_json::Value::Null)
+        | (ExpectedArtifactKind::Executable, serde_json::Value::String(_)) => Ok(()),
+        (ExpectedArtifactKind::Generic, serde_json::Value::String(entry)) => {
+            Err(ArtifactError::UnexpectedEntry {
+                entry: entry.clone(),
+            })
+        }
+        (ExpectedArtifactKind::Executable, serde_json::Value::Null) => {
+            Err(ArtifactError::MissingEntry)
+        }
+        (_, _) => Err(ArtifactError::Malformed(
+            "field `entry` must be a string or null".to_owned(),
+        )),
+    }
 }
 
 fn canonical_float_bits(value: f64) -> u64 {

@@ -542,6 +542,182 @@ pub fn main() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
+fn interpreted_executable_artifact_closes_to_one_entry_without_narrowing_driver_cache() {
+    const INITIAL_SOURCE: &str = r"module executable_closure
+
+fn mainHelper() Int { 1 }
+
+fn alternateHelper() Int { 2 }
+
+pub fn main() {
+    let value = mainHelper()
+    assert value == 1
+}
+
+pub fn alternate() {
+    let value = alternateHelper()
+    assert value == 2
+}
+
+record DeadRecord {
+    value Int
+}
+
+fn dead() DeadRecord {
+    DeadRecord { value = 10 }
+}
+";
+    const CHANGED_DEAD_SOURCE: &str = r"module executable_closure
+
+fn mainHelper() Int { 1 }
+
+fn alternateHelper() Int { 2 }
+
+pub fn main() {
+    let value = mainHelper()
+    assert value == 1
+}
+
+pub fn alternate() {
+    let value = alternateHelper()
+    assert value == 2
+}
+
+record DeadRecord {
+    value Int
+}
+
+fn dead() DeadRecord {
+    DeadRecord { value = 20 }
+}
+";
+
+    let project = TestProject::new(INITIAL_SOURCE);
+    let main_artifact = project.0.join("main.loomi");
+    let build = |entry: &str, artifact: &std::path::Path, no_cache: bool| {
+        let mut command = loomc_without_test_runtime();
+        command.args(["--json", "--backend", "interpreter"]);
+        if no_cache {
+            command.arg("--no-cache");
+        }
+        command
+            .args(["build", "--entry", entry, "--output"])
+            .arg(artifact)
+            .arg(&project.0)
+            .output()
+            .expect("build interpreted executable closure")
+    };
+
+    let first = build("main", &main_artifact, false);
+    assert_eq!(
+        first.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&first.stdout),
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert_eq!(
+        cache_status(&first.stdout, "checked_mir").as_deref(),
+        Some("miss")
+    );
+    let main_bytes = fs::read(&main_artifact).expect("read main artifact");
+    let (main_program, main_entry) = loom_mir::decode_interpreted_executable_artifact(&main_bytes)
+        .expect("decode closed main artifact");
+    assert_eq!(main_entry, "main");
+    assert_eq!(
+        main_program
+            .exports
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["main"]
+    );
+    let mut main_functions = main_program
+        .functions
+        .iter()
+        .map(|function| function.name.as_str())
+        .collect::<Vec<_>>();
+    main_functions.sort_unstable();
+    assert_eq!(
+        main_functions,
+        ["executable_closure.main", "executable_closure.mainHelper"]
+    );
+    assert!(
+        !main_program
+            .types
+            .iter()
+            .any(|definition| definition.name == "DeadRecord")
+    );
+    assert!(main_program.tests.is_empty());
+
+    let alternate_artifact = project.0.join("alternate.loomi");
+    let alternate = build("alternate", &alternate_artifact, false);
+    assert_eq!(
+        alternate.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&alternate.stdout),
+        String::from_utf8_lossy(&alternate.stderr)
+    );
+    assert_eq!(
+        cache_status(&alternate.stdout, "checked_mir").as_deref(),
+        Some("hit"),
+        "the generic driver cache must retain exports outside the first executable closure"
+    );
+    let alternate_bytes = fs::read(&alternate_artifact).expect("read alternate artifact");
+    let (alternate_program, alternate_entry) =
+        loom_mir::decode_interpreted_executable_artifact(&alternate_bytes)
+            .expect("decode closed alternate artifact");
+    assert_eq!(alternate_entry, "alternate");
+    assert_eq!(
+        alternate_program
+            .exports
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["alternate"]
+    );
+    let mut alternate_functions = alternate_program
+        .functions
+        .iter()
+        .map(|function| function.name.as_str())
+        .collect::<Vec<_>>();
+    alternate_functions.sort_unstable();
+    assert_eq!(
+        alternate_functions,
+        [
+            "executable_closure.alternate",
+            "executable_closure.alternateHelper"
+        ]
+    );
+
+    project.write("main.loom", CHANGED_DEAD_SOURCE);
+    let changed_artifact = project.0.join("main-after-dead-edit.loomi");
+    let changed = build("main", &changed_artifact, true);
+    assert_eq!(
+        changed.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&changed.stdout),
+        String::from_utf8_lossy(&changed.stderr)
+    );
+    assert_eq!(
+        fs::read(changed_artifact).expect("read artifact after dead edit"),
+        main_bytes,
+        "an unreachable definition edit must not perturb final executable bytes"
+    );
+
+    let run = loomc_without_test_runtime()
+        .args(["--backend", "interpreter", "run", "--artifact"])
+        .arg(main_artifact)
+        .output()
+        .expect("run closed interpreted executable");
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    assert_eq!(run.stdout, b"Unit\n");
+}
+
+#[test]
 fn persistent_cache_hits_content_keys_and_final_artifacts() {
     let project = TestProject::new("module demo\n\npub fn main() {\n}\n");
 

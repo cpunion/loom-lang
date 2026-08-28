@@ -12,9 +12,10 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Manifest schema | `1` |
 | Lockfile schema | `1` |
 | Registry protocol/bundle | `1` |
-| Interpreted MIR artifact | format `loom.interpreted-mir`, version `25` |
+| Interpreted MIR artifact | format `loom.interpreted-mir`, version `26` |
 | Portable library artifact | source-package version `2` |
 | Persistent compiler cache | schema `4` |
+| Interpreted final-cache layer | `final-artifact-v3` / writer v3 |
 | Portable-library final-cache layer | `portable-library-artifact-v3` |
 | LCIR textual dump | version `33` |
 | LCIR artifact identity | schema `34` |
@@ -150,6 +151,15 @@ checks. Interpreted artifact encoding and decoding require the complete trio;
 focused non-artifact checked MIR may omit all three. It changes no LCIR or
 runtime ABI.
 
+Interpreted MIR version 26 makes envelope kind part of the decoding contract.
+A generic compiler-cache artifact has an explicitly null `entry`; an
+executable artifact has a fixed string entry. Generic and executable decoders
+reject the opposite kind before validating the MIR program body. It changes no
+LCIR or runtime ABI. The interpreted final-cache layer and writer domain advance
+to v3 because executable writing now closes the selected export's definitions,
+dense-remaps all global MIR identities, and independently revalidates the
+result. The generic checked-MIR cache remains complete and keeps schema 4.
+
 Portable library version 2 replaces version 1's checked-MIR payload with a
 source-and-interface package envelope. It stores the resolved non-standard
 package graph, exact source text, language version, and canonical public
@@ -161,7 +171,7 @@ compiler-distributed standard library and repeat parsing, type checking, proof
 search, lowering, and MIR validation. Version 1 is rejected and must be
 rebuilt. The derived final-artifact cache layer advances to
 `portable-library-artifact-v3` and binds the source-package format/version;
-`.loomi` version 25, persistent compiler-cache schema 4, and the checked-MIR
+`.loomi` version 26, persistent compiler-cache schema 4, and the checked-MIR
 cache envelope are unchanged by this library-format replacement.
 
 Nongeneric `.loomi` proof replay advances the LCIR dump to 18, artifact schema

@@ -15,7 +15,9 @@ rather than assuming every build output is executable.
 | Runtime bundle | `runtime pack` or a release archive | target-specific | used by the linker |
 
 The interpreted artifact format is `loom.interpreted-mir`, currently version
-`25`. Its complete checked MIR is decoded and validated before execution.
+`26`. A build checks the complete source program, then writes the closed
+checked-MIR definitions for one selected export. The artifact is decoded and
+fully validated before execution.
 
 Portable libraries use source-package format version `2`. They record the Loom
 language version, resolved package graph, exact non-standard-library Loom
@@ -49,6 +51,16 @@ the trio for low-level tools, but such a program cannot cross the interpreted
 artifact boundary. These are structural guarantees only; publisher
 authentication remains the responsibility of the registry or distribution
 channel.
+
+Version 26 distinguishes generic compiler-cache artifacts from executable
+artifacts using the existing `entry` field. Generic artifacts require an
+explicit null entry; executable artifacts require a fixed string entry. The
+generic and executable decoders are not interchangeable and reject the wrong
+kind before validating its MIR program body. A fixed executable entry must
+also name an exported function. Before encoding, executable closure removes
+other exports, test roots, and unrelated definitions, densely remaps all global
+MIR identities, and validates the closed program. This does not narrow the
+generic compiler cache used to build another entry.
 
 Source-local construction proofs are not portable certificates. A `.loomi`
 encodes them as mandatory predicate/invariant rechecks. A successful recheck

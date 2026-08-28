@@ -1,8 +1,8 @@
 # Reachability and dead-code elimination
 
-Native artifacts are closed-world. The frontend checks the complete resolved
-source graph, then LLVM code generation retains only code and conformance data
-reachable from the selected command roots.
+Executable artifacts are closed-world. The frontend checks the complete
+resolved source graph, then the selected backend retains only definitions
+needed by the command roots. Dead-code elimination never hides a source error.
 
 The implementation lives in the `source_graph` module of `loom-codegen-ir`,
 before LLVM emission. `SourceRoots` and `ReachableSourceGraph` contain
@@ -14,6 +14,28 @@ diagnostics. Source root selection and closure accept only
 automatic native router either lowers the complete reachable typed artifact
 to independently checked LCIR or stores this exact source graph for one
 whole-artifact legacy emission.
+
+## Interpreted executable closure
+
+An interpreter build uses the same selected-export source graph as its
+executable seed, but a `.loomi` stores checked MIR rather than emitted machine
+code. It therefore adds a serialization closure before encoding. Every global
+identity mentioned anywhere in a retained function, type, contract, concept,
+requirement, witness, cleanup action, or coroutine schema is retained to a
+fixed point, including syntax after a `return` or diverging expression.
+Retained witnesses keep the complete method table required by the independent
+MIR validator. Compiler-known resource concept metadata remains present, while
+marker witnesses whose concrete schemas cannot affect retained values stay
+dead.
+
+The closure preserves original relative definition order, remaps all five
+global identity domains to dense indices, keeps only the selected export,
+clears test roots, and runs complete MIR validation again. Encoding and
+decoding then apply the ordinary executable artifact profile. A generic
+checked-MIR cache entry is never narrowed: it retains all exports and checked
+definitions so a later command can select another entry without recompiling
+the frontend. Consequently, changing an unrelated dead body does not change
+the final `.loomi` bytes, while changing a live definition does.
 
 For the LCIR route, source reachability is followed by a second, more precise
 closure over concrete callable instances. It starts from the selected exported
@@ -173,6 +195,12 @@ Reachability changes need tests for:
 - unused requirement slots remaining absent;
 - both development and release objects;
 - object-cache identity after dead and live edits.
+
+Interpreted closure tests additionally cover dense remapping in every global
+identity domain, references serialized after `return`, complete retained
+witness tables, dead resource-marker conformances, one selected export, stable
+bytes after a dead edit, artifact round trips, and reuse of the unchanged full
+checked-MIR cache for another export.
 
 Reachability is not allowed to hide frontend errors: a dead function is still
 parsed, resolved, and type-checked.
