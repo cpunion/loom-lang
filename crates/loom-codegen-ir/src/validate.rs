@@ -3533,13 +3533,6 @@ impl<'a> Validator<'a> {
                         "task.create does not admit an inout coroutine signature",
                     );
                 }
-                if function.coroutine().is_none() {
-                    self.error(
-                        ValidationCode::InvalidCoroutinePlan,
-                        &path,
-                        "task.create requires an active typed-coroutine executor context",
-                    );
-                }
                 self.validate_call_arguments(
                     function,
                     arguments,
@@ -3657,13 +3650,6 @@ impl<'a> Validator<'a> {
                     );
                 }
                 self.require_results(function, instruction, &[expected.flatten()], &path);
-                if function.coroutine().is_none() {
-                    self.error(
-                        ValidationCode::InvalidCoroutinePlan,
-                        &path,
-                        "task.join_all requires an active typed-coroutine executor context",
-                    );
-                }
                 if !function.effects().contains(Effects::NEEDS_EXECUTOR) {
                     self.error(
                         ValidationCode::EffectMismatch,
@@ -4005,13 +3991,6 @@ impl<'a> Validator<'a> {
                     &format!("{path}.normal"),
                 );
                 self.validate_unwind_target(function, fault, &[], &format!("{path}.fault"));
-                if function.coroutine().is_none() {
-                    self.error(
-                        ValidationCode::InvalidCoroutinePlan,
-                        &path,
-                        "task.sleep is only valid in a checked coroutine",
-                    );
-                }
                 self.require_may_fault_effect(function, &path, "task.sleep");
                 if !function.effects().contains(Effects::NEEDS_EXECUTOR) {
                     self.error(

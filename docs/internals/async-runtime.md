@@ -157,11 +157,13 @@ resource according to the scoped operation's ownership contract.
 
 ## Typed timer tasks
 
-Checked `Task.sleep` is admitted only inside an async function. The LCIR
-terminator consumes canonical `Int` milliseconds; lowering extracts the single
-field from a source `Duration` before reaching that boundary. It has explicit
-normal and fault edges and contributes `MAY_FAULT` plus `NEEDS_EXECUTOR`, but it
-does not suspend or collect. A negative input raises `InvalidSleepDuration`.
+Checked `Task.sleep` is admitted wherever LCIR has a proved current executor
+context. This includes an async callback and a synchronous helper reached from
+one. The LCIR terminator consumes canonical `Int` milliseconds; lowering
+extracts the single field from a source `Duration` before reaching that
+boundary. It has explicit normal and fault edges and contributes `MAY_FAULT`
+plus `NEEDS_EXECUTOR`, but it does not suspend or collect. A negative input
+raises `InvalidSleepDuration`.
 Signed millisecond-to-nanosecond multiplication and unsigned monotonic-deadline
 addition are checked separately; either overflow raises
 `SleepDurationOverflow`.
@@ -179,6 +181,15 @@ The additive factory advances the native runtime ABI to component 16 and adds
 `typed-timer-v1` plus `runtime-v10` to the exact identity. The typed-task and
 wait wires remain version 1; the timer carries no universal value, moving-GC
 root, or new scheduler protocol.
+
+Synchronous Task-producing helpers receive the active executor through one
+effect-derived compiler-private parameter. The parameter follows any hidden
+fault context, so a fallible helper has the physical order `source arguments,
+fault context, executor`. Calls forward it transitively. A helper may create a
+child Task, a fixed `Task.all` composite, or a timer Task, but it cannot await,
+drive the queue, create a nested executor, or outlive the async structured
+scope. Checked artifact roots reject a synchronous root that would need this
+capability.
 
 ## Private primitives for static standard-library joins
 

@@ -161,7 +161,13 @@ need to:
 These flags are compiler-private lowering facts, not source effects. They
 allow a proven pure direct native body to omit status and hidden runtime
 context, a synchronous managed root to create only a runtime, and an async root
-to attach an executor only when required.
+to attach an executor only when required. A non-coroutine function with
+`NEEDS_EXECUTOR` receives one hidden pointer after any hidden fault context.
+Direct calls and invokes append the callee's exact hidden arguments in that
+order, allowing nested synchronous Task-producing helpers to borrow the one
+executor already driving their coroutine caller. They do not create, run, or
+destroy an executor, and a synchronous executable root requiring that pointer
+is rejected before emission.
 
 These requirements describe execution state, not compiler-generated harness
 output. Even a pure direct LCIR executable may declare the output-only

@@ -43,6 +43,7 @@ const TYPED_LOGGING_STDERR: &[u8] =
 const TYPED_ASYNC_FIXTURE: &str = "fixtures/lcir-typed-async";
 const ASYNC_MANAGED_COLLECTIONS_FIXTURE: &str = "fixtures/lcir-async-managed-collections";
 const TYPED_SLEEP_FIXTURE: &str = "fixtures/lcir-typed-sleep";
+const SYNC_TASK_HELPERS_FIXTURE: &str = "fixtures/lcir-sync-task-helpers";
 const TYPED_TASK_ALL_FIXTURE: &str = "fixtures/lcir-typed-task-all";
 const TYPED_TASK_ANY_FIXTURE: &str = "fixtures/lcir-typed-task-any";
 const TYPED_TASK_OUTCOMES_FIXTURE: &str = "fixtures/lcir-typed-task-outcomes";
@@ -418,6 +419,16 @@ fn main() {
         "typed-sleep",
     ) {
         report.failures.push(format!("typed-sleep: {error}"));
+    }
+    if let Err(error) = typed_async_gate(
+        &workspace,
+        &runtime,
+        &mut report.gates,
+        &mut report.native_routes,
+        SYNC_TASK_HELPERS_FIXTURE,
+        "sync-task-helpers",
+    ) {
+        report.failures.push(format!("sync-task-helpers: {error}"));
     }
     if let Err(error) = typed_async_gate(
         &workspace,

@@ -343,8 +343,10 @@ source function:
 An infallible function without inout parameters returns its typed result
 directly. With ordered writebacks `W...`, it returns `{ T, W... }`. A function
 with the `MAY_FAULT` effect returns `{ i32 status, T, W... }` and receives one
-trailing opaque runtime-context pointer. Status zero is success; status one is
-a source runtime fault. A normal return supplies the result and current
+trailing opaque fault-context pointer. A synchronous function with
+`NEEDS_EXECUTOR` then receives one executor pointer after that optional fault
+context. Status zero is success; status one is a source runtime fault. A normal
+return supplies the result and current
 writebacks. A fault origin reports the fault once and returns status one, a
 zero source result, and the current writebacks; an unwind continuation
 propagates the failure without reporting it again.
@@ -363,6 +365,9 @@ executor; neither operation itself suspends. `AwaitTasks` contributes both
 `MAY_FAULT` and `MAY_SUSPEND` and accepts one or more ordered children. The
 explicit fallible `TaskSleep` terminator requires `MAY_FAULT` and
 `NEEDS_EXECUTOR`, but does not itself add `MAY_SUSPEND` or `MAY_COLLECT`.
+The exact effect-derived synchronous ABI forwards the current executor through
+direct calls and invokes. Such helpers may construct Tasks but cannot await or
+drive the executor.
 
 All functions are declared before bodies are emitted, so direct and mutually
 recursive calls use the same typed ABI. Entry block parameters map to function
@@ -389,7 +394,10 @@ global's trailing NUL. The runtime performs no NUL scan, delimiter insertion,
 or C text-mode translation. Output failure may leave a prefix, so generated
 code never retries it: an otherwise successful `Unit` or passed-test path
 becomes nonzero, while an already failing path retains its nonzero status. A
-synchronous faulting or collecting root creates a runtime but no executor. An
+synchronous faulting or collecting root creates a runtime but no executor. A
+synchronous root requiring `NEEDS_EXECUTOR` is rejected before unsupported
+classification may select a fallback; every admitted executor-dependent helper
+is therefore reached from a checked coroutine. An
 async root creates one executor, constructs the root Task, runs it to a terminal
 state, takes its exact typed result, and destroys the executor. When the async
 root has preconditions, construction supplies its declaration span as
@@ -416,8 +424,9 @@ cancellation enters the corresponding state-specific cancel edge. Normal join
 completion takes the mode-derived typed values into the leading continuation
 parameters; child fault and cancellation forward only the identical exact live
 row. Completion is published through typed-task v1. `TaskSleep` accepts
-normalized `Int` milliseconds only inside that checked coroutine boundary,
-returns a first-class typed `Task[Unit]` on its normal edge, and preserves
+normalized `Int` milliseconds inside any checked executor context, including a
+synchronous helper reached from the coroutine, returns a first-class typed
+`Task[Unit]` on its normal edge, and preserves
 canonical negative-duration or overflow faults on its fault edge. A source
 `Duration` is normalized through product extraction before this terminator.
 
@@ -668,8 +677,9 @@ Every LCIR slice requires:
   operations, and fault propagation;
 - negative IR assertions that a complete direct artifact has no universal
   value, linked argument nodes, legacy tag operations, or universal root
-  wrapper; synchronous slices also require no executor, while async slices
-  require only the checked typed-task/executor surface;
+  wrapper; pure and runtime-only synchronous slices require no executor, while
+  Task-producing synchronous helpers may only forward the checked executor
+  owned by their async caller;
 - reachable-unsupported and unreachable-unsupported route tests;
 - tests proving that lowering, validation, and target defects do not fall back;
 - development and release verification on every supported native CI host;

@@ -773,7 +773,7 @@ fn core03_task_list_joins_are_complete_for_run_and_tests() {
 }
 
 #[test]
-fn task_all_in_a_sync_helper_does_not_receive_a_hidden_executor() {
+fn task_all_in_a_sync_helper_receives_the_transitive_executor_capability() {
     let source = r"module sync_task_all
 
 async fn child(value Int) Int { value }
@@ -782,17 +782,26 @@ fn combined() Task[(Int, Int)] {
     Task.all(child(1), child(2))
 }
 
-pub async fn main() Unit {
+pub async fn main() {
     discard combined().await
 }
 ";
-    let LoweringOutcome::Unsupported(report) = lower_run(source) else {
-        panic!("a sync Task.all helper must fail closed")
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("a sync Task.all helper must lower through typed LCIR")
     };
-    assert!(report.items().iter().any(|item| {
-        item.feature() == UnsupportedFeature::TaskOperation
-            || item.feature() == UnsupportedFeature::AsyncFunction
-    }));
+    let combined = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("combined"))
+        .expect("combined instance");
+    assert!(combined.coroutine().is_none());
+    assert!(combined.effects().contains(Effects::NEEDS_EXECUTOR));
+    assert!(
+        combined
+            .instructions()
+            .iter()
+            .any(|instruction| matches!(instruction.kind(), InstructionKind::TaskJoinAll { .. }))
+    );
 }
 
 #[test]
@@ -1585,20 +1594,24 @@ pub async fn main() Unit {
 }
 
 #[test]
-fn task_creation_in_sync_functions_fails_closed_before_emission() {
-    for source in [
-        r"module sync_task_create
+fn task_creation_in_sync_functions_propagates_the_executor_capability() {
+    for (source, expected_task_create, expected_sleep) in [
+        (
+            r"module sync_task_create
 
 async fn child() Int { 1 }
 
 fn helper() Task[Int] { child() }
 
-pub async fn main() Unit {
+pub async fn main() {
     discard helper().await
-    Unit
 }
 ",
-        r"module nested_sync_task_create
+            true,
+            false,
+        ),
+        (
+            r"module nested_sync_task_create
 
 async fn child() Int { 1 }
 
@@ -1606,30 +1619,61 @@ fn inner() Task[Int] { child() }
 
 fn helper() Task[Int] { inner() }
 
-pub async fn main() Unit {
+pub async fn main() {
     discard helper().await
-    Unit
 }
 ",
-        r"module sync_task_sleep
+            true,
+            false,
+        ),
+        (
+            r"module sync_task_sleep
 
 fn helper() Task[Unit] { Task.sleep(0) }
 
-pub async fn main() Unit {
+pub async fn main() {
     helper().await
-    Unit
 }
 ",
+            false,
+            true,
+        ),
     ] {
-        let LoweringOutcome::Unsupported(report) = lower_run(source) else {
-            panic!("a sync function cannot receive an implicit coroutine executor")
+        let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+            panic!("sync Task-producing helpers must lower through typed LCIR")
         };
+        let synchronous_helpers = artifact
+            .functions()
+            .iter()
+            .filter(|function| {
+                function.coroutine().is_none()
+                    && (function.name().ends_with("helper") || function.name().ends_with("inner"))
+            })
+            .collect::<Vec<_>>();
+        assert!(!synchronous_helpers.is_empty());
         assert!(
-            report.items().iter().any(|item| matches!(
-                item.feature(),
-                UnsupportedFeature::AsyncFunction | UnsupportedFeature::TaskOperation
-            )),
-            "{report:#?}"
+            synchronous_helpers
+                .iter()
+                .all(|function| function.effects().contains(Effects::NEEDS_EXECUTOR))
+        );
+        assert_eq!(
+            synchronous_helpers.iter().any(|function| {
+                function.instructions().iter().any(|instruction| {
+                    matches!(instruction.kind(), InstructionKind::TaskCreate { .. })
+                })
+            }),
+            expected_task_create
+        );
+        assert_eq!(
+            synchronous_helpers.iter().any(|function| {
+                function.blocks().iter().any(|block| {
+                    matches!(
+                        block.terminator().map(loom_codegen_ir::Terminator::kind),
+                        Some(TerminatorKind::TaskSleep { .. })
+                    )
+                })
+            }),
+            expected_sleep
         );
     }
 }
@@ -2866,22 +2910,32 @@ pub fn main() Unit { Unit }
 fn unreachable_task_policy_items_create_no_executor_or_artifact_identity_edge() {
     let any_source = r"module dead_task_policy
 
-pub fn main() Unit { Unit }
+pub fn main() {}
 
 async fn child() Int { 1 }
 
-async fn deadPolicy() Unit {
+async fn deadPolicy() {
     discard Task.any(child(), child()).await
 }
 ";
     let race_source = r"module dead_task_policy
 
-pub fn main() Unit { Unit }
+pub fn main() {}
 
 async fn child() Int { 1 }
 
-async fn deadPolicy() Unit {
+async fn deadPolicy() {
     discard Task.race(child(), child()).await
+}
+";
+    let sync_source = r"module dead_task_policy
+
+pub fn main() {}
+
+async fn child() Int { 1 }
+
+fn deadFactory() Task[Int] {
+    child()
 }
 ";
     let LoweringOutcome::Complete(any) = lower_run(any_source) else {
@@ -2890,16 +2944,25 @@ async fn deadPolicy() Unit {
     let LoweringOutcome::Complete(race) = lower_run(race_source) else {
         panic!("an unreachable Task.race policy must not select fallback")
     };
+    let LoweringOutcome::Complete(sync) = lower_run(sync_source) else {
+        panic!("an unreachable synchronous Task helper must not select fallback")
+    };
     assert_eq!(dump_program(any.program()), dump_program(race.program()));
+    assert_eq!(dump_program(any.program()), dump_program(sync.program()));
     assert_eq!(artifact_identity(&any), artifact_identity(&race));
-    assert_eq!(any.functions().len(), 1);
-    assert!(
-        any.functions()
-            .iter()
-            .all(|function| !function.effects().contains(Effects::NEEDS_EXECUTOR))
-    );
+    assert_eq!(artifact_identity(&any), artifact_identity(&sync));
+    for artifact in [&any, &race, &sync] {
+        assert_eq!(artifact.functions().len(), 1);
+        assert!(
+            artifact
+                .functions()
+                .iter()
+                .all(|function| !function.effects().contains(Effects::NEEDS_EXECUTOR))
+        );
+    }
     let dump = dump_program(any.program());
     assert!(!dump.contains("deadPolicy"), "{dump}");
+    assert!(!dump.contains("deadFactory"), "{dump}");
     assert!(!dump.contains("await_tasks"), "{dump}");
 }
 

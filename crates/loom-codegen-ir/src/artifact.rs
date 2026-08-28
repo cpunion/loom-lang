@@ -90,6 +90,7 @@ pub enum ArtifactValidationCode {
     InvalidRootReference,
     DuplicateTestRoot,
     RootSignature,
+    RootCapability,
     UnreachableFunction,
     ImmortalTextProvenance,
 }
@@ -103,6 +104,7 @@ impl ArtifactValidationCode {
             Self::InvalidRootReference => "LcirArtifactInvalidRootReference",
             Self::DuplicateTestRoot => "LcirArtifactDuplicateTestRoot",
             Self::RootSignature => "LcirArtifactRootSignature",
+            Self::RootCapability => "LcirArtifactRootCapability",
             Self::UnreachableFunction => "LcirArtifactUnreachableFunction",
             Self::ImmortalTextProvenance => "LcirArtifactImmortalTextProvenance",
         }
@@ -293,11 +295,11 @@ impl CheckedProgram {
 /// Validates a root request against an already checked LCIR program.
 ///
 /// The request variant makes the harness kind structurally unambiguous. This
-/// validator checks branded identity, existence, per-kind signature rules,
-/// uniqueness of test roots, that every function belongs to the exact callable
-/// closure, and that every immortal Text value has only literal or closed
-/// internal typed-flow provenance. An empty test set is valid only with an
-/// empty program.
+/// validator checks branded identity, existence, per-kind signature and root
+/// execution-capability rules, uniqueness of test roots, that every function
+/// belongs to the exact callable closure, and that every immortal Text value
+/// has only literal or closed internal typed-flow provenance. An empty test set
+/// is valid only with an empty program.
 ///
 /// # Errors
 ///
@@ -474,9 +476,20 @@ impl ArtifactValidator<'_> {
         if !signature.params().is_empty() || !valid_result {
             self.error(
                 ArtifactValidationCode::RootSignature,
-                path,
+                path.clone(),
                 format!(
                     "{kind} root {root} must declare zero parameters and match its explicit Unit or Result[Unit, E] outcome plan"
+                ),
+            );
+        }
+        if function.coroutine().is_none()
+            && function.effects().contains(crate::Effects::NEEDS_EXECUTOR)
+        {
+            self.error(
+                ArtifactValidationCode::RootCapability,
+                path,
+                format!(
+                    "synchronous {kind} root {root} cannot require an executor; executor-dependent synchronous helpers must be reached from a checked coroutine"
                 ),
             );
         }
@@ -1012,6 +1025,101 @@ mod tests {
         }
         let ids = declarations.into_iter().map(|(id, _, _)| id).collect();
         (builder.finish_checked().expect("valid LCIR"), ids)
+    }
+
+    fn synchronous_executor_root() -> (CheckedProgram, InstanceId) {
+        let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        let unit = builder.type_id(&Type::Unit).expect("Unit");
+        let integer = builder.type_id(&Type::Int).expect("Int");
+        let task_unit = builder
+            .add_task_handle_type(Type::Task(Box::new(Type::Unit)))
+            .expect("Task[Unit]");
+        let effects = Effects::MAY_FAULT
+            .union(Effects::NEEDS_EXECUTOR)
+            .with_implications();
+        let root = builder
+            .declare_function(
+                origin(0),
+                "sync_executor_root",
+                Signature::new([], unit),
+                effects,
+            )
+            .expect("root");
+        {
+            let mut function = builder.function(root).expect("function builder");
+            let entry = function.create_block().expect("entry");
+            let normal = function.create_block().expect("normal");
+            let fault = function.create_block().expect("fault");
+            function.set_entry(entry).expect("set entry");
+            let milliseconds = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::Constant(Constant::Int(0)),
+                    &[integer],
+                    origin(0),
+                )
+                .expect("milliseconds")[0];
+            function
+                .append_block_parameter(normal, task_unit)
+                .expect("timer Task");
+            function
+                .terminate(
+                    entry,
+                    Terminator::new(
+                        TerminatorKind::TaskSleep {
+                            milliseconds,
+                            normal: ResultTarget::new(normal, []),
+                            fault: UnwindTarget::new(fault, []),
+                        },
+                        origin(0),
+                    ),
+                )
+                .expect("Task.sleep");
+            let result = function
+                .append_instruction(
+                    normal,
+                    InstructionKind::Constant(Constant::Unit),
+                    &[unit],
+                    origin(0),
+                )
+                .expect("Unit")[0];
+            function
+                .terminate(
+                    normal,
+                    Terminator::new(TerminatorKind::Return(result), origin(0)),
+                )
+                .expect("return");
+            function
+                .terminate(
+                    fault,
+                    Terminator::new(TerminatorKind::ResumeFault, origin(0)),
+                )
+                .expect("resume fault");
+        }
+        (
+            builder
+                .finish_checked()
+                .expect("synchronous executor function is valid LCIR"),
+            root,
+        )
+    }
+
+    #[test]
+    fn synchronous_executor_roots_are_rejected_for_run_and_tests() {
+        let (program, root) = synchronous_executor_root();
+        for (request, expected_path) in [
+            (ArtifactRootRequest::Run(root), "roots.run"),
+            (ArtifactRootRequest::tests([root]), "roots.tests[0]"),
+        ] {
+            let errors = validate_artifact_roots(&program, &request)
+                .expect_err("only a checked coroutine may own an executor root");
+            assert_eq!(errors.len(), 1, "{errors:#?}");
+            assert_eq!(
+                errors.as_slice()[0].code(),
+                ArtifactValidationCode::RootCapability
+            );
+            assert_eq!(errors.as_slice()[0].path(), expected_path);
+        }
     }
 
     #[test]

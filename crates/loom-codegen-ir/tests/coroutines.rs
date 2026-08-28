@@ -491,21 +491,15 @@ fn task_sleep_program(
 }
 
 #[test]
-fn task_sleep_requires_exact_coroutine_effects_and_task_unit_result() {
+fn task_sleep_requires_exact_executor_effects_and_task_unit_result() {
     let effects = Effects::MAY_FAULT
         .union(Effects::NEEDS_EXECUTOR)
         .with_implications();
     validate_program(&task_sleep_program(true, effects, false, false))
         .expect("canonical task.sleep must validate");
 
-    let no_coroutine = validate_program(&task_sleep_program(false, effects, false, false))
-        .expect_err("task.sleep outside a coroutine must fail");
-    assert!(no_coroutine.as_slice().iter().any(|error| {
-        error.code() == ValidationCode::InvalidCoroutinePlan
-            && error
-                .message()
-                .contains("only valid in a checked coroutine")
-    }));
+    validate_program(&task_sleep_program(false, effects, false, false))
+        .expect("a synchronous helper may receive a checked hidden executor");
 
     let wrong_effects = validate_program(&task_sleep_program(
         true,
@@ -740,13 +734,8 @@ fn task_join_all_requires_unique_exact_children_result_and_executor_context() {
             .any(|error| error.code() == ValidationCode::TypeMismatch)
     );
 
-    let no_coroutine =
-        validate_program(&task_join_all_program(false, false, false, false, effects))
-            .expect_err("a sync function cannot gain a hidden executor context");
-    assert!(no_coroutine.as_slice().iter().any(|error| {
-        error.code() == ValidationCode::InvalidCoroutinePlan
-            && error.message().contains("active typed-coroutine")
-    }));
+    validate_program(&task_join_all_program(false, false, false, false, effects))
+        .expect("a synchronous helper may receive a checked hidden executor");
 
     let no_executor = validate_program(&task_join_all_program(
         false,
@@ -1303,6 +1292,8 @@ fn await_tasks_program_with_mode(
     let int_origin = Origin::synthetic(FunctionId(1));
     let bool_origin = Origin::synthetic(FunctionId(2));
     let fallible_origin = Origin::synthetic(FunctionId(3));
+    let sync_task_origin = Origin::synthetic(FunctionId(4));
+    let sync_timer_origin = Origin::synthetic(FunctionId(5));
     let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
     let unit = builder.type_id(&Type::Unit).expect("Unit");
     let integer = builder.type_id(&Type::Int).expect("Int");
@@ -1416,6 +1407,90 @@ fn await_tasks_program_with_mode(
                 ),
             )
             .expect("fault");
+    }
+
+    let sync_task_factory = builder
+        .declare_function(
+            sync_task_origin,
+            "await.sync_task_factory",
+            Signature::new([], task_int),
+            Effects::NEEDS_EXECUTOR.with_implications(),
+        )
+        .expect("sync Task factory");
+    {
+        let mut function = builder
+            .function(sync_task_factory)
+            .expect("sync Task factory builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("entry");
+        let task = function
+            .append_instruction(
+                entry,
+                InstructionKind::TaskCreate {
+                    coroutine: int_child,
+                    arguments: Box::new([]),
+                },
+                &[task_int],
+                sync_task_origin,
+            )
+            .expect("Task[Int]")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(TerminatorKind::Return(task), sync_task_origin),
+            )
+            .expect("return Task");
+    }
+
+    let sync_timer_factory = builder
+        .declare_function(
+            sync_timer_origin,
+            "await.sync_timer_factory",
+            Signature::new([integer], task_unit),
+            Effects::MAY_FAULT
+                .union(Effects::NEEDS_EXECUTOR)
+                .with_implications(),
+        )
+        .expect("sync timer factory");
+    {
+        let mut function = builder
+            .function(sync_timer_factory)
+            .expect("sync timer factory builder");
+        let entry = function.create_block().expect("entry");
+        let normal = function.create_block().expect("normal");
+        let fault = function.create_block().expect("fault");
+        function.set_entry(entry).expect("entry");
+        let milliseconds = function
+            .append_block_parameter(entry, integer)
+            .expect("milliseconds");
+        let task = function
+            .append_block_parameter(normal, task_unit)
+            .expect("timer Task");
+        function
+            .terminate(
+                entry,
+                Terminator::new(
+                    TerminatorKind::TaskSleep {
+                        milliseconds,
+                        normal: ResultTarget::new(normal, []),
+                        fault: UnwindTarget::new(fault, []),
+                    },
+                    sync_timer_origin,
+                ),
+            )
+            .expect("Task.sleep");
+        function
+            .terminate(
+                normal,
+                Terminator::new(TerminatorKind::Return(task), sync_timer_origin),
+            )
+            .expect("return timer Task");
+        function
+            .terminate(
+                fault,
+                Terminator::new(TerminatorKind::ResumeFault, sync_timer_origin),
+            )
+            .expect("resume timer fault");
     }
 
     let root = builder
@@ -1774,6 +1849,56 @@ fn await_tasks_program_with_mode(
                     Terminator::new(TerminatorKind::ResumeFault, origin),
                 )
                 .expect("propagate invalid executor-dependent invoke fault");
+        } else if matches!(exit_case, AwaitExitCase::CancelDirectCallsSyncExecutor) {
+            function
+                .append_instruction(
+                    cancel,
+                    InstructionKind::DirectCall {
+                        callee: sync_task_factory,
+                        arguments: Box::new([]),
+                    },
+                    &[task_int],
+                    origin,
+                )
+                .expect("invalid sync executor-dependent call");
+            function
+                .terminate(
+                    cancel,
+                    Terminator::new(TerminatorKind::TaskCancelled, origin),
+                )
+                .expect("cancel after invalid sync executor-dependent call");
+        } else if matches!(exit_case, AwaitExitCase::CancelInvokesSyncExecutor) {
+            let invoke_normal = function.create_block().expect("cancel sync invoke normal");
+            let invoke_unwind = function.create_block().expect("cancel sync invoke unwind");
+            function
+                .append_block_parameter(invoke_normal, task_unit)
+                .expect("cancel sync invoke Task[Unit]");
+            function
+                .terminate(
+                    cancel,
+                    Terminator::new(
+                        TerminatorKind::Invoke {
+                            callee: sync_timer_factory,
+                            arguments: Box::from([cancel_live]),
+                            normal: ResultTarget::new(invoke_normal, []),
+                            unwind: UnwindTarget::new(invoke_unwind, []),
+                        },
+                        origin,
+                    ),
+                )
+                .expect("invalid sync executor-dependent invoke");
+            function
+                .terminate(
+                    invoke_normal,
+                    Terminator::new(TerminatorKind::TaskCancelled, origin),
+                )
+                .expect("cancel after invalid sync executor-dependent invoke");
+            function
+                .terminate(
+                    invoke_unwind,
+                    Terminator::new(TerminatorKind::ResumeFault, origin),
+                )
+                .expect("propagate invalid sync executor-dependent invoke fault");
         } else if matches!(exit_case, AwaitExitCase::CancelReturns) {
             let result = function
                 .append_instruction(
@@ -1834,6 +1959,8 @@ enum AwaitExitCase {
     CancelSleeps,
     CancelDirectCallsExecutor,
     CancelInvokesExecutor,
+    CancelDirectCallsSyncExecutor,
+    CancelInvokesSyncExecutor,
     FaultSuspends,
 }
 
@@ -1953,6 +2080,33 @@ fn cancellation_cleanup_cannot_call_or_invoke_executor_dependent_functions() {
         assert!(errors.as_slice().iter().any(|error| {
             error.code() == ValidationCode::CallShape && error.message() == call_shape
         }));
+    }
+}
+
+#[test]
+fn cancellation_cleanup_rejects_synchronous_executor_helpers_without_call_shape_errors() {
+    for (exit_case, diagnostic) in [
+        (
+            AwaitExitCase::CancelDirectCallsSyncExecutor,
+            "cancellation cleanup cannot call an executor-dependent function; it must remain scheduler-topology neutral",
+        ),
+        (
+            AwaitExitCase::CancelInvokesSyncExecutor,
+            "cancellation cleanup cannot invoke an executor-dependent function; it must remain scheduler-topology neutral",
+        ),
+    ] {
+        let errors = validate_program(&await_tasks_program(false, false, exit_case))
+            .expect_err("cancellation cleanup cannot enter a synchronous Task helper");
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::InvalidCoroutinePlan && error.message() == diagnostic
+        }));
+        assert!(
+            errors
+                .as_slice()
+                .iter()
+                .all(|error| error.code() != ValidationCode::CallShape),
+            "a legal synchronous helper call shape must be rejected only for cancellation topology: {errors:#?}"
+        );
     }
 }
 
