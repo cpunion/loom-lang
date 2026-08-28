@@ -19,6 +19,7 @@ const fn is_direct_product_leaf(ty: &Type) -> bool {
 /// type tree into each field.
 pub(crate) const DIRECT_AGGREGATE_MAX_TYPE_NODES: usize =
     crate::repr::DIRECT_PRODUCT_MAX_STRUCTURAL_NODES;
+const DIRECT_CONTRACT_MAX_EXPRESSION_NODES: usize = 4_096;
 
 /// Resolves one concrete record instantiation into ordered, substituted field
 /// types. `TextMap` remains opaque because its raw field is a runtime handle,
@@ -59,6 +60,116 @@ pub(crate) fn concrete_any_record_fields(program: &mir::Program, ty: &Type) -> O
         return None;
     };
     substitute_fields(fields, arguments)
+}
+
+/// Resolves one invariant record's declaration-level type parameters in both
+/// its fields and every lexical binding carried by its contract expression.
+/// Function-instance substitution must happen before this helper: `arguments`
+/// belong to the record definition's independent parameter namespace.
+pub(crate) fn concrete_invariant_record(
+    program: &mir::Program,
+    ty: &Type,
+) -> Option<(Box<[Type]>, mir::Contract)> {
+    let Type::Nominal(id, arguments) = ty else {
+        return None;
+    };
+    let definition = program.type_def(*id)?;
+    if usize::try_from(definition.type_parameters).ok()? != arguments.len() {
+        return None;
+    }
+    let mir::TypeDefKind::Record {
+        invariant: Some(invariant),
+        ..
+    } = &definition.kind
+    else {
+        return None;
+    };
+    let fields = concrete_any_record_fields(program, ty)?;
+    let invariant = substitute_contract_bindings(invariant, arguments)?;
+    Some((fields, invariant))
+}
+
+fn substitute_contract_bindings(
+    contract: &mir::Contract,
+    arguments: &[Type],
+) -> Option<mir::Contract> {
+    if arguments
+        .iter()
+        .any(|argument| concrete_type_node_count(argument).is_none())
+    {
+        return None;
+    }
+
+    // Validate every replacement before cloning the contract. The expression
+    // walk is bounded independently from the type-tree budget so a portable
+    // artifact cannot force unbounded planning allocation.
+    let mut expression_nodes = 0_usize;
+    let mut type_nodes = 0_usize;
+    let mut pending = vec![&contract.expression];
+    while let Some(expression) = pending.pop() {
+        expression_nodes = expression_nodes.checked_add(1)?;
+        if expression_nodes > DIRECT_CONTRACT_MAX_EXPRESSION_NODES {
+            return None;
+        }
+        match &expression.kind {
+            mir::ContractExprKind::Constant(_)
+            | mir::ContractExprKind::Value(_)
+            | mir::ContractExprKind::Binding(_) => {}
+            mir::ContractExprKind::Field(owner, _)
+            | mir::ContractExprKind::Unary(_, owner)
+            | mir::ContractExprKind::IsFinite(owner) => pending.push(owner),
+            mir::ContractExprKind::Binary(_, left, right) => {
+                pending.push(left);
+                pending.push(right);
+            }
+            mir::ContractExprKind::Match { scrutinee, arms } => {
+                if expression_nodes
+                    .checked_add(pending.len())?
+                    .checked_add(arms.len())?
+                    .checked_add(1)?
+                    > DIRECT_CONTRACT_MAX_EXPRESSION_NODES
+                {
+                    return None;
+                }
+                pending.push(scrutinee);
+                for arm in arms {
+                    pending.push(&arm.value);
+                    for binding in &arm.bindings {
+                        let remaining = DIRECT_AGGREGATE_MAX_TYPE_NODES.checked_sub(type_nodes)?;
+                        let cost = substituted_type_node_count(binding, arguments, remaining)?;
+                        type_nodes = type_nodes.checked_add(cost)?;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut concrete = contract.clone();
+    let mut pending = vec![&mut concrete.expression];
+    while let Some(expression) = pending.pop() {
+        match &mut expression.kind {
+            mir::ContractExprKind::Constant(_)
+            | mir::ContractExprKind::Value(_)
+            | mir::ContractExprKind::Binding(_) => {}
+            mir::ContractExprKind::Field(owner, _)
+            | mir::ContractExprKind::Unary(_, owner)
+            | mir::ContractExprKind::IsFinite(owner) => pending.push(owner),
+            mir::ContractExprKind::Binary(_, left, right) => {
+                pending.push(left);
+                pending.push(right);
+            }
+            mir::ContractExprKind::Match { scrutinee, arms } => {
+                pending.push(scrutinee);
+                for arm in arms {
+                    for binding in &mut arm.bindings {
+                        *binding = substitute_type(binding, arguments, 1)?;
+                    }
+                    pending.push(&mut arm.value);
+                }
+            }
+        }
+    }
+    Some(concrete)
 }
 
 /// Resolves the transparent payload of a concrete refined instantiation.
@@ -941,11 +1052,75 @@ impl AggregatePlan {
 mod tests {
     use loom_core::Span;
     use loom_mir::{
-        Constant, Contract, ContractExpr, ContractExprKind, FieldDef, PreludeIds, Program, TypeDef,
-        TypeDefKind, VariantDef, VariantId,
+        Constant, Contract, ContractArm, ContractExpr, ContractExprKind, ContractValue, FieldDef,
+        Pattern, PreludeIds, Program, TypeDef, TypeDefKind, VariantDef, VariantId,
     };
 
     use super::*;
+
+    #[test]
+    fn invariant_record_contract_bindings_use_the_definition_parameter_space() {
+        let guarded = TypeId(0);
+        let span = Span::default();
+        let program = Program {
+            types: vec![TypeDef {
+                id: guarded,
+                name: "Guarded".into(),
+                span,
+                type_parameters: 2,
+                kind: TypeDefKind::Record {
+                    fields: vec![
+                        FieldDef {
+                            name: "label".into(),
+                            ty: Type::Parameter(0),
+                            span,
+                        },
+                        FieldDef {
+                            name: "payload".into(),
+                            ty: Type::Parameter(1),
+                            span,
+                        },
+                    ],
+                    invariant: Some(Contract {
+                        code: "Guarded.invariant".into(),
+                        span,
+                        expression: ContractExpr {
+                            kind: ContractExprKind::Match {
+                                scrutinee: Box::new(ContractExpr {
+                                    kind: ContractExprKind::Field(
+                                        Box::new(ContractExpr {
+                                            kind: ContractExprKind::Value(ContractValue::SelfValue),
+                                            span,
+                                        }),
+                                        1,
+                                    ),
+                                    span,
+                                }),
+                                arms: vec![ContractArm {
+                                    pattern: Pattern::Binding,
+                                    bindings: vec![Type::Parameter(1)],
+                                    value: ContractExpr {
+                                        kind: ContractExprKind::Constant(Constant::Bool(true)),
+                                        span,
+                                    },
+                                }],
+                            },
+                            span,
+                        },
+                    }),
+                },
+            }],
+            ..Program::default()
+        };
+        let concrete = Type::Nominal(guarded, vec![Type::Text, Type::Int]);
+        let (fields, invariant) =
+            concrete_invariant_record(&program, &concrete).expect("concrete invariant record");
+        assert_eq!(fields.as_ref(), &[Type::Text, Type::Int]);
+        let ContractExprKind::Match { arms, .. } = invariant.expression.kind else {
+            panic!("concrete invariant lost its match")
+        };
+        assert_eq!(arms[0].bindings, vec![Type::Int]);
+    }
 
     #[test]
     fn managed_list_breaks_by_value_recursion_but_checks_its_element_graph() {

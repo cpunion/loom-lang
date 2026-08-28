@@ -411,13 +411,13 @@ fn decoded_generic_record_recheck_preserves_instantiated_contract_types() {
 
 record Boxed[T] {
     payload T
-    marker Int
+    marker Float
 
-    invariant self.marker >= 0
+    invariant self.marker >= 0.0
 }
 
 pub fn main() Unit {
-    discard Boxed { payload = 7, marker = 9 }
+    discard Boxed { payload = 7, marker = 9.0 }
     Unit
 }
 ";
@@ -427,6 +427,7 @@ pub fn main() Unit {
         fresh_debug.contains("construction: Proven"),
         "{fresh_debug}"
     );
+    assert_fresh_proof_uses_lcir(&fresh, "main");
 
     let bytes = encode_interpreted_executable_artifact(&fresh, "main")
         .expect("encode generic proof artifact");
@@ -437,6 +438,7 @@ pub fn main() Unit {
         decoded_debug.contains("construction: Recheck"),
         "{decoded_debug}"
     );
+    assert!(decoded.serialized_construction_proofs_were_distrusted());
     assert_eq!(
         Interpreter::new(&decoded)
             .invoke(decoded.exports[&entry], Vec::new(), Span::default())
@@ -450,20 +452,91 @@ pub fn main() Unit {
         NativeRoutePolicy::Automatic,
     )
     .expect("prepare generic invariant recheck");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::Legacy);
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
 
     let directory = tempfile::tempdir().expect("create generic proof output");
     let executable = directory.path().join("generic-proof");
     let ir = directory.path().join("generic-proof.ll");
-    let mut options = EmitOptions::run(&entry).with_optimization(OptimizationProfile::Release);
+    let mut options = EmitOptions::run(&entry).with_optimization(OptimizationProfile::Development);
     options.emit_ir = Some(ir.clone());
-    emit_native(&decoded, &executable, &options).expect("emit generic invariant recheck");
+    assert_eq!(
+        emit_automatic_executable(&decoded, &executable, options),
+        NativeRouteKind::Lcir
+    );
     let llvm = std::fs::read_to_string(ir).expect("read generic proof LLVM IR");
-    assert!(llvm.contains("artifact.proof.recheck"), "{llvm}");
+    assert!(llvm.contains("@loom.lcir.fn."), "{llvm}");
+    assert!(llvm.contains(ARTIFACT_PROOF_REJECTED_FAULT_CODE), "{llvm}");
+    assert!(!llvm.contains("loom.Value"), "{llvm}");
+    assert!(!llvm.contains("artifact.proof.recheck"), "{llvm}");
     let output = Command::new(executable)
         .output()
         .expect("run generic invariant recheck");
     assert!(output.status.success(), "{output:?}");
+}
+
+#[test]
+fn tampered_generic_record_recheck_faults_identically_on_typed_lcir() {
+    let source = r"module generic_proof_rejection
+
+record Boxed[T] {
+    payload T
+    marker Float
+
+    invariant self.marker >= 0.0
+}
+
+pub fn main() Unit {
+    discard Boxed { payload = 7, marker = 9.0 }
+    Unit
+}
+";
+    let fresh = compile_source(source);
+    let (decoded, entry) = decode_with_tampered_float(&fresh, "main", 9.0, -1.0, true);
+    let decoded_debug = format!("{decoded:#?}");
+    assert!(
+        decoded_debug.contains("construction: Recheck"),
+        "{decoded_debug}"
+    );
+    assert!(
+        !decoded_debug.contains("construction: Proven"),
+        "{decoded_debug}"
+    );
+    assert!(decoded.serialized_construction_proofs_were_distrusted());
+
+    let function = decoded.exports[&entry];
+    let expected_span = first_evaluated_expression_span(&decoded, function);
+    let failure = Interpreter::new(&decoded)
+        .invoke(function, Vec::new(), Span::default())
+        .expect_err("forged generic record must fail its replayed invariant");
+    assert_canonical_proof_failure(&failure, expected_span);
+
+    let prepared = prepare_native_object(
+        &decoded,
+        EmitOptions::run(&entry).with_optimization(OptimizationProfile::Release),
+        NativeRoutePolicy::Automatic,
+    )
+    .expect("prepare rejected generic invariant replay");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+
+    let directory = tempfile::tempdir().expect("create rejected generic proof output");
+    let debug_executable = directory.path().join("generic-proof-rejected-debug");
+    let debug_ir = directory.path().join("generic-proof-rejected-debug.ll");
+    let mut debug_options =
+        EmitOptions::run(&entry).with_optimization(OptimizationProfile::Development);
+    debug_options.emit_ir = Some(debug_ir.clone());
+    assert_eq!(
+        emit_automatic_executable(&decoded, &debug_executable, debug_options),
+        NativeRouteKind::Lcir
+    );
+    let llvm = std::fs::read_to_string(debug_ir).expect("read rejected generic proof LLVM IR");
+    assert!(llvm.contains("@loom.lcir.fn."), "{llvm}");
+    assert!(llvm.contains(ARTIFACT_PROOF_REJECTED_FAULT_CODE), "{llvm}");
+    assert!(!llvm.contains("loom.Value"), "{llvm}");
+    assert!(!llvm.contains("artifact.proof.recheck"), "{llvm}");
+    assert_eq!(
+        native_json_failure(&decoded, &entry, directory.path(), "generic-proof-rejected",),
+        serde_json::to_value(&failure).expect("serialize interpreted generic proof failure")
+    );
 }
 
 #[test]

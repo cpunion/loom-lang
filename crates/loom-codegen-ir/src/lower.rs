@@ -11,7 +11,7 @@ use loom_mir::{
 
 use crate::aggregate_plan::{
     AggregatePlanner, AggregateRegistrationError, closed_enum_variants, concrete_any_record_fields,
-    concrete_record_fields, concrete_refined_base, is_direct_scalar,
+    concrete_invariant_record, concrete_record_fields, concrete_refined_base, is_direct_scalar,
 };
 use crate::dyn_plan::DynConceptPlan;
 use crate::instance_closure::{
@@ -2599,39 +2599,31 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     return expression.ty != Type::Never;
                 }
                 if *construction == mir::ConstructionMode::Recheck {
-                    let invariant = self
-                        .program
-                        .type_def(*ty)
-                        .and_then(|definition| {
-                            (definition.type_parameters == 0).then_some(definition)
+                    let target = semantic.as_ref().filter(|target| {
+                        expression_ty.as_ref() == Some(*target) && self.supported_value_type(target)
+                    });
+                    let invariant = target.and_then(|target| {
+                        concrete_invariant_record(self.program, target)
+                            .map(|(_, invariant)| invariant)
+                    });
+                    let direct_recheck = target.is_some() && invariant.is_some();
+                    let contract_supported = target.is_some_and(|target| {
+                        invariant.as_ref().is_some_and(|invariant| {
+                            self.classify_contract_expr(
+                                function,
+                                key,
+                                &invariant.expression,
+                                &ContractTypeContext {
+                                    receiver: Some(target.clone()),
+                                    result: None,
+                                    arguments: Vec::new(),
+                                    old_receiver: None,
+                                    old_arguments: Vec::new(),
+                                    bindings: Vec::new(),
+                                },
+                                &format!("{path}.recheck_invariant"),
+                            ) == Some(Type::Bool)
                         })
-                        .and_then(|definition| match &definition.kind {
-                            mir::TypeDefKind::Record {
-                                invariant: Some(invariant),
-                                ..
-                            } => Some(invariant.clone()),
-                            _ => None,
-                        });
-                    let direct_recheck = semantic.as_ref() == Some(&Type::Nominal(*ty, Vec::new()))
-                        && expression_ty.as_ref() == Some(&Type::Nominal(*ty, Vec::new()))
-                        && expression_ty
-                            .as_ref()
-                            .is_some_and(|ty| self.supported_value_type(ty));
-                    let contract_supported = invariant.is_some_and(|invariant| {
-                        self.classify_contract_expr(
-                            function,
-                            key,
-                            &invariant.expression,
-                            &ContractTypeContext {
-                                receiver: Some(Type::Nominal(*ty, Vec::new())),
-                                result: None,
-                                arguments: Vec::new(),
-                                old_receiver: None,
-                                old_arguments: Vec::new(),
-                                bindings: Vec::new(),
-                            },
-                            &format!("{path}.recheck_invariant"),
-                        ) == Some(Type::Bool)
                     });
                     if !direct_recheck || !contract_supported {
                         self.expression_item(
@@ -7250,9 +7242,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             }
             ExprKind::Record {
                 ty,
+                type_arguments,
                 fields,
                 construction,
-                ..
             } => {
                 let instruction = match construction {
                     mir::ConstructionMode::Plain => ProductConstruction::Plain,
@@ -7261,7 +7253,13 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                         return self.lower_runtime_checked_record(flow, *ty, fields, expression);
                     }
                     mir::ConstructionMode::Recheck => {
-                        return self.lower_rechecked_record(flow, *ty, fields, expression);
+                        return self.lower_rechecked_record(
+                            flow,
+                            *ty,
+                            type_arguments,
+                            fields,
+                            expression,
+                        );
                     }
                 };
                 self.lower_product_values(flow, fields, expression, instruction)
@@ -8096,26 +8094,21 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         &mut self,
         mut flow: Flow,
         ty: mir::TypeId,
+        type_arguments: &[Type],
         fields: &[mir::Expr],
         expression: &mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
-        let (field_types, invariant) = self
-            .program
-            .type_def(ty)
-            .and_then(|definition| (definition.type_parameters == 0).then_some(definition))
-            .and_then(|definition| match &definition.kind {
-                mir::TypeDefKind::Record {
-                    fields,
-                    invariant: Some(invariant),
-                } => Some((
-                    fields
-                        .iter()
-                        .map(|field| field.ty.clone())
-                        .collect::<Vec<_>>(),
-                    invariant.clone(),
-                )),
-                _ => None,
-            })
+        let arguments = InstanceSubstitution::new(self.program, self.key)
+            .instantiate_types(type_arguments)
+            .map_err(|error| instantiation_defect(self.source.id, Some(expression.id), error))?;
+        let expected = Type::Nominal(ty, arguments);
+        let target = InstanceSubstitution::new(self.program, self.key)
+            .instantiate_type(&expression.ty)
+            .map_err(|error| instantiation_defect(self.source.id, Some(expression.id), error))?;
+        if target != expected {
+            return Err(self.unsupported_reached("serialized record proof recheck type"));
+        }
+        let (field_types, invariant) = concrete_invariant_record(self.program, &target)
             .ok_or_else(|| self.unsupported_reached("serialized record proof recheck"))?;
         if field_types.len() != fields.len() {
             return Err(LoweringError::defect(
@@ -8134,11 +8127,6 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 return Ok(EvalFlow::Terminated);
             };
             flow = next_flow;
-            let field_ty = InstanceSubstitution::new(self.program, self.key)
-                .instantiate_type(&field_ty)
-                .map_err(|error| {
-                    instantiation_defect(self.source.id, Some(expression.id), error)
-                })?;
             lowered.push(value);
             candidates.push(ContractOperand {
                 value,
@@ -8148,7 +8136,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         let context = ContractContext {
             receiver: None,
             record_candidate: Some(ContractRecordCandidate {
-                ty: Type::Nominal(ty, Vec::new()),
+                ty: target,
                 fields: candidates,
             }),
             result: None,
