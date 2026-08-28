@@ -49,6 +49,7 @@ fn values(text Text, bytes Bytes, base Path, child Path, index Int) {
     let concatenated = text.concat("!")
     let contained = text.contains("loom")
     let encoded = text.encode_utf8()
+    let rebuilt = Text.from_utf8_units([76, 111, 111, 109])
     let byte_count = bytes.length()
     let byte = bytes.get(index)
     let appended = bytes.append(encoded)
@@ -90,6 +91,29 @@ async fn pathFiles(path Path) {
 "#,
     );
     assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+}
+
+#[test]
+fn text_from_utf8_units_requires_exactly_one_int_list() {
+    let diagnostics = analyze_source(
+        r#"
+module sample
+
+fn wrong() {
+    let textList = Text.from_utf8_units(["not", "bytes"])
+    let floatList = Text.from_utf8_units([65.0])
+    let extraArgument = Text.from_utf8_units([65], [66])
+}
+"#,
+    );
+    let codes = diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        codes.iter().filter(|code| **code == "TypeMismatch").count() >= 4,
+        "{diagnostics:#?}"
+    );
 }
 
 #[test]

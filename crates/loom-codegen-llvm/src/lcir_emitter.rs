@@ -63,18 +63,19 @@ use loom_runtime_abi::{
     PARSE_INT_SYMBOL, PARSE_STATUS_INVALID_SYNTAX, PARSE_STATUS_OK, PARSE_STATUS_OUT_OF_RANGE,
     STDOUT_WRITE_SYMBOL, TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL,
     TASK_JOIN_ANY, TASK_JOIN_RACE, TASK_JOIN_SETTLED, TASK_PENDING, TEXT_CONCAT_TYPED_SYMBOL,
-    TEXT_CONTAINS_SYMBOL, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_MISSING, TEXT_GET_TYPED_SYMBOL,
-    TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_BYTE_LENGTH,
-    TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE,
-    TYPED_GC_ABI_VERSION, TYPED_GC_ALLOC_SYMBOL, TYPED_GC_REPEATED_ABI_VERSION,
-    TYPED_GC_REPEATED_ALLOC_SYMBOL, TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL,
-    TYPED_JSON_ABI_VERSION, TYPED_JSON_FORMAT_DEPTH_LIMIT, TYPED_JSON_FORMAT_NON_FINITE_NUMBER,
-    TYPED_JSON_FORMAT_OK, TYPED_JSON_FORMAT_SYMBOL, TYPED_LOG_FIELD_ALIGNMENT,
-    TYPED_LOG_FIELD_KEY_OFFSET, TYPED_LOG_FIELD_SIZE, TYPED_LOG_FIELD_VALUE_OFFSET, TYPED_LOG_OK,
-    TYPED_LOG_WRITE_FAILED, TYPED_LOG_WRITE_SYMBOL, TYPED_RESOURCE_CLOSE_SYMBOL,
-    TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET, TYPED_SHADOW_STACK_ABI_VERSION,
-    TYPED_TASK_ABI_VERSION, TYPED_TASK_PUBLISH_ADOPTING_SYMBOL, TYPED_TASK_TAKE_OUTCOME_SYMBOL,
-    TYPED_TIMER_TASK_CREATE_SYMBOL,
+    TEXT_CONTAINS_SYMBOL, TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8,
+    TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_MISSING,
+    TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT,
+    TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH,
+    TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION, TYPED_GC_ALLOC_SYMBOL,
+    TYPED_GC_REPEATED_ABI_VERSION, TYPED_GC_REPEATED_ALLOC_SYMBOL, TYPED_GC_ROOT_POP_SYMBOL,
+    TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_JSON_ABI_VERSION, TYPED_JSON_FORMAT_DEPTH_LIMIT,
+    TYPED_JSON_FORMAT_NON_FINITE_NUMBER, TYPED_JSON_FORMAT_OK, TYPED_JSON_FORMAT_SYMBOL,
+    TYPED_LOG_FIELD_ALIGNMENT, TYPED_LOG_FIELD_KEY_OFFSET, TYPED_LOG_FIELD_SIZE,
+    TYPED_LOG_FIELD_VALUE_OFFSET, TYPED_LOG_OK, TYPED_LOG_WRITE_FAILED, TYPED_LOG_WRITE_SYMBOL,
+    TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET,
+    TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION, TYPED_TASK_PUBLISH_ADOPTING_SYMBOL,
+    TYPED_TASK_TAKE_OUTCOME_SYMBOL, TYPED_TIMER_TASK_CREATE_SYMBOL,
 };
 
 use crate::codegen::{DebugSource, NativeObjectArtifact, NativeObjectOptions};
@@ -4835,6 +4836,23 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             })
     }
 
+    fn runtime_text_from_utf8_units_typed(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL)
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.context.i64_type().into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function(TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL, function_type, None)
+            })
+    }
+
     fn runtime_bytes_append_typed(&self) -> FunctionValue<'ctx> {
         self.module
             .get_function(BYTES_APPEND_TYPED_SYMBOL)
@@ -5436,6 +5454,19 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         &self,
         status: IntValue<'ctx>,
     ) -> Result<IntValue<'ctx>, CodegenError> {
+        self.require_decode_text_status(
+            status,
+            "bytes.decode_utf8",
+            BYTES_DECODE_UTF8_TYPED_INVALID_UTF8,
+        )
+    }
+
+    fn require_decode_text_status(
+        &self,
+        status: IntValue<'ctx>,
+        name: &str,
+        invalid_status: i32,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
         let function = self
             .builder
             .get_insert_block()
@@ -5443,28 +5474,26 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             .ok_or_else(|| {
                 CodegenError::new(
                     "LlvmBuilderFailed",
-                    "Bytes.decode_utf8 status guard has no active function",
+                    format!("{name} status guard has no active function"),
                 )
             })?;
         let accepted = self
             .context
-            .append_basic_block(function, "bytes.decode_utf8.status.ok");
+            .append_basic_block(function, &format!("{name}.status.ok"));
         let failure = self
             .context
-            .append_basic_block(function, "bytes.decode_utf8.status.failed");
+            .append_basic_block(function, &format!("{name}.status.failed"));
         let valid_utf8 = self
             .builder
             .build_int_compare(
                 IntPredicate::EQ,
                 status,
                 self.context.i32_type().const_zero(),
-                "bytes.decode_utf8.valid",
+                &format!("{name}.valid"),
             )
             .map_err(builder_error)?;
         let invalid_utf8_status = self.context.i32_type().const_int(
-            u64::from(u32::from_ne_bytes(
-                BYTES_DECODE_UTF8_TYPED_INVALID_UTF8.to_ne_bytes(),
-            )),
+            u64::from(u32::from_ne_bytes(invalid_status.to_ne_bytes())),
             false,
         );
         let invalid_utf8 = self
@@ -5473,12 +5502,12 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                 IntPredicate::EQ,
                 status,
                 invalid_utf8_status,
-                "bytes.decode_utf8.invalid_utf8",
+                &format!("{name}.invalid_utf8"),
             )
             .map_err(builder_error)?;
         let recognized = self
             .builder
-            .build_or(valid_utf8, invalid_utf8, "bytes.decode_utf8.status.valid")
+            .build_or(valid_utf8, invalid_utf8, &format!("{name}.status.valid"))
             .map_err(builder_error)?;
         self.builder
             .build_conditional_branch(recognized, accepted, failure)
@@ -5488,7 +5517,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             .and_then(|intrinsic| intrinsic.get_declaration(&self.module, &[]))
             .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "missing llvm.trap"))?;
         self.builder
-            .build_call(trap, &[], "bytes.decode_utf8.status.trap")
+            .build_call(trap, &[], &format!("{name}.status.trap"))
             .map_err(builder_error)?;
         self.builder.build_unreachable().map_err(builder_error)?;
         self.builder.position_at_end(accepted);
@@ -6227,6 +6256,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 instruction.kind(),
                 InstructionKind::TextConcat { .. }
                     | InstructionKind::TextGet { .. }
+                    | InstructionKind::TextFromUtf8Units { .. }
                     | InstructionKind::BytesAppend { .. }
                     | InstructionKind::BytesDecodeUtf8 { .. }
                     | InstructionKind::FormatFloat { .. }
@@ -8400,6 +8430,18 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 one(self.backend.emit_text_literal(utf8)?.into())
             }
             InstructionKind::TextEncodeUtf8 { text } => one(self.value(*text)?),
+            InstructionKind::TextFromUtf8Units {
+                units,
+                ok_variant,
+                error_variant,
+                invalid_utf8_variant,
+            } => one(self.emit_text_from_utf8_units(
+                instruction,
+                *units,
+                *ok_variant,
+                *error_variant,
+                *invalid_utf8_variant,
+            )?),
             InstructionKind::BytesLength { bytes } => {
                 let (_, length) = self
                     .backend
@@ -9101,6 +9143,69 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .map(BasicValueEnum::into_pointer_value)
     }
 
+    fn emit_text_from_utf8_units(
+        &self,
+        instruction: &Instruction,
+        units: ValueId,
+        ok_variant: u32,
+        error_variant: u32,
+        invalid_utf8_variant: u32,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let result = instruction.results().first().copied().ok_or_else(|| {
+            CodegenError::new("LlvmAbiDefect", "Text.from_utf8_units has no result")
+        })?;
+        let result_ty = self
+            .source
+            .value(result)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "Text.from_utf8_units result is missing")
+            })?
+            .ty();
+        let error_ty = self.sum_variant_field_type(result_ty, error_variant, 0)?;
+        let units_ty = self.list_type_of_value(units)?;
+        let layout = self.backend.list_layout(units_ty)?;
+        if layout.element_stride != 8
+            || !matches!(layout.element, BasicTypeEnum::IntType(element) if element.get_bit_width() == 64)
+        {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "Text.from_utf8_units requires the canonical contiguous i64 List[Int] layout",
+            ));
+        }
+        let object = self.value(units)?.into_pointer_value();
+        let (data, length) = self.load_int_list_view(&layout, object)?;
+        let output = self.managed_output_cell(instruction.id())?;
+        self.backend
+            .builder
+            .build_store(output, self.backend.ptr_type.const_null())
+            .map_err(builder_error)?;
+        self.publish_root_state(ManagedSafepoint::Instruction(instruction.id()))?;
+        let status = call_int(
+            &self.backend.builder,
+            self.backend.runtime_text_from_utf8_units_typed(),
+            &[data.into(), length.into(), output.into()],
+            "text.from_utf8_units.status",
+        )?;
+        let valid = self.backend.require_decode_text_status(
+            status,
+            "text.from_utf8_units",
+            TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8,
+        )?;
+        let text = self
+            .backend
+            .builder
+            .build_load(self.backend.ptr_type, output, "text.from_utf8_units.text")
+            .map_err(builder_error)?;
+        let ok_value = self.emit_sum_construct_values(result_ty, ok_variant, &[text])?;
+        let invalid_error = self.emit_sum_construct_values(error_ty, invalid_utf8_variant, &[])?;
+        let error_value =
+            self.emit_sum_construct_values(result_ty, error_variant, &[invalid_error])?;
+        self.backend
+            .builder
+            .build_select(valid, ok_value, error_value, "text.from_utf8_units.result")
+            .map_err(builder_error)
+    }
+
     fn emit_bytes_decode_utf8(
         &self,
         instruction: &Instruction,
@@ -9669,6 +9774,65 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .builder
             .build_int_to_ptr(address, self.backend.ptr_type, name)
             .map_err(builder_error)
+    }
+
+    fn load_int_list_view(
+        &self,
+        layout: &ListLayout<'ctx>,
+        object: PointerValue<'ctx>,
+    ) -> Result<(PointerValue<'ctx>, IntValue<'ctx>), CodegenError> {
+        let (length, _) = self.load_list_header(layout, object, "text.from_utf8_units.list")?;
+        let source = self.current_block()?;
+        let function = source.get_parent().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmBuilderFailed",
+                "Text.from_utf8_units List view has no function",
+            )
+        })?;
+        let empty = self
+            .backend
+            .context
+            .append_basic_block(function, "text.from_utf8_units.data.empty");
+        let present = self
+            .backend
+            .context
+            .append_basic_block(function, "text.from_utf8_units.data.present");
+        let merge = self
+            .backend
+            .context
+            .append_basic_block(function, "text.from_utf8_units.data.merge");
+        let is_null = self
+            .backend
+            .builder
+            .build_is_null(object, "text.from_utf8_units.list.is_null")
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(is_null, empty, present)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(empty);
+        let null = self.backend.ptr_type.const_null();
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(present);
+        let data = self.list_field_pointer(layout, object, 2, "text.from_utf8_units.list.data")?;
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(merge);
+        let data_phi = self
+            .backend
+            .builder
+            .build_phi(self.backend.ptr_type, "text.from_utf8_units.data")
+            .map_err(builder_error)?;
+        data_phi.add_incoming(&[(&null, empty), (&data, present)]);
+        Ok((data_phi.as_basic_value().into_pointer_value(), length))
     }
 
     fn load_list_header(

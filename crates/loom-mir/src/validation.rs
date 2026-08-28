@@ -6407,6 +6407,17 @@ impl<'program> Validator<'program> {
                     expression.span,
                     path,
                 ),
+            Builtin::TextFromUtf8Units
+                if types_compatible(&Type::List(Box::new(Type::Int)), types[0].as_ref()?) =>
+            {
+                self.expected_result_type(
+                    Type::Text,
+                    self.program.prelude.decode_text_error,
+                    "decode_text_error",
+                    expression.span,
+                    path,
+                )
+            }
             Builtin::BytesLength
                 if Self::nominal_builtin_argument(&types, 0, self.program.prelude.bytes) =>
             {
@@ -6534,6 +6545,7 @@ impl<'program> Validator<'program> {
             | Builtin::FormatFloat
             | Builtin::TextLength
             | Builtin::TextEncodeUtf8
+            | Builtin::TextFromUtf8Units
             | Builtin::BytesLength
             | Builtin::BytesDecodeUtf8
             | Builtin::PathFromText
@@ -8699,6 +8711,7 @@ impl<'program> Validator<'program> {
             | Builtin::TextConcat
             | Builtin::TextContains
             | Builtin::TextEncodeUtf8
+            | Builtin::TextFromUtf8Units
             | Builtin::BytesLength
             | Builtin::BytesGet
             | Builtin::BytesAppend

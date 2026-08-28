@@ -40,6 +40,7 @@ pub enum BuiltinValue {
     TextConcat,
     TextContains,
     TextEncodeUtf8,
+    TextFromUtf8Units,
     BytesLength,
     BytesGet,
     BytesAppend,

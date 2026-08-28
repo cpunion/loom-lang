@@ -3263,6 +3263,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         | mir::Builtin::TextGet
                         | mir::Builtin::TextConcat
                         | mir::Builtin::TextEncodeUtf8
+                        | mir::Builtin::TextFromUtf8Units
                         | mir::Builtin::BytesLength
                         | mir::Builtin::BytesGet
                         | mir::Builtin::BytesAppend
@@ -4031,6 +4032,7 @@ fn scan_effect_expr(
                 CallTarget::Builtin(
                     mir::Builtin::TextConcat
                         | mir::Builtin::TextGet
+                        | mir::Builtin::TextFromUtf8Units
                         | mir::Builtin::BytesAppend
                         | mir::Builtin::BytesDecodeUtf8
                         | mir::Builtin::ListAdd
@@ -11311,6 +11313,13 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             (mir::Builtin::TextEncodeUtf8, [text]) => {
                 InstructionKind::TextEncodeUtf8 { text: *text }.into()
             }
+            (mir::Builtin::TextFromUtf8Units, [units]) => InstructionKind::TextFromUtf8Units {
+                units: *units,
+                ok_variant: 0,
+                error_variant: 1,
+                invalid_utf8_variant: 0,
+            }
+            .into(),
             (mir::Builtin::BytesLength, [bytes]) => {
                 InstructionKind::BytesLength { bytes: *bytes }.into()
             }

@@ -128,6 +128,17 @@ the checked artifact identity to schema 35, the LCIR native-object domain to
 `loom-llvm-object-cache-v36`. Bytes adds neither a JSON policy nor ownership or
 borrow syntax.
 
+`Text.from_utf8_units` borrows a direct `List[Int]` as a contiguous `i64`
+range only for one synchronous call. The runtime narrows and stages every unit
+before entering the moving allocator, validates the complete UTF-8 sequence,
+and publishes one canonical Text pointer last. An empty List crosses as
+`null + 0`; generated code never forms an interior pointer from the null empty
+representation. Out-of-range units and malformed UTF-8 return the sole
+negative language status. This format-neutral boundary advances the native
+runtime ABI to component 24 with `typed-text-units-v1` and `runtime-v18`, and
+the public standard-library ABI to v5. It does not expose List layout as a
+public ABI and does not add a JSON runtime.
+
 ## Legacy primitive and aggregate specialization
 
 Within a complete legacy object, `Unit`, `Bool`, `Int`, and `Float` can use

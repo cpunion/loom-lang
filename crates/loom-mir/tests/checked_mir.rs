@@ -4362,7 +4362,7 @@ fn artifact_rejects_pre_witness_segmentation_version_sixteen_before_body_decode(
 
 #[test]
 fn artifact_rejects_raw_wait_version_seventeen_before_body_decode() {
-    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 26);
+    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 27);
     let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
     let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
     value["version"] = serde_json::json!(17);

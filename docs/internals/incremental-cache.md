@@ -78,7 +78,7 @@ semantic entries that lacked this standard-item identity. Whether a body is
 reused or conservatively reanalyzed, MIR lowering consumes only the resolved
 identity; it never reconstructs a policy from source spelling.
 
-Checked-MIR cache envelopes use artifact version 26. Version 24 added the
+Checked-MIR cache envelopes use artifact version 27. Version 24 added the
 compiler-known `TextMap.entry_at` builtin; version 25 assigns distinct
 compiler-known tags to the three resource concepts resolved from the
 compiler-owned package. Tags paired with prelude ids grant MIR authority;
@@ -86,11 +86,14 @@ module/name and fixed shapes are independent consistency checks. The artifact
 profile rejects a missing or partial trio at both encode and decode.
 Version 26 separates generic cache envelopes, whose `entry` is null, from
 executable envelopes, whose `entry` is a fixed string. Each decoder rejects the
-opposite kind before MIR body validation. Artifact-version validation rejects
-older encodings rather than guessing their meaning. The earlier canonical
-six-field `ConstraintError` shape remains validator-enforced. These changes
-require no cache-schema advance because typed semantic cache payloads do not
-encode MIR builtins, canonical concept authority, or executable entry state.
+opposite kind before MIR body validation. Version 27 adds the compiler-known
+`Text.from_utf8_units` operation and its strict
+`List[Int] -> Result[Text, DecodeTextError]` checked shape. Artifact-version
+validation rejects older encodings rather than guessing their meaning. The
+earlier canonical six-field `ConstraintError` shape remains validator-enforced.
+These changes require no cache-schema advance because typed semantic cache
+payloads do not encode MIR builtins, canonical concept authority, or executable
+entry state.
 The separate standard-item change above is why the current cache schema is 4.
 
 The complete compilation key includes the normalized project graph, exact

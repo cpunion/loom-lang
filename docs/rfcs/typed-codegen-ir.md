@@ -670,6 +670,18 @@ dump to `lcir 34`, artifact identity to schema 35, LCIR native-object domain to
 standard-library ABI v4 unchanged and introduces no JSON-specific policy or
 source ownership model.
 
+The format-neutral `Text.from_utf8_units(List[Int])` foundation subsequently
+adds `TextFromUtf8Units` and
+`loom_runtime_text_from_utf8_units_typed_v1`. Generated code borrows the direct
+contiguous `i64` List payload; the runtime validates byte range and complete
+UTF-8, stages before allocation, and publishes canonical Text last. It has no
+JSON-specific input, output, or policy. This advances the canonical dump to
+`lcir 35`, artifact identity to schema 36, LCIR native-object domain to
+`loom-lcir-native-object-v32`, CLI object-cache domain to
+`loom-llvm-object-cache-v37`, native runtime identity to component 24 with
+`typed-text-units-v1` and `runtime-v18`, public standard-library ABI to v5, and
+checked-MIR artifacts to version 27.
+
 Calls to the C process entry, libc, and versioned Loom runtime functions are
 explicit external boundaries. They do not permit two source-function ABIs in
 one artifact.

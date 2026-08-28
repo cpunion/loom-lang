@@ -614,6 +614,18 @@ pub enum InstructionKind {
     TextEncodeUtf8 {
         text: ValueId,
     },
+    /// Validates every signed `Int` unit as one byte, validates the complete
+    /// sequence as UTF-8, and constructs exact
+    /// `Result[Text, DecodeTextError]`. Successful construction allocates one
+    /// managed Text object, so this instruction is a moving-GC safepoint;
+    /// an out-of-byte-range unit and malformed UTF-8 select the same closed
+    /// `InvalidUtf8` language error.
+    TextFromUtf8Units {
+        units: ValueId,
+        ok_variant: u32,
+        error_variant: u32,
+        invalid_utf8_variant: u32,
+    },
     /// Reads the exact byte length from a canonical managed Bytes object.
     BytesLength {
         bytes: ValueId,
@@ -904,6 +916,7 @@ impl InstructionKind {
             | Self::TextEncodeUtf8 { text }
             | Self::ParseInt { text, .. }
             | Self::ParseFloat { text, .. } => vec![*text],
+            Self::TextFromUtf8Units { units, .. } => vec![*units],
             Self::TextGet { text, index, .. } => vec![*text, *index],
             Self::BytesLength { bytes } | Self::BytesDecodeUtf8 { bytes, .. } => vec![*bytes],
             Self::BytesGet { bytes, index, .. } => vec![*bytes, *index],

@@ -1012,6 +1012,25 @@ fn assert_no_legacy_surface(ir: &str) {
     }
 }
 
+fn assert_no_universal_value_surface(ir: &str) {
+    for forbidden in [
+        "%loom.Value",
+        "ArgNode",
+        "ValueNode",
+        "@loom.fn.",
+        "loom_gc_root_push_v1",
+        "loom_gc_root_pop_v1",
+        "landingpad",
+        "personality ptr",
+        "resume {",
+    ] {
+        assert!(
+            !ir.contains(forbidden),
+            "universal/EH token `{forbidden}` in typed LCIR:\n{ir}"
+        );
+    }
+}
+
 fn assert_no_indirect_calls(ir: &str) {
     for line in ir.lines() {
         let Some(call) = line.find("call ") else {
@@ -1876,6 +1895,96 @@ fn managed_bytes_close_the_typed_lcir_route_on_all_supported_targets() {
         assert!(!ir.contains("loom_gc_root_push_v1"), "{ir}");
         assert!(!ir.contains("loom_executor_"), "{ir}");
         assert!(!ir.contains("%loom.Value"), "{ir}");
+    }
+}
+
+#[test]
+fn text_from_utf8_units_is_direct_typed_lcir_on_all_supported_targets() {
+    let source = include_str!("../../../fixtures/lcir-text-from-utf8-units/main.loom");
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert!(
+        interpreted
+            .iter()
+            .all(|test| test.status == TestStatus::Passed),
+        "{interpreted:?}"
+    );
+
+    let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let dump = dump_program(artifact.program());
+    for required in [
+        "List[Int] =>",
+        "managed_ptr",
+        "text.from_utf8_units",
+        "Nominal#13[] =>",
+    ] {
+        assert!(dump.contains(required), "missing `{required}`:\n{dump}");
+    }
+    let verifier = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("verifyMovingSource"))
+        .expect("UTF-8-unit relocation verifier");
+    assert!(verifier.effects().contains(Effects::MAY_COLLECT));
+    assert!(verifier.effects().contains(Effects::NEEDS_RUNTIME));
+    assert!(!verifier.effects().contains(Effects::NEEDS_EXECUTOR));
+
+    let native = emit_and_run_lcir(&artifact, "source-text-from-utf8-units-tests");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    for required in [
+        "declare i32 @loom_runtime_text_from_utf8_units_typed_v1(ptr, i64, ptr)",
+        "text.from_utf8_units.status",
+        "text.from_utf8_units.data.empty",
+        "text.from_utf8_units.data.present",
+        "loom_gc_typed_root_push_v1",
+        "loom_gc_typed_root_pop_v1",
+    ] {
+        assert!(
+            native.ir.contains(required),
+            "missing `{required}`:\n{}",
+            native.ir
+        );
+    }
+    assert_no_universal_value_surface(&native.ir);
+    assert!(!native.ir.contains("loom_executor_"), "{}", native.ir);
+
+    for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
+        let directory = tempfile::tempdir().expect("create UTF-8-unit target directory");
+        let object = directory.path().join(if target.contains("windows") {
+            "text-from-utf8-units.obj"
+        } else {
+            "text-from-utf8-units.o"
+        });
+        let ir_path = directory.path().join("text-from-utf8-units.ll");
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                emit_ir: Some(ir_path.clone()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit Text.from_utf8_units object for {target}: {error}"));
+        assert!(object.is_file(), "missing UTF-8-unit object for {target}");
+        let ir = std::fs::read_to_string(ir_path).expect("read UTF-8-unit target IR");
+        for required in [
+            "loom_runtime_text_from_utf8_units_typed_v1",
+            "loom_gc_typed_root_push_v1",
+            "loom_gc_typed_root_pop_v1",
+        ] {
+            assert!(
+                ir.contains(required),
+                "{target} omitted `{required}`:\n{ir}"
+            );
+        }
+        assert!(
+            ir.contains(&format!("target triple = \"{target}\"")),
+            "{ir}"
+        );
+        assert_no_universal_value_surface(&ir);
+        assert!(!ir.contains("loom_executor_"), "{ir}");
     }
 }
 

@@ -168,6 +168,10 @@ JSON gate executes all canonical formatting and error cases through each
 artifact.
 The remaining reviewed legacy allowance covers the broader standard-library
 fixture's JSON parsing and typed external I/O operations.
+The format-neutral `Text.from_utf8_units(List[Int])` source API, interpreter
+semantics, typed LCIR instruction, direct LLVM lowering, and typed runtime ABI
+are complete; this is the construction foundation for moving JSON parsing into
+ordinary Loom source without adding a JSON parser to the runtime.
 
 The PR benchmark workflow compares the base and candidate merge revisions on
 one Ubuntu x86-64 runner and one macOS arm64 runner. A separate trusted workflow

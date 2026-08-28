@@ -12,12 +12,20 @@ valid Text. Text is not implicitly normalized and has no locale, case-folding,
 grapheme-cluster, or mutable-buffer semantics.
 
 ```text
+Text.from_utf8_units(units List[Int]) Result[Text, DecodeTextError]
 text.length() Int
 text.get(index Int) Option[Text]
 text.concat(other Text) Text
 text.contains(needle Text) Bool
 text.encode_utf8() Bytes
 ```
+
+`from_utf8_units` is the explicit low-level construction boundary used by
+source libraries that decode external formats. Every Int must be in the range
+0 through 255 and the complete sequence must be valid UTF-8. Success produces
+Text; an out-of-range unit or malformed sequence produces
+`DecodeTextError.InvalidUtf8`. The conversion is never implicit, and it does
+not define JSON or any other data-format policy.
 
 `length` counts Unicode scalar values, not UTF-8 bytes or user-perceived
 grapheme clusters. `get` indexes the same scalar sequence and returns a

@@ -5412,6 +5412,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::TextConcat
             | BuiltinValue::TextContains
             | BuiltinValue::TextEncodeUtf8
+            | BuiltinValue::TextFromUtf8Units
             | BuiltinValue::BytesLength
             | BuiltinValue::BytesGet
             | BuiltinValue::BytesAppend
@@ -6490,6 +6491,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             return None;
         };
         let (builtin, parameters, result) = match (segment.name.as_str(), method_name.as_str()) {
+            ("Text", "from_utf8_units") => self.text_from_utf8_units_signature(),
             ("Path", "from_text") => {
                 let text = self.types().builtin(BuiltinType::Text);
                 let path = self.types().builtin(BuiltinType::Path);
@@ -6572,6 +6574,15 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             },
         );
         Some(result)
+    }
+
+    fn text_from_utf8_units_signature(&mut self) -> (BuiltinValue, Vec<TyId>, TyId) {
+        let int = self.types().builtin(BuiltinType::Int);
+        let units = self.types().intern(TyData::List(int));
+        let text = self.types().builtin(BuiltinType::Text);
+        let error = self.types().builtin(BuiltinType::DecodeTextError);
+        let result = self.types().intern(TyData::Result { ok: text, error });
+        (BuiltinValue::TextFromUtf8Units, vec![units], result)
     }
 
     fn standard_static_value(type_path: &Path, name: &Name) -> Option<(BuiltinValue, BuiltinType)> {

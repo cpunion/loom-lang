@@ -12,23 +12,23 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Manifest schema | `1` |
 | Lockfile schema | `1` |
 | Registry protocol/bundle | `1` |
-| Interpreted MIR artifact | format `loom.interpreted-mir`, version `26` |
+| Interpreted MIR artifact | format `loom.interpreted-mir`, version `27` |
 | Portable library artifact | source-package version `2` |
 | Persistent compiler cache | schema `4` |
 | Interpreted final-cache layer | `final-artifact-v3` / writer v3 |
 | Portable-library final-cache layer | `portable-library-artifact-v3` |
-| LCIR textual dump | version `34` |
-| LCIR artifact identity | schema `35` |
-| LCIR native-object domain | `loom-lcir-native-object-v31` |
+| LCIR textual dump | version `35` |
+| LCIR artifact identity | schema `36` |
+| LCIR native-object domain | `loom-lcir-native-object-v32` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v36` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v37` |
 | Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
-| Native runtime ABI component | `23` |
+| Native runtime ABI component | `24` |
 | Coroutine/Task ABI component | `2` |
 | Typed Task ABI component | `1` |
 | Wait ABI component | `1` |
-| Standard-library ABI component | `4` |
+| Standard-library ABI component | `5` |
 
 The exact compiler-private native ABI identity contains additional layout,
 text, shadow-stack, witness, list, and runtime component versions. Runtime
@@ -103,6 +103,21 @@ source APIs gain typed LCIR instructions, advancing the dump to 34, artifact
 schema to 35, native-object domain to `loom-lcir-native-object-v31`, and
 object-cache domain to `loom-llvm-object-cache-v36`. Bytes defines neither a
 JSON policy nor ownership or borrow syntax.
+
+The public static `Text.from_utf8_units(List[Int])` operation adds an explicit
+format-neutral construction boundary for source-written decoders. Its typed
+runtime helper borrows the direct contiguous `i64` List payload, validates
+every unit as one byte, stages the complete byte sequence before the sole
+moving-GC allocation, and publishes Text last through stable output storage.
+Both an out-of-range unit and malformed UTF-8 select
+`DecodeTextError.InvalidUtf8`; positive runtime statuses remain ABI defects.
+The runtime knows no JSON grammar or JSON representation. This advances the
+native runtime ABI to component 24 with `typed-text-units-v1` and
+`runtime-v18`, and the public standard-library ABI to v5. The new MIR builtin
+advances `.loomi` to version 27. The explicit `TextFromUtf8Units` instruction
+advances the LCIR dump to 35, artifact schema to 36, native-object domain to
+`loom-lcir-native-object-v32`, and object-cache domain to
+`loom-llvm-object-cache-v37`.
 
 Task composition and timer calls now remain ordinary HIR calls until semantic
 resolution selects a stable compiler-owned `StandardLibraryItem`. The item is

@@ -692,6 +692,11 @@ impl SerializationClosure {
             Builtin::TextEncodeUtf8 | Builtin::BytesLength | Builtin::BytesAppend => {
                 self.add_optional_type(prelude.bytes);
             }
+            Builtin::TextFromUtf8Units => {
+                self.scan_type(&Type::List(Box::new(Type::Int)));
+                self.add_optional_type(prelude.result);
+                self.add_optional_type(prelude.decode_text_error);
+            }
             Builtin::BytesDecodeUtf8 => {
                 self.add_optional_type(prelude.bytes);
                 self.add_optional_type(prelude.result);

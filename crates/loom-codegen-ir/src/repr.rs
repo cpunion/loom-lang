@@ -1105,6 +1105,98 @@ mod tests {
     }
 
     #[test]
+    fn text_utf8_units_reject_a_noncanonical_managed_list_alternative() {
+        let origin = Origin::synthetic(MirFunctionId(98));
+        let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        builder
+            .add_managed_text_type()
+            .expect("canonical managed Text");
+        let list_semantic = Type::List(Box::new(Type::Int));
+        let list = builder
+            .add_managed_list_type(list_semantic)
+            .expect("canonical List[Int]");
+        let decode_error_semantic = Type::Nominal(TypeId(13), Vec::new());
+        builder
+            .add_sum_type(decode_error_semantic.clone(), &[Box::new([])])
+            .expect("DecodeTextError");
+        let decode_result = builder
+            .add_sum_type(
+                Type::Nominal(TypeId(1), vec![Type::Text, decode_error_semantic.clone()]),
+                &[Box::new([Type::Text]), Box::from([decode_error_semantic])],
+            )
+            .expect("Result[Text, DecodeTextError]");
+        let unit = builder.type_id(&Type::Unit).expect("Unit");
+        let root = builder
+            .declare_function(
+                origin,
+                "text.units.noncanonical",
+                Signature::new([list], unit),
+                Effects::MAY_COLLECT.with_implications(),
+            )
+            .expect("function");
+        {
+            let mut function = builder.function(root).expect("function builder");
+            let entry = function.create_block().expect("entry");
+            function.set_entry(entry).expect("set entry");
+            let units = function
+                .append_block_parameter(entry, list)
+                .expect("List[Int] parameter");
+            function
+                .append_instruction(
+                    entry,
+                    InstructionKind::TextFromUtf8Units {
+                        units,
+                        ok_variant: 0,
+                        error_variant: 1,
+                        invalid_utf8_variant: 0,
+                    },
+                    &[decode_result],
+                    origin,
+                )
+                .expect("Text construction");
+            let result = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::Constant(Constant::Unit),
+                    &[unit],
+                    origin,
+                )
+                .expect("Unit")[0];
+            function
+                .terminate(
+                    entry,
+                    Terminator::new(TerminatorKind::Return(result), origin),
+                )
+                .expect("return");
+        }
+
+        let mut program = builder.finish();
+        validate_program(&program).expect("canonical Text construction");
+        let canonical = program.representations.types[list.index()].clone();
+        let alternative_repr =
+            ReprId::from_index(program.brand, program.representations.reprs.len())
+                .expect("alternative representation identity");
+        let alternative =
+            ValueTypeId::from_index(program.brand, program.representations.types.len())
+                .expect("alternative value type identity");
+        program.representations.reprs.push(Repr::ManagedPointer);
+        program.representations.types.push(ValueType {
+            semantic: canonical.semantic,
+            repr: alternative_repr,
+            kind: canonical.kind,
+        });
+        program.functions[0].signature = Signature::new([alternative], unit);
+        program.functions[0].values[0].ty = alternative;
+
+        let errors = validate_program(&program)
+            .expect_err("noncanonical List[Int] must not cross the Text construction boundary");
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::TypeMismatch
+                && error.message().contains("canonical List[Int]")
+        }));
+    }
+
+    #[test]
     fn independent_validation_enforces_text_container_boundaries() {
         let mut immortal = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
         let text = immortal.add_immortal_text_type().expect("immortal Text");

@@ -77,7 +77,10 @@ pub use standard::{
     parse_json, path_contains_nul, path_join, text_concat, text_contains, text_get, text_length,
     text_map_get, text_map_insert, text_map_remove,
 };
-pub use text::{bytes_append_typed_v1, bytes_decode_utf8_typed_v1, concat_typed_v1, get_typed_v1};
+pub use text::{
+    bytes_append_typed_v1, bytes_decode_utf8_typed_v1, concat_typed_v1, from_utf8_units_typed_v1,
+    get_typed_v1,
+};
 pub use typed_json::json_format_typed_v1;
 
 pub use loom_runtime_abi::{
@@ -99,6 +102,7 @@ pub use loom_runtime_abi::{
     STANDARD_LIBRARY_ABI_VERSION, STDOUT_WRITE_FAILED, STDOUT_WRITE_INVALID_ARGUMENT,
     STDOUT_WRITE_OK, STDOUT_WRITE_SYMBOL, TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED,
     TASK_JOIN_ALL, TASK_JOIN_ANY, TASK_JOIN_RACE, TASK_JOIN_SETTLED, TASK_PENDING,
+    TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8, TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL,
     TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_INVALID, TEXT_GET_TYPED_MISSING, TEXT_GET_TYPED_SYMBOL,
     TYPED_GC_ABI_VERSION, TYPED_GC_ALLOC_SYMBOL, TYPED_GC_REPEATED_ABI_VERSION,
     TYPED_GC_REPEATED_ALLOC_SYMBOL, TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL,

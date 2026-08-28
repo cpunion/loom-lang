@@ -91,7 +91,8 @@ passes the migration gates below.
 Some source-library algorithms need efficient construction that immutable
 public values cannot provide directly. Such primitives remain format-neutral:
 
-- build one `Text` from a sequence of text or UTF-8 chunks;
+- build one `Text` from validated UTF-8 units through the format-neutral
+  `Text.from_utf8_units(List[Int])` boundary;
 - build one `List[T]` from uniquely owned append state;
 - enumerate a canonical `TextMap[V]` entry by checked index;
 - allocate and initialize a compiler-described closed value;
