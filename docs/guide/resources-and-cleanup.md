@@ -168,6 +168,14 @@ without capturing the Loom scoped value or allowing handle reuse to retarget
 the operation. This rule is specific to the built-in I/O boundary and does not
 enable arbitrary scoped-resource capture.
 
+When an acquisition task completes with a File or Socket, the runtime moves
+that handle from the child to its owner Task, which may itself be the root
+Task, before the child is retired. Faulted, cancelled, losing, and unconsumed
+tasks do not transfer handles; terminal cleanup or typed result disposal closes
+their remaining built-in handles before retired-task memory reclamation. Source
+code sees no ownership token: the delivered value still must enter `scoped`
+immediately, as in the examples above.
+
 ## Faults during cleanup
 
 Cleanup still runs when the original computation faults or is cancelled. If a

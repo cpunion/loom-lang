@@ -91,7 +91,14 @@ special case.
 
 The workspace also has focused parser, semantic, MIR-validator, interpreter,
 runtime, codegen, CLI, package, registry, cache, formatter, LSP, and hostile
-input tests.
+input tests. Current cleanup evidence independently rejects noncanonical or
+kind-mismatched `ResourceClose` inputs and checks that LLVM maps only close
+status `2` to `ResourceCloseFault`, trapping on invalid or unknown statuses.
+Runtime ownership tests cover successful completed-result transfer before
+child retirement, root-Task retention in the executor-owned task registry, no
+transfer for fault/cancellation/loser/unconsumed paths, opposite-kind close
+rejection, deterministic ledger cleanup before retired-child memory
+reclamation, and cleanup even when a typed disposer reports a defect.
 
 ## Toolchain features
 
@@ -125,12 +132,15 @@ direct coverage includes:
   depth/non-finite error values;
 - canonical structured logging with direct Text and `TextMap[Text]` values;
 - supported contracts and proof replay, static concepts, closed dynamic-concept
-  catalogs, exact moving-GC roots, and static lexical cleanup;
+  catalogs, exact moving-GC roots, and static lexical cleanup, including exact
+  canonical `File#9`/`Socket#10` close validation and fail-closed status
+  classification;
 - checked stackless coroutines, typed Task handles, exact suspension rows,
   fallible timers, and executor-owned roots;
 - nonempty static forms of the four standard-library Task policies, including
   stored heterogeneous `Task.all`, sole-List-literal specialization, exact
-  `TaskOutcome[T]` capture, winner finalization, cancellation, and draining.
+  `TaskOutcome[T]` capture, completed-result resource transfer before child
+  retirement, winner finalization, cancellation, and draining.
 
 Async `requires` checks run in child state zero. A created Task carries its
 creation-site blame, an async root carries its declaration span, and

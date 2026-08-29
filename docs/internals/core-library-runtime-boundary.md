@@ -52,7 +52,18 @@ turn lexical cleanup into a library convention. The compiler identifies the
 definitions from its own `standard` package, validates their fixed shapes, and
 enforces disposal, recursive resource obligations, and suspension restrictions
 statically. Concept witnesses lower through the normal direct-call machinery;
-there is no runtime resource registry or name-based runtime dispatch.
+there is no source-visible runtime resource registry or name-based runtime
+dispatch.
+
+The scheduler does maintain a compiler-private ownership ledger on each Task
+for built-in File and Socket handles published in typed results. Successful
+completed-result consumption moves those entries to the child's non-null owner
+Task, which may itself be the root Task, before retiring the child. If
+result-take is applied directly to the ownerless root Task, its entries remain
+attached to that Task's `owned_result_resources` ledger in the executor-owned
+task registry. This internal exactly-once cleanup bookkeeping is neither
+source-visible nor ownership syntax, and it does not affect standard-library
+reachability or dispatch.
 
 The library owns reusable policy and algorithms, including:
 

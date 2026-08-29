@@ -27,8 +27,8 @@ impl BodyOrigins {
 }
 
 #[test]
-fn identity_schema_is_pinned_after_typed_path() {
-    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 37);
+fn identity_schema_is_pinned_after_resource_close_and_task_transfer_hardening() {
+    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 38);
 }
 
 fn origin(expression: Option<u32>, file: u32, start: u32, end: u32) -> Origin {
@@ -509,6 +509,10 @@ fn identity_is_brand_independent_and_repeatable() {
     assert!(identity.starts_with(&format!(
         "loom-checked-artifact-identity\nschema={ARTIFACT_IDENTITY_SCHEMA}\nroute={ARTIFACT_IDENTITY_ROUTE}\n"
     )));
+    assert!(
+        identity.contains("payload=checked-lcir-with-origins\nlcir 36\n"),
+        "artifact schema 38 changes checked meaning without changing the LCIR text wire: {identity}"
+    );
     assert!(!identity.contains("ProgramBrand"));
     assert!(!identity.contains("function-origin f41/e7 file1:10..20"));
     assert!(identity.contains("function-origin f41 file1:10..20"));
@@ -559,7 +563,7 @@ fn complete_tuple_semantics_are_dump_and_artifact_identity_inputs() {
     assert_ne!(boolean_dump, floating_dump);
     assert_ne!(artifact_identity(&boolean), artifact_identity(&floating));
     assert_eq!(
-        ARTIFACT_IDENTITY_SCHEMA, 37,
+        ARTIFACT_IDENTITY_SCHEMA, 38,
         "complete tuple semantics use the current artifact identity schema"
     );
 }

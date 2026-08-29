@@ -112,6 +112,15 @@ After a match payload introduces a resource binding, that binding must be used
 immediately as the initializer of `scoped`; it cannot first be copied to an
 ordinary alias. A wildcard cannot discard a resource-bearing payload.
 
+Awaiting a task does not make an external resource belong to the garbage
+collector. When a completed child delivers a File, Socket, or value containing
+one to another task, the runtime transfers the resource to that task before the
+child is retired. A completed root keeps it on the root Task in the
+executor-owned task registry. A faulted, cancelled, losing, or unconsumed task
+delivers no resource; its established cleanup path remains responsible for
+exactly-once disposal. These are implementation guarantees behind the same
+recursive `MustScope` rule, not ownership or borrowing syntax.
+
 Calling a method on a `MustScope` value requires that the receiver already be a
 `scoped` binding. Built-in File and Socket methods follow the same rule.
 

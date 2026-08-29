@@ -334,7 +334,7 @@ fn independent_validation_bounds_hostile_fault_text_before_encoding() {
 
 #[test]
 fn contract_metadata_is_part_of_artifact_identity() {
-    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 37);
+    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 38);
     let contract_span = Span::new(FileId(7), 10, 20);
     let first = checked_fault_artifact(ContractFaultMetadata::contract(
         ContractFaultKind::Precondition,

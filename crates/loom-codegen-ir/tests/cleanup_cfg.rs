@@ -13,12 +13,39 @@ fn assertion_metadata(function: u32) -> FaultMetadata {
     FaultMetadata::contract(ContractFaultMetadata::assertion(origin(function).span))
 }
 
-fn resource_program(fields: &[Type], effects: Effects) -> Program {
+fn resource_program(
+    kind: ResourceKind,
+    semantic: Type,
+    fields: &[Type],
+    effects: Effects,
+) -> Program {
+    resource_program_with_representation(kind, semantic, fields, effects, false)
+}
+
+fn file_resource_program(fields: &[Type], effects: Effects) -> Program {
+    resource_program(
+        ResourceKind::File,
+        Type::Nominal(TypeId(9), Vec::new()),
+        fields,
+        effects,
+    )
+}
+
+fn resource_program_with_representation(
+    kind: ResourceKind,
+    semantic: Type,
+    fields: &[Type],
+    effects: Effects,
+    invariant: bool,
+) -> Program {
     let mut program = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
     let unit = program.type_id(&Type::Unit).expect("Unit");
-    let resource = program
-        .add_pod_record_type(Type::Nominal(TypeId(90), Vec::new()), fields)
-        .expect("resource product");
+    let resource = if invariant {
+        program.add_invariant_record_type(semantic, fields)
+    } else {
+        program.add_pod_record_type(semantic, fields)
+    }
+    .expect("resource product");
     let function = program
         .declare_function(
             origin(0),
@@ -50,7 +77,7 @@ fn resource_program(fields: &[Type], effects: Effects) -> Program {
                 entry,
                 Terminator::new(
                     TerminatorKind::ResourceClose {
-                        kind: ResourceKind::File,
+                        kind,
                         resource: value,
                         normal: ResultTarget::new(normal, []),
                         fault: UnwindTarget::new(fault, []),
@@ -91,7 +118,7 @@ fn assert_has_code(program: Program, expected: ValidationCode) {
 
 #[test]
 fn typed_resource_cleanup_has_exact_runtime_and_fault_edges() {
-    let checked = resource_program(
+    let checked = file_resource_program(
         &[Type::Int],
         Effects::MAY_FAULT.union(Effects::NEEDS_RUNTIME),
     )
@@ -110,16 +137,61 @@ fn typed_resource_cleanup_has_exact_runtime_and_fault_edges() {
 #[test]
 fn typed_resource_cleanup_rejects_noncanonical_shape_and_missing_runtime_effect() {
     assert_has_code(
-        resource_program(
+        file_resource_program(
             &[Type::Int, Type::Int],
             Effects::MAY_FAULT.union(Effects::NEEDS_RUNTIME),
         ),
         ValidationCode::TypeMismatch,
     );
     assert_has_code(
-        resource_program(&[Type::Int], Effects::MAY_FAULT),
+        file_resource_program(
+            &[Type::Float],
+            Effects::MAY_FAULT.union(Effects::NEEDS_RUNTIME),
+        ),
+        ValidationCode::TypeMismatch,
+    );
+    assert_has_code(
+        resource_program_with_representation(
+            ResourceKind::File,
+            Type::Nominal(TypeId(9), Vec::new()),
+            &[Type::Int],
+            Effects::MAY_FAULT.union(Effects::NEEDS_RUNTIME),
+            true,
+        ),
+        ValidationCode::TypeMismatch,
+    );
+    assert_has_code(
+        file_resource_program(&[Type::Int], Effects::MAY_FAULT),
         ValidationCode::EffectMismatch,
     );
+}
+
+#[test]
+fn typed_resource_cleanup_requires_the_exact_canonical_nominal_for_each_kind() {
+    let effects = Effects::MAY_FAULT.union(Effects::NEEDS_RUNTIME);
+    resource_program(
+        ResourceKind::Socket,
+        Type::Nominal(TypeId(10), Vec::new()),
+        &[Type::Int],
+        effects,
+    )
+    .into_checked()
+    .expect("canonical Socket#10 cleanup is valid");
+
+    for (kind, semantic) in [
+        (ResourceKind::File, Type::Nominal(TypeId(10), Vec::new())),
+        (ResourceKind::Socket, Type::Nominal(TypeId(9), Vec::new())),
+        (ResourceKind::File, Type::Nominal(TypeId(90), Vec::new())),
+        (
+            ResourceKind::File,
+            Type::Nominal(TypeId(9), vec![Type::Int]),
+        ),
+    ] {
+        assert_has_code(
+            resource_program(kind, semantic, &[Type::Int], effects),
+            ValidationCode::TypeMismatch,
+        );
+    }
 }
 
 #[test]
@@ -128,7 +200,7 @@ fn active_resource_cleanup_preserves_the_primary_on_both_close_outcomes() {
     let boolean = program.type_id(&Type::Bool).expect("Bool");
     let unit = program.type_id(&Type::Unit).expect("Unit");
     let resource = program
-        .add_pod_record_type(Type::Nominal(TypeId(91), Vec::new()), &[Type::Int])
+        .add_pod_record_type(Type::Nominal(TypeId(10), Vec::new()), &[Type::Int])
         .expect("resource product");
     let function = program
         .declare_function(
@@ -222,7 +294,7 @@ fn active_resource_cleanup_preserves_the_primary_on_both_close_outcomes() {
         .union(Effects::NEEDS_EXECUTOR)
         .union(Effects::MAY_SUSPEND);
     assert_has_code(
-        resource_program(&[Type::Int], suspending),
+        file_resource_program(&[Type::Int], suspending),
         ValidationCode::EffectMismatch,
     );
 }
