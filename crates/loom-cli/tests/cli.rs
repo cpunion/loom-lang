@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -133,6 +133,90 @@ fn loomc() -> Command {
 
 fn loomc_without_test_runtime() -> Command {
     Command::new(env!("CARGO_BIN_EXE_loomc"))
+}
+
+fn run_git(repository: &Path, arguments: &[&str]) -> String {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repository)
+        .args(arguments)
+        .output()
+        .expect("run git fixture command");
+    assert!(
+        output.status.success(),
+        "git {arguments:?} failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("git fixture output is UTF-8")
+        .trim()
+        .to_owned()
+}
+
+fn commit_git_fixture(repository: &Path, message: &str) -> String {
+    run_git(repository, &["add", "."]);
+    run_git(
+        repository,
+        &[
+            "-c",
+            "user.name=Loom Tests",
+            "-c",
+            "user.email=loom-tests@example.invalid",
+            "commit",
+            "-m",
+            message,
+        ],
+    );
+    run_git(repository, &["rev-parse", "HEAD"])
+}
+
+fn git_file_url(repository: &Path) -> String {
+    let path = fs::canonicalize(repository)
+        .expect("canonical git fixture")
+        .to_string_lossy()
+        .replace('\\', "/");
+    if path.starts_with('/') {
+        format!("file://{path}")
+    } else {
+        format!("file:///{path}")
+    }
+}
+
+fn assert_git_lock_pin(
+    lock: &str,
+    module: &str,
+    git_url: &str,
+    selector: &str,
+    commit: &str,
+) -> String {
+    let lock = toml::from_str::<toml::Value>(lock).expect("parse generated git lockfile");
+    let locked = lock
+        .get("module")
+        .and_then(toml::Value::as_array)
+        .expect("lockfile module array")
+        .iter()
+        .find(|entry| entry.get("name").and_then(toml::Value::as_str) == Some(module))
+        .unwrap_or_else(|| panic!("lockfile contains module {module}"));
+    let source = locked
+        .get("source")
+        .and_then(toml::Value::as_str)
+        .expect("git lock source");
+    assert_eq!(source, format!("git+{git_url}#{commit}"));
+    assert_eq!(
+        locked.get("selector").and_then(toml::Value::as_str),
+        Some(selector)
+    );
+    let checksum = locked
+        .get("checksum")
+        .and_then(toml::Value::as_str)
+        .expect("git lock checksum");
+    assert_eq!(checksum.len(), 64, "{locked:#?}");
+    assert!(
+        checksum.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "{locked:#?}"
+    );
+    checksum.to_owned()
 }
 
 #[cfg(unix)]
@@ -3159,6 +3243,186 @@ fn library_targets_build_portable_validated_artifacts() {
         String::from_utf8_lossy(&native.stdout),
         String::from_utf8_lossy(&native.stderr)
     );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn git_fork_dependencies_lock_run_offline_and_update_as_one_cli_flow() {
+    let project = TestProject::empty();
+    let repository = project.0.join("utility-fork");
+    fs::create_dir_all(&repository).expect("create git dependency fixture");
+    project.write(
+        "utility-fork/loom.toml",
+        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"upstream_utility\"\nversion = \"1.0.0\"\n",
+    );
+    project.write(
+        "utility-fork/lib.loom",
+        "pub fn answer() Int {\n    42\n}\n",
+    );
+    run_git(&repository, &["init"]);
+    let first_commit = commit_git_fixture(&repository, "initial utility");
+    run_git(&repository, &["branch", "-M", "main"]);
+    let git_url = git_file_url(&repository);
+
+    let old_field_manifest = format!(
+        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"consumer\"\nversion = \"1.0.0\"\n[dependencies]\nutility = {{ git = {git_url:?}, branch = \"main\", package = \"upstream_utility\" }}\n"
+    );
+    project.write("old-field/loom.toml", &old_field_manifest);
+    project.write("old-field/main.loom", "fn local() {}\n");
+    let old_field = loomc_without_test_runtime()
+        .args(["--json", "check"])
+        .arg(project.0.join("old-field"))
+        .output()
+        .expect("reject the retired dependency package field");
+    assert_eq!(old_field.status.code(), Some(2), "{old_field:?}");
+    let old_field_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&old_field.stdout),
+        String::from_utf8_lossy(&old_field.stderr)
+    );
+    assert!(old_field_output.contains("package"), "{old_field_output}");
+    assert!(old_field_output.contains("module"), "{old_field_output}");
+
+    let consumer_manifest = format!(
+        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"consumer\"\nversion = \"1.0.0\"\n[dependencies]\nutility = {{ git = {git_url:?}, branch = \"main\", module = \"upstream_utility\" }}\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"consumer.main\"\n"
+    );
+    assert!(!consumer_manifest.contains("replace"));
+    assert!(!consumer_manifest.contains("package ="));
+    project.write("consumer/loom.toml", &consumer_manifest);
+    project.write(
+        "consumer/main.loom",
+        "import utility.answer\n\npub fn main() {\n    let value = answer()\n    assert value > 0\n}\n",
+    );
+    project.write(
+        "consumer/main_test.loom",
+        "import utility.answer\n\ntest fn fork_dependency_works() {\n    let value = answer()\n    assert value == 42\n}\n",
+    );
+    let consumer = project.0.join("consumer");
+
+    let resolved = loomc_without_test_runtime()
+        .args(["--json", "resolve"])
+        .arg(&consumer)
+        .output()
+        .expect("resolve direct git fork URL");
+    assert_eq!(
+        resolved.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&resolved.stdout),
+        String::from_utf8_lossy(&resolved.stderr)
+    );
+    let lock_path = consumer.join("loom.lock");
+    let first_lock = fs::read_to_string(&lock_path).expect("read initial git lockfile");
+    let first_checksum = assert_git_lock_pin(
+        &first_lock,
+        "upstream_utility",
+        &git_url,
+        "branch:main",
+        &first_commit,
+    );
+
+    let locked = loomc_without_test_runtime()
+        .args(["--locked", "--backend", "interpreter", "check"])
+        .arg(&consumer)
+        .output()
+        .expect("check the pinned git dependency");
+    assert_eq!(
+        locked.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&locked.stdout),
+        String::from_utf8_lossy(&locked.stderr)
+    );
+    let tests = loomc_without_test_runtime()
+        .args(["--backend", "interpreter", "test"])
+        .arg(&consumer)
+        .output()
+        .expect("test through the git dependency");
+    assert_eq!(
+        tests.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&tests.stdout),
+        String::from_utf8_lossy(&tests.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&tests.stdout).contains("passed consumer.fork_dependency_works"),
+        "{tests:?}"
+    );
+
+    project.write(
+        "utility-fork/lib.loom",
+        "pub fn answer() Int {\n    84\n}\n",
+    );
+    let second_commit = commit_git_fixture(&repository, "update utility");
+    assert_ne!(first_commit, second_commit);
+    let pinned = loomc_without_test_runtime()
+        .arg("resolve")
+        .arg(&consumer)
+        .output()
+        .expect("keep the locked branch revision without update");
+    assert_eq!(
+        pinned.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&pinned.stdout),
+        String::from_utf8_lossy(&pinned.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(&lock_path).expect("read unchanged git lockfile"),
+        first_lock
+    );
+
+    let updated = loomc_without_test_runtime()
+        .args(["resolve", "--update"])
+        .arg(&consumer)
+        .output()
+        .expect("refresh the git branch revision");
+    assert_eq!(
+        updated.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&updated.stdout),
+        String::from_utf8_lossy(&updated.stderr)
+    );
+    let second_lock = fs::read_to_string(&lock_path).expect("read refreshed git lockfile");
+    assert_ne!(first_lock, second_lock);
+    let second_checksum = assert_git_lock_pin(
+        &second_lock,
+        "upstream_utility",
+        &git_url,
+        "branch:main",
+        &second_commit,
+    );
+    assert_ne!(first_checksum, second_checksum);
+
+    project.write(
+        "consumer/main.loom",
+        "import utility.answer\n\npub fn main() {\n    let value = answer()\n    assert value == 84\n}\n",
+    );
+    fs::rename(&repository, project.0.join("utility-fork-unavailable"))
+        .expect("make git remote unavailable");
+    let offline = loomc_without_test_runtime()
+        .args([
+            "--offline",
+            "--locked",
+            "--backend",
+            "interpreter",
+            "run",
+            "--target",
+            "app",
+        ])
+        .arg(&consumer)
+        .output()
+        .expect("run from the pinned offline git cache");
+    assert_eq!(
+        offline.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&offline.stdout),
+        String::from_utf8_lossy(&offline.stderr)
+    );
+    assert_eq!(offline.stdout, b"Unit\n");
 }
 
 #[test]

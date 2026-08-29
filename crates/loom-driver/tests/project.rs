@@ -1352,7 +1352,7 @@ fn dependency_aliases_resolve_without_exposing_the_package_name() {
     );
     project.write(
         "application/loom.toml",
-        "schema = 2\n[module]\nname = \"application\"\nversion = \"1.0.0\"\n[dependencies]\nutil = { path = \"../utility\", package = \"utility\" }\n",
+        "schema = 2\n[module]\nname = \"application\"\nversion = \"1.0.0\"\n[dependencies]\nutil = { path = \"../utility\", module = \"utility\" }\n",
     );
     project.write(
         "application/main.loom",

@@ -1,4 +1,4 @@
-# Packages and registries
+# Packages, Git, and registries
 
 Loom resolves one closed module graph before semantic analysis. Module identity
 includes its name, resolved SemVer, and Loom language version. Dependencies are
@@ -7,16 +7,48 @@ search path.
 
 ## Module sources
 
-Loom supports three dependency sources:
+Loom supports four dependency sources:
 
 1. a local path containing `loom.toml`;
-2. a named local or HTTP registry;
-3. a validated portable `.loomlib` artifact.
+2. a Git repository whose root contains `loom.toml`;
+3. a named local or HTTP registry;
+4. a validated portable `.loomlib` artifact.
 
-The selected source and resolved checksum are recorded in `loom.lock`. A
-dependency cycle, duplicate module identity, manifest mismatch, invalid
-directory package, nested-module boundary violation, or checksum mismatch
-stops compilation.
+The selected source and, where applicable, its resolved checksum are recorded
+in `loom.lock`. A dependency cycle, duplicate module identity, manifest
+mismatch, invalid directory package, nested-module boundary violation, or
+checksum mismatch stops compilation.
+
+## Git repositories and forks
+
+Declare a repository directly; a fork needs no replacement mechanism:
+
+```toml
+[dependencies]
+codec = { git = "https://github.com/my-team/codec.git", branch = "loom-fix" }
+```
+
+`branch`, `tag`, and the full-commit `rev` selector are mutually exclusive.
+With no selector, Loom uses the remote default `HEAD`. `loom.lock` records the
+selector and pins the resolved commit and source checksum, so normal builds do
+not follow a moving reference. `loomc resolve --update` refreshes it
+deliberately.
+
+The repository URL is provenance, not nominal type identity. The checked-out
+manifest's `[module]` name remains authoritative, while the dependency table
+key is the local import alias. Use `module = "NAME"` when those two names differ.
+
+Loom uses the system Git client and its configured HTTPS credential helpers or
+SSH agent. It rejects plain HTTP and HTTPS URLs containing credentials, and it
+does not echo Git output into diagnostics. Local `file://` repositories are
+also accepted. Checkouts live below
+`target/loom/git/checkouts`, are published atomically, and are revalidated
+against their Git commit and checksum before use. Offline resolution succeeds
+only for an already verified checkout.
+
+The initial Git source is deliberately small: `loom.toml` must be at the
+repository root, submodules are not initialized, and Git modules cannot use
+path or artifact dependencies.
 
 ## Local registries
 

@@ -52,17 +52,20 @@ A dependency declares exactly one source:
 ```toml
 [dependencies]
 local = { path = "../local", version = "^1" }
+fork = { git = "https://github.com/example/local-fork.git", branch = "loom-fix" }
 published = { registry = "primary", version = "^2" }
 prebuilt = { artifact = "../prebuilt.loomlib", version = "^0.4" }
 ```
 
 - `path` resolves another `loom.toml` relative to the current manifest.
+- `git` resolves the module at a Git repository root and pins its exact commit.
 - `registry` resolves a module from a named filesystem or HTTPS registry.
 - `artifact` consumes a validated portable `.loomlib` without a separate
   producer checkout.
 
 The dependency table key is its local alias and therefore the first segment
-used to import that dependency's packages. The declared name, version
+used to import that dependency's packages. Use `module = "upstream_name"` when
+the dependency's declared module name differs from that alias. The declared name, version
 requirement, language version, and resolved module identity must agree.
 
 An artifact dependency cannot combine with `path` or `registry`, and cannot
@@ -87,6 +90,49 @@ implementation activation.
 Dependency `*_test.loom` files are not part of the resolved source graph.
 `loomc test` includes and runs tests only from the selected root module.
 
+## Git and fork dependencies
+
+A fork is an ordinary dependency source; Loom has no `replace` table:
+
+```toml
+[dependencies]
+http = { git = "https://github.com/my-team/http.git", branch = "loom-fix" }
+```
+
+The checkout's `[module]` declaration remains the nominal identity. Changing
+the repository URL to a fork does not create a new type identity, and the table
+key remains only the local import prefix. If the key differs from the declared
+identity, write it explicitly:
+
+```toml
+http_fork = { git = "ssh://git@github.com/my-team/http.git", tag = "v1.4.0", module = "http" }
+```
+
+A Git dependency accepts at most one selector:
+
+- `branch = "NAME"` follows a branch when pins are refreshed;
+- `tag = "NAME"` selects a tag;
+- `rev = "40_HEX_DIGIT_COMMIT"` selects one full commit ID;
+- no selector follows the repository's default `HEAD`.
+
+Normal resolution reuses the exact commit in `loom.lock`. Only
+`loomc resolve --update` refreshes a moving branch, tag, or default `HEAD`.
+The lock record carries the selector, exact commit, and a source checksum.
+Changing the selector makes `--locked` fail even when two selectors currently
+point at the same commit. Every cached checkout is verified against both Git
+and that checksum before compilation. `--offline` requires that verified
+checkout to exist already.
+
+Loom invokes the system `git` executable so HTTPS credential helpers and SSH
+configuration work without manifest secrets. Plain HTTP and credential-bearing
+HTTPS URLs are rejected. `file://` is accepted for local repository workflows;
+prefer `path` when no Git commit boundary is needed. Keep credentials out of
+manifests and diagnostics.
+
+The first Git implementation expects `loom.toml` at the repository root and
+does not initialize submodules. A Git-sourced module cannot use path or artifact
+dependencies; its transitive dependencies must be Git or registry sources.
+
 ## Resolve and lock
 
 Resolve the graph and materialize `loom.lock`:
@@ -109,11 +155,11 @@ loomc --locked test .
 ```
 
 It fails if the selected module and feature graph does not exactly match the
-lockfile. Registry content is hashed; changing the contents of an already
-locked version is rejected.
+lockfile. Registry, artifact, and Git content is hashed; changing the contents
+of an already locked source is rejected.
 
-`--offline` prohibits registry network requests and accepts only a fully
-validated local registry cache hit:
+`--offline` prohibits registry and Git network requests and accepts only fully
+validated local cache hits:
 
 ```sh
 loomc --offline --locked check .
@@ -223,4 +269,4 @@ loomc --cache-dir /absolute/cache/path check .
 Cache keys include the inputs relevant to their layer, including module and
 feature graphs, compiler identity, language version, and target/codegen identity
 where applicable. A cache is an optimization, never the authority for source,
-lockfile, artifact, or registry integrity.
+lockfile, Git, artifact, or registry integrity.

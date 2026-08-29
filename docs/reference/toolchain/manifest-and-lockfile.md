@@ -64,20 +64,23 @@ A dependency selects exactly one source:
 ```toml
 [dependencies]
 local = { path = "../local", version = "^1" }
-remote = { registry = "public", package = "remote_name", version = ">=1, <2" }
+fork = { git = "https://github.com/example/remote_name.git", branch = "loom-fix", module = "remote_name" }
+remote = { registry = "public", module = "remote_name", version = ">=1, <2" }
 prebuilt = { artifact = "../dist/library.loomlib" }
 optional_tool = { path = "../tool", optional = true }
 ```
 
-The dependency table key is the local alias and import prefix. `package` can
-name a differently named registry module. A dependency may also declare:
+The dependency table key is the local alias and import prefix. `module` can
+name a differently named dependency module. A dependency may also declare:
 
 - `version`: a SemVer requirement;
 - `optional = true`: omit it until a feature activates it;
 - `features = ["name"]`: enable features in the dependency;
 - `default-features = false`: disable the dependency's default feature.
 
-`path`, `registry`, and `artifact` are mutually exclusive. An artifact
+`path`, `git`, `registry`, and `artifact` are mutually exclusive. A Git
+dependency accepts at most one of `branch`, `tag`, or a full 40-hex-digit
+`rev`; omitting all three selects the repository's default `HEAD`. An artifact
 dependency is a validated `.loomlib` rather than a native library.
 
 Imports resolve through the root module and its declared direct dependency
@@ -135,15 +138,16 @@ changes it. Commit the lockfile for applications and other reproducible builds.
 
 The lockfile schema is `2`. Each `[[module]]` record includes its name, version,
 language version, source identity, enabled features, and resolved dependency
-identities. Registry and artifact records also carry a SHA-256 checksum; path
-dependencies do not.
+identities. Git source identity includes the requested selector and exact
+commit pin. Registry, Git, and artifact records also carry a SHA-256 checksum;
+path dependencies do not.
 
 - `--locked` fails if the lockfile is missing or differs from the resolved
   graph. It never silently rewrites the lockfile.
-- `resolve --update` ignores existing registry pins and selects the highest
-  matching available versions.
+- `resolve --update` ignores existing registry and Git pins and refreshes their
+  selectors.
 - `--offline` permits only local sources and already validated cached registry
-  content.
+  or Git content.
 
 Do not hand-edit module checksums or format-version fields. If a lockfile is
 incompatible with the installed compiler, regenerate it with the intended
