@@ -110,11 +110,16 @@ fn structured_standard_values_are_discoverable_through_completion_and_hover() {
     let source = r#"module editor.standard
 
 import std.json.parse_json
+import std.log.debug
+import std.log.error
+import std.log.info
+import std.log.warn
 import std.log.write
 
 fn inspect(problem IoError, value Json) {
     let fields = TextMap[Text]().insert("key", "value")
     let parsed = parse_json("null")
+    debug("indexed from source")
     write(LogLevel.Info, problem.message(), fields)
 }
 "#;
@@ -129,8 +134,9 @@ fn inspect(problem IoError, value Json) {
         json!({"jsonrpc":"2.0","id":3,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "parse_json")}}),
         json!({"jsonrpc":"2.0","id":4,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "insert")}}),
         json!({"jsonrpc":"2.0","id":5,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "IoError")}}),
-        json!({"jsonrpc":"2.0","id":6,"method":"textDocument/completion","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "\n}")}}),
-        json!({"jsonrpc":"2.0","id":7,"method":"shutdown","params":null}),
+        json!({"jsonrpc":"2.0","id":6,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "debug(\"indexed")}}),
+        json!({"jsonrpc":"2.0","id":7,"method":"textDocument/completion","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "\n}")}}),
+        json!({"jsonrpc":"2.0","id":8,"method":"shutdown","params":null}),
         json!({"jsonrpc":"2.0","method":"exit","params":null}),
     ];
     let input = messages.iter().flat_map(frame).collect::<Vec<_>>();
@@ -158,9 +164,21 @@ fn inspect(problem IoError, value Json) {
         assert!(markdown.contains(signature), "{markdown}");
     }
 
-    let labels = responses
+    let source_hover = responses
         .iter()
         .find(|message| message.get("id") == Some(&json!(6)))
+        .expect("missing source-backed std.log.debug hover response")
+        .pointer("/result/contents/value")
+        .and_then(Value::as_str)
+        .expect("source-backed std.log.debug hover markdown");
+    assert!(
+        source_hover.contains("`function debug`") && source_hover.contains("module `std.log`"),
+        "{source_hover}"
+    );
+
+    let labels = responses
+        .iter()
+        .find(|message| message.get("id") == Some(&json!(7)))
         .and_then(|message| message.pointer("/result/items"))
         .and_then(Value::as_array)
         .expect("completion items")
@@ -177,6 +195,10 @@ fn inspect(problem IoError, value Json) {
         "LogLevel",
         "parse_json",
         "format_json",
+        "debug",
+        "info",
+        "warn",
+        "error",
         "write",
         "insert",
         "remove",

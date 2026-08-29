@@ -87,7 +87,7 @@ fn typed_log_write_has_exact_fault_edges_and_keeps_managed_operands_live() {
                     TerminatorKind::LogWrite {
                         level: level_value,
                         message,
-                        fields: Some(fields_value),
+                        fields: fields_value,
                         normal: ResultTarget::new(normal, Vec::new()),
                         fault: UnwindTarget::new(fault, Vec::new()),
                     },
@@ -198,7 +198,7 @@ fn independent_validation_rejects_noncanonical_log_operands() {
                     TerminatorKind::LogWrite {
                         level: wrong_level,
                         message: wrong_message,
-                        fields: Some(wrong_fields),
+                        fields: wrong_fields,
                         normal: ResultTarget::new(normal, Vec::new()),
                         fault: UnwindTarget::new(fault, Vec::new()),
                     },

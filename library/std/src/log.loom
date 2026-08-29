@@ -1,0 +1,27 @@
+module std.log
+
+import std.log.write
+
+fn write_without_fields(level LogLevel, message Text) {
+    write(level, message, TextMap[Text]())
+}
+
+/// Writes one debug-level event without structured fields.
+pub fn debug(message Text) {
+    write_without_fields(LogLevel.Debug, message)
+}
+
+/// Writes one info-level event without structured fields.
+pub fn info(message Text) {
+    write_without_fields(LogLevel.Info, message)
+}
+
+/// Writes one warning-level event without structured fields.
+pub fn warn(message Text) {
+    write_without_fields(LogLevel.Warn, message)
+}
+
+/// Writes one error-level event without structured fields.
+pub fn error(message Text) {
+    write_without_fields(LogLevel.Error, message)
+}

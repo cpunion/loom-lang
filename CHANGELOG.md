@@ -53,11 +53,13 @@ artifact, or runtime compatibility.
   with `runtime-v8`; the collector remains `gc-v9`.
 - A compiler-distributed, read-only `std` source package compiled through
   the ordinary frontend, MIR, reachability, and native pipelines. The initial
-  source set includes `std.int`, which provides `minimum` and `maximum`, and
-  `std.resource`, which publicly declares `Dispose`, `MustScope`, and
-  `NoSuspend`. Resource declarations now pass through the ordinary source
-  pipeline, while their fixed shapes and lexical static rules remain in the
-  language core and add no runtime registry. Unreachable functions are absent
+  source set includes `std.int`, which provides `minimum` and `maximum`,
+  `std.log`, whose four convenience functions are ordinary Loom wrappers over
+  the sole `write` output boundary, and `std.resource`, which publicly declares
+  `Dispose`, `MustScope`, and `NoSuspend`. Resource declarations now pass
+  through the ordinary source pipeline, while their fixed shapes and lexical
+  static rules remain in the language core and add no runtime registry.
+  Unreachable functions are absent
   from native artifacts. Exact embedded source bytes and the language version
   form the versioned `loom-source-stdlib-v1/<sha256>` cache identity; the
   `std` package name, dependency alias, and complete `std.*` module

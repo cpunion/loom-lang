@@ -3278,10 +3278,6 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             | BuiltinValue::JsonFormat
             | BuiltinValue::IoErrorKind
             | BuiltinValue::IoErrorMessage
-            | BuiltinValue::LogDebug
-            | BuiltinValue::LogInfo
-            | BuiltinValue::LogWarn
-            | BuiltinValue::LogError
             | BuiltinValue::LogWrite
             | BuiltinValue::ListAdd
             | BuiltinValue::ListLength
@@ -3758,10 +3754,6 @@ fn executable_builtin(builtin: BuiltinValue) -> Option<Builtin> {
         BuiltinValue::JsonFormat => Builtin::JsonFormat,
         BuiltinValue::IoErrorKind => Builtin::IoErrorKind,
         BuiltinValue::IoErrorMessage => Builtin::IoErrorMessage,
-        BuiltinValue::LogDebug => Builtin::LogDebug,
-        BuiltinValue::LogInfo => Builtin::LogInfo,
-        BuiltinValue::LogWarn => Builtin::LogWarn,
-        BuiltinValue::LogError => Builtin::LogError,
         BuiltinValue::LogWrite => Builtin::LogWrite,
         BuiltinValue::ListAdd => Builtin::ListAdd,
         BuiltinValue::ListLength => Builtin::ListLength,

@@ -10583,10 +10583,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 | Builtin::JsonFormat
                 | Builtin::IoErrorKind
                 | Builtin::IoErrorMessage
-                | Builtin::LogDebug
-                | Builtin::LogInfo
-                | Builtin::LogWarn
-                | Builtin::LogError
                 | Builtin::LogWrite
         ) {
             let continues =
@@ -11309,24 +11305,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 self.shallow_copy_named(destination, field, "io.error.field.copy")?;
                 Ok(true)
             }
-            (
-                Builtin::LogDebug | Builtin::LogInfo | Builtin::LogWarn | Builtin::LogError,
-                [message],
-            ) => {
-                let level = match builtin {
-                    Builtin::LogDebug => 0,
-                    Builtin::LogInfo => 1,
-                    Builtin::LogWarn => 2,
-                    Builtin::LogError => 3,
-                    _ => unreachable!(),
-                };
-                self.emit_log_write(
-                    level,
-                    *message,
-                    self.backend.ptr_type.const_null(),
-                    destination,
-                )
-            }
             (Builtin::LogWrite, [level, message, fields]) => {
                 let level = self.unwrap(*level)?;
                 let level = self.backend.load_i64_field(
@@ -11560,21 +11538,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 .text_map
                 .ok_or_else(|| CodegenError::new("InvalidPrelude", "TextMap is missing"))?,
         ))
-    }
-
-    fn emit_log_write(
-        &self,
-        level: u64,
-        message: PointerValue<'ctx>,
-        fields: PointerValue<'ctx>,
-        destination: PointerValue<'ctx>,
-    ) -> Result<bool, CodegenError> {
-        self.emit_log_write_value(
-            self.backend.context.i32_type().const_int(level, false),
-            message,
-            fields,
-            destination,
-        )
     }
 
     fn emit_log_write_value(

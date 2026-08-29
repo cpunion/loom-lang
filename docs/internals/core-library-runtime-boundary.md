@@ -55,6 +55,13 @@ statically. Concept witnesses lower through the normal direct-call machinery;
 there is no source-visible runtime resource registry or name-based runtime
 dispatch.
 
+The `std.log.debug`, `info`, `warn`, and `error` functions are also ordinary
+Loom source. Each constructs an empty fields map and calls the sole public
+library function backed by the compiler-private output operation,
+`std.log.write`. They therefore participate in normal direct-call reachability
+and disappear when unused; the compiler has no convenience-level logging
+builtins.
+
 The scheduler does maintain a compiler-private ownership ledger on each Task
 for built-in File and Socket handles published in typed results. Successful
 completed-result consumption moves those entries to the child's non-null owner

@@ -548,11 +548,7 @@ fn add_terminator_local_uses(
             message,
             fields,
             ..
-        } => {
-            let mut values = vec![*level, *message];
-            values.extend(*fields);
-            values
-        }
+        } => vec![*level, *message, *fields],
     };
     add_managed(live, values, managed);
     add_managed(live, terminator.writebacks().iter().copied(), managed);

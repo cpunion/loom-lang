@@ -23,6 +23,11 @@ const STANDARD_SOURCES: &[StandardSource] = &[
         text: include_str!("../../../library/std/src/int.loom"),
     },
     StandardSource {
+        path: "src/log.loom",
+        module: "std.log",
+        text: include_str!("../../../library/std/src/log.loom"),
+    },
+    StandardSource {
         path: "src/resource.loom",
         module: "std.resource",
         text: include_str!("../../../library/std/src/resource.loom"),

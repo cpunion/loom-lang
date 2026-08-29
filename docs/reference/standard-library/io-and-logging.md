@@ -163,7 +163,10 @@ write(level LogLevel, message Text, fields TextMap[Text])
 ```
 
 `LogLevel` is the closed value `Debug | Info | Warn | Error`. The four helpers
-are equivalent to `write` with their respective level and an empty fields map.
+are ordinary Loom source functions equivalent to `write` with their respective
+level and an empty fields map. Only the public `write` function is backed by
+the compiler-private output operation; an unused helper is removed by normal
+reachability.
 
 Each call writes one compact UTF-8 JSON line to standard error. Keys appear in
 this order:

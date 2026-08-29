@@ -10784,14 +10784,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
     )]
     fn typed_log_fields(
         &self,
-        fields: Option<ValueId>,
+        fields: ValueId,
     ) -> Result<(PointerValue<'ctx>, IntValue<'ctx>), CodegenError> {
-        let Some(fields) = fields else {
-            return Ok((
-                self.backend.ptr_type.const_null(),
-                self.backend.context.i64_type().const_zero(),
-            ));
-        };
         let ty = self.text_map_type_of_value(fields)?;
         let value_ty = self.backend.text_map_value_type(ty)?;
         let value_type = self
@@ -13691,7 +13685,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         &mut self,
         level: ValueId,
         message: ValueId,
-        fields: Option<ValueId>,
+        fields: ValueId,
         origin: Origin,
         normal: &ResultTarget,
         fault: &UnwindTarget,

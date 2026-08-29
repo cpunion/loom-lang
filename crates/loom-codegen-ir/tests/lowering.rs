@@ -49,20 +49,17 @@ fn compile(source: &str) -> loom_mir::CheckedProgram {
         .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
 }
 
-fn compile_with_std_resource(source: &str) -> loom_mir::CheckedProgram {
+fn compile_with_std_module(source: &str, std_source: &str) -> loom_mir::CheckedProgram {
     let application = parse_with_file(FileId(0), source);
-    let resource = parse_with_file(
-        FileId(1),
-        include_str!("../../../library/std/src/resource.loom"),
-    );
+    let std_module = parse_with_file(FileId(1), std_source);
     assert!(
-        application.diagnostics().is_empty() && resource.diagnostics().is_empty(),
+        application.diagnostics().is_empty() && std_module.diagnostics().is_empty(),
         "syntax diagnostics: application={:#?} std={:#?}",
         application.diagnostics(),
-        resource.diagnostics()
+        std_module.diagnostics()
     );
     let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
-    let root = PackageId::legacy();
+    let root = PackageId::new("codegen-ir-test", "0");
     let mut lowered = lower_package_files([
         PackageSourceUnit {
             file: FileId(0),
@@ -72,7 +69,7 @@ fn compile_with_std_resource(source: &str) -> loom_mir::CheckedProgram {
         PackageSourceUnit {
             file: FileId(1),
             package: std_package.clone(),
-            syntax: resource.ast(),
+            syntax: std_module.ast(),
         },
     ]);
     lowered
@@ -96,6 +93,17 @@ fn compile_with_std_resource(source: &str) -> loom_mir::CheckedProgram {
         .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
 }
 
+fn compile_with_std_resource(source: &str) -> loom_mir::CheckedProgram {
+    compile_with_std_module(
+        source,
+        include_str!("../../../library/std/src/resource.loom"),
+    )
+}
+
+fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
+    compile_with_std_module(source, include_str!("../../../library/std/src/log.loom"))
+}
+
 fn lower_run(source: &str) -> LoweringOutcome {
     let mir = compile(source);
     lower_typed_artifact(
@@ -110,6 +118,18 @@ fn lower_run(source: &str) -> LoweringOutcome {
 
 fn lower_run_with_standard_resource(source: &str) -> LoweringOutcome {
     let mir = compile_with_std_resource(source);
+    lower_typed_artifact(
+        &mir,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("lower typed artifact")
+}
+
+fn lower_run_with_std_log(source: &str) -> LoweringOutcome {
+    let mir = compile_with_std_log(source);
     lower_typed_artifact(
         &mir,
         &SourceArtifactRequest::Run {
@@ -364,8 +384,8 @@ pub fn main() {
 }
 
 #[test]
-fn canonical_logging_builtins_lower_to_typed_fault_control_flow() {
-    let outcome = lower_run(
+fn source_backed_logging_helpers_lower_to_typed_fault_control_flow() {
+    let outcome = lower_run_with_std_log(
         r#"module typed_logging
 
 import std.log.debug
@@ -393,48 +413,45 @@ pub fn main() {
         .expect("main instance");
     assert_eq!(main.effects(), Effects::MAY_FAULT);
 
-    let writes = main
-        .blocks()
-        .iter()
-        .filter_map(
-            |block| match block.terminator().map(loom_codegen_ir::Terminator::kind) {
-                Some(TerminatorKind::LogWrite {
-                    level,
-                    message,
-                    fields,
-                    normal,
-                    fault,
-                }) => Some((*level, *message, *fields, normal, fault)),
-                _ => None,
-            },
-        )
-        .collect::<Vec<_>>();
-    assert_eq!(writes.len(), 5, "{}", dump_program(artifact.program()));
-    assert!(
-        writes[..4]
-            .iter()
-            .all(|(_, _, fields, _, _)| fields.is_none())
-    );
-    assert!(writes[4].2.is_some());
-    for (_, _, _, normal, fault) in &writes {
-        assert_eq!(
-            main.block(normal.block)
-                .expect("log normal block")
-                .params()
-                .len(),
-            1
-        );
-        assert!(matches!(
-            main.block(fault.block)
-                .and_then(loom_codegen_ir::Block::terminator)
-                .map(loom_codegen_ir::Terminator::kind),
-            Some(TerminatorKind::ResumeFault)
-        ));
+    let mut write_count = 0;
+    for function in artifact.functions() {
+        for block in function.blocks() {
+            let Some(TerminatorKind::LogWrite {
+                fields,
+                normal,
+                fault,
+                ..
+            }) = block.terminator().map(loom_codegen_ir::Terminator::kind)
+            else {
+                continue;
+            };
+            write_count += 1;
+            assert!(function.value(*fields).is_some());
+            assert_eq!(
+                function
+                    .block(normal.block)
+                    .expect("log normal block")
+                    .params()
+                    .len(),
+                1
+            );
+            assert!(matches!(
+                function
+                    .block(fault.block)
+                    .and_then(loom_codegen_ir::Block::terminator)
+                    .map(loom_codegen_ir::Terminator::kind),
+                Some(TerminatorKind::ResumeFault)
+            ));
+        }
     }
+    assert_eq!(write_count, 2, "{}", dump_program(artifact.program()));
 
     let dump = dump_program(artifact.program());
-    assert_eq!(dump.matches("log.write ").count(), 5, "{dump}");
-    assert_eq!(dump.matches("fields none").count(), 4, "{dump}");
+    assert_eq!(dump.matches("log.write ").count(), 2, "{dump}");
+    assert_eq!(dump.matches("text_map.construct").count(), 2, "{dump}");
+    for function in ["debug", "info", "warn", "error", "write_without_fields"] {
+        assert!(dump.contains(&format!("std.log.{function}")), "{dump}");
+    }
     for variant in 0..=3 {
         assert!(
             dump.contains(&format!("sum.construct variant {variant} ()")),

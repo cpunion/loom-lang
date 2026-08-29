@@ -1081,10 +1081,6 @@ pub enum Builtin {
     SocketTryConnect,
     SocketTryReadText,
     SocketTryWriteText,
-    LogDebug,
-    LogInfo,
-    LogWarn,
-    LogError,
     LogWrite,
 }
 

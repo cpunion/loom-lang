@@ -5210,14 +5210,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 "format_json" if self.builtin_is_imported("std.json.format_json") => {
                     Some(BuiltinValue::JsonFormat)
                 }
-                "debug" if self.builtin_is_imported("std.log.debug") => {
-                    Some(BuiltinValue::LogDebug)
-                }
-                "info" if self.builtin_is_imported("std.log.info") => Some(BuiltinValue::LogInfo),
-                "warn" if self.builtin_is_imported("std.log.warn") => Some(BuiltinValue::LogWarn),
-                "error" if self.builtin_is_imported("std.log.error") => {
-                    Some(BuiltinValue::LogError)
-                }
                 "write" if self.builtin_is_imported("std.log.write") => {
                     Some(BuiltinValue::LogWrite)
                 }
@@ -5380,10 +5372,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::SocketTryConnect
             | BuiltinValue::JsonParse
             | BuiltinValue::JsonFormat
-            | BuiltinValue::LogDebug
-            | BuiltinValue::LogInfo
-            | BuiltinValue::LogWarn
-            | BuiltinValue::LogError
             | BuiltinValue::LogWrite => {
                 self.check_standard_builtin_call(expression, builtin, arguments)
             }
@@ -5640,14 +5628,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 let text = self.types().builtin(BuiltinType::Text);
                 let error = self.types().builtin(BuiltinType::JsonError);
                 self.types().intern(TyData::Result { ok: text, error })
-            }
-            BuiltinValue::LogDebug
-            | BuiltinValue::LogInfo
-            | BuiltinValue::LogWarn
-            | BuiltinValue::LogError => {
-                let text = self.types().builtin(BuiltinType::Text);
-                self.check_fixed_arguments(expression, arguments, &[text]);
-                self.types().builtin(BuiltinType::Unit)
             }
             BuiltinValue::LogWrite => {
                 let level = self.types().builtin(BuiltinType::LogLevel);

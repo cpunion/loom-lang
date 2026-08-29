@@ -1,24 +1,51 @@
-use loom_core::FileId;
-use loom_hir::{SourceUnit, lower_files};
+use loom_core::{FileId, LOOM_LANGUAGE_VERSION, Name, PackageId};
+use loom_hir::{PackageSourceUnit, lower_package_files};
 use loom_sema::analyze;
 use loom_syntax::parse_with_file;
 
 fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
-    let parsed = parse_with_file(FileId(0), source);
+    let root_file = FileId(0);
+    let standard_log_file = FileId(1);
+    let parsed = parse_with_file(root_file, source);
+    let standard_log = parse_with_file(
+        standard_log_file,
+        include_str!("../../../library/std/src/log.loom"),
+    );
     assert!(
         parsed.diagnostics().is_empty(),
         "syntax diagnostics: {:#?}",
         parsed.diagnostics()
     );
-    let lowered = lower_files([SourceUnit {
-        file: FileId(0),
-        syntax: parsed.ast(),
-    }]);
+    assert!(
+        standard_log.diagnostics().is_empty(),
+        "std.log syntax diagnostics: {:#?}",
+        standard_log.diagnostics()
+    );
+    let root_package = PackageId::new("sema-test", "0");
+    let standard_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+    let mut lowered = lower_package_files([
+        PackageSourceUnit {
+            file: root_file,
+            package: root_package.clone(),
+            syntax: parsed.ast(),
+        },
+        PackageSourceUnit {
+            file: standard_log_file,
+            package: standard_package.clone(),
+            syntax: standard_log.ast(),
+        },
+    ]);
     assert!(
         lowered.diagnostics.is_empty(),
         "HIR diagnostics: {:#?}",
         lowered.diagnostics
     );
+    lowered
+        .program
+        .register_package(standard_package.clone(), [], false);
+    lowered
+        .program
+        .register_package(root_package, [(Name::new("std"), standard_package)], true);
     analyze(&lowered.program).diagnostics
 }
 

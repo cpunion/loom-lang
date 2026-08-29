@@ -1199,10 +1199,8 @@ pub fn main() {
 }
 
 #[test]
-fn read_only_aggregate_builtins_borrow_copies_without_collecting() {
+fn read_only_aggregate_operations_borrow_copies_without_collecting() {
     let source = r#"module readonly_builtin_requirements
-
-import std.log.debug
 
 fn byteCount(value Bytes) Int { value.length() }
 
@@ -1217,8 +1215,6 @@ fn emptyMapCount() Int {
 }
 
 fn pathText(value Path) Text { value.as_text() }
-
-fn logText(value Text) { debug(value) }
 
 pub fn main() {
     let bytes = "abc".encode_utf8()
@@ -1240,12 +1236,11 @@ pub fn main() {
             Unit
         }
     }
-    logText("readonly")
 }
 "#;
     let (project, _program, llvm) = emit_source_with_ir(source);
 
-    for name in ["byteCount", "mapFacts", "pathText", "logText"] {
+    for name in ["byteCount", "mapFacts", "pathText"] {
         let function = llvm_function(&llvm, &format!("readonly_builtin_requirements_{name}"));
         assert!(!function.contains("@loom_gc_clone_value_v1"), "{function}");
         assert!(
@@ -1270,9 +1265,6 @@ pub fn main() {
         map_facts.contains("@loom_runtime_text_map_get"),
         "{map_facts}"
     );
-    let log = llvm_function(&llvm, "readonly_builtin_requirements_logText");
-    assert!(log.contains("@loom_runtime_log"), "{log}");
-
     assert_emitted_main_succeeds(&project);
 }
 

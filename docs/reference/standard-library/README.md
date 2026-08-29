@@ -13,13 +13,16 @@ their `std.*` path.
 
 Source-backed modules are distributed as Loom source and compile through the
 ordinary module, type, MIR, reachability, and native pipelines. The current
-source package contains the foundational `std.int` algorithms and the public
-`Dispose`, `MustScope`, and `NoSuspend` declarations in `std.resource`.
-Resource declarations are source-backed, but their fixed shapes and
-irreducible static rules remain part of the language core and add no runtime
-registry. Other documented APIs, including JSON, currently use compiler-known
-or runtime implementations until their Loom source modules exist. Those
-private paths are deleted after their source replacements pass the ordinary
+source package contains the foundational `std.int` algorithms, the
+`std.log.debug`, `info`, `warn`, and `error` convenience functions, and the
+public `Dispose`, `MustScope`, and `NoSuspend` declarations in `std.resource`.
+The logging conveniences are ordinary Loom functions over the irreducible
+`std.log.write` output boundary. Resource declarations are source-backed, but
+their fixed shapes and irreducible static rules remain part of the language
+core and add no runtime registry. Other documented APIs, including JSON,
+currently use compiler-known or runtime implementations until their Loom
+source modules exist. Those private paths are deleted after their source
+replacements pass the ordinary
 pipeline gates; they are not retained as compatibility layers. The target
 boundary permits only irreducible GC, scheduler, platform, and generic
 construction services to cross into the compiler-private runtime. The

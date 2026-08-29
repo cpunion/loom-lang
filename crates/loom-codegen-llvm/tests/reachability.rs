@@ -317,14 +317,29 @@ fn dead() {
     let program = snapshot.executable().expect("lower structured graph MIR");
     let roots = SourceRoots::for_entry(program, "main").expect("main root");
     let reachable = analyze_source_reachability(program, &roots).expect("analyze graph");
-    assert_eq!(reachable.functions.len(), 2);
+    assert_eq!(reachable.functions.len(), 4);
+    let reachable_names = program
+        .functions
+        .iter()
+        .filter(|function| reachable.functions.contains(&function.id))
+        .map(|function| function.name.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        reachable_names,
+        BTreeSet::from([
+            "std.log.info",
+            "std.log.write_without_fields",
+            "structured_graph.main",
+            "structured_graph.markInt",
+        ])
+    );
     assert_eq!(reachable.witnesses.len(), 1);
     assert_eq!(
         reachable.builtins,
         BTreeSet::from([
             Builtin::TextMapNew,
             Builtin::TextMapInsert,
-            Builtin::LogInfo,
+            Builtin::LogWrite,
         ])
     );
     assert!(!reachable.builtins.contains(&Builtin::JsonParse));
@@ -368,11 +383,10 @@ fn dead(text Text) {
         BTreeSet::from([
             Builtin::TextMapNew,
             Builtin::TextMapInsert,
-            Builtin::LogInfo,
+            Builtin::LogWrite,
         ])
     );
     assert!(!reachable.builtins.contains(&Builtin::JsonParse));
-    assert!(!reachable.builtins.contains(&Builtin::LogWarn));
 
     let artifact = encode_interpreted_artifact(program).expect("encode structured artifact");
     assert_eq!(
@@ -389,11 +403,11 @@ fn dead(text Text) {
 
     let fingerprint = native_object_fingerprint(program, &options).expect("object identity");
     let mut dead_changed = program.clone().into_program();
-    replace_builtin_in_named_function(
+    replace_direct_call_in_named_function(
         &mut dead_changed,
         "dead",
-        Builtin::LogWarn,
-        Builtin::LogError,
+        "std.log.warn",
+        "std.log.error",
     );
     let dead_changed = checked(dead_changed);
     let dead_artifact =
@@ -406,11 +420,11 @@ fn dead(text Text) {
     );
 
     let mut live_changed = program.clone().into_program();
-    replace_builtin_in_named_function(
+    replace_direct_call_in_named_function(
         &mut live_changed,
         "main",
-        Builtin::LogInfo,
-        Builtin::LogDebug,
+        "std.log.info",
+        "std.log.debug",
     );
     let live_changed = checked(live_changed);
     let live_artifact =
@@ -513,21 +527,33 @@ fn make_view(witness: WitnessId, token: u32, value: Expr, ty: Type) -> Expr {
     }
 }
 
-fn replace_builtin_in_named_function(
+fn replace_direct_call_in_named_function(
     program: &mut Program,
     function_name: &str,
-    from: Builtin,
-    to: Builtin,
+    from: &str,
+    to: &str,
 ) {
+    let from = program
+        .functions
+        .iter()
+        .find(|function| function.name == from)
+        .unwrap_or_else(|| panic!("missing function {from}"))
+        .id;
+    let to = program
+        .functions
+        .iter()
+        .find(|function| function.name == to)
+        .unwrap_or_else(|| panic!("missing function {to}"))
+        .id;
     let function = program
         .functions
         .iter_mut()
         .find(|function| function.name.rsplit('.').next() == Some(function_name))
         .unwrap_or_else(|| panic!("missing function {function_name}"));
     let mut value = serde_json::to_value(&*function).expect("serialize MIR function");
-    let needle = serde_json::to_value(CallTarget::Builtin(from)).expect("serialize old builtin");
+    let needle = serde_json::to_value(CallTarget::Direct(from)).expect("serialize old call target");
     let replacement =
-        serde_json::to_value(CallTarget::Builtin(to)).expect("serialize replacement builtin");
+        serde_json::to_value(CallTarget::Direct(to)).expect("serialize replacement call target");
     assert_eq!(replace_json_value(&mut value, &needle, &replacement), 1);
     *function = serde_json::from_value(value).expect("deserialize mutated MIR function");
 }

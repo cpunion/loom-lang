@@ -4702,38 +4702,36 @@ impl<'a> Validator<'a> {
                     ValidationCode::TypeMismatch,
                     format!("{path}.message"),
                 );
-                if let Some(fields) = fields {
-                    let fields_semantic = Type::Nominal(TEXT_MAP_TYPE_ID, vec![Type::Text]);
-                    let fields_type = self.program.representations.type_id(&fields_semantic);
-                    let canonical_fields = fields_type.is_some_and(|ty| {
-                        self.program
-                            .representations
-                            .value_type(ty)
-                            .is_some_and(|value_type| {
-                                value_type.kind() == ValueTypeKind::ManagedTextMap
-                                    && value_type.semantic() == &fields_semantic
-                                    && self.program.representations.type_id(value_type.semantic())
-                                        == Some(ty)
-                                    && self.program.representations.repr(value_type.repr())
-                                        == Some(&Repr::ManagedPointer)
-                            })
-                            && self.text_map_value(ty) == text
-                    });
-                    if !canonical_fields {
-                        self.error(
-                            ValidationCode::TypeMismatch,
-                            format!("{path}.fields"),
-                            "typed structured logging requires canonical Nominal#15[Text] managed TextMap fields",
-                        );
-                    }
-                    self.require_known_value_type(
-                        function,
-                        *fields,
-                        fields_type,
+                let fields_semantic = Type::Nominal(TEXT_MAP_TYPE_ID, vec![Type::Text]);
+                let fields_type = self.program.representations.type_id(&fields_semantic);
+                let canonical_fields = fields_type.is_some_and(|ty| {
+                    self.program
+                        .representations
+                        .value_type(ty)
+                        .is_some_and(|value_type| {
+                            value_type.kind() == ValueTypeKind::ManagedTextMap
+                                && value_type.semantic() == &fields_semantic
+                                && self.program.representations.type_id(value_type.semantic())
+                                    == Some(ty)
+                                && self.program.representations.repr(value_type.repr())
+                                    == Some(&Repr::ManagedPointer)
+                        })
+                        && self.text_map_value(ty) == text
+                });
+                if !canonical_fields {
+                    self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.fields"),
+                        "typed structured logging requires canonical Nominal#15[Text] managed TextMap fields",
                     );
                 }
+                self.require_known_value_type(
+                    function,
+                    *fields,
+                    fields_type,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.fields"),
+                );
                 self.validate_result_target(
                     function,
                     normal,
