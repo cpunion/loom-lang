@@ -583,9 +583,10 @@ impl<'a> Compiler<'a> {
             .definitions
             .iter()
             .filter_map(|(definition, source)| {
-                matches!(source.kind, DefinitionKind::Test(_))
-                    .then(|| self.indices.functions.get(&definition).copied())
-                    .flatten()
+                (matches!(source.kind, DefinitionKind::Test(_))
+                    && self.hir.is_root_module(source.module))
+                .then(|| self.indices.functions.get(&definition).copied())
+                .flatten()
             })
             .collect()
     }
