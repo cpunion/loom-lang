@@ -25,21 +25,36 @@ or standard library works on that host.
 
 ## Required change evidence
 
-Language or semantic changes need:
+Every change needs the smallest deterministic test that would have caught its
+regression. Add another layer only when the change crosses that boundary. For
+example, a diagnostic change needs a source-level diagnostic assertion, while
+an artifact schema change needs decoding and cache-identity coverage. Do not
+duplicate the same invariant across unit, integration, differential, and
+end-to-end suites by default.
 
-- accepted and rejected source examples;
-- stable diagnostic assertions where user behavior changes;
-- MIR validation coverage;
-- interpreter/native differential coverage when both backends apply;
-- artifact and cache invalidation coverage for changed wire facts;
-- documentation updated in the same pull request.
+Language behavior shared by both backends needs one representative
+interpreter/native differential test. Runtime, ABI, and hostile-input changes
+need boundary tests proportional to the risk they introduce. Optimization
+changes need semantic evidence and a checked fallback; use an IR or object
+assertion only when machine structure is the claim being made.
 
-Runtime or ABI changes additionally need malformed-boundary tests, forced GC or
-Task-state tests as applicable, and runtime-bundle compatibility tests.
+User-visible behavior and its documentation change in the same pull request.
+Performance measurements never permit disabling contracts, overflow checks,
+cleanup, GC roots, or concept proof validation.
 
-Optimization changes need a checked fallback, semantic differential tests, and
-IR/object structure tests. Performance measurements do not permit disabling
-contracts, overflow checks, cleanup, GC roots, or concept proof validation.
+## Development gate
+
+The default pull-request and `main` gate runs on macOS 15 arm64 with LLVM 19.
+It formats and lints the workspace, prepares one runtime sidecar, runs the Rust
+workspace tests once, executes the Loom standard-library tests on the native
+and interpreter backends, and checks repository documentation. It deliberately
+does not repeat separate Cargo `check`, `test`, and complete `build` passes.
+
+Linux and Windows are release-matrix platforms, not per-change development
+gates. A passing development gate is therefore macOS evidence only. Base versus
+candidate benchmarks are opt-in through the `benchmark` pull-request label,
+and fuzz campaigns are run explicitly when the affected trust boundary needs
+them.
 
 ## Controlled quality runner
 

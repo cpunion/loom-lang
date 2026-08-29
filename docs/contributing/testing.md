@@ -4,13 +4,12 @@ Tests should establish the narrowest invariant at the cheapest layer and then
 add end-to-end evidence for observable behavior. A large fixture does not
 replace a focused regression test.
 
-## Full workspace gate
+## Development gate
 
-With LLVM 19 configured:
+With LLVM 19 configured, the default macOS CI gate is reproduced by:
 
 ```sh
 cargo +1.88.0 fmt --all -- --check
-cargo +1.88.0 check --locked --workspace --all-targets
 cargo +1.88.0 clippy --locked --workspace --all-targets -- -D warnings
 CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' \
   cargo +1.88.0 build --locked -p loom-runtime
@@ -21,10 +20,14 @@ target/debug/loomc runtime pack \
   --output "$runtime_bundle_root"
 export LOOM_RUNTIME_BUNDLE="$runtime_bundle_root"
 cargo +1.88.0 test --locked --workspace --all-targets
-cargo +1.88.0 build --locked --workspace --all-targets
+target/debug/loomc --no-cache test library/std/tests
+target/debug/loomc --backend interpreter --no-cache test library/std/tests
 ```
 
-Use `--locked` so dependency resolution matches CI.
+Use `--locked` so dependency resolution matches CI. `clippy --all-targets`
+already checks compilation before the test pass, and the test pass builds its
+executables, so separate workspace-wide `check` and `build` passes are not part
+of the development gate.
 The runtime preparation is needed only by native link/run tests. A fresh
 `cargo check` or `cargo build -p loom-codegen-llvm` has no runtime sidecar and
 must not create a nested `runtime-target`.
@@ -166,12 +169,9 @@ replace focused tests and is not a general benchmark.
 
 ## CI parity
 
-Linux runs the full workspace and all principal fixture gates. macOS runs the
-full workspace, standard-library differential tests, and the C3 dual-backend
-loop. Complete Windows CI and release jobs are configured, including a
-PowerShell argument-binding probe for their shared pinned LLVM bootstrap. A
-real Windows runner has verified the bootstrap and most of the native workspace;
-the platform and release remain unverified until the complete job and archive
-both pass. See
-[Implementation status](../project/implementation-status.md) before adding a
-platform claim.
+The default pull-request and `main` workflow has one macOS 15 arm64 job. It runs
+the development gate above plus the lightweight documentation-policy tests.
+The tagged or manually dispatched release workflow owns Linux, macOS, and
+Windows archive validation. Consequently, a pull-request result is not Linux
+or Windows evidence. See [Implementation status](../project/implementation-status.md)
+before adding a platform claim.

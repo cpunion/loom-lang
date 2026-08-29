@@ -111,22 +111,18 @@ the report schema/policy text and explain why the comparison remains coherent.
 
 ## PR benchmark workflow
 
-The PR workflow measures base and candidate merge revisions on Ubuntu 24.04
-x86-64 and macOS 15 arm64 runners with pinned Rust, LLVM/Clang, and Go. Each
-runner uploads one base/candidate report pair. A separate `workflow_run` job
-checks out the trusted default branch renderer, validates both artifacts, and
-updates one sticky PR comment.
+Add the `benchmark` label when a pull request changes a measured hot path. The
+opt-in workflow measures base and candidate merge revisions on macOS 15 arm64
+with pinned Rust, LLVM/Clang, and Go. It uploads one report pair. A separate
+`workflow_run` job checks out the trusted default-branch renderer, validates the
+artifact, and updates one sticky pull-request comment.
 
-The comment contains one exact `base | candidate | delta` table across both
-measured platforms, followed by separate macOS and Linux runtime-index charts.
-The charts are stacked so every category remains readable in GitHub comments.
-Each chart contains only its own platform: macOS uses blue candidate bars,
-Linux uses orange candidate bars, and a gray line marks that platform's base
-revision at 100. The panels use the same numeric scale, but every index is
-normalized only against its same-platform base. Lower values are faster and
-higher values are slower. The table remains the exact and accessible source of
-truth. Windows benchmark evidence remains unavailable; its complete native CI
-job must first establish compiler, runtime, and I/O execution on a real runner.
+The comment contains an exact `base | candidate | delta` table and a macOS
+runtime-index chart. Blue bars show the candidate and a gray line marks the base
+revision at 100. Lower values are faster and higher values are slower. The table
+remains the exact and accessible source of truth. Linux and Windows benchmark
+cells remain unavailable until an intentionally requested, equivalent runner
+is restored.
 
 The comment is informational. Each shared runner passes
 `--allow-busy-host`, so it is useful for spotting large changes, not for

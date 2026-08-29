@@ -33,26 +33,23 @@ function bootstrapInvocationErrors(source, label) {
   return errors;
 }
 
-export function checkReleaseWorkflow({ ci, release, bootstrap, argumentTest }) {
+export function checkReleaseWorkflow({ release, bootstrap, argumentTest }) {
   const errors = [];
 
-  for (const [label, source] of [
-    ["compiler CI", ci],
-    ["release workflow", release],
-  ]) {
-    errors.push(...bootstrapInvocationErrors(source, label));
-    requireText(
-      errors,
-      source,
-      "./.github/scripts/test-windows-llvm-bootstrap.ps1",
-      label,
+  errors.push(...bootstrapInvocationErrors(release, "release workflow"));
+  requireText(
+    errors,
+    release,
+    "./.github/scripts/test-windows-llvm-bootstrap.ps1",
+    "release workflow",
+  );
+  if (release.includes("https://github.com/llvm/llvm-project/releases/download/")) {
+    errors.push(
+      `release workflow: duplicates the pinned LLVM download owned by ${bootstrapName}`,
     );
-    if (source.includes("https://github.com/llvm/llvm-project/releases/download/")) {
-      errors.push(`${label}: duplicates the pinned LLVM download owned by ${bootstrapName}`);
-    }
-    if (source.includes("https://gitlab.gnome.org/GNOME/libxml2/")) {
-      errors.push(`${label}: restores the retired static libxml2 rebuild`);
-    }
+  }
+  if (release.includes("https://gitlab.gnome.org/GNOME/libxml2/")) {
+    errors.push("release workflow: restores the retired static libxml2 rebuild");
   }
 
   for (const expected of [
@@ -125,17 +122,15 @@ export function checkReleaseWorkflow({ ci, release, bootstrap, argumentTest }) {
 export async function checkRepositoryReleaseWorkflow(root) {
   const sources = await Promise.all(
     [
-      ".github/workflows/ci.yml",
       ".github/workflows/release.yml",
       bootstrapName,
       ".github/scripts/test-windows-llvm-bootstrap.ps1",
     ].map((file) => readFile(path.join(root, file), "utf8")),
   );
   return checkReleaseWorkflow({
-    ci: sources[0],
-    release: sources[1],
-    bootstrap: sources[2],
-    argumentTest: sources[3],
+    release: sources[0],
+    bootstrap: sources[1],
+    argumentTest: sources[2],
   });
 }
 

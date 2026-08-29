@@ -238,6 +238,6 @@ reloads, no-empty-frame emission, synchronous shadow-stack maps, coroutine
 state liveness, structured values, standard-library outputs, and collections
 at compiler-generated boundaries.
 
-A complete Windows native job is configured with GC/runtime fixture coverage,
-but it is not verified Windows runtime or release evidence until a real Windows
-runner result is recorded.
+The Windows release entry includes GC/runtime fixture coverage, but it is not
+verified Windows runtime or release evidence until a successful archive run is
+recorded.

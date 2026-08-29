@@ -752,11 +752,11 @@ Every LCIR slice requires:
   owned by their async caller;
 - reachable-unsupported and unreachable-unsupported route tests;
 - tests proving that lowering, validation, and target defects do not fall back;
-- development and release verification on every supported native CI host;
+- macOS development verification and release verification on each release host;
 - object-identity tests for LCIR format, planning, target-layout, root,
   reachability, or route-selection changes;
-- controlled direct-value benchmarks against the checked-MIR compiler and the maintained
-  Go, Rust, C, and C++ cases.
+- controlled direct-value benchmarks against the checked-MIR compiler and the
+  maintained Go, Rust, C, and C++ cases when a measured hot path changes.
 
 The migration is complete only after the checked-MIR universal source-function ABI
 and its exact-shape specializations are deleted. LLVM optimization output alone

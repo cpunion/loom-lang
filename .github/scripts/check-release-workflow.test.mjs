@@ -16,13 +16,11 @@ test("accepts the repository release and Windows bootstrap structure", async () 
 
 test("requires every named PowerShell bootstrap argument", () => {
   const errors = checkReleaseWorkflow({
-    ci: "./.github/scripts/bootstrap-windows-llvm.ps1 -CacheRoot x -InstallRoot y -EnvironmentFile z",
     release:
       "./.github/scripts/bootstrap-windows-llvm.ps1 -CacheRoot x -InstallRoot y -EnvironmentFile z",
     bootstrap: "",
     argumentTest: "",
   });
-  assert.ok(errors.some((error) => error.includes("compiler CI") && error.includes("-PathFile")));
   assert.ok(
     errors.some((error) => error.includes("release workflow") && error.includes("-PathFile")),
   );
@@ -30,7 +28,6 @@ test("requires every named PowerShell bootstrap argument", () => {
 
 test("requires exact LF byte checks in both release archive branches", () => {
   const errors = checkReleaseWorkflow({
-    ci: "",
     release: "",
     bootstrap: "",
     argumentTest: "",
@@ -51,13 +48,11 @@ test("requires exact LF byte checks in both release archive branches", () => {
 
 test("rejects duplicated downloads, redundant rebuilds, and unsplatted native arguments", () => {
   const errors = checkReleaseWorkflow({
-    ci: [
+    release: [
       "./.github/scripts/bootstrap-windows-llvm.ps1 -CacheRoot x -InstallRoot y -EnvironmentFile z -PathFile p",
       "https://github.com/llvm/llvm-project/releases/download/example",
       "https://gitlab.gnome.org/GNOME/libxml2/-/archive/example",
     ].join("\n"),
-    release:
-      "./.github/scripts/bootstrap-windows-llvm.ps1 -CacheRoot x -InstallRoot y -EnvironmentFile z -PathFile p",
     bootstrap: [
       "& curl.exe --output archive url",
       "& tar.exe -xf archive",

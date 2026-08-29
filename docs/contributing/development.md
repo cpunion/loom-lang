@@ -39,13 +39,8 @@ export PATH="$LLVM_SYS_191_PREFIX/bin:$PATH"
 
 The reported LLVM version must begin with `19.`.
 
-A complete Windows native job is configured for the workspace, `loomc`, LLVM
-codegen, the runtime, and native fixture closures. Until that job produces a
-real Windows runner result, this is configuration rather than verified platform
-or release evidence.
-
-Both Windows CI and release jobs use
-`.github/scripts/bootstrap-windows-llvm.ps1`. The pinned LLVM 19.1.7 Windows
+The cross-platform release workflow owns Windows validation. It uses
+`.github/scripts/bootstrap-windows-llvm.ps1`; the pinned LLVM 19.1.7 Windows
 development archive contains `LLVM-C.dll` and its `LLVM-C.lib` import library.
 MSVC builds use that supported C ABI rather than LLVM's static component
 closure. This keeps LLVM's C++ and C-runtime implementation behind one DLL
@@ -75,12 +70,9 @@ recover the compiler's immutable host identity. The x86-64 MSVC target triple
 and LLVM 19 data layout are embedded as compiler-build invariants, with a
 cross-target regression test checking the layout against the pinned LLVM.
 
-The Windows native gate executes target-machine construction and the first
-LCIR object emission as separate single-test processes before the workspace
-suite. `LOOM_LLVM_TRACE_STAGES=1` prints only compiler-owned LLVM boundary
-names, never source text, paths, environment values, or host details. The
-preceding linkage probes independently cover version reporting, LLVM-owned
-messages, target-triple normalization, and target-machine construction.
+The release gate covers the native compiler, runtime sidecar, source fixtures,
+standard-library boundaries, and packaged archive. A normal pull request does
+not run Windows and must not be cited as Windows evidence.
 
 ## First build
 
@@ -139,7 +131,6 @@ round-trip, cache identity, and tests agree.
 
 ```sh
 cargo +1.88.0 fmt --all -- --check
-cargo +1.88.0 check --locked --workspace --all-targets
 cargo +1.88.0 clippy --locked --workspace --all-targets -- -D warnings
 CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' \
   cargo +1.88.0 build --locked -p loom-runtime
@@ -150,13 +141,17 @@ target/debug/loomc runtime pack \
   --output "$runtime_bundle_root"
 export LOOM_RUNTIME_BUNDLE="$runtime_bundle_root"
 cargo +1.88.0 test --locked --workspace --all-targets
-cargo +1.88.0 build --locked --workspace --all-targets
+target/debug/loomc --no-cache test library/std/tests
+target/debug/loomc --backend interpreter --no-cache test library/std/tests
 ```
 
 The separate runtime build is intentional: compiling `loom-codegen-llvm` never
 starts Cargo recursively and never embeds a machine-local runtime archive.
 Native integration tests require the explicit host archive above; syntax,
 type-checking, object emission, and interpreter tests do not.
+
+The default development workflow runs this gate on macOS only. Linux and
+Windows validation belongs to tagged or manually dispatched release runs.
 
 The fuzz workspace is separate and uses a pinned nightly; see
 [Fuzzing](fuzzing.md). Performance work has a separate controlled runner; see

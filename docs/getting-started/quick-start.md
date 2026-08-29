@@ -71,9 +71,9 @@ target/release/loomc test examples/async-resources
 target/release/loomc run examples/async-resources
 ```
 
-Native asynchronous I/O is supported on the tested Linux and macOS hosts. A
-complete Windows native gate is configured, but Windows runtime support is not
-claimed until successful runner evidence exists.
+Native asynchronous I/O is supported on the tested Linux and macOS hosts. The
+Windows release entry exercises the native closure, but Windows runtime support
+is not claimed until successful runner and archive evidence exists.
 
 ## Work with a manifest project
 

@@ -14,173 +14,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  linux-llvm19:
-    runs-on: ubuntu-24.04
-    env:
-      LLVM_SYS_191_PREFIX: /usr/lib/llvm-19
-      LOOM_CC: clang-19
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install LLVM 19
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes clang-19 llvm-19-dev libpolly-19-dev
-      - name: Install Rust 1.88
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
-        with:
-          toolchain: 1.88.0
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - name: Format
-        run: cargo fmt --all -- --check
-      - name: Check workspace
-        run: cargo check --locked --workspace --all-targets
-      - name: Lint workspace
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: Prove cold codegen builds do not recurse into Cargo
-        run: |
-          cold_target="$RUNNER_TEMP/loom-cold-codegen-target"
-          CARGO_TARGET_DIR="$cold_target" CARGO_NET_OFFLINE=true \
-            cargo check --offline --locked -p loom-codegen-llvm
-          CARGO_TARGET_DIR="$cold_target" CARGO_NET_OFFLINE=true \
-            cargo build --offline --locked -p loom-codegen-llvm
-          if find "$cold_target" -type d -name runtime-target -print -quit | grep -q .; then
-            echo "codegen created a forbidden nested runtime-target" >&2
-            exit 1
-          fi
-      - name: Prepare host runtime sidecar
-        run: |
-          CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' cargo build --locked -p loom-runtime
-          cargo build --locked -p loom-cli
-          runtime_bundle="$PWD/target/runtime-sidecar-$GITHUB_JOB-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          target/debug/loomc runtime pack \
-            --archive target/debug/libloom_runtime.a \
-            --output "$runtime_bundle"
-          echo "LOOM_RUNTIME_BUNDLE=$runtime_bundle" >> "$GITHUB_ENV"
-      - name: Close typed LCIR on a 1 MiB compiler stack
-        run: |
-          cargo test --locked -p loom-lowering --test source_programs \
-            logical_chains_lower_on_one_mib_stack_and_remain_balanced -- \
-            --exact
-          (
-            ulimit -s 1024
-            target/debug/loomc --no-cache check fixtures/lcir-typed-textmap
-            target/debug/loomc --no-cache build --emit object \
-              --output target/ci-low-stack-textmap.o fixtures/lcir-typed-textmap
-            target/debug/loomc --no-cache test fixtures/lcir-typed-textmap
-            target/debug/loomc --no-cache run fixtures/lcir-typed-textmap
-          )
-      - name: Test workspace
-        run: cargo test --locked --workspace --all-targets
-      - name: Build complete workspace
-        run: cargo build --locked --workspace --all-targets
-      - name: Test benchmark comment renderer
-        run: node --test .github/scripts/render-benchmark-comment.test.mjs
-      - name: Canonical examples dual-backend closure
-        run: |
-          for example in constraints-contracts concepts-polymorphism async-resources; do
-            source="examples/$example"
-            native="target/ci-$example"
-            interpreted="target/ci-$example.loomi"
-            cargo run --locked -p loom-cli -- --no-cache check "$source"
-            cargo run --locked -p loom-cli -- --no-cache build --output "$native" "$source"
-            cargo run --locked -p loom-cli -- --no-cache test "$source"
-            cargo run --locked -p loom-cli -- --no-cache run "$source"
-            cargo run --locked -p loom-cli -- run --artifact "$native"
-            cargo run --locked -p loom-cli -- --backend interpreter --no-cache check "$source"
-            cargo run --locked -p loom-cli -- --backend interpreter --no-cache build --output "$interpreted" "$source"
-            cargo run --locked -p loom-cli -- --backend interpreter --no-cache test "$source"
-            cargo run --locked -p loom-cli -- --backend interpreter --no-cache run "$source"
-            cargo run --locked -p loom-cli -- --backend interpreter run --artifact "$interpreted"
-          done
-      - name: Package targets on both backends
-        run: |
-          cargo run --locked -p loom-cli -- --no-cache check --target app examples/packages/application
-          cargo run --locked -p loom-cli -- --no-cache build --target app --output target/ci-package examples/packages/application
-          cargo run --locked -p loom-cli -- --no-cache test --target unit examples/packages/application
-          cargo run --locked -p loom-cli -- --no-cache run --target app examples/packages/application
-          cargo run --locked -p loom-cli -- run --artifact target/ci-package
-          cargo run --locked -p loom-cli -- --backend interpreter --no-cache check --target app examples/packages/application
-          cargo run --locked -p loom-cli -- --backend interpreter --no-cache build --target app --output target/ci-package.loomi examples/packages/application
-          cargo run --locked -p loom-cli -- --backend interpreter --no-cache test --target unit examples/packages/application
-          cargo run --locked -p loom-cli -- --backend interpreter --no-cache run --target app examples/packages/application
-          cargo run --locked -p loom-cli -- --backend interpreter run --artifact target/ci-package.loomi
-      - name: Standard library Loom tests
-        run: |
-          target/debug/loomc --no-cache test library/std/tests
-          target/debug/loomc --backend interpreter --no-cache test library/std/tests
-      - name: C3 repository check/build/test/run on both backends
-        run: |
-          cargo run --locked -p loom-cli -- --no-cache check --target app examples/c3/application
-          cargo run --locked -p loom-cli -- --no-cache build --target app --output target/ci-c3 examples/c3/application
-          cargo run --locked -p loom-cli -- --no-cache test --target unit examples/c3/application
-          cargo run --locked -p loom-cli -- --no-cache run --target app examples/c3/application
-          cargo run --locked -p loom-cli -- run --artifact target/ci-c3
-          cargo run --locked -p loom-cli -- --backend interpreter --no-cache check --target app examples/c3/application
-          cargo run --locked -p loom-cli -- --backend interpreter --no-cache build --target app --output target/ci-c3.loomi examples/c3/application
-          cargo run --locked -p loom-cli -- --backend interpreter --no-cache test --target unit examples/c3/application
-          cargo run --locked -p loom-cli -- --backend interpreter --no-cache run --target app examples/c3/application
-          cargo run --locked -p loom-cli -- --backend interpreter run --artifact target/ci-c3.loomi
-      - name: Verify embedded Linux DWARF
-        run: |
-          llvm-dwarfdump-19 --debug-info target/ci-constraints-contracts | grep 'DW_AT_producer.*loomc'
-          llvm-dwarfdump-19 --debug-line target/ci-constraints-contracts | grep 'shop.loom'
-          cargo run --locked -p loom-cli -- --no-cache build --output target/ci-lcir-debug fixtures/typed-lcir
-          target/ci-lcir-debug
-          llvm-dwarfdump-19 --debug-info target/ci-lcir-debug | grep 'DW_AT_producer.*loomc lcir'
-          llvm-dwarfdump-19 --debug-info target/ci-lcir-debug | grep 'DW_AT_linkage_name.*loom.lcir.fn'
-          llvm-dwarfdump-19 --debug-line target/ci-lcir-debug | grep 'main.loom'
-          cargo run --locked -p loom-cli -- --no-cache build --output target/ci-lcir-fallible-debug fixtures/lcir-debug-fallible
-          target/ci-lcir-fallible-debug
-          llvm-dwarfdump-19 --debug-info target/ci-lcir-fallible-debug > target/ci-lcir-fallible-debug.dwarf
-          grep 'DW_AT_type.*LoomFallible<Int>' target/ci-lcir-fallible-debug.dwarf
-          grep 'DW_TAG_formal_parameter' target/ci-lcir-fallible-debug.dwarf
-          grep 'DW_AT_name.*arg0' target/ci-lcir-fallible-debug.dwarf
-          grep 'DW_AT_name.*__loom_fault_context' target/ci-lcir-fallible-debug.dwarf
-          grep 'DW_AT_artificial.*true' target/ci-lcir-fallible-debug.dwarf
-      - name: C3 controlled correctness and performance gates
-        run: cargo run --locked --release -p loom-quality | tee target/c3-evidence.json
-      - name: Upload C3 evidence
-        if: success()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: c3-evidence-linux-llvm19
-          path: target/c3-evidence.json
-          if-no-files-found: error
-
-  fuzz-smoke:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install pinned nightly Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
-        with:
-          toolchain: nightly-2025-06-26
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          workspaces: fuzz -> target
-      - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked --version 0.13.1
-      - name: Fuzz lossless syntax and recovery
-        run: cargo +nightly-2025-06-26 fuzz run syntax -- -max_total_time=20 -timeout=5 -rss_limit_mb=2048
-      - name: Fuzz artifact decoding and MIR validation
-        run: cargo +nightly-2025-06-26 fuzz run artifact -- -max_total_time=20 -timeout=5 -rss_limit_mb=2048
-      - name: Fuzz proof and runtime-check semantics
-        run: cargo +nightly-2025-06-26 fuzz run semantics -- -max_total_time=20 -timeout=5 -rss_limit_mb=2048
-
   macos-llvm19:
+    name: macOS development gate (LLVM 19)
     runs-on: macos-15
+    timeout-minutes: 60
     env:
       CARGO_TERM_COLOR: always
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Check repository documentation and workflow policy
+        run: |
+          node --test .github/scripts/*.test.mjs
+          node .github/scripts/check-docs.mjs
+
       - name: Install and discover LLVM 19
         run: |
           brew install llvm@19
@@ -189,234 +38,34 @@ jobs:
           echo "LOOM_CC=$llvm_prefix/bin/clang" >> "$GITHUB_ENV"
           echo "$llvm_prefix/bin" >> "$GITHUB_PATH"
           "$llvm_prefix/bin/llvm-config" --version
+
       - name: Install Rust 1.88
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
           toolchain: 1.88.0
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - name: Check and test workspace
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Format and lint
         run: |
           cargo fmt --all -- --check
-          cargo check --locked --workspace --all-targets
           cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: Prepare the host runtime sidecar
+        run: |
           CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' cargo build --locked -p loom-runtime
           cargo build --locked -p loom-cli
           runtime_bundle="$PWD/target/runtime-sidecar-$GITHUB_JOB-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           target/debug/loomc runtime pack \
             --archive target/debug/libloom_runtime.a \
             --output "$runtime_bundle"
-          export LOOM_RUNTIME_BUNDLE="$runtime_bundle"
-          echo "LOOM_RUNTIME_BUNDLE=$LOOM_RUNTIME_BUNDLE" >> "$GITHUB_ENV"
-          cargo test --locked --workspace --all-targets
-          cargo build --locked --workspace --all-targets
-      - name: Standard library Loom tests
-        run: target/debug/loomc --no-cache test library/std/tests
-      - name: Verify typed LCIR dSYM
-        run: |
-          cargo run --locked -p loom-cli -- --no-cache build --output target/ci-lcir-debug fixtures/typed-lcir
-          target/ci-lcir-debug
-          debug_image=target/ci-lcir-debug.dSYM/Contents/Resources/DWARF/ci-lcir-debug
-          llvm-dwarfdump --debug-info "$debug_image" | grep 'DW_AT_producer.*loomc lcir'
-          llvm-dwarfdump --debug-info "$debug_image" | grep 'DW_AT_linkage_name.*loom.lcir.fn'
-          llvm-dwarfdump --debug-line "$debug_image" | grep 'main.loom'
-          cargo run --locked -p loom-cli -- --no-cache build --output target/ci-lcir-fallible-debug fixtures/lcir-debug-fallible
-          target/ci-lcir-fallible-debug
-          fallible_debug_image=target/ci-lcir-fallible-debug.dSYM/Contents/Resources/DWARF/ci-lcir-fallible-debug
-          llvm-dwarfdump --debug-info "$fallible_debug_image" > target/ci-lcir-fallible-debug.dwarf
-          grep 'DW_AT_type.*LoomFallible<Int>' target/ci-lcir-fallible-debug.dwarf
-          grep 'DW_TAG_formal_parameter' target/ci-lcir-fallible-debug.dwarf
-          grep 'DW_AT_name.*arg0' target/ci-lcir-fallible-debug.dwarf
-          grep 'DW_AT_name.*__loom_fault_context' target/ci-lcir-fallible-debug.dwarf
-          grep 'DW_AT_artificial.*true' target/ci-lcir-fallible-debug.dwarf
-          lldb -b \
-            -o 'breakpoint set --file main.loom --line 4' \
-            -o run \
-            -o 'frame variable arg0' \
-            -o 'thread step-out' \
-            -o quit \
-            target/ci-lcir-fallible-debug | tee target/ci-lcir-fallible-debug.lldb
-          grep 'arg0 = 41' target/ci-lcir-fallible-debug.lldb
-          grep 'Return value: (LoomFallible<Int>)' target/ci-lcir-fallible-debug.lldb
-          grep 'status = 0, value = 42' target/ci-lcir-fallible-debug.lldb
-          ! grep 'Return value: (long).* = 0' target/ci-lcir-fallible-debug.lldb
-      - name: C3 repository check/build/test/run on both backends
-        run: |
-          cargo run --locked -p loom-cli -- --no-cache check --target app examples/c3/application
-          cargo run --locked -p loom-cli -- --no-cache build --target app --output target/ci-c3 examples/c3/application
-          cargo run --locked -p loom-cli -- --no-cache test --target unit examples/c3/application
-          cargo run --locked -p loom-cli -- --no-cache run --target app examples/c3/application
-          cargo run --locked -p loom-cli -- run --artifact target/ci-c3
-          cargo run --locked -p loom-cli -- --backend interpreter --no-cache check --target app examples/c3/application
-          cargo run --locked -p loom-cli -- --backend interpreter --no-cache build --target app --output target/ci-c3.loomi examples/c3/application
-          cargo run --locked -p loom-cli -- --backend interpreter --no-cache test --target unit examples/c3/application
-          cargo run --locked -p loom-cli -- --backend interpreter --no-cache run --target app examples/c3/application
-          cargo run --locked -p loom-cli -- --backend interpreter run --artifact target/ci-c3.loomi
+          echo "LOOM_RUNTIME_BUNDLE=$runtime_bundle" >> "$GITHUB_ENV"
 
-  windows-llvm19:
-    name: Windows x86-64 native closure (LLVM 19)
-    runs-on: windows-2025
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Test Windows LLVM bootstrap argument binding
-        shell: pwsh
+      - name: Test workspace
+        run: cargo test --locked --workspace --all-targets
+
+      - name: Test the standard library with both backends
         run: |
-          & ./.github/scripts/test-windows-llvm-bootstrap.ps1 `
-            -TemporaryRoot $env:RUNNER_TEMP
-      - name: Restore official LLVM 19.1.7 development archive
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: |
-            ${{ runner.temp }}/clang+llvm-19.1.7-x86_64-pc-windows-msvc.tar.xz
-          key: windows-llvm-c-19.1.7-b4557b4f012161f5
-      - name: Verify and unpack LLVM development toolchain
-        shell: pwsh
-        run: |
-          $llvmRoot = Join-Path $env:RUNNER_TEMP "llvm-19.1.7-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
-          & ./.github/scripts/bootstrap-windows-llvm.ps1 `
-            -CacheRoot $env:RUNNER_TEMP `
-            -InstallRoot $llvmRoot `
-            -EnvironmentFile $env:GITHUB_ENV `
-            -PathFile $env:GITHUB_PATH
-      - name: Install Rust 1.88
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
-        with:
-          toolchain: 1.88.0
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Check, lint, and prepare the runtime sidecar
-        shell: bash
-        run: |
-          cargo fmt --all -- --check
-          cargo check --locked --workspace --all-targets
-          cargo clippy --locked --workspace --all-targets -- -D warnings
-          CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' cargo build --locked -p loom-runtime
-          cargo build --locked -p loom-cli
-          runtime_bundle="$PWD/target/runtime-sidecar-$GITHUB_JOB-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          target/debug/loomc.exe runtime pack \
-            --archive target/debug/loom_runtime.lib \
-            --output "$runtime_bundle"
-          export LOOM_RUNTIME_BUNDLE="$runtime_bundle"
-          echo "LOOM_RUNTIME_BUNDLE=$LOOM_RUNTIME_BUNDLE" >> "$GITHUB_ENV"
-      - name: Close typed LCIR on the Windows compiler stack
-        shell: bash
-        run: |
-          cargo test --locked -p loom-lowering --test source_programs \
-            logical_chains_lower_on_one_mib_stack_and_remain_balanced -- \
-            --exact
-          target/debug/loomc.exe --no-cache check fixtures/lcir-typed-textmap
-          target/debug/loomc.exe --no-cache build --emit object \
-            --output target/ci-low-stack-textmap fixtures/lcir-typed-textmap
-          test -f target/ci-low-stack-textmap.obj
-          target/debug/loomc.exe --no-cache test fixtures/lcir-typed-textmap
-          target/debug/loomc.exe --no-cache run fixtures/lcir-typed-textmap
-          cargo test --locked -p loom-codegen-llvm --test lcir_source \
-            typed_logging_uses_one_direct_fallible_runtime_boundary -- --exact
-          cargo test --locked -p loom-cli --test cli \
-            typed_logging_closes_real_check_build_test_and_run_commands -- --exact
-      - name: Verify the staged Windows LLVM-C dependency
-        shell: pwsh
-        run: |
-          $compiler = Join-Path $PWD "target\debug\loomc.exe"
-          $imports = & (Join-Path $env:LLVM_PATH "bin\llvm-readobj.exe") --coff-imports $compiler
-          $importsText = $imports -join "`n"
-          if ($LASTEXITCODE -ne 0 -or $importsText -notmatch "Name: LLVM-C.dll") {
-            throw "loomc.exe does not import the pinned LLVM-C.dll"
-          }
-          $staging = Join-Path $env:RUNNER_TEMP "loom-llvm-c-smoke-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
-          New-Item -ItemType Directory -Force -Path $staging | Out-Null
-          Copy-Item -LiteralPath $compiler -Destination $staging
-          Copy-Item -LiteralPath (Join-Path $env:LLVM_PATH "bin\LLVM-C.dll") -Destination $staging
-          $llvmBin = Join-Path $env:LLVM_PATH "bin"
-          $env:PATH = (($env:PATH -split ';') | Where-Object { $_ -ne $llvmBin }) -join ';'
-          & (Join-Path $staging "loomc.exe") --version
-          if ($LASTEXITCODE -ne 0) {
-            throw "the staged compiler could not load its adjacent LLVM-C.dll"
-          }
-      - name: Trace Windows LLVM C API and target-machine construction
-        shell: bash
-        env:
-          LOOM_LLVM_TRACE_STAGES: "1"
-        run: |
-          set +e
-          failed=0
-          for test_name in \
-            windows_llvm_c_api_reports_the_linked_version \
-            windows_llvm_c_api_message_round_trip_is_sound \
-            windows_llvm_c_api_normalizes_a_static_triple \
-            windows_native_target_machine_constructs_and_reads_layout
-          do
-            cargo test --locked -p loom-codegen-llvm --lib \
-              "target::tests::$test_name" -- \
-              --exact --nocapture --test-threads=1
-            status=$?
-            if [ "$status" -ne 0 ]; then
-              echo "LLVM probe $test_name failed with status $status" >&2
-              failed=1
-            fi
-          done
-          set -e
-          exit "$failed"
-      - name: Trace the first Windows LLVM object emission
-        shell: bash
-        env:
-          LOOM_LLVM_TRACE_STAGES: "1"
-        run: |
-          cargo test --locked -p loom-cli --lib \
-            tests::ir_side_artifacts_bypass_the_object_cache_and_are_still_written -- \
-            --exact --nocapture --test-threads=1
-      - name: Test and build complete workspace
-        shell: bash
-        run: |
-          cargo test --locked --workspace --all-targets
-          cargo build --locked --workspace --all-targets
-      - name: Standard library Loom tests
-        shell: bash
-        run: target/debug/loomc.exe --no-cache test library/std/tests
-      - name: Canonical examples native and interpreter closure
-        shell: bash
-        run: |
-          for example in constraints-contracts concepts-polymorphism async-resources; do
-            source="examples/$example"
-            native="target/ci-$example"
-            interpreted="target/ci-$example.loomi"
-            cargo run --locked -p loom-cli -- --no-cache check "$source"
-            cargo run --locked -p loom-cli -- --no-cache build --output "$native" "$source"
-            test -f "$native.exe"
-            test -f "$native.pdb"
-            cargo run --locked -p loom-cli -- --no-cache test "$source"
-            cargo run --locked -p loom-cli -- --no-cache run "$source"
-            cargo run --locked -p loom-cli -- run --artifact "$native.exe"
-            cargo run --locked -p loom-cli -- --backend interpreter --no-cache check "$source"
-            cargo run --locked -p loom-cli -- --backend interpreter --no-cache build --output "$interpreted" "$source"
-            cargo run --locked -p loom-cli -- --backend interpreter --no-cache test "$source"
-            cargo run --locked -p loom-cli -- --backend interpreter --no-cache run "$source"
-            cargo run --locked -p loom-cli -- --backend interpreter run --artifact "$interpreted"
-          done
-      - name: Verify Windows CodeView object and PDB containers
-        shell: pwsh
-        run: |
-          cargo run --locked -p loom-cli -- --no-cache build --output target/ci-lcir-codeview fixtures/typed-lcir
-          & target/ci-lcir-codeview.exe
-          if ($LASTEXITCODE -ne 0 -or -not (Test-Path target/ci-lcir-codeview.pdb -PathType Leaf)) {
-            throw "typed LCIR executable/PDB closure failed"
-          }
-          cargo run --locked -p loom-cli -- --no-cache build --emit object --output target/ci-lcir-codeview-object fixtures/typed-lcir
-          if (-not (Test-Path target/ci-lcir-codeview-object.obj -PathType Leaf)) {
-            throw "native object did not use the MSVC .obj convention"
-          }
-          $sections = & "$env:LLVM_PATH/bin/llvm-readobj.exe" --sections target/ci-lcir-codeview-object.obj | Out-String
-          if ($LASTEXITCODE -ne 0 -or $sections -notmatch '\.debug\$S') {
-            throw "compiler-emitted COFF object has no CodeView .debug`$S section"
-          }
-          $symbols = & "$env:LLVM_PATH/bin/llvm-nm.exe" --format=posix target/ci-lcir-codeview-object.obj | Out-String
-          if ($LASTEXITCODE -ne 0 -or $symbols -notmatch 'loom\.lcir\.fn') {
-            throw "CodeView object did not use the typed LCIR route"
-          }
-          & "$env:LLVM_PATH/bin/llvm-pdbutil.exe" dump -summary target/ci-lcir-codeview.pdb
-          if ($LASTEXITCODE -ne 0) {
-            throw "MSVC linker did not produce a readable PDB"
-          }
+          target/debug/loomc --no-cache test library/std/tests
+          target/debug/loomc --backend interpreter --no-cache test library/std/tests
