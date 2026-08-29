@@ -3276,6 +3276,8 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         | mir::Builtin::ParseFloat
                         | mir::Builtin::FormatFloat
                         | mir::Builtin::JsonFormat
+                        | mir::Builtin::IoErrorKind
+                        | mir::Builtin::IoErrorMessage
                         | mir::Builtin::TaskFaultCode
                         | mir::Builtin::TaskFaultMessage
                         | mir::Builtin::DurationMilliseconds
@@ -11358,6 +11360,16 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 error_variant: 1,
                 depth_limit_variant: 2,
                 non_finite_number_variant: 3,
+            }
+            .into(),
+            (mir::Builtin::IoErrorKind, [error]) => InstructionKind::ProductExtract {
+                aggregate: *error,
+                field: 0,
+            }
+            .into(),
+            (mir::Builtin::IoErrorMessage, [error]) => InstructionKind::ProductExtract {
+                aggregate: *error,
+                field: 1,
             }
             .into(),
             (mir::Builtin::IsFinite, [value]) => {

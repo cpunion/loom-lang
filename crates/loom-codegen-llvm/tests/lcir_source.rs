@@ -3578,7 +3578,7 @@ fn standard_library_mir_route_is_exactly_the_reviewed_lcir_gap() {
     let report = error
         .support_report()
         .expect("unsupported preparation must carry its complete report");
-    assert_eq!(report.len(), 20);
+    assert_eq!(report.len(), 17);
     assert!(
         report
             .items()
@@ -3613,8 +3613,6 @@ fn standard_library_mir_route_is_exactly_the_reviewed_lcir_gap() {
                 "SocketTryConnect"
             } else if site.starts_with("socket.try_write_text(") {
                 "SocketTryWriteText"
-            } else if site == "error.kind()" {
-                "IoErrorKind"
             } else {
                 panic!("unreviewed standard-library LCIR gap: {site}")
             }
@@ -3636,11 +3634,8 @@ fn standard_library_mir_route_is_exactly_the_reviewed_lcir_gap() {
             "SocketTryConnect",
             "SocketTryWriteText",
             "FileTryOpenRead",
-            "IoErrorKind",
             "SocketTryConnect",
-            "IoErrorKind",
             "SocketTryConnect",
-            "IoErrorKind",
             "SocketTryConnect",
             "SocketTryWriteText",
         ]

@@ -71,6 +71,11 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- `IoError.kind()` and `IoError.message()` now lower to direct LCIR product
+  projections. They no longer count as unsupported native operations; the
+  standard-library fallback gate now names only JSON parsing and typed external
+  I/O task creation.
+
 - Source files and directories compiled without `loom.toml` now use the exact
   `Standalone` project mode and synthetic `<standalone>@0` package identity.
   The former project-mode names and cache identity were replaced outright;
