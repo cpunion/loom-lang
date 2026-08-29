@@ -496,15 +496,39 @@ pub fn main() {
 
     let llvm = std::fs::read_to_string(ir).expect("read stable-output ABI IR");
     let main = llvm_native_function(&llvm, "stable_output_abi_main");
+    for dead_process_surface in [
+        "loom_runtime_set_arguments",
+        "loom_runtime_process_arguments",
+        "std_process_arguments",
+    ] {
+        assert!(
+            !llvm.contains(dead_process_surface),
+            "environment-only source retained dead argument surface `{dead_process_surface}`: {llvm}"
+        );
+    }
     for symbol in [
         "@loom_runtime_format_float",
         "@loom_runtime_text_get",
         "@loom_runtime_list_get",
-        "@loom_runtime_process_environment",
     ] {
         assert!(main.contains(symbol), "missing {symbol}: {main}");
         assert_gc_state_published_before(main, symbol);
     }
+    let process_environment = llvm_function(&llvm, "std_process_environment");
+    let process_environment_symbol = llvm_defined_symbol(process_environment);
+    assert!(
+        main.contains(&format!("@{process_environment_symbol}(")),
+        "application main must call the ordinary std.process.environment wrapper: {main}"
+    );
+    assert!(
+        !main.contains("@loom_runtime_process_environment"),
+        "the private process primitive must not be emitted in the application function: {main}"
+    );
+    assert!(
+        process_environment.contains("@loom_runtime_process_environment"),
+        "the std.process.environment wrapper must own the private runtime primitive: {process_environment}"
+    );
+    assert_gc_state_published_before(process_environment, "@loom_runtime_process_environment");
     assert!(
         main.lines().any(|line| {
             line.contains("call i32 @loom_runtime_list_get") && line.matches("ptr ").count() == 2
@@ -527,11 +551,11 @@ pub fn main() {
     );
     assert_gc_state_published_before(main, "@loom_gc_clone_value_v1");
     assert!(
-        main.lines().any(|line| {
+        process_environment.lines().any(|line| {
             line.contains("call i32 @loom_runtime_process_environment")
                 && line.matches("ptr ").count() == 2
         }),
-        "environment did not use name/length/stable-output status ABI: {main}"
+        "environment did not use name/length/stable-output status ABI: {process_environment}"
     );
 
     let output = Command::new(executable)

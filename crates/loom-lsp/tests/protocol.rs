@@ -359,6 +359,105 @@ fn parse(text Text) Result[Int, ParseIntError] {
 }
 
 #[test]
+fn source_backed_process_functions_hover_and_resolve_to_read_only_source() {
+    let source = r"module editor.process
+
+import std.process.arguments
+import std.process.environment
+
+fn inspect(name Text) Option[Text] {
+    let processArguments = arguments()
+    environment(name)
+}
+";
+    let project = TestProject::new(source);
+    let root_uri = loom_lsp::path_to_file_uri(&project.0);
+    let file_uri = loom_lsp::path_to_file_uri(&project.0.join("main.loom"));
+    let arguments_position = source_position(source, "arguments()");
+    let environment_position = source_position(source, "environment(name)");
+    let messages = [
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":root_uri}}),
+        json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+        json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":file_uri,"languageId":"loom","version":1,"text":source}}}),
+        json!({"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":arguments_position}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":environment_position}}),
+        json!({"jsonrpc":"2.0","id":4,"method":"textDocument/definition","params":{"textDocument":{"uri":file_uri},"position":arguments_position}}),
+        json!({"jsonrpc":"2.0","id":5,"method":"textDocument/definition","params":{"textDocument":{"uri":file_uri},"position":environment_position}}),
+        json!({"jsonrpc":"2.0","id":6,"method":"shutdown","params":null}),
+        json!({"jsonrpc":"2.0","method":"exit","params":null}),
+    ];
+    let input = messages.iter().flat_map(frame).collect::<Vec<_>>();
+    let mut output = Vec::new();
+    loom_lsp::run(BufReader::new(input.as_slice()), &mut output).expect("run LSP session");
+    let responses = decode_frames(&output);
+
+    for (id, name) in [(2, "arguments"), (3, "environment")] {
+        let markdown = responses
+            .iter()
+            .find(|message| message.get("id") == Some(&json!(id)))
+            .unwrap_or_else(|| panic!("missing {name} hover response"))
+            .pointer("/result/contents/value")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("missing {name} hover markdown: {responses:#?}"));
+        assert!(
+            markdown.contains(&format!("`function {name}`")),
+            "{markdown}"
+        );
+        assert!(markdown.contains("module `std.process`"), "{markdown}");
+    }
+
+    for (id, name) in [(4, "arguments"), (5, "environment")] {
+        let definition = responses
+            .iter()
+            .find(|message| message.get("id") == Some(&json!(id)))
+            .unwrap_or_else(|| panic!("missing {name} definition response"));
+        assert_eq!(
+            definition.pointer("/error/data/code"),
+            Some(&json!("CompilerOwnedSourceNotNavigable")),
+            "{name}: {definition:#?}"
+        );
+    }
+
+    let snapshot = AnalysisHost::new(&project.0)
+        .expect("open source-backed std.process project")
+        .snapshot()
+        .expect("analyze source-backed std.process project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let file = snapshot
+        .sources()
+        .file_id(&project.0.join("main.loom"))
+        .expect("root source file");
+    for (needle, name) in [
+        ("arguments()", "arguments"),
+        ("environment(name)", "environment"),
+    ] {
+        let byte = u32::try_from(source.find(needle).expect("source occurrence"))
+            .expect("test source fits a u32 span");
+        let symbol = snapshot
+            .definition_at(file, byte)
+            .unwrap_or_else(|| panic!("resolve {name} through the semantic source index"));
+        assert_eq!(symbol.name, name);
+        assert_eq!(symbol.kind, "function");
+        assert_eq!(symbol.module, "std.process");
+        let definition_source = snapshot
+            .sources()
+            .document(symbol.definition.file)
+            .expect("definition source");
+        assert_eq!(definition_source.origin(), SourceOrigin::CompilerStd);
+        assert!(definition_source.is_compiler_std());
+        assert!(definition_source.is_read_only());
+        assert!(!definition_source.is_navigable());
+        assert!(
+            definition_source
+                .relative_path()
+                .ends_with("src/process.loom"),
+            "{}",
+            definition_source.relative_path()
+        );
+    }
+}
+
+#[test]
 fn compiler_std_sources_report_distinct_navigation_and_mutation_policy() {
     let source = r"module editor.compiler_owned
 

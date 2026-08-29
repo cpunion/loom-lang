@@ -3723,6 +3723,106 @@ fn range_and_growable_list_run_on_both_backends() {
 }
 
 #[test]
+fn source_backed_process_closes_both_backend_cli_loops() {
+    let project = TestProject::new(
+        r#"module source_process
+
+import std.process.arguments
+import std.process.environment
+
+fn assertEnvironment() {
+    match environment("LOOM_SOURCE_PROCESS_TEST") {
+        Some(value) => {
+            assert value == "visible"
+        }
+        None => {
+            assert false
+        }
+    }
+}
+
+pub fn main() {
+    let values = arguments()
+    let count = values.length()
+    assert count == 2
+    assertEnvironment()
+}
+
+test fn readsEnvironment() {
+    assertEnvironment()
+}
+"#,
+    );
+
+    for backend in ["interpreter", "llvm"] {
+        for command in ["check", "test"] {
+            let output = loomc()
+                .args(["--no-cache", "--backend", backend, command])
+                .arg(&project.0)
+                .env("LOOM_SOURCE_PROCESS_TEST", "visible")
+                .output()
+                .expect("execute source-backed process command");
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "{backend} {command}: stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let run = loomc()
+            .args(["--no-cache", "--backend", backend, "run"])
+            .arg(&project.0)
+            .arg("--")
+            .args(["alpha", "beta"])
+            .env("LOOM_SOURCE_PROCESS_TEST", "visible")
+            .output()
+            .expect("run source-backed process project");
+        assert_eq!(
+            run.status.code(),
+            Some(0),
+            "{backend} run: stdout={} stderr={}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert_eq!(run.stdout, b"Unit\n", "{backend} run");
+
+        let artifact = project.0.join(format!("source-process-{backend}.artifact"));
+        let build = loomc()
+            .args(["--no-cache", "--backend", backend, "build", "--output"])
+            .arg(&artifact)
+            .arg(&project.0)
+            .output()
+            .expect("build source-backed process artifact");
+        assert_eq!(
+            build.status.code(),
+            Some(0),
+            "{backend} build: stdout={} stderr={}",
+            String::from_utf8_lossy(&build.stdout),
+            String::from_utf8_lossy(&build.stderr)
+        );
+
+        let artifact_run = loomc()
+            .args(["--backend", backend, "run", "--artifact"])
+            .arg(&artifact)
+            .arg("--")
+            .args(["alpha", "beta"])
+            .env("LOOM_SOURCE_PROCESS_TEST", "visible")
+            .output()
+            .expect("run source-backed process artifact");
+        assert_eq!(
+            artifact_run.status.code(),
+            Some(0),
+            "{backend} artifact: stdout={} stderr={}",
+            String::from_utf8_lossy(&artifact_run.stdout),
+            String::from_utf8_lossy(&artifact_run.stderr)
+        );
+        assert_eq!(artifact_run.stdout, b"Unit\n", "{backend} artifact");
+    }
+}
+
+#[test]
 fn build_writes_a_runnable_native_artifact() {
     let project = TestProject::new("module demo\n\npub fn main() {\n}\n");
     let artifact = project.0.join("out.native");

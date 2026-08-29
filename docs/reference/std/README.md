@@ -122,6 +122,12 @@ environment(name Text) Option[Text]
 their original order. `environment` returns `Some(value)` when the named
 environment variable is present and representable as Text, otherwise `None`.
 
+Both public functions are ordinary Loom source definitions. Their bodies call
+compiler-private process primitives that are available only to the exact
+compiler-owned `std.process` module; application and dependency source cannot
+import those primitives. Consequently the wrappers and process runtime symbols
+enter an artifact only through normal source reachability.
+
 The library does not expose a mutable process-environment operation.
 
 ## Time values

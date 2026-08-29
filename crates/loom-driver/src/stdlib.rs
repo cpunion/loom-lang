@@ -33,6 +33,11 @@ const STD_SOURCES: &[StdSource] = &[
         text: include_str!("../../../library/std/src/log.loom"),
     },
     StdSource {
+        path: "src/process.loom",
+        module: "std.process",
+        text: include_str!("../../../library/std/src/process.loom"),
+    },
+    StdSource {
         path: "src/resource.loom",
         module: "std.resource",
         text: include_str!("../../../library/std/src/resource.loom"),

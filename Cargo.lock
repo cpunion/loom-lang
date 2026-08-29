@@ -333,6 +333,7 @@ dependencies = [
 name = "loom-driver"
 version = "0.1.0"
 dependencies = [
+ "loom-codegen-ir",
  "loom-core",
  "loom-hir",
  "loom-interpreter",
