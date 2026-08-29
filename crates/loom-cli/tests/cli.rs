@@ -2026,9 +2026,11 @@ fn finite_dynamic_concepts_close_real_check_build_test_and_run_commands() {
 }
 
 #[test]
-fn core02_main_and_tests_use_the_unique_witness_lcir_route() {
-    let project = TestProject::new(include_str!("../../../examples/core02/concepts.loom"));
-    let object_path = project.0.join("core02-unique-dyn.o");
+fn concepts_polymorphism_uses_the_unique_witness_lcir_route() {
+    let project = TestProject::new(include_str!(
+        "../../../examples/concepts-polymorphism/concepts.loom"
+    ));
+    let object_path = project.0.join("concepts-polymorphism-unique-dyn.o");
     let build = loomc()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
@@ -2957,9 +2959,6 @@ fn library_targets_build_portable_validated_artifacts() {
         Some("miss")
     );
     let artifact_bytes = fs::read(&first_artifact).expect("read portable library");
-    let envelope: serde_json::Value =
-        serde_json::from_slice(&artifact_bytes).expect("portable library JSON");
-    assert!(envelope.get("checkedMir").is_none());
     let checked = loom_driver::decode_library_artifact(&artifact_bytes)
         .expect("decode and validate portable library");
     assert_eq!(checked.root_package().name(), "sample");
@@ -4019,13 +4018,6 @@ fn packed_host_runtime_bundle_builds_and_target_mismatch_fails_closed() {
         .expect("reject runtime pack without an output");
     assert_eq!(missing_output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&missing_output.stderr).contains("requires --output DIR"));
-
-    let removed_export = loomc()
-        .args(["runtime", "export"])
-        .output()
-        .expect("reject removed runtime export command");
-    assert_eq!(removed_export.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&removed_export.stderr).contains("unknown runtime operation"));
 }
 
 #[test]
@@ -4301,15 +4293,18 @@ fn source_backed_std_closes_real_check_build_test_and_run_commands() {
 
 #[test]
 fn core_examples_close_check_build_test_and_run() {
-    for (version, source) in [
-        ("core01", include_str!("../../../examples/core01/shop.loom")),
+    for (fixture, source) in [
         (
-            "core02",
-            include_str!("../../../examples/core02/concepts.loom"),
+            "constraints-contracts",
+            include_str!("../../../examples/constraints-contracts/shop.loom"),
         ),
         (
-            "core03",
-            include_str!("../../../examples/core03/tasks.loom"),
+            "concepts-polymorphism",
+            include_str!("../../../examples/concepts-polymorphism/concepts.loom"),
+        ),
+        (
+            "async-resources",
+            include_str!("../../../examples/async-resources/tasks.loom"),
         ),
     ] {
         let project = TestProject::new(source);
@@ -4322,26 +4317,26 @@ fn core_examples_close_check_build_test_and_run() {
             assert_eq!(
                 output.status.code(),
                 Some(0),
-                "{version} {command}: stdout={} stderr={}",
+                "{fixture} {command}: stdout={} stderr={}",
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
         }
 
-        let artifact = project.0.join(format!("{version}.native"));
+        let artifact = project.0.join(format!("{fixture}.native"));
         let mut command = loomc();
         command
             .args(["build", "--output"])
             .arg(&artifact)
             .arg(&project.0);
-        let build = command.output().expect("build version artifact");
-        assert_eq!(build.status.code(), Some(0), "{version} build");
+        let build = command.output().expect("build fixture artifact");
+        assert_eq!(build.status.code(), Some(0), "{fixture} build");
         let run = loomc()
             .args(["run", "--artifact"])
             .arg(artifact)
             .output()
-            .expect("run version artifact");
-        assert_eq!(run.status.code(), Some(0), "{version} artifact run");
+            .expect("run fixture artifact");
+        assert_eq!(run.status.code(), Some(0), "{fixture} artifact run");
     }
 }
 
@@ -4439,15 +4434,23 @@ test fn resource_identity() {
 }
 
 #[test]
-fn run_rejects_pre_raw_wait_removal_artifact_version() {
+fn run_rejects_an_incompatible_artifact_format_version() {
     let project = TestProject::new("module demo\n");
-    let artifact = project.0.join("old.loomi");
+    let artifact = project.0.join("incompatible-version.loomi");
+    let unsupported_version = loom_mir::INTERPRETED_ARTIFACT_VERSION
+        .checked_sub(1)
+        .expect("artifact format version must be positive");
     fs::write(
         &artifact,
-        br#"{"format":"loom.interpreted-mir","version":17,"program":{},"floatBits":[]}"#,
+        serde_json::to_vec(&serde_json::json!({
+            "format": loom_mir::INTERPRETED_ARTIFACT_FORMAT,
+            "version": unsupported_version,
+            "unexpected": true,
+        }))
+        .expect("encode incompatible artifact"),
     )
     .expect("write incompatible artifact");
-    let output = loomc()
+    let output = loomc_without_test_runtime()
         .args(["--json", "--backend", "interpreter", "run", "--artifact"])
         .arg(&artifact)
         .output()

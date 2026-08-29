@@ -18,10 +18,10 @@ text-and-Git workflow without adding ownership, borrowing, or lifetime syntax.
 ## Language at a glance
 
 This excerpt is adapted from the checked and executed
-[`examples/core01`](examples/core01/shop.loom) fixture:
+[`examples/constraints-contracts`](examples/constraints-contracts/shop.loom) fixture:
 
 ```loom
-module example.shop
+module example.constraints_contracts
 
 import std.float.is_finite
 
@@ -85,16 +85,16 @@ target/release/loomc runtime pack \
   --archive target/release/libloom_runtime.a \
   --output target/release/runtime
 
-target/release/loomc check examples/core01
-target/release/loomc test examples/core01
-target/release/loomc run examples/core01
+target/release/loomc check examples/constraints-contracts
+target/release/loomc test examples/constraints-contracts
+target/release/loomc run examples/constraints-contracts
 ```
 
 The default backend produces a native executable through LLVM. The interpreter
 is an explicitly selected semantic oracle:
 
 ```sh
-target/release/loomc --backend interpreter test examples/core01
+target/release/loomc --backend interpreter test examples/constraints-contracts
 ```
 
 Continue with the [quick-start tutorial](docs/getting-started/quick-start.md) or

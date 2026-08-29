@@ -5,7 +5,7 @@ for external resources. It does not add ownership, borrowing, lifetime, or
 pointer-stability syntax.
 
 The cleanup examples in
-[`examples/core03/tasks.loom`](../../examples/core03/tasks.loom) and the typed
+[`examples/async-resources/tasks.loom`](../../examples/async-resources/tasks.loom) and the typed
 I/O cases in
 [`fixtures/standard-library/main.loom`](../../fixtures/standard-library/main.loom)
 are executable evidence for this guide.

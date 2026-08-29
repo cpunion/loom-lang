@@ -14,19 +14,14 @@ record must never be used as evidence that a feature is available.
 - **Accepted**: approved for implementation, but not necessarily usable.
 - **Implemented**: shipped with tests and normative reference documentation.
 - **Deferred**: intentionally postponed without rejecting the underlying idea.
-- **Rejected**: evaluated and not planned in its proposed form.
-- **Superseded**: replaced by another record.
-- **Archived**: retained as research history and outside the active roadmap.
+- **Rejected**: evaluated and awaiting removal after any current constraints are
+  recorded in the authoritative documentation.
+- **Superseded**: temporarily retained while its replacement is being completed.
 
 ## Active records
 
 - [Typed code generation IR](typed-codegen-ir.md) — **Accepted;
   implementation in progress**
-
-## Archived records
-
-Earlier investigations that are not on the active roadmap are preserved as
-[archived research](archived/README.md).
 
 New proposals should begin with a tracking issue and state their user problem,
 scope, alternatives, observable semantics, diagnostics, migration impact, test

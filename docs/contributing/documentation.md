@@ -16,7 +16,7 @@ Write each fact once at the right layer:
 | `docs/internals` | current compiler/runtime architecture and private representations |
 | `docs/contributing` | repository setup, tests, benchmarks, fuzzing, releases, and writing policy |
 | `docs/project` | charter, status, quality, terminology, and versioning |
-| `docs/rfcs` | active proposals and archived design decisions |
+| `docs/rfcs` | active proposals that may change the current design |
 
 Do not copy an internal layout into the language reference. Do not put an
 unimplemented roadmap item into a command or standard-library reference.
@@ -49,8 +49,9 @@ implementation choice and avoid implying source code can observe it.
 
 Unimplemented designs belong in an RFC. An RFC should have an explicit status,
 motivation, semantics, rejected alternatives, compiler/runtime/artifact impact,
-and test plan. Archived RFCs and retained numbered design documents are history
-and are not normative user reference.
+and test plan. Once a pre-release proposal is abandoned, remove it after moving
+any still-relevant constraint into the current reference or an active RFC. The
+repository is not a compatibility archive for unpublished designs.
 
 In particular, do not merge these topics into current reference pages without
 a separately accepted and implemented change:
@@ -103,6 +104,6 @@ change. Do not represent a future workflow matrix as current CI.
 - Does the change remove stale duplication rather than creating another source
   of truth?
 
-For a broad rewrite, search for non-English text and stale version references,
-but do not delete historical documents unless the migration plan explicitly
-authorizes it.
+For a broad rewrite, search for non-English text, stale version references, and
+superseded pre-release documents. Preserve only facts that still describe the
+current implementation or an active proposal.

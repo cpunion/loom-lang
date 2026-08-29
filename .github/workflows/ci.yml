@@ -78,12 +78,12 @@ jobs:
         run: cargo build --locked --workspace --all-targets
       - name: Test benchmark comment renderer
         run: node --test .github/scripts/render-benchmark-comment.test.mjs
-      - name: Core 0.1-0.3 dual-backend closure
+      - name: Canonical examples dual-backend closure
         run: |
-          for version in core01 core02 core03; do
-            source="examples/$version"
-            native="target/ci-$version"
-            interpreted="target/ci-$version.loomi"
+          for example in constraints-contracts concepts-polymorphism async-resources; do
+            source="examples/$example"
+            native="target/ci-$example"
+            interpreted="target/ci-$example.loomi"
             cargo run --locked -p loom-cli -- --no-cache check "$source"
             cargo run --locked -p loom-cli -- --no-cache build --output "$native" "$source"
             cargo run --locked -p loom-cli -- --no-cache test "$source"
@@ -130,8 +130,8 @@ jobs:
           cargo run --locked -p loom-cli -- --backend interpreter run --artifact target/ci-c3.loomi
       - name: Verify embedded Linux DWARF
         run: |
-          llvm-dwarfdump-19 --debug-info target/ci-core01 | grep 'DW_AT_producer.*loomc'
-          llvm-dwarfdump-19 --debug-line target/ci-core01 | grep 'shop.loom'
+          llvm-dwarfdump-19 --debug-info target/ci-constraints-contracts | grep 'DW_AT_producer.*loomc'
+          llvm-dwarfdump-19 --debug-line target/ci-constraints-contracts | grep 'shop.loom'
           cargo run --locked -p loom-cli -- --no-cache build --output target/ci-lcir-debug fixtures/typed-lcir
           target/ci-lcir-debug
           llvm-dwarfdump-19 --debug-info target/ci-lcir-debug | grep 'DW_AT_producer.*loomc lcir'
@@ -385,13 +385,13 @@ jobs:
         run: |
           cargo test --locked --workspace --all-targets
           cargo build --locked --workspace --all-targets
-      - name: Core native and interpreter check/build/test/run closure
+      - name: Canonical examples native and interpreter closure
         shell: bash
         run: |
-          for version in core01 core02 core03; do
-            source="examples/$version"
-            native="target/ci-$version"
-            interpreted="target/ci-$version.loomi"
+          for example in constraints-contracts concepts-polymorphism async-resources; do
+            source="examples/$example"
+            native="target/ci-$example"
+            interpreted="target/ci-$example.loomi"
             cargo run --locked -p loom-cli -- --no-cache check "$source"
             cargo run --locked -p loom-cli -- --no-cache build --output "$native" "$source"
             test -f "$native.exe"

@@ -1,4 +1,4 @@
-module example.tasks
+module example.async_resources
 
 import std.resource.Dispose
 import std.resource.MustScope

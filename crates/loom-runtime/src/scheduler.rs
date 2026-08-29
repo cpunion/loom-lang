@@ -5994,15 +5994,6 @@ pub unsafe extern "C" fn task_suspend_join(
     0
 }
 
-#[unsafe(export_name = "loom_task_join_count")]
-pub unsafe extern "C" fn task_join_count(parent: *const LoomTask) -> u64 {
-    if parent.is_null() {
-        0
-    } else {
-        unsafe { (*parent).join_children.len() as u64 }
-    }
-}
-
 #[unsafe(export_name = "loom_task_join_winner")]
 pub unsafe extern "C" fn task_join_winner(parent: *const LoomTask) -> u64 {
     if parent.is_null() {
@@ -6145,17 +6136,6 @@ pub unsafe extern "C" fn task_join_step(parent: *const LoomTask) -> i32 {
         unsafe { finalize_typed_winner_join(&mut *executor, parent_pointer) };
     }
     unsafe { (*parent_pointer).join_step }
-}
-
-#[unsafe(export_name = "loom_task_join_result_step")]
-pub unsafe extern "C" fn task_join_result_step(parent: *const LoomTask, index: u64) -> i32 {
-    let Ok(index) = usize::try_from(index) else {
-        return TASK_FAULTED;
-    };
-    if parent.is_null() || index >= unsafe { (*parent).join_children.len() } {
-        return TASK_FAULTED;
-    }
-    terminal_step(unsafe { (&(*parent).join_children)[index] })
 }
 
 #[unsafe(export_name = "loom_task_join_result")]

@@ -87,11 +87,11 @@ For a language fixture, exercise both backends rather than only parsing it:
 ```sh
 for backend in llvm interpreter; do
   cargo +1.88.0 run --locked -p loom-cli -- \
-    --backend "$backend" --no-cache check examples/core03
+    --backend "$backend" --no-cache check examples/async-resources
   cargo +1.88.0 run --locked -p loom-cli -- \
-    --backend "$backend" --no-cache test examples/core03
+    --backend "$backend" --no-cache test examples/async-resources
   cargo +1.88.0 run --locked -p loom-cli -- \
-    --backend "$backend" --no-cache run examples/core03
+    --backend "$backend" --no-cache run examples/async-resources
 done
 ```
 
@@ -100,13 +100,13 @@ the matching backend:
 
 ```sh
 cargo +1.88.0 run --locked -p loom-cli -- \
-  --no-cache build --output target/example examples/core01
+  --no-cache build --output target/example examples/constraints-contracts
 cargo +1.88.0 run --locked -p loom-cli -- \
   run --artifact target/example
 
 cargo +1.88.0 run --locked -p loom-cli -- \
   --backend interpreter --no-cache build \
-  --output target/example.loomi examples/core01
+  --output target/example.loomi examples/constraints-contracts
 cargo +1.88.0 run --locked -p loom-cli -- \
   --backend interpreter run --artifact target/example.loomi
 ```

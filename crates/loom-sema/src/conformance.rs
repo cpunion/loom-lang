@@ -61,7 +61,7 @@ impl ImplIndex {
     }
 
     /// Returns all pairs whose target heads might overlap. Conditions are
-    /// intentionally ignored, as required by Core 0.2's conservative rule.
+    /// intentionally ignored by the conservative conformance rule.
     #[must_use]
     pub fn overlapping_pairs(&self, types: &TyInterner) -> Vec<(DefId, DefId)> {
         let mut overlaps = Vec::new();

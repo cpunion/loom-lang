@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -43,6 +44,22 @@ impl Drop for TestProject {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.root);
     }
+}
+
+fn loom_text_literal(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+}
+
+#[test]
+fn loom_text_literals_escape_windows_paths_before_source_interpolation() {
+    assert_eq!(
+        loom_text_literal("C:\\loom\\round-trip.txt"),
+        "C:\\\\loom\\\\round-trip.txt"
+    );
 }
 
 fn relative(root: &Path, path: &Path) -> String {
@@ -450,7 +467,7 @@ fn first_class_dynamic_values_execute_in_the_interpreter() {
     let project = TestProject::new();
     project.write(
         "concepts.loom",
-        include_str!("../../../examples/core02/concepts.loom"),
+        include_str!("../../../examples/concepts-polymorphism/concepts.loom"),
     );
     let snapshot = AnalysisHost::new(&project.root)
         .expect("open dynamic-value project")
@@ -476,7 +493,7 @@ fn async_dynamic_values_execute_in_the_interpreter() {
     let project = TestProject::new();
     project.write(
         "tasks.loom",
-        include_str!("../../../examples/core03/tasks.loom"),
+        include_str!("../../../examples/async-resources/tasks.loom"),
     );
     let snapshot = AnalysisHost::new(&project.root)
         .expect("open async dynamic-value project")
@@ -647,7 +664,7 @@ fn portable_library_is_a_consumable_versioned_dependency() {
     for unsupported in [previous, next] {
         let mut mismatched_version = envelope.clone();
         mismatched_version["version"] = serde_json::json!(unsupported);
-        mismatched_version["checkedMir"] = serde_json::json!("must not be decoded");
+        mismatched_version["producerState"] = serde_json::json!("must not be decoded");
         let error = decode_library_artifact(
             &serde_json::to_vec(&mismatched_version).expect("encode mismatched artifact"),
         )
@@ -659,12 +676,12 @@ fn portable_library_is_a_consumable_versioned_dependency() {
         );
     }
 
-    let mut extra_mir = envelope.clone();
-    extra_mir["checkedMir"] = serde_json::json!("producer implementation");
+    let mut unexpected_field = envelope.clone();
+    unexpected_field["producerState"] = serde_json::json!("private implementation detail");
     let error = decode_library_artifact(
-        &serde_json::to_vec(&extra_mir).expect("encode v2 artifact with producer MIR"),
+        &serde_json::to_vec(&unexpected_field).expect("encode artifact with an unknown field"),
     )
-    .expect_err("v2 artifact rejects producer implementation state");
+    .expect_err("the current artifact rejects unknown producer state");
     assert_eq!(error.code(), "InvalidLibraryArtifact");
 
     let mut nested_extra = envelope.clone();
@@ -984,10 +1001,23 @@ fn portable_library_carries_source_instead_of_process_local_proofs() {
         .expect("encode proof library");
     let library_json: serde_json::Value =
         serde_json::from_slice(&library).expect("proof library JSON");
-    assert_eq!(library_json["version"], 2);
-    assert!(
-        library_json.get("checkedMir").is_none(),
-        "portable libraries must not capture producer MIR or proof dispositions"
+    assert_eq!(
+        library_json
+            .as_object()
+            .expect("library envelope")
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "format",
+            "languageVersion",
+            "packages",
+            "publicInterfaces",
+            "rootPackage",
+            "sources",
+            "version",
+        ]),
+        "portable libraries have one exact source-package envelope"
     );
     assert!(
         library_json["sources"]
@@ -1400,6 +1430,47 @@ fn language_version_defaults_to_current_and_rejects_unknown_versions() {
     assert_eq!(error.code(), "UnsupportedLanguageVersion");
     assert!(
         error.to_string().contains("`0.4`") && error.to_string().contains("`0.3`"),
+        "{error}"
+    );
+}
+
+#[test]
+fn lockfile_requires_package_entries() {
+    let project = TestProject::new();
+    project.write(
+        "loom.toml",
+        "schema = 1\n[package]\nname = \"sample\"\nversion = \"1.0.0\"\n",
+    );
+    project.write("src/lib.loom", "module sample\n");
+    project.write("loom.lock", "schema = 1\n");
+
+    let error = ProjectGraph::load(&project.root).expect_err("package entries are required");
+    assert_eq!(error.code(), "ProjectLoadFailed");
+    assert!(
+        error.to_string().contains("invalid lockfile")
+            && error.to_string().contains("missing field `package`"),
+        "{error}"
+    );
+}
+
+#[test]
+fn locked_packages_require_language() {
+    let project = TestProject::new();
+    project.write(
+        "loom.toml",
+        "schema = 1\n[package]\nname = \"sample\"\nversion = \"1.0.0\"\n",
+    );
+    project.write("src/lib.loom", "module sample\n");
+    project.write(
+        "loom.lock",
+        "schema = 1\n\n[[package]]\nname = \"sample\"\nversion = \"1.0.0\"\nsource = \"root\"\n",
+    );
+
+    let error = ProjectGraph::load(&project.root).expect_err("package language is required");
+    assert_eq!(error.code(), "ProjectLoadFailed");
+    assert!(
+        error.to_string().contains("invalid lockfile")
+            && error.to_string().contains("missing field `language`"),
         "{error}"
     );
 }
@@ -2334,6 +2405,10 @@ fn duration_file_and_socket_tasks_execute_from_source() {
 
     let project = TestProject::new();
     let file = project.root.join("round-trip.txt");
+    let file_literal = loom_text_literal(
+        file.to_str()
+            .expect("temporary I/O path must be valid UTF-8"),
+    );
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind test listener");
     let port = listener.local_addr().expect("listener address").port();
     let server = std::thread::spawn(move || {
@@ -2357,18 +2432,18 @@ test async fn real_io() {{
     assert observed == 1
     Task.sleep(delay).await
     {{
-        scoped output = create("{}").await
+        scoped output = create("{file_literal}").await
         output.write_text("hello from loom").await
         Unit
     }}
     {{
-        scoped input = open_read("{}").await
+        scoped input = open_read("{file_literal}").await
         let content = input.read_text().await
         assert content == "hello from loom"
         Unit
     }}
     {{
-        scoped socket = connect("127.0.0.1", {}).await
+        scoped socket = connect("127.0.0.1", {port}).await
         socket.write_text("ping").await
         let response = socket.read_text().await
         assert response == "pong"
@@ -2376,9 +2451,6 @@ test async fn real_io() {{
     }}
 }}
 "#,
-        file.display(),
-        file.display(),
-        port,
     );
     project.write("io.loom", &source);
 

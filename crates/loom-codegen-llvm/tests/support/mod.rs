@@ -53,6 +53,14 @@ pub fn emit_native(
     loom_codegen_llvm::emit_native(program, output, options, &runtime.bundle, &runtime.linker)
 }
 
+pub fn loom_text_literal(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+}
+
 pub fn link_native_object(object: &Path, output: &Path) -> Result<(), CodegenError> {
     let runtime = test_runtime();
     link_object_with_runtime_bundle(object, output, &runtime.bundle, &runtime.linker)

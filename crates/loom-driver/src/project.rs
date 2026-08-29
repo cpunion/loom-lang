@@ -208,7 +208,7 @@ struct LockState {
 #[serde(deny_unknown_fields)]
 struct Lockfile {
     schema: u32,
-    #[serde(default, rename = "package")]
+    #[serde(rename = "package")]
     packages: Vec<LockedPackage>,
 }
 
@@ -217,7 +217,6 @@ struct Lockfile {
 struct LockedPackage {
     name: String,
     version: String,
-    #[serde(default = "default_language_version")]
     language: String,
     source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

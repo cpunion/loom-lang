@@ -67,11 +67,7 @@ and test evidence.
 
 User-facing reference documents describe implemented, supported behavior.
 Internals describe the current implementation. Contributing guides describe
-repository process. RFCs and archived design studies are proposals or history,
-not user reference.
-
-The repository preserves selected earlier research as explicitly archived
-design records under `docs/rfcs/archived`. It does not retain superseded
-numbered reference documents as an alternate specification. Archived
-declarative-composition, AOP-like, and desired-state studies do not define
-implemented behavior.
+repository process. RFCs describe active proposals and are not user reference.
+Abandoned pre-release designs are removed after any current constraint is moved
+to its authoritative document; the repository does not retain an alternate
+historical specification.

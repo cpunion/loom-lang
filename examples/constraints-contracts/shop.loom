@@ -1,4 +1,4 @@
-module example.shop
+module example.constraints_contracts
 
 import std.float.is_finite
 

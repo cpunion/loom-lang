@@ -29,7 +29,6 @@ mod scheduler;
 mod standard;
 mod text;
 mod typed_json;
-mod value;
 mod witness;
 
 pub use gc::{
@@ -40,7 +39,6 @@ pub use gc::{
 pub use int_list::{LoomIntListStorage, int_list_drop, int_list_reserve};
 pub use logging::log_typed_v1;
 pub use output::{stdout_write_v1, write_process_stderr};
-pub use value::value_summary;
 
 pub use float::format_float_typed_v1;
 pub use reactor::{
@@ -58,23 +56,23 @@ pub use scheduler::{
     file_try_create, file_try_open_read, file_try_read_text, file_try_write_text, join_add_list,
     join_add_task, join_create, join_task, socket_try_connect, socket_try_read_text,
     socket_try_write_text, task_add_join_child, task_cancel, task_capture_witnesses_v1,
-    task_from_wait_source, task_is_cancelled, task_join_count, task_join_result,
-    task_join_result_step, task_join_step, task_join_winner, task_prepare_join, task_report_fault,
-    task_result, task_set_fault, task_set_state, task_slot, task_spawn, task_spawn_descriptor,
-    task_suspend_join, task_suspend_value, task_suspend_wait, task_trace_live_slots,
-    task_witness_v1, task_write_join_result, typed_io_cancel_v1, typed_io_poll_v1,
-    typed_io_task_create_v1, typed_resource_close_v1, typed_task_abort_unpublished_v1,
-    typed_task_create_v1, typed_task_fault_view_v1, typed_task_frame_v1, typed_task_initialize_v1,
-    typed_task_is_cancel_requested_v1, typed_task_publish_adopting_v1,
-    typed_task_publish_result_v1, typed_task_publish_v1, typed_task_record_fault_v1,
-    typed_task_request_cancel_v1, typed_task_set_root_state_v1, typed_task_status_v1,
-    typed_task_take_outcome_v1, typed_task_take_result_v1, typed_timer_task_create_v1,
+    task_from_wait_source, task_is_cancelled, task_join_result, task_join_step, task_join_winner,
+    task_prepare_join, task_report_fault, task_result, task_set_fault, task_set_state, task_slot,
+    task_spawn, task_spawn_descriptor, task_suspend_join, task_suspend_value, task_suspend_wait,
+    task_trace_live_slots, task_witness_v1, task_write_join_result, typed_io_cancel_v1,
+    typed_io_poll_v1, typed_io_task_create_v1, typed_resource_close_v1,
+    typed_task_abort_unpublished_v1, typed_task_create_v1, typed_task_fault_view_v1,
+    typed_task_frame_v1, typed_task_initialize_v1, typed_task_is_cancel_requested_v1,
+    typed_task_publish_adopting_v1, typed_task_publish_result_v1, typed_task_publish_v1,
+    typed_task_record_fault_v1, typed_task_request_cancel_v1, typed_task_set_root_state_v1,
+    typed_task_status_v1, typed_task_take_outcome_v1, typed_task_take_result_v1,
+    typed_timer_task_create_v1,
 };
 pub use standard::{
     JSON_DEPTH_LIMIT, JsonFailure, JsonFailureKind, JsonNode, bytes_append, bytes_decode_utf8,
-    bytes_get, bytes_is_utf8, escape_json_text, format_json, json_format, json_parse, log_write,
-    parse_json, path_contains_nul, path_join, text_concat, text_contains, text_get, text_length,
-    text_map_get, text_map_insert, text_map_remove,
+    bytes_get, escape_json_text, format_json, json_format, json_parse, log_write, parse_json,
+    path_contains_nul, path_join, text_concat, text_contains, text_get, text_map_get,
+    text_map_insert, text_map_remove,
 };
 pub use text::{
     bytes_append_typed_v1, bytes_decode_utf8_typed_v1, concat_typed_v1, from_utf8_units_typed_v1,

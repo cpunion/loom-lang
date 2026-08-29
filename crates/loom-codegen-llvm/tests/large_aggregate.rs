@@ -74,12 +74,31 @@ test fn copy_and_compare_large_list() {{
     let snapshot = snapshot(project.path());
     assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
     let executable = project.path().join("native-tests");
+    let llvm_ir = project.path().join("native-tests.ll");
+    let mut options = EmitOptions::tests();
+    options.emit_ir = Some(llvm_ir.clone());
     emit_native(
         snapshot.executable().expect("lower large aggregate MIR"),
         &executable,
-        &EmitOptions::tests(),
+        &options,
     )
     .expect("emit native regression executable");
+    let llvm_ir = std::fs::read_to_string(llvm_ir).expect("read large aggregate LLVM IR");
+    assert!(
+        !llvm_ir.lines().any(|line| {
+            line.contains("alloca")
+                && (line.contains("aggregate.value") || line.contains("aggregate.sources"))
+        }),
+        "List literal retained per-element stack materialization"
+    );
+    assert_eq!(
+        llvm_ir
+            .lines()
+            .filter(|line| line.contains("call i32 @loom_runtime_list_add"))
+            .count(),
+        ELEMENT_COUNT,
+        "List literal did not stream every source element through the bounded append path"
+    );
     let native = Command::new(executable)
         .output()
         .expect("run native regression executable");

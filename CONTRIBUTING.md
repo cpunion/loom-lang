@@ -71,7 +71,7 @@ The three core fixtures exercise distinct language layers. Test both backends
 when changing observable semantics:
 
 ```sh
-for fixture in core01 core02 core03; do
+for fixture in constraints-contracts concepts-polymorphism async-resources; do
     target/debug/loomc --no-cache check "examples/$fixture"
     target/debug/loomc --no-cache test "examples/$fixture"
     target/debug/loomc --no-cache run "examples/$fixture"

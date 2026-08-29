@@ -87,7 +87,7 @@ Verify the compiler:
 
 ```sh
 target/release/loomc --version
-target/release/loomc check examples/core01
+target/release/loomc check examples/constraints-contracts
 ```
 
 Loom has no installer or shell-completion command yet. Keep the `runtime/`
@@ -118,7 +118,7 @@ linker and system SDK are installed. The interpreter backend can still exercise
 language semantics without a native runtime bundle or LLVM linking:
 
 ```sh
-target/release/loomc --backend interpreter test examples/core01
+target/release/loomc --backend interpreter test examples/constraints-contracts
 ```
 
 This is a diagnostic alternative, not the default production path.

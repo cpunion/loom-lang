@@ -57,7 +57,8 @@ either direction fails the runner, so newly supported coverage requires removal
 of its stale allowance.
 
 Run and test artifacts are judged independently because their exact reachable
-graphs may differ. Core 0.1 requires typed LCIR for both graphs now that source
+graphs may differ. The constraints-and-contracts fixture requires typed LCIR
+for both graphs now that source
 contracts and nongeneric runtime-checked constrained construction are direct.
 Only generic or unsupported-shape runtime construction may retain a reviewed
 allowance in another fixture.

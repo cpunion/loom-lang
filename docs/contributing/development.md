@@ -103,13 +103,13 @@ by pointing the build at another LLVM major release.
 
 ```sh
 cargo +1.88.0 run --locked -p loom-cli -- \
-  --no-cache check examples/core01
+  --no-cache check examples/constraints-contracts
 cargo +1.88.0 run --locked -p loom-cli -- \
-  --no-cache build --output target/core01 examples/core01
-target/core01
+  --no-cache build --output target/constraints-contracts examples/constraints-contracts
+target/constraints-contracts
 
 cargo +1.88.0 run --locked -p loom-cli -- \
-  --backend interpreter --no-cache test examples/core01
+  --backend interpreter --no-cache test examples/constraints-contracts
 ```
 
 For a manifest target:

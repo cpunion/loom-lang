@@ -34,12 +34,12 @@ fn parses_postfix_await_as_a_chainable_keyword() {
     };
     assert!(matches!(expression.kind, ExprKind::Await(_)));
 
-    let migrated = parse(
+    let invalid_prefix = parse(
         "module tasks\nasync fn child() Int { 1 }\nasync fn parent() Int { await child() }\n",
     );
-    assert!(codes(&migrated).contains(&"UnexpectedToken"));
+    assert!(codes(&invalid_prefix).contains(&"UnexpectedToken"));
     assert_eq!(
-        migrated.reconstructed(),
+        invalid_prefix.reconstructed(),
         "module tasks\nasync fn child() Int { 1 }\nasync fn parent() Int { await child() }\n"
     );
 
@@ -206,13 +206,6 @@ fn use(
         function.signature.parameters[1].ty.kind,
         TypeExprKind::BareDyn(_)
     ));
-}
-
-#[test]
-fn removed_carrier_words_parse_as_plain_identifiers_and_remain_lossless() {
-    let source = "module legacy\nfn use(value view[dyn C]) { discard box(value)\n discard shared(value)\n}\n";
-    let parsed = assert_clean(source);
-    assert_eq!(parsed.reconstructed(), source);
 }
 
 #[test]
