@@ -240,7 +240,7 @@ impl AnalysisSnapshot {
         })
     }
 
-    /// Executes every ordinary language test in deterministic name order.
+    /// Executes root-package language tests in deterministic source declaration order.
     ///
     /// # Errors
     ///

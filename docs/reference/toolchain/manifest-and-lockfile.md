@@ -118,7 +118,7 @@ kind = "lib"
 The supported target kinds are:
 
 - `bin`: an executable entry; `entry` defaults to `main`;
-- `test`: the package graph's `test fn` declarations;
+- `test`: the root package's `test fn` declarations;
 - `lib`: a portable source-and-interface package artifact with no entry.
 
 An `entry` is valid only on a binary target.

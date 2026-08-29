@@ -172,3 +172,5 @@ A test has no parameters, receiver, or generic parameters. It returns `Unit` or
 `Result[Unit, E]`. Normal `Unit` or `Ok(Unit)` completion passes. An `Err`,
 contract fault, runtime fault, or execution defect fails the test. Tests use the
 same type checker, contracts, resource rules, and task rules as other code.
+`loomc test` runs tests owned by the selected root package; tests declared by
+dependencies are type-checked as dependency source but are not executed.

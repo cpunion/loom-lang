@@ -7184,6 +7184,17 @@ test fn middle() {}
             .all(|result| result.status == TestStatus::Passed),
         "{interpreted:#?}"
     );
+    assert_eq!(
+        interpreted
+            .iter()
+            .map(|result| result.name.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "lcir_source_tests.zeta",
+            "lcir_source_tests.alpha",
+            "lcir_source_tests.middle",
+        ]
+    );
     let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
     let root_names = artifact
         .test_roots()

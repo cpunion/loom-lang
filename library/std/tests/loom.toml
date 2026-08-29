@@ -1,0 +1,6 @@
+schema = 1
+language = "0.3"
+
+[package]
+name = "std_tests"
+version = "0.1.0"

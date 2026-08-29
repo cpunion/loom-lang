@@ -791,13 +791,9 @@ impl<'program> Interpreter<'program> {
     }
 
     pub fn run_tests(&mut self) -> Vec<TestResult> {
-        let mut tests = self.program.tests.clone();
-        tests.sort_by_key(|id| {
-            self.program
-                .function(*id)
-                .map_or_else(String::new, |function| function.name.clone())
-        });
-        tests
+        self.program
+            .tests
+            .clone()
             .into_iter()
             .map(|id| {
                 let Some(function) = self.program.function(id) else {

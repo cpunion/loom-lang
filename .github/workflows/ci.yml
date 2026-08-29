@@ -107,15 +107,10 @@ jobs:
           cargo run --locked -p loom-cli -- --backend interpreter --no-cache test --target unit examples/packages/application
           cargo run --locked -p loom-cli -- --backend interpreter --no-cache run --target app examples/packages/application
           cargo run --locked -p loom-cli -- --backend interpreter run --artifact target/ci-package.loomi
-      - name: Standard library differential gate
+      - name: Standard library Loom tests
         run: |
-          cargo test --locked -p loom-codegen-llvm --test builtin_values
-          cargo test --locked -p loom-codegen-llvm --test std_integration
-          cargo test --locked -p loom-codegen-llvm --test lcir_source \
-            typed_logging_uses_one_direct_fallible_runtime_boundary -- --exact
-          cargo test --locked -p loom-cli --test cli \
-            typed_logging_closes_real_check_build_test_and_run_commands -- --exact
-          cargo test --locked -p loom-codegen-llvm --test runtime_bundle
+          target/debug/loomc --no-cache test library/std/tests
+          target/debug/loomc --backend interpreter --no-cache test library/std/tests
       - name: C3 repository check/build/test/run on both backends
         run: |
           cargo run --locked -p loom-cli -- --no-cache check --target app examples/c3/application
@@ -215,15 +210,8 @@ jobs:
           echo "LOOM_RUNTIME_BUNDLE=$LOOM_RUNTIME_BUNDLE" >> "$GITHUB_ENV"
           cargo test --locked --workspace --all-targets
           cargo build --locked --workspace --all-targets
-      - name: Standard library differential gate
-        run: |
-          cargo test --locked -p loom-codegen-llvm --test builtin_values
-          cargo test --locked -p loom-codegen-llvm --test std_integration
-          cargo test --locked -p loom-codegen-llvm --test lcir_source \
-            typed_logging_uses_one_direct_fallible_runtime_boundary -- --exact
-          cargo test --locked -p loom-cli --test cli \
-            typed_logging_closes_real_check_build_test_and_run_commands -- --exact
-          cargo test --locked -p loom-codegen-llvm --test runtime_bundle
+      - name: Standard library Loom tests
+        run: target/debug/loomc --no-cache test library/std/tests
       - name: Verify typed LCIR dSYM
         run: |
           cargo run --locked -p loom-cli -- --no-cache build --output target/ci-lcir-debug fixtures/typed-lcir
@@ -385,6 +373,9 @@ jobs:
         run: |
           cargo test --locked --workspace --all-targets
           cargo build --locked --workspace --all-targets
+      - name: Standard library Loom tests
+        shell: bash
+        run: target/debug/loomc.exe --no-cache test library/std/tests
       - name: Canonical examples native and interpreter closure
         shell: bash
         run: |

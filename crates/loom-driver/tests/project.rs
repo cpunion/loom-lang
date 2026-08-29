@@ -584,7 +584,7 @@ fn manifest_resolves_path_dependencies_sources_and_targets() {
     );
     project.write(
         "utility/src/math.loom",
-        "module utility.math\n\npub fn increment(value Int) Int {\n    value + 1\n}\n",
+        "module utility.math\n\npub fn increment(value Int) Int {\n    value + 1\n}\n\ntest fn dependency_test_is_not_a_root() {\n    assert false\n}\n",
     );
     project.write(
         "application/loom.toml",
@@ -638,6 +638,14 @@ fn manifest_resolves_path_dependencies_sources_and_targets() {
             .exports
             .contains_key("application.start")
     );
+    let tests = snapshot.run_tests().expect("run root package tests");
+    assert_eq!(
+        tests.len(),
+        1,
+        "dependency tests are not root package tests"
+    );
+    assert!(tests[0].name.ends_with("dependency_works"));
+    assert_eq!(tests[0].status, TestStatus::Passed);
 }
 
 #[test]
