@@ -63,18 +63,17 @@ fail even though its null data pointer is valid.
 This is an output-only runtime boundary. It does not give a pure typed LCIR
 source function a runtime context, GC capability, or executor requirement. A
 pure executable object may nevertheless reference this symbol from its native
-harness. That boundary advanced the native runtime ABI to component 20 with
-`stdout-v1` and `runtime-v14`.
+harness. The boundary is identified by `stdout-v1`; the complete current runtime
+identity is defined in
+[Versioning and compatibility](../project/versioning.md).
 
 Typed logging uses a separate synchronous, non-retaining ABI. Its message is a
 complete direct Text object pointer, and its optional fields are a contiguous
 view of canonical `TextMap[Text]` entries, each exactly two pointers. Empty
 fields use a null pointer and zero count. The runtime validates Text headers,
 UTF-8, field ordering, and bounds before producing one compact JSONL line. The
-call does not enter the Loom collector or scheduler. At that stage this
-advanced the native runtime ABI to component 21 with `typed-log-v1` and
-`runtime-v15`; the
-exact identity remains compiler-private.
+call does not enter the Loom collector or scheduler. `typed-log-v1` identifies
+this compiler-private boundary.
 
 ## Typed JSON formatting
 
@@ -90,9 +89,8 @@ The runtime validates the descriptor, traverses all six canonical variants,
 and stages the complete compact JSON byte sequence outside the moving heap.
 Only success allocates and publishes Text. Depth exhaustion and non-finite
 numbers return distinct statuses which LLVM maps into the exact direct
-`JsonError` variants. This advances the native runtime ABI to component 22
-with `typed-json-v1` and `runtime-v16`; Text remains v3, GC remains v9, and the
-public standard-library ABI remains v4.
+`JsonError` variants. `typed-json-v1` identifies this compiler-private
+boundary.
 
 ## Typed Bytes
 
@@ -121,14 +119,9 @@ the ordinary `DecodeTextError.InvalidUtf8` result.
 
 Generated objects reference the two operation symbols and the established
 typed-root wire. The Bytes descriptor and typed allocator remain runtime
-implementation details rather than code-generation dependencies. This boundary
-advances the native runtime ABI to component 23 with `typed-bytes-v1` and
-`runtime-v17`; `text-v3`, `gc-v9`, and public standard-library ABI v4 remain
-unchanged. Its five typed source APIs advance the canonical dump to `lcir 34`,
-the checked artifact identity to schema 35, the LCIR native-object domain to
-`loom-lcir-native-object-v31`, and the CLI object-cache domain to
-`loom-llvm-object-cache-v36`. Bytes adds neither a JSON policy nor ownership or
-borrow syntax.
+implementation details rather than code-generation dependencies. The current
+boundary is identified by `typed-bytes-v1`. Bytes adds neither a JSON policy nor
+ownership or borrow syntax.
 
 `Text.from_utf8_units` borrows a direct `List[Int]` as a contiguous `i64`
 range only for one synchronous call. The runtime narrows and stages every unit
@@ -136,10 +129,9 @@ before entering the moving allocator, validates the complete UTF-8 sequence,
 and publishes one canonical Text pointer last. An empty List crosses as
 `null + 0`; generated code never forms an interior pointer from the null empty
 representation. Out-of-range units and malformed UTF-8 return the sole
-negative language status. This format-neutral boundary advances the native
-runtime ABI to component 24 with `typed-text-units-v1` and `runtime-v18`, and
-the public standard-library ABI to v5. It does not expose List layout as a
-public ABI and does not add a JSON runtime.
+negative language status. The format-neutral boundary is identified by
+`typed-text-units-v1`. It does not expose List layout as a public ABI and does
+not add a JSON runtime.
 
 ## Typed Path
 
@@ -162,10 +154,10 @@ success, status `-1` is the ordinary `PathError.AbsoluteJoin` outcome, and any
 positive or unknown status is a compiler/runtime ABI defect. Exact managed-root
 liveness keeps only values live after the call in the typed shadow frame.
 
-This boundary advances the native runtime ABI to component 25 with
-`typed-path-v1` and `runtime-v19`. It adds no filesystem lookup, host path
-normalization, JSON behavior, or ownership/borrow syntax. The older untyped
-path helper symbols belong only to complete legacy objects.
+The boundary is identified by `typed-path-v1`. It adds no filesystem lookup,
+host path normalization, JSON behavior, or ownership/borrow syntax. The
+whole-artifact MIR route uses its own path helper symbols; a native object never
+mixes the two routes.
 
 ## Typed external resources
 
@@ -408,8 +400,8 @@ layouts fail closed.
 The descriptor is runtime trace/layout metadata. It is not a source-visible
 tag and does not make `Text` a dynamic type. Literal objects and typed moving
 objects reuse the existing language-visible layout prefix. The concat helper
-and generated typed-root calls advance the whole native runtime identity to
-ABI component 10 with `text-v2` and `runtime-v4`; GC remains `gc-v8`.
+and generated typed-root calls use the current Text and typed-GC boundaries
+listed in [Versioning and compatibility](../project/versioning.md).
 
 ## Dynamic concept values
 
@@ -484,59 +476,48 @@ containers. It describes a fixed header and one repeated element region with a
 constant stride and exact managed-pointer offsets. Capacity is an allocator
 argument copied into private GC metadata; tracing never trusts an object
 header. The allocator scans zeroed unused capacity as null cells, keeping the
-representation precise and tagless. This additive boundary is
-`typed-repeated-v1`; it advances the collector identity to `gc-v9` and the
-native runtime component to 13 with `runtime-v7`.
+representation precise and tagless. `typed-repeated-v1` identifies this
+compiler-private boundary.
 
-The additive `loom_runtime_text_get_typed_v1` helper returns found, missing,
+The `loom_runtime_text_get_typed_v1` helper returns found, missing,
 or invalid status and publishes a newly allocated one-scalar direct Text only
 for found indices. It copies the scalar before collection, so source relocation
-cannot invalidate the read. This advances Text identity to `text-v3` and the
-native runtime component to 14 with `runtime-v8`; GC remains `gc-v9`.
+cannot invalidate the read.
 
-The additive `loom_runtime_format_float_typed_v1(value, out_cell)` helper
+The `loom_runtime_format_float_typed_v1(value, out_cell)` helper
 publishes canonical binary64 text through the same direct managed pointer
 representation. Its output cell remains stable across allocation and is
-published only after complete initialization. This advances the native runtime
-component to 15 with `format-float-v1` and `runtime-v9`; `text-v3`, `gc-v9`,
-and both typed allocation wires remain unchanged.
+published only after complete initialization. `format-float-v1` identifies the
+boundary.
 
-The additive `loom_typed_timer_task_create_v1(executor, deadline_ns)` helper
+The `loom_typed_timer_task_create_v1(executor, deadline_ns)` helper
 returns the established opaque typed Task handle. Its `Task[Unit]` frame has no
-managed roots and its result has zero size, so it adds no source-value layout.
-The helper advances the native runtime component to 16 with `typed-timer-v1`
-and `runtime-v10`; typed-task v1 and wait v1 remain unchanged.
+managed roots and its result has zero size. `typed-timer-v1` identifies this
+boundary.
 
-The additive
 `loom_typed_task_publish_adopting_v1(executor, composite, children, count)`
 helper atomically transfers a nonempty ordered set of published typed children
 from the active structured parent into one initialized unpublished composite,
 then publishes that composite. It validates all pointers and ownership edges
 and finishes fallible reservations before the first topology mutation; an error
-therefore preserves the original ownership and ready-queue state. This advances
-the native runtime component to 17 with `typed-task-adopt-v1` and
-`runtime-v11`; `typed-task-v1`, `typed-timer-v1`, `wait-v1`, and `gc-v9` remain
-unchanged.
+therefore preserves the original ownership and ready-queue state.
+`typed-task-adopt-v1` identifies the boundary.
 
 Direct fixed `Task.any` reuses the same opaque handles, frames, and typed result
 take. The existing join-step entry additionally finalizes completed loser
 results and retires losers before returning the observable step. This adds no
-symbol or source-value layout, but advances the exact native runtime identity to
-component 18 with `typed-task-any-finalize-v1` and `runtime-v12`. Typed-task v1,
-coroutine v2, wait v1, and GC v9 remain unchanged.
+source-value layout. Winner finalization is part of the current private Task
+protocol.
 
 Static `Task.settled` and `Task.race` use
 `loom_typed_task_take_outcome_v1` to move one exact completed result or publish
 managed fault Text before retiring a terminal child. Generalized winner
-finalization is shared by `any` and `race`. That slice advanced the native
-identity to component 19 with `typed-task-winner-finalize-v1`,
-`typed-task-outcome-v1`, and
-`runtime-v13`; Task handles and source `TaskOutcome[T]` layouts do not gain an
-extra runtime tag or pointer.
+finalization is shared by `any` and `race`. The current private identity names
+`typed-task-winner-finalize-v1` and `typed-task-outcome-v1`; Task handles and
+source `TaskOutcome[T]` layouts do not gain an extra runtime tag or pointer.
 
-The subsequent exact-length native harness stdout boundary adds `stdout-v1`
-and advances the native runtime identity to component 20 with `runtime-v14`.
-It changes no source-value, typed-task, coroutine, wait, Text, or GC layout.
+The exact-length native harness stdout boundary is identified by `stdout-v1`
+and changes no source-value, Task, coroutine, wait, Text, or GC layout.
 
 Witness descriptors emitted by the compiler are immutable process-lifetime
 constants. Dynamically assembled witness instances live in a non-moving proof
