@@ -47,7 +47,7 @@ fn lower_with_standard_resource(source: &str) -> loom_hir::Program {
         resource.diagnostics()
     );
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
-    let root = PackageId::legacy();
+    let root = PackageId::new("lowering-test", "0");
     let mut lowered = lower_package_files([
         PackageSourceUnit {
             file: FileId(0),
@@ -81,6 +81,48 @@ fn compile_with_standard_resource(source: &str) -> loom_mir::CheckedProgram {
         analysis.diagnostics
     );
     lower_to_mir(&program, &analysis)
+        .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
+}
+
+fn compile_with_standard_log(source: &str) -> loom_mir::CheckedProgram {
+    let application = parse_with_file(FileId(0), source);
+    let log = parse_with_file(FileId(1), include_str!("../../../library/std/src/log.loom"));
+    assert!(
+        application.diagnostics().is_empty() && log.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} std={:#?}",
+        application.diagnostics(),
+        log.diagnostics()
+    );
+    let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+    let root = PackageId::new("lowering-test", "0");
+    let mut lowered = lower_package_files([
+        PackageSourceUnit {
+            file: FileId(0),
+            package: root.clone(),
+            syntax: application.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(1),
+            package: std.clone(),
+            syntax: log.ast(),
+        },
+    ]);
+    lowered.program.register_package(std.clone(), [], false);
+    lowered
+        .program
+        .register_package(root, [(Name::new("std"), std)], true);
+    assert!(
+        lowered.diagnostics.is_empty(),
+        "HIR diagnostics: {:#?}",
+        lowered.diagnostics
+    );
+    let analysis = analyze(&lowered.program);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "semantic diagnostics: {:#?}",
+        analysis.diagnostics
+    );
+    lower_to_mir(&lowered.program, &analysis)
         .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
 }
 
@@ -1075,8 +1117,8 @@ async fn pathFiles(path Path) {
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn structured_standard_values_lower_to_checked_mir() {
-    let program = compile_and_validate(
+fn structured_standard_values_and_source_log_wrappers_lower_to_checked_mir() {
+    let program = compile_with_standard_log(
         r#"
 module structured_standard_lowering
 
@@ -1186,12 +1228,22 @@ async fn network(host Text, port Int) Result[Unit, IoError] {
         "SocketTryConnect",
         "SocketTryReadText",
         "SocketTryWriteText",
-        "LogDebug",
-        "LogInfo",
-        "LogWarn",
-        "LogError",
         "LogWrite",
     ] {
         assert!(debug.contains(builtin), "missing {builtin} in {debug}");
+    }
+    for wrapper in [
+        "std.log.debug",
+        "std.log.info",
+        "std.log.warn",
+        "std.log.error",
+    ] {
+        assert!(
+            program
+                .functions
+                .iter()
+                .any(|function| function.name == wrapper),
+            "missing source wrapper {wrapper} in {debug}"
+        );
     }
 }

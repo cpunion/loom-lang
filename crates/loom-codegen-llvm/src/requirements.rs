@@ -982,11 +982,7 @@ pub(crate) const fn builtin_borrows_copy_argument(builtin: Builtin, index: usize
         | Builtin::DurationAsMilliseconds
         | Builtin::TextMapLength
         | Builtin::IoErrorKind
-        | Builtin::IoErrorMessage
-        | Builtin::LogDebug
-        | Builtin::LogInfo
-        | Builtin::LogWarn
-        | Builtin::LogError => index == 0,
+        | Builtin::IoErrorMessage => index == 0,
         Builtin::TextContains | Builtin::TextMapContains => index < 2,
         Builtin::LogWrite => index < 3,
         _ => false,
@@ -1028,13 +1024,9 @@ const fn builtin_requirements(builtin: Builtin) -> RuntimeRequirements {
         Builtin::FileClose | Builtin::SocketClose => {
             RuntimeRequirements::MAY_FAULT.union(RuntimeRequirements::NEEDS_EXECUTOR)
         }
-        Builtin::TextContains
-        | Builtin::TextMapContains
-        | Builtin::LogDebug
-        | Builtin::LogInfo
-        | Builtin::LogWarn
-        | Builtin::LogError
-        | Builtin::LogWrite => RuntimeRequirements::MAY_FAULT,
+        Builtin::TextContains | Builtin::TextMapContains | Builtin::LogWrite => {
+            RuntimeRequirements::MAY_FAULT
+        }
         Builtin::ParseFloat
         | Builtin::ParseInt
         | Builtin::TextEncodeUtf8
@@ -1403,10 +1395,6 @@ mod tests {
             Builtin::TextMapContains,
             Builtin::IoErrorKind,
             Builtin::IoErrorMessage,
-            Builtin::LogDebug,
-            Builtin::LogInfo,
-            Builtin::LogWarn,
-            Builtin::LogError,
             Builtin::LogWrite,
             Builtin::FileClose,
             Builtin::SocketClose,

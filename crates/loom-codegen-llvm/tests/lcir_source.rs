@@ -3119,7 +3119,7 @@ fn typed_logging_interpreter_child() {
 #[test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one gate keeps all five source logging calls, exact interpreter/legacy/typed stderr, release IR purity, and Linux/MSVC object ABIs together"
+    reason = "one gate keeps five public logging calls over two reachable source bodies, exact interpreter/MIR/typed stderr, release IR purity, and Linux/MSVC object ABIs together"
 )]
 fn typed_logging_uses_one_direct_fallible_runtime_boundary() {
     let source = include_str!("../../../fixtures/lcir-typed-logging/main.loom");
@@ -3152,7 +3152,10 @@ fn typed_logging_uses_one_direct_fallible_runtime_boundary() {
 
         let artifact = lower_source_artifact(&program, &request);
         let dump = dump_program(artifact.program());
-        assert_eq!(dump.matches("log.write").count(), 5, "{dump}");
+        assert_eq!(dump.matches("log.write ").count(), 2, "{dump}");
+        for function in ["debug", "info", "warn", "error", "write_without_fields"] {
+            assert!(dump.contains(&format!("std.log.{function}")), "{dump}");
+        }
         let logging = artifact
             .functions()
             .iter()

@@ -1096,30 +1096,6 @@ const STANDARD_SYMBOLS: &[StandardSymbol] = &[
         signature: "fn format_json(value Json) Result[Text, JsonError]",
     },
     StandardSymbol {
-        name: "debug",
-        kind: "function",
-        module: "std.log",
-        signature: "fn debug(message Text)",
-    },
-    StandardSymbol {
-        name: "info",
-        kind: "function",
-        module: "std.log",
-        signature: "fn info(message Text)",
-    },
-    StandardSymbol {
-        name: "warn",
-        kind: "function",
-        module: "std.log",
-        signature: "fn warn(message Text)",
-    },
-    StandardSymbol {
-        name: "error",
-        kind: "function",
-        module: "std.log",
-        signature: "fn error(message Text)",
-    },
-    StandardSymbol {
         name: "write",
         kind: "function",
         module: "std.log",

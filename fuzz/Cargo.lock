@@ -181,6 +181,7 @@ dependencies = [
 name = "loom-runtime"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "loom-runtime-abi",
  "polling",
 ]

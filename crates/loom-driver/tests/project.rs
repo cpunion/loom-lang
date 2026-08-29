@@ -87,6 +87,7 @@ fn assert_compiler_owned_source(source: &loom_driver::SourceDocument) {
 fn assert_compiler_owned_overlays_are_ignored(
     host: &mut AnalysisHost,
     int_path: &Path,
+    log_path: &Path,
     resource_path: &Path,
 ) {
     host.set_overlay(
@@ -94,6 +95,11 @@ fn assert_compiler_owned_overlays_are_ignored(
         "module std.int\n\npub fn minimum(left Int, right Int) Int { 999 }\n",
     )
     .expect("install hostile synthetic-path overlay");
+    host.set_overlay(
+        log_path,
+        "module std.log\n\npub fn debug(message Text) { discard message }\n",
+    )
+    .expect("install hostile std.log overlay");
     host.set_overlay(
         resource_path,
         "module std.resource\n\npub concept ForgedResourceProtocol {}\n",
@@ -103,6 +109,7 @@ fn assert_compiler_owned_overlays_are_ignored(
     let protected = host.snapshot().expect("reload protected standard source");
     for (path, expected, message) in [
         (int_path, "Returns the smaller", "std.int source"),
+        (log_path, "Writes one debug-level", "std.log source"),
         (
             resource_path,
             "Requires a value to transfer directly",
@@ -123,14 +130,18 @@ fn assert_compiler_owned_overlays_are_ignored(
     assert!(!protected.has_errors(), "{:#?}", protected.diagnostics());
 }
 
-#[test]
-fn compiler_owned_standard_source_resolves_as_an_ordinary_direct_definition() {
+fn project_using_source_backed_standard_functions() -> TestProject {
     let project = TestProject::new();
     project.write(
         "main.loom",
-        r"module embedded_standard_user
+        r#"module embedded_standard_user
 
 import std.int.minimum
+import std.log.debug
+
+fn emit() {
+    debug("not executed")
+}
 
 pub fn main() {
     let value = minimum(9, 4)
@@ -141,9 +152,14 @@ test fn importedMinimum() {
     let value = minimum(-2, 3)
     assert value == -2
 }
-",
+"#,
     );
+    project
+}
 
+#[test]
+fn compiler_owned_standard_sources_have_protected_authority() {
+    let project = project_using_source_backed_standard_functions();
     let mut host = AnalysisHost::new(&project.root).expect("open embedded-standard project");
     let snapshot = host.snapshot().expect("check embedded-standard project");
     assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
@@ -171,6 +187,12 @@ test fn importedMinimum() {
     assert!(
         standard_sources
             .iter()
+            .any(|source| source.relative_path().ends_with("src/log.loom")),
+        "{standard_sources:#?}"
+    );
+    assert!(
+        standard_sources
+            .iter()
             .any(|source| source.relative_path().ends_with("src/resource.loom")),
         "{standard_sources:#?}"
     );
@@ -183,8 +205,15 @@ test fn importedMinimum() {
         .expect("compiler-owned std.resource source")
         .absolute_path()
         .to_path_buf();
+    let log_path = standard_sources
+        .iter()
+        .find(|source| source.relative_path().ends_with("src/log.loom"))
+        .expect("compiler-owned std.log source")
+        .absolute_path()
+        .to_path_buf();
     let standard_source = standard_sources
-        .into_iter()
+        .iter()
+        .copied()
         .find(|source| source.relative_path().ends_with("src/int.loom"))
         .expect("compiler-owned std.int source");
     assert_compiler_owned_source(standard_source);
@@ -197,6 +226,24 @@ test fn importedMinimum() {
     );
     assert_eq!(standard_source.relative_path(), "deps/std@0.3/src/int.loom");
 
+    let standard_path = standard_source.absolute_path().to_path_buf();
+    drop(snapshot);
+    assert_compiler_owned_overlays_are_ignored(
+        &mut host,
+        &standard_path,
+        &log_path,
+        &resource_path,
+    );
+}
+
+#[test]
+fn source_backed_standard_functions_lower_to_direct_calls_and_run() {
+    let project = project_using_source_backed_standard_functions();
+    let snapshot = AnalysisHost::new(&project.root)
+        .expect("open source-backed standard project")
+        .snapshot()
+        .expect("check source-backed standard project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
     let program = snapshot.executable().expect("lower checked MIR");
     let minimum = program
         .functions
@@ -217,16 +264,34 @@ test fn importedMinimum() {
         }),
         "the imported source function must lower to a direct DefId-derived call"
     );
+    let debug = program
+        .functions
+        .iter()
+        .find(|function| function.name == "std.log.debug")
+        .expect("ordinary source debug definition");
+    let emit = program
+        .functions
+        .iter()
+        .find(|function| function.name == "embedded_standard_user.emit")
+        .expect("root caller of source-backed debug");
+    assert!(
+        emit.exprs_preorder().any(|expression| {
+            matches!(
+                expression.kind,
+                loom_mir::ExprKind::Call {
+                    target: loom_mir::CallTarget::Direct(target),
+                    ..
+                } if target == debug.id
+            )
+        }),
+        "std.log.debug must resolve through its ordinary source DefId"
+    );
 
     let results = snapshot
         .run_tests()
         .expect("run imported standard function");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].status, TestStatus::Passed);
-
-    let standard_path = standard_source.absolute_path().to_path_buf();
-    drop(snapshot);
-    assert_compiler_owned_overlays_are_ignored(&mut host, &standard_path, &resource_path);
 }
 
 #[test]
@@ -495,6 +560,7 @@ fn manifest_resolves_path_dependencies_sources_and_targets() {
         .collect::<Vec<_>>();
     for expected in [
         "deps/std@0.3/src/int.loom",
+        "deps/std@0.3/src/log.loom",
         "deps/std@0.3/src/resource.loom",
     ] {
         assert!(standard_paths.contains(&expected), "{standard_paths:?}");
@@ -785,6 +851,12 @@ fn portable_library_is_a_consumable_versioned_dependency() {
         standard_sources
             .iter()
             .any(|source| source.relative_path().ends_with("src/int.loom")),
+        "{standard_sources:#?}"
+    );
+    assert!(
+        standard_sources
+            .iter()
+            .any(|source| source.relative_path().ends_with("src/log.loom")),
         "{standard_sources:#?}"
     );
     assert!(
@@ -1911,7 +1983,7 @@ fn many_modules_and_call_edges_close_the_checked_mir_pipeline() {
             .iter()
             .filter(|function| function.name.starts_with("std."))
             .count(),
-        2
+        7
     );
     assert!(program.exports.contains_key("stress.app.main"));
 }
@@ -1940,6 +2012,7 @@ fn snapshot_assigns_file_ids_by_stable_relative_path_and_builds_executable_mir()
     assert_eq!(paths[1], (FileId(1), "b.loom"));
     for expected in [
         "deps/std@0.3/src/int.loom",
+        "deps/std@0.3/src/log.loom",
         "deps/std@0.3/src/resource.loom",
     ] {
         assert!(paths.iter().any(|(_, path)| *path == expected), "{paths:?}");

@@ -1151,10 +1151,6 @@ pub(crate) const TEXT_MAP_TYPE_ID: TypeId = TypeId(15);
 pub(crate) const JSON_TYPE_ID: TypeId = TypeId(16);
 pub(crate) const JSON_ERROR_TYPE_ID: TypeId = TypeId(17);
 pub(crate) const LOG_LEVEL_TYPE_ID: TypeId = TypeId(20);
-pub(crate) const LOG_LEVEL_DEBUG_VARIANT: u32 = 0;
-pub(crate) const LOG_LEVEL_INFO_VARIANT: u32 = 1;
-pub(crate) const LOG_LEVEL_WARN_VARIANT: u32 = 2;
-pub(crate) const LOG_LEVEL_ERROR_VARIANT: u32 = 3;
 
 /// Statically known external-resource class for typed lexical disposal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1497,14 +1493,14 @@ pub enum TerminatorKind {
         fault: UnwindTarget,
     },
     /// Writes one structured JSON log line through the direct Text ABI.
-    /// `fields=None` is the canonical empty map used by the four fixed-level
-    /// helpers. A successful operation defines Unit only on `normal`; a device
-    /// failure activates [`FaultCode::LogWrite`] and enters `fault` so lexical
-    /// cleanup can run before propagation.
+    /// `fields` is the canonical managed `TextMap[Text]` value. A successful
+    /// operation defines Unit only on `normal`; a device failure activates
+    /// [`FaultCode::LogWrite`] and enters `fault` so lexical cleanup can run
+    /// before propagation.
     LogWrite {
         level: ValueId,
         message: ValueId,
-        fields: Option<ValueId>,
+        fields: ValueId,
         normal: ResultTarget,
         fault: UnwindTarget,
     },
@@ -1652,14 +1648,11 @@ impl TerminatorKind {
                 normal,
                 fault,
             } => {
-                let mut operands = Vec::with_capacity(
-                    2 + usize::from(fields.is_some())
-                        + normal.arguments.len()
-                        + fault.arguments.len(),
-                );
+                let mut operands =
+                    Vec::with_capacity(3 + normal.arguments.len() + fault.arguments.len());
                 operands.push(*level);
                 operands.push(*message);
-                operands.extend(*fields);
+                operands.push(*fields);
                 operands.extend_from_slice(&normal.arguments);
                 operands.extend_from_slice(&fault.arguments);
                 operands

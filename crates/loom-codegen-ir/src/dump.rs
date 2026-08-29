@@ -690,12 +690,7 @@ fn write_terminator(
             normal,
             fault,
         } => {
-            write!(output, "log.write %{level}, %{message}, fields ")?;
-            if let Some(fields) = fields {
-                write!(output, "%{fields}")?;
-            } else {
-                output.write_str("none")?;
-            }
+            write!(output, "log.write %{level}, %{message}, fields %{fields}")?;
             write!(output, ", normal ")?;
             write_result_target(output, normal, 0)?;
             write!(output, ", fault ")?;

@@ -3569,22 +3569,29 @@ mod tests {
         assert!(analyze_assumed_int_function(&asserted).is_none());
 
         let mut effectful = recursive_fibonacci_function();
-        effectful.locals.push(test_local(1, Type::Unit, false));
+        effectful.locals.push(test_local(1, Type::Bool, false));
         effectful.body.statements.push(loom_mir::Statement {
             kind: StatementKind::Let {
                 local: LocalId(1),
                 value: Expr::new(
                     ExprKind::Call {
-                        target: CallTarget::Builtin(Builtin::LogInfo),
+                        target: CallTarget::Builtin(Builtin::TextContains),
                         type_arguments: Vec::new(),
-                        arguments: vec![CallArgument::Value(Expr::new(
-                            ExprKind::Constant(Constant::Text("effect".to_owned())),
-                            Type::Text,
-                            Default::default(),
-                        ))],
+                        arguments: vec![
+                            CallArgument::Value(Expr::new(
+                                ExprKind::Constant(Constant::Text("effect".to_owned())),
+                                Type::Text,
+                                Default::default(),
+                            )),
+                            CallArgument::Value(Expr::new(
+                                ExprKind::Constant(Constant::Text("e".to_owned())),
+                                Type::Text,
+                                Default::default(),
+                            )),
+                        ],
                         witnesses: Vec::new(),
                     },
-                    Type::Unit,
+                    Type::Bool,
                     Default::default(),
                 ),
             },

@@ -3378,14 +3378,7 @@ impl<'program> Interpreter<'program> {
         if matches!(builtin, Builtin::IoErrorKind | Builtin::IoErrorMessage) {
             return self.eval_io_error_builtin(builtin, arguments, span);
         }
-        if matches!(
-            builtin,
-            Builtin::LogDebug
-                | Builtin::LogInfo
-                | Builtin::LogWarn
-                | Builtin::LogError
-                | Builtin::LogWrite
-        ) {
+        if builtin == Builtin::LogWrite {
             return self.eval_log_builtin(builtin, arguments, span);
         }
         match (builtin, arguments) {
@@ -3832,10 +3825,6 @@ impl<'program> Interpreter<'program> {
         span: Span,
     ) -> Result<Value, ExecutionFailure> {
         let (level, message, fields) = match (builtin, arguments) {
-            (Builtin::LogDebug, [Value::Text { value }]) => ("debug", value, Vec::new()),
-            (Builtin::LogInfo, [Value::Text { value }]) => ("info", value, Vec::new()),
-            (Builtin::LogWarn, [Value::Text { value }]) => ("warn", value, Vec::new()),
-            (Builtin::LogError, [Value::Text { value }]) => ("error", value, Vec::new()),
             (Builtin::LogWrite, [level, Value::Text { value }, fields]) => {
                 let level = self.log_level(level, span)?;
                 (level, value, self.text_map_entries(fields, span)?)

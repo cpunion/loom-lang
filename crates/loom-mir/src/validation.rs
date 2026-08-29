@@ -6337,11 +6337,6 @@ impl<'program> Validator<'program> {
             {
                 Some(Type::Text)
             }
-            Builtin::LogDebug | Builtin::LogInfo | Builtin::LogWarn | Builtin::LogError
-                if types_compatible(&Type::Text, types[0].as_ref()?) =>
-            {
-                Some(Type::Unit)
-            }
             Builtin::LogWrite
                 if Self::nominal_builtin_argument(&types, 0, self.program.prelude.log_level)
                     && types_compatible(&Type::Text, types[1].as_ref()?)
@@ -6583,11 +6578,7 @@ impl<'program> Validator<'program> {
             | Builtin::FileTryOpenReadPath
             | Builtin::FileTryCreatePath
             | Builtin::FileTryReadText
-            | Builtin::SocketTryReadText
-            | Builtin::LogDebug
-            | Builtin::LogInfo
-            | Builtin::LogWarn
-            | Builtin::LogError => 1,
+            | Builtin::SocketTryReadText => 1,
         };
         if arguments.len() != expected_arity {
             self.push(
@@ -8759,10 +8750,6 @@ impl<'program> Validator<'program> {
             | Builtin::JsonFormat
             | Builtin::IoErrorKind
             | Builtin::IoErrorMessage
-            | Builtin::LogDebug
-            | Builtin::LogInfo
-            | Builtin::LogWarn
-            | Builtin::LogError
             | Builtin::LogWrite => true,
         }
     }

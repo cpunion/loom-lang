@@ -1,5 +1,5 @@
-use loom_core::FileId;
-use loom_hir::{SourceUnit, lower_files};
+use loom_core::{FileId, LOOM_LANGUAGE_VERSION, Name, PackageId};
+use loom_hir::{PackageSourceUnit, lower_package_files};
 use loom_lowering::lower_to_mir;
 use loom_sema::analyze;
 use loom_syntax::parse_with_file;
@@ -86,16 +86,61 @@ pub fn main() {
 
 pub fn compile(source: &str) -> Result<loom_mir::CheckedProgram, String> {
     let parsed = parse_with_file(FileId(0), source);
+    let standard_int = parse_with_file(FileId(1), include_str!("../../library/std/src/int.loom"));
+    let standard_log = parse_with_file(FileId(2), include_str!("../../library/std/src/log.loom"));
+    let standard_resource = parse_with_file(
+        FileId(3),
+        include_str!("../../library/std/src/resource.loom"),
+    );
     if !parsed.diagnostics().is_empty() {
         return Err(format!("syntax diagnostics: {:#?}", parsed.diagnostics()));
     }
-    let lowered = lower_files([SourceUnit {
-        file: FileId(0),
-        syntax: parsed.ast(),
-    }]);
+    if !standard_int.diagnostics().is_empty()
+        || !standard_log.diagnostics().is_empty()
+        || !standard_resource.diagnostics().is_empty()
+    {
+        return Err(format!(
+            "standard-library syntax diagnostics: int={:#?}, log={:#?}, resource={:#?}",
+            standard_int.diagnostics(),
+            standard_log.diagnostics(),
+            standard_resource.diagnostics()
+        ));
+    }
+    let root_package = PackageId::new("fuzz", "0");
+    let standard_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+    let mut lowered = lower_package_files([
+        PackageSourceUnit {
+            file: FileId(0),
+            package: root_package.clone(),
+            syntax: parsed.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(1),
+            package: standard_package.clone(),
+            syntax: standard_int.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(2),
+            package: standard_package.clone(),
+            syntax: standard_log.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(3),
+            package: standard_package.clone(),
+            syntax: standard_resource.ast(),
+        },
+    ]);
     if !lowered.diagnostics.is_empty() {
         return Err(format!("HIR diagnostics: {:#?}", lowered.diagnostics));
     }
+    lowered
+        .program
+        .register_package(standard_package.clone(), [], false);
+    lowered.program.register_package(
+        root_package,
+        [(Name::new("std"), standard_package)],
+        true,
+    );
     let analysis = analyze(&lowered.program);
     if !analysis.diagnostics.is_empty() {
         return Err(format!("semantic diagnostics: {:#?}", analysis.diagnostics));

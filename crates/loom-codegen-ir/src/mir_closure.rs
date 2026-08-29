@@ -784,11 +784,7 @@ impl SerializationClosure {
             | Builtin::TextContains
             | Builtin::ListAdd
             | Builtin::ListLength
-            | Builtin::ProcessArguments
-            | Builtin::LogDebug
-            | Builtin::LogInfo
-            | Builtin::LogWarn
-            | Builtin::LogError => {}
+            | Builtin::ProcessArguments => {}
         }
     }
 }
