@@ -169,7 +169,7 @@ path helper symbols belong only to complete legacy objects.
 
 ## Typed external resources
 
-Canonical `File#9` and `Socket#10` are direct one-field products containing an
+Canonical `File#8` and `Socket#9` are direct one-field products containing an
 `Int` platform-handle value. The type identity, monomorphic registration,
 direct representation, product shape, and canonical `Int` field must all
 agree; a merely layout-compatible nominal is not an ABI substitute.
@@ -200,6 +200,10 @@ result ownership order nevertheless advances the exact native runtime identity
 to component 26 with `typed-resource-ownership-v1` and `runtime-v20`.
 Typed-task ABI v1, coroutine v2, wait v1, standard-library ABI v5, Text v3, and
 GC v9 remain unchanged.
+
+The current exact runtime identity is component 27 with `runtime-v21`.
+Integer parsing has no runtime export and changes none of these resource,
+typed-task, layout, Text, or GC wires.
 
 ## Legacy primitive and aggregate specialization
 

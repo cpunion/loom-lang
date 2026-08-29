@@ -1008,11 +1008,6 @@ impl<'program> Validator<'program> {
                 self.program.prelude.parse_float_error,
                 "enum",
             ),
-            (
-                "parse_int_error",
-                self.program.prelude.parse_int_error,
-                "enum",
-            ),
             ("task_fault", self.program.prelude.task_fault, "record"),
             ("task_outcome", self.program.prelude.task_outcome, "enum"),
             ("duration", self.program.prelude.duration, "record"),
@@ -1181,33 +1176,6 @@ impl<'program> Validator<'program> {
                     format!("prelude {name} must be a non-generic {{ raw Text }} record"),
                     definition.span,
                     format!("prelude.{}", name.to_ascii_lowercase()),
-                );
-            }
-        }
-        if let Some(definition) = self
-            .program
-            .prelude
-            .parse_int_error
-            .and_then(|id| self.program.type_def(id))
-        {
-            let valid = matches!(
-                &definition.kind,
-                TypeDefKind::Enum { variants }
-                    if definition.type_parameters == 0
-                        && variants.len() == 2
-                        && variants[0].id == VariantId(0)
-                        && variants[0].name == "InvalidSyntax"
-                        && variants[0].payload.is_empty()
-                        && variants[1].id == VariantId(1)
-                        && variants[1].name == "OutOfRange"
-                        && variants[1].payload.is_empty()
-            );
-            if !valid {
-                self.push(
-                    MirValidationCode::VariantShape,
-                    "prelude ParseIntError must use empty InvalidSyntax#0 and OutOfRange#1 variants",
-                    definition.span,
-                    "prelude.parse_int_error",
                 );
             }
         }
@@ -6364,14 +6332,6 @@ impl<'program> Validator<'program> {
                 };
                 Some(Type::Nominal(option, vec![Type::Text]))
             }
-            Builtin::ParseInt if types_compatible(&Type::Text, types[0].as_ref()?) => self
-                .expected_result_type(
-                    Type::Int,
-                    self.program.prelude.parse_int_error,
-                    "parse_int_error",
-                    expression.span,
-                    path,
-                ),
             Builtin::IsFinite if self.is_float_like(types[0].as_ref()?) => Some(Type::Bool),
             Builtin::ParseFloat if types_compatible(&Type::Text, types[0].as_ref()?) => self
                 .expected_result_type(
@@ -6555,7 +6515,6 @@ impl<'program> Validator<'program> {
             | Builtin::PathAsText
             | Builtin::ListLength
             | Builtin::ProcessEnvironment
-            | Builtin::ParseInt
             | Builtin::TaskFaultCode
             | Builtin::TaskFaultMessage
             | Builtin::DurationMilliseconds
@@ -8732,7 +8691,6 @@ impl<'program> Validator<'program> {
             | Builtin::ListGet
             | Builtin::ProcessArguments
             | Builtin::ProcessEnvironment
-            | Builtin::ParseInt
             | Builtin::TaskFaultCode
             | Builtin::TaskFaultMessage
             | Builtin::DurationMilliseconds

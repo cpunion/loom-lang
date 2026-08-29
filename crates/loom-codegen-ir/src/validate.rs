@@ -2009,7 +2009,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::TypeMismatch,
                 format!("{path}.result[0]"),
-                "task.outcome_take requires the canonical Nominal#7[T] result type",
+                "task.outcome_take requires the canonical Nominal#6[T] result type",
             );
         }
         self.require_results(function, instruction, &[expected_outcome], path);
@@ -2034,7 +2034,7 @@ impl<'a> Validator<'a> {
                 self.error(
                     ValidationCode::TypeMismatch,
                     format!("{path}.result[0]"),
-                    "task.outcome_take result must use the canonical direct Nominal#7[T] value type",
+                    "task.outcome_take result must use the canonical direct Nominal#6[T] value type",
                 );
             }
         }
@@ -2074,7 +2074,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::TypeMismatch,
                 format!("{path}.task_fault"),
-                "task.outcome_take requires canonical Nominal#6 as direct product (Text, Text)",
+                "task.outcome_take requires canonical Nominal#5 as direct product (Text, Text)",
             );
         }
 
@@ -2799,7 +2799,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.result[0]"),
-                        "UTF-8 encoding requires canonical managed Bytes#11",
+                        "UTF-8 encoding requires canonical managed Bytes#10",
                     );
                 }
                 self.require_known_value_type(
@@ -2836,7 +2836,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.text"),
-                        "Path construction requires canonical Path#12 as one managed Text field",
+                        "Path construction requires canonical Path#11 as one managed Text field",
                     );
                 }
                 self.require_known_value_type(
@@ -2862,7 +2862,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.path"),
-                        "Path projection requires canonical Path#12 as one managed Text field",
+                        "Path projection requires canonical Path#11 as one managed Text field",
                     );
                 }
                 self.require_known_value_type(
@@ -2891,7 +2891,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.base"),
-                        "Path join requires canonical Path#12 as one managed Text field",
+                        "Path join requires canonical Path#11 as one managed Text field",
                     );
                 }
                 for (name, value) in [("base", base), ("child", child)] {
@@ -2918,7 +2918,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.bytes"),
-                        "Bytes length requires canonical managed Bytes#11",
+                        "Bytes length requires canonical managed Bytes#10",
                     );
                 }
                 self.require_known_value_type(
@@ -2940,7 +2940,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.bytes"),
-                        "Bytes selection requires canonical managed Bytes#11",
+                        "Bytes selection requires canonical managed Bytes#10",
                     );
                 }
                 self.require_known_value_type(
@@ -3000,7 +3000,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.result[0]"),
-                        "Bytes append requires canonical managed Bytes#11",
+                        "Bytes append requires canonical managed Bytes#10",
                     );
                 }
                 for (name, value) in [("left", left), ("right", right)] {
@@ -3033,7 +3033,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.left"),
-                        "Bytes comparison requires canonical managed Bytes#11",
+                        "Bytes comparison requires canonical managed Bytes#10",
                     );
                 }
                 for (name, value) in [("left", left), ("right", right)] {
@@ -3047,34 +3047,16 @@ impl<'a> Validator<'a> {
                 }
                 self.require_results(function, instruction, &[boolean], &path);
             }
-            InstructionKind::ParseInt {
-                text: value,
-                ok_variant,
-                error_variant,
-                invalid_syntax_variant,
-                out_of_range_variant,
-            } => self.validate_parse_instruction(
-                function,
-                instruction,
-                *value,
-                &Type::Int,
-                *ok_variant,
-                *error_variant,
-                *invalid_syntax_variant,
-                *out_of_range_variant,
-                &path,
-            ),
             InstructionKind::ParseFloat {
                 text: value,
                 ok_variant,
                 error_variant,
                 invalid_syntax_variant,
                 out_of_range_variant,
-            } => self.validate_parse_instruction(
+            } => self.validate_parse_float_instruction(
                 function,
                 instruction,
                 *value,
-                &Type::Float,
                 *ok_variant,
                 *error_variant,
                 *invalid_syntax_variant,
@@ -4610,8 +4592,8 @@ impl<'a> Validator<'a> {
                 let valid_resource = resource_type == self.canonical_resource_type(*kind);
                 if resource_type.is_some() && !valid_resource {
                     let expected = match kind {
-                        crate::ResourceKind::File => "File#9",
-                        crate::ResourceKind::Socket => "Socket#10",
+                        crate::ResourceKind::File => "File#8",
+                        crate::ResourceKind::Socket => "Socket#9",
                     };
                     self.error(
                         ValidationCode::TypeMismatch,
@@ -4683,7 +4665,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.level"),
-                        "typed logging requires canonical Nominal#20 LogLevel with four empty ordered variants",
+                        "typed logging requires canonical Nominal#19 LogLevel with four empty ordered variants",
                     );
                 }
                 self.require_known_value_type(
@@ -4722,7 +4704,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.fields"),
-                        "typed structured logging requires canonical Nominal#15[Text] managed TextMap fields",
+                        "typed structured logging requires canonical Nominal#14[Text] managed TextMap fields",
                     );
                 }
                 self.require_known_value_type(
@@ -5780,18 +5762,17 @@ impl<'a> Validator<'a> {
 
     #[expect(
         clippy::too_many_arguments,
-        reason = "the parse opcode's complete closed-result identity is validated at one boundary"
+        reason = "the Float parse opcode's complete closed-result identity is validated at one boundary"
     )]
     #[expect(
         clippy::too_many_lines,
-        reason = "the complete nested Result and ParseError shape is checked atomically"
+        reason = "the complete nested Result and ParseFloatError shape is checked atomically"
     )]
-    fn validate_parse_instruction(
+    fn validate_parse_float_instruction(
         &mut self,
         function: &Function,
         instruction: &Instruction,
         text_value: ValueId,
-        scalar_semantic: &Type,
         ok_variant: u32,
         error_variant: u32,
         invalid_syntax_variant: u32,
@@ -5825,7 +5806,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::TypeMismatch,
                 format!("{path}.result[0]"),
-                "parse result must be a nominal Result[scalar, ParseError]",
+                "Float parse result must be a nominal Result[Float, ParseFloatError]",
             );
             return;
         };
@@ -5833,26 +5814,26 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::TypeMismatch,
                 format!("{path}.result[0]"),
-                "parse result nominal must have exactly scalar and error arguments",
+                "Float parse result nominal must have exactly Float and error arguments",
             );
             return;
         };
-        if result_scalar != scalar_semantic
+        if result_scalar != &Type::Float
             || !matches!(error_semantic, Type::Nominal(_, arguments) if arguments.is_empty())
         {
             self.error(
                 ValidationCode::TypeMismatch,
                 format!("{path}.result[0]"),
-                "parse result must use the exact scalar and a monomorphic nominal ParseError",
+                "Float parse result must use exact Float and a monomorphic nominal ParseFloatError",
             );
         }
 
-        let scalar = self.scalar_type(scalar_semantic);
+        let scalar = self.scalar_type(&Type::Float);
         let Some(result_sum) = self.sum_repr(result_ty) else {
             self.error(
                 ValidationCode::TypeMismatch,
                 format!("{path}.result[0]"),
-                "parse result must use a closed sum representation",
+                "Float parse result must use a closed sum representation",
             );
             return;
         };
@@ -5866,14 +5847,14 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::InstructionShape,
                 format!("{path}.result[0]"),
-                "parse Result must contain exactly two variants",
+                "Float parse Result must contain exactly two variants",
             );
         }
         if ok_variant == error_variant {
             self.error(
                 ValidationCode::InstructionShape,
                 format!("{path}.variants"),
-                "parse Result requires distinct success and error variants",
+                "Float parse Result requires distinct success and error variants",
             );
         }
         let ok = usize::try_from(ok_variant).ok();
@@ -5887,7 +5868,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::InstructionShape,
                 format!("{path}.ok_variant"),
-                "parse success variant must exist and carry exactly the parsed scalar",
+                "Float parse success variant must exist and carry exactly Float",
             );
         }
         let error = usize::try_from(error_variant).ok();
@@ -5900,7 +5881,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::InstructionShape,
                 format!("{path}.error_variant"),
-                "parse error variant must exist and carry exactly one ParseError",
+                "Float parse error variant must carry exactly one ParseFloatError",
             );
             return;
         };
@@ -5913,14 +5894,14 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::TypeMismatch,
                 format!("{path}.error_variant"),
-                "parse error payload must match the Result error argument exactly",
+                "Float parse error payload must match the Result error argument exactly",
             );
         }
         let Some(error_sum) = self.sum_repr(error_ty) else {
             self.error(
                 ValidationCode::TypeMismatch,
                 format!("{path}.error_variant"),
-                "ParseError payload must use a closed sum representation",
+                "ParseFloatError payload must use a closed sum representation",
             );
             return;
         };
@@ -5934,14 +5915,14 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::InstructionShape,
                 format!("{path}.error_variant"),
-                "ParseError must contain exactly two variants",
+                "ParseFloatError must contain exactly two variants",
             );
         }
         if invalid_syntax_variant == out_of_range_variant {
             self.error(
                 ValidationCode::InstructionShape,
                 format!("{path}.error_variants"),
-                "ParseError requires distinct invalid-syntax and out-of-range variants",
+                "ParseFloatError requires distinct invalid-syntax and out-of-range variants",
             );
         }
         for (name, variant) in [
@@ -5956,7 +5937,7 @@ impl<'a> Validator<'a> {
                 self.error(
                     ValidationCode::InstructionShape,
                     format!("{path}.{name}"),
-                    "ParseError status variant must exist and carry no payload",
+                    "ParseFloatError status variant must exist and carry no payload",
                 );
             }
         }
@@ -6030,7 +6011,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::TypeMismatch,
                 format!("{path}.result[0]"),
-                "Path operation requires canonical Path#12 as one managed Text field",
+                "Path operation requires canonical Path#11 as one managed Text field",
             );
         }
         let path_semantic = Type::Nominal(PATH_TYPE_ID, Vec::new());
@@ -6055,7 +6036,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::TypeMismatch,
                 format!("{path}.result[0]"),
-                "Path operation result must be canonical prelude Result#1[Path#12, PathError#14]",
+                "Path operation result must be canonical prelude Result#1[Path#11, PathError#13]",
             );
         }
 
@@ -6092,7 +6073,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::InstructionShape,
                 format!("{path}.ok_variant"),
-                "Path success variant must carry exactly canonical Path#12",
+                "Path success variant must carry exactly canonical Path#11",
             );
         }
 
@@ -6112,7 +6093,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::InstructionShape,
                 format!("{path}.error_variant"),
-                "Path error variant must carry exactly canonical direct PathError#14",
+                "Path error variant must carry exactly canonical direct PathError#13",
             );
             return;
         }
@@ -6120,7 +6101,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::TypeMismatch,
                 format!("{path}.error_variant"),
-                "PathError#14 must use a closed sum representation",
+                "PathError#13 must use a closed sum representation",
             );
             return;
         };
@@ -6139,7 +6120,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::InstructionShape,
                 format!("{path}.error_variant"),
-                "PathError#14 must contain only ContainsNul=0 and AbsoluteJoin=1 without payload",
+                "PathError#13 must contain only ContainsNul=0 and AbsoluteJoin=1 without payload",
             );
         }
         if path_error_variant != expected_path_error_variant {
@@ -6175,7 +6156,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::TypeMismatch,
                 format!("{path}.bytes"),
-                "UTF-8 decoding requires canonical managed Bytes#11",
+                "UTF-8 decoding requires canonical managed Bytes#10",
             );
         }
         self.require_known_value_type(
@@ -6249,7 +6230,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::TypeMismatch,
                 format!("{path}.result[0]"),
-                "UTF-8 decoding result must be canonical prelude Result#1[Text, DecodeTextError#13]",
+                "UTF-8 decoding result must be canonical prelude Result#1[Text, DecodeTextError#12]",
             );
         }
 
@@ -6305,7 +6286,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::InstructionShape,
                 format!("{path}.error_variant"),
-                "UTF-8 decoding error variant must carry exactly canonical direct DecodeTextError#13",
+                "UTF-8 decoding error variant must carry exactly canonical direct DecodeTextError#12",
             );
             return;
         }
@@ -6313,7 +6294,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::TypeMismatch,
                 format!("{path}.error_variant"),
-                "DecodeTextError#13 must use a closed sum representation",
+                "DecodeTextError#12 must use a closed sum representation",
             );
             return;
         };
@@ -6331,7 +6312,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::InstructionShape,
                 format!("{path}.invalid_utf8_variant"),
-                "DecodeTextError#13 must contain only canonical InvalidUtf8=0 without payload",
+                "DecodeTextError#12 must contain only canonical InvalidUtf8=0 without payload",
             );
         }
     }
@@ -6380,7 +6361,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::TypeMismatch,
                 format!("{path}.json"),
-                "JSON formatting requires canonical prelude Json#16",
+                "JSON formatting requires canonical prelude Json#15",
             );
         }
         let variants = self
@@ -6441,7 +6422,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::TypeMismatch,
                 format!("{path}.result[0]"),
-                "JSON formatting result must be canonical prelude Result#1[Text, JsonError#17]",
+                "JSON formatting result must be canonical prelude Result#1[Text, JsonError#16]",
             );
         }
 
@@ -8127,7 +8108,7 @@ mod tests {
 
     #[test]
     fn trusted_refinement_still_requires_the_exact_declared_base_type() {
-        let money = Type::Nominal(TypeId(12), Vec::new());
+        let money = Type::Nominal(TypeId(112), Vec::new());
         let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
         let integer = builder.type_id(&Type::Int).expect("Int type");
         let money_id = builder
@@ -8180,7 +8161,7 @@ mod tests {
 
     #[test]
     fn trusted_invariant_opcode_cannot_target_an_ordinary_product() {
-        let semantic = Type::Nominal(TypeId(13), Vec::new());
+        let semantic = Type::Nominal(TypeId(113), Vec::new());
         let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
         let integer = builder.type_id(&Type::Int).expect("Int type");
         let ordinary = builder
@@ -8239,7 +8220,7 @@ mod tests {
         let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
         let fields = vec![Type::Int; crate::repr::DIRECT_PRODUCT_MAX_STRUCTURAL_NODES + 1];
         let protected = builder
-            .add_invariant_record_type(Type::Nominal(TypeId(14), Vec::new()), &fields)
+            .add_invariant_record_type(Type::Nominal(TypeId(114), Vec::new()), &fields)
             .expect("unchecked wide protected product");
         let function = builder
             .declare_function(

@@ -10,7 +10,7 @@ fn target() -> TargetLayout {
 
 #[test]
 fn transparent_nominal_values_keep_semantic_identity_and_share_only_physical_repr() {
-    let money = Type::Nominal(TypeId(10), Vec::new());
+    let money = Type::Nominal(TypeId(100), Vec::new());
     let mut builder = ProgramBuilder::new(target());
     let float = builder.type_id(&Type::Float).expect("Float type");
     let money_id = builder
@@ -34,8 +34,8 @@ fn transparent_nominal_values_keep_semantic_identity_and_share_only_physical_rep
 
 #[test]
 fn public_raw_builder_cannot_mint_frontend_proof_certificates() {
-    let money = Type::Nominal(TypeId(12), Vec::new());
-    let protected = Type::Nominal(TypeId(13), Vec::new());
+    let money = Type::Nominal(TypeId(101), Vec::new());
+    let protected = Type::Nominal(TypeId(102), Vec::new());
     let mut builder = ProgramBuilder::new(target());
     let float = builder.type_id(&Type::Float).expect("Float type");
     let integer = builder.type_id(&Type::Int).expect("Int type");
@@ -99,7 +99,7 @@ fn public_raw_builder_cannot_mint_frontend_proof_certificates() {
 
 #[test]
 fn ordinary_product_construction_cannot_forge_an_invariant_record() {
-    let protected = Type::Nominal(TypeId(11), Vec::new());
+    let protected = Type::Nominal(TypeId(103), Vec::new());
     let mut builder = ProgramBuilder::new(target());
     let integer = builder.type_id(&Type::Int).expect("Int type");
     let protected_id = builder
@@ -154,7 +154,7 @@ fn ordinary_product_construction_cannot_forge_an_invariant_record() {
 
 #[test]
 fn product_insertion_cannot_mutate_an_invariant_record() {
-    let protected = Type::Nominal(TypeId(15), Vec::new());
+    let protected = Type::Nominal(TypeId(104), Vec::new());
     let mut builder = ProgramBuilder::new(target());
     let integer = builder.type_id(&Type::Int).expect("Int type");
     let protected_id = builder

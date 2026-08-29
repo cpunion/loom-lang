@@ -13,7 +13,8 @@ their `std.*` path.
 
 Source-backed modules are distributed as Loom source and compile through the
 ordinary module, type, MIR, reachability, and native pipelines. The current
-source package contains the foundational `std.int` algorithms, the
+source package contains the foundational `std.int` algorithms, parser, and
+parse-error enum, the
 `std.log.debug`, `info`, `warn`, and `error` convenience functions, and the
 public `Dispose`, `MustScope`, and `NoSuspend` declarations in `std.resource`.
 The logging conveniences are ordinary Loom functions over the irreducible
@@ -89,6 +90,7 @@ infinity.
 ### Int
 
 ```loom
+import std.int.ParseIntError
 import std.int.parse_int
 ```
 
@@ -96,11 +98,16 @@ import std.int.parse_int
 parse_int(Text) Result[Int, ParseIntError]
 ```
 
-`ParseIntError` has the closed variants `InvalidSyntax` and `OutOfRange`.
-Parsing consumes the complete Text as a decimal integer with an optional `+`
-or `-` sign. Whitespace, separators, radix prefixes, and suffixes are rejected.
-A syntactically valid integer outside the signed 64-bit range produces
-`OutOfRange`.
+`ParseIntError` is an ordinary public enum declared by `std.int`, with the
+closed variants `InvalidSyntax` and `OutOfRange`. Parsing consumes the complete
+Text as a decimal integer with an optional `+` or `-` sign. Whitespace,
+separators, radix prefixes, suffixes, and non-ASCII digits are rejected. A
+syntactically valid integer outside the signed 64-bit range produces
+`OutOfRange`; invalid syntax takes precedence when both conditions occur.
+
+The implementation is ordinary Loom source over `Text.encode_utf8` and
+`Bytes`. The compiler and runtime do not contain an integer-parser opcode,
+builtin, or ABI entry point.
 
 ## Process values
 

@@ -47,7 +47,6 @@ pub enum BuiltinType {
     File,
     Socket,
     ParseFloatError,
-    ParseIntError,
     DecodeTextError,
     PathError,
     Json,

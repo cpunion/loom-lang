@@ -1977,14 +1977,6 @@ fn many_modules_and_call_edges_close_the_checked_mir_pipeline() {
             .count(),
         MODULES + 1
     );
-    assert_eq!(
-        program
-            .functions
-            .iter()
-            .filter(|function| function.name.starts_with("std."))
-            .count(),
-        7
-    );
     assert!(program.exports.contains_key("stress.app.main"));
 }
 

@@ -636,7 +636,7 @@ pub enum InstructionKind {
         error_variant: u32,
         contains_nul_variant: u32,
     },
-    /// Extracts the immutable managed Text field from canonical `Path#12`.
+    /// Extracts the immutable managed Text field from canonical `Path#11`.
     /// This is a representation-preserving, non-allocating operation.
     PathAsText {
         path: ValueId,
@@ -688,22 +688,11 @@ pub enum InstructionKind {
         left: ValueId,
         right: ValueId,
     },
-    /// Parses one canonical Text value as a signed `Int` and constructs the
-    /// exact closed `Result[Int, ParseIntError]` selected by the checked
-    /// source program. Runtime status 0 selects `ok_variant`; statuses 1 and
-    /// 2 select the nested `invalid_syntax_variant` and
-    /// `out_of_range_variant` through `error_variant`.
-    ParseInt {
-        text: ValueId,
-        ok_variant: u32,
-        error_variant: u32,
-        invalid_syntax_variant: u32,
-        out_of_range_variant: u32,
-    },
     /// Parses one canonical Text value as a binary64 `Float` and constructs
     /// the exact closed `Result[Float, ParseFloatError]` selected by the
-    /// checked source program. The status and variant contract matches
-    /// [`InstructionKind::ParseInt`].
+    /// checked source program. Runtime status 0 selects `ok_variant`; statuses
+    /// 1 and 2 select the nested `invalid_syntax_variant` and
+    /// `out_of_range_variant` through `error_variant`.
     ParseFloat {
         text: ValueId,
         ok_variant: u32,
@@ -941,7 +930,6 @@ impl InstructionKind {
             Self::TextLength { text }
             | Self::TextEncodeUtf8 { text }
             | Self::PathFromText { text, .. }
-            | Self::ParseInt { text, .. }
             | Self::ParseFloat { text, .. } => vec![*text],
             Self::TextFromUtf8Units { units, .. } => vec![*units],
             Self::PathAsText { path } => vec![*path],
@@ -1128,8 +1116,8 @@ pub enum AwaitMode {
 /// [`InstructionKind::TaskOutcomeTake`]. Checked MIR establishes the source
 /// definitions; independent LCIR validation rechecks their concrete semantic
 /// identities and complete target representation shapes.
-pub const TASK_FAULT_TYPE_ID: TypeId = TypeId(6);
-pub const TASK_OUTCOME_TYPE_ID: TypeId = TypeId(7);
+pub const TASK_FAULT_TYPE_ID: TypeId = TypeId(5);
+pub const TASK_OUTCOME_TYPE_ID: TypeId = TypeId(6);
 pub const TASK_OUTCOME_COMPLETED_VARIANT: u32 = 0;
 pub const TASK_OUTCOME_FAULTED_VARIANT: u32 = 1;
 pub const TASK_OUTCOME_CANCELLED_VARIANT: u32 = 2;
@@ -1139,18 +1127,18 @@ pub const TASK_OUTCOME_CANCELLED_VARIANT: u32 = 2;
 /// validation rechecks both semantic identity and physical shape.
 pub(crate) const OPTION_TYPE_ID: TypeId = TypeId(0);
 pub(crate) const RESULT_TYPE_ID: TypeId = TypeId(1);
-pub(crate) const FILE_TYPE_ID: TypeId = TypeId(9);
-pub(crate) const SOCKET_TYPE_ID: TypeId = TypeId(10);
+pub(crate) const FILE_TYPE_ID: TypeId = TypeId(8);
+pub(crate) const SOCKET_TYPE_ID: TypeId = TypeId(9);
 /// Canonical prelude identity of the compiler-known immutable Bytes type.
-pub const BYTES_TYPE_ID: TypeId = TypeId(11);
+pub const BYTES_TYPE_ID: TypeId = TypeId(10);
 /// Canonical prelude identity of the compiler-known lexical Path type.
-pub const PATH_TYPE_ID: TypeId = TypeId(12);
-pub(crate) const DECODE_TEXT_ERROR_TYPE_ID: TypeId = TypeId(13);
-pub(crate) const PATH_ERROR_TYPE_ID: TypeId = TypeId(14);
-pub(crate) const TEXT_MAP_TYPE_ID: TypeId = TypeId(15);
-pub(crate) const JSON_TYPE_ID: TypeId = TypeId(16);
-pub(crate) const JSON_ERROR_TYPE_ID: TypeId = TypeId(17);
-pub(crate) const LOG_LEVEL_TYPE_ID: TypeId = TypeId(20);
+pub const PATH_TYPE_ID: TypeId = TypeId(11);
+pub(crate) const DECODE_TEXT_ERROR_TYPE_ID: TypeId = TypeId(12);
+pub(crate) const PATH_ERROR_TYPE_ID: TypeId = TypeId(13);
+pub(crate) const TEXT_MAP_TYPE_ID: TypeId = TypeId(14);
+pub(crate) const JSON_TYPE_ID: TypeId = TypeId(15);
+pub(crate) const JSON_ERROR_TYPE_ID: TypeId = TypeId(16);
+pub(crate) const LOG_LEVEL_TYPE_ID: TypeId = TypeId(19);
 
 /// Statically known external-resource class for typed lexical disposal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

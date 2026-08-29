@@ -71,9 +71,21 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- `std.int.parse_int` and `std.int.ParseIntError` are now ordinary Loom source
+  definitions. Parsing uses `Text.encode_utf8`, `Bytes`, control flow, checked
+  `Int` operations, and ordinary enum/Result construction. The compiler-known
+  function and error type, fixed nominal slot, MIR builtin, LCIR instruction,
+  LLVM emitter paths, `loom_runtime_parse_int`, and its runtime ABI constant
+  were deleted without aliases, tombstones, compatibility decoding, or a
+  migration layer. The remaining canonical synthetic TypeIds are densely
+  renumbered. This advances interpreted MIR to 28, LCIR to 37, artifact schema
+  to 39, the native-object domain to v35, the LLVM object-cache domain to v40,
+  and native runtime ABI to component 27 with `runtime-v21`; the public
+  standard-library ABI remains v5.
+
 - Typed resource cleanup and completed-task resource ownership now fail closed
   at their existing boundaries. LCIR accepts `ResourceClose` only for the exact
-  canonical one-handle `File#9` or `Socket#10` representation selected by the
+  canonical one-handle `File#8` or `Socket#9` representation selected by the
   resource kind. LLVM treats close status `0` as success, status `2` as the
   ordinary `ResourceCloseFault`, and every other status as a compiler/runtime
   ABI defect. Successful `loom_typed_task_take_result_v1` and completed
@@ -336,8 +348,8 @@ artifact, or runtime compatibility.
   budgets prevent many legal wide sums or construct sites from multiplying
   search and bytewise LLVM IR work; checked source regressions exhaust both
   bounds before an object or partial IR file is produced.
-- Typed LCIR now lowers `is_finite`, `parse_int`, `parse_float`,
-  `format_float`, `milliseconds`, and `Duration.as_milliseconds` without a
+- Typed LCIR now lowers `is_finite`, `parse_float`, `format_float`,
+  `milliseconds`, and `Duration.as_milliseconds` without a
   universal value or executor. Parse results use their exact closed sums;
   Duration is a direct product whose negative check uses canonical
   `Assert + FaultMetadata::Runtime`, preserving lexical cleanup and the first

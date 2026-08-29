@@ -287,8 +287,8 @@ mod tests {
     #[test]
     fn plan_retains_every_semantic_and_physical_field_identity() {
         let mut builder = ProgramBuilder::new(TargetLayout::new(32).expect("test target"));
-        let inner_semantic = Type::Nominal(TypeId(7), Vec::new());
-        let outer_semantic = Type::Nominal(TypeId(8), Vec::new());
+        let inner_semantic = Type::Nominal(TypeId(100), Vec::new());
+        let outer_semantic = Type::Nominal(TypeId(101), Vec::new());
         let inner = builder
             .add_pod_record_type(inner_semantic.clone(), &[Type::Bool, Type::Int])
             .expect("inner product");
@@ -353,8 +353,8 @@ mod tests {
     #[test]
     fn plan_rejects_excess_depth_and_projection_through_protected_products() {
         let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("test target"));
-        let protected_semantic = Type::Nominal(TypeId(9), Vec::new());
-        let outer_semantic = Type::Nominal(TypeId(10), Vec::new());
+        let protected_semantic = Type::Nominal(TypeId(102), Vec::new());
+        let outer_semantic = Type::Nominal(TypeId(103), Vec::new());
         let protected = builder
             .add_invariant_record_type(protected_semantic.clone(), &[Type::Int])
             .expect("invariant product");

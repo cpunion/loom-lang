@@ -6,7 +6,7 @@ use loom_codegen_ir::{
 use loom_mir::{FunctionId as MirFunctionId, Type, TypeId};
 
 const RESULT_TYPE_ID: TypeId = TypeId(1);
-const PATH_ERROR_TYPE_ID: TypeId = TypeId(14);
+const PATH_ERROR_TYPE_ID: TypeId = TypeId(13);
 
 #[derive(Clone, Copy)]
 struct PathTypes {
@@ -343,7 +343,7 @@ fn path_opcodes_reject_a_transparent_path_error_carrier() {
     assert!(
         errors.as_slice().iter().any(|error| {
             error.code() == ValidationCode::InstructionShape
-                && error.message().contains("canonical direct PathError#14")
+                && error.message().contains("canonical direct PathError#13")
         }),
         "{errors:#?}"
     );

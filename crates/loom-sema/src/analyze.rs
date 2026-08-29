@@ -3394,7 +3394,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 | BuiltinType::TaskFault
                 | BuiltinType::Duration
                 | BuiltinType::ParseFloatError
-                | BuiltinType::ParseIntError
                 | BuiltinType::DecodeTextError
                 | BuiltinType::PathError
                 | BuiltinType::Json
@@ -5168,9 +5167,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 "environment" if self.builtin_is_imported("std.process.environment") => {
                     Some(BuiltinValue::ProcessEnvironment)
                 }
-                "parse_int" if self.builtin_is_imported("std.int.parse_int") => {
-                    Some(BuiltinValue::ParseInt)
-                }
                 "milliseconds" if self.builtin_is_imported("std.time.milliseconds") => {
                     Some(BuiltinValue::DurationMilliseconds)
                 }
@@ -5358,7 +5354,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::IsFinite
             | BuiltinValue::ProcessArguments
             | BuiltinValue::ProcessEnvironment
-            | BuiltinValue::ParseInt
             | BuiltinValue::DurationMilliseconds
             | BuiltinValue::FileOpenRead
             | BuiltinValue::FileCreate
@@ -5425,8 +5420,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::None
             | BuiltinValue::ParseFloatInvalidSyntax
             | BuiltinValue::ParseFloatOutOfRange
-            | BuiltinValue::ParseIntInvalidSyntax
-            | BuiltinValue::ParseIntOutOfRange
             | BuiltinValue::DecodeTextInvalidUtf8
             | BuiltinValue::PathContainsNul
             | BuiltinValue::PathAbsoluteJoin
@@ -5567,13 +5560,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 let text = self.types().builtin(BuiltinType::Text);
                 self.check_fixed_arguments(expression, arguments, &[text]);
                 self.types().intern(TyData::Option(text))
-            }
-            BuiltinValue::ParseInt => {
-                let text = self.types().builtin(BuiltinType::Text);
-                self.check_fixed_arguments(expression, arguments, &[text]);
-                let int = self.types().builtin(BuiltinType::Int);
-                let error = self.types().builtin(BuiltinType::ParseIntError);
-                self.types().intern(TyData::Result { ok: int, error })
             }
             BuiltinValue::DurationMilliseconds => {
                 let int = self.types().builtin(BuiltinType::Int);
@@ -8361,13 +8347,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 "OutOfRange" if payload.is_empty() => Some(PatternVariant::ParseFloatOutOfRange),
                 _ => None,
             },
-            TyData::Builtin(BuiltinType::ParseIntError) => match name.as_str() {
-                "InvalidSyntax" if payload.is_empty() => {
-                    Some(PatternVariant::ParseIntInvalidSyntax)
-                }
-                "OutOfRange" if payload.is_empty() => Some(PatternVariant::ParseIntOutOfRange),
-                _ => None,
-            },
             TyData::Builtin(BuiltinType::DecodeTextError) => match name.as_str() {
                 "InvalidUtf8" if payload.is_empty() => Some(PatternVariant::DecodeTextInvalidUtf8),
                 _ => None,
@@ -8648,13 +8627,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             TyData::Builtin(BuiltinType::ParseFloatError) => [
                 PatternVariant::ParseFloatInvalidSyntax,
                 PatternVariant::ParseFloatOutOfRange,
-            ]
-            .into_iter()
-            .map(|variant| (CheckedPatternHead::Variant(variant), Vec::new()))
-            .collect(),
-            TyData::Builtin(BuiltinType::ParseIntError) => [
-                PatternVariant::ParseIntInvalidSyntax,
-                PatternVariant::ParseIntOutOfRange,
             ]
             .into_iter()
             .map(|variant| (CheckedPatternHead::Variant(variant), Vec::new()))
@@ -9066,8 +9038,6 @@ enum PatternVariant {
     Err,
     ParseFloatInvalidSyntax,
     ParseFloatOutOfRange,
-    ParseIntInvalidSyntax,
-    ParseIntOutOfRange,
     DecodeTextInvalidUtf8,
     PathContainsNul,
     PathAbsoluteJoin,
@@ -9150,10 +9120,6 @@ fn pattern_variant_resolution(variant: PatternVariant) -> Resolution {
         PatternVariant::ParseFloatOutOfRange => {
             Resolution::Builtin(BuiltinValue::ParseFloatOutOfRange)
         }
-        PatternVariant::ParseIntInvalidSyntax => {
-            Resolution::Builtin(BuiltinValue::ParseIntInvalidSyntax)
-        }
-        PatternVariant::ParseIntOutOfRange => Resolution::Builtin(BuiltinValue::ParseIntOutOfRange),
         PatternVariant::DecodeTextInvalidUtf8 => {
             Resolution::Builtin(BuiltinValue::DecodeTextInvalidUtf8)
         }

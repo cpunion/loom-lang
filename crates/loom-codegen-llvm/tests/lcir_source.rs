@@ -31,7 +31,7 @@ use loom_mir::{
 };
 use loom_runtime_abi::{
     FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX, FORMAT_FLOAT_TYPED_SYMBOL,
-    PARSE_FLOAT_SYMBOL, PARSE_INT_SYMBOL, TYPED_JSON_FORMAT_SYMBOL,
+    PARSE_FLOAT_SYMBOL, TYPED_JSON_FORMAT_SYMBOL,
 };
 
 mod support;
@@ -941,7 +941,7 @@ pub fn main() {
 fn builtin_resource_cleanup_parts(
     file: bool,
 ) -> (TypeId, &'static str, ScopedDisposal, PreludeIds) {
-    let resource = TypeId(if file { 9 } else { 10 });
+    let resource = TypeId(if file { 8 } else { 9 });
     if file {
         (
             resource,
@@ -1328,13 +1328,14 @@ pub fn main() {
 #[test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one differential gate covers every scalar builtin status, managed Text input, target object, and legacy-surface exclusion"
+    reason = "one gate covers the source integer parser, scalar ABI status, managed Text input, target objects, and universal-surface exclusion"
 )]
-fn scalar_builtins_match_interpreter_and_legacy_without_universal_values() {
+fn scalar_standard_apis_match_interpreter_and_close_typed_targets() {
     let source = r#"module lcir_scalar_builtins
 
 import std.float.is_finite
 import std.float.parse_float
+import std.int.ParseIntError
 import std.int.parse_int
 import std.time.milliseconds
 
@@ -1387,15 +1388,43 @@ pub fn main() {
     let maxInt = parsedIntEquals(managed, 9223372036854775807)
     let minInt = parsedIntEquals("-9223372036854775808", -9223372036854775807 - 1)
     let plusInt = parsedIntEquals("+17", 17)
+    let zeroInt = parsedIntEquals("0", 0)
+    let plusZeroInt = parsedIntEquals("+0", 0)
+    let negativeZeroInt = parsedIntEquals("-0", 0)
+    let leadingZeroInt = parsedIntEquals("00000017", 17)
     let invalidInt = intInvalid("17x")
+    let emptyInt = intInvalid("")
+    let plusOnlyInt = intInvalid("+")
+    let minusOnlyInt = intInvalid("-")
+    let whitespaceInt = intInvalid(" 17")
+    let separatorInt = intInvalid("1_7")
+    let radixInt = intInvalid("0x11")
+    let duplicateSignInt = intInvalid("++17")
+    let unicodeInt = intInvalid("１７")
+    let overflowThenInvalidInt = intInvalid("999999999999999999999999999999999999x")
     let positiveIntOverflow = intOutOfRange("9223372036854775808")
     let negativeIntOverflow = intOutOfRange("-9223372036854775809")
+    let longIntOverflow = intOutOfRange("999999999999999999999999999999999999")
     assert maxInt
     assert minInt
     assert plusInt
+    assert zeroInt
+    assert plusZeroInt
+    assert negativeZeroInt
+    assert leadingZeroInt
     assert invalidInt
+    assert emptyInt
+    assert plusOnlyInt
+    assert minusOnlyInt
+    assert whitespaceInt
+    assert separatorInt
+    assert radixInt
+    assert duplicateSignInt
+    assert unicodeInt
+    assert overflowThenInvalidInt
     assert positiveIntOverflow
     assert negativeIntOverflow
+    assert longIntOverflow
 
     let finiteFloat = parsedFloatEquals("1.25e2", 125.0)
     let positiveInfinity = parsedFloatEquals("Infinity", 1.0 / 0.0)
@@ -1441,8 +1470,10 @@ pub fn main() {
     );
     let dump = dump_program(artifact.program());
     for required in [
-        "parse.int",
         "parse.float",
+        "text.encode_utf8",
+        "bytes.length",
+        "bytes.get",
         "float.compare.ordered_greater_equal",
         "float.compare.ordered_less_equal",
         "runtime InvalidDuration",
@@ -1451,18 +1482,17 @@ pub fn main() {
     ] {
         assert!(dump.contains(required), "missing `{required}`:\n{dump}");
     }
+    assert!(
+        !dump.contains(" = parse.int "),
+        "integer parsing retained a dedicated LCIR instruction:\n{dump}"
+    );
     let native = emit_and_run_lcir(&artifact, "source-scalar-builtins");
-    let legacy = emit_and_run_legacy(&program, "main", "legacy-scalar-builtins");
     assert!(native.output.status.success(), "{:?}", native.output);
-    assert!(legacy.status.success(), "{legacy:?}");
-    assert_eq!(native.output.stdout, legacy.stdout);
-    assert_eq!(native.output.stderr, legacy.stderr);
+    assert_eq!(native.output.stdout, b"Unit\n");
+    assert!(native.output.stderr.is_empty(), "{:?}", native.output);
     for required in [
-        PARSE_INT_SYMBOL,
         PARSE_FLOAT_SYMBOL,
-        "parse.int.status.valid",
         "parse.float.status.valid",
-        "parse.int.status.failed",
         "parse.float.status.failed",
         "call void @llvm.trap()",
     ] {
@@ -1472,22 +1502,25 @@ pub fn main() {
             native.ir
         );
     }
-    for parse in ["parse.int", "parse.float"] {
-        let failed = format!("{parse}.status.failed:");
-        let start = native
-            .ir
-            .rfind(&failed)
-            .unwrap_or_else(|| panic!("missing unexpected-status block `{failed}`"));
-        let end = native.ir.len().min(start + 512);
-        assert!(
-            native.ir[start..end].contains("call void @llvm.trap()"),
-            "{parse} must trap an ABI-forged status outside 0/1/2:\n{}",
-            &native.ir[start..end]
-        );
-    }
+    let failed = "parse.float.status.failed:";
+    let start = native
+        .ir
+        .rfind(failed)
+        .unwrap_or_else(|| panic!("missing unexpected-status block `{failed}`"));
+    let end = native.ir.len().min(start + 512);
+    assert!(
+        native.ir[start..end].contains("call void @llvm.trap()"),
+        "parse.float must trap an ABI-forged status outside 0/1/2:\n{}",
+        &native.ir[start..end]
+    );
     let parse_integer = emitted_lcir_function(&native.ir, &artifact, "parsedIntEquals");
     assert!(!parse_integer.contains("loom_gc_typed_root_push_v1"));
     assert!(!parse_integer.contains("loom_gc_typed_root_pop_v1"));
+    assert!(
+        !native.ir.contains("loom_runtime_parse_int"),
+        "{}",
+        native.ir
+    );
     assert_no_legacy_surface(&native.ir);
 
     for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
@@ -1509,7 +1542,7 @@ pub fn main() {
             "missing scalar builtin object for {target}"
         );
         let ir = std::fs::read_to_string(ir_path).expect("read scalar builtin target IR");
-        assert!(ir.contains(PARSE_INT_SYMBOL), "{ir}");
+        assert!(!ir.contains("loom_runtime_parse_int"), "{ir}");
         assert!(ir.contains(PARSE_FLOAT_SYMBOL), "{ir}");
         assert_no_legacy_surface(&ir);
     }
@@ -1870,7 +1903,7 @@ fn managed_bytes_close_the_typed_lcir_route_on_all_supported_targets() {
     let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
     let dump = dump_program(artifact.program());
     for required in [
-        "Nominal#11[] =>",
+        "Nominal#10[] =>",
         "managed_ptr",
         "text.encode_utf8",
         "bytes.length",
@@ -1986,7 +2019,7 @@ fn text_from_utf8_units_is_direct_typed_lcir_on_all_supported_targets() {
         "List[Int] =>",
         "managed_ptr",
         "text.from_utf8_units",
-        "Nominal#13[] =>",
+        "Nominal#12[] =>",
     ] {
         assert!(dump.contains(required), "missing `{required}`:\n{dump}");
     }
@@ -2073,11 +2106,11 @@ fn lexical_path_is_direct_typed_lcir_on_all_supported_targets() {
     let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
     let dump = dump_program(artifact.program());
     for required in [
-        "Nominal#12[] =>",
+        "Nominal#11[] =>",
         "path.from_text",
         "path.as_text",
         "path.join",
-        "Nominal#14[] =>",
+        "Nominal#13[] =>",
     ] {
         assert!(dump.contains(required), "missing `{required}`:\n{dump}");
     }

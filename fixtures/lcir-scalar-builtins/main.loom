@@ -3,6 +3,7 @@ module lcir_scalar_builtins
 import std.float.format_float
 import std.float.is_finite
 import std.float.parse_float
+import std.int.ParseIntError
 import std.int.parse_int
 import std.time.milliseconds
 
@@ -10,6 +11,20 @@ fn parsedIntEquals(input Text, expected Int) Bool {
     match parse_int(input) {
         Ok(value) => value == expected
         Err(_) => false
+    }
+}
+
+fn intInvalid(input Text) Bool {
+    match parse_int(input) {
+        Err(ParseIntError.InvalidSyntax) => true
+        _ => false
+    }
+}
+
+fn intOutOfRange(input Text) Bool {
+    match parse_int(input) {
+        Err(ParseIntError.OutOfRange) => true
+        _ => false
     }
 }
 
@@ -23,17 +38,41 @@ fn parsedFloatEquals(input Text, expected Float) Bool {
 fn scalarBuiltins() {
     let managedDigits = "9".concat("223372036854775807")
     let parsedMaximum = parsedIntEquals(managedDigits, 9223372036854775807)
-    let invalidInt = match parse_int("17x") {
-        Err(ParseIntError.InvalidSyntax) => true
-        _ => false
-    }
-    let largeInt = match parse_int("9223372036854775808") {
-        Err(ParseIntError.OutOfRange) => true
-        _ => false
-    }
+    let parsedMinimum = parsedIntEquals("-9223372036854775808", -9223372036854775807 - 1)
+    let parsedZero = parsedIntEquals("0", 0)
+    let parsedPlusZero = parsedIntEquals("+0", 0)
+    let parsedNegativeZero = parsedIntEquals("-0", 0)
+    let parsedLeadingZero = parsedIntEquals("00000017", 17)
+    let invalidEmpty = intInvalid("")
+    let invalidPlus = intInvalid("+")
+    let invalidMinus = intInvalid("-")
+    let invalidWhitespace = intInvalid(" 17")
+    let invalidSeparator = intInvalid("1_7")
+    let invalidRadix = intInvalid("0x11")
+    let invalidDuplicateSign = intInvalid("++17")
+    let invalidUnicode = intInvalid("１７")
+    let invalidAfterOverflow = intInvalid("999999999999999999999999999999999999x")
+    let positiveOverflow = intOutOfRange("9223372036854775808")
+    let negativeOverflow = intOutOfRange("-9223372036854775809")
+    let longOverflow = intOutOfRange("999999999999999999999999999999999999")
     assert parsedMaximum
-    assert invalidInt
-    assert largeInt
+    assert parsedMinimum
+    assert parsedZero
+    assert parsedPlusZero
+    assert parsedNegativeZero
+    assert parsedLeadingZero
+    assert invalidEmpty
+    assert invalidPlus
+    assert invalidMinus
+    assert invalidWhitespace
+    assert invalidSeparator
+    assert invalidRadix
+    assert invalidDuplicateSign
+    assert invalidUnicode
+    assert invalidAfterOverflow
+    assert positiveOverflow
+    assert negativeOverflow
+    assert longOverflow
 
     let parsedFinite = parsedFloatEquals("1.25e2", 125.0)
     let invalidFloat = match parse_float("1") {

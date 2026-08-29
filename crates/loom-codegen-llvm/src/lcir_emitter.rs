@@ -59,11 +59,11 @@ use loom_runtime_abi::{
     BYTES_APPEND_TYPED_SYMBOL, BYTES_DECODE_UTF8_TYPED_INVALID_UTF8,
     BYTES_DECODE_UTF8_TYPED_SYMBOL, FORMAT_FLOAT_TYPED_SYMBOL, GC_MAX_OBJECT_ALIGNMENT,
     GC_MAX_OBJECT_BYTES, GC_MAX_OBJECT_POINTERS, GC_MAX_REPEATED_POINTER_CELLS,
-    GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, PARSE_FLOAT_SYMBOL,
-    PARSE_INT_SYMBOL, PARSE_STATUS_INVALID_SYNTAX, PARSE_STATUS_OK, PARSE_STATUS_OUT_OF_RANGE,
-    PATH_JOIN_TYPED_ABSOLUTE, PATH_JOIN_TYPED_SYMBOL, STDOUT_WRITE_SYMBOL, TASK_CANCELLED,
-    TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL, TASK_JOIN_ANY, TASK_JOIN_RACE, TASK_JOIN_SETTLED,
-    TASK_PENDING, TEXT_CONCAT_TYPED_SYMBOL, TEXT_CONTAINS_SYMBOL,
+    GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES,
+    PARSE_FLOAT_STATUS_INVALID_SYNTAX, PARSE_FLOAT_STATUS_OK, PARSE_FLOAT_STATUS_OUT_OF_RANGE,
+    PARSE_FLOAT_SYMBOL, PATH_JOIN_TYPED_ABSOLUTE, PATH_JOIN_TYPED_SYMBOL, STDOUT_WRITE_SYMBOL,
+    TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL, TASK_JOIN_ANY, TASK_JOIN_RACE,
+    TASK_JOIN_SETTLED, TASK_PENDING, TEXT_CONCAT_TYPED_SYMBOL, TEXT_CONTAINS_SYMBOL,
     TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8, TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL,
     TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_MISSING, TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL,
     TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES,
@@ -4965,26 +4965,21 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             })
     }
 
-    fn runtime_parse_int(&self) -> FunctionValue<'ctx> {
-        self.runtime_parse_scalar(PARSE_INT_SYMBOL)
-    }
-
     fn runtime_parse_float(&self) -> FunctionValue<'ctx> {
-        self.runtime_parse_scalar(PARSE_FLOAT_SYMBOL)
-    }
-
-    fn runtime_parse_scalar(&self, symbol: &str) -> FunctionValue<'ctx> {
-        self.module.get_function(symbol).unwrap_or_else(|| {
-            let function_type = self.context.i32_type().fn_type(
-                &[
-                    self.ptr_type.into(),
-                    self.context.i64_type().into(),
-                    self.ptr_type.into(),
-                ],
-                false,
-            );
-            self.module.add_function(symbol, function_type, None)
-        })
+        self.module
+            .get_function(PARSE_FLOAT_SYMBOL)
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.context.i64_type().into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function(PARSE_FLOAT_SYMBOL, function_type, None)
+            })
     }
 
     fn runtime_resource_close_typed(&self) -> FunctionValue<'ctx> {
@@ -5551,11 +5546,11 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         Ok(success)
     }
 
-    fn require_parse_status(
+    fn require_float_parse_status(
         &self,
         status: IntValue<'ctx>,
-        name: &str,
     ) -> Result<(IntValue<'ctx>, IntValue<'ctx>), CodegenError> {
+        let name = "parse.float";
         let function = self
             .builder
             .get_insert_block()
@@ -5563,7 +5558,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             .ok_or_else(|| {
                 CodegenError::new(
                     "LlvmBuilderFailed",
-                    "parse status guard has no active function",
+                    "Float parse status guard has no active function",
                 )
             })?;
         let success = self
@@ -5578,7 +5573,8 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                 IntPredicate::EQ,
                 status,
                 self.context.i32_type().const_int(
-                    u64::try_from(PARSE_STATUS_OK).expect("parse success status is nonnegative"),
+                    u64::try_from(PARSE_FLOAT_STATUS_OK)
+                        .expect("Float parse success status is nonnegative"),
                     false,
                 ),
                 &format!("{name}.ok"),
@@ -5590,8 +5586,8 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                 IntPredicate::EQ,
                 status,
                 self.context.i32_type().const_int(
-                    u64::try_from(PARSE_STATUS_INVALID_SYNTAX)
-                        .expect("parse invalid-syntax status is nonnegative"),
+                    u64::try_from(PARSE_FLOAT_STATUS_INVALID_SYNTAX)
+                        .expect("Float parse invalid-syntax status is nonnegative"),
                     false,
                 ),
                 &format!("{name}.invalid_syntax"),
@@ -5603,8 +5599,8 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                 IntPredicate::EQ,
                 status,
                 self.context.i32_type().const_int(
-                    u64::try_from(PARSE_STATUS_OUT_OF_RANGE)
-                        .expect("parse out-of-range status is nonnegative"),
+                    u64::try_from(PARSE_FLOAT_STATUS_OUT_OF_RANGE)
+                        .expect("Float parse out-of-range status is nonnegative"),
                     false,
                 ),
                 &format!("{name}.out_of_range"),
@@ -5710,12 +5706,6 @@ struct CoroutineCallerSpan<'ctx> {
     end: IntValue<'ctx>,
 }
 
-#[derive(Clone, Copy)]
-enum ParseScalar {
-    Int,
-    Float,
-}
-
 struct CoroutineEmission<'ctx> {
     layout: CoroutineLayout<'ctx>,
     prologue: BasicBlock<'ctx>,
@@ -5757,7 +5747,7 @@ struct FunctionEmitter<'backend, 'ctx, 'artifact> {
     resource_close_cells: Vec<Option<PointerValue<'ctx>>>,
     managed_output_cells: Vec<Option<PointerValue<'ctx>>>,
     json_input_cells: Vec<Option<PointerValue<'ctx>>>,
-    parse_output_cells: Vec<Option<PointerValue<'ctx>>>,
+    float_parse_output_cells: Vec<Option<PointerValue<'ctx>>>,
 }
 
 impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
@@ -5910,7 +5900,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             resource_close_cells: vec![None; source.blocks().len()],
             managed_output_cells: vec![None; source.instructions().len()],
             json_input_cells: vec![None; source.instructions().len()],
-            parse_output_cells: vec![None; source.instructions().len()],
+            float_parse_output_cells: vec![None; source.instructions().len()],
         };
         emitter.prepare_parameters()?;
         Ok(emitter)
@@ -6372,7 +6362,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             })
     }
 
-    fn prepare_parse_output_cells(&mut self) -> Result<(), CodegenError> {
+    fn prepare_float_parse_output_cells(&mut self) -> Result<(), CodegenError> {
         let entry = self.source.entry().ok_or_else(|| {
             CodegenError::new(
                 "LlvmAbiDefect",
@@ -6383,36 +6373,34 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .builder
             .position_at_end(self.allocation_block(entry)?);
         for instruction in self.source.instructions() {
-            let scalar_type: BasicTypeEnum<'ctx> = match instruction.kind() {
-                InstructionKind::ParseInt { .. } => self.backend.context.i64_type().into(),
-                InstructionKind::ParseFloat { .. } => self.backend.context.f64_type().into(),
-                _ => continue,
-            };
+            if !matches!(instruction.kind(), InstructionKind::ParseFloat { .. }) {
+                continue;
+            }
             let cell = self
                 .backend
                 .builder
                 .build_alloca(
-                    scalar_type,
-                    &format!("parse.output.i{}", instruction.id().raw()),
+                    self.backend.context.f64_type(),
+                    &format!("parse.float.output.i{}", instruction.id().raw()),
                 )
                 .map_err(builder_error)?;
-            self.parse_output_cells[instruction.id().index()] = Some(cell);
+            self.float_parse_output_cells[instruction.id().index()] = Some(cell);
         }
         Ok(())
     }
 
-    fn parse_output_cell(
+    fn float_parse_output_cell(
         &self,
         instruction: InstructionId,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
-        self.parse_output_cells
+        self.float_parse_output_cells
             .get(instruction.index())
             .copied()
             .flatten()
             .ok_or_else(|| {
                 CodegenError::new(
                     "LlvmAbiDefect",
-                    format!("parse instruction {instruction} has no scalar output cell"),
+                    format!("Float parse instruction {instruction} has no output cell"),
                 )
             })
     }
@@ -7245,7 +7233,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         self.prepare_resource_close_cells()?;
         self.prepare_managed_output_cells()?;
         self.prepare_json_input_cells()?;
-        self.prepare_parse_output_cells()?;
+        self.prepare_float_parse_output_cells()?;
         self.prepare_root_frame()?;
         self.finish_coroutine_prologue()?;
         self.emit_coroutine_resume_blocks()?;
@@ -8762,30 +8750,14 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 };
                 one(compared.into())
             }
-            InstructionKind::ParseInt {
-                text,
-                ok_variant,
-                error_variant,
-                invalid_syntax_variant,
-                out_of_range_variant,
-            } => one(self.emit_parse_instruction(
-                instruction,
-                ParseScalar::Int,
-                *text,
-                *ok_variant,
-                *error_variant,
-                *invalid_syntax_variant,
-                *out_of_range_variant,
-            )?),
             InstructionKind::ParseFloat {
                 text,
                 ok_variant,
                 error_variant,
                 invalid_syntax_variant,
                 out_of_range_variant,
-            } => one(self.emit_parse_instruction(
+            } => one(self.emit_parse_float_instruction(
                 instruction,
-                ParseScalar::Float,
                 *text,
                 *ok_variant,
                 *error_variant,
@@ -9697,53 +9669,33 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .map_err(builder_error)
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the checked parse opcode carries the complete outer and nested sum identity"
-    )]
-    fn emit_parse_instruction(
+    fn emit_parse_float_instruction(
         &self,
         instruction: &Instruction,
-        scalar: ParseScalar,
         text: ValueId,
         ok_variant: u32,
         error_variant: u32,
         invalid_syntax_variant: u32,
         out_of_range_variant: u32,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
-        let result =
-            instruction.results().first().copied().ok_or_else(|| {
-                CodegenError::new("LlvmAbiDefect", "parse instruction has no result")
-            })?;
+        let result = instruction.results().first().copied().ok_or_else(|| {
+            CodegenError::new("LlvmAbiDefect", "Float parse instruction has no result")
+        })?;
         let result_ty = self
             .source
             .value(result)
-            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "parse result value is missing"))?
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "Float parse result value is missing")
+            })?
             .ty();
         let error_ty = self.sum_variant_field_type(result_ty, error_variant, 0)?;
-        let output = self.parse_output_cell(instruction.id())?;
-        let (runtime, zero, output_type, name): (
-            FunctionValue<'ctx>,
-            BasicValueEnum<'ctx>,
-            BasicTypeEnum<'ctx>,
-            &str,
-        ) = match scalar {
-            ParseScalar::Int => (
-                self.backend.runtime_parse_int(),
-                self.backend.context.i64_type().const_zero().into(),
-                self.backend.context.i64_type().into(),
-                "parse.int",
-            ),
-            ParseScalar::Float => (
-                self.backend.runtime_parse_float(),
-                self.backend.context.f64_type().const_zero().into(),
-                self.backend.context.f64_type().into(),
-                "parse.float",
-            ),
-        };
+        let output = self.float_parse_output_cell(instruction.id())?;
+        let runtime = self.backend.runtime_parse_float();
+        let output_type = self.backend.context.f64_type();
+        let name = "parse.float";
         self.backend
             .builder
-            .build_store(output, zero)
+            .build_store(output, output_type.const_zero())
             .map_err(builder_error)?;
         let (data, length) = self.backend.text_parts(
             self.value(text)?.into_pointer_value(),
@@ -9755,7 +9707,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             &[data.into(), length.into(), output.into()],
             &format!("{name}.status"),
         )?;
-        let (ok, out_of_range) = self.backend.require_parse_status(status, name)?;
+        let (ok, out_of_range) = self.backend.require_float_parse_status(status)?;
         let parsed = self
             .backend
             .builder
@@ -9791,7 +9743,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
     ) -> Result<ValueTypeId, CodegenError> {
         let representations = self.backend.artifact.representations();
         let value_type = representations.value_type(ty).ok_or_else(|| {
-            CodegenError::new("LlvmAbiDefect", format!("missing parse result type {ty}"))
+            CodegenError::new("LlvmAbiDefect", format!("missing sum value type {ty}"))
         })?;
         let Repr::Sum(sum) = representations
             .repr(value_type.repr())
@@ -9799,13 +9751,13 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .ok_or_else(|| {
                 CodegenError::new(
                     "LlvmAbiDefect",
-                    format!("missing parse result repr for {ty}"),
+                    format!("missing sum value representation for {ty}"),
                 )
             })?
         else {
             return Err(CodegenError::new(
                 "LlvmAbiDefect",
-                format!("parse result type {ty} is not a sum"),
+                format!("value type {ty} is not represented as a sum"),
             ));
         };
         representations
@@ -9820,7 +9772,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .ok_or_else(|| {
                 CodegenError::new(
                     "LlvmAbiDefect",
-                    format!("parse result type {ty} has no variant {variant} field {field}"),
+                    format!("sum value type {ty} has no variant {variant} field {field}"),
                 )
             })
     }

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use loom_driver::{AnalysisHost, encode_library_artifact};
+use loom_driver::{AnalysisHost, SourceOrigin, encode_library_artifact};
 use serde_json::{Value, json};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -210,6 +210,125 @@ fn inspect(problem IoError, value Json) {
         "discard",
     ] {
         assert!(labels.contains(&expected), "missing {expected}: {labels:?}");
+    }
+}
+
+#[test]
+fn source_backed_int_parsing_is_indexed_without_an_lsp_catalog_entry() {
+    let source = r"module editor.parse_int
+
+import std.int.ParseIntError
+import std.int.parse_int
+
+fn parse(text Text) Result[Int, ParseIntError] {
+    parse_int(text)
+}
+";
+    let project = TestProject::new(source);
+    let root_uri = loom_lsp::path_to_file_uri(&project.0);
+    let file_uri = loom_lsp::path_to_file_uri(&project.0.join("main.loom"));
+    let messages = [
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":root_uri}}),
+        json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+        json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":file_uri,"languageId":"loom","version":1,"text":source}}}),
+        json!({"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "parse_int(text)")}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "ParseIntError]")}}),
+        json!({"jsonrpc":"2.0","id":4,"method":"textDocument/completion","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "parse_int(text)")}}),
+        json!({"jsonrpc":"2.0","id":5,"method":"textDocument/definition","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "parse_int(text)")}}),
+        json!({"jsonrpc":"2.0","id":6,"method":"textDocument/definition","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "ParseIntError]")}}),
+        json!({"jsonrpc":"2.0","id":7,"method":"shutdown","params":null}),
+        json!({"jsonrpc":"2.0","method":"exit","params":null}),
+    ];
+    let input = messages.iter().flat_map(frame).collect::<Vec<_>>();
+    let mut output = Vec::new();
+    loom_lsp::run(BufReader::new(input.as_slice()), &mut output).expect("run LSP session");
+    let responses = decode_frames(&output);
+
+    for (id, signature) in [(2, "`function parse_int`"), (3, "`enum ParseIntError`")] {
+        let markdown = responses
+            .iter()
+            .find(|message| message.get("id") == Some(&json!(id)))
+            .unwrap_or_else(|| panic!("missing hover response {id}"))
+            .pointer("/result/contents/value")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("missing source-backed hover markdown: {responses:#?}"));
+        assert!(markdown.contains(signature), "{markdown}");
+        assert!(markdown.contains("module `std.int`"), "{markdown}");
+    }
+
+    let completion_items = responses
+        .iter()
+        .find(|message| message.get("id") == Some(&json!(4)))
+        .and_then(|message| message.pointer("/result/items"))
+        .and_then(Value::as_array)
+        .expect("completion items");
+    for (name, kind) in [("parse_int", "function"), ("ParseIntError", "enum")] {
+        let matching = completion_items
+            .iter()
+            .filter(|item| item.get("label") == Some(&json!(name)))
+            .collect::<Vec<_>>();
+        assert_eq!(matching.len(), 1, "{name}: {matching:#?}");
+        assert_eq!(
+            matching[0].get("detail"),
+            Some(&json!(format!("{kind} · std.int"))),
+            "{name}: {matching:#?}"
+        );
+        assert_eq!(
+            matching[0].get("sortText"),
+            Some(&json!(format!("0-{name}-std.int"))),
+            "{name} must come from the semantic source index, not STANDARD_SYMBOLS"
+        );
+    }
+
+    for id in [5, 6] {
+        let definition = responses
+            .iter()
+            .find(|message| message.get("id") == Some(&json!(id)))
+            .unwrap_or_else(|| panic!("missing definition response {id}"));
+        assert_eq!(
+            definition.pointer("/error/data/code"),
+            Some(&json!("CompilerOwnedSourceNotNavigable")),
+            "{definition:#?}"
+        );
+    }
+
+    let snapshot = AnalysisHost::new(&project.0)
+        .expect("open source-backed std.int project")
+        .snapshot()
+        .expect("analyze source-backed std.int project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let file = snapshot
+        .sources()
+        .file_id(&project.0.join("main.loom"))
+        .expect("root source file");
+    for (needle, name, kind) in [
+        ("parse_int(text)", "parse_int", "function"),
+        ("ParseIntError]", "ParseIntError", "enum"),
+    ] {
+        let byte = u32::try_from(source.find(needle).expect("source occurrence"))
+            .expect("test source fits a u32 span");
+        let symbol = snapshot
+            .definition_at(file, byte)
+            .unwrap_or_else(|| panic!("resolve {name} through the semantic index"));
+        assert_eq!(symbol.name, name);
+        assert_eq!(symbol.kind, kind);
+        assert_eq!(symbol.module, "std.int");
+        let definition_source = snapshot
+            .sources()
+            .document(symbol.definition.file)
+            .expect("definition source");
+        assert_eq!(
+            definition_source.origin(),
+            SourceOrigin::CompilerOwnedStandardLibrary
+        );
+        assert!(definition_source.is_compiler_owned());
+        assert!(definition_source.is_read_only());
+        assert!(!definition_source.is_navigable());
+        assert!(
+            definition_source.relative_path().ends_with("src/int.loom"),
+            "{}",
+            definition_source.relative_path()
+        );
     }
 }
 

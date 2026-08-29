@@ -18,7 +18,6 @@
 
 mod float;
 mod gc;
-mod int;
 mod int_list;
 mod logging;
 mod output;
