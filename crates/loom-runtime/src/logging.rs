@@ -9,8 +9,8 @@ use loom_runtime_abi::{
 };
 
 use crate::output::write_process_stderr;
-use crate::standard::escape_json_text;
 use crate::text::text_bytes;
+use crate::value_ops::escape_json_text;
 
 const LOG_LEVELS: [&str; 4] = ["debug", "info", "warn", "error"];
 

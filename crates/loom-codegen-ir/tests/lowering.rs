@@ -120,7 +120,7 @@ fn lower_run(source: &str) -> LoweringOutcome {
     .expect("lower typed artifact")
 }
 
-fn lower_run_with_standard_resource(source: &str) -> LoweringOutcome {
+fn lower_run_with_std_resource(source: &str) -> LoweringOutcome {
     let mir = compile_with_std_resource(source);
     lower_typed_artifact(
         &mir,
@@ -546,7 +546,7 @@ fn async_scalar_call_and_await_lower_to_a_checked_coroutine_plan() {
 
 #[test]
 fn async_scoped_and_defer_cleanup_are_explicit_on_every_suspension_exit() {
-    let outcome = lower_run_with_standard_resource(
+    let outcome = lower_run_with_std_resource(
         r"module typed_async_resource
 
 import std.resource.Dispose

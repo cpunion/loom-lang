@@ -22,7 +22,7 @@ use loom_sema::{
     Analysis, BodySemantics, BuiltinType, BuiltinValue, CallResolution,
     CallTarget as SemaCallTarget, Coercion, ConstructionCheck, Mutability, Place as SemaPlace,
     PlaceProjection, PlaceRoot, Resolution, RuntimeCheck, ScopedDisposal as SemaScopedDisposal,
-    Signature, StandardLibraryItem, TyData, TyId, ViewSource, WitnessSelection, WitnessSource,
+    Signature, TaskIntrinsic, TyData, TyId, ViewSource, WitnessSelection, WitnessSource,
 };
 
 const OPTION_TYPE: TypeId = TypeId(0);
@@ -2947,14 +2947,14 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                 let receiver = resolution.receiver.and(receiver);
                 return self.lower_builtin_call(id, builtin, receiver, source_arguments);
             }
-            SemaCallTarget::StandardLibrary(item) => {
+            SemaCallTarget::TaskIntrinsic(intrinsic) => {
                 if resolution.receiver.is_some() {
                     return Err(defect(
-                        "standard-library static call unexpectedly carries a receiver",
+                        "Task intrinsic unexpectedly carries a receiver",
                         span,
                     ));
                 }
-                return self.lower_standard_library_call(id, item, source_arguments);
+                return self.lower_task_intrinsic(id, intrinsic, source_arguments);
             }
             _ => {}
         }
@@ -3092,7 +3092,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             SemaCallTarget::EnumVariant(_)
             | SemaCallTarget::RefinedConstructor(_)
             | SemaCallTarget::Builtin(_)
-            | SemaCallTarget::StandardLibrary(_) => unreachable!("handled above"),
+            | SemaCallTarget::TaskIntrinsic(_) => unreachable!("handled above"),
             SemaCallTarget::Error => {
                 return Err(defect("error call target reached MIR lowering", span));
             }
@@ -3110,16 +3110,16 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
         })
     }
 
-    fn lower_standard_library_call(
+    fn lower_task_intrinsic(
         &mut self,
         id: ExprId,
-        item: StandardLibraryItem,
+        intrinsic: TaskIntrinsic,
         arguments: &[ExprId],
     ) -> LowerResult<Expr> {
         let span = self.expr_span(id);
         let ty = self.uncoerced_expression_ty(id)?;
-        let kind = match item {
-            StandardLibraryItem::TaskSleep => {
+        let kind = match intrinsic {
+            TaskIntrinsic::Sleep => {
                 let [milliseconds] = arguments else {
                     return Err(defect("checked Task.sleep call has invalid arity", span));
                 };
@@ -3127,16 +3127,16 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                     milliseconds: Box::new(self.lower_expr(*milliseconds)?),
                 }
             }
-            StandardLibraryItem::TaskAll
-            | StandardLibraryItem::TaskSettled
-            | StandardLibraryItem::TaskAny
-            | StandardLibraryItem::TaskRace => ExprKind::TaskJoin {
-                mode: match item {
-                    StandardLibraryItem::TaskAll => loom_mir::TaskJoinMode::All,
-                    StandardLibraryItem::TaskSettled => loom_mir::TaskJoinMode::Settled,
-                    StandardLibraryItem::TaskAny => loom_mir::TaskJoinMode::Any,
-                    StandardLibraryItem::TaskRace => loom_mir::TaskJoinMode::Race,
-                    StandardLibraryItem::TaskSleep => unreachable!(),
+            TaskIntrinsic::All
+            | TaskIntrinsic::Settled
+            | TaskIntrinsic::Any
+            | TaskIntrinsic::Race => ExprKind::TaskJoin {
+                mode: match intrinsic {
+                    TaskIntrinsic::All => loom_mir::TaskJoinMode::All,
+                    TaskIntrinsic::Settled => loom_mir::TaskJoinMode::Settled,
+                    TaskIntrinsic::Any => loom_mir::TaskJoinMode::Any,
+                    TaskIntrinsic::Race => loom_mir::TaskJoinMode::Race,
+                    TaskIntrinsic::Sleep => unreachable!(),
                 },
                 arguments: arguments
                     .iter()

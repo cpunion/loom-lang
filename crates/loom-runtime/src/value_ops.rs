@@ -1,7 +1,9 @@
-//! Runtime primitives for immutable `Text`, `Bytes`, and lexical `Path`.
+//! Compiler-private operations over universal Loom value slots.
 //!
-//! Native `Bytes` and `Path` are nominal records whose private payload uses a
-//! managed immutable sequence object. Text and arbitrary Bytes have distinct
+//! The boundaries cover immutable `Text`, `Bytes`, lexical `Path`, `TextMap`,
+//! canonical JSON formatting, and structured log formatting. Native `Bytes`
+//! and `Path` are nominal records whose private payload uses a managed
+//! immutable sequence object. Text and arbitrary Bytes have distinct
 //! descriptors; valid UTF-8 storage may be shared only where the type-level
 //! operation preserves the Text invariant.
 
@@ -17,7 +19,7 @@ use crate::gc::{NodeStream, RuntimeRootScope};
 use crate::scheduler::{ValueNode, ValueSlot};
 use crate::{gc, text, write_process_stderr};
 
-const STANDARD_INVALID_ARGUMENT: i32 = -1;
+const VALUE_OP_INVALID_ARGUMENT: i32 = -1;
 pub const JSON_DEPTH_LIMIT: usize = 128;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -137,10 +139,10 @@ unsafe fn input_bytes<'value>(data: *const c_void, length: u64) -> Option<&'valu
 
 fn store_text(output: *mut c_void, bytes: &[u8]) -> i32 {
     if output.is_null() {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     }
     let Some(value) = gc::text_value(bytes) else {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     };
     // SAFETY: generated code supplies an aligned writable ValueSlot.
     unsafe { output.cast::<ValueSlot>().write(value) };
@@ -149,10 +151,10 @@ fn store_text(output: *mut c_void, bytes: &[u8]) -> i32 {
 
 fn store_bytes(output: *mut c_void, bytes: &[u8]) -> i32 {
     if output.is_null() {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     }
     let Some(value) = gc::byte_value(bytes) else {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     };
     // SAFETY: generated code supplies an aligned writable ValueSlot.
     unsafe { output.cast::<ValueSlot>().write(value) };
@@ -169,13 +171,13 @@ pub unsafe extern "C" fn text_get(
     output: *mut c_void,
 ) -> i32 {
     if output.is_null() {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     }
     let Some(bytes) = (unsafe { input_bytes(data, length) }) else {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     };
     let Ok(text) = std::str::from_utf8(bytes) else {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     };
     let Some(index) = usize::try_from(index).ok() else {
         return 0;
@@ -217,7 +219,7 @@ pub unsafe extern "C" fn text_concat(
     output: *mut c_void,
 ) -> i32 {
     let Some(value) = (unsafe { concatenate(left, left_length, right, right_length) }) else {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     };
     store_text(output, &value)
 }
@@ -233,7 +235,7 @@ pub unsafe extern "C" fn bytes_append(
     output: *mut c_void,
 ) -> i32 {
     let Some(value) = (unsafe { concatenate(left, left_length, right, right_length) }) else {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     };
     store_bytes(output, &value)
 }
@@ -248,10 +250,10 @@ pub unsafe extern "C" fn text_contains(
     needle_length: u64,
 ) -> i32 {
     let Some(value) = (unsafe { input_bytes(value, value_length) }) else {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     };
     let Some(needle) = (unsafe { input_bytes(needle, needle_length) }) else {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     };
     if needle.is_empty() {
         return 1;
@@ -269,10 +271,10 @@ pub unsafe extern "C" fn bytes_get(
     output: *mut c_void,
 ) -> i32 {
     if output.is_null() {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     }
     let Some(bytes) = (unsafe { input_bytes(data, length) }) else {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     };
     let Some(value) = usize::try_from(index)
         .ok()
@@ -299,10 +301,10 @@ pub unsafe extern "C" fn bytes_decode_utf8(
     output: *mut c_void,
 ) -> i32 {
     if output.is_null() {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     }
     let Some(bytes) = (unsafe { input_bytes(data, length) }) else {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     };
     if std::str::from_utf8(bytes).is_err() {
         return 0;
@@ -310,14 +312,14 @@ pub unsafe extern "C" fn bytes_decode_utf8(
     if store_text(output, bytes) == 0 {
         1
     } else {
-        STANDARD_INVALID_ARGUMENT
+        VALUE_OP_INVALID_ARGUMENT
     }
 }
 
 #[unsafe(export_name = "loom_runtime_path_contains_nul")]
 pub unsafe extern "C" fn path_contains_nul(data: *const c_void, length: u64) -> i32 {
     let Some(bytes) = (unsafe { input_bytes(data, length) }) else {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     };
     i32::from(bytes.contains(&0))
 }
@@ -335,10 +337,10 @@ pub unsafe extern "C" fn path_join(
     output: *mut c_void,
 ) -> i32 {
     let Some(base) = (unsafe { input_bytes(base, base_length) }) else {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     };
     let Some(child) = (unsafe { input_bytes(child, child_length) }) else {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     };
     if child.first() == Some(&b'/') {
         return 1;
@@ -349,7 +351,7 @@ pub unsafe extern "C" fn path_join(
         .checked_add(separator)
         .and_then(|length| length.checked_add(child.len()))
     else {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     };
     let mut value = Vec::with_capacity(capacity);
     value.extend_from_slice(base);
@@ -440,34 +442,34 @@ pub unsafe extern "C" fn text_map_get(
     output: *mut c_void,
 ) -> i32 {
     if output.is_null() {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     }
     let Some(key) = (unsafe { input_bytes(key, key_length) }) else {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     };
     let map = map.cast::<ValueSlot>();
     if map.is_null()
         || unsafe { (*map).words[0] } != VALUE_TAG_RECORD
         || unsafe { (*map).words[2] } % 2 != 0
     {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     }
     let mut node = unsafe { (*map).words[4] as *const ValueNode };
     for _ in 0..unsafe { (*map).words[2] / 2 } {
         if node.is_null() || !key_matches(unsafe { &(*node).value }, key) {
             if node.is_null() {
-                return STANDARD_INVALID_ARGUMENT;
+                return VALUE_OP_INVALID_ARGUMENT;
             }
             node = unsafe { (*node).next };
             if node.is_null() {
-                return STANDARD_INVALID_ARGUMENT;
+                return VALUE_OP_INVALID_ARGUMENT;
             }
             node = unsafe { (*node).next };
             continue;
         }
         let value = unsafe { (*node).next };
         if value.is_null() {
-            return STANDARD_INVALID_ARGUMENT;
+            return VALUE_OP_INVALID_ARGUMENT;
         }
         unsafe { output.cast::<ValueSlot>().write((*value).value) };
         return 1;
@@ -486,13 +488,13 @@ pub unsafe extern "C" fn text_map_insert(
     let key = key.cast::<ValueSlot>();
     let value = value.cast::<ValueSlot>();
     if key.is_null() || value.is_null() || output.is_null() {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     }
     let Some(mut entries) = (unsafe { map_entries(map) }) else {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     };
     let Some(key_bytes) = (unsafe { text_slot_bytes(&*key) }) else {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     };
     if let Some((_, existing)) = entries
         .iter_mut()
@@ -522,13 +524,13 @@ pub unsafe extern "C" fn text_map_remove(
 ) -> i32 {
     let map = map.cast::<ValueSlot>();
     if output.is_null() {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     }
     let Some(key) = (unsafe { input_bytes(key, key_length) }) else {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     };
     let Some(mut entries) = (unsafe { map_entries(map) }) else {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     };
     entries.retain(|(candidate, _)| !key_matches(candidate, key));
     let nominal = unsafe { (*map).words[1] };
@@ -647,7 +649,7 @@ pub unsafe extern "C" fn json_format(
     output: *mut c_void,
 ) -> i32 {
     if value.is_null() || output.is_null() {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     }
     let value = match unsafe { slot_json(&*value.cast::<ValueSlot>(), json_type, text_map_type, 0) }
     {
@@ -661,7 +663,7 @@ pub unsafe extern "C" fn json_format(
             unsafe { output.cast::<ValueSlot>().write(result) };
             return 0;
         }
-        Err(SlotJsonFailure::InvalidShape) => return STANDARD_INVALID_ARGUMENT,
+        Err(SlotJsonFailure::InvalidShape) => return VALUE_OP_INVALID_ARGUMENT,
     };
     let result = match format_json(&value) {
         Ok(value) => result_value(result_type, true, text_value(&value)),
@@ -679,19 +681,19 @@ pub unsafe extern "C" fn log_write(
     fields: *const c_void,
 ) -> i32 {
     let Some(level) = ["debug", "info", "warn", "error"].get(level as usize) else {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     };
     let Some(message) = (unsafe { input_bytes(message, message_length) }) else {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     };
     let Ok(message) = std::str::from_utf8(message) else {
-        return STANDARD_INVALID_ARGUMENT;
+        return VALUE_OP_INVALID_ARGUMENT;
     };
     let entries = if fields.is_null() {
         Vec::new()
     } else {
         let Some(entries) = (unsafe { map_entries(fields.cast::<ValueSlot>()) }) else {
-            return STANDARD_INVALID_ARGUMENT;
+            return VALUE_OP_INVALID_ARGUMENT;
         };
         entries
     };
@@ -702,13 +704,13 @@ pub unsafe extern "C" fn log_write(
     );
     for (index, (key, value)) in entries.iter().enumerate() {
         let Some(key) = (unsafe { text_slot_bytes(key) }) else {
-            return STANDARD_INVALID_ARGUMENT;
+            return VALUE_OP_INVALID_ARGUMENT;
         };
         let Some(value) = (unsafe { text_slot_bytes(value) }) else {
-            return STANDARD_INVALID_ARGUMENT;
+            return VALUE_OP_INVALID_ARGUMENT;
         };
         let (Ok(key), Ok(value)) = (std::str::from_utf8(key), std::str::from_utf8(value)) else {
-            return STANDARD_INVALID_ARGUMENT;
+            return VALUE_OP_INVALID_ARGUMENT;
         };
         if index > 0 {
             line.push(',');

@@ -16,7 +16,7 @@ use crate::registry::{RegistryConfig, fetch_http_registry_package};
 use crate::source::{
     discover_loom_files, has_loom_extension, is_ignored_relative, normalize_absolute, relative_key,
 };
-use crate::standard_library::{self, STD_PACKAGE_NAME};
+use crate::stdlib::{self, STD_PACKAGE_NAME};
 
 pub const MANIFEST_FILE: &str = "loom.toml";
 pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
@@ -558,10 +558,7 @@ impl ProjectGraph {
                 result
             }
         };
-        sources.extend(standard_library::project_sources(
-            &self.root,
-            self.language_version(),
-        ));
+        sources.extend(stdlib::project_sources(&self.root, self.language_version()));
         sources.sort_by(|left, right| left.stable_path.cmp(&right.stable_path));
         Ok(sources)
     }
@@ -633,7 +630,7 @@ impl ProjectGraph {
     }
 
     pub(crate) fn configure_hir_packages(&self, program: &mut loom_hir::Program) {
-        let std_package = standard_library::package_id(self.language_version());
+        let std_package = stdlib::package_id(self.language_version());
         program.register_package(std_package.clone(), [], false);
         match &self.kind {
             ProjectKind::Standalone { .. } => {
@@ -899,7 +896,7 @@ impl Resolver {
             if alias == STD_PACKAGE_NAME {
                 return Err(manifest_error(
                     manifest,
-                    "dependency alias `std` is reserved for the compiler-owned standard library",
+                    "dependency alias `std` is reserved for the compiler-owned `std` package",
                 ));
             }
             if dependency.optional && !enabled_features.contains(&format!("dep:{alias}")) {
@@ -1388,7 +1385,7 @@ fn read_manifest(manifest: &Path) -> Result<RawManifest, DriverError> {
     if raw.package.name == STD_PACKAGE_NAME {
         return Err(manifest_error(
             manifest,
-            "package name `std` is reserved for the compiler-owned standard library",
+            "package name `std` is reserved for the compiler-owned `std` package",
         ));
     }
     Version::parse(&raw.package.version).map_err(|error| {

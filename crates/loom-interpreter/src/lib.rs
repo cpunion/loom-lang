@@ -4843,7 +4843,7 @@ impl<'program> Interpreter<'program> {
                 | Builtin::PathAsText
                 | Builtin::PathJoin
         ) {
-            return self.eval_standard_value_builtin(builtin, arguments, span);
+            return self.eval_builtin_value(builtin, arguments, span);
         }
         if matches!(
             builtin,
@@ -5364,7 +5364,7 @@ impl<'program> Interpreter<'program> {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn eval_standard_value_builtin(
+    fn eval_builtin_value(
         &self,
         builtin: Builtin,
         arguments: &[Value],
@@ -8320,7 +8320,7 @@ mod socket_readiness_tests {
 }
 
 #[cfg(test)]
-mod standard_value_tests {
+mod builtin_value_tests {
     use super::*;
     use loom_mir::{FieldDef, Type, TypeDef, VariantDef};
 
@@ -8333,7 +8333,7 @@ mod standard_value_tests {
         }
     }
 
-    fn standard_program() -> Program {
+    fn builtin_program() -> Program {
         let mut types = Vec::new();
         types.push(TypeDef {
             id: TypeId(0),
@@ -8425,7 +8425,7 @@ mod standard_value_tests {
 
     #[test]
     fn unicode_scalars_invalid_utf8_and_lexical_paths_match_the_language_rules() {
-        let program = standard_program()
+        let program = builtin_program()
             .into_checked()
             .expect("valid standard-value checked-MIR fixture");
         let interpreter = Interpreter::new(&program);
@@ -8435,12 +8435,12 @@ mod standard_value_tests {
         };
         assert_eq!(
             interpreter
-                .eval_standard_value_builtin(Builtin::TextLength, std::slice::from_ref(&text), span)
+                .eval_builtin_value(Builtin::TextLength, std::slice::from_ref(&text), span)
                 .unwrap(),
             Value::Int { value: 3 }
         );
         let scalar = interpreter
-            .eval_standard_value_builtin(Builtin::TextGet, &[text, Value::Int { value: 1 }], span)
+            .eval_builtin_value(Builtin::TextGet, &[text, Value::Int { value: 1 }], span)
             .unwrap();
         assert!(matches!(
             scalar,
@@ -8455,7 +8455,7 @@ mod standard_value_tests {
             }],
         };
         let decoded = interpreter
-            .eval_standard_value_builtin(Builtin::BytesDecodeUtf8, &[invalid], span)
+            .eval_builtin_value(Builtin::BytesDecodeUtf8, &[invalid], span)
             .unwrap();
         assert!(matches!(
             decoded,
@@ -8472,7 +8472,7 @@ mod standard_value_tests {
                 .collect(),
         };
         let rebuilt = interpreter
-            .eval_standard_value_builtin(Builtin::TextFromUtf8Units, &[valid_units], span)
+            .eval_builtin_value(Builtin::TextFromUtf8Units, &[valid_units], span)
             .unwrap();
         assert!(matches!(
             rebuilt,
@@ -8488,7 +8488,7 @@ mod standard_value_tests {
                     .collect(),
             };
             let decoded = interpreter
-                .eval_standard_value_builtin(Builtin::TextFromUtf8Units, &[invalid_units], span)
+                .eval_builtin_value(Builtin::TextFromUtf8Units, &[invalid_units], span)
                 .unwrap();
             assert!(matches!(
                 decoded,
@@ -8502,7 +8502,7 @@ mod standard_value_tests {
         let base = interpreter.path_value("root".into(), span).unwrap();
         let child = interpreter.path_value("child/file".into(), span).unwrap();
         let joined = interpreter
-            .eval_standard_value_builtin(Builtin::PathJoin, &[base, child], span)
+            .eval_builtin_value(Builtin::PathJoin, &[base, child], span)
             .unwrap();
         assert!(matches!(
             joined,

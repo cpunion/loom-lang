@@ -18,7 +18,7 @@ fn text_bytes_paths_and_path_files_match_in_both_backends() {
             .expect("temporary path is UTF-8"),
     );
     let source = format!(
-        r#"module standard_values
+        r#"module builtin_values
 
 import std.file.open_read_path
 import std.file.create_path
@@ -174,11 +174,11 @@ test async fn path_file_round_trip() {{
     );
     let stdout = String::from_utf8(output.stdout).expect("native output is UTF-8");
     assert!(
-        stdout.contains("passed standard_values.text_bytes_and_paths\n"),
+        stdout.contains("passed builtin_values.text_bytes_and_paths\n"),
         "{stdout}"
     );
     assert!(
-        stdout.contains("passed standard_values.path_file_round_trip\n"),
+        stdout.contains("passed builtin_values.path_file_round_trip\n"),
         "{stdout}"
     );
     assert_eq!(

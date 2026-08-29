@@ -19,8 +19,8 @@ use loom_runtime_abi::{
     TYPED_JSON_FORMAT_RESOURCE_LIMIT,
 };
 
-use crate::standard::JSON_DEPTH_LIMIT;
 use crate::text;
+use crate::value_ops::JSON_DEPTH_LIMIT;
 
 const JSON_TAG_NULL: u32 = 0;
 const JSON_TAG_BOOL: u32 = 1;

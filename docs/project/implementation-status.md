@@ -5,6 +5,32 @@ pre-1.0 language and toolchain. “Implemented” below means there is executabl
 repository evidence, not that the feature has broad production adoption or a
 long-term compatibility guarantee.
 
+## Source `std` completion
+
+The compiler currently embeds four Loom source modules: `std.int`, `std.json`,
+`std.log`, and `std.resource`. Passing interpreter or native tests does not by
+itself make an API source-backed; the table distinguishes ordinary source
+definitions from public names still recognized by semantic builtin tables.
+
+| Surface | Ordinary `library/std` source today | Remaining compiler-owned public surface | Status |
+| --- | --- | --- | --- |
+| `std.int` | `ParseIntError`, `minimum`, `maximum`, `parse_int`, and the complete parser helper graph | none for the current module API | source-backed |
+| `std.json` | `parse_json` and its bounded iterative parser helper graph | `Json`, `JsonError`, and `format_json` | partial |
+| `std.log` | `debug`, `info`, `warn`, `error`, and their no-fields helper | `LogLevel` and `write` | partial |
+| `std.resource` | `Dispose`, `MustScope`, and `NoSuspend` declarations | their fixed language-item meaning and static enforcement intentionally remain language core | source declarations complete |
+| `std.float` | none | parsing, formatting, finiteness, and `ParseFloatError` | not source-backed |
+| `std.process` | none | arguments and environment access | not source-backed |
+| `std.time` | none | `Duration`, construction, and conversion | not source-backed |
+| `std.file` / `std.net` | none | public functions, resource values, I/O errors, and methods | not source-backed |
+| `Task.sleep/all/settled/any/race` | none | temporary public-name resolution through `TaskIntrinsic` plus the private scheduler substrate | transitional |
+
+The target boundary gives every public library declaration an ordinary source
+`DefId`. Only irreducible GC, scheduler, scalar, platform, output, and bulk
+construction operations remain compiler-private, and only compiler-owned
+`std` source may call them. Each migration removes its public builtin or
+`TaskIntrinsic` path in the same change; no compatibility alias or parallel
+implementation remains.
+
 ## Platform support matrix
 
 | Platform / target | CI-tested | Compiler layers | Native runtime and LLVM closure | Cross-target object | Release archive |
@@ -83,7 +109,7 @@ The following repository fixtures are run through real compiler stages:
 | `fixtures/lcir-lexical-cleanup` | direct typed assertions and source contracts, checked-root and assumed-body boundaries, mutable invariant writeback, lexical `defer`, static-concept `scoped` disposal, exact LIFO/fault behavior, and real check/build/test/run commands without universal values or an executor |
 | `fixtures/lcir-static-concepts` | concrete static method selection, conditional proof forwarding, associated-type normalization, direct host execution, and MSVC COFF emission without runtime witness or universal-value surfaces |
 | `fixtures/lcir-dyn-unique` | closed-world unique-witness `dyn` erasure, direct calls, aggregate/List storage, dead conformance and method-slot elimination, real check/build/test/run, host execution, and Linux/MSVC object emission without runtime witness data |
-| `fixtures/standard-library` | differential interpreter/native checks for structured values, text, maps, JSON, typed file/socket I/O, logging, GC, and async behavior |
+| `fixtures/std` | differential interpreter/native checks for structured values, text, maps, JSON, typed file/socket I/O, logging, GC, and async behavior |
 
 Every admitted payload-bearing closed sum now uses the same bounded
 target-data-derived byte-class carrier plan. Pack/unpack, active managed roots,
@@ -150,11 +176,13 @@ Async `requires` checks run in child state zero. A created Task carries its
 creation-site blame, an async root carries its declaration span, and
 `TaskCreate` does not inherit child fault effects. Core gains no `all`, `any`,
 `settled`, or `race` syntax. HIR keeps these as ordinary method calls; semantic
-resolution maps only canonical, unshadowed Task API members through the current
-embedded catalog to stable `StandardLibraryItem` identities, and MIR
-specialization consumes those identities without re-reading source names.
-Trusted source-library definitions remain the next replacement for the catalog
-lookup, not a change to the language or MIR boundary.
+resolution currently maps only canonical, unshadowed Task API members through
+the temporary catalog to `TaskIntrinsic`, and MIR consumes that identity
+without re-reading source names. This is implementation debt, not the target
+library boundary. The source migration resolves each public member to an
+ordinary `std` source `DefId`, lets reachability follow its body into private
+scheduler primitives, and deletes the catalog and `TaskIntrinsic` rather than
+mapping source definitions back to them.
 
 Remaining atomic fallback includes open or prerequisite-dependent dynamic
 concepts, unsupported proof or contract value shapes, recursive nominal

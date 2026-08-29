@@ -688,12 +688,21 @@ the result cell, join topology, or resource ledger.
 A sole nonempty List literal is flattened to the same static child row without
 constructing the input List. `all` and `settled` build a fresh result List from
 the ordered resumed values; `any` and `race` retain their scalar result. The
-frontend reaches this path only after semantic resolution has selected a stable
-`StandardLibraryItem`; LCIR lowering never checks the source name. Its private
-substrate is limited to typed join/select readiness, exact value or outcome
-extraction, and structured cancellation-and-drain; it does not encode public
-policy names as source operators. Empty, stored, computed, and runtime-sized
-Lists are deliberately not classified as fixed rows.
+frontend currently reaches this path only after semantic resolution has
+selected the temporary compiler-private `TaskIntrinsic`; LCIR lowering never
+checks the source name. `TaskIntrinsic` is an implementation bridge for API
+shapes that the current source type system cannot yet declare. It is not a
+standard-library identity, source ABI, or persistent extension point.
+
+The completed source boundary instead resolves each public Task policy to its
+ordinary definition `DefId` in the compiler-owned `std` package. Normal
+reachability follows that function body, which may call private typed
+join/select readiness, exact value-or-outcome extraction, and structured
+cancellation-and-drain primitives. Neither semantic analysis nor LCIR maps the
+public `DefId` back to a policy enum. The temporary Task catalog and
+`TaskIntrinsic` are deleted when the general source-level associated-function
+and tuple/List mechanisms can express the API. Empty, stored, computed, and
+runtime-sized Lists are deliberately not classified as fixed rows today.
 
 LLVM derives a target-laid-out frame containing state, parameters, optional
 creation-site span coordinates, one ordered child-pointer row plus one

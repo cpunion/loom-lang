@@ -34,7 +34,7 @@ fn compile_and_validate(source: &str) -> loom_mir::CheckedProgram {
     compile(source)
 }
 
-fn lower_with_standard_resource(source: &str) -> loom_hir::Program {
+fn lower_with_std_resource(source: &str) -> loom_hir::Program {
     let application = parse_with_file(FileId(0), source);
     let resource = parse_with_file(
         FileId(1),
@@ -72,8 +72,8 @@ fn lower_with_standard_resource(source: &str) -> loom_hir::Program {
     lowered.program
 }
 
-fn compile_with_standard_resource(source: &str) -> loom_mir::CheckedProgram {
-    let program = lower_with_standard_resource(source);
+fn compile_with_std_resource(source: &str) -> loom_mir::CheckedProgram {
+    let program = lower_with_std_resource(source);
     let analysis = analyze(&program);
     assert!(
         analysis.diagnostics.is_empty(),
@@ -84,7 +84,7 @@ fn compile_with_standard_resource(source: &str) -> loom_mir::CheckedProgram {
         .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
 }
 
-fn compile_with_standard_log(source: &str) -> loom_mir::CheckedProgram {
+fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
     let application = parse_with_file(FileId(0), source);
     let log = parse_with_file(FileId(1), include_str!("../../../library/std/src/log.loom"));
     let json = parse_with_file(
@@ -138,7 +138,7 @@ fn compile_with_standard_log(source: &str) -> loom_mir::CheckedProgram {
         .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
 }
 
-fn compile_with_standard_int(source: &str) -> loom_mir::CheckedProgram {
+fn compile_with_std_int(source: &str) -> loom_mir::CheckedProgram {
     let application = parse_with_file(FileId(0), source);
     let int = parse_with_file(FileId(1), include_str!("../../../library/std/src/int.loom"));
     assert!(
@@ -180,7 +180,7 @@ fn compile_with_standard_int(source: &str) -> loom_mir::CheckedProgram {
         .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
 }
 
-fn compile_with_standard_json(source: &str) -> loom_mir::CheckedProgram {
+fn compile_with_std_json(source: &str) -> loom_mir::CheckedProgram {
     let application = parse_with_file(FileId(0), source);
     let json = parse_with_file(
         FileId(1),
@@ -225,8 +225,8 @@ fn compile_with_standard_json(source: &str) -> loom_mir::CheckedProgram {
         .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
 }
 
-fn analyze_with_standard_resource(source: &str) -> Vec<loom_core::Diagnostic> {
-    let program = lower_with_standard_resource(source);
+fn analyze_with_std_resource(source: &str) -> Vec<loom_core::Diagnostic> {
+    let program = lower_with_std_resource(source);
     analyze(&program).diagnostics
 }
 
@@ -295,9 +295,8 @@ fn concepts_polymorphism_source_lowers_and_validates() {
 
 #[test]
 fn async_resources_source_lowers_and_validates() {
-    let program = compile_with_standard_resource(include_str!(
-        "../../../examples/async-resources/tasks.loom"
-    ));
+    let program =
+        compile_with_std_resource(include_str!("../../../examples/async-resources/tasks.loom"));
     assert!(program.functions.iter().any(|function| function.is_async));
     assert!(format!("{program:#?}").contains("Await"));
     assert!(format!("{program:#?}").contains("Tuple"));
@@ -404,7 +403,7 @@ fn logical_chains_lower_on_one_mib_stack_and_remain_balanced() {
 
 #[test]
 fn scoped_source_lowers_to_first_class_mir_without_a_synthetic_defer() {
-    let program = compile_with_standard_resource(
+    let program = compile_with_std_resource(
         r"
 module custom_resource
 
@@ -466,7 +465,7 @@ fn main() {
 
 #[test]
 fn source_and_portable_mir_independently_reject_unscoped_must_scope_state() {
-    let diagnostics = analyze_with_standard_resource(
+    let diagnostics = analyze_with_std_resource(
         r"
 module unscoped_resource
 
@@ -650,8 +649,8 @@ fn earlier_contract_clauses_eliminate_weaker_later_clauses() {
 #[test]
 fn lowering_and_artifact_are_deterministic() {
     let source = include_str!("../../../examples/concepts-polymorphism/concepts.loom");
-    let first = compile_with_standard_resource(source);
-    let second = compile_with_standard_resource(source);
+    let first = compile_with_std_resource(source);
+    let second = compile_with_std_resource(source);
     for function in &first.functions {
         assert!(
             function
@@ -950,7 +949,7 @@ test async fn generic_async_contracts() {
 }
 
 #[test]
-fn only_resolved_task_standard_items_specialize_to_task_mir() {
+fn only_resolved_task_intrinsics_specialize_to_task_mir() {
     let canonical = compile_and_validate(
         r"
 module canonical_task_items
@@ -1147,7 +1146,7 @@ async fn returns(flag Bool, first Int, second Int) Int {
 fn text_bytes_path_and_path_file_calls_lower_to_checked_mir() {
     let program = compile_and_validate(
         r#"
-module standard_value_lowering
+module builtin_value_lowering
 
 import std.file.open_read_path
 import std.file.create_path
@@ -1221,10 +1220,10 @@ async fn pathFiles(path Path) {
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn structured_standard_values_and_source_log_wrappers_lower_to_checked_mir() {
-    let program = compile_with_standard_log(
+fn structured_builtin_values_and_source_log_wrappers_lower_to_checked_mir() {
+    let program = compile_with_std_log(
         r#"
-module structured_standard_lowering
+module structured_builtin_lowering
 
 import std.file.try_open_read_path
 import std.file.try_create_path
@@ -1320,7 +1319,7 @@ async fn network(host Text, port Int) Result[Unit, IoError] {
     let values = program
         .functions
         .iter()
-        .find(|function| function.name == "structured_standard_lowering.values")
+        .find(|function| function.name == "structured_builtin_lowering.values")
         .expect("structured values caller");
     assert!(
         values.exprs_preorder().any(|expression| {
@@ -1374,10 +1373,10 @@ async fn network(host Text, port Int) Result[Unit, IoError] {
 }
 
 #[test]
-fn standard_parse_int_and_its_error_are_ordinary_source_definitions() {
-    let program = compile_with_standard_int(
+fn std_parse_int_and_its_error_are_ordinary_source_definitions() {
+    let program = compile_with_std_int(
         r"
-module standard_int_lowering
+module std_int_lowering
 
 import std.int.parse_int
 
@@ -1402,7 +1401,7 @@ fn classify(error std.int.ParseIntError) Int {
     let wrapper = program
         .functions
         .iter()
-        .find(|function| function.name == "standard_int_lowering.parse")
+        .find(|function| function.name == "std_int_lowering.parse")
         .expect("source parse wrapper");
     assert!(
         wrapper.exprs_preorder().any(|expression| {
@@ -1443,10 +1442,10 @@ fn classify(error std.int.ParseIntError) Int {
 }
 
 #[test]
-fn standard_parse_json_is_an_ordinary_source_function_with_complete_parser_shapes() {
-    let program = compile_with_standard_json(
+fn std_parse_json_is_an_ordinary_source_function_with_complete_parser_shapes() {
+    let program = compile_with_std_json(
         r"
-module standard_json_lowering
+module std_json_lowering
 
 fn idle() {
 }

@@ -487,9 +487,9 @@ fn clean_check_uses_the_real_semantic_pipeline() {
 }
 
 #[test]
-fn embedded_loom_standard_source_checks_builds_and_closes_only_reachable_definitions() {
+fn embedded_loom_std_source_checks_builds_and_closes_only_reachable_definitions() {
     let project = TestProject::new(
-        r"module standard_source_client
+        r"module std_source_client
 
 import std.int.minimum
 
@@ -505,7 +505,7 @@ pub fn main() {
             .args(["--backend", "interpreter", "--no-cache", command])
             .arg(&project.0)
             .output()
-            .expect("run standard-source command");
+            .expect("run std-source command");
         assert_eq!(
             output.status.code(),
             Some(0),
@@ -516,9 +516,9 @@ pub fn main() {
     }
 
     let snapshot = loom_driver::AnalysisHost::new(&project.0)
-        .expect("open embedded-standard client")
+        .expect("open embedded-std client")
         .snapshot()
-        .expect("compile embedded-standard client");
+        .expect("compile embedded-std client");
     assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
     let program = snapshot.executable().expect("checked MIR");
     let minimum = program
@@ -1678,7 +1678,7 @@ fn generic_products_close_real_check_build_test_and_run_commands() {
 }
 
 #[test]
-fn scalar_standard_apis_close_both_backends_and_typed_object_surface() {
+fn scalar_std_apis_close_both_backends_and_typed_object_surface() {
     let project = TestProject::new(include_str!(
         "../../../fixtures/lcir-scalar-builtins/main.loom"
     ));
@@ -1689,7 +1689,7 @@ fn scalar_standard_apis_close_both_backends_and_typed_object_surface() {
                 .args(["--backend", backend, "--no-cache", command])
                 .arg(&project.0)
                 .output()
-                .expect("run scalar standard APIs through the production CLI");
+                .expect("run scalar std APIs through the production CLI");
             assert_eq!(
                 output.status.code(),
                 Some(0),
@@ -1714,14 +1714,14 @@ fn scalar_standard_apis_close_both_backends_and_typed_object_surface() {
             .arg(&artifact)
             .arg(&project.0)
             .output()
-            .expect("build scalar standard API artifact");
+            .expect("build scalar std API artifact");
         assert_eq!(build.status.code(), Some(0), "{backend}: {build:?}");
 
         let run = loomc()
             .args(["--backend", backend, "run", "--artifact"])
             .arg(&artifact)
             .output()
-            .expect("run scalar standard API artifact");
+            .expect("run scalar std API artifact");
         assert_eq!(run.status.code(), Some(0), "{backend}: {run:?}");
         assert_eq!(run.stdout, b"Unit\n", "{backend} artifact run");
     }
@@ -2840,7 +2840,7 @@ fn cache_stat_and_prune_have_stable_json_reports() {
     assert_eq!(stat.status.code(), Some(0));
     let stdout = String::from_utf8(stat.stdout).expect("UTF-8 stat output");
     assert!(stdout.contains("\"category\":\"cache_stat\""), "{stdout}");
-    assert!(stdout.contains("\"schema_version\":4"), "{stdout}");
+    assert!(stdout.contains("\"schema_version\":5"), "{stdout}");
 
     let prune = loomc()
         .args(["--json", "cache", "prune"])

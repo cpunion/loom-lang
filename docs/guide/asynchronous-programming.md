@@ -13,7 +13,7 @@ Core stops at `Task[T]`, `async fn`, postfix `.await`, structured task
 obligations, and terminal task outcomes. `Task.all`, `Task.any`,
 `Task.settled`, and `Task.race` are standard-library policies. They add no
 keywords, source-level polling protocol, or runtime type erasure.
-See the normative [Task composition](../reference/standard-library/task-composition.md)
+See the normative [Task composition](../reference/std/task-composition.md)
 reference for the complete signatures.
 
 The executable companion is

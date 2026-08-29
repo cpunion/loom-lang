@@ -3,7 +3,7 @@
 //! A `.loomlib` is deliberately not a native ABI. It carries the resolved
 //! package graph, canonical public-interface fingerprints, compiler-private
 //! source payloads. The consuming compiler checks those sources normally, so
-//! generic instantiation, proof search, and the compiler-owned standard library
+//! generic instantiation, proof search, and the compiler-owned `std` package
 //! always use the consumer toolchain. Only the public interface is part of the
 //! user-facing dependency surface.
 
@@ -153,7 +153,7 @@ impl std::error::Error for LibraryArtifactError {}
 /// # Errors
 ///
 /// Returns an error if the graph has no manifest root, source provenance is
-/// incomplete or inconsistent, or the compiler-owned standard library leaked
+/// incomplete or inconsistent, or the compiler-owned `std` package leaked
 /// into the payload.
 pub fn encode_library_artifact(
     project: &ProjectGraph,
@@ -191,13 +191,12 @@ pub fn encode_library_artifact(
                 source.relative_path()
             ))
         })?;
-        if source.is_authoritative_compiler_standard() {
+        if source.is_authoritative_compiler_std() {
             continue;
         }
-        if source.is_compiler_owned() || package.name() == crate::standard_library::STD_PACKAGE_NAME
-        {
+        if source.is_compiler_std() || package.name() == crate::stdlib::STD_PACKAGE_NAME {
             return Err(LibraryArtifactError::InvalidGraph(format!(
-                "source `{}` has inconsistent compiler-owned standard provenance: origin {:?}, package `{package}`",
+                "source `{}` has inconsistent compiler-owned `std` provenance: origin {:?}, package `{package}`",
                 source.relative_path(),
                 source.origin(),
             )));
@@ -330,7 +329,7 @@ fn validate_packages(
                 package.id.name()
             )));
         }
-        if package.id.name() == crate::standard_library::STD_PACKAGE_NAME {
+        if package.id.name() == crate::stdlib::STD_PACKAGE_NAME {
             return Err(LibraryArtifactError::InvalidGraph(
                 "portable libraries cannot define the reserved package `std`".to_owned(),
             ));
@@ -362,7 +361,7 @@ fn validate_packages(
                     dependency.alias
                 )));
             }
-            if dependency.alias == crate::standard_library::STD_PACKAGE_NAME {
+            if dependency.alias == crate::stdlib::STD_PACKAGE_NAME {
                 return Err(LibraryArtifactError::InvalidGraph(
                     "portable libraries cannot define the reserved dependency alias `std`"
                         .to_owned(),

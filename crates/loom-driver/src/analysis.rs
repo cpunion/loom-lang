@@ -704,12 +704,10 @@ fn validate_package_module(
         return;
     };
     let module_name = declaration.name.as_string();
-    if crate::standard_library::owns_module(&module_name)
-        && !source.is_authoritative_compiler_standard()
-    {
+    if crate::stdlib::owns_module(&module_name) && !source.is_authoritative_compiler_std() {
         diagnostics.push(Diagnostic::error(
-            "ReservedStandardModule",
-            format!("module `{module_name}` is supplied by the compiler-owned standard library"),
+            "ReservedStdModule",
+            format!("module `{module_name}` is supplied by the compiler-owned `std` package"),
             Span {
                 file: source.id(),
                 range: declaration.range,

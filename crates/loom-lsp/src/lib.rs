@@ -453,7 +453,7 @@ impl<R: BufRead, W: Write> Server<R, W> {
                 }),
             );
         }
-        let Some(symbol) = standard_symbol_at(&snapshot, file, byte) else {
+        let Some(symbol) = std_symbol_at(&snapshot, file, byte) else {
             return self.respond(id, Value::Null);
         };
         self.respond(
@@ -529,7 +529,7 @@ impl<R: BufRead, W: Write> Server<R, W> {
                 })
             })
             .collect::<Vec<_>>();
-        items.extend(STANDARD_SYMBOLS.iter().map(|symbol| {
+        items.extend(STD_SYMBOLS.iter().map(|symbol| {
             json!({
                 "label": symbol.name,
                 "kind": completion_kind(symbol.kind),
@@ -980,7 +980,7 @@ fn non_navigable_source_diagnostic(source: &SourceDocument) -> (&'static str, &'
             "portable library implementation sources are compiler-private",
             "DependencyArtifactOpaque",
         ),
-        SourceOrigin::CompilerOwnedStandardLibrary => (
+        SourceOrigin::CompilerStd => (
             "compiler-owned standard library source is not a workspace document",
             "CompilerOwnedSourceNotNavigable",
         ),
@@ -997,7 +997,7 @@ fn read_only_source_diagnostic(source: &SourceDocument) -> (&'static str, &'stat
             "portable library implementation sources are read-only",
             "DependencySourceReadOnly",
         ),
-        SourceOrigin::CompilerOwnedStandardLibrary => (
+        SourceOrigin::CompilerStd => (
             "compiler-owned standard library sources are read-only",
             "CompilerOwnedSourceReadOnly",
         ),
@@ -1039,147 +1039,147 @@ const COMPLETION_KEYWORDS: &[&str] = &[
     "where",
 ];
 
-struct StandardSymbol {
+struct StdSymbol {
     name: &'static str,
     kind: &'static str,
     module: &'static str,
     signature: &'static str,
 }
 
-const STANDARD_SYMBOLS: &[StandardSymbol] = &[
-    StandardSymbol {
+const STD_SYMBOLS: &[StdSymbol] = &[
+    StdSymbol {
         name: "TextMap",
         kind: "record",
         module: "std.prelude",
         signature: "TextMap[V]",
     },
-    StandardSymbol {
+    StdSymbol {
         name: "Json",
         kind: "enum",
         module: "std.prelude",
         signature: "enum Json",
     },
-    StandardSymbol {
+    StdSymbol {
         name: "JsonError",
         kind: "enum",
         module: "std.prelude",
         signature: "enum JsonError",
     },
-    StandardSymbol {
+    StdSymbol {
         name: "IoError",
         kind: "record",
         module: "std.prelude",
         signature: "record IoError",
     },
-    StandardSymbol {
+    StdSymbol {
         name: "IoErrorKind",
         kind: "enum",
         module: "std.prelude",
         signature: "enum IoErrorKind",
     },
-    StandardSymbol {
+    StdSymbol {
         name: "LogLevel",
         kind: "enum",
         module: "std.prelude",
         signature: "enum LogLevel",
     },
-    StandardSymbol {
+    StdSymbol {
         name: "format_json",
         kind: "function",
         module: "std.json",
         signature: "fn format_json(value Json) Result[Text, JsonError]",
     },
-    StandardSymbol {
+    StdSymbol {
         name: "write",
         kind: "function",
         module: "std.log",
         signature: "fn write(level LogLevel, message Text, fields TextMap[Text])",
     },
-    StandardSymbol {
+    StdSymbol {
         name: "try_open_read",
         kind: "function",
         module: "std.file",
         signature: "fn try_open_read(path Text) Task[Result[File, IoError]]",
     },
-    StandardSymbol {
+    StdSymbol {
         name: "try_create",
         kind: "function",
         module: "std.file",
         signature: "fn try_create(path Text) Task[Result[File, IoError]]",
     },
-    StandardSymbol {
+    StdSymbol {
         name: "try_open_read_path",
         kind: "function",
         module: "std.file",
         signature: "fn try_open_read_path(path Path) Task[Result[File, IoError]]",
     },
-    StandardSymbol {
+    StdSymbol {
         name: "try_create_path",
         kind: "function",
         module: "std.file",
         signature: "fn try_create_path(path Path) Task[Result[File, IoError]]",
     },
-    StandardSymbol {
+    StdSymbol {
         name: "try_connect",
         kind: "function",
         module: "std.net",
         signature: "fn try_connect(host Text, port Int) Task[Result[Socket, IoError]]",
     },
-    StandardSymbol {
+    StdSymbol {
         name: "length",
         kind: "method",
         module: "std.prelude.TextMap",
         signature: "method length[V](self TextMap[V]) Int",
     },
-    StandardSymbol {
+    StdSymbol {
         name: "contains",
         kind: "method",
         module: "std.prelude.TextMap",
         signature: "method contains[V](self TextMap[V], key Text) Bool",
     },
-    StandardSymbol {
+    StdSymbol {
         name: "get",
         kind: "method",
         module: "std.prelude.TextMap",
         signature: "method get[V](self TextMap[V], key Text) Option[V]",
     },
-    StandardSymbol {
+    StdSymbol {
         name: "entry_at",
         kind: "method",
         module: "std.prelude.TextMap",
         signature: "method entry_at[V](self TextMap[V], index Int) Option[(Text, V)]",
     },
-    StandardSymbol {
+    StdSymbol {
         name: "insert",
         kind: "method",
         module: "std.prelude.TextMap",
         signature: "method insert[V](self TextMap[V], key Text, value V) TextMap[V]",
     },
-    StandardSymbol {
+    StdSymbol {
         name: "remove",
         kind: "method",
         module: "std.prelude.TextMap",
         signature: "method remove[V](self TextMap[V], key Text) TextMap[V]",
     },
-    StandardSymbol {
+    StdSymbol {
         name: "kind",
         kind: "method",
         module: "std.prelude.IoError",
         signature: "method kind(self IoError) IoErrorKind",
     },
-    StandardSymbol {
+    StdSymbol {
         name: "message",
         kind: "method",
         module: "std.prelude.IoError",
         signature: "method message(self IoError) Text",
     },
-    StandardSymbol {
+    StdSymbol {
         name: "try_read_text",
         kind: "method",
         module: "std.file",
         signature: "method try_read_text(mut self File) Task[Result[Text, IoError]]",
     },
-    StandardSymbol {
+    StdSymbol {
         name: "try_write_text",
         kind: "method",
         module: "std.file",
@@ -1187,11 +1187,11 @@ const STANDARD_SYMBOLS: &[StandardSymbol] = &[
     },
 ];
 
-fn standard_symbol_at(
+fn std_symbol_at(
     snapshot: &AnalysisSnapshot,
     file: FileId,
     byte: u32,
-) -> Option<&'static StandardSymbol> {
+) -> Option<&'static StdSymbol> {
     let source = snapshot.sources().document(file)?.text()?;
     let byte = usize::try_from(byte).ok()?;
     if byte > source.len() || !source.is_char_boundary(byte) {
@@ -1199,18 +1199,18 @@ fn standard_symbol_at(
     }
     let bytes = source.as_bytes();
     let mut start = byte;
-    while start > 0 && is_standard_ident_byte(bytes[start - 1]) {
+    while start > 0 && is_std_ident_byte(bytes[start - 1]) {
         start -= 1;
     }
     let mut end = byte;
-    while end < bytes.len() && is_standard_ident_byte(bytes[end]) {
+    while end < bytes.len() && is_std_ident_byte(bytes[end]) {
         end += 1;
     }
     let name = source.get(start..end)?;
-    STANDARD_SYMBOLS.iter().find(|symbol| symbol.name == name)
+    STD_SYMBOLS.iter().find(|symbol| symbol.name == name)
 }
 
-const fn is_standard_ident_byte(byte: u8) -> bool {
+const fn is_std_ident_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
 

@@ -14,7 +14,7 @@ use loom_driver::{
 use loom_hir::{SourceUnit, lower_files};
 use loom_interpreter::{Interpreter, TestStatus, Value};
 use loom_mir::ConceptIdentity;
-use loom_sema::{CallTarget, StandardLibraryItem};
+use loom_sema::{CallTarget, TaskIntrinsic};
 use loom_syntax::parse_with_file;
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -75,7 +75,7 @@ fn portable_cache_context() -> CacheContext {
     CacheContext {
         language_version: "0.3".to_owned(),
         frontend_identity: "test-frontend-v1".to_owned(),
-        standard_library_identity: "test-stdlib-v1".to_owned(),
+        stdlib_identity: "test-stdlib-v1".to_owned(),
         contract_mode: "checked".to_owned(),
     }
 }
@@ -93,9 +93,9 @@ fn constrained_proof_project() -> TestProject {
     project
 }
 
-fn assert_compiler_owned_source(source: &loom_driver::SourceDocument) {
-    assert_eq!(source.origin(), SourceOrigin::CompilerOwnedStandardLibrary);
-    assert!(source.is_compiler_owned());
+fn assert_compiler_std_source(source: &loom_driver::SourceDocument) {
+    assert_eq!(source.origin(), SourceOrigin::CompilerStd);
+    assert!(source.is_compiler_std());
     assert!(!source.is_embedded_dependency());
     assert!(source.is_read_only());
     assert!(!source.is_navigable());
@@ -129,7 +129,7 @@ fn assert_compiler_owned_overlays_are_ignored(
     )
     .expect("install hostile std.resource overlay");
 
-    let protected = host.snapshot().expect("reload protected standard source");
+    let protected = host.snapshot().expect("reload protected std source");
     for (path, expected, message) in [
         (int_path, "Returns the smaller", "std.int source"),
         (json_path, "fn finish_utf8", "std.json source"),
@@ -154,11 +154,11 @@ fn assert_compiler_owned_overlays_are_ignored(
     assert!(!protected.has_errors(), "{:#?}", protected.diagnostics());
 }
 
-fn project_using_source_backed_standard_functions() -> TestProject {
+fn project_using_source_backed_std_functions() -> TestProject {
     let project = TestProject::new();
     project.write(
         "main.loom",
-        r#"module embedded_standard_user
+        r#"module embedded_std_user
 
 import std.int.minimum
 import std.log.debug
@@ -182,10 +182,10 @@ test fn importedMinimum() {
 }
 
 #[test]
-fn compiler_owned_standard_sources_have_protected_authority() {
-    let project = project_using_source_backed_standard_functions();
-    let mut host = AnalysisHost::new(&project.root).expect("open embedded-standard project");
-    let snapshot = host.snapshot().expect("check embedded-standard project");
+fn compiler_std_sources_have_protected_authority() {
+    let project = project_using_source_backed_std_functions();
+    let mut host = AnalysisHost::new(&project.root).expect("open embedded-std project");
+    let snapshot = host.snapshot().expect("check embedded-std project");
     assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
 
     let root_source = snapshot
@@ -198,7 +198,7 @@ fn compiler_owned_standard_sources_have_protected_authority() {
     assert!(root_source.is_navigable());
     assert!(!root_source.is_read_only());
 
-    let standard_sources = snapshot
+    let std_sources = snapshot
         .sources()
         .documents()
         .iter()
@@ -209,64 +209,61 @@ fn compiler_owned_standard_sources_have_protected_authority() {
         })
         .collect::<Vec<_>>();
     assert!(
-        standard_sources
+        std_sources
             .iter()
             .any(|source| source.relative_path().ends_with("src/json.loom")),
-        "{standard_sources:#?}"
+        "{std_sources:#?}"
     );
     assert!(
-        standard_sources
+        std_sources
             .iter()
             .any(|source| source.relative_path().ends_with("src/log.loom")),
-        "{standard_sources:#?}"
+        "{std_sources:#?}"
     );
     assert!(
-        standard_sources
+        std_sources
             .iter()
             .any(|source| source.relative_path().ends_with("src/resource.loom")),
-        "{standard_sources:#?}"
+        "{std_sources:#?}"
     );
-    for source in &standard_sources {
-        assert_compiler_owned_source(source);
+    for source in &std_sources {
+        assert_compiler_std_source(source);
     }
-    let resource_path = standard_sources
+    let resource_path = std_sources
         .iter()
         .find(|source| source.relative_path().ends_with("src/resource.loom"))
         .expect("compiler-owned std.resource source")
         .absolute_path()
         .to_path_buf();
-    let json_path = standard_sources
+    let json_path = std_sources
         .iter()
         .find(|source| source.relative_path().ends_with("src/json.loom"))
         .expect("compiler-owned std.json source")
         .absolute_path()
         .to_path_buf();
-    let log_path = standard_sources
+    let log_path = std_sources
         .iter()
         .find(|source| source.relative_path().ends_with("src/log.loom"))
         .expect("compiler-owned std.log source")
         .absolute_path()
         .to_path_buf();
-    let standard_source = standard_sources
+    let std_source = std_sources
         .iter()
         .copied()
         .find(|source| source.relative_path().ends_with("src/int.loom"))
         .expect("compiler-owned std.int source");
-    assert_compiler_owned_source(standard_source);
+    assert_compiler_std_source(std_source);
     assert_eq!(
-        standard_source
-            .package()
-            .expect("standard package")
-            .version(),
+        std_source.package().expect("std package").version(),
         loom_core::LOOM_LANGUAGE_VERSION
     );
-    assert_eq!(standard_source.relative_path(), "deps/std@0.3/src/int.loom");
+    assert_eq!(std_source.relative_path(), "deps/std@0.3/src/int.loom");
 
-    let standard_path = standard_source.absolute_path().to_path_buf();
+    let std_path = std_source.absolute_path().to_path_buf();
     drop(snapshot);
     assert_compiler_owned_overlays_are_ignored(
         &mut host,
-        &standard_path,
+        &std_path,
         &json_path,
         &log_path,
         &resource_path,
@@ -274,12 +271,12 @@ fn compiler_owned_standard_sources_have_protected_authority() {
 }
 
 #[test]
-fn source_backed_standard_functions_lower_to_direct_calls_and_run() {
-    let project = project_using_source_backed_standard_functions();
+fn source_backed_std_functions_lower_to_direct_calls_and_run() {
+    let project = project_using_source_backed_std_functions();
     let snapshot = AnalysisHost::new(&project.root)
-        .expect("open source-backed standard project")
+        .expect("open source-backed std project")
         .snapshot()
-        .expect("check source-backed standard project");
+        .expect("check source-backed std project");
     assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
     let program = snapshot.executable().expect("lower checked MIR");
     let minimum = program
@@ -309,7 +306,7 @@ fn source_backed_standard_functions_lower_to_direct_calls_and_run() {
     let emit = program
         .functions
         .iter()
-        .find(|function| function.name == "embedded_standard_user.emit")
+        .find(|function| function.name == "embedded_std_user.emit")
         .expect("root caller of source-backed debug");
     assert!(
         emit.exprs_preorder().any(|expression| {
@@ -324,9 +321,7 @@ fn source_backed_standard_functions_lower_to_direct_calls_and_run() {
         "std.log.debug must resolve through its ordinary source DefId"
     );
 
-    let results = snapshot
-        .run_tests()
-        .expect("run imported standard function");
+    let results = snapshot.run_tests().expect("run imported std function");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].status, TestStatus::Passed);
 }
@@ -375,7 +370,7 @@ fn std_package_name_alias_and_complete_namespace_are_reserved() {
             snapshot
                 .diagnostics()
                 .iter()
-                .any(|diagnostic| diagnostic.code == "ReservedStandardModule"),
+                .any(|diagnostic| diagnostic.code == "ReservedStdModule"),
             "{module}: {:#?}",
             snapshot.diagnostics()
         );
@@ -590,15 +585,15 @@ fn manifest_resolves_path_dependencies_sources_and_targets() {
         .sources()
         .documents()
         .iter()
-        .filter(|source| !source.is_compiler_owned())
+        .filter(|source| !source.is_compiler_std())
         .map(loom_driver::SourceDocument::relative_path)
         .collect::<Vec<_>>();
     assert_eq!(paths, ["deps/utility@1.2.0/src/math.loom", "src/main.loom"]);
-    let standard_paths = snapshot
+    let std_paths = snapshot
         .sources()
         .documents()
         .iter()
-        .filter(|source| source.is_compiler_owned())
+        .filter(|source| source.is_compiler_std())
         .map(loom_driver::SourceDocument::relative_path)
         .collect::<Vec<_>>();
     for expected in [
@@ -607,7 +602,7 @@ fn manifest_resolves_path_dependencies_sources_and_targets() {
         "deps/std@0.3/src/log.loom",
         "deps/std@0.3/src/resource.loom",
     ] {
-        assert!(standard_paths.contains(&expected), "{standard_paths:?}");
+        assert!(std_paths.contains(&expected), "{std_paths:?}");
     }
     assert!(!snapshot.has_errors(), "{:?}", snapshot.diagnostics());
     assert!(
@@ -651,7 +646,7 @@ fn portable_library_is_a_consumable_versioned_dependency() {
             .expect("library sources")
             .iter()
             .all(|source| source["package"]["name"] != "std"),
-        "compiler-owned standard sources must not be serialized into a portable package"
+        "compiler-owned std sources must not be serialized into a portable package"
     );
     let mut reserved_package = envelope.clone();
     reserved_package["packages"][0]["id"]["name"] = serde_json::json!("std");
@@ -837,7 +832,7 @@ fn portable_library_is_a_consumable_versioned_dependency() {
             .interfaces()
             .iter()
             .all(|interface| !interface.module.starts_with("std@")),
-        "compiler-owned standard interfaces must not be serialized into a portable package"
+        "compiler-owned std interfaces must not be serialized into a portable package"
     );
     assert!(decoded.interfaces().iter().any(|interface| {
         interface.module.ends_with("::utility.nested")
@@ -893,7 +888,7 @@ fn portable_library_is_a_consumable_versioned_dependency() {
             .to_string_lossy()
             .contains("utility.loomlib")
     );
-    let standard_sources = snapshot
+    let std_sources = snapshot
         .sources()
         .documents()
         .iter()
@@ -904,31 +899,31 @@ fn portable_library_is_a_consumable_versioned_dependency() {
         })
         .collect::<Vec<_>>();
     assert!(
-        standard_sources
+        std_sources
             .iter()
             .any(|source| source.relative_path().ends_with("src/int.loom")),
-        "{standard_sources:#?}"
+        "{std_sources:#?}"
     );
     assert!(
-        standard_sources
+        std_sources
             .iter()
             .any(|source| source.relative_path().ends_with("src/json.loom")),
-        "{standard_sources:#?}"
+        "{std_sources:#?}"
     );
     assert!(
-        standard_sources
+        std_sources
             .iter()
             .any(|source| source.relative_path().ends_with("src/log.loom")),
-        "{standard_sources:#?}"
+        "{std_sources:#?}"
     );
     assert!(
-        standard_sources
+        std_sources
             .iter()
             .any(|source| source.relative_path().ends_with("src/resource.loom")),
-        "{standard_sources:#?}"
+        "{std_sources:#?}"
     );
-    for source in standard_sources {
-        assert_compiler_owned_source(source);
+    for source in std_sources {
+        assert_compiler_std_source(source);
         assert!(
             !source
                 .absolute_path()
@@ -1524,7 +1519,7 @@ fn language_version_changes_compilation_cache_identity() {
 }
 
 #[test]
-fn frontend_standard_library_and_contract_change_compilation_identity() {
+fn frontend_stdlib_and_contract_change_compilation_identity() {
     let project = TestProject::new();
     project.write("main.loom", "module sample\n");
     let host = AnalysisHost::new(&project.root).expect("open cache project");
@@ -1539,11 +1534,11 @@ fn frontend_standard_library_and_contract_change_compilation_identity() {
         PersistentCache::compilation_key(host.project(), &sources, &changed_frontend)
     );
 
-    let mut changed_standard_library = current.clone();
-    changed_standard_library.standard_library_identity = "test-stdlib-v2".to_owned();
+    let mut changed_stdlib = current.clone();
+    changed_stdlib.stdlib_identity = "test-stdlib-v2".to_owned();
     assert_ne!(
         current_key,
-        PersistentCache::compilation_key(host.project(), &sources, &changed_standard_library)
+        PersistentCache::compilation_key(host.project(), &sources, &changed_stdlib)
     );
 
     let mut changed_contract_mode = current.clone();
@@ -1879,7 +1874,7 @@ fn persistent_semantic_reuse_rederives_compiler_owned_must_scope_identity() {
 }
 
 #[test]
-fn warm_semantic_reanalysis_preserves_task_standard_item_identity() {
+fn warm_semantic_reanalysis_preserves_task_std_item_identity() {
     let project = TestProject::new();
     project.write(
         "main.loom",
@@ -1891,7 +1886,7 @@ fn warm_semantic_reanalysis_preserves_task_standard_item_identity() {
         host.snapshot_from_sources_with_parse_cache(
             host.load_sources().expect("load task item source"),
             &cache,
-            "task-standard-item-test-v1",
+            "task-std-item-test-v1",
         )
         .0
     };
@@ -1914,13 +1909,13 @@ fn warm_semantic_reanalysis_preserves_task_standard_item_identity() {
             .values()
             .flat_map(|body| body.calls.values())
             .filter_map(|call| match call.target {
-                CallTarget::StandardLibrary(item) => Some(item),
+                CallTarget::TaskIntrinsic(item) => Some(item),
                 _ => None,
             })
             .collect::<Vec<_>>()
     };
-    assert_eq!(items(&cold), [StandardLibraryItem::TaskAny]);
-    assert_eq!(items(&warm), [StandardLibraryItem::TaskAny]);
+    assert_eq!(items(&cold), [TaskIntrinsic::Any]);
+    assert_eq!(items(&warm), [TaskIntrinsic::Any]);
     warm.executable()
         .expect("cached task item identity must lower to checked MIR");
 }
@@ -2453,7 +2448,7 @@ fn duration_file_and_socket_tasks_execute_from_source() {
         socket.write_all(b"pong").expect("write response");
     });
     let source = format!(
-        r#"module standard_io
+        r#"module std_io
 
 import std.time.milliseconds
 import std.file.open_read

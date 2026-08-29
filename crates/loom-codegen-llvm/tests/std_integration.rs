@@ -8,7 +8,7 @@ use loom_driver::AnalysisHost;
 mod support;
 use support::{emit_native, loom_text_literal, runtime_bundle_identity};
 
-const CHILD_PROJECT_ENV: &str = "LOOM_STDLIB_INTERPRETER_CHILD_PROJECT";
+const CHILD_PROJECT_ENV: &str = "LOOM_STD_INTERPRETER_CHILD_PROJECT";
 const EXPECTED_LOGS: &str = concat!(
     "{\"level\":\"debug\",\"message\":\"debug \\\"line\\\"\",\"fields\":{}}\n",
     "{\"level\":\"warn\",\"message\":\"event\\nline\",\"fields\":{\"a\":\"first\",\"z\":\"last\"}}\n",
@@ -22,7 +22,7 @@ fn snapshot(project: &Path) -> loom_driver::AnalysisSnapshot {
 }
 
 #[test]
-fn interpreter_standard_library_child() {
+fn interpreter_std_child() {
     let Ok(project) = std::env::var(CHILD_PROJECT_ENV) else {
         return;
     };
@@ -86,7 +86,7 @@ fn structured_values_match_in_interpreter_and_native_runtime() {
             assert_eq!(bytes, b"socket snapshot");
         }
     });
-    let source = include_str!("../../../fixtures/standard-library/main.loom")
+    let source = include_str!("../../../fixtures/std/main.loom")
         .replace("__ROUND_TRIP_PATH__", &round_trip_literal)
         .replace("__MISSING_PATH__", &missing_literal)
         .replace("__REUSE_PATH__", &reuse_literal)
@@ -95,11 +95,7 @@ fn structured_values_match_in_interpreter_and_native_runtime() {
     std::fs::write(project.path().join("main.loom"), source).expect("write fixture source");
 
     let interpreter = Command::new(std::env::current_exe().expect("current test executable"))
-        .args([
-            "--exact",
-            "interpreter_standard_library_child",
-            "--nocapture",
-        ])
+        .args(["--exact", "interpreter_std_child", "--nocapture"])
         .env(CHILD_PROJECT_ENV, project.path())
         .output()
         .expect("run interpreter fixture child");
@@ -146,7 +142,7 @@ fn structured_values_match_in_interpreter_and_native_runtime() {
         "canonical_logging",
     ] {
         assert!(
-            stdout.contains(&format!("passed standard_library.{test}\n")),
+            stdout.contains(&format!("passed std_fixture.{test}\n")),
             "{stdout}",
         );
     }

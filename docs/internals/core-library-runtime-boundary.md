@@ -45,6 +45,17 @@ read-only, versioned `std` package rather than merged into the user's root
 package. Its source is parsed, resolved, type-checked, lowered, instantiated,
 and optimized by the ordinary pipeline.
 
+The boundary requires every public library declaration to have an ordinary
+source `DefId`. A compiler primitive may be imported only by a module whose
+package identity is the compiler-owned `std`; application packages and
+dependencies must receive an ordinary unresolved-import diagnostic for the same
+spelling. Primitive names are compiler-private implementation details, never
+public `std` API names. A migrated wrapper records the primitive identity only
+inside its reachable source body, so ordinary call-graph closure and dead-code
+elimination remain the authority for including library behavior. The
+implementation-status document identifies APIs that have not reached this
+boundary yet.
+
 The `std.resource` module declares the public `Dispose`, `MustScope`, and
 `NoSuspend` concepts in ordinary Loom source. Moving these declarations into
 the `std` package removes copies from applications and fixtures; it does not
@@ -55,12 +66,13 @@ statically. Concept witnesses lower through the normal direct-call machinery;
 there is no source-visible runtime resource registry or name-based runtime
 dispatch.
 
-The `std.log.debug`, `info`, `warn`, and `error` functions are also ordinary
-Loom source. Each constructs an empty fields map and calls the sole public
-library function backed by the compiler-private output operation,
-`std.log.write`. They therefore participate in normal direct-call reachability
-and disappear when unused; the compiler has no convenience-level logging
-builtins.
+The `std.log.debug`, `info`, `warn`, and `error` functions are ordinary Loom
+source. Each constructs an empty fields map and calls the sole public library
+function backed by the compiler-private output operation, `std.log.write`.
+They therefore participate in normal direct-call reachability and disappear
+when unused; the compiler has no convenience-level logging builtins. Moving
+`std.log.write` itself behind a compiler-private primitive remains part of the
+source-library migration.
 
 The scheduler does maintain a compiler-private ownership ledger on each Task
 for built-in File and Socket handles published in typed results. Successful

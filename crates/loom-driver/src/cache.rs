@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256};
 use crate::incremental::ModuleQueryKey;
 use crate::{DiagnosticRecord, ModuleInterface, ProjectGraph, SourceMap};
 
-pub const CACHE_SCHEMA_VERSION: u32 = 4;
+pub const CACHE_SCHEMA_VERSION: u32 = 5;
 const MAX_REF_BYTES: u64 = 64 * 1024;
 const MAX_BLOB_BYTES: u64 = 1024 * 1024 * 1024;
 const CHECKED_MIR_NAMESPACE: &str = "checked-mir";
@@ -34,32 +34,32 @@ const MODULE_INTERFACE_NAMESPACE: &str = "module-interface";
 const TYPED_MODULE_STATE_NAMESPACE: &str = "typed-module-state";
 const TARGET_OBJECT_NAMESPACE: &str = "target-object";
 const ARTIFACT_NAMESPACE: &str = "artifact";
-const COMPILATION_CACHE_DOMAIN: &str = "loom-compilation-cache-v4";
+const COMPILATION_CACHE_DOMAIN: &str = "loom-compilation-cache-v5";
 
 /// Frontend facts which can change validated checked MIR.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CacheContext {
     pub language_version: String,
     pub frontend_identity: String,
-    pub standard_library_identity: String,
+    pub stdlib_identity: String,
     pub contract_mode: String,
 }
 
 #[cfg(test)]
 mod tests {
-    use loom_sema::{CallResolution, CallTarget, StandardLibraryItem, Substitution};
+    use loom_sema::{CallResolution, CallTarget, Substitution, TaskIntrinsic};
 
     #[test]
-    fn standard_library_call_resolution_round_trips_stable_identity() {
+    fn compiler_std_call_resolution_round_trips_stable_identity() {
         for item in [
-            StandardLibraryItem::TaskSleep,
-            StandardLibraryItem::TaskAll,
-            StandardLibraryItem::TaskSettled,
-            StandardLibraryItem::TaskAny,
-            StandardLibraryItem::TaskRace,
+            TaskIntrinsic::Sleep,
+            TaskIntrinsic::All,
+            TaskIntrinsic::Settled,
+            TaskIntrinsic::Any,
+            TaskIntrinsic::Race,
         ] {
             let resolution = CallResolution {
-                target: CallTarget::StandardLibrary(item),
+                target: CallTarget::TaskIntrinsic(item),
                 substitution: Substitution::default(),
                 dispatch_witness: None,
                 witnesses: Vec::new(),
@@ -71,7 +71,7 @@ mod tests {
                 serde_json::from_slice(&bytes).expect("deserialize call resolution");
 
             assert_eq!(decoded, resolution);
-            assert_eq!(decoded.target, CallTarget::StandardLibrary(item));
+            assert_eq!(decoded.target, CallTarget::TaskIntrinsic(item));
         }
     }
 }
@@ -291,10 +291,7 @@ impl PersistentCache {
         let mut identity = Identity::new(COMPILATION_CACHE_DOMAIN);
         identity.field("language-version", &context.language_version);
         identity.field("frontend-identity", &context.frontend_identity);
-        identity.field(
-            "standard-library-identity",
-            &context.standard_library_identity,
-        );
+        identity.field("stdlib-identity", &context.stdlib_identity);
         identity.field("contract-mode", &context.contract_mode);
         for field in project.semantic_identity_fields() {
             identity.field("project", &field);

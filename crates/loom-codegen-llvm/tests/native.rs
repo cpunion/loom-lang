@@ -4339,7 +4339,7 @@ fn duration_file_and_socket_tasks_run_natively() {
         socket.write_all(b"pong").expect("write response");
     });
     let source = format!(
-        r#"module standard_io
+        r#"module builtin_io
 
 import std.time.milliseconds
 import std.file.open_read

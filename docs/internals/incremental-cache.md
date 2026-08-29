@@ -48,7 +48,7 @@ larger graph.
 
 ## Persistent layers
 
-The persistent cache schema is `4`. Current layers include source parse,
+The persistent cache schema is `5`. Current layers include source parse,
 module-interface presence, typed module state, complete checked MIR, target
 objects, and deterministic final artifacts.
 
@@ -72,11 +72,12 @@ and prelude ids. Cache serialization requires the complete artifact resource
 profile, and cache reads cross both ordinary MIR validation and that profile;
 inconsistent or incomplete identity metadata is a cache miss.
 
-Task policy and timer calls store their resolved `StandardLibraryItem` in typed
-body facts. Cache schema `4` and the `loom-compilation-cache-v4` domain require
+Task policy and timer calls currently store a resolved `TaskIntrinsic` in typed
+body facts. Cache schema `5` and the `loom-compilation-cache-v5` domain require
 that identity. Whether a body is reused or conservatively reanalyzed, MIR
 lowering consumes only the resolved identity; it never reconstructs a policy
-from source spelling.
+from source spelling. This cache identity disappears when the temporary Task
+catalog is replaced by ordinary source definitions.
 
 Checked-MIR cache envelopes use artifact version `29` and its exact current
 MIR shape. The artifact profile requires the complete compiler-known resource

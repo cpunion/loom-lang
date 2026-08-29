@@ -17,7 +17,7 @@ use crate::{
     CallTarget, CallableSignature, Coercion, ConceptInstance, ConstructionCheck, DefMapBuild, Goal,
     ImplHeader, ModuleGraph, ModuleGraphBuild, Mutability, Namespace, ParamEnv, Place,
     PlaceProjection, PlaceRoot, ReceiverPassing, RegionId, Resolution, ResolveError, RuntimeCheck,
-    ScopedDisposal, Signature, SolveFailure, StandardLibraryItem, Substitution, TyData, TyId,
+    ScopedDisposal, Signature, SolveFailure, Substitution, TaskIntrinsic, TyData, TyId,
     TypedProgram, ViewResolution, ViewSource, ViewTokenId, WitnessSelection, WitnessSource,
 };
 
@@ -3603,7 +3603,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             if let Some((variant, owner)) = self.resolve_qualified_variant(&type_path, name) {
                 return self.check_variant_constructor(expression, variant, owner, &[], None);
             }
-            if let Some((builtin, ty)) = Self::standard_static_value(&type_path, name) {
+            if let Some((builtin, ty)) = Self::builtin_static_value(&type_path, name) {
                 self.semantics.calls.insert(
                     expression,
                     CallResolution {
@@ -5364,7 +5364,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::SocketTryConnect
             | BuiltinValue::JsonFormat
             | BuiltinValue::LogWrite => {
-                self.check_standard_builtin_call(expression, builtin, arguments)
+                self.check_builtin_function_call(expression, builtin, arguments)
             }
             BuiltinValue::ListNew
             | BuiltinValue::TextMapNew
@@ -5524,7 +5524,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn check_standard_builtin_call(
+    fn check_builtin_function_call(
         &mut self,
         expression: ExprId,
         builtin: BuiltinValue,
@@ -5823,24 +5823,23 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         }
     }
 
-    fn resolved_standard_namespace(
-        &self,
-        path: &Path,
-    ) -> Option<crate::standard_items::StandardNamespace> {
-        let namespace = crate::standard_items::resolve_namespace(path)?;
+    fn resolves_task_intrinsic_namespace(&self, path: &Path) -> bool {
+        if !crate::task_intrinsics::is_task_namespace(path) {
+            return false;
+        }
         let module = self.analyzer.program.definitions[self.environment.owner].module;
         if self.value_path_lookup(path) != ValuePathLookup::Missing {
-            return None;
+            return false;
         }
         let [segment] = path.segments.as_slice() else {
-            return None;
+            return false;
         };
         if self.analyzer.program.modules[module]
             .imports
             .iter()
             .any(|import| crate::module_graph::imported_name(import) == Some(&segment.name))
         {
-            return None;
+            return false;
         }
         let mut resolver =
             crate::Resolver::new(self.analyzer.program, self.analyzer.def_maps, module);
@@ -5850,7 +5849,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 parameter,
             );
         }
-        matches!(resolver.resolve_type(path), Err(ResolveError::Missing)).then_some(namespace)
+        matches!(resolver.resolve_type(path), Err(ResolveError::Missing))
     }
 
     #[allow(clippy::too_many_lines)]
@@ -5871,7 +5870,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 return self
                     .check_variant_constructor(expression, variant, owner, arguments, expected);
             }
-            if let Some(result) = self.check_standard_static_method_call(
+            if let Some(result) = self.check_compiler_static_method_call(
                 expression,
                 &type_path,
                 method_name,
@@ -5923,7 +5922,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             return result;
         }
         if let TyData::Builtin(builtin) = self.types().data(receiver_ty).clone()
-            && let Some(result) = self.check_standard_value_method_call(
+            && let Some(result) = self.check_builtin_value_method_call(
                 expression,
                 receiver,
                 builtin,
@@ -6408,7 +6407,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         Some(self.types().builtin(BuiltinType::Text))
     }
 
-    fn check_standard_library_item_call(
+    fn check_task_intrinsic_call(
         &mut self,
         expression: ExprId,
         type_path: &Path,
@@ -6416,12 +6415,11 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         type_arguments: &[TypeRefId],
         arguments: &[ExprId],
     ) -> Option<TyId> {
-        let standard_item = self
-            .resolved_standard_namespace(type_path)
-            .and_then(|namespace| {
-                crate::standard_items::resolve_static_item(namespace, method_name)
-            });
-        if let Some(item) = standard_item {
+        let intrinsic = self
+            .resolves_task_intrinsic_namespace(type_path)
+            .then(|| crate::task_intrinsics::resolve(method_name))
+            .flatten();
+        if let Some(intrinsic) = intrinsic {
             if !type_arguments.is_empty() {
                 self.error_at(
                     "TypeMismatch",
@@ -6429,25 +6427,25 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     expression,
                 );
             }
-            let result = match item {
-                StandardLibraryItem::TaskSleep => self.check_sleep(expression, arguments),
-                StandardLibraryItem::TaskAll => {
+            let result = match intrinsic {
+                TaskIntrinsic::Sleep => self.check_sleep(expression, arguments),
+                TaskIntrinsic::All => {
                     self.check_task_join(expression, TaskJoinPolicy::All, arguments)
                 }
-                StandardLibraryItem::TaskSettled => {
+                TaskIntrinsic::Settled => {
                     self.check_task_join(expression, TaskJoinPolicy::Settled, arguments)
                 }
-                StandardLibraryItem::TaskAny => {
+                TaskIntrinsic::Any => {
                     self.check_task_join(expression, TaskJoinPolicy::Any, arguments)
                 }
-                StandardLibraryItem::TaskRace => {
+                TaskIntrinsic::Race => {
                     self.check_task_join(expression, TaskJoinPolicy::Race, arguments)
                 }
             };
             self.semantics.calls.insert(
                 expression,
                 CallResolution {
-                    target: CallTarget::StandardLibrary(item),
+                    target: CallTarget::TaskIntrinsic(intrinsic),
                     substitution: Substitution::default(),
                     dispatch_witness: None,
                     witnesses: Vec::new(),
@@ -6459,7 +6457,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         None
     }
 
-    fn check_standard_static_method_call(
+    fn check_compiler_static_method_call(
         &mut self,
         expression: ExprId,
         type_path: &Path,
@@ -6467,7 +6465,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         type_arguments: &[TypeRefId],
         arguments: &[ExprId],
     ) -> Option<TyId> {
-        if let Some(result) = self.check_standard_library_item_call(
+        if let Some(result) = self.check_task_intrinsic_call(
             expression,
             type_path,
             method_name,
@@ -6574,7 +6572,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         (BuiltinValue::TextFromUtf8Units, vec![units], result)
     }
 
-    fn standard_static_value(type_path: &Path, name: &Name) -> Option<(BuiltinValue, BuiltinType)> {
+    fn builtin_static_value(type_path: &Path, name: &Name) -> Option<(BuiltinValue, BuiltinType)> {
         let [segment] = type_path.segments.as_slice() else {
             return None;
         };
@@ -6622,7 +6620,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
     }
 
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-    fn check_standard_value_method_call(
+    fn check_builtin_value_method_call(
         &mut self,
         expression: ExprId,
         receiver: ExprId,
@@ -9648,7 +9646,7 @@ pub concept NoSuspend {}
     }
 
     #[test]
-    fn resource_language_items_require_the_exact_current_standard_package() {
+    fn resource_language_items_require_the_exact_current_std_package() {
         let (_, canonical) =
             analyze_resource_module(PackageId::compiler_std(LOOM_LANGUAGE_VERSION));
         assert!(

@@ -12,7 +12,7 @@ mod module_graph;
 mod proof;
 mod resolver;
 mod side_tables;
-mod standard_items;
+mod task_intrinsics;
 mod ty;
 
 pub use analyze::{Analysis, CanonicalConcepts, analyze, analyze_reusing_bodies};

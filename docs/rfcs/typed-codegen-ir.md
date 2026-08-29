@@ -525,8 +525,9 @@ canonical `TaskOutcome[T]` sums. `settled` preserves every child in source
 order. `race` retains the first terminal winner and shares generalized loser
 finalization with `any`. A sole nonempty List literal is flattened to the same
 static child row without constructing the input List; `all` and `settled`
-construct their List result after resume. These are compiler specializations of
-standard-library APIs, not additional language syntax.
+construct their List result after resume. The current frontend specializes
+these standard-library API calls without adding language syntax; the accepted
+end state reaches the same private substrate from ordinary source definitions.
 
 Successful exact result consumption transfers the completed child's
 resource-ledger entries, which back any published File or Socket capability
@@ -545,15 +546,21 @@ outcome take only for SETTLED/RACE, and completed ANY/RACE winner finalization.
 An invalid call is transactional, so it cannot remove the winner before loser
 disposal or reinterpret terminal fault/cancellation as an ordinary result.
 
-The frontend keeps an ordinary method call through HIR. It maps a canonical,
-unshadowed standard Task API member through its embedded catalog to
-stable `StandardLibraryItem` identity, and only then constructs specialized
-MIR. Future source-library definitions map their trusted identity to the same
-item. LCIR therefore receives policy mode, exact child types, and control flow
-without receiving or matching a public source name. Its minimum private
-substrate provides typed join/select readiness, exact result or outcome
-extraction, and structured cancellation-and-drain. Public policy names do not
-become LCIR source operators.
+The frontend keeps an ordinary method call through HIR. The current
+implementation temporarily maps a canonical, unshadowed Task API member to a
+compiler-private `TaskIntrinsic` before constructing specialized MIR. That
+identity is an implementation bridge only: it is not a standard-library ABI,
+must not be serialized as public policy identity, and is removed rather than
+preserved when the source library can declare these functions.
+
+In the accepted end state, each public Task policy resolves to an ordinary
+source `DefId` in the compiler-owned `std` package. Instance closure follows
+the source body, and any specialized path begins at compiler-private
+join/select, result-or-outcome extraction, or cancellation-and-drain primitives
+called by that body. No compiler stage reconstructs a policy from the public
+name or maps the source `DefId` back to `TaskIntrinsic`. LCIR therefore still
+receives exact child types and explicit control flow without acquiring public
+Task policy operators.
 
 The remaining fallback boundary includes explicit mutable coroutine
 parameters, finite-catalog or open dynamic-concept frame values, raw readiness,
