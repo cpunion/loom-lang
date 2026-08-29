@@ -433,7 +433,11 @@ pub fn emit_native(
         .tempfile()
         .map_err(|error| CodegenError::new("ArtifactWriteFailed", error.to_string()))?;
     let emitted = emit_native_object(program, object.path(), options)?;
-    crate::link_object_with_runtime_bundle(object.path(), output, runtime, linker)?;
+    // MSVC linkers must reopen the object and Windows temporary files do not
+    // grant that access while NamedTempFile still owns its creation handle.
+    // Keep deletion ownership while closing the handle before link execution.
+    let object = object.into_temp_path();
+    crate::link_object_with_runtime_bundle(&object, output, runtime, linker)?;
     if !options.debug_sources.is_empty() {
         crate::emit_native_debug_companion(output)?;
     }
