@@ -184,7 +184,7 @@ fn automatic_route_is_atomic_over_the_reachable_artifact() {
     let managed_tuple = compile_source(
         r#"module prepared_managed_tuple
 
-fn make() (Int, Text) { (1, "legacy") }
+fn make() (Int, Text) { (1, "value") }
 
 pub fn main() {
     let number, label = make()
@@ -209,7 +209,7 @@ record Label { value Text }
 enum Message { Textual(Label) }
 
 pub fn main() {
-    discard Message.Textual(Label { value = "legacy" })
+    discard Message.Textual(Label { value = "value" })
 }
 "#,
     );
@@ -342,7 +342,7 @@ fn invalid_roots_are_structured_and_never_fallback() {
     for policy in [
         NativeRoutePolicy::Automatic,
         NativeRoutePolicy::LcirOnly,
-        NativeRoutePolicy::LegacyOnly,
+        NativeRoutePolicy::CheckedMirOnly,
     ] {
         let error = prepare_native_object(&program, EmitOptions::run("missing"), policy)
             .err()
@@ -375,7 +375,7 @@ fn lcir_only_preserves_a_deterministic_structured_support_report() {
             NativeRoutePolicy::LcirOnly,
         )
         .err()
-        .expect("unsupported LCIR must fail instead of selecting legacy")
+        .expect("unsupported LCIR must fail instead of selecting checked-MIR")
     };
     let first = prepare();
     let second = prepare();
@@ -402,15 +402,15 @@ fn lcir_only_preserves_a_deterministic_structured_support_report() {
 }
 
 #[test]
-fn legacy_only_never_attempts_the_lcir_route() {
+fn checked_mir_only_never_attempts_the_lcir_route() {
     let program = scalar_program();
     let prepared = prepare_native_object(
         &program,
         EmitOptions::run("main"),
-        NativeRoutePolicy::LegacyOnly,
+        NativeRoutePolicy::CheckedMirOnly,
     )
-    .expect("prepare forced legacy artifact");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::Legacy);
+    .expect("prepare forced checked-MIR artifact");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::CheckedMir);
 }
 
 #[test]
@@ -490,8 +490,8 @@ fn fingerprints_separate_routes_and_all_codegen_inputs() {
     );
     assert_ne!(
         baseline,
-        fingerprint(EmitOptions::run("main"), NativeRoutePolicy::LegacyOnly),
-        "LCIR and legacy routes need disjoint identity domains"
+        fingerprint(EmitOptions::run("main"), NativeRoutePolicy::CheckedMirOnly),
+        "LCIR and checked-MIR routes need disjoint identity domains"
     );
     assert_ne!(
         baseline,
@@ -625,7 +625,7 @@ fn fingerprint_excludes_output_and_ir_side_artifact_paths() {
 }
 
 #[test]
-fn legacy_fingerprint_separates_run_and_test_harnesses_for_the_same_root() {
+fn checked_mir_fingerprint_separates_run_and_test_harnesses_for_the_same_root() {
     let mut program = scalar_program().into_program();
     let root = program.exports["main"];
     program.tests.push(root);
@@ -633,9 +633,9 @@ fn legacy_fingerprint_separates_run_and_test_harnesses_for_the_same_root() {
         .into_checked()
         .expect("shared run and test root is valid checked MIR");
     let fingerprint = |options| {
-        let prepared = prepare_native_object(&program, options, NativeRoutePolicy::LegacyOnly)
-            .expect("prepare legacy object");
-        prepared_native_object_fingerprint(&prepared).expect("fingerprint legacy object")
+        let prepared = prepare_native_object(&program, options, NativeRoutePolicy::CheckedMirOnly)
+            .expect("prepare checked-MIR object");
+        prepared_native_object_fingerprint(&prepared).expect("fingerprint checked-MIR object")
     };
 
     assert_ne!(
@@ -681,7 +681,7 @@ fn thirty_two_bit_targets_are_allowed_only_for_complete_lcir() {
         EmitOptions::run("main").with_target_triple(Some("i686-unknown-linux-gnu".to_owned()));
     let error = prepare_native_object(&text, options, NativeRoutePolicy::LcirOnly)
         .err()
-        .expect("LCIR-only must preserve unsupported coverage before legacy ABI validation");
+        .expect("LCIR-only must preserve unsupported coverage before checked-MIR ABI validation");
     assert_eq!(error.kind(), NativePreparationErrorKind::Unsupported);
     assert!(error.support_report().is_some());
 
@@ -690,7 +690,7 @@ fn thirty_two_bit_targets_are_allowed_only_for_complete_lcir() {
         EmitOptions::run("main").with_target_triple(Some("i686-unknown-linux-gnu".to_owned()));
     let error = prepare_native_object(&text, options, NativeRoutePolicy::Automatic)
         .err()
-        .expect("legacy Value ABI must reject 32-bit targets");
+        .expect("checked-MIR Value ABI must reject 32-bit targets");
     assert_eq!(error.kind(), NativePreparationErrorKind::Target);
     assert_eq!(error.code(), "UnsupportedNativePointerWidth");
 }

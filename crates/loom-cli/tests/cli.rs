@@ -2695,7 +2695,6 @@ fn typed_json_format_closes_real_check_build_test_and_run_commands() {
         b"loom.Value",
         b"ValueNode",
         b"loom_runtime_json_format\0",
-        b"loom_runtime_json_parse",
         b"loom_runtime_list_",
         b"loom_runtime_text_map_",
         b"loom_gc_root_push_v1",
@@ -2726,6 +2725,101 @@ fn typed_json_format_closes_real_check_build_test_and_run_commands() {
     assert_eq!(run.status.code(), Some(0), "{run:?}");
     assert_eq!(run.stdout, b"Unit\n");
     assert!(run.stderr.is_empty(), "{run:?}");
+}
+
+#[test]
+fn source_json_parse_closes_real_check_build_test_and_run_commands() {
+    let project = TestProject::new(include_str!("../../../fixtures/lcir-json-parse/main.loom"));
+
+    for backend in ["interpreter", "llvm"] {
+        for command in ["check", "test", "run"] {
+            let output = loomc()
+                .args(["--backend", backend, "--no-cache", command])
+                .arg(&project.0)
+                .output()
+                .expect("run source JSON parsing through the production CLI");
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "{backend} {command}: stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            if command == "test" {
+                assert_eq!(
+                    output.stdout, b"passed lcir_json_parse.source_json_parse\n",
+                    "{backend} test",
+                );
+            } else if command == "run" {
+                assert_eq!(output.stdout, b"Unit\n", "{backend} run");
+            }
+            assert!(output.stderr.is_empty(), "{backend} {command}: {output:?}");
+        }
+
+        let artifact = project
+            .0
+            .join(format!("source-json-parse-{backend}.artifact"));
+        let build = loomc()
+            .args(["--backend", backend, "--no-cache", "build", "--output"])
+            .arg(&artifact)
+            .arg(&project.0)
+            .output()
+            .expect("build source JSON parser artifact");
+        assert_eq!(build.status.code(), Some(0), "{backend}: {build:?}");
+        assert!(build.stderr.is_empty(), "{backend}: {build:?}");
+
+        let run = loomc()
+            .args(["--backend", backend, "run", "--artifact"])
+            .arg(&artifact)
+            .output()
+            .expect("run source JSON parser artifact");
+        assert_eq!(run.status.code(), Some(0), "{backend}: {run:?}");
+        assert_eq!(run.stdout, b"Unit\n", "{backend} artifact run");
+        assert!(run.stderr.is_empty(), "{backend}: {run:?}");
+    }
+
+    let object_path = project.0.join("source-json-parse.o");
+    let build = loomc()
+        .args([
+            "--backend",
+            "llvm",
+            "--no-cache",
+            "build",
+            "--emit",
+            "object",
+            "--output",
+        ])
+        .arg(&object_path)
+        .arg(&project.0)
+        .output()
+        .expect("build source JSON parsing through the CLI");
+    assert_eq!(build.status.code(), Some(0), "{build:?}");
+    let object = fs::read(object_path).expect("read source JSON parser object");
+    for required in [
+        b"loom.lcir.fn".as_slice(),
+        b"loom_runtime_parse_float",
+        b"loom_gc_typed_repeated_alloc_v1",
+    ] {
+        assert!(
+            contains_bytes(&object, required),
+            "source JSON parser object omitted `{}`",
+            String::from_utf8_lossy(required)
+        );
+    }
+    for forbidden in [
+        b"loom.fn.".as_slice(),
+        b"loom.Value",
+        b"ValueNode",
+        b"loom_gc_root_push_v1",
+        b"loom_gc_root_pop_v1",
+        b"loom_executor_",
+    ] {
+        assert!(
+            !contains_bytes(&object, forbidden),
+            "source JSON parser object exposed `{}`",
+            String::from_utf8_lossy(forbidden)
+        );
+    }
 }
 
 #[test]

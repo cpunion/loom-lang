@@ -22,7 +22,7 @@ project input
           -> complete checked LCIR -> typed LLVM emitter
           or
           -> unsupported
-             -> Automatic -> checked-MIR reachability -> legacy LLVM emitter
+             -> Automatic -> checked-MIR reachability -> universal-value LLVM emitter
              -> LcirOnly -> structured support-report error
        -> object cache -> linker
 ```
@@ -46,16 +46,15 @@ identity and have no manifest features.
 The source-backed portion of the compiler-distributed standard library is a
 read-only `std` package available through a reserved direct dependency. It
 is not concatenated with a root source file and it receives no privileged
-frontend pass: migrated modules are parsed, resolved, checked, lowered, and
+frontend pass: its modules are parsed, resolved, checked, lowered, and
 selected by the same reachability rules as user packages. The current package
-contains the foundational `std.int` algorithms and integer parser with its
-ordinary source enum, ordinary `std.log` convenience functions over the single
-output boundary, and the public resource concept
-declarations in `std.resource`. `Dispose`, `MustScope`, and
+contains the `std.int` and `std.json` parsers with their ordinary source error
+values, `std.log` convenience functions over the single output boundary, and
+the public resource concept declarations in `std.resource`. `Dispose`, `MustScope`, and
 `NoSuspend` pass through the ordinary source pipeline, while their canonical
 identity, required shapes, and lexical static rules remain compiler-enforced
-and require no runtime registry. JSON and other documented APIs still have
-transitional compiler-known or runtime paths. See
+and require no runtime registry. JSON formatting remains one exact typed
+compiler/runtime operation; parsing has no special compiler or runtime path. See
 [Core, standard library, and runtime boundary](core-library-runtime-boundary.md).
 
 The `std` identity is the only compiler-owned package identity in language
@@ -149,23 +148,23 @@ structural tuples, closed records, and established transparent refined values,
 including eligible closed concrete enums.
 A complete result retains only the independently validated `CheckedArtifact`
 and uses the typed LCIR emitter. Only a valid `Unsupported` result selects the
-legacy source graph and universal-value emitter for the complete artifact.
+checked-MIR source graph and universal-value emitter for the complete artifact.
 Invalid roots, resource exhaustion, compiler defects, and LCIR emission
 failures never select fallback.
 
 Tooling can select `NativeRoutePolicy::LcirOnly` at the same preparation
 boundary. It performs the identical whole-artifact classification but returns
 `NativePreparationUnsupportedLcir` with the ordered `SupportReport` instead of
-constructing a legacy plan. `LegacyOnly` remains available for focused legacy
-backend validation. Route policy never changes the identity of an otherwise
-identical selected object.
+constructing a checked-MIR plan. `CheckedMirOnly` remains available for focused
+checked-MIR backend validation. Route policy never changes the identity of an
+otherwise identical selected object.
 
 The prepared plan owns its `EmitOptions` and exact target machine. Cache
 identity, runtime-bundle validation, optimization, and object emission reuse
 that plan instead of reconstructing target or reachability state. Ordinary
 `build`, `run`, `test`, and `debug` use automatic selection. A complete LCIR
 artifact keeps the typed route in development debug builds; an unsupported
-reachable construct selects the complete legacy route exactly as it does for
+reachable construct selects the complete checked-MIR route exactly as it does for
 the other commands. Linking remains a separate step.
 
 Source diagnostics exit before either backend executes. Errors discovered

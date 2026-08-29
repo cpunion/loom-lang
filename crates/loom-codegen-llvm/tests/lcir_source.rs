@@ -11,7 +11,8 @@ use loom_codegen_ir::{
 };
 use loom_codegen_llvm::{
     DebugSource, EmitOptions, NativeObjectOptions, NativePreparationErrorKind, NativeRouteKind,
-    NativeRoutePolicy, OptimizationProfile, emit_lcir_native_object, prepare_native_object,
+    NativeRoutePolicy, OptimizationProfile, emit_lcir_native_object, emit_prepared_native_object,
+    prepare_native_object,
 };
 use loom_core::{
     Span,
@@ -172,11 +173,15 @@ fn typed_async_cleanup_crosses_suspension_without_a_runtime_cleanup_stack() {
     }
 
     let lcir = emit_and_run_lcir_machine_fault(&artifact, "lcir-async-cleanup-normal");
-    let legacy = emit_and_run_legacy_machine_fault(&program, "main", "legacy-async-cleanup-normal");
+    let checked_mir = emit_and_run_checked_mir_machine_fault(
+        &program,
+        "main",
+        "checked-mir-async-cleanup-normal",
+    );
     assert!(lcir.output.status.success(), "{:?}", lcir.output);
-    assert!(legacy.status.success(), "{legacy:?}");
-    assert_eq!(lcir.output.stdout, legacy.stdout);
-    assert_eq!(lcir.output.stderr, legacy.stderr);
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
+    assert_eq!(lcir.output.stdout, checked_mir.stdout);
+    assert_eq!(lcir.output.stderr, checked_mir.stderr);
     assert!(!lcir.ir.contains("loom.Value"), "{}", lcir.ir);
     for required in [
         "loom_typed_task_is_cancel_requested_v1",
@@ -217,15 +222,18 @@ fn typed_async_cleanup_crosses_suspension_without_a_runtime_cleanup_stack() {
         },
     );
     let faulted = emit_and_run_lcir_machine_fault(&fault_cleanup, "lcir-async-cleanup-child-fault");
-    let legacy_faulted = emit_and_run_legacy_machine_fault(
+    let checked_mir_faulted = emit_and_run_checked_mir_machine_fault(
         &program,
         "faultCleanupMain",
-        "legacy-async-cleanup-child-fault",
+        "checked-mir-async-cleanup-child-fault",
     );
     assert!(!faulted.output.status.success(), "{:?}", faulted.output);
-    assert!(!legacy_faulted.status.success(), "{legacy_faulted:?}");
+    assert!(
+        !checked_mir_faulted.status.success(),
+        "{checked_mir_faulted:?}"
+    );
     assert_eq!(machine_fault(&faulted.output), expected_fault_cleanup);
-    assert_eq!(machine_fault(&legacy_faulted), expected_fault_cleanup);
+    assert_eq!(machine_fault(&checked_mir_faulted), expected_fault_cleanup);
     assert!(
         faulted.ir.contains("task.await.fault.live")
             && faulted.ir.contains("task.await.fault.active.pointer"),
@@ -246,15 +254,18 @@ fn typed_async_cleanup_crosses_suspension_without_a_runtime_cleanup_stack() {
     );
     let cancelled =
         emit_and_run_lcir_machine_fault(&cancellation, "lcir-async-cleanup-cancellation");
-    let legacy_cancelled = emit_and_run_legacy_machine_fault(
+    let checked_mir_cancelled = emit_and_run_checked_mir_machine_fault(
         &program,
         "cancellationMain",
-        "legacy-async-cleanup-cancellation",
+        "checked-mir-async-cleanup-cancellation",
     );
     assert!(!cancelled.output.status.success(), "{:?}", cancelled.output);
-    assert!(!legacy_cancelled.status.success(), "{legacy_cancelled:?}");
+    assert!(
+        !checked_mir_cancelled.status.success(),
+        "{checked_mir_cancelled:?}"
+    );
     assert_eq!(machine_fault(&cancelled.output), expected);
-    assert_eq!(machine_fault(&legacy_cancelled), expected);
+    assert_eq!(machine_fault(&checked_mir_cancelled), expected);
     assert!(
         !diagnostic_text(&cancelled.output).contains("LOOM_RUNTIME_TYPED_"),
         "source cleanup violated the typed cancellation protocol: {:?}",
@@ -512,60 +523,84 @@ fn emit_and_run_lcir_with_options_and_fault_format(
     }
 }
 
-fn emit_and_run_legacy(program: &CheckedProgram, entry: &str, stem: &str) -> Output {
-    emit_and_run_legacy_with_fault_format(program, entry, stem, false)
+fn emit_and_run_checked_mir(program: &CheckedProgram, entry: &str, stem: &str) -> Output {
+    emit_and_run_checked_mir_with_fault_format(program, entry, stem, false)
 }
 
-fn emit_and_run_legacy_machine_fault(program: &CheckedProgram, entry: &str, stem: &str) -> Output {
-    emit_and_run_legacy_with_fault_format(program, entry, stem, true)
+fn prepare_and_run_checked_mir(
+    program: &CheckedProgram,
+    options: EmitOptions,
+    stem: &str,
+) -> Output {
+    let directory = tempfile::tempdir().expect("create checked-MIR output directory");
+    let object = directory.path().join(format!("{stem}.o"));
+    let executable = directory.path().join(stem);
+    let prepared = prepare_native_object(program, options, NativeRoutePolicy::CheckedMirOnly)
+        .expect("prepare checked-MIR native object");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::CheckedMir);
+    emit_prepared_native_object(&prepared, &object).expect("emit checked-MIR native object");
+    link_native_object(&object, &executable).expect("link checked-MIR native object");
+    Command::new(executable)
+        .output()
+        .expect("run checked-MIR executable")
 }
 
-fn emit_and_run_legacy_machine_fault_with_ir(
+fn emit_and_run_checked_mir_machine_fault(
+    program: &CheckedProgram,
+    entry: &str,
+    stem: &str,
+) -> Output {
+    emit_and_run_checked_mir_with_fault_format(program, entry, stem, true)
+}
+
+fn emit_and_run_checked_mir_machine_fault_with_ir(
     program: &CheckedProgram,
     entry: &str,
     stem: &str,
 ) -> NativeRun {
-    let directory = tempfile::tempdir().expect("create legacy output directory");
+    let directory = tempfile::tempdir().expect("create checked-MIR output directory");
     let executable = directory.path().join(stem);
     let ir_path = directory.path().join(format!("{stem}.ll"));
     let mut options = EmitOptions::run(entry);
     options.emit_ir = Some(ir_path.clone());
-    emit_native(program, &executable, &options).expect("emit legacy comparison executable");
+    emit_native(program, &executable, &options).expect("emit checked-MIR comparison executable");
     let output = Command::new(executable)
         .env(FAULT_FORMAT_ENV, FAULT_FORMAT_JSON)
         .output()
-        .expect("run legacy comparison executable");
+        .expect("run checked-MIR comparison executable");
     NativeRun {
-        ir: std::fs::read_to_string(ir_path).expect("read legacy LLVM IR"),
+        ir: std::fs::read_to_string(ir_path).expect("read checked-MIR LLVM IR"),
         output,
     }
 }
 
-fn emit_and_run_legacy_with_fault_format(
+fn emit_and_run_checked_mir_with_fault_format(
     program: &CheckedProgram,
     entry: &str,
     stem: &str,
     machine_faults: bool,
 ) -> Output {
-    let directory = tempfile::tempdir().expect("create legacy output directory");
+    let directory = tempfile::tempdir().expect("create checked-MIR output directory");
     let executable = directory.path().join(stem);
     emit_native(program, &executable, &EmitOptions::run(entry))
-        .expect("emit legacy comparison executable");
+        .expect("emit checked-MIR comparison executable");
     let mut command = Command::new(executable);
     if machine_faults {
         command.env(FAULT_FORMAT_ENV, FAULT_FORMAT_JSON);
     }
-    command.output().expect("run legacy comparison executable")
+    command
+        .output()
+        .expect("run checked-MIR comparison executable")
 }
 
-fn emit_and_run_legacy_tests(program: &CheckedProgram, stem: &str) -> Output {
-    let directory = tempfile::tempdir().expect("create legacy test output directory");
+fn emit_and_run_checked_mir_tests(program: &CheckedProgram, stem: &str) -> Output {
+    let directory = tempfile::tempdir().expect("create checked-MIR test output directory");
     let executable = directory.path().join(stem);
     emit_native(program, &executable, &EmitOptions::tests())
-        .expect("emit legacy comparison test executable");
+        .expect("emit checked-MIR comparison test executable");
     Command::new(executable)
         .output()
-        .expect("run legacy comparison test executable")
+        .expect("run checked-MIR comparison test executable")
 }
 
 #[test]
@@ -1074,29 +1109,7 @@ fn checked_builtin_resource_cleanup_fixture(file: bool) -> CheckedProgram {
         .expect("canonical built-in cleanup fixture must validate")
 }
 
-fn assert_no_legacy_surface(ir: &str) {
-    for forbidden in [
-        "loom.Value",
-        "ArgNode",
-        "ValueNode",
-        "loom.runtime.print",
-        "@puts",
-        "@printf",
-        "loom_executor_",
-        "loom_gc_",
-        "witness",
-        "landingpad",
-        "personality ptr",
-        "resume {",
-    ] {
-        assert!(
-            !ir.contains(forbidden),
-            "legacy/EH token `{forbidden}` in source-lowered IR:\n{ir}"
-        );
-    }
-}
-
-fn assert_no_universal_value_surface(ir: &str) {
+fn assert_typed_lcir_surface(ir: &str) {
     for forbidden in [
         "%loom.Value",
         "ArgNode",
@@ -1110,7 +1123,24 @@ fn assert_no_universal_value_surface(ir: &str) {
     ] {
         assert!(
             !ir.contains(forbidden),
-            "universal/EH token `{forbidden}` in typed LCIR:\n{ir}"
+            "universal value or EH token `{forbidden}` in typed LCIR:\n{ir}"
+        );
+    }
+}
+
+fn assert_stateless_direct_lcir_surface(ir: &str) {
+    assert_typed_lcir_surface(ir);
+    for forbidden in [
+        "loom.runtime.print",
+        "@puts",
+        "@printf",
+        "loom_executor_",
+        "loom_gc_",
+        "witness",
+    ] {
+        assert!(
+            !ir.contains(forbidden),
+            "stateful runtime token `{forbidden}` in direct LCIR:\n{ir}"
         );
     }
 }
@@ -1131,7 +1161,7 @@ fn assert_no_indirect_calls(ir: &str) {
 }
 
 fn assert_pure_surface(ir: &str) {
-    assert_no_legacy_surface(ir);
+    assert_stateless_direct_lcir_surface(ir);
     assert!(ir.contains("loom_runtime_stdout_write_v1"), "{ir}");
     for line in ir.lines().filter(|line| line.contains("@loom_runtime_")) {
         assert!(
@@ -1151,7 +1181,7 @@ fn assert_pure_surface(ir: &str) {
 }
 
 fn assert_fallible_surface(ir: &str) {
-    assert_no_legacy_surface(ir);
+    assert_stateless_direct_lcir_surface(ir);
     assert!(ir.contains("loom_runtime_create_v1"), "{ir}");
     assert!(ir.contains("loom_runtime_activate_v1"), "{ir}");
     assert!(ir.contains("loom_context_raise_fault_v1"), "{ir}");
@@ -1246,15 +1276,15 @@ fn float_patterns_use_ieee_ordered_equality_in_all_three_backends() {
     );
 
     let lcir = emit_and_run_lcir(&artifact, "float-patterns");
-    let legacy = emit_and_run_legacy(&program, "main", "legacy-float-patterns");
+    let checked_mir = emit_and_run_checked_mir(&program, "main", "checked-mir-float-patterns");
     assert!(lcir.output.status.success(), "{:?}", lcir.output);
-    assert!(legacy.status.success(), "{legacy:?}");
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
     assert_eq!(lcir.output.stdout, b"Unit\n");
-    assert_eq!(lcir.output.stdout, legacy.stdout);
+    assert_eq!(lcir.output.stdout, checked_mir.stdout);
 }
 
 #[test]
-fn source_lowered_pure_scalars_run_without_runtime_or_legacy_values() {
+fn source_lowered_pure_scalars_run_without_runtime_or_universal_values() {
     let source = r"module lcir_source_pure
 
 fn choose(flag Bool, left Float, right Float) Bool {
@@ -1536,7 +1566,7 @@ pub fn main() {
         "{}",
         native.ir
     );
-    assert_no_legacy_surface(&native.ir);
+    assert_stateless_direct_lcir_surface(&native.ir);
 
     for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
         let directory = tempfile::tempdir().expect("create scalar builtin target directory");
@@ -1559,7 +1589,7 @@ pub fn main() {
         let ir = std::fs::read_to_string(ir_path).expect("read scalar builtin target IR");
         assert!(!ir.contains("loom_runtime_parse_int"), "{ir}");
         assert!(ir.contains(PARSE_FLOAT_SYMBOL), "{ir}");
-        assert_no_legacy_surface(&ir);
+        assert_stateless_direct_lcir_surface(&ir);
     }
 }
 
@@ -1623,11 +1653,11 @@ pub fn main() {{
     assert!(dump.contains("format.float"), "{dump}");
 
     let native = emit_and_run_lcir(&artifact, "source-typed-float-format");
-    let legacy = emit_and_run_legacy(&program, "main", "legacy-float-format");
+    let checked_mir = emit_and_run_checked_mir(&program, "main", "checked-mir-float-format");
     assert!(native.output.status.success(), "{:?}", native.output);
-    assert!(legacy.status.success(), "{legacy:?}");
-    assert_eq!(native.output.stdout, legacy.stdout);
-    assert_eq!(native.output.stderr, legacy.stderr);
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
+    assert_eq!(native.output.stdout, checked_mir.stdout);
+    assert_eq!(native.output.stderr, checked_mir.stderr);
     for required in [
         FORMAT_FLOAT_TYPED_SYMBOL,
         "format.float.failed",
@@ -1691,7 +1721,7 @@ pub fn main() {{
 }
 
 #[test]
-fn negative_duration_fault_matches_interpreter_and_legacy() {
+fn negative_duration_fault_matches_interpreter_and_checked_mir() {
     let source = r"module lcir_negative_duration
 
 import std.time.milliseconds
@@ -1720,19 +1750,23 @@ pub fn main() {
     assert!(dump.contains("assert"), "{dump}");
     assert!(dump.contains("InvalidDuration"), "{dump}");
     let lcir = emit_and_run_lcir_machine_fault(&artifact, "lcir-negative-duration");
-    let legacy = emit_and_run_legacy_machine_fault(&program, "main", "legacy-negative-duration");
+    let checked_mir =
+        emit_and_run_checked_mir_machine_fault(&program, "main", "checked-mir-negative-duration");
     assert!(!lcir.output.status.success(), "{:?}", lcir.output);
-    assert!(!legacy.status.success(), "{legacy:?}");
+    assert!(!checked_mir.status.success(), "{checked_mir:?}");
     let lcir_fault = machine_fault(&lcir.output);
-    let legacy_fault = machine_fault(&legacy);
+    let checked_mir_fault = machine_fault(&checked_mir);
     assert_eq!(lcir_fault["fault"]["code"], "InvalidDuration");
     assert_eq!(
         lcir_fault["fault"]["message"],
         "Duration milliseconds cannot be negative"
     );
-    assert_eq!(legacy_fault["fault"]["code"], interpreted["fault"]["code"]);
     assert_eq!(
-        legacy_fault["fault"]["message"],
+        checked_mir_fault["fault"]["code"],
+        interpreted["fault"]["code"]
+    );
+    assert_eq!(
+        checked_mir_fault["fault"]["message"],
         interpreted["fault"]["message"]
     );
     assert_fallible_surface(&lcir.ir);
@@ -1768,12 +1802,18 @@ pub fn main() {
     assert!(dump.contains("assert"), "{dump}");
     assert!(dump.contains("InvalidDuration"), "{dump}");
     let lcir = emit_and_run_lcir_machine_fault(&artifact, "lcir-duration-cleanup-primary");
-    let legacy =
-        emit_and_run_legacy_machine_fault(&program, "main", "legacy-duration-cleanup-primary");
+    let checked_mir = emit_and_run_checked_mir_machine_fault(
+        &program,
+        "main",
+        "checked-mir-duration-cleanup-primary",
+    );
     let lcir_fault = machine_fault(&lcir.output);
-    let legacy_fault = machine_fault(&legacy);
+    let checked_mir_fault = machine_fault(&checked_mir);
     assert_eq!(lcir_fault["code"], interpreted["fault"]["code"]);
-    assert_eq!(legacy_fault["fault"]["code"], interpreted["fault"]["code"]);
+    assert_eq!(
+        checked_mir_fault["fault"]["code"],
+        interpreted["fault"]["code"]
+    );
 }
 
 #[test]
@@ -1825,7 +1865,7 @@ pub fn main() {
         "{}",
         native.ir
     );
-    assert_no_legacy_surface(&native.ir);
+    assert_stateless_direct_lcir_surface(&native.ir);
 }
 
 #[test]
@@ -1852,11 +1892,11 @@ fn immortal_text_uses_one_pointer_and_allocation_free_runtime_abi_on_all_targets
         assert!(dump.contains(expected), "missing `{expected}`:\n{dump}");
     }
     let native = emit_and_run_lcir(&artifact, "source-immortal-text");
-    let legacy = emit_and_run_legacy(&program, "main", "legacy-immortal-text");
+    let checked_mir = emit_and_run_checked_mir(&program, "main", "checked-mir-immortal-text");
     assert!(native.output.status.success(), "{:?}", native.output);
     assert_eq!(native.output.stdout, b"Unit\n");
-    assert_eq!(native.output.stdout, legacy.stdout);
-    assert_eq!(native.output.stderr, legacy.stderr);
+    assert_eq!(native.output.stdout, checked_mir.stdout);
+    assert_eq!(native.output.stderr, checked_mir.stderr);
     assert!(
         native
             .ir
@@ -1867,7 +1907,7 @@ fn immortal_text_uses_one_pointer_and_allocation_free_runtime_abi_on_all_targets
     assert!(native.ir.contains("@loom_layout_text_v1 = external global"));
     assert!(native.ir.contains("text.compare.same_length"));
     assert!(native.ir.contains("define internal ptr @loom.lcir.fn"));
-    assert_no_legacy_surface(&native.ir);
+    assert_stateless_direct_lcir_surface(&native.ir);
 
     for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
         let directory = tempfile::tempdir().expect("create cross-target Text directory");
@@ -1894,7 +1934,7 @@ fn immortal_text_uses_one_pointer_and_allocation_free_runtime_abi_on_all_targets
             "{ir}"
         );
         assert!(ir.contains("define internal ptr @loom.lcir.fn"), "{ir}");
-        assert_no_legacy_surface(&ir);
+        assert_stateless_direct_lcir_surface(&ir);
     }
 }
 
@@ -1947,10 +1987,10 @@ fn managed_bytes_close_the_typed_lcir_route_on_all_supported_targets() {
     assert!(equality.effects().is_empty());
 
     let native = emit_and_run_lcir(&artifact, "source-managed-bytes-tests");
-    let legacy = emit_and_run_legacy_tests(&program, "legacy-managed-bytes-tests");
+    let checked_mir = emit_and_run_checked_mir_tests(&program, "checked-mir-managed-bytes-tests");
     assert!(native.output.status.success(), "{:?}", native.output);
-    assert_eq!(native.output.stdout, legacy.stdout);
-    assert_eq!(native.output.stderr, legacy.stderr);
+    assert_eq!(native.output.stdout, checked_mir.stdout);
+    assert_eq!(native.output.stderr, checked_mir.stderr);
     for required in [
         "declare i32 @loom_runtime_bytes_append_typed_v1(ptr, ptr, ptr)",
         "declare i32 @loom_runtime_bytes_decode_utf8_typed_v1(ptr, ptr)",
@@ -2063,7 +2103,7 @@ fn text_from_utf8_units_is_direct_typed_lcir_on_all_supported_targets() {
             native.ir
         );
     }
-    assert_no_universal_value_surface(&native.ir);
+    assert_typed_lcir_surface(&native.ir);
     assert!(!native.ir.contains("loom_executor_"), "{}", native.ir);
 
     for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
@@ -2100,7 +2140,7 @@ fn text_from_utf8_units_is_direct_typed_lcir_on_all_supported_targets() {
             ir.contains(&format!("target triple = \"{target}\"")),
             "{ir}"
         );
-        assert_no_universal_value_surface(&ir);
+        assert_typed_lcir_surface(&ir);
         assert!(!ir.contains("loom_executor_"), "{ir}");
     }
 }
@@ -2165,7 +2205,7 @@ fn lexical_path_is_direct_typed_lcir_on_all_supported_targets() {
             native.ir
         );
     }
-    assert_no_universal_value_surface(&native.ir);
+    assert_typed_lcir_surface(&native.ir);
 
     for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
         let directory = tempfile::tempdir().expect("create typed Path target directory");
@@ -2202,7 +2242,7 @@ fn lexical_path_is_direct_typed_lcir_on_all_supported_targets() {
             ir.contains(&format!("target triple = \"{target}\"")),
             "{ir}"
         );
-        assert_no_universal_value_surface(&ir);
+        assert_typed_lcir_surface(&ir);
         assert!(!ir.contains("loom_runtime_path_join("), "{ir}");
         assert!(!ir.contains("loom_runtime_path_contains_nul"), "{ir}");
         assert!(!ir.contains("loom_executor_"), "{ir}");
@@ -2436,10 +2476,10 @@ pub fn main() {{
     );
 
     let native = emit_and_run_lcir(&artifact, "source-managed-text-get");
-    let legacy = emit_and_run_legacy_tests(&program, "legacy-managed-text-get");
+    let checked_mir = emit_and_run_checked_mir_tests(&program, "checked-mir-managed-text-get");
     assert!(native.output.status.success(), "{:?}", native.output);
-    assert_eq!(native.output.stdout, legacy.stdout);
-    assert_eq!(native.output.stderr, legacy.stderr);
+    assert_eq!(native.output.stdout, checked_mir.stdout);
+    assert_eq!(native.output.stderr, checked_mir.stderr);
     for required in [
         "loom_runtime_text_get_typed_v1",
         "text.get.status.valid",
@@ -3223,19 +3263,19 @@ fn typed_logging_uses_one_direct_fallible_runtime_boundary() {
             stem,
             NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
         );
-        let legacy = match &request {
+        let checked_mir = match &request {
             SourceArtifactRequest::Run { .. } => {
-                emit_and_run_legacy(&program, "main", "legacy-typed-logging-run")
+                emit_and_run_checked_mir(&program, "main", "checked-mir-typed-logging-run")
             }
             SourceArtifactRequest::Tests => {
-                emit_and_run_legacy_tests(&program, "legacy-typed-logging-tests")
+                emit_and_run_checked_mir_tests(&program, "checked-mir-typed-logging-tests")
             }
         };
         assert!(native.output.status.success(), "{:#?}", native.output);
-        assert!(legacy.status.success(), "{legacy:#?}");
-        assert_eq!(native.output.stdout, legacy.stdout);
+        assert!(checked_mir.status.success(), "{checked_mir:#?}");
+        assert_eq!(native.output.stdout, checked_mir.stdout);
         assert_eq!(native.output.stderr, TYPED_LOGGING_STDERR);
-        assert_eq!(native.output.stderr, legacy.stderr);
+        assert_eq!(native.output.stderr, checked_mir.stderr);
         for required in [
             "@loom_runtime_log_typed_v1",
             "LogWriteFault",
@@ -3313,9 +3353,9 @@ fn typed_logging_uses_one_direct_fallible_runtime_boundary() {
     .expect("emit typed logging unwritable-stderr object");
     link_native_object(&typed_object, &typed_executable)
         .expect("link typed logging unwritable-stderr executable");
-    let legacy_executable = directory.path().join("legacy-logging-unwritable");
-    emit_native(&program, &legacy_executable, &EmitOptions::run("main"))
-        .expect("emit legacy logging unwritable-stderr executable");
+    let checked_mir_executable = directory.path().join("checked-mir-logging-unwritable");
+    emit_native(&program, &checked_mir_executable, &EmitOptions::run("main"))
+        .expect("emit checked-MIR logging unwritable-stderr executable");
 
     let mut interpreter = Command::new(std::env::current_exe().expect("current test executable"));
     interpreter
@@ -3326,7 +3366,7 @@ fn typed_logging_uses_one_direct_fallible_runtime_boundary() {
         interpreter.status.success(),
         "interpreter did not observe read-only stderr: {interpreter:?}"
     );
-    for executable in [&typed_executable, &legacy_executable] {
+    for executable in [&typed_executable, &checked_mir_executable] {
         let mut command = Command::new(executable);
         let output = run_with_read_only_stderr(&mut command, directory.path());
         assert!(
@@ -3348,7 +3388,7 @@ fn typed_logging_uses_one_direct_fallible_runtime_boundary() {
             interpreter.status.success(),
             "interpreter did not observe closed stderr: {interpreter:?}"
         );
-        for executable in [&typed_executable, &legacy_executable] {
+        for executable in [&typed_executable, &checked_mir_executable] {
             let mut command = Command::new(executable);
             let output = run_with_closed_stderr(&mut command);
             assert!(
@@ -3448,13 +3488,14 @@ fn typed_text_maps_are_direct_exact_and_survive_forced_relocation() {
         "every insert/remove source site must retain an exact typed allocation:\n{verify}"
     );
 
-    let legacy_tests = emit_and_run_legacy_tests(&program, "legacy-typed-text-maps-tests");
+    let checked_mir_tests =
+        emit_and_run_checked_mir_tests(&program, "checked-mir-typed-text-maps-tests");
     assert_eq!(
-        legacy_tests.status.success(),
+        checked_mir_tests.status.success(),
         native_tests.output.status.success()
     );
-    assert_eq!(legacy_tests.stdout, native_tests.output.stdout);
-    assert_eq!(legacy_tests.stderr, native_tests.output.stderr);
+    assert_eq!(checked_mir_tests.stdout, native_tests.output.stdout);
+    assert_eq!(checked_mir_tests.stderr, native_tests.output.stderr);
 
     let run_artifact = lower_source_artifact(
         &program,
@@ -3469,13 +3510,14 @@ fn typed_text_maps_are_direct_exact_and_survive_forced_relocation() {
         native_run.output
     );
     assert_eq!(native_run.output.stdout, b"Unit\n");
-    let legacy_run = emit_and_run_legacy(&program, "main", "legacy-typed-text-maps-run");
+    let checked_mir_run =
+        emit_and_run_checked_mir(&program, "main", "checked-mir-typed-text-maps-run");
     assert_eq!(
-        legacy_run.status.success(),
+        checked_mir_run.status.success(),
         native_run.output.status.success()
     );
-    assert_eq!(legacy_run.stdout, native_run.output.stdout);
-    assert_eq!(legacy_run.stderr, native_run.output.stderr);
+    assert_eq!(checked_mir_run.stdout, native_run.output.stdout);
+    assert_eq!(checked_mir_run.stderr, native_run.output.stderr);
 
     let release_directory = tempfile::tempdir().expect("create release TextMap directory");
     let release_object = release_directory.path().join("typed-text-map-release.o");
@@ -3577,7 +3619,7 @@ fn standard_library_text_map_segment_classifies_through_direct_lcir() {
 }
 
 #[test]
-fn standard_library_mir_route_is_exactly_the_reviewed_lcir_gap() {
+fn complete_standard_library_tests_route_through_lcir() {
     let source = include_str!("../../../fixtures/standard-library/main.loom")
         .replace("__ROUND_TRIP_PATH__", "round-trip.txt")
         .replace("__MISSING_PATH__", "missing.txt")
@@ -3585,46 +3627,13 @@ fn standard_library_mir_route_is_exactly_the_reviewed_lcir_gap() {
         .replace("__LOOPBACK_PORT__", "1")
         .replace("__READ_LOOPBACK_PORT__", "1");
     let program = compile_source(&source);
-    let error = prepare_native_object(&program, EmitOptions::tests(), NativeRoutePolicy::LcirOnly)
-        .err()
-        .expect("the reviewed standard-library LCIR gap must remain explicit");
-    assert_eq!(error.kind(), NativePreparationErrorKind::Unsupported);
-    assert_eq!(error.code(), "NativePreparationUnsupportedLcir");
-    let report = error
-        .support_report()
-        .expect("unsupported preparation must carry its complete report");
-    assert_eq!(report.len(), 2);
-    assert!(
-        report
-            .items()
-            .iter()
-            .all(|item| item.feature() == UnsupportedFeature::BuiltinCall),
-        "{report:#?}"
-    );
-    let operations = report
-        .items()
-        .iter()
-        .map(|item| {
-            let range = item.span().range;
-            let site = source
-                .get(
-                    usize::try_from(range.start).expect("source offset fits usize")
-                        ..usize::try_from(range.end).expect("source offset fits usize"),
-                )
-                .expect("support-report span belongs to the reviewed fixture");
-            if site.starts_with("parse_json(") {
-                "JsonParse"
-            } else {
-                panic!("unreviewed standard-library LCIR gap: {site}")
-            }
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(operations, ["JsonParse", "JsonParse"]);
-
-    let prepared =
-        prepare_native_object(&program, EmitOptions::tests(), NativeRoutePolicy::Automatic)
-            .expect("automatic preparation must retain the complete MIR backend");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::Legacy);
+    for policy in [NativeRoutePolicy::Automatic, NativeRoutePolicy::LcirOnly] {
+        let prepared = prepare_native_object(&program, EmitOptions::tests(), policy)
+            .unwrap_or_else(|error| {
+                panic!("prepare standard-library tests with {policy:?}: {error}")
+            });
+        assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    }
 }
 
 #[test]
@@ -3674,7 +3683,7 @@ pub async fn main() {
 
     let ir = std::fs::read_to_string(ir_path).expect("read async scoped-close LLVM IR");
     assert_typed_resource_close_guard(&ir, &artifact, "main", 1);
-    assert_no_universal_value_surface(&ir);
+    assert_typed_lcir_surface(&ir);
 }
 
 #[test]
@@ -3741,7 +3750,7 @@ fn typed_io_tasks_use_direct_result_frames_and_real_scheduler_io() {
     for forbidden in ["loom.Value", "loom_file_try_", "loom_socket_try_"] {
         assert!(
             !ir.contains(forbidden),
-            "legacy `{forbidden}` remained:\n{ir}"
+            "checked-MIR backend token `{forbidden}` remained:\n{ir}"
         );
     }
     for (function, kind) in [("round_trip", 1), ("missingMain", 1), ("socketMain", 2)] {
@@ -3770,6 +3779,292 @@ fn typed_io_tasks_use_direct_result_frames_and_real_scheduler_io() {
         )
         .unwrap_or_else(|error| panic!("emit typed I/O object for {target}: {error}"));
         assert!(object.is_file(), "missing typed I/O object for {target}");
+    }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one gate keeps source JSON call-graph reachability, bulk construction, both harnesses, and runtime purity together"
+)]
+fn source_json_parser_is_direct_bulk_lcir_in_run_and_test_harnesses() {
+    let source = include_str!("../../../fixtures/lcir-json-parse/main.loom");
+    let program = compile_source(source);
+
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert_eq!(interpreted.len(), 1, "{interpreted:#?}");
+    assert_eq!(
+        interpreted[0].status,
+        TestStatus::Passed,
+        "{interpreted:#?}"
+    );
+
+    for (options, scenario) in [
+        (EmitOptions::run("main"), "run"),
+        (EmitOptions::tests(), "tests"),
+    ] {
+        for policy in [NativeRoutePolicy::Automatic, NativeRoutePolicy::LcirOnly] {
+            let prepared =
+                prepare_native_object(&program, options.clone(), policy).unwrap_or_else(|error| {
+                    panic!("prepare source JSON parser {scenario} with {policy:?}: {error}")
+                });
+            assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+        }
+    }
+
+    let assert_direct_parser = |artifact: &CheckedArtifact, ir: &str, scenario: &str| {
+        let dump = dump_program(artifact.program());
+        for required in [
+            "std.json.parse_json",
+            "std.json.parse_value",
+            "std.json.finish_object",
+            "text_map.construct_entries",
+        ] {
+            assert!(
+                dump.contains(required),
+                "source JSON {scenario} LCIR omitted `{required}`:\n{dump}"
+            );
+        }
+        assert_eq!(
+            dump.matches("list.append.unique").count(),
+            6,
+            "every parser-local construction append must stay unique:\n{dump}"
+        );
+        assert!(
+            !dump.contains("list.append %"),
+            "source JSON {scenario} regressed to functional loop append:\n{dump}"
+        );
+        let finish_object = artifact
+            .functions()
+            .iter()
+            .find(|function| function.name().ends_with("finish_object"))
+            .expect("source finish_object helper");
+        assert!(finish_object.instructions().iter().any(|instruction| {
+            matches!(
+                instruction.kind(),
+                InstructionKind::TextMapConstructEntries { .. }
+            )
+        }));
+        assert!(finish_object.effects().contains(Effects::MAY_COLLECT));
+        assert!(!finish_object.effects().contains(Effects::NEEDS_EXECUTOR));
+        for required in [
+            "@loom_gc_typed_repeated_alloc_v1",
+            "text_map.bulk.heap.header",
+            "text_map.bulk.sort.header",
+            "text_map.bulk.scan.header",
+            "text_map.bulk.duplicate",
+            "llvm.memcpy",
+            "managed.root.reload",
+        ] {
+            assert!(
+                ir.contains(required),
+                "source JSON {scenario} IR omitted `{required}`:\n{ir}"
+            );
+        }
+        for forbidden in [
+            "%loom.Value",
+            "loom_runtime_text_map_insert",
+            "ValueNode",
+            "loom.fn",
+            "loom_executor_",
+            "@qsort",
+        ] {
+            assert!(
+                !ir.contains(forbidden),
+                "source JSON {scenario} retained `{forbidden}`:\n{ir}"
+            );
+        }
+    };
+
+    let run_artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let native_run = emit_and_run_lcir(&run_artifact, "source-json-parser-run");
+    assert!(
+        native_run.output.status.success(),
+        "{:#?}",
+        native_run.output
+    );
+    assert_eq!(native_run.output.stdout, b"Unit\n");
+    assert!(
+        native_run.output.stderr.is_empty(),
+        "{:#?}",
+        native_run.output
+    );
+    assert_direct_parser(&run_artifact, &native_run.ir, "run");
+    let checked_mir_run = prepare_and_run_checked_mir(
+        &program,
+        EmitOptions::run("main"),
+        "checked-mir-source-json-parser-run",
+    );
+    assert!(checked_mir_run.status.success(), "{checked_mir_run:#?}");
+    assert_eq!(checked_mir_run.stdout, native_run.output.stdout);
+    assert_eq!(checked_mir_run.stderr, native_run.output.stderr);
+
+    let tests_artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let native_tests = emit_and_run_lcir(&tests_artifact, "source-json-parser-tests");
+    assert!(
+        native_tests.output.status.success(),
+        "{:#?}",
+        native_tests.output
+    );
+    assert!(
+        String::from_utf8_lossy(&native_tests.output.stdout)
+            .contains("passed lcir_json_parse.source_json_parse"),
+        "{:#?}",
+        native_tests.output
+    );
+    assert!(
+        native_tests.output.stderr.is_empty(),
+        "{:#?}",
+        native_tests.output
+    );
+    assert_direct_parser(&tests_artifact, &native_tests.ir, "tests");
+    let checked_mir_tests = prepare_and_run_checked_mir(
+        &program,
+        EmitOptions::tests(),
+        "checked-mir-source-json-parser-tests",
+    );
+    assert!(checked_mir_tests.status.success(), "{checked_mir_tests:#?}");
+    assert_eq!(checked_mir_tests.stdout, native_tests.output.stdout);
+    assert_eq!(checked_mir_tests.stderr, native_tests.output.stderr);
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one gate keeps multi-leaf moving-GC behavior and both cross-target object surfaces together"
+)]
+fn text_map_bulk_copy_sort_preserves_source_alias_across_moving_collection() {
+    let half = "x".repeat(20 * 1024);
+    let source = format!(
+        r#"module lcir_text_map_bulk_relocation
+
+record Pair {{
+    left Text
+    right Text
+}}
+
+fn first_entry_is_valid(entries List[(Text, Pair)], left Text, right Text) Bool {{
+    match entries.get(0) {{
+        Some(entry) => {{
+            let key, value = entry
+            key == "z" && value.left == left && value.right == right
+        }}
+        None => false
+    }}
+}}
+
+fn verify(left Text, right Text) Bool {{
+    let value = Pair {{ left = left, right = right }}
+    var entries = List[(Text, Pair)]()
+    entries.add(("z", value))
+    entries.add(("a", value))
+    let alias = entries
+    let pressure = left.concat(right)
+    discard pressure
+    match entries.to_text_map() {{
+        Ok(map) => {{
+            let first_valid = match map.entry_at(0) {{
+                Some(entry) => {{
+                    let key, value = entry
+                    key == "a" && value.left == left && value.right == right
+                }}
+                None => false
+            }}
+            first_entry_is_valid(alias, left, right) && map.length() == 2 && first_valid
+        }}
+        Err(_) => false
+    }}
+}}
+
+pub fn main() {{
+    let left = "{half}".concat("{half}")
+    let right = left.concat("!")
+    let valid = verify(left, right)
+    assert valid
+}}
+"#
+    );
+    let program = compile_source(&source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    assert_eq!(
+        dump.matches("text_map.construct_entries").count(),
+        1,
+        "{dump}"
+    );
+    assert_eq!(dump.matches("list.append.unique").count(), 2, "{dump}");
+    assert!(!dump.contains("list.append %"), "{dump}");
+
+    let native = emit_and_run_lcir(&artifact, "source-text-map-bulk-relocation");
+    assert!(native.output.status.success(), "{:#?}", native.output);
+    assert_eq!(native.output.stdout, b"Unit\n");
+    assert!(native.output.stderr.is_empty(), "{:#?}", native.output);
+    let verify = emitted_lcir_function(&native.ir, &artifact, "verify");
+    for required in [
+        "text_map.bulk.allocate",
+        "text_map.bulk.source",
+        "text_map.bulk.destination",
+        "text_map.bulk.sort.header",
+        "managed.root.reload",
+        "loom_gc_typed_root_push_v1",
+        "@loom_gc_typed_repeated_alloc_v1",
+        "@llvm.memcpy",
+    ] {
+        assert!(verify.contains(required), "missing `{required}`:\n{verify}");
+    }
+
+    for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
+        let directory = tempfile::tempdir().expect("create TextMap bulk target directory");
+        let object = directory.path().join(if target.contains("windows") {
+            "text-map-bulk.obj"
+        } else {
+            "text-map-bulk.o"
+        });
+        let ir_path = directory.path().join("text-map-bulk.ll");
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                emit_ir: Some(ir_path.clone()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit TextMap bulk object for {target}: {error}"));
+        let bytes = std::fs::read(&object).expect("read TextMap bulk target object");
+        if target.contains("windows") {
+            assert_eq!(bytes.get(..2), Some([0x64, 0x86].as_slice()));
+        } else {
+            assert_eq!(bytes.get(..4), Some(b"\x7fELF".as_slice()));
+        }
+        let ir = std::fs::read_to_string(ir_path).expect("read TextMap bulk target IR");
+        assert!(
+            ir.contains(&format!("target triple = \"{target}\"")),
+            "TextMap bulk object used the wrong target:\n{ir}"
+        );
+        let verify = emitted_lcir_function(&ir, &artifact, "verify");
+        for required in [
+            "text_map.bulk.source",
+            "text_map.bulk.sort.header",
+            "managed.root.reload",
+        ] {
+            assert!(
+                verify.contains(required),
+                "{target} omitted `{required}`:\n{verify}"
+            );
+        }
     }
 }
 
@@ -4076,10 +4371,10 @@ fn recursive_json_uses_one_exact_managed_cell_and_survives_forced_relocation() {
             && line.contains("i64 32, i64 2")
     }));
 
-    let legacy = emit_and_run_legacy_tests(&program, "legacy-recursive-json");
-    assert_eq!(legacy.status.success(), native.output.status.success());
-    assert_eq!(legacy.stdout, native.output.stdout);
-    assert_eq!(legacy.stderr, native.output.stderr);
+    let checked_mir = emit_and_run_checked_mir_tests(&program, "checked-mir-recursive-json");
+    assert_eq!(checked_mir.status.success(), native.output.status.success());
+    assert_eq!(checked_mir.stdout, native.output.stdout);
+    assert_eq!(checked_mir.stderr, native.output.stderr);
 
     for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
         let directory = tempfile::tempdir().expect("create recursive Json target directory");
@@ -4222,10 +4517,10 @@ fn closed_sum_byte_classes_never_alias_scalar_bytes_with_managed_pointer_cells()
         );
     }
 
-    let legacy = emit_and_run_legacy_tests(&program, "legacy-sum-layout-collisions");
-    assert_eq!(legacy.status.success(), native.output.status.success());
-    assert_eq!(legacy.stdout, native.output.stdout);
-    assert_eq!(legacy.stderr, native.output.stderr);
+    let checked_mir = emit_and_run_checked_mir_tests(&program, "checked-mir-sum-layout-collisions");
+    assert_eq!(checked_mir.status.success(), native.output.status.success());
+    assert_eq!(checked_mir.stdout, native.output.stdout);
+    assert_eq!(checked_mir.stderr, native.output.stderr);
 
     for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
         let directory = tempfile::tempdir().expect("create sum-layout target directory");
@@ -4583,10 +4878,10 @@ fn generic_instances_use_direct_host_and_msvc_target_abis() {
     );
     assert_pure_surface(&native.ir);
 
-    let legacy = emit_and_run_legacy(&program, "main", "source-generics-legacy");
-    assert_eq!(legacy.status.success(), native.output.status.success());
-    assert_eq!(legacy.stdout, native.output.stdout);
-    assert_eq!(legacy.stderr, native.output.stderr);
+    let checked_mir = emit_and_run_checked_mir(&program, "main", "source-generics-checked-mir");
+    assert_eq!(checked_mir.status.success(), native.output.status.success());
+    assert_eq!(checked_mir.stdout, native.output.stdout);
+    assert_eq!(checked_mir.stderr, native.output.stderr);
 
     let directory = tempfile::tempdir().expect("create MSVC generic output directory");
     let object = directory.path().join("generic.obj");
@@ -4647,11 +4942,11 @@ fn generic_products_and_proven_wrappers_execute_through_typed_lcir() {
         "source-generic-products",
         NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
     );
-    let legacy = emit_and_run_legacy(&program, "main", "legacy-generic-products");
+    let checked_mir = emit_and_run_checked_mir(&program, "main", "checked-mir-generic-products");
     assert!(native.output.status.success(), "{:?}", native.output);
-    assert!(legacy.status.success(), "{legacy:?}");
-    assert_eq!(native.output.stdout, legacy.stdout);
-    assert_eq!(native.output.stderr, legacy.stderr);
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
+    assert_eq!(native.output.stdout, checked_mir.stdout);
+    assert_eq!(native.output.stderr, checked_mir.stderr);
     assert!(!native.ir.contains("%loom.Value"), "{}", native.ir);
     assert!(!native.ir.contains("loom_executor_"), "{}", native.ir);
 
@@ -4705,11 +5000,11 @@ fn structural_equality_executes_products_sums_contracts_and_lists_through_typed_
         "source-structural-equality",
         NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
     );
-    let legacy = emit_and_run_legacy(&program, "main", "legacy-structural-equality");
+    let checked_mir = emit_and_run_checked_mir(&program, "main", "checked-mir-structural-equality");
     assert!(native.output.status.success(), "{:?}", native.output);
-    assert!(legacy.status.success(), "{legacy:?}");
-    assert_eq!(native.output.stdout, legacy.stdout);
-    assert_eq!(native.output.stderr, legacy.stderr);
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
+    assert_eq!(native.output.stdout, checked_mir.stdout);
+    assert_eq!(native.output.stderr, checked_mir.stderr);
     for forbidden in [
         "%loom.Value",
         "@loom.fn.",
@@ -4817,11 +5112,15 @@ fn recursive_structural_equality_executes_typed_helper_cycles_without_runtime_ty
         "source-recursive-structural-equality",
         NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
     );
-    let legacy = emit_and_run_legacy(&program, "main", "legacy-recursive-structural-equality");
+    let checked_mir = emit_and_run_checked_mir(
+        &program,
+        "main",
+        "checked-mir-recursive-structural-equality",
+    );
     assert!(native.output.status.success(), "{:?}", native.output);
-    assert!(legacy.status.success(), "{legacy:?}");
-    assert_eq!(native.output.stdout, legacy.stdout);
-    assert_eq!(native.output.stderr, legacy.stderr);
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
+    assert_eq!(native.output.stdout, checked_mir.stdout);
+    assert_eq!(native.output.stderr, checked_mir.stderr);
     for forbidden in [
         "%loom.Value",
         "@loom.fn.",
@@ -4840,16 +5139,16 @@ fn recursive_structural_equality_executes_typed_helper_cycles_without_runtime_ty
 
     let tests = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
     let native_tests = emit_and_run_lcir(&tests, "source-recursive-structural-equality-tests");
-    let legacy_tests =
-        emit_and_run_legacy_tests(&program, "legacy-recursive-structural-equality-tests");
+    let checked_mir_tests =
+        emit_and_run_checked_mir_tests(&program, "checked-mir-recursive-structural-equality-tests");
     assert!(
         native_tests.output.status.success(),
         "{:?}",
         native_tests.output
     );
-    assert!(legacy_tests.status.success(), "{legacy_tests:?}");
-    assert_eq!(native_tests.output.stdout, legacy_tests.stdout);
-    assert_eq!(native_tests.output.stderr, legacy_tests.stderr);
+    assert!(checked_mir_tests.status.success(), "{checked_mir_tests:?}");
+    assert_eq!(native_tests.output.stdout, checked_mir_tests.stdout);
+    assert_eq!(native_tests.output.stderr, checked_mir_tests.stderr);
 }
 
 fn static_concepts_test_artifact() -> CheckedArtifact {
@@ -4885,7 +5184,7 @@ fn static_concepts_run_directly_on_host_without_runtime_witnesses() {
         "{:?}",
         native.output
     );
-    assert_no_legacy_surface(&native.ir);
+    assert_stateless_direct_lcir_surface(&native.ir);
     assert_no_indirect_calls(&native.ir);
     for forbidden in [
         "loom_runtime_create_v1",
@@ -4930,7 +5229,7 @@ fn static_concepts_emit_direct_msvc_object_without_runtime_witnesses() {
         ir.contains("target triple = \"x86_64-pc-windows-msvc\""),
         "{ir}"
     );
-    assert_no_legacy_surface(&ir);
+    assert_stateless_direct_lcir_surface(&ir);
     assert_no_indirect_calls(&ir);
     for forbidden in [
         "loom_runtime_create_v1",
@@ -4977,12 +5276,12 @@ fn concepts_polymorphism_main_devirtualizes_unique_dynamic_witnesses_to_direct_c
     );
 
     let native = emit_and_run_lcir(&artifact, "source-concepts-unique-dyn");
-    let legacy = emit_and_run_legacy(&program, "main", "mir-concepts-unique-dyn");
+    let checked_mir = emit_and_run_checked_mir(&program, "main", "mir-concepts-unique-dyn");
     assert!(native.output.status.success(), "{:?}", native.output);
-    assert!(legacy.status.success(), "{legacy:?}");
-    assert_eq!(native.output.stdout, legacy.stdout);
-    assert_eq!(native.output.stderr, legacy.stderr);
-    assert_no_legacy_surface(&native.ir);
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
+    assert_eq!(native.output.stdout, checked_mir.stdout);
+    assert_eq!(native.output.stderr, checked_mir.stderr);
+    assert_stateless_direct_lcir_surface(&native.ir);
     assert_no_indirect_calls(&native.ir);
     for forbidden in ["loom_witness_", "WitnessInstance", "loom_executor_"] {
         assert!(
@@ -5194,11 +5493,11 @@ test fn dynamicStorageGcPressure() {{
     );
 
     let native = emit_and_run_lcir(&artifact, "source-concepts-dyn-storage");
-    let legacy = emit_and_run_legacy_tests(&program, "mir-concepts-dyn-storage");
+    let checked_mir = emit_and_run_checked_mir_tests(&program, "mir-concepts-dyn-storage");
     assert!(native.output.status.success(), "{:?}", native.output);
-    assert!(legacy.status.success(), "{legacy:?}");
-    assert_eq!(native.output.stdout, legacy.stdout);
-    assert_eq!(native.output.stderr, legacy.stderr);
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
+    assert_eq!(native.output.stdout, checked_mir.stdout);
+    assert_eq!(native.output.stderr, checked_mir.stderr);
     for required in [
         "loom_gc_typed_repeated_alloc_v1",
         "loom.lcir.list.descriptor",
@@ -5293,7 +5592,7 @@ fn unique_dynamic_witness_dce_ignores_dead_conformances_and_method_slots() {
         "{:?}",
         native.output
     );
-    assert_no_legacy_surface(&native.ir);
+    assert_stateless_direct_lcir_surface(&native.ir);
     assert_no_indirect_calls(&native.ir);
     for forbidden in ["lcir_dyn_unique.cold", "UnusedCounter", "loom_witness_"] {
         assert!(
@@ -5389,11 +5688,11 @@ fn finite_dynamic_witnesses_use_precise_single_pointer_boxes_and_direct_dispatch
     }
 
     let native = emit_and_run_lcir(&artifact, "source-finite-dyn");
-    let legacy = emit_and_run_legacy_tests(&program, "legacy-finite-dyn");
+    let checked_mir = emit_and_run_checked_mir_tests(&program, "checked-mir-finite-dyn");
     assert!(native.output.status.success(), "{:?}", native.output);
-    assert!(legacy.status.success(), "{legacy:?}");
-    assert_eq!(native.output.stdout, legacy.stdout);
-    assert_eq!(native.output.stderr, legacy.stderr);
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
+    assert_eq!(native.output.stdout, checked_mir.stdout);
+    assert_eq!(native.output.stderr, checked_mir.stderr);
     assert!(
         String::from_utf8_lossy(&native.output.stdout)
             .contains("passed lcir_dyn_finite.finiteDynamicWitnesses"),
@@ -5651,12 +5950,12 @@ pub fn main() {
         },
     );
     let lcir = emit_and_run_lcir(&artifact, "source-fibonacci");
-    let legacy = emit_and_run_legacy(&program, "main", "legacy-fibonacci");
+    let checked_mir = emit_and_run_checked_mir(&program, "main", "checked-mir-fibonacci");
 
     assert!(lcir.output.status.success(), "{:?}", lcir.output);
-    assert!(legacy.status.success(), "{legacy:?}");
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
     assert_eq!(lcir.output.stdout, b"Unit\n");
-    assert_eq!(lcir.output.stdout, legacy.stdout);
+    assert_eq!(lcir.output.stdout, checked_mir.stdout);
     assert_fallible_surface(&lcir.ir);
 }
 
@@ -5683,17 +5982,17 @@ pub fn main() {
         },
     );
     let lcir = emit_and_run_lcir(&artifact, "source-short-circuit");
-    let legacy = emit_and_run_legacy(&program, "main", "legacy-short-circuit");
+    let checked_mir = emit_and_run_checked_mir(&program, "main", "checked-mir-short-circuit");
 
     assert!(lcir.output.status.success(), "{:?}", lcir.output);
-    assert!(legacy.status.success(), "{legacy:?}");
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
     assert_eq!(lcir.output.stdout, b"Unit\n");
-    assert_eq!(lcir.output.stdout, legacy.stdout);
+    assert_eq!(lcir.output.stdout, checked_mir.stdout);
     assert_fallible_surface(&lcir.ir);
 }
 
 #[test]
-fn source_integer_faults_match_interpreter_and_legacy_diagnostics() {
+fn source_integer_faults_match_interpreter_and_checked_mir_diagnostics() {
     let cases = [
         (
             "overflow",
@@ -5723,18 +6022,19 @@ fn source_integer_faults_match_interpreter_and_legacy_diagnostics() {
             },
         );
         let lcir = emit_and_run_lcir(&artifact, &format!("source-{name}"));
-        let legacy = emit_and_run_legacy(&program, "main", &format!("legacy-{name}"));
+        let checked_mir =
+            emit_and_run_checked_mir(&program, "main", &format!("checked-mir-{name}"));
 
         assert!(!lcir.output.status.success(), "{name}: {:?}", lcir.output);
-        assert!(!legacy.status.success(), "{name}: {legacy:?}");
+        assert!(!checked_mir.status.success(), "{name}: {checked_mir:?}");
         assert!(
             diagnostic_text(&lcir.output).contains(expected),
             "{name}: {:?}",
             lcir.output
         );
         assert!(
-            diagnostic_text(&legacy).contains(expected),
-            "{name}: {legacy:?}"
+            diagnostic_text(&checked_mir).contains(expected),
+            "{name}: {checked_mir:?}"
         );
         assert_fallible_surface(&lcir.ir);
     }
@@ -5745,7 +6045,7 @@ fn source_integer_faults_match_interpreter_and_legacy_diagnostics() {
     clippy::too_many_lines,
     reason = "one differential gate keeps all lexical cleanup exit shapes and exact fault metadata together"
 )]
-fn typed_lexical_cleanup_matches_interpreter_and_legacy_on_every_exit_shape() {
+fn typed_lexical_cleanup_matches_interpreter_and_checked_mir_on_every_exit_shape() {
     let source = r"module typed_lexical_cleanup
 
 fn requireEqual(actual Int, expected Int) {
@@ -5816,12 +6116,15 @@ pub fn cleanupFaultMain() {
             },
         );
         let lcir = emit_and_run_lcir_machine_fault(&artifact, &format!("lcir-cleanup-{entry}"));
-        let legacy =
-            emit_and_run_legacy_machine_fault(&program, entry, &format!("legacy-cleanup-{entry}"));
+        let checked_mir = emit_and_run_checked_mir_machine_fault(
+            &program,
+            entry,
+            &format!("checked-mir-cleanup-{entry}"),
+        );
         assert!(lcir.output.status.success(), "{entry}: {:?}", lcir.output);
-        assert!(legacy.status.success(), "{entry}: {legacy:?}");
-        assert_eq!(lcir.output.stdout, legacy.stdout, "{entry}");
-        assert_eq!(lcir.output.stderr, legacy.stderr, "{entry}");
+        assert!(checked_mir.status.success(), "{entry}: {checked_mir:?}");
+        assert_eq!(lcir.output.stdout, checked_mir.stdout, "{entry}");
+        assert_eq!(lcir.output.stderr, checked_mir.stderr, "{entry}");
         assert_fallible_surface(&lcir.ir);
     }
 
@@ -5840,12 +6143,15 @@ pub fn cleanupFaultMain() {
             },
         );
         let lcir = emit_and_run_lcir_machine_fault(&artifact, &format!("lcir-cleanup-{entry}"));
-        let legacy =
-            emit_and_run_legacy_machine_fault(&program, entry, &format!("legacy-cleanup-{entry}"));
+        let checked_mir = emit_and_run_checked_mir_machine_fault(
+            &program,
+            entry,
+            &format!("checked-mir-cleanup-{entry}"),
+        );
         assert!(!lcir.output.status.success(), "{entry}: {:?}", lcir.output);
-        assert!(!legacy.status.success(), "{entry}: {legacy:?}");
+        assert!(!checked_mir.status.success(), "{entry}: {checked_mir:?}");
         let lcir_fault = machine_fault(&lcir.output);
-        let legacy_fault = machine_fault(&legacy);
+        let checked_mir_fault = machine_fault(&checked_mir);
         let code = |fault: &serde_json::Value| {
             fault["fault"]["code"]
                 .as_str()
@@ -5854,12 +6160,15 @@ pub fn cleanupFaultMain() {
         };
         assert_eq!(code(&lcir_fault).as_deref(), Some(expected), "LCIR {entry}");
         assert_eq!(
-            code(&legacy_fault).as_deref(),
+            code(&checked_mir_fault).as_deref(),
             Some(expected),
-            "legacy {entry}"
+            "checked-MIR {entry}"
         );
         if expected == "AssertionFault" {
-            assert_eq!(legacy_fault, interpreted, "legacy metadata {entry}");
+            assert_eq!(
+                checked_mir_fault, interpreted,
+                "checked-MIR metadata {entry}"
+            );
             assert_eq!(lcir_fault, interpreted, "LCIR assertion metadata {entry}");
         } else {
             assert_eq!(
@@ -5947,18 +6256,25 @@ pub fn initializerFaultMain() {
             assert!(!block.contains("invoke"), "{block}\n{dump}");
         }
         let lcir = emit_and_run_lcir_machine_fault(&artifact, &format!("lcir-scoped-{entry}"));
-        let legacy =
-            emit_and_run_legacy_machine_fault(&program, entry, &format!("legacy-scoped-{entry}"));
+        let checked_mir = emit_and_run_checked_mir_machine_fault(
+            &program,
+            entry,
+            &format!("checked-mir-scoped-{entry}"),
+        );
         assert_eq!(
             lcir.output.status.success(),
             succeeds,
             "{entry}: {:?}",
             lcir.output
         );
-        assert_eq!(legacy.status.success(), succeeds, "{entry}: {legacy:?}");
-        assert_eq!(lcir.output.stdout, legacy.stdout, "{entry}");
+        assert_eq!(
+            checked_mir.status.success(),
+            succeeds,
+            "{entry}: {checked_mir:?}"
+        );
+        assert_eq!(lcir.output.stdout, checked_mir.stdout, "{entry}");
         if succeeds {
-            assert_eq!(lcir.output.stderr, legacy.stderr, "{entry}");
+            assert_eq!(lcir.output.stderr, checked_mir.stderr, "{entry}");
         } else {
             let fault_code = |fault: &serde_json::Value| {
                 fault["fault"]["code"]
@@ -5972,9 +6288,9 @@ pub fn initializerFaultMain() {
                 "LCIR {entry}"
             );
             assert_eq!(
-                fault_code(&machine_fault(&legacy)).as_deref(),
+                fault_code(&machine_fault(&checked_mir)).as_deref(),
                 expected_fault,
-                "legacy {entry}"
+                "checked-MIR {entry}"
             );
         }
         assert_fallible_surface(&lcir.ir);
@@ -6082,15 +6398,15 @@ pub fn multiplyMain() {
         );
         let lcir =
             emit_and_run_lcir_machine_fault(&artifact, &format!("lcir-integer-overflow-{entry}"));
-        let legacy = emit_and_run_legacy_machine_fault(
+        let checked_mir = emit_and_run_checked_mir_machine_fault(
             &program,
             entry,
-            &format!("legacy-integer-overflow-{entry}"),
+            &format!("checked-mir-integer-overflow-{entry}"),
         );
         assert!(!lcir.output.status.success(), "{entry}: {:?}", lcir.output);
-        assert!(!legacy.status.success(), "{entry}: {legacy:?}");
+        assert!(!checked_mir.status.success(), "{entry}: {checked_mir:?}");
         assert_eq!(machine_fault(&lcir.output), expected, "LCIR {entry}");
-        assert_eq!(machine_fault(&legacy), expected, "legacy {entry}");
+        assert_eq!(machine_fault(&checked_mir), expected, "checked-MIR {entry}");
         assert_fallible_surface(&lcir.ir);
     }
 }
@@ -6113,27 +6429,31 @@ pub fn main() {
         },
     );
     let lcir = emit_and_run_lcir_machine_fault(&artifact, "lcir-provable-integer-arithmetic");
-    let legacy = emit_and_run_legacy_machine_fault_with_ir(
+    let checked_mir = emit_and_run_checked_mir_machine_fault_with_ir(
         &program,
         "main",
-        "legacy-provable-integer-arithmetic",
+        "checked-mir-provable-integer-arithmetic",
     );
 
     assert!(lcir.output.status.success(), "{:?}", lcir.output);
-    assert!(legacy.output.status.success(), "{:?}", legacy.output);
-    assert_eq!(lcir.output.stdout, b"Unit\n");
-    assert_eq!(legacy.output.stdout, lcir.output.stdout);
-    assert!(!diagnostic_text(&lcir.output).contains(FAULT_JSON_PREFIX));
-    assert!(!diagnostic_text(&legacy.output).contains(FAULT_JSON_PREFIX));
     assert!(
-        !legacy.ir.contains("with.overflow"),
-        "provable legacy arithmetic retained a runtime overflow check:\n{}",
-        legacy.ir
+        checked_mir.output.status.success(),
+        "{:?}",
+        checked_mir.output
+    );
+    assert_eq!(lcir.output.stdout, b"Unit\n");
+    assert_eq!(checked_mir.output.stdout, lcir.output.stdout);
+    assert!(!diagnostic_text(&lcir.output).contains(FAULT_JSON_PREFIX));
+    assert!(!diagnostic_text(&checked_mir.output).contains(FAULT_JSON_PREFIX));
+    assert!(
+        !checked_mir.ir.contains("with.overflow"),
+        "provable checked-MIR arithmetic retained a runtime overflow check:\n{}",
+        checked_mir.ir
     );
 }
 
 #[test]
-fn contract_int_negation_overflow_matches_interpreter_lcir_and_legacy() {
+fn contract_int_negation_overflow_matches_interpreter_lcir_and_checked_mir() {
     let source = r"module contract_int_negation
 
 fn guarded(value Int)
@@ -6215,10 +6535,10 @@ pub fn assertMain() {
             "interpreter {entry}"
         );
 
-        let legacy = emit_and_run_legacy_machine_fault(
+        let checked_mir = emit_and_run_checked_mir_machine_fault(
             &program,
             entry,
-            &format!("legacy-contract-int-negation-{entry}"),
+            &format!("checked-mir-contract-int-negation-{entry}"),
         );
         let artifact = lower_source_artifact(
             &program,
@@ -6232,8 +6552,8 @@ pub fn assertMain() {
         );
         assert!(!lcir.output.status.success(), "{entry}: {:?}", lcir.output);
         assert_eq!(machine_fault(&lcir.output), expected, "LCIR {entry}");
-        assert!(!legacy.status.success(), "{entry}: {legacy:?}");
-        assert_eq!(machine_fault(&legacy), expected, "legacy {entry}");
+        assert!(!checked_mir.status.success(), "{entry}: {checked_mir:?}");
+        assert_eq!(machine_fault(&checked_mir), expected, "checked-MIR {entry}");
     }
 }
 
@@ -6281,13 +6601,13 @@ pub fn shortCircuitMain() {
     );
     let overflow_lcir =
         emit_and_run_lcir_machine_fault(&overflow_artifact, "lcir-contract-binary-overflow");
-    let overflow_legacy = emit_and_run_legacy_machine_fault(
+    let overflow_checked_mir = emit_and_run_checked_mir_machine_fault(
         &program,
         "overflowMain",
-        "legacy-contract-binary-overflow",
+        "checked-mir-contract-binary-overflow",
     );
     assert_eq!(machine_fault(&overflow_lcir.output), expected);
-    assert_eq!(machine_fault(&overflow_legacy), expected);
+    assert_eq!(machine_fault(&overflow_checked_mir), expected);
 
     assert_eq!(interpret_run(&program, "shortCircuitMain"), Ok(Value::Unit));
     let safe_artifact = lower_source_artifact(
@@ -6297,14 +6617,14 @@ pub fn shortCircuitMain() {
         },
     );
     let safe_lcir = emit_and_run_lcir_machine_fault(&safe_artifact, "lcir-contract-short-circuit");
-    let safe_legacy = emit_and_run_legacy_machine_fault(
+    let safe_checked_mir = emit_and_run_checked_mir_machine_fault(
         &program,
         "shortCircuitMain",
-        "legacy-contract-short-circuit",
+        "checked-mir-contract-short-circuit",
     );
     assert!(safe_lcir.output.status.success(), "{:?}", safe_lcir.output);
-    assert!(safe_legacy.status.success(), "{safe_legacy:?}");
-    assert_eq!(safe_lcir.output.stdout, safe_legacy.stdout);
+    assert!(safe_checked_mir.status.success(), "{safe_checked_mir:?}");
+    assert_eq!(safe_lcir.output.stdout, safe_checked_mir.stdout);
 }
 
 #[test]
@@ -6352,12 +6672,19 @@ pub fn argumentFaultMain() {
             assert!(dump.contains("checked-root source="), "{dump}");
         }
         let lcir = emit_and_run_lcir_machine_fault(&artifact, &format!("lcir-contract-{entry}"));
-        let legacy =
-            emit_and_run_legacy_machine_fault(&program, entry, &format!("legacy-contract-{entry}"));
+        let checked_mir = emit_and_run_checked_mir_machine_fault(
+            &program,
+            entry,
+            &format!("checked-mir-contract-{entry}"),
+        );
         assert!(!lcir.output.status.success(), "{entry}: {:?}", lcir.output);
-        assert!(!legacy.status.success(), "{entry}: {legacy:?}");
+        assert!(!checked_mir.status.success(), "{entry}: {checked_mir:?}");
         assert_eq!(machine_fault(&lcir.output), interpreted, "LCIR {entry}");
-        assert_eq!(machine_fault(&legacy), interpreted, "legacy {entry}");
+        assert_eq!(
+            machine_fault(&checked_mir),
+            interpreted,
+            "checked-MIR {entry}"
+        );
     }
 
     let caller = source_function(&program, "callerMain");
@@ -6385,17 +6712,17 @@ pub fn argumentFaultMain() {
     );
     let argument_lcir =
         emit_and_run_lcir_machine_fault(&argument_artifact, "lcir-contract-argument-order");
-    let argument_legacy = emit_and_run_legacy_machine_fault(
+    let argument_checked_mir = emit_and_run_checked_mir_machine_fault(
         &program,
         "argumentFaultMain",
-        "legacy-contract-argument-order",
+        "checked-mir-contract-argument-order",
     );
     assert_eq!(
         machine_fault(&argument_lcir.output)["code"],
         argument_failure["fault"]["code"]
     );
     assert_eq!(
-        machine_fault(&argument_legacy)["fault"]["code"],
+        machine_fault(&argument_checked_mir)["fault"]["code"],
         argument_failure["fault"]["code"]
     );
 }
@@ -6515,16 +6842,23 @@ test async fn c_checked_root()
     assert!(!lcir.output.status.success(), "{:?}", lcir.output);
     assert_eq!(machine_faults(&lcir.output), expected, "typed LCIR faults");
 
-    let legacy_directory = tempfile::tempdir().expect("create legacy contract test output");
-    let legacy_executable = legacy_directory.path().join("legacy-async-contract-blame");
-    emit_native(&program, &legacy_executable, &EmitOptions::tests())
-        .expect("emit legacy async contract comparison");
-    let legacy = Command::new(legacy_executable)
+    let checked_mir_directory =
+        tempfile::tempdir().expect("create checked-MIR contract test output");
+    let checked_mir_executable = checked_mir_directory
+        .path()
+        .join("checked-mir-async-contract-blame");
+    emit_native(&program, &checked_mir_executable, &EmitOptions::tests())
+        .expect("emit checked-MIR async contract comparison");
+    let checked_mir = Command::new(checked_mir_executable)
         .env(FAULT_FORMAT_ENV, FAULT_FORMAT_JSON)
         .output()
-        .expect("run legacy async contract comparison");
-    assert!(!legacy.status.success(), "{legacy:?}");
-    assert_eq!(machine_faults(&legacy), expected, "legacy LLVM faults");
+        .expect("run checked-MIR async contract comparison");
+    assert!(!checked_mir.status.success(), "{checked_mir:?}");
+    assert_eq!(
+        machine_faults(&checked_mir),
+        expected,
+        "checked-MIR LLVM faults"
+    );
 
     let descriptor_name = format!("@loom.lcir.coroutine.descriptor.{} =", positive.id().raw());
     assert_eq!(
@@ -6632,12 +6966,15 @@ pub fn main() {
     assert!(dump.contains("writebacks"), "{dump}");
 
     let lcir = emit_and_run_lcir_machine_fault(&artifact, "lcir-contract-mutable-receiver");
-    let legacy =
-        emit_and_run_legacy_machine_fault(&program, "main", "legacy-contract-mutable-receiver");
+    let checked_mir = emit_and_run_checked_mir_machine_fault(
+        &program,
+        "main",
+        "checked-mir-contract-mutable-receiver",
+    );
     assert!(lcir.output.status.success(), "{:?}", lcir.output);
-    assert!(legacy.status.success(), "{legacy:?}");
-    assert_eq!(lcir.output.stdout, legacy.stdout);
-    assert_eq!(lcir.output.stderr, legacy.stderr);
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
+    assert_eq!(lcir.output.stdout, checked_mir.stdout);
+    assert_eq!(lcir.output.stderr, checked_mir.stderr);
     assert!(!lcir.ir.contains("loom.Value"), "{}", lcir.ir);
     assert!(!lcir.ir.contains("loom_executor_"), "{}", lcir.ir);
 }
@@ -6675,8 +7012,11 @@ pub fn main() {
     assert!(dump.contains("contract PostconditionFault"), "{dump}");
     assert!(dump.contains("checked_int.divide"), "{dump}");
     let lcir = emit_and_run_lcir_machine_fault(&artifact, "lcir-contract-cleanup-fault");
-    let legacy =
-        emit_and_run_legacy_machine_fault(&program, "main", "legacy-contract-cleanup-fault");
+    let checked_mir = emit_and_run_checked_mir_machine_fault(
+        &program,
+        "main",
+        "checked-mir-contract-cleanup-fault",
+    );
     let lcir_fault = machine_fault(&lcir.output);
     assert_eq!(lcir_fault["code"], interpreted["fault"]["code"]);
     assert_eq!(
@@ -6691,10 +7031,13 @@ pub fn main() {
         lcir_fault["sourceSpan"]["end"],
         interpreted["fault"]["span"]["range"]["end"]
     );
-    let legacy_fault = machine_fault(&legacy);
-    assert_eq!(legacy_fault["fault"]["code"], interpreted["fault"]["code"]);
+    let checked_mir_fault = machine_fault(&checked_mir);
     assert_eq!(
-        legacy_fault["fault"]["message"],
+        checked_mir_fault["fault"]["code"],
+        interpreted["fault"]["code"]
+    );
+    assert_eq!(
+        checked_mir_fault["fault"]["message"],
         interpreted["fault"]["message"]
     );
     assert!(!lcir.ir.contains("loom.Value"), "{}", lcir.ir);
@@ -6771,10 +7114,11 @@ pub fn main() {
     assert!(dump.contains("witnesses=[Concrete#"), "{dump}");
 
     let lcir = emit_and_run_lcir(&artifact, "lcir-contract-static-match");
-    let legacy = emit_and_run_legacy(&program, "main", "legacy-contract-static-match");
+    let checked_mir =
+        emit_and_run_checked_mir(&program, "main", "checked-mir-contract-static-match");
     assert!(lcir.output.status.success(), "{:?}", lcir.output);
-    assert!(legacy.status.success(), "{legacy:?}");
-    assert_eq!(lcir.output.stdout, legacy.stdout);
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
+    assert_eq!(lcir.output.stdout, checked_mir.stdout);
     assert!(!lcir.ir.contains("loom.Value"), "{}", lcir.ir);
     assert!(!lcir.ir.contains("loom_executor_"), "{}", lcir.ir);
 }
@@ -6808,10 +7152,11 @@ pub fn main() {
     assert!(dump.contains("managed_ptr"), "{dump}");
     assert!(dump.contains("text.compare.equal"), "{dump}");
     let lcir = emit_and_run_lcir(&artifact, "lcir-contract-managed-product");
-    let legacy = emit_and_run_legacy(&program, "main", "legacy-contract-managed-product");
+    let checked_mir =
+        emit_and_run_checked_mir(&program, "main", "checked-mir-contract-managed-product");
     assert!(lcir.output.status.success(), "{:?}", lcir.output);
-    assert!(legacy.status.success(), "{legacy:?}");
-    assert_eq!(lcir.output.stdout, legacy.stdout);
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
+    assert_eq!(lcir.output.stdout, checked_mir.stdout);
     assert!(
         lcir.ir.contains("loom_gc_typed_root_push_v1"),
         "{}",
@@ -6963,11 +7308,11 @@ pub fn main() {
         },
     );
     let lcir = emit_and_run_lcir(&artifact, "source-records");
-    let legacy = emit_and_run_legacy(&program, "main", "legacy-records");
+    let checked_mir = emit_and_run_checked_mir(&program, "main", "checked-mir-records");
 
     assert!(lcir.output.status.success(), "{:?}", lcir.output);
-    assert!(legacy.status.success(), "{legacy:?}");
-    assert_eq!(lcir.output.stdout, legacy.stdout);
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
+    assert_eq!(lcir.output.stdout, checked_mir.stdout);
     let lowered_functions = lcir.ir.split("define i32 @main").next().unwrap_or(&lcir.ir);
     for forbidden in ["alloca", "loom.Value", "loom_gc_", "loom_executor_"] {
         assert!(
@@ -7007,11 +7352,11 @@ fn projected_places_preserve_sibling_updates_and_loop_product_phis() {
     );
 
     let lcir = emit_and_run_lcir(&artifact, "source-projected-places");
-    let legacy = emit_and_run_legacy(&program, "main", "legacy-projected-places");
+    let checked_mir = emit_and_run_checked_mir(&program, "main", "checked-mir-projected-places");
     assert!(lcir.output.status.success(), "{:?}", lcir.output);
-    assert!(legacy.status.success(), "{legacy:?}");
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
     assert_eq!(lcir.output.stdout, b"Unit\n");
-    assert_eq!(lcir.output.stdout, legacy.stdout);
+    assert_eq!(lcir.output.stdout, checked_mir.stdout);
     let lowered_functions = lcir.ir.split("define i32 @main").next().unwrap_or(&lcir.ir);
     for forbidden in [
         "alloca",
@@ -7089,11 +7434,12 @@ pub fn main() {
         },
     );
     let lcir = emit_and_run_lcir(&artifact, "source-nested-receiver-aliases");
-    let legacy = emit_and_run_legacy(&program, "main", "legacy-nested-receiver-aliases");
+    let checked_mir =
+        emit_and_run_checked_mir(&program, "main", "checked-mir-nested-receiver-aliases");
     assert!(lcir.output.status.success(), "{:?}", lcir.output);
-    assert!(legacy.status.success(), "{legacy:?}");
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
     assert_eq!(lcir.output.stdout, b"Unit\n");
-    assert_eq!(lcir.output.stdout, legacy.stdout);
+    assert_eq!(lcir.output.stdout, checked_mir.stdout);
 }
 
 #[test]
@@ -7201,11 +7547,11 @@ pub fn main() {
             ..NativeObjectOptions::default()
         },
     );
-    let legacy = emit_and_run_legacy(&program, "main", "legacy-tuples");
+    let checked_mir = emit_and_run_checked_mir(&program, "main", "checked-mir-tuples");
 
     assert!(lcir.output.status.success(), "{:?}", lcir.output);
-    assert!(legacy.status.success(), "{legacy:?}");
-    assert_eq!(lcir.output.stdout, legacy.stdout);
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
+    assert_eq!(lcir.output.stdout, checked_mir.stdout);
     assert!(
         lcir.ir.contains(
             "define internal { i1, { { i64, i1 } } } @loom.lcir.fn.0({ { { i64, i1 } }, double } %arg0)"
@@ -7316,10 +7662,10 @@ pub fn main() {
         "source-refined",
         NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
     );
-    let legacy = emit_and_run_legacy(&program, "main", "legacy-refined");
+    let checked_mir = emit_and_run_checked_mir(&program, "main", "checked-mir-refined");
     assert!(lcir.output.status.success(), "{:?}", lcir.output);
-    assert!(legacy.status.success(), "{legacy:?}");
-    assert_eq!(lcir.output.stdout, legacy.stdout);
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
+    assert_eq!(lcir.output.stdout, checked_mir.stdout);
     let lowered_functions = lcir.ir.split("define i32 @main").next().unwrap_or(&lcir.ir);
     for forbidden in [
         "alloca",
@@ -7341,7 +7687,7 @@ pub fn main() {
         NativeObjectOptions::default().with_debug_sources(debug_sources),
     );
     assert!(debug.output.status.success(), "{:?}", debug.output);
-    assert_eq!(debug.output.stdout, legacy.stdout);
+    assert_eq!(debug.output.stdout, checked_mir.stdout);
     assert!(debug.ir.contains("switch i8"), "{}", debug.ir);
     assert!(
         debug.ir.contains("!DIBasicType(name: \"Float\", size: 64"),
@@ -7395,11 +7741,11 @@ pub fn main() {
     assert!(dump.contains("sum.construct variant 1"), "{dump}");
 
     let lcir = emit_and_run_lcir(&artifact, "runtime-refinement");
-    let legacy = emit_and_run_legacy(&program, "main", "legacy-runtime-refinement");
+    let checked_mir = emit_and_run_checked_mir(&program, "main", "checked-mir-runtime-refinement");
     assert!(lcir.output.status.success(), "{:?}", lcir.output);
-    assert!(legacy.status.success(), "{legacy:?}");
-    assert_eq!(lcir.output.stdout, legacy.stdout);
-    assert_no_legacy_surface(&lcir.ir);
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
+    assert_eq!(lcir.output.stdout, checked_mir.stdout);
+    assert_stateless_direct_lcir_surface(&lcir.ir);
     assert!(!lcir.ir.contains("loom_executor_"), "{}", lcir.ir);
 }
 
@@ -7566,11 +7912,11 @@ pub fn main() {
             ..NativeObjectOptions::default()
         },
     );
-    let legacy = emit_and_run_legacy(&program, "main", "legacy-sums");
+    let checked_mir = emit_and_run_checked_mir(&program, "main", "checked-mir-sums");
 
     assert!(lcir.output.status.success(), "{:?}", lcir.output);
-    assert!(legacy.status.success(), "{legacy:?}");
-    assert_eq!(lcir.output.stdout, legacy.stdout);
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
+    assert_eq!(lcir.output.stdout, checked_mir.stdout);
     assert!(lcir.ir.contains("switch i8"), "{}", lcir.ir);
     assert!(lcir.ir.contains("name: \"LoomSum<t"), "{}", lcir.ir);
     assert!(
@@ -7583,7 +7929,7 @@ pub fn main() {
         lcir.ir
     );
     assert_no_indirect_calls(&lcir.ir);
-    assert_no_legacy_surface(&lcir.ir);
+    assert_stateless_direct_lcir_surface(&lcir.ir);
 }
 
 #[test]
@@ -7765,7 +8111,7 @@ fn closed_sum_carriers_emit_as_native_msvc_objects_without_fallback() {
 }
 
 #[test]
-fn result_unit_test_outcomes_drive_native_and_legacy_harnesses() {
+fn result_unit_test_outcomes_drive_native_and_checked_mir_harnesses() {
     let source = r"module lcir_result_tests
 
 enum Problem { Failed(Int) }
@@ -7798,12 +8144,12 @@ test fn fails() Result[Unit, Problem] { Err(Problem.Failed(7)) }
 
     let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
     let lcir = emit_and_run_lcir(&artifact, "result-tests");
-    let legacy = emit_and_run_legacy_tests(&program, "legacy-result-tests");
+    let checked_mir = emit_and_run_checked_mir_tests(&program, "checked-mir-result-tests");
     assert!(!lcir.output.status.success(), "{:?}", lcir.output);
-    assert!(!legacy.status.success(), "{legacy:?}");
+    assert!(!checked_mir.status.success(), "{checked_mir:?}");
     let expected = b"passed lcir_result_tests.succeeds\nfailed lcir_result_tests.fails\n";
     assert_eq!(lcir.output.stdout, expected);
-    assert_eq!(legacy.stdout, expected);
+    assert_eq!(checked_mir.stdout, expected);
     assert!(lcir.ir.contains("test.result.succeeded"), "{}", lcir.ir);
     assert_no_indirect_calls(&lcir.ir);
     assert_pure_surface(&lcir.ir);
@@ -7923,18 +8269,18 @@ pub fn main() {
     );
     assert!(dump.contains("resume_fault writebacks"), "{dump}");
     let lcir = emit_and_run_lcir(&artifact, "source-record-fault");
-    let legacy = emit_and_run_legacy(&program, "main", "legacy-record-fault");
+    let checked_mir = emit_and_run_checked_mir(&program, "main", "checked-mir-record-fault");
 
     assert!(!lcir.output.status.success(), "{:?}", lcir.output);
-    assert!(!legacy.status.success(), "{legacy:?}");
+    assert!(!checked_mir.status.success(), "{checked_mir:?}");
     assert!(
         diagnostic_text(&lcir.output).contains("IntegerDivisionByZero"),
         "{:?}",
         lcir.output
     );
     assert!(
-        diagnostic_text(&legacy).contains("IntegerDivisionByZero"),
-        "{legacy:?}"
+        diagnostic_text(&checked_mir).contains("IntegerDivisionByZero"),
+        "{checked_mir:?}"
     );
     assert!(
         lcir.ir
@@ -8041,12 +8387,12 @@ fn typed_async_state_machines_survive_forced_relocation_on_all_targets() {
     }));
 
     let lcir = emit_and_run_lcir(&artifact, "source-typed-async");
-    let legacy = emit_and_run_legacy(&program, "main", "legacy-typed-async");
+    let checked_mir = emit_and_run_checked_mir(&program, "main", "checked-mir-typed-async");
     assert!(lcir.output.status.success(), "{:?}", lcir.output);
-    assert!(legacy.status.success(), "{legacy:?}");
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
     assert_eq!(lcir.output.stdout, b"Unit\n");
-    assert_eq!(lcir.output.stdout, legacy.stdout);
-    assert_eq!(lcir.output.stderr, legacy.stderr);
+    assert_eq!(lcir.output.stdout, checked_mir.stdout);
+    assert_eq!(lcir.output.stderr, checked_mir.stderr);
     for required in [
         "loom.lcir.coroutine.resume.",
         "loom.lcir.coroutine.descriptor.",
@@ -8088,15 +8434,16 @@ fn typed_async_state_machines_survive_forced_relocation_on_all_targets() {
     );
     let test_artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
     let native_tests = emit_and_run_lcir(&test_artifact, "source-typed-async-tests");
-    let legacy_tests = emit_and_run_legacy_tests(&program, "legacy-typed-async-tests");
+    let checked_mir_tests =
+        emit_and_run_checked_mir_tests(&program, "checked-mir-typed-async-tests");
     assert!(
         native_tests.output.status.success(),
         "{:?}",
         native_tests.output
     );
-    assert!(legacy_tests.status.success(), "{legacy_tests:?}");
-    assert_eq!(native_tests.output.stdout, legacy_tests.stdout);
-    assert_eq!(native_tests.output.stderr, legacy_tests.stderr);
+    assert!(checked_mir_tests.status.success(), "{checked_mir_tests:?}");
+    assert_eq!(native_tests.output.stdout, checked_mir_tests.stdout);
+    assert_eq!(native_tests.output.stderr, checked_mir_tests.stderr);
 
     for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
         let directory = tempfile::tempdir().expect("create typed-async target output");
@@ -8559,12 +8906,12 @@ fn typed_sleep_uses_checked_lcir_and_the_narrow_timer_runtime_abi() {
         "source-typed-sleep-release",
         NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
     );
-    let legacy = emit_and_run_legacy(&program, "main", "legacy-typed-sleep");
+    let checked_mir = emit_and_run_checked_mir(&program, "main", "checked-mir-typed-sleep");
     assert!(lcir.output.status.success(), "{:?}", lcir.output);
-    assert!(legacy.status.success(), "{legacy:?}");
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
     assert_eq!(lcir.output.stdout, b"Unit\n");
-    assert_eq!(lcir.output.stdout, legacy.stdout);
-    assert_eq!(lcir.output.stderr, legacy.stderr);
+    assert_eq!(lcir.output.stdout, checked_mir.stdout);
+    assert_eq!(lcir.output.stderr, checked_mir.stderr);
     for required in [
         "llvm.smul.with.overflow.i64",
         "llvm.uadd.with.overflow.i64",
@@ -8606,7 +8953,7 @@ fn typed_sleep_uses_checked_lcir_and_the_narrow_timer_runtime_abi() {
 }
 
 #[test]
-fn typed_sleep_source_faults_match_interpreter_and_legacy_codegen() {
+fn typed_sleep_source_faults_match_interpreter_and_checked_mir_codegen() {
     let source = r"module lcir_typed_sleep_faults
 
 pub async fn negativeMain() {
@@ -8645,26 +8992,29 @@ pub async fn overflowMain() {
             },
         );
         let lcir = emit_and_run_lcir_machine_fault(&artifact, &format!("lcir-sleep-{entry}"));
-        let legacy =
-            emit_and_run_legacy_machine_fault(&program, entry, &format!("legacy-sleep-{entry}"));
+        let checked_mir = emit_and_run_checked_mir_machine_fault(
+            &program,
+            entry,
+            &format!("checked-mir-sleep-{entry}"),
+        );
         assert!(!lcir.output.status.success(), "{entry}: {:?}", lcir.output);
-        assert!(!legacy.status.success(), "{entry}: {legacy:?}");
+        assert!(!checked_mir.status.success(), "{entry}: {checked_mir:?}");
         assert_eq!(machine_fault(&lcir.output), expected, "LCIR {entry}");
-        let legacy_fault = machine_fault(&legacy);
-        // The frozen legacy emitter attributes this constructor fault to the
-        // whole async function. Keep its pre-existing coarse-span debt out of
+        let checked_mir_fault = machine_fault(&checked_mir);
+        // The checked-MIR emitter attributes this constructor fault to the
+        // whole async function. Keep that coarse-span limitation out of
         // the checked-LCIR slice while pinning every observable fault field.
         assert_eq!(
-            legacy_fault["channel"], expected["channel"],
-            "legacy {entry}"
+            checked_mir_fault["channel"], expected["channel"],
+            "checked-MIR {entry}"
         );
         assert_eq!(
-            legacy_fault["fault"]["code"], expected["fault"]["code"],
-            "legacy {entry}"
+            checked_mir_fault["fault"]["code"], expected["fault"]["code"],
+            "checked-MIR {entry}"
         );
         assert_eq!(
-            legacy_fault["fault"]["message"], expected["fault"]["message"],
-            "legacy {entry}"
+            checked_mir_fault["fault"]["message"], expected["fault"]["message"],
+            "checked-MIR {entry}"
         );
     }
 }
@@ -9099,11 +9449,16 @@ pub async fn main() {
         },
     );
     let lcir = emit_and_run_lcir_machine_fault(&artifact, "lcir-task-all-fault");
-    let legacy = emit_and_run_legacy_machine_fault(&program, "main", "legacy-task-all-fault");
+    let checked_mir =
+        emit_and_run_checked_mir_machine_fault(&program, "main", "checked-mir-task-all-fault");
     assert!(!lcir.output.status.success(), "{:?}", lcir.output);
-    assert!(!legacy.status.success(), "{legacy:?}");
+    assert!(!checked_mir.status.success(), "{checked_mir:?}");
     assert_eq!(machine_fault(&lcir.output), expected, "LCIR Task.all fault");
-    assert_eq!(machine_fault(&legacy), expected, "legacy Task.all fault");
+    assert_eq!(
+        machine_fault(&checked_mir),
+        expected,
+        "checked-MIR Task.all fault"
+    );
     assert!(lcir.ir.contains("ret i32 2"), "{}", lcir.ir);
     assert!(lcir.ir.contains("ret i32 3"), "{}", lcir.ir);
     assert!(
@@ -9224,12 +9579,13 @@ fn fallible_typed_async_results_and_faults_close_the_native_route() {
     }
 
     let lcir = emit_and_run_lcir(&artifact, "source-fallible-typed-async");
-    let legacy = emit_and_run_legacy(&program, "main", "legacy-fallible-typed-async");
+    let checked_mir =
+        emit_and_run_checked_mir(&program, "main", "checked-mir-fallible-typed-async");
     assert!(lcir.output.status.success(), "{:?}", lcir.output);
-    assert!(legacy.status.success(), "{legacy:?}");
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
     assert_eq!(lcir.output.stdout, b"Unit\n");
-    assert_eq!(lcir.output.stdout, legacy.stdout);
-    assert_eq!(lcir.output.stderr, legacy.stderr);
+    assert_eq!(lcir.output.stdout, checked_mir.stdout);
+    assert_eq!(lcir.output.stderr, checked_mir.stderr);
     for required in [
         "%loom.lcir.FaultContext = type",
         "fault.context.runtime.pointer",
@@ -9338,15 +9694,16 @@ fn fallible_typed_async_results_and_faults_close_the_native_route() {
     );
     let test_artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
     let native_tests = emit_and_run_lcir(&test_artifact, "source-fallible-typed-async-tests");
-    let legacy_tests = emit_and_run_legacy_tests(&program, "legacy-fallible-typed-async-tests");
+    let checked_mir_tests =
+        emit_and_run_checked_mir_tests(&program, "checked-mir-fallible-typed-async-tests");
     assert!(
         native_tests.output.status.success(),
         "{:?}",
         native_tests.output
     );
-    assert!(legacy_tests.status.success(), "{legacy_tests:?}");
-    assert_eq!(native_tests.output.stdout, legacy_tests.stdout);
-    assert_eq!(native_tests.output.stderr, legacy_tests.stderr);
+    assert!(checked_mir_tests.status.success(), "{checked_mir_tests:?}");
+    assert_eq!(native_tests.output.stdout, checked_mir_tests.stdout);
+    assert_eq!(native_tests.output.stderr, checked_mir_tests.stderr);
 
     for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
         let directory = tempfile::tempdir().expect("create fallible async target output");
@@ -9466,15 +9823,15 @@ pub async fn postconditionMain() {
         }
         let lcir =
             emit_and_run_lcir_machine_fault(&artifact, &format!("lcir-fallible-async-{entry}"));
-        let legacy = emit_and_run_legacy_machine_fault(
+        let checked_mir = emit_and_run_checked_mir_machine_fault(
             &fault_program,
             entry,
-            &format!("legacy-fallible-async-{entry}"),
+            &format!("checked-mir-fallible-async-{entry}"),
         );
         assert!(!lcir.output.status.success(), "{entry}: {:?}", lcir.output);
-        assert!(!legacy.status.success(), "{entry}: {legacy:?}");
+        assert!(!checked_mir.status.success(), "{entry}: {checked_mir:?}");
         assert_eq!(machine_fault(&lcir.output), expected, "LCIR {entry}");
-        assert_eq!(machine_fault(&legacy), expected, "legacy {entry}");
+        assert_eq!(machine_fault(&checked_mir), expected, "checked-MIR {entry}");
         assert!(
             lcir.ir.contains("loom_task_report_fault"),
             "{entry}: {}",

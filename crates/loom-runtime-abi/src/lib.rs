@@ -4,11 +4,11 @@
 //! values crossing the runtime boundary are defined here once and consumed by
 //! both generated-code declarations and the Rust runtime implementation.
 
-pub const RUNTIME_ABI_VERSION: u32 = 30;
+pub const RUNTIME_ABI_VERSION: u32 = 31;
 pub const COROUTINE_ABI_VERSION: u32 = 2;
 pub const TYPED_TASK_ABI_VERSION: u32 = 1;
 pub const WAIT_ABI_VERSION: u32 = 1;
-pub const STANDARD_LIBRARY_ABI_VERSION: u32 = 5;
+pub const STANDARD_LIBRARY_ABI_VERSION: u32 = 6;
 pub const LAYOUT_ABI_VERSION: u32 = 1;
 pub const SHADOW_STACK_ABI_VERSION: u32 = 1;
 pub const TYPED_GC_ABI_VERSION: u32 = 1;
@@ -17,7 +17,7 @@ pub const TYPED_SHADOW_STACK_ABI_VERSION: u32 = 1;
 pub const WITNESS_ABI_VERSION: u32 = 1;
 pub const TYPED_JSON_ABI_VERSION: u32 = 1;
 pub const TYPED_IO_ABI_VERSION: u32 = 1;
-pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v24/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v5";
+pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v25/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v6";
 
 /// Writes exactly `length` bytes to the process standard-output stream.
 ///
@@ -338,7 +338,7 @@ pub struct LoomGcTypedRootDescriptor {
 ///
 /// Each entry in `slots` points to writable pointer-sized storage containing
 /// only null, the exact base of a runtime-managed typed allocation, or a
-/// compiler-proven process-lifetime static/immortal pointer. A legacy moving
+/// compiler-proven process-lifetime static/immortal pointer. A universal-value moving
 /// allocation, an interior pointer, and any other unregistered finite-lifetime
 /// pointer are invalid. Every slot cell address must remain stable from push
 /// through pop and must not itself reside in either moving heap. The runtime
@@ -362,7 +362,7 @@ pub struct LoomGcTypedRootFrame {
 /// strictly increasing array of `pointer_count` byte offsets from the object
 /// base to aligned pointer-sized managed-reference cells. Each such cell obeys
 /// the same null/exact-typed-base/static-immortal target restriction as a typed
-/// root. In particular, typed metadata cannot hide a legacy moving reference
+/// root. In particular, typed metadata cannot hide a universal-value moving reference
 /// or an interior reference. Descriptor identity is compiler/runtime metadata
 /// and is not a source-visible type tag.
 #[repr(C)]
@@ -710,7 +710,7 @@ mod tests {
 
     #[test]
     fn native_runtime_identity_is_pinned() {
-        assert_eq!(RUNTIME_ABI_VERSION, 30);
+        assert_eq!(RUNTIME_ABI_VERSION, 31);
         assert_eq!(COROUTINE_ABI_VERSION, 2);
         assert_eq!(TYPED_TASK_ABI_VERSION, 1);
         assert_eq!(LAYOUT_ABI_VERSION, 1);
@@ -795,10 +795,10 @@ mod tests {
             "loom_typed_timer_task_create_v1"
         );
         assert_eq!(WITNESS_ABI_VERSION, 1);
-        assert_eq!(STANDARD_LIBRARY_ABI_VERSION, 5);
+        assert_eq!(STANDARD_LIBRARY_ABI_VERSION, 6);
         assert_eq!(
             NATIVE_RUNTIME_ABI_IDENTITY,
-            "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v24/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v5",
+            "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v25/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v6",
         );
     }
 

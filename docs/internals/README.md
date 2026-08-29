@@ -56,7 +56,7 @@ identity/emission, and portable-library encoding retain or require
 independently validated `CheckedProgram` and validated roots.
 `loom-codegen-llvm` automatically selects that typed route for a completely
 supported reachable artifact and otherwise prepares one whole checked-MIR
-legacy route. The exact prepared target and route-specific fingerprint are
+route. The exact prepared target and route-specific fingerprint are
 reused by the production cache and emitter. Broader LCIR representation and
 semantic coverage remain tracked by the
 [typed code generation IR RFC](../rfcs/typed-codegen-ir.md).

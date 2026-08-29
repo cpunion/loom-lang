@@ -7,7 +7,7 @@ future.
 
 ## Coroutine descriptor
 
-The complete legacy route uses a compiler-private descriptor containing:
+The complete checked-MIR route uses a compiler-private descriptor containing:
 
 - resume, cancel, and trace functions;
 - value-slot and witness-slot counts;
@@ -105,7 +105,7 @@ Selected async functions with explicit mutable coroutine parameters, raw
 readiness, dynamically sized or computed-List Task joins, `Task.any`,
 `Task.settled`, or `Task.race` whose result is stored or otherwise used
 first-class, and finite-catalog or open dynamic-concept frame values still
-select the complete legacy route. Async roots with `requires` use the same
+select the complete checked-MIR route. Async roots with `requires` use the same
 typed state-zero check as child Tasks.
 
 ## Runtime and executor
@@ -364,7 +364,7 @@ cancelled, losing, and unconsumed tasks do not transfer completed-result
 resources. Their terminal cleanup or typed result disposal releases remaining
 built-in owners before retired-task memory reclamation.
 
-The complete runtime and legacy compiler route implement all of those source
+The complete runtime and checked-MIR compiler route implement all of those source
 forms. The typed-LCIR route admits nonempty immediately awaited fixed-argument
 forms of all four APIs and a sole nonempty List literal. `all` and `settled`
 may preserve heterogeneous fixed outputs; `any` and `race` require one exact

@@ -32,7 +32,7 @@ managed allocation.
 
 ## Precise roots
 
-Legacy synchronous generated frames link a shadow-stack record containing:
+Checked-MIR synchronous generated frames link a shadow-stack record containing:
 
 - a versioned immutable descriptor;
 - pointers to existing universal value slots;
@@ -46,7 +46,7 @@ Typed synchronous frames use the same state/bitmap model on a separate chain.
 Each live entry points to writable pointer-sized storage containing a direct
 managed reference. It is never interpreted as a universal `ValueSlot`. A cell
 may contain only null, the exact base of a typed managed allocation, or a
-compiler-proven process-lifetime static/immortal pointer. Legacy moving object
+compiler-proven process-lifetime static/immortal pointer. Checked-MIR moving object
 pointers, interior pointers, and other unregistered finite-lifetime pointers
 are forbidden. A legal static pointer is left unchanged without adding a
 runtime tag or registration table.
@@ -229,7 +229,7 @@ bounded pin protocol; ordinary Loom values do not become immovable.
 Runtime unit tests cover activation, attachment, both root descriptor forms,
 shared resource bounds, copied typed layout metadata, advertised alignment,
 forced collection, pointer-free trailing-byte preservation, typed
-parent/child graphs, cycles, aliased and state-selective roots, legacy/typed
+parent/child graphs, cycles, aliased and state-selective roots, checked-MIR/typed
 coexistence, relocation, nested managed values, witness mark/sweep, and
 partial-construction helpers. The synchronous typed tests also prove concat
 staging across forced relocation and that the heap path constructs no

@@ -755,11 +755,15 @@ impl SerializationClosure {
             | Builtin::TextMapRemove => {
                 self.add_optional_type(prelude.text_map);
             }
+            Builtin::ListToTextMap => {
+                self.add_optional_type(prelude.text_map);
+                self.add_optional_type(prelude.result);
+            }
             Builtin::TextMapGet | Builtin::TextMapEntryAt => {
                 self.add_optional_type(prelude.text_map);
                 self.add_optional_type(prelude.option);
             }
-            Builtin::JsonParse | Builtin::JsonFormat => {
+            Builtin::JsonFormat => {
                 self.add_optional_type(prelude.json);
                 self.add_optional_type(prelude.result);
                 self.add_optional_type(prelude.json_error);

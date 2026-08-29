@@ -1874,7 +1874,7 @@ const TYPED_TIMER_REGISTRATION_FAULT_MESSAGE: &str = "could not register timer w
 /// Runtime-owned callback for the narrow typed `Task[Unit]` timer factory.
 /// The absolute deadline lives in the scheduler's existing copied `WaitSource`;
 /// the one-byte typed frame is intentionally rootless and carries no source
-/// value or legacy universal envelope.
+/// value or universal-value envelope.
 unsafe extern "C" fn resume_typed_timer(
     task: *mut c_void,
     executor: *mut c_void,
@@ -2627,7 +2627,7 @@ unsafe fn resume_socket_read(
     socket: TcpStream,
     bytes: Vec<u8>,
 ) -> i32 {
-    unsafe { finish_legacy_io_progress(task, executor, advance_socket_read(socket, bytes)) }
+    unsafe { finish_universal_io_progress(task, executor, advance_socket_read(socket, bytes)) }
 }
 
 fn advance_socket_read(mut socket: TcpStream, mut bytes: Vec<u8>) -> IoProgress {
@@ -2669,7 +2669,7 @@ unsafe fn resume_socket_write(
     offset: usize,
 ) -> i32 {
     unsafe {
-        finish_legacy_io_progress(task, executor, advance_socket_write(socket, bytes, offset))
+        finish_universal_io_progress(task, executor, advance_socket_write(socket, bytes, offset))
     }
 }
 
@@ -2719,7 +2719,7 @@ fn advance_socket_write(mut socket: TcpStream, bytes: Vec<u8>, mut offset: usize
     }
 }
 
-unsafe fn finish_legacy_io_progress(
+unsafe fn finish_universal_io_progress(
     task: *mut LoomTask,
     executor: *mut LoomExecutor,
     progress: IoProgress,
@@ -2888,7 +2888,7 @@ unsafe fn fail_message(task: *mut LoomTask, code: &str, message: &str) -> i32 {
     TASK_FAULTED
 }
 
-fn empty_legacy_descriptor() -> LoomCoroutineDescriptor {
+fn empty_universal_descriptor() -> LoomCoroutineDescriptor {
     LoomCoroutineDescriptor {
         abi_version: COROUTINE_ABI_VERSION,
         flags: 0,
@@ -3118,7 +3118,7 @@ pub unsafe extern "C" fn typed_task_create_v1(
         return ptr::null_mut();
     }
     let mut task = Box::new(LoomTask {
-        descriptor: empty_legacy_descriptor(),
+        descriptor: empty_universal_descriptor(),
         slots: Box::new([]),
         result_slot: 0,
         state: 0,
@@ -10211,7 +10211,7 @@ mod typed_task_tests {
         }
     }
 
-    unsafe extern "C" fn legacy_complete(
+    unsafe extern "C" fn universal_complete(
         _task: *mut LoomTask,
         _executor: *mut LoomExecutor,
     ) -> i32 {
@@ -10333,12 +10333,12 @@ mod typed_task_tests {
     }
 
     #[test]
-    fn legacy_composite_consumes_an_already_completed_child_inline() {
+    fn universal_composite_consumes_an_already_completed_child_inline() {
         let (runtime, executor) = runtime_and_executor();
         unsafe {
-            let owner = task_spawn(executor, Some(legacy_complete), 1, 0);
+            let owner = task_spawn(executor, Some(universal_complete), 1, 0);
             activate_test_task(executor, owner);
-            let child = task_spawn(executor, Some(legacy_complete), 1, 0);
+            let child = task_spawn(executor, Some(universal_complete), 1, 0);
             (*child).status = TaskStatus::Completed;
             let join = join_create(executor, TASK_JOIN_ALL, 0);
             assert!(!join.is_null());
@@ -10758,7 +10758,7 @@ mod typed_task_tests {
         assert_eq!(REENTRANT_DISPOSE_CALLS.load(Ordering::SeqCst), 1);
     }
 
-    const CLEANUP_LEGACY_SPAWN_DENIED: usize = 1 << 0;
+    const CLEANUP_UNIVERSAL_SPAWN_DENIED: usize = 1 << 0;
     const CLEANUP_TYPED_SPAWN_DENIED: usize = 1 << 1;
     const CLEANUP_DELAYED_PUBLISH_DENIED: usize = 1 << 2;
     const CLEANUP_REGISTER_DENIED: usize = 1 << 3;
@@ -10778,7 +10778,10 @@ mod typed_task_tests {
     static SELF_TAKE_VALUE: AtomicU64 = AtomicU64::new(0);
     static MALICIOUS_DISPOSE_CALLS: AtomicUsize = AtomicUsize::new(0);
 
-    unsafe extern "C" fn legacy_pending(_task: *mut LoomTask, _executor: *mut LoomExecutor) -> i32 {
+    unsafe extern "C" fn universal_pending(
+        _task: *mut LoomTask,
+        _executor: *mut LoomExecutor,
+    ) -> i32 {
         TASK_PENDING
     }
 
@@ -10788,8 +10791,8 @@ mod typed_task_tests {
         frame: *mut c_void,
     ) -> usize {
         let mut passed = 0;
-        if unsafe { task_spawn(executor, Some(legacy_pending), 1, 0) }.is_null() {
-            passed |= CLEANUP_LEGACY_SPAWN_DENIED;
+        if unsafe { task_spawn(executor, Some(universal_pending), 1, 0) }.is_null() {
+            passed |= CLEANUP_UNIVERSAL_SPAWN_DENIED;
         }
         let descriptor = descriptor(remain_pending, cancel_noop);
         if unsafe { typed_task_create_v1(executor, &raw const descriptor) }.is_null() {
@@ -11541,7 +11544,7 @@ mod typed_task_tests {
             assert!(!(*task).typed.as_ref().unwrap().join_cancel_authorized);
 
             // The public join step remains readable for diagnostics and
-            // legacy consumers, but it cannot mint another authorization.
+            // universal consumers, but it cannot mint another authorization.
             assert_eq!(task_join_step(task), TASK_CANCELLED);
             assert!(!(*task).typed.as_ref().unwrap().join_cancel_authorized);
             assert_eq!(

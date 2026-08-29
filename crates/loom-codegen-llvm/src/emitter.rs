@@ -38,9 +38,9 @@ use loom_mir::{
 };
 use loom_runtime_abi::{
     GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, PARSE_FLOAT_SYMBOL,
-    SHADOW_STACK_ABI_VERSION, STDOUT_WRITE_SYMBOL, TEXT_OBJECT_ALIGNMENT,
-    TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH,
-    TEXT_OBJECT_HEADER_SIZE,
+    SHADOW_STACK_ABI_VERSION, STDOUT_WRITE_SYMBOL, TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8,
+    TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL, TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_BYTE_LENGTH,
+    TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE,
 };
 
 use crate::CodegenError;
@@ -293,7 +293,7 @@ impl Emitter {
         options: &EmitOptions,
         target: &NativeTargetMachine,
     ) -> Result<NativeObjectArtifact, CodegenError> {
-        target.validate_legacy_value_abi()?;
+        target.validate_checked_mir_value_abi()?;
 
         let context = Context::create();
         let int_ranges = NativeIntRangePlan::analyze(program, reachable, roots);
@@ -2009,6 +2009,23 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             })
     }
 
+    fn native_text_from_utf8_units_typed(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL)
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.i64_type.into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function(TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL, function_type, None)
+            })
+    }
+
     fn native_text_get(&self) -> FunctionValue<'ctx> {
         self.module
             .get_function("loom_runtime_text_get")
@@ -2133,27 +2150,6 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 );
                 self.module
                     .add_function("loom_runtime_text_map_remove", function_type, None)
-            })
-    }
-
-    fn native_json_parse(&self) -> FunctionValue<'ctx> {
-        self.module
-            .get_function("loom_runtime_json_parse")
-            .unwrap_or_else(|| {
-                let function_type = self.context.i32_type().fn_type(
-                    &[
-                        self.ptr_type.into(),
-                        self.i64_type.into(),
-                        self.i64_type.into(),
-                        self.i64_type.into(),
-                        self.i64_type.into(),
-                        self.i64_type.into(),
-                        self.ptr_type.into(),
-                    ],
-                    false,
-                );
-                self.module
-                    .add_function("loom_runtime_json_parse", function_type, None)
             })
     }
 
@@ -10523,7 +10519,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     ) -> Result<bool, CodegenError> {
         if matches!(
             builtin,
-            Builtin::ListAdd | Builtin::ListLength | Builtin::ListGet
+            Builtin::ListAdd | Builtin::ListLength | Builtin::ListGet | Builtin::ListToTextMap
         ) {
             return self.emit_list_builtin(builtin, arguments, destination);
         }
@@ -10554,6 +10550,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 | Builtin::TextConcat
                 | Builtin::TextContains
                 | Builtin::TextEncodeUtf8
+                | Builtin::TextFromUtf8Units
                 | Builtin::BytesLength
                 | Builtin::BytesGet
                 | Builtin::BytesAppend
@@ -10578,7 +10575,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 | Builtin::TextMapEntryAt
                 | Builtin::TextMapInsert
                 | Builtin::TextMapRemove
-                | Builtin::JsonParse
                 | Builtin::JsonFormat
                 | Builtin::IoErrorKind
                 | Builtin::IoErrorMessage
@@ -10675,7 +10671,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             (Builtin::FormatFloat, [value]) => self.emit_format_float(*value, destination),
             _ => Err(CodegenError::new(
                 "InvalidBuiltinCall",
-                "builtin argument shape does not match checked MIR",
+                format!(
+                    "builtin {builtin:?} received {} materialized arguments",
+                    prepared.values.len()
+                ),
             )),
         }?;
         if continues {
@@ -10864,6 +10863,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     .bytes
                     .ok_or_else(|| CodegenError::new("InvalidPrelude", "Bytes is missing"))?;
                 self.emit_opaque_record(bytes, *text, destination)?;
+                Ok(true)
+            }
+            (Builtin::TextFromUtf8Units, [units]) => {
+                self.emit_text_from_utf8_units(*units, result, destination)?;
                 Ok(true)
             }
             (Builtin::BytesLength, [bytes]) => {
@@ -11074,6 +11077,267 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the checked-MIR route materializes a universal List[Int] into the existing compiler-private contiguous storage before crossing the typed Text ABI"
+    )]
+    fn emit_text_from_utf8_units(
+        &self,
+        units: PointerValue<'ctx>,
+        result: TypeId,
+        destination: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let list = self.unwrap(units)?;
+        let length = self.backend.load_i64_field(
+            self.backend.value_type,
+            list,
+            VALUE_FIELD_AUX,
+            "text.from_utf8_units.length",
+        )?;
+        let storage =
+            self.alloc_temporary(self.backend.int_list_type, "text.from_utf8_units.storage")?;
+        self.backend
+            .builder
+            .build_store(storage, self.backend.int_list_type.const_zero())
+            .map_err(builder_error)?;
+        let reserve_status = call_int(
+            &self.backend.builder,
+            self.backend.native_int_list_reserve(),
+            &[storage.into(), length.into()],
+            "text.from_utf8_units.reserve",
+        )?;
+        self.trap_on_runtime_status(reserve_status, "text.from_utf8_units.reserve")?;
+        let data = self.backend.load_pointer_field(
+            self.backend.int_list_type,
+            storage,
+            INT_LIST_FIELD_DATA,
+            "text.from_utf8_units.data",
+        )?;
+
+        let preheader = self.backend.builder.get_insert_block().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmBuilderFailed",
+                "Text.from_utf8_units materialization has no preheader",
+            )
+        })?;
+        let header = self.append_block("text.from_utf8_units.copy.header");
+        let body = self.append_block("text.from_utf8_units.copy.body");
+        let finish = self.append_block("text.from_utf8_units.copy.finish");
+        self.backend.branch(header)?;
+
+        self.backend.builder.position_at_end(header);
+        let index_phi = self
+            .backend
+            .builder
+            .build_phi(self.backend.i64_type, "text.from_utf8_units.index")
+            .map_err(builder_error)?;
+        let zero = self.backend.i64_type.const_zero();
+        index_phi.add_incoming(&[(&zero, preheader)]);
+        let index = index_phi.as_basic_value().into_int_value();
+        let remains = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::ULT,
+                index,
+                length,
+                "text.from_utf8_units.copy.remains",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(remains, body, finish)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(body);
+        let unit = self.alloc_value("text.from_utf8_units.unit");
+        let get_status = call_int(
+            &self.backend.builder,
+            self.backend.native_list_get(),
+            &[list.into(), index.into(), unit.into()],
+            "text.from_utf8_units.get",
+        )?;
+        let expected_get_status = self.backend.context.i32_type().const_int(1, false);
+        let normalized_get_status = self
+            .backend
+            .builder
+            .build_int_sub(
+                get_status,
+                expected_get_status,
+                "text.from_utf8_units.get.normalized",
+            )
+            .map_err(builder_error)?;
+        self.trap_on_runtime_status(normalized_get_status, "text.from_utf8_units.get")?;
+        let scalar = self.int_scalar(unit)?;
+        let slot =
+            self.native_int_list_element_pointer(data, index, "text.from_utf8_units.slot")?;
+        self.backend
+            .builder
+            .build_store(slot, scalar)
+            .map_err(builder_error)?;
+        let next = self
+            .backend
+            .builder
+            .build_int_add(
+                index,
+                self.backend.i64_type.const_int(1, false),
+                "text.from_utf8_units.next",
+            )
+            .map_err(builder_error)?;
+        let backedge = self.backend.builder.get_insert_block().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmBuilderFailed",
+                "Text.from_utf8_units materialization has no backedge",
+            )
+        })?;
+        self.backend.branch(header)?;
+        index_phi.add_incoming(&[(&next, backedge)]);
+
+        self.backend.builder.position_at_end(finish);
+        self.backend.store_i64_field(
+            self.backend.int_list_type,
+            storage,
+            INT_LIST_FIELD_LENGTH,
+            length,
+        )?;
+        let output = self.alloc_temporary(self.backend.ptr_type, "text.from_utf8_units.output")?;
+        self.backend
+            .builder
+            .build_store(output, self.backend.ptr_type.const_null())
+            .map_err(builder_error)?;
+        self.publish_gc_root_state()?;
+        let status = call_int(
+            &self.backend.builder,
+            self.backend.native_text_from_utf8_units_typed(),
+            &[data.into(), length.into(), output.into()],
+            "text.from_utf8_units.status",
+        )?;
+        let drop_status = call_int(
+            &self.backend.builder,
+            self.backend.native_int_list_drop(),
+            &[storage.into()],
+            "text.from_utf8_units.drop",
+        )?;
+        self.trap_on_runtime_status(drop_status, "text.from_utf8_units.drop")?;
+
+        let success = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.backend.context.i32_type().const_zero(),
+                "text.from_utf8_units.valid",
+            )
+            .map_err(builder_error)?;
+        let invalid_utf8_status = self.backend.context.i32_type().const_int(
+            u64::from(u32::from_ne_bytes(
+                TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8.to_ne_bytes(),
+            )),
+            false,
+        );
+        let ordinary_error = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                invalid_utf8_status,
+                "text.from_utf8_units.invalid_utf8",
+            )
+            .map_err(builder_error)?;
+        let recognized = self
+            .backend
+            .builder
+            .build_or(success, ordinary_error, "text.from_utf8_units.status.valid")
+            .map_err(builder_error)?;
+        let invalid_status = self
+            .backend
+            .builder
+            .build_not(recognized, "text.from_utf8_units.status.invalid")
+            .map_err(builder_error)?;
+        let normalized_status = self
+            .backend
+            .builder
+            .build_int_z_extend(
+                invalid_status,
+                self.backend.context.i32_type(),
+                "text.from_utf8_units.status.normalized",
+            )
+            .map_err(builder_error)?;
+        self.trap_on_runtime_status(normalized_status, "text.from_utf8_units.status")?;
+
+        let ok = self.append_block("text.from_utf8_units.ok");
+        let error = self.append_block("text.from_utf8_units.error");
+        let merge = self.append_block("text.from_utf8_units.merge");
+        self.backend
+            .builder
+            .build_conditional_branch(success, ok, error)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(ok);
+        let decoded = self.alloc_value("text.from_utf8_units.text");
+        let typed_text = self
+            .backend
+            .builder
+            .build_load(
+                self.backend.ptr_type,
+                output,
+                "text.from_utf8_units.text.object",
+            )
+            .map_err(builder_error)?
+            .into_pointer_value();
+        let byte_length = self.backend.load_i64_field(
+            self.backend.text_object_type,
+            typed_text,
+            TEXT_OBJECT_FIELD_BYTE_LENGTH,
+            "text.from_utf8_units.text.length",
+        )?;
+        let bytes = self.backend.struct_pointer(
+            self.backend.text_object_type,
+            typed_text,
+            TEXT_OBJECT_FIELD_BYTES,
+            "text.from_utf8_units.text.bytes",
+        )?;
+        // The typed helper publishes a direct typed-GC leaf, while checked
+        // MIR's universal Text must point into the universal sequence arena.
+        // Universal text concatenation copies both complete byte ranges into
+        // native staging before its allocation safepoint. Concatenating the
+        // validated Text with an empty range therefore bridges ownership
+        // domains without carrying the temporary typed object across GC.
+        self.publish_gc_root_state()?;
+        let bridge_status = call_int(
+            &self.backend.builder,
+            self.backend.native_text_concat(),
+            &[
+                bytes.into(),
+                byte_length.into(),
+                self.backend.ptr_type.const_null().into(),
+                self.backend.i64_type.const_zero().into(),
+                decoded.into(),
+            ],
+            "text.from_utf8_units.publish",
+        )?;
+        self.trap_on_runtime_status(bridge_status, "text.from_utf8_units.publish")?;
+        self.emit_variant_from_pointers(result, 0, &[decoded], destination)?;
+        self.backend.branch(merge)?;
+
+        self.backend.builder.position_at_end(error);
+        let error_value = self.alloc_value("text.from_utf8_units.error.value");
+        let error_ty = self
+            .backend
+            .program
+            .prelude
+            .decode_text_error
+            .ok_or_else(|| CodegenError::new("InvalidPrelude", "DecodeTextError is missing"))?;
+        self.emit_variant_from_pointers(error_ty, 0, &[], error_value)?;
+        self.emit_variant_from_pointers(result, 1, &[error_value], destination)?;
+        self.backend.branch(merge)?;
+
+        self.backend.builder.position_at_end(merge);
+        Ok(())
+    }
+
     fn fail_on_standard_status(
         &self,
         status: IntValue<'ctx>,
@@ -11242,27 +11506,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 self.fail_on_standard_status(status, "TextMapRuntimeFault")?;
                 Ok(true)
             }
-            (Builtin::JsonParse, [text]) => {
-                let (data, length) = self.text_parts(*text, "json.parse")?;
-                let (result, json, error, map) = self.json_type_ids()?;
-                self.publish_gc_root_state()?;
-                let status = call_int(
-                    &self.backend.builder,
-                    self.backend.native_json_parse(),
-                    &[
-                        data.into(),
-                        length.into(),
-                        self.backend.tag(u64::from(result.0)).into(),
-                        self.backend.tag(u64::from(json.0)).into(),
-                        self.backend.tag(u64::from(error.0)).into(),
-                        self.backend.tag(u64::from(map.0)).into(),
-                        destination.into(),
-                    ],
-                    "json.parse.status",
-                )?;
-                self.fail_on_standard_status(status, "JsonRuntimeFault")?;
-                Ok(true)
-            }
             (Builtin::JsonFormat, [json]) => {
                 let (result, json_type, error, map) = self.json_type_ids()?;
                 self.publish_gc_root_state()?;
@@ -11327,7 +11570,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "legacy universal-value map traversal, rooted cloning, and Option construction share one GC-safety boundary"
+        reason = "checked-MIR universal-value map traversal, rooted cloning, and Option construction share one GC-safety boundary"
     )]
     fn emit_text_map_entry_at(
         &self,
@@ -11664,8 +11907,11 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         if let Some(result) = self.emit_native_int_list_builtin(builtin, arguments, destination)? {
             return Ok(result);
         }
-        let prepared = if matches!(builtin, Builtin::ListLength | Builtin::ListGet)
-            && let Some((CallArgument::Value(receiver), remaining)) = arguments.split_first()
+        let prepared = if matches!(
+            builtin,
+            Builtin::ListLength | Builtin::ListGet | Builtin::ListToTextMap
+        ) && let Some((CallArgument::Value(receiver), remaining)) =
+            arguments.split_first()
             && let ExprKind::Copy(place) = &receiver.kind
             && remaining.iter().all(|argument| match argument {
                 CallArgument::Value(value) => !expression_contains_await(value),
@@ -11977,6 +12223,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one checked-MIR builtin boundary keeps List construction, reads, mutation writeback, and bulk TextMap fallback together"
+    )]
     fn emit_list_builtin_values(
         &self,
         builtin: Builtin,
@@ -12080,11 +12330,286 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 self.emit_call_writebacks(writebacks)?;
                 Ok(true)
             }
+            (Builtin::ListToTextMap, [entries]) => {
+                self.emit_list_to_text_map(*entries, destination)?;
+                self.emit_call_writebacks(writebacks)?;
+                Ok(true)
+            }
             _ => Err(CodegenError::new(
                 "InvalidBuiltinCall",
-                "List builtin argument shape does not match checked MIR",
+                format!(
+                    "List builtin {builtin:?} received {} materialized arguments",
+                    values.len()
+                ),
             )),
         }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the checked-MIR route expands bulk construction through existing universal collection operations without a new runtime ABI"
+    )]
+    fn emit_list_to_text_map(
+        &self,
+        entries: PointerValue<'ctx>,
+        destination: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let list = self.unwrap(entries)?;
+        let length = self.backend.load_i64_field(
+            self.backend.value_type,
+            list,
+            VALUE_FIELD_AUX,
+            "list.to_text_map.length",
+        )?;
+        let map = self.alloc_value("list.to_text_map.map");
+        let duplicates = self.alloc_value("list.to_text_map.duplicates");
+        self.emit_structured_value_builtin(Builtin::TextMapNew, &[], map)?;
+        self.emit_structured_value_builtin(Builtin::TextMapNew, &[], duplicates)?;
+        let unit = self.alloc_value("list.to_text_map.unit");
+        self.emit_constant(&Constant::Unit, unit)?;
+        // These loop-carried output cells retain the previous iteration's
+        // managed values until the runtime overwrites them. Register both
+        // before emitting any loop safepoint so every state which can run on a
+        // later iteration rewrites those retained aliases during moving GC.
+        let next_duplicates = self.alloc_value("list.to_text_map.next_duplicates");
+        let next_map = self.alloc_value("list.to_text_map.next_map");
+
+        let source = self.backend.builder.get_insert_block().ok_or_else(|| {
+            CodegenError::new("LlvmBuilderFailed", "List.to_text_map has no source block")
+        })?;
+        let header = self.append_block("list.to_text_map.header");
+        let body = self.append_block("list.to_text_map.body");
+        let duplicate = self.append_block("list.to_text_map.found_duplicate");
+        let insert = self.append_block("list.to_text_map.insert");
+        let finish = self.append_block("list.to_text_map.finish");
+        let success = self.append_block("list.to_text_map.success");
+        let failure = self.append_block("list.to_text_map.failure");
+        let merge = self.append_block("list.to_text_map.merge");
+        self.backend.branch(header)?;
+
+        self.backend.builder.position_at_end(header);
+        let index_phi = self
+            .backend
+            .builder
+            .build_phi(self.backend.i64_type, "list.to_text_map.index")
+            .map_err(builder_error)?;
+        let zero = self.backend.i64_type.const_zero();
+        index_phi.add_incoming(&[(&zero, source)]);
+        let index = index_phi.as_basic_value().into_int_value();
+        let remains = self
+            .backend
+            .builder
+            .build_int_compare(IntPredicate::ULT, index, length, "list.to_text_map.remains")
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(remains, body, finish)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(body);
+        let entry = self.alloc_value("list.to_text_map.entry");
+        // Cloning and functional insertion in a previous iteration may have
+        // collected. Reload through the stable rooted receiver cell instead
+        // of retaining an unwrapped pointer across those safepoints.
+        let list = self.unwrap(entries)?;
+        let status = call_int(
+            &self.backend.builder,
+            self.backend.native_list_get(),
+            &[list.into(), index.into(), entry.into()],
+            "list.to_text_map.get",
+        )?;
+        let invalid = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                status,
+                self.backend.context.i32_type().const_int(1, false),
+                "list.to_text_map.invalid_entry",
+            )
+            .map_err(builder_error)?;
+        self.fail_if(invalid, "ListRuntimeFault")?;
+        let tuple = self.unwrap(entry)?;
+        let nodes = self.backend.load_pointer_field(
+            self.backend.value_type,
+            tuple,
+            VALUE_FIELD_DATA,
+            "list.to_text_map.entry.nodes",
+        )?;
+        let key_node = self.value_node_at(nodes, 0)?;
+        let value_node = self.value_node_at(nodes, 1)?;
+        let key_source = self.backend.struct_pointer(
+            self.backend.value_node_type,
+            key_node,
+            VALUE_NODE_FIELD_VALUE,
+            "list.to_text_map.key.source",
+        )?;
+        let value_source = self.backend.struct_pointer(
+            self.backend.value_node_type,
+            value_node,
+            VALUE_NODE_FIELD_VALUE,
+            "list.to_text_map.value.source",
+        )?;
+        let key_snapshot = self.alloc_value("list.to_text_map.key.snapshot");
+        let value_snapshot = self.alloc_value("list.to_text_map.value.snapshot");
+        self.shallow_copy_named(key_snapshot, key_source, "list.to_text_map.key.snapshot")?;
+        self.shallow_copy_named(
+            value_snapshot,
+            value_source,
+            "list.to_text_map.value.snapshot",
+        )?;
+        let key = self.alloc_value("list.to_text_map.key");
+        let value = self.alloc_value("list.to_text_map.value");
+        self.clone_value(key, key_snapshot)?;
+        self.clone_value(value, value_snapshot)?;
+        let (key_data, key_length) = self.text_parts(key, "list.to_text_map.key")?;
+        let ignored = self.alloc_value("list.to_text_map.existing");
+        let found = call_int(
+            &self.backend.builder,
+            self.backend.native_text_map_get(),
+            &[
+                map.into(),
+                key_data.into(),
+                key_length.into(),
+                ignored.into(),
+            ],
+            "list.to_text_map.contains",
+        )?;
+        let invalid = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::SLT,
+                found,
+                self.backend.context.i32_type().const_zero(),
+                "list.to_text_map.contains.invalid",
+            )
+            .map_err(builder_error)?;
+        self.fail_if(invalid, "TextMapRuntimeFault")?;
+        let found = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                found,
+                self.backend.context.i32_type().const_int(1, false),
+                "list.to_text_map.contains.found",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(found, duplicate, insert)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(duplicate);
+        self.publish_gc_root_state()?;
+        let status = call_int(
+            &self.backend.builder,
+            self.backend.native_text_map_insert(),
+            &[
+                duplicates.into(),
+                key.into(),
+                unit.into(),
+                next_duplicates.into(),
+            ],
+            "list.to_text_map.record_duplicate",
+        )?;
+        self.fail_on_standard_status(status, "TextMapRuntimeFault")?;
+        self.shallow_copy_named(
+            duplicates,
+            next_duplicates,
+            "list.to_text_map.duplicates.writeback",
+        )?;
+        self.backend.branch(insert)?;
+
+        self.backend.builder.position_at_end(insert);
+        self.publish_gc_root_state()?;
+        let status = call_int(
+            &self.backend.builder,
+            self.backend.native_text_map_insert(),
+            &[map.into(), key.into(), value.into(), next_map.into()],
+            "list.to_text_map.insert",
+        )?;
+        self.fail_on_standard_status(status, "TextMapRuntimeFault")?;
+        self.shallow_copy_named(map, next_map, "list.to_text_map.map.writeback")?;
+        let next = self
+            .backend
+            .builder
+            .build_int_add(
+                index,
+                self.backend.i64_type.const_int(1, false),
+                "list.to_text_map.next",
+            )
+            .map_err(builder_error)?;
+        self.backend.branch(header)?;
+        let backedge = self.backend.builder.get_insert_block().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmBuilderFailed",
+                "List.to_text_map has no backedge block",
+            )
+        })?;
+        index_phi.add_incoming(&[(&next, backedge)]);
+
+        self.backend.builder.position_at_end(finish);
+        let duplicate_map = self.unwrap(duplicates)?;
+        let duplicate_slots = self.backend.load_i64_field(
+            self.backend.value_type,
+            duplicate_map,
+            VALUE_FIELD_AUX,
+            "list.to_text_map.duplicate_slots",
+        )?;
+        let has_duplicate = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                duplicate_slots,
+                self.backend.i64_type.const_zero(),
+                "list.to_text_map.has_duplicate",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(has_duplicate, failure, success)
+            .map_err(builder_error)?;
+
+        let result = self
+            .backend
+            .program
+            .prelude
+            .result
+            .ok_or_else(|| CodegenError::new("InvalidPrelude", "Result is missing"))?;
+        self.backend.builder.position_at_end(success);
+        self.emit_variant_from_pointers(result, 0, &[map], destination)?;
+        self.backend.branch(merge)?;
+
+        self.backend.builder.position_at_end(failure);
+        let duplicate_nodes = self.backend.load_pointer_field(
+            self.backend.value_type,
+            duplicate_map,
+            VALUE_FIELD_DATA,
+            "list.to_text_map.duplicate_nodes",
+        )?;
+        let duplicate_node = self.value_node_at(duplicate_nodes, 0)?;
+        let duplicate_source = self.backend.struct_pointer(
+            self.backend.value_node_type,
+            duplicate_node,
+            VALUE_NODE_FIELD_VALUE,
+            "list.to_text_map.duplicate.source",
+        )?;
+        let duplicate_snapshot = self.alloc_value("list.to_text_map.duplicate.snapshot");
+        self.shallow_copy_named(
+            duplicate_snapshot,
+            duplicate_source,
+            "list.to_text_map.duplicate.snapshot",
+        )?;
+        let duplicate_key = self.alloc_value("list.to_text_map.duplicate.key");
+        self.clone_value(duplicate_key, duplicate_snapshot)?;
+        self.emit_variant_from_pointers(result, 1, &[duplicate_key], destination)?;
+        self.backend.branch(merge)?;
+
+        self.backend.builder.position_at_end(merge);
+        Ok(())
     }
 
     fn emit_process_builtin(

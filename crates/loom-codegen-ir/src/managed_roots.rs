@@ -345,6 +345,7 @@ fn collect_safepoint_values(
                     | InstructionKind::JsonFormat { .. }
                     | InstructionKind::TaskOutcomeTake { .. }
                     | InstructionKind::TextMapInsert { .. }
+                    | InstructionKind::TextMapConstructEntries { .. }
                     | InstructionKind::TextMapRemove { .. }
             ) || list_allocation
                 || dyn_allocation
@@ -361,7 +362,11 @@ fn collect_safepoint_values(
                 // relocate them. They therefore belong to this row even when
                 // dead after the instruction.
                 if list_allocation
-                    || matches!(instruction.kind(), InstructionKind::TextMapInsert { .. })
+                    || matches!(
+                        instruction.kind(),
+                        InstructionKind::TextMapInsert { .. }
+                            | InstructionKind::TextMapConstructEntries { .. }
+                    )
                     || dyn_allocation
                 {
                     add_managed(&mut live, instruction.kind().operands(), managed);

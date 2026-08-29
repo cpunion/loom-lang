@@ -3266,6 +3266,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         | mir::Builtin::ListAdd
                         | mir::Builtin::ListLength
                         | mir::Builtin::ListGet
+                        | mir::Builtin::ListToTextMap
                         | mir::Builtin::TextMapNew
                         | mir::Builtin::TextMapInsert
                         | mir::Builtin::TextMapLength
@@ -3302,6 +3303,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                                     | mir::Builtin::JsonFormat
                                     | mir::Builtin::TextMapNew
                                     | mir::Builtin::TextMapInsert
+                                    | mir::Builtin::ListToTextMap
                                     | mir::Builtin::TextMapLength
                                     | mir::Builtin::TextMapContains
                                     | mir::Builtin::TextMapGet
@@ -4051,6 +4053,7 @@ fn scan_effect_expr(
                         | mir::Builtin::BytesDecodeUtf8
                         | mir::Builtin::PathJoin
                         | mir::Builtin::ListAdd
+                        | mir::Builtin::ListToTextMap
                         | mir::Builtin::TextMapInsert
                         | mir::Builtin::TextMapRemove
                         | mir::Builtin::FormatFloat
@@ -4158,16 +4161,7 @@ fn canonical_unique_list_loop_body(block: &mir::Block, local: LocalId) -> bool {
     let mut append_count = 0_usize;
     for statement in &block.statements {
         if let StatementKind::Evaluate(expression) = &statement.kind
-            && let ExprKind::Call {
-                target: CallTarget::Builtin(mir::Builtin::ListAdd),
-                arguments,
-                ..
-            } = &expression.kind
-            && let [CallArgument::InOut(receiver), CallArgument::Value(value)] =
-                arguments.as_slice()
-            && receiver.local == local
-            && receiver.projection.is_empty()
-            && !expr_mentions_local(value, local)
+            && canonical_unique_list_add(expression, local)
         {
             append_count = append_count.saturating_add(1);
             continue;
@@ -4176,11 +4170,34 @@ fn canonical_unique_list_loop_body(block: &mir::Block, local: LocalId) -> bool {
             return false;
         }
     }
-    append_count != 0
-        && block
-            .tail
-            .as_deref()
-            .is_none_or(|tail| !expr_mentions_local(tail, local))
+    let tail_append = block
+        .tail
+        .as_deref()
+        .is_some_and(|tail| canonical_unique_list_add(tail, local));
+    tail_append
+        || append_count != 0
+            && block
+                .tail
+                .as_deref()
+                .is_none_or(|tail| !expr_mentions_local(tail, local))
+}
+
+fn canonical_unique_list_add(expression: &mir::Expr, local: LocalId) -> bool {
+    expression.ty == Type::Unit
+        && matches!(
+            &expression.kind,
+            ExprKind::Call {
+                target: CallTarget::Builtin(mir::Builtin::ListAdd),
+                arguments,
+                ..
+            } if matches!(
+                arguments.as_slice(),
+                [CallArgument::InOut(receiver), CallArgument::Value(value)]
+                    if receiver.local == local
+                        && receiver.projection.is_empty()
+                        && !expr_mentions_local(value, local)
+            )
+        )
 }
 
 fn statement_mentions_local(statement: &mir::Statement, local: LocalId) -> bool {
@@ -6747,7 +6764,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         origin: Origin,
     ) -> Result<EvalFlow, LoweringError> {
         match &kind {
-            InstructionKind::ListLength { .. } | InstructionKind::ListGet { .. } => {}
+            InstructionKind::ListLength { .. }
+            | InstructionKind::ListGet { .. }
+            | InstructionKind::TextMapConstructEntries { .. } => {}
             InstructionKind::ListAppend { value, .. } => self.share_list_value(*value),
             InstructionKind::ListConstruct { elements } => {
                 for element in elements.iter().copied() {
@@ -10260,6 +10279,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             .map_err(LoweringError::from)?;
         let mut header_env = self.environments.remove(flow.env, local)?;
         let mut preheader_arguments = vec![start];
+        let mut unique_carried = Vec::new();
         for outer_local in &carried {
             let incoming = self
                 .environments
@@ -10278,6 +10298,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 && canonical_unique_list_loop_body(body, *outer_local)
             {
                 self.unique_list_values.insert(parameter);
+                unique_carried.push(parameter);
             }
             header_env = self.environments.set(header_env, *outer_local, parameter)?;
             preheader_arguments.push(incoming);
@@ -10369,6 +10390,13 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             )?;
         }
 
+        // The header value is consumed only along the loop-body edge.  The
+        // mutually exclusive exit edge still carries the same unique value,
+        // and independent LCIR ownership validation rederives that fact from
+        // the CFG.  Restore the lowering fact after visiting the body so a
+        // direct-local append immediately after the loop can use it.
+        self.unique_list_values.extend(unique_carried);
+
         Ok(StatementFlow::Continue(Flow {
             block: exit,
             env: header_env,
@@ -10387,7 +10415,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
     ) -> Result<EvalFlow, LoweringError> {
         if let CallTarget::Builtin(builtin) = target {
             return match builtin {
-                mir::Builtin::ListAdd | mir::Builtin::ListLength | mir::Builtin::ListGet => {
+                mir::Builtin::ListAdd
+                | mir::Builtin::ListLength
+                | mir::Builtin::ListGet
+                | mir::Builtin::ListToTextMap => {
                     self.lower_list_builtin(flow, *builtin, arguments, expression)
                 }
                 mir::Builtin::TextMapNew
@@ -11587,6 +11618,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 list: *list,
                 index: *index,
             },
+            (mir::Builtin::ListToTextMap, [entries]) => {
+                InstructionKind::TextMapConstructEntries { entries: *entries }
+            }
             _ => return Err(self.unsupported_reached("unsupported List builtin")),
         };
         self.one_instruction(flow, kind, self.type_id(&expression.ty)?, origin)
@@ -11599,6 +11633,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         arguments: &[CallArgument],
         expression: &mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
+        let origin = self.expression_origin(expression);
         let mut lowered = Vec::with_capacity(arguments.len());
         for argument in arguments {
             let CallArgument::Value(value) = argument else {
@@ -11640,12 +11675,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             },
             _ => return Err(self.unsupported_reached("unsupported TextMap builtin")),
         };
-        self.one_instruction(
-            flow,
-            kind,
-            self.type_id(&expression.ty)?,
-            self.expression_origin(expression),
-        )
+        self.one_instruction(flow, kind, self.type_id(&expression.ty)?, origin)
     }
 
     fn lower_log_builtin(

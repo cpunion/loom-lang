@@ -272,4 +272,4 @@ This representation is not a stable cross-artifact ABI. It contains no witness
 pointer, universal value, runtime conformance registry, or source-visible type
 tag. Missing witnesses and open, generic, prerequisite-dependent, or otherwise
 incomplete candidate sets currently fail closed for typed LCIR and may select
-the complete legacy native route; the compiler never guesses a finite catalog.
+the complete checked-MIR native route; the compiler never guesses a finite catalog.

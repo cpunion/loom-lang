@@ -3778,18 +3778,18 @@ mod tests {
     }
 
     #[test]
-    fn legacy_and_typed_roots_coexist_and_are_validated_before_collection() {
+    fn universal_and_typed_roots_coexist_and_are_validated_before_collection() {
         let runtime = runtime_create_v1();
-        let mut legacy = TestRootFrame::<1>::all_live();
+        let mut universal = TestRootFrame::<1>::all_live();
         let mut typed = TestTypedRootFrame::<1>::all_live();
         let descriptor = typed_leaf_descriptor();
         unsafe {
             assert_eq!(activate_runtime_v1(runtime), GC_OK);
-            assert_eq!(root_push_v1(legacy.pointer()), GC_OK);
+            assert_eq!(root_push_v1(universal.pointer()), GC_OK);
             assert_eq!(typed_root_push_v1(typed.pointer()), GC_OK);
-            let legacy_before = allocate_value().cast::<ValueSlot>();
+            let universal_before = allocate_value().cast::<ValueSlot>();
             let typed_before = typed_allocate(&raw const descriptor, size_of::<TestTypedLeaf>());
-            legacy.roots[0] = indirect(legacy_before);
+            universal.roots[0] = indirect(universal_before);
             typed.roots[0] = typed_before;
 
             force_next_safepoint(runtime);
@@ -3797,18 +3797,24 @@ mod tests {
             typed.header.state = 1;
             assert_eq!(safepoint_v1(), GC_DESCRIPTOR_INVALID);
             assert_eq!((*runtime).heap.collections, collections_before);
-            assert_eq!(legacy.roots[0].words[VALUE_WORD_DATA], legacy_before as u64);
+            assert_eq!(
+                universal.roots[0].words[VALUE_WORD_DATA],
+                universal_before as u64
+            );
             assert_eq!(typed.roots[0], typed_before);
 
             typed.header.state = 0;
             assert_eq!(safepoint_v1(), GC_OK);
-            assert_ne!(legacy.roots[0].words[VALUE_WORD_DATA], legacy_before as u64);
+            assert_ne!(
+                universal.roots[0].words[VALUE_WORD_DATA],
+                universal_before as u64
+            );
             assert_ne!(typed.roots[0], typed_before);
             assert_eq!((*runtime).heap.values.len(), 1);
             assert_eq!((*runtime).heap.typed_object_count(), 1);
 
             // The chains are independent; cross-chain pop order is irrelevant.
-            assert_eq!(root_pop_v1(legacy.pointer()), GC_OK);
+            assert_eq!(root_pop_v1(universal.pointer()), GC_OK);
             assert_eq!(deactivate_runtime_v1(runtime), GC_ROOT_STACK_NOT_EMPTY);
             assert_eq!(typed_root_pop_v1(typed.pointer()), GC_OK);
             assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
@@ -3985,7 +3991,7 @@ mod tests {
             };
             assert_eq!(typed_root_push_v1(&raw mut typed_frame), GC_RESOURCE_LIMIT,);
 
-            let legacy_descriptor = LoomGcRootDescriptor {
+            let universal_descriptor = LoomGcRootDescriptor {
                 abi_version: SHADOW_STACK_ABI_VERSION,
                 flags: 0,
                 slot_count: typed_descriptor.slot_count,
@@ -3993,15 +3999,15 @@ mod tests {
                 live_bitmap_words: typed_descriptor.live_bitmap_words,
                 live_bitmaps: bitmap.as_ptr(),
             };
-            let mut legacy_frame = LoomGcRootFrame {
+            let mut universal_frame = LoomGcRootFrame {
                 abi_version: SHADOW_STACK_ABI_VERSION,
                 flags: 0,
                 state: 0,
-                descriptor: &raw const legacy_descriptor,
+                descriptor: &raw const universal_descriptor,
                 slots: ptr::null(),
                 previous: ptr::null_mut(),
             };
-            assert_eq!(root_push_v1(&raw mut legacy_frame), GC_RESOURCE_LIMIT);
+            assert_eq!(root_push_v1(&raw mut universal_frame), GC_RESOURCE_LIMIT);
 
             let mut malformed = TestTypedRootFrame::<1>::new(1, &[0b10]);
             assert_eq!(

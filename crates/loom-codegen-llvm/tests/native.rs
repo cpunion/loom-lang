@@ -42,7 +42,7 @@ fn loom_text_literals_escape_windows_paths_before_source_interpolation() {
 }
 
 #[test]
-fn raw_legacy_codegen_rejects_non_language_run_roots_before_fingerprinting_or_emission() {
+fn raw_checked_mir_codegen_rejects_non_language_run_roots_before_fingerprinting_or_emission() {
     for (label, source) in [
         (
             "non-unit",
@@ -90,21 +90,21 @@ fn emits_links_and_runs_a_native_unit_entry() {
 }
 
 #[test]
-fn legacy_run_returns_failure_when_exact_stdout_is_not_writable() {
+fn checked_mir_run_returns_failure_when_exact_stdout_is_not_writable() {
     let program = unit_program();
     let directory = tempfile::tempdir().expect("create temp directory");
     let executable = directory.path().join("program");
     let ir = directory.path().join("program.ll");
     let mut options = EmitOptions::run("main");
     options.emit_ir = Some(ir.clone());
-    emit_native(&program, &executable, &options).expect("emit legacy native executable");
+    emit_native(&program, &executable, &options).expect("emit checked-MIR native executable");
 
-    let llvm = std::fs::read_to_string(ir).expect("read legacy stdout LLVM IR");
+    let llvm = std::fs::read_to_string(ir).expect("read checked-MIR stdout LLVM IR");
     assert_exact_stdout_ir(&llvm);
     let write = llvm
         .lines()
         .find(|line| line.contains("call i32 @loom_runtime_stdout_write_v1"))
-        .expect("legacy Unit harness must call the exact stdout ABI");
+        .expect("checked-MIR Unit harness must call the exact stdout ABI");
     assert!(
         write.contains("i64 5"),
         "Unit plus LF must use the exact five-byte length: {write}"
@@ -113,7 +113,7 @@ fn legacy_run_returns_failure_when_exact_stdout_is_not_writable() {
     let failed = run_with_read_only_stdout(&executable, directory.path());
     assert!(
         !failed.status.success(),
-        "legacy harness ignored an exact stdout write failure: {failed:?}"
+        "checked-MIR harness ignored an exact stdout write failure: {failed:?}"
     );
 
     #[cfg(unix)]
@@ -122,33 +122,33 @@ fn legacy_run_returns_failure_when_exact_stdout_is_not_writable() {
         assert_eq!(
             closed.status.code(),
             Some(loom_runtime_abi::STDOUT_WRITE_FAILED),
-            "legacy harness allowed SIGPIPE to bypass the stdout ABI: {closed:?}"
+            "checked-MIR harness allowed SIGPIPE to bypass the stdout ABI: {closed:?}"
         );
     }
 }
 
 #[test]
-fn legacy_passing_tests_return_failure_when_exact_stdout_is_not_writable() {
+fn checked_mir_passing_tests_return_failure_when_exact_stdout_is_not_writable() {
     let program = unit_test_program();
     let directory = tempfile::tempdir().expect("create temp directory");
     let executable = directory.path().join("tests");
     let ir = directory.path().join("tests.ll");
     let mut options = EmitOptions::tests();
     options.emit_ir = Some(ir.clone());
-    emit_native(&program, &executable, &options).expect("emit legacy native tests executable");
+    emit_native(&program, &executable, &options).expect("emit checked-MIR native tests executable");
 
-    let llvm = std::fs::read_to_string(ir).expect("read legacy tests stdout LLVM IR");
+    let llvm = std::fs::read_to_string(ir).expect("read checked-MIR tests stdout LLVM IR");
     assert_exact_stdout_ir(&llvm);
     let normal = Command::new(&executable)
         .output()
-        .expect("run legacy tests executable");
+        .expect("run checked-MIR tests executable");
     assert!(normal.status.success(), "{normal:?}");
     assert_eq!(normal.stdout, b"passed sample.main\n");
 
     let failed = run_with_read_only_stdout(&executable, directory.path());
     assert!(
         !failed.status.success(),
-        "legacy tests harness ignored a passing-line stdout failure: {failed:?}"
+        "checked-MIR tests harness ignored a passing-line stdout failure: {failed:?}"
     );
 }
 
@@ -3426,7 +3426,7 @@ pub fn main() {
 fn requires_faults_preserve_exact_caller_spans_across_llvm_abis() {
     let source = r#"module requires_caller_blame
 
-fn legacy(value Int) Text
+fn checked_mir(value Int) Text
     requires value > 0
 {
     "accepted"
@@ -3444,12 +3444,12 @@ async fn asynchronous(value Int) Int
     value
 }
 
-test fn a_legacy_first() {
-    discard legacy(0)
+test fn a_checked_mir_first() {
+    discard checked_mir(0)
 }
 
-test fn b_legacy_second() {
-    discard legacy(0)
+test fn b_checked_mir_second() {
+    discard checked_mir(0)
 }
 
 test fn c_native_first() {
@@ -4493,7 +4493,7 @@ pub async fn main() {
 }
 
 #[test]
-fn compact_witness_ir_removes_linked_nodes_concat_and_legacy_task_clone() {
+fn compact_witness_ir_removes_linked_nodes_concat_and_universal_task_clone() {
     let source = r"module compact_witness
 
 concept Check {
@@ -4524,7 +4524,7 @@ pub async fn main() {
     assert!(llvm.contains("@loom_task_witness_v1"), "{llvm}");
     assert!(llvm.contains("@loom_gc_clone_value_v1"), "{llvm}");
     assert!(llvm.contains("@loom_gc_build_value_nodes_v1"), "{llvm}");
-    for legacy in [
+    for forbidden in [
         "%loom.WitnessNode",
         "@loom.runtime.concat_witnesses",
         "@loom.runtime.clone",
@@ -4534,8 +4534,8 @@ pub async fn main() {
         "@loom_task_clone_witness",
     ] {
         assert!(
-            !llvm.contains(legacy),
-            "legacy witness ABI `{legacy}`:\n{llvm}"
+            !llvm.contains(forbidden),
+            "universal witness ABI `{forbidden}`:\n{llvm}"
         );
     }
 

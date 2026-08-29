@@ -150,7 +150,7 @@ impl Default for ExecutionLimits {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Value {
     Unit,
@@ -221,6 +221,12 @@ pub enum TaskOutcomeValue {
     Completed(Box<Value>),
     Faulted,
     Cancelled,
+}
+
+impl Clone for Value {
+    fn clone(&self) -> Self {
+        clone_value(self, false)
+    }
 }
 
 /// A fully resolved conformance proof carried by an executing frame or view.
@@ -539,6 +545,97 @@ enum EvalAbort {
     Failure(ExecutionFailure),
     Return(Box<Value>),
     Cancelled,
+}
+
+struct SyncCall {
+    function: FunctionId,
+    arguments: Vec<BoundArgument>,
+    witnesses: Vec<RuntimeWitness>,
+    span: Span,
+}
+
+type SyncResume<'program, T> = Box<
+    dyn FnOnce(&mut Interpreter<'program>, Result<Value, ExecutionFailure>) -> SyncStep<'program, T>
+        + 'program,
+>;
+
+enum SyncStep<'program, T> {
+    Complete(Result<T, EvalAbort>),
+    Call {
+        request: SyncCall,
+        resume: SyncResume<'program, T>,
+    },
+}
+
+impl<'program, T: 'program> SyncStep<'program, T> {
+    fn complete(value: T) -> Self {
+        Self::Complete(Ok(value))
+    }
+
+    fn fail(abort: impl Into<EvalAbort>) -> Self {
+        Self::Complete(Err(abort.into()))
+    }
+
+    fn then<U: 'program>(
+        self,
+        interpreter: &mut Interpreter<'program>,
+        continuation: impl FnOnce(
+            &mut Interpreter<'program>,
+            Result<T, EvalAbort>,
+        ) -> SyncStep<'program, U>
+        + 'program,
+    ) -> SyncStep<'program, U> {
+        match self {
+            Self::Complete(outcome) => continuation(interpreter, outcome),
+            Self::Call { request, resume } => SyncStep::Call {
+                request,
+                resume: Box::new(move |interpreter, outcome| {
+                    resume(interpreter, outcome).then(interpreter, continuation)
+                }),
+            },
+        }
+    }
+
+    fn and_then<U: 'program>(
+        self,
+        interpreter: &mut Interpreter<'program>,
+        continuation: impl FnOnce(&mut Interpreter<'program>, T) -> SyncStep<'program, U> + 'program,
+    ) -> SyncStep<'program, U> {
+        self.then(interpreter, move |interpreter, outcome| match outcome {
+            Ok(value) => continuation(interpreter, value),
+            Err(abort) => SyncStep::Complete(Err(abort)),
+        })
+    }
+}
+
+impl SyncStep<'_, Value> {
+    fn call(request: SyncCall) -> Self {
+        Self::Call {
+            request,
+            resume: Box::new(|_, outcome| match outcome {
+                Ok(value) => Self::complete(value),
+                Err(failure) => Self::fail(failure),
+            }),
+        }
+    }
+}
+
+enum BoundInvocation<'program> {
+    Complete(Value),
+    Sync {
+        frame: u64,
+        function: &'program Function,
+        call_site: Span,
+    },
+}
+
+enum SyncCleanup<'program> {
+    Deferred(&'program Block),
+    Scoped {
+        local: LocalId,
+        disposal: &'program ScopedDisposal,
+        span: Span,
+    },
 }
 
 impl From<ExecutionFailure> for EvalAbort {
@@ -1210,19 +1307,20 @@ impl<'program> Interpreter<'program> {
             let task = self.tasks.get(&task_id).expect("task checked above");
             (task.function, task.frame)
         };
-        let function = self.program.function(function_id).cloned().ok_or_else(|| {
+        let program = self.program;
+        let function = program.function(function_id).ok_or_else(|| {
             ExecutionFailure::from(self.runtime_fault(
                 "LOOM_RUNTIME_INVALID_MIR",
                 "async task references an unknown function",
                 Span::default(),
             ))
         })?;
-        if let Err(failure) = self.enter_async_contracts(task_id, frame, &function) {
+        if let Err(failure) = self.enter_async_contracts(task_id, frame, function) {
             return Ok(self.finish_task(task_id, Err(EvalAbort::Failure(failure))));
         }
         loop {
             let cursor = self.tasks.get(&task_id).expect("task exists").cursor;
-            if let Some(statement) = function.body.statements.get(cursor).cloned() {
+            if let Some(statement) = function.body.statements.get(cursor) {
                 if let StatementKind::Defer(cleanup) = &statement.kind {
                     let task = self.tasks.get_mut(&task_id).expect("task exists");
                     task.cleanups
@@ -1334,7 +1432,7 @@ impl<'program> Interpreter<'program> {
                     continue;
                 }
 
-                match self.eval_statement(frame, &statement) {
+                match self.eval_statement(frame, statement) {
                     Ok(()) => {
                         self.tasks.get_mut(&task_id).expect("task exists").cursor += 1;
                     }
@@ -1702,10 +1800,9 @@ impl<'program> Interpreter<'program> {
                 .get(&task_id)
                 .and_then(|task| task.contract_state.as_ref().map(|_| task.function));
             if let Some(function_id) = function_id {
-                let checked = self
-                    .program
+                let program = self.program;
+                let checked = program
                     .function(function_id)
-                    .cloned()
                     .ok_or_else(|| {
                         ExecutionFailure::from(self.runtime_fault(
                             "LOOM_RUNTIME_INVALID_MIR",
@@ -1714,7 +1811,7 @@ impl<'program> Interpreter<'program> {
                         ))
                     })
                     .and_then(|function| {
-                        self.check_async_exit_contracts(task_id, frame, &function, &value)
+                        self.check_async_exit_contracts(task_id, frame, function, &value)
                     });
                 if let Err(failure) = checked {
                     outcome = Err(EvalAbort::Failure(failure));
@@ -1788,7 +1885,6 @@ impl<'program> Interpreter<'program> {
         self.gc_stats.live = self.tasks.len() as u64;
     }
 
-    #[allow(clippy::too_many_lines)]
     fn invoke_bound(
         &mut self,
         function_id: FunctionId,
@@ -1796,6 +1892,24 @@ impl<'program> Interpreter<'program> {
         witnesses: Vec<RuntimeWitness>,
         call_site: Span,
     ) -> Result<Value, ExecutionFailure> {
+        match self.begin_bound(function_id, arguments, witnesses, call_site)? {
+            BoundInvocation::Complete(value) => Ok(value),
+            BoundInvocation::Sync {
+                frame,
+                function,
+                call_site,
+            } => self.drive_sync(frame, function, call_site),
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn begin_bound(
+        &mut self,
+        function_id: FunctionId,
+        arguments: Vec<BoundArgument>,
+        witnesses: Vec<RuntimeWitness>,
+        call_site: Span,
+    ) -> Result<BoundInvocation<'program>, ExecutionFailure> {
         self.tick(call_site)?;
         if self.call_depth >= self.max_call_depth {
             return Err(self
@@ -1806,7 +1920,8 @@ impl<'program> Interpreter<'program> {
                 )
                 .into());
         }
-        let function = self.program.function(function_id).cloned().ok_or_else(|| {
+        let program = self.program;
+        let function = program.function(function_id).ok_or_else(|| {
             ExecutionFailure::from(self.runtime_fault(
                 "LOOM_RUNTIME_INVALID_MIR",
                 format!("function #{} does not exist", function_id.0),
@@ -1902,119 +2017,203 @@ impl<'program> Interpreter<'program> {
             self.enqueue_task(task_id);
             self.gc_stats.allocations = self.gc_stats.allocations.saturating_add(1);
             self.gc_stats.live = self.tasks.len() as u64;
-            return Ok(Value::Task { id: task_id });
+            return Ok(BoundInvocation::Complete(Value::Task { id: task_id }));
         }
         self.call_depth += 1;
-
-        let outcome = self.execute_function(frame_id, &function, call_site);
-        self.call_depth -= 1;
-        self.frames.remove(&frame_id);
-        outcome
+        Ok(BoundInvocation::Sync {
+            frame: frame_id,
+            function,
+            call_site,
+        })
     }
 
-    fn execute_function(
+    fn drive_sync(
         &mut self,
         frame: u64,
-        function: &Function,
+        function: &'program Function,
         call_site: Span,
     ) -> Result<Value, ExecutionFailure> {
-        let parameter_values = self.read_parameter_values(frame, function)?;
-        let (receiver, arguments) = self.contract_arguments(function, &parameter_values)?;
+        let mut active_frames = vec![frame];
+        let mut continuations: Vec<SyncResume<'program, Value>> = Vec::new();
+        let mut step = self.sync_execute_function(frame, function, call_site);
 
-        if let (Some(contract), Some(receiver_value)) =
-            (&function.call_plan.receiver_invariant, receiver.as_ref())
-        {
-            self.require_contract(
-                contract,
-                ContractFaultKind::Invariant,
-                receiver_value,
-                arguments,
-                None,
-                None,
-                &[],
-                contract.span,
-            )?;
+        loop {
+            match step {
+                SyncStep::Complete(outcome) => {
+                    let outcome = match outcome {
+                        Ok(value) => Ok(value),
+                        Err(EvalAbort::Failure(failure)) => Err(failure),
+                        Err(EvalAbort::Return(_)) => Err(self
+                            .runtime_fault(
+                                "LOOM_RUNTIME_INVALID_MIR",
+                                "function return escaped its execution boundary",
+                                call_site,
+                            )
+                            .into()),
+                        Err(EvalAbort::Cancelled) => Err(self
+                            .runtime_fault(
+                                "LOOM_RUNTIME_INVALID_MIR",
+                                "synchronous function observed task cancellation",
+                                call_site,
+                            )
+                            .into()),
+                    };
+                    let completed_frame = active_frames
+                        .pop()
+                        .expect("sync activation must own a frame");
+                    self.frames.remove(&completed_frame);
+                    self.call_depth -= 1;
+                    let Some(resume) = continuations.pop() else {
+                        return outcome;
+                    };
+                    step = resume(self, outcome);
+                }
+                SyncStep::Call { request, resume } => {
+                    match self.begin_bound(
+                        request.function,
+                        request.arguments,
+                        request.witnesses,
+                        request.span,
+                    ) {
+                        Ok(BoundInvocation::Complete(value)) => {
+                            step = resume(self, Ok(value));
+                        }
+                        Ok(BoundInvocation::Sync {
+                            frame,
+                            function,
+                            call_site,
+                        }) => {
+                            continuations.push(resume);
+                            active_frames.push(frame);
+                            step = self.sync_execute_function(frame, function, call_site);
+                        }
+                        Err(failure) => {
+                            step = resume(self, Err(failure));
+                        }
+                    }
+                }
+            }
         }
+    }
 
-        for contract in &function.call_plan.requires {
-            self.require_contract(
-                contract,
-                ContractFaultKind::Precondition,
-                receiver.as_ref().unwrap_or(&Value::Unit),
-                arguments,
-                None,
-                None,
-                &[],
-                call_site,
-            )?;
-        }
+    #[allow(clippy::too_many_lines)]
+    fn sync_execute_function(
+        &mut self,
+        frame: u64,
+        function: &'program Function,
+        call_site: Span,
+    ) -> SyncStep<'program, Value> {
+        let snapshots = (|| -> Result<_, ExecutionFailure> {
+            let parameter_values = self.read_parameter_values(frame, function)?;
+            let (receiver, arguments) = self.contract_arguments(function, &parameter_values)?;
 
-        let snapshot_needs = old_snapshot_needs(&function.call_plan.ensures, arguments.len());
-        let old_arguments = arguments
-            .iter()
-            .enumerate()
-            .map(|(index, value)| {
-                snapshot_needs
-                    .arguments
-                    .get(index)
-                    .copied()
-                    .unwrap_or(false)
-                    .then(|| value.clone())
-            })
-            .collect::<Vec<_>>();
-        let old_receiver = snapshot_needs.receiver.then(|| receiver.clone()).flatten();
-        let result = match self.eval_block(frame, &function.body) {
-            Ok(value) => value,
-            Err(EvalAbort::Return(value)) => *value,
-            Err(EvalAbort::Failure(failure)) => return Err(failure),
-            Err(EvalAbort::Cancelled) => {
-                return Err(self
-                    .runtime_fault(
+            if let (Some(contract), Some(receiver_value)) =
+                (&function.call_plan.receiver_invariant, receiver.as_ref())
+            {
+                self.require_contract(
+                    contract,
+                    ContractFaultKind::Invariant,
+                    receiver_value,
+                    arguments,
+                    None,
+                    None,
+                    &[],
+                    contract.span,
+                )?;
+            }
+            for contract in &function.call_plan.requires {
+                self.require_contract(
+                    contract,
+                    ContractFaultKind::Precondition,
+                    receiver.as_ref().unwrap_or(&Value::Unit),
+                    arguments,
+                    None,
+                    None,
+                    &[],
+                    call_site,
+                )?;
+            }
+
+            let snapshot_needs = old_snapshot_needs(&function.call_plan.ensures, arguments.len());
+            let old_arguments = arguments
+                .iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    snapshot_needs
+                        .arguments
+                        .get(index)
+                        .copied()
+                        .unwrap_or(false)
+                        .then(|| value.clone())
+                })
+                .collect::<Vec<_>>();
+            let old_receiver = snapshot_needs.receiver.then(|| receiver.clone()).flatten();
+            Ok((old_receiver, old_arguments))
+        })();
+        let (old_receiver, old_arguments) = match snapshots {
+            Ok(snapshots) => snapshots,
+            Err(failure) => return SyncStep::fail(failure),
+        };
+
+        let body = self.sync_eval_block(frame, &function.body);
+        body.then(self, move |interpreter, outcome| {
+            let result = match outcome {
+                Ok(value) => value,
+                Err(EvalAbort::Return(value)) => *value,
+                Err(EvalAbort::Failure(failure)) => return SyncStep::fail(failure),
+                Err(EvalAbort::Cancelled) => {
+                    return SyncStep::fail(interpreter.runtime_fault(
                         "LOOM_RUNTIME_INVALID_MIR",
                         "synchronous function observed task cancellation",
                         call_site,
-                    )
-                    .into());
+                    ));
+                }
+            };
+            if function.call_plan.receiver_invariant.is_none()
+                && function.call_plan.ensures.is_empty()
+            {
+                return SyncStep::complete(result);
             }
-        };
 
-        if function.call_plan.receiver_invariant.is_none() && function.call_plan.ensures.is_empty()
-        {
-            return Ok(result);
-        }
-        let current_parameter_values = self.read_parameter_values(frame, function)?;
-        let (current_receiver, current_arguments) =
-            self.contract_arguments(function, &current_parameter_values)?;
-
-        if let (Some(contract), Some(receiver_value)) = (
-            &function.call_plan.receiver_invariant,
-            current_receiver.as_ref(),
-        ) {
-            self.require_contract(
-                contract,
-                ContractFaultKind::Invariant,
-                receiver_value,
-                current_arguments,
-                Some(&result),
-                old_receiver.as_ref(),
-                &old_arguments,
-                contract.span,
-            )?;
-        }
-
-        for contract in &function.call_plan.ensures {
-            self.require_contract(
-                contract,
-                ContractFaultKind::Postcondition,
-                current_receiver.as_ref().unwrap_or(&Value::Unit),
-                current_arguments,
-                Some(&result),
-                old_receiver.as_ref(),
-                &old_arguments,
-                contract.span,
-            )?;
-        }
-        Ok(result)
+            let contracts = (|| -> Result<(), ExecutionFailure> {
+                let current_parameter_values =
+                    interpreter.read_parameter_values(frame, function)?;
+                let (current_receiver, current_arguments) =
+                    interpreter.contract_arguments(function, &current_parameter_values)?;
+                if let (Some(contract), Some(receiver_value)) = (
+                    &function.call_plan.receiver_invariant,
+                    current_receiver.as_ref(),
+                ) {
+                    interpreter.require_contract(
+                        contract,
+                        ContractFaultKind::Invariant,
+                        receiver_value,
+                        current_arguments,
+                        Some(&result),
+                        old_receiver.as_ref(),
+                        &old_arguments,
+                        contract.span,
+                    )?;
+                }
+                for contract in &function.call_plan.ensures {
+                    interpreter.require_contract(
+                        contract,
+                        ContractFaultKind::Postcondition,
+                        current_receiver.as_ref().unwrap_or(&Value::Unit),
+                        current_arguments,
+                        Some(&result),
+                        old_receiver.as_ref(),
+                        &old_arguments,
+                        contract.span,
+                    )?;
+                }
+                Ok(())
+            })();
+            match contracts {
+                Ok(()) => SyncStep::complete(result),
+                Err(failure) => SyncStep::fail(failure),
+            }
+        })
     }
 
     fn enter_async_contracts(
@@ -2235,6 +2434,437 @@ impl<'program> Interpreter<'program> {
         }
     }
 
+    fn sync_eval_block(&mut self, frame: u64, block: &'program Block) -> SyncStep<'program, Value> {
+        if let Err(failure) = self.tick(block.span) {
+            return SyncStep::fail(failure);
+        }
+        self.sync_eval_block_from(frame, block, 0, Vec::new())
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn sync_eval_block_from(
+        &mut self,
+        frame: u64,
+        block: &'program Block,
+        mut cursor: usize,
+        mut cleanups: Vec<SyncCleanup<'program>>,
+    ) -> SyncStep<'program, Value> {
+        while let Some(statement) = block.statements.get(cursor) {
+            match &statement.kind {
+                StatementKind::Defer(cleanup) => {
+                    cleanups.push(SyncCleanup::Deferred(cleanup));
+                    cursor += 1;
+                }
+                StatementKind::Scoped {
+                    local,
+                    value,
+                    disposal,
+                } => {
+                    let local = *local;
+                    let span = statement.span;
+                    match self.sync_eval_expr(frame, value) {
+                        SyncStep::Complete(Ok(value)) => {
+                            if let Err(failure) =
+                                self.set_slot(frame, local, Slot::Value(value), span)
+                            {
+                                return self.sync_run_cleanups(
+                                    frame,
+                                    cleanups,
+                                    Err(EvalAbort::from(failure)),
+                                );
+                            }
+                            cleanups.push(SyncCleanup::Scoped {
+                                local,
+                                disposal,
+                                span,
+                            });
+                            cursor += 1;
+                        }
+                        SyncStep::Complete(Err(abort)) => {
+                            return self.sync_run_cleanups(frame, cleanups, Err(abort));
+                        }
+                        SyncStep::Call { request, resume } => {
+                            return SyncStep::Call {
+                                request,
+                                resume: Box::new(move |interpreter, result| {
+                                    resume(interpreter, result).then(
+                                        interpreter,
+                                        move |interpreter, outcome| match outcome {
+                                            Ok(value) => {
+                                                if let Err(failure) = interpreter.set_slot(
+                                                    frame,
+                                                    local,
+                                                    Slot::Value(value),
+                                                    span,
+                                                ) {
+                                                    return interpreter.sync_run_cleanups(
+                                                        frame,
+                                                        cleanups,
+                                                        Err(EvalAbort::from(failure)),
+                                                    );
+                                                }
+                                                cleanups.push(SyncCleanup::Scoped {
+                                                    local,
+                                                    disposal,
+                                                    span,
+                                                });
+                                                interpreter.sync_eval_block_from(
+                                                    frame,
+                                                    block,
+                                                    cursor + 1,
+                                                    cleanups,
+                                                )
+                                            }
+                                            Err(abort) => interpreter.sync_run_cleanups(
+                                                frame,
+                                                cleanups,
+                                                Err(abort),
+                                            ),
+                                        },
+                                    )
+                                }),
+                            };
+                        }
+                    }
+                }
+                _ => match self.sync_eval_statement(frame, statement) {
+                    SyncStep::Complete(Ok(())) => cursor += 1,
+                    SyncStep::Complete(Err(abort)) => {
+                        return self.sync_run_cleanups(frame, cleanups, Err(abort));
+                    }
+                    SyncStep::Call { request, resume } => {
+                        return SyncStep::Call {
+                            request,
+                            resume: Box::new(move |interpreter, result| {
+                                resume(interpreter, result).then(
+                                    interpreter,
+                                    move |interpreter, outcome| match outcome {
+                                        Ok(()) => interpreter.sync_eval_block_from(
+                                            frame,
+                                            block,
+                                            cursor + 1,
+                                            cleanups,
+                                        ),
+                                        Err(abort) => interpreter.sync_run_cleanups(
+                                            frame,
+                                            cleanups,
+                                            Err(abort),
+                                        ),
+                                    },
+                                )
+                            }),
+                        };
+                    }
+                },
+            }
+        }
+
+        let outcome = block.tail.as_deref().map_or_else(
+            || SyncStep::complete(Value::Unit),
+            |tail| self.sync_eval_expr(frame, tail),
+        );
+        outcome.then(self, move |interpreter, outcome| {
+            interpreter.sync_run_cleanups(frame, cleanups, outcome)
+        })
+    }
+
+    fn sync_run_cleanups(
+        &mut self,
+        frame: u64,
+        mut cleanups: Vec<SyncCleanup<'program>>,
+        mut outcome: Result<Value, EvalAbort>,
+    ) -> SyncStep<'program, Value> {
+        while let Some(cleanup) = cleanups.pop() {
+            let (cleanup, span) = match cleanup {
+                SyncCleanup::Deferred(block) => (self.sync_eval_block(frame, block), block.span),
+                SyncCleanup::Scoped {
+                    local,
+                    disposal,
+                    span,
+                } => (
+                    self.sync_eval_scoped_disposal(frame, local, disposal, span),
+                    span,
+                ),
+            };
+            match cleanup {
+                SyncStep::Complete(cleanup_outcome) => {
+                    Self::merge_cleanup_outcome(&mut outcome, cleanup_outcome, span);
+                }
+                SyncStep::Call { request, resume } => {
+                    return SyncStep::Call {
+                        request,
+                        resume: Box::new(move |interpreter, result| {
+                            resume(interpreter, result).then(
+                                interpreter,
+                                move |interpreter, cleanup_outcome| {
+                                    Self::merge_cleanup_outcome(
+                                        &mut outcome,
+                                        cleanup_outcome,
+                                        span,
+                                    );
+                                    interpreter.sync_run_cleanups(frame, cleanups, outcome)
+                                },
+                            )
+                        }),
+                    };
+                }
+            }
+        }
+        SyncStep::Complete(outcome)
+    }
+
+    fn merge_cleanup_outcome(
+        outcome: &mut Result<Value, EvalAbort>,
+        cleanup_outcome: Result<Value, EvalAbort>,
+        cleanup_span: Span,
+    ) {
+        match cleanup_outcome {
+            Ok(_) => {}
+            Err(EvalAbort::Failure(failure)) => {
+                if matches!(outcome, Ok(_) | Err(EvalAbort::Return(_))) {
+                    *outcome = Err(EvalAbort::Failure(failure));
+                }
+            }
+            Err(EvalAbort::Return(_)) => {
+                if matches!(outcome, Ok(_) | Err(EvalAbort::Return(_))) {
+                    *outcome = Err(EvalAbort::Failure(
+                        RuntimeFault {
+                            code: "LOOM_RUNTIME_INVALID_MIR".into(),
+                            message: "defer cleanup attempted to return".into(),
+                            span: cleanup_span,
+                        }
+                        .into(),
+                    ));
+                }
+            }
+            Err(EvalAbort::Cancelled) => {
+                if !matches!(outcome, Err(EvalAbort::Failure(_))) {
+                    *outcome = Err(EvalAbort::Cancelled);
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn sync_eval_statement(
+        &mut self,
+        frame: u64,
+        statement: &'program Statement,
+    ) -> SyncStep<'program, ()> {
+        if let Err(failure) = self.tick(statement.span) {
+            return SyncStep::fail(failure);
+        }
+        match &statement.kind {
+            StatementKind::Let { local, value } => {
+                let local = *local;
+                let span = statement.span;
+                let value = self.sync_eval_expr(frame, value);
+                value.then(self, move |interpreter, outcome| match outcome {
+                    Ok(value) => match interpreter.set_slot(frame, local, Slot::Value(value), span)
+                    {
+                        Ok(()) => SyncStep::complete(()),
+                        Err(failure) => SyncStep::fail(failure),
+                    },
+                    Err(abort) => SyncStep::Complete(Err(abort)),
+                })
+            }
+            StatementKind::LetTuple { locals, value } => {
+                let span = statement.span;
+                let value = self.sync_eval_expr(frame, value);
+                value.then(self, move |interpreter, outcome| match outcome {
+                    Ok(value) => match interpreter.bind_tuple(frame, locals, value, span) {
+                        Ok(()) => SyncStep::complete(()),
+                        Err(failure) => SyncStep::fail(failure),
+                    },
+                    Err(abort) => SyncStep::Complete(Err(abort)),
+                })
+            }
+            StatementKind::ForRange {
+                local,
+                start,
+                end,
+                body,
+            } => {
+                let local = *local;
+                let span = statement.span;
+                let start = self.sync_eval_expr(frame, start);
+                start.and_then(self, move |interpreter, start| {
+                    let end_step = interpreter.sync_eval_expr(frame, end);
+                    end_step.and_then(interpreter, move |interpreter, end| {
+                        let (Value::Int { value: start }, Value::Int { value: end }) =
+                            (unrefined(start), unrefined(end))
+                        else {
+                            return SyncStep::fail(interpreter.runtime_fault(
+                                "LOOM_RUNTIME_INVALID_MIR",
+                                "range bounds did not produce Int",
+                                span,
+                            ));
+                        };
+                        interpreter.sync_eval_for_range(frame, local, start, end, body, span)
+                    })
+                })
+            }
+            StatementKind::Assign { place, value } => {
+                let span = statement.span;
+                let value = self.sync_eval_expr(frame, value);
+                value.then(self, move |interpreter, outcome| match outcome {
+                    Ok(value) => {
+                        let location = Location::from_place(frame, place);
+                        match interpreter.write_place(&location, value, span) {
+                            Ok(()) => SyncStep::complete(()),
+                            Err(failure) => SyncStep::fail(failure),
+                        }
+                    }
+                    Err(abort) => SyncStep::Complete(Err(abort)),
+                })
+            }
+            StatementKind::Assert { condition } => {
+                let span = statement.span;
+                let condition = self.sync_eval_expr(frame, condition);
+                condition.then(self, move |interpreter, outcome| match outcome {
+                    Ok(Value::Bool { value: true }) => SyncStep::complete(()),
+                    Ok(Value::Bool { value: false }) => SyncStep::fail(ContractFault {
+                        code: "AssertionFault".into(),
+                        category: ContractFaultKind::Assertion,
+                        message: "assertion was not satisfied".into(),
+                        contract_span: span,
+                        blame_span: span,
+                    }),
+                    Ok(_) => SyncStep::fail(interpreter.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "assert expression did not produce Bool",
+                        span,
+                    )),
+                    Err(abort) => SyncStep::Complete(Err(abort)),
+                })
+            }
+            StatementKind::Evaluate(expression) => {
+                let expression = self.sync_eval_expr(frame, expression);
+                expression.then(self, |_, outcome| match outcome {
+                    Ok(_) => SyncStep::complete(()),
+                    Err(abort) => SyncStep::Complete(Err(abort)),
+                })
+            }
+            StatementKind::Return(value) => value.as_ref().map_or_else(
+                || SyncStep::Complete(Err(EvalAbort::Return(Box::new(Value::Unit)))),
+                |value| {
+                    let value = self.sync_eval_expr(frame, value);
+                    value.then(self, |_, outcome| match outcome {
+                        Ok(value) => SyncStep::Complete(Err(EvalAbort::Return(Box::new(value)))),
+                        Err(abort) => SyncStep::Complete(Err(abort)),
+                    })
+                },
+            ),
+            StatementKind::Defer(_) | StatementKind::Scoped { .. } => {
+                SyncStep::fail(self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "cleanup registration escaped block execution",
+                    statement.span,
+                ))
+            }
+        }
+    }
+
+    fn sync_eval_for_range(
+        &mut self,
+        frame: u64,
+        local: LocalId,
+        mut current: i64,
+        end: i64,
+        body: &'program Block,
+        span: Span,
+    ) -> SyncStep<'program, ()> {
+        while current < end {
+            if let Err(failure) = self.set_slot(
+                frame,
+                local,
+                Slot::Value(Value::Int { value: current }),
+                span,
+            ) {
+                return SyncStep::fail(failure);
+            }
+            let body_step = self.sync_eval_block(frame, body);
+            let next = current + 1;
+            match body_step {
+                SyncStep::Complete(Ok(_)) => current = next,
+                SyncStep::Complete(Err(abort)) => return SyncStep::Complete(Err(abort)),
+                SyncStep::Call { request, resume } => {
+                    return SyncStep::Call {
+                        request,
+                        resume: Box::new(move |interpreter, outcome| {
+                            resume(interpreter, outcome).then(
+                                interpreter,
+                                move |interpreter, outcome| match outcome {
+                                    Ok(_) => interpreter
+                                        .sync_eval_for_range(frame, local, next, end, body, span),
+                                    Err(abort) => SyncStep::Complete(Err(abort)),
+                                },
+                            )
+                        }),
+                    };
+                }
+            }
+        }
+        SyncStep::complete(())
+    }
+
+    fn sync_eval_scoped_disposal(
+        &mut self,
+        frame: u64,
+        local: LocalId,
+        disposal: &'program ScopedDisposal,
+        span: Span,
+    ) -> SyncStep<'program, Value> {
+        match disposal {
+            ScopedDisposal::FileClose | ScopedDisposal::SocketClose => {
+                let builtin = match disposal {
+                    ScopedDisposal::FileClose => Builtin::FileClose,
+                    ScopedDisposal::SocketClose => Builtin::SocketClose,
+                    ScopedDisposal::StaticConcept { .. } => unreachable!(),
+                };
+                match self.eval_resource_close(
+                    frame,
+                    builtin,
+                    &[CallArgument::InOut(Place::local(local))],
+                    span,
+                ) {
+                    Ok(value) => SyncStep::complete(value),
+                    Err(abort) => SyncStep::Complete(Err(abort)),
+                }
+            }
+            ScopedDisposal::StaticConcept {
+                requirement,
+                witness,
+                ..
+            } => {
+                let runtime_witness = match self.resolve_witness(frame, witness, span) {
+                    Ok(witness) => witness,
+                    Err(abort) => return SyncStep::Complete(Err(abort)),
+                };
+                let Some(definition) = self.program.witness(runtime_witness.definition) else {
+                    return SyncStep::fail(self.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "scoped disposal references an unknown witness",
+                        span,
+                    ));
+                };
+                let Some(function) = definition.methods.get(requirement).copied() else {
+                    return SyncStep::fail(self.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "scoped disposal witness is missing Dispose.dispose",
+                        span,
+                    ));
+                };
+                SyncStep::call(SyncCall {
+                    function,
+                    arguments: vec![BoundArgument::Alias(Location::local(frame, local))],
+                    witnesses: runtime_witness.arguments,
+                    span,
+                })
+            }
+        }
+    }
+
     fn eval_block(&mut self, frame: u64, block: &Block) -> Result<Value, EvalAbort> {
         self.tick(block.span).map_err(EvalAbort::from)?;
         let mut cleanups = Vec::new();
@@ -2435,6 +3065,901 @@ impl<'program> Interpreter<'program> {
             self.set_slot(frame, *local, Slot::Value(element), span)?;
         }
         Ok(())
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn sync_eval_expr(
+        &mut self,
+        frame: u64,
+        expression: &'program Expr,
+    ) -> SyncStep<'program, Value> {
+        if let Err(failure) = self.tick(expression.span) {
+            return SyncStep::fail(failure);
+        }
+        match &expression.kind {
+            ExprKind::Constant(value) => SyncStep::complete(Value::from(value.clone())),
+            ExprKind::Tuple(elements) => {
+                let elements = self.sync_eval_expr_sequence(frame, elements, 0, Vec::new());
+                elements.and_then(self, |_, elements| {
+                    SyncStep::complete(Value::Tuple { elements })
+                })
+            }
+            ExprKind::List(elements) => {
+                let elements = self.sync_eval_expr_sequence(frame, elements, 0, Vec::new());
+                elements.and_then(self, |_, elements| {
+                    SyncStep::complete(Value::List { elements })
+                })
+            }
+            ExprKind::Copy(place) => {
+                match self.read_place(&Location::from_place(frame, place), expression.span) {
+                    Ok(value) => SyncStep::complete(owned_value_clone(&value)),
+                    Err(failure) => SyncStep::fail(failure),
+                }
+            }
+            ExprKind::Move(place) => {
+                match self.take_place(&Location::from_place(frame, place), expression.span) {
+                    Ok(value) => SyncStep::complete(value),
+                    Err(failure) => SyncStep::fail(failure),
+                }
+            }
+            ExprKind::Unary(operator, value) => {
+                let operator = *operator;
+                let span = expression.span;
+                let value = self.sync_eval_expr(frame, value);
+                value.and_then(self, move |interpreter, value| {
+                    match interpreter.eval_unary(operator, value, span) {
+                        Ok(value) => SyncStep::complete(value),
+                        Err(failure) => SyncStep::fail(failure),
+                    }
+                })
+            }
+            ExprKind::Binary(BinaryOp::And, left, right) => {
+                let span = expression.span;
+                let left = self.sync_eval_expr(frame, left);
+                left.and_then(self, move |interpreter, left| {
+                    let left = match expect_bool(&left, span) {
+                        Ok(left) => left,
+                        Err(failure) => return SyncStep::fail(failure),
+                    };
+                    if !left {
+                        return SyncStep::complete(Value::Bool { value: false });
+                    }
+                    let right = interpreter.sync_eval_expr(frame, right);
+                    right.and_then(interpreter, move |_, right| {
+                        match expect_bool(&right, span) {
+                            Ok(value) => SyncStep::complete(Value::Bool { value }),
+                            Err(failure) => SyncStep::fail(failure),
+                        }
+                    })
+                })
+            }
+            ExprKind::Binary(BinaryOp::Or, left, right) => {
+                let span = expression.span;
+                let left = self.sync_eval_expr(frame, left);
+                left.and_then(self, move |interpreter, left| {
+                    let left = match expect_bool(&left, span) {
+                        Ok(left) => left,
+                        Err(failure) => return SyncStep::fail(failure),
+                    };
+                    if left {
+                        return SyncStep::complete(Value::Bool { value: true });
+                    }
+                    let right = interpreter.sync_eval_expr(frame, right);
+                    right.and_then(interpreter, move |_, right| {
+                        match expect_bool(&right, span) {
+                            Ok(value) => SyncStep::complete(Value::Bool { value }),
+                            Err(failure) => SyncStep::fail(failure),
+                        }
+                    })
+                })
+            }
+            ExprKind::Binary(operator, left, right) => {
+                let operator = *operator;
+                let span = expression.span;
+                let left = self.sync_eval_expr(frame, left);
+                left.and_then(self, move |interpreter, left| {
+                    let right = interpreter.sync_eval_expr(frame, right);
+                    right.and_then(interpreter, move |interpreter, right| {
+                        match interpreter.eval_binary(operator, left, right, span) {
+                            Ok(value) => SyncStep::complete(value),
+                            Err(failure) => SyncStep::fail(failure),
+                        }
+                    })
+                })
+            }
+            ExprKind::Block(block) => self.sync_eval_block(frame, block),
+            ExprKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                let span = expression.span;
+                let condition = self.sync_eval_expr(frame, condition);
+                condition.and_then(self, move |interpreter, condition| {
+                    let condition = match expect_bool(&condition, span) {
+                        Ok(condition) => condition,
+                        Err(failure) => return SyncStep::fail(failure),
+                    };
+                    interpreter
+                        .sync_eval_block(frame, if condition { then_branch } else { else_branch })
+                })
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                let span = expression.span;
+                let scrutinee = self.sync_eval_expr(frame, scrutinee);
+                scrutinee.and_then(self, move |interpreter, value| {
+                    interpreter.sync_eval_match(frame, &value, arms, span)
+                })
+            }
+            ExprKind::Record {
+                ty,
+                fields,
+                construction,
+                ..
+            } => {
+                let ty = *ty;
+                let construction = *construction;
+                let span = expression.span;
+                let fields = self.sync_eval_expr_sequence(frame, fields, 0, Vec::new());
+                fields.and_then(self, move |interpreter, fields| {
+                    let value = Value::Record { ty, fields };
+                    let value = match construction {
+                        ConstructionMode::Runtime => interpreter.checked_record(ty, value, span),
+                        ConstructionMode::Recheck => interpreter.rechecked_record(ty, value, span),
+                        ConstructionMode::Plain | ConstructionMode::Proven => Ok(value),
+                    };
+                    match value {
+                        Ok(value) => SyncStep::complete(value),
+                        Err(failure) => SyncStep::fail(failure),
+                    }
+                })
+            }
+            ExprKind::Variant {
+                ty,
+                variant,
+                payload,
+                ..
+            } => {
+                let ty = *ty;
+                let variant = *variant;
+                let payload = self.sync_eval_expr_sequence(frame, payload, 0, Vec::new());
+                payload.and_then(self, move |_, payload| {
+                    SyncStep::complete(Value::Enum {
+                        ty,
+                        variant,
+                        payload,
+                    })
+                })
+            }
+            ExprKind::Refine {
+                ty,
+                value,
+                construction,
+            } => {
+                let ty = *ty;
+                let construction = *construction;
+                let span = expression.span;
+                let value = self.sync_eval_expr(frame, value);
+                value.and_then(self, move |interpreter, value| {
+                    let value = match construction {
+                        ConstructionMode::Runtime => interpreter.checked_refine(ty, value, span),
+                        ConstructionMode::Recheck => interpreter.rechecked_refine(ty, value, span),
+                        ConstructionMode::Plain | ConstructionMode::Proven => Ok(Value::Refined {
+                            ty,
+                            value: Box::new(value),
+                        }),
+                    };
+                    match value {
+                        Ok(value) => SyncStep::complete(value),
+                        Err(failure) => SyncStep::fail(failure),
+                    }
+                })
+            }
+            ExprKind::Unrefine(value) => {
+                let span = expression.span;
+                let value = self.sync_eval_expr(frame, value);
+                value.and_then(self, move |interpreter, value| {
+                    let Value::Refined { value, .. } = value else {
+                        return SyncStep::fail(interpreter.runtime_fault(
+                            "LOOM_RUNTIME_INVALID_MIR",
+                            "unrefine operand is not a constrained value",
+                            span,
+                        ));
+                    };
+                    SyncStep::complete(*value)
+                })
+            }
+            ExprKind::Call {
+                target,
+                arguments,
+                witnesses,
+                ..
+            } => self.sync_eval_call(frame, target, arguments, witnesses, expression.span),
+            ExprKind::MakeView {
+                value,
+                writeback,
+                witness,
+                mutable,
+                token,
+            } => {
+                let span = expression.span;
+                let mutable = *mutable;
+                let token = *token;
+                let value = self.sync_eval_expr(frame, value);
+                value.and_then(self, move |interpreter, value| {
+                    let witness = match interpreter.resolve_witness(frame, witness, span) {
+                        Ok(witness) => witness,
+                        Err(abort) => return SyncStep::Complete(Err(abort)),
+                    };
+                    SyncStep::complete(Value::DynView {
+                        value: Box::new(value),
+                        writeback: writeback
+                            .as_ref()
+                            .map(|owner| Location::from_place(frame, owner)),
+                        witness,
+                        mutable,
+                        token,
+                    })
+                })
+            }
+            ExprKind::ReborrowView {
+                owner,
+                mutable,
+                token,
+            } => {
+                let location = Location::from_place(frame, owner);
+                match self.read_place(&location, expression.span) {
+                    Ok(Value::DynView { value, witness, .. }) => {
+                        SyncStep::complete(Value::DynView {
+                            value,
+                            writeback: Some(location),
+                            witness,
+                            mutable: *mutable,
+                            token: *token,
+                        })
+                    }
+                    Ok(_) => SyncStep::fail(self.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "interface reborrow source is not an erased interface",
+                        expression.span,
+                    )),
+                    Err(failure) => SyncStep::fail(failure),
+                }
+            }
+            ExprKind::Await { .. } => match self.eval_nested_await(frame, expression) {
+                Ok(value) => SyncStep::complete(value),
+                Err(abort) => SyncStep::Complete(Err(abort)),
+            },
+            ExprKind::Sleep { milliseconds } => {
+                let span = expression.span;
+                let duration = self.sync_eval_expr(frame, milliseconds);
+                duration.and_then(self, move |interpreter, duration| {
+                    interpreter.sync_eval_sleep(duration, span)
+                })
+            }
+            ExprKind::TaskJoin { mode, arguments } => {
+                let mode = *mode;
+                let span = expression.span;
+                let values = self.sync_eval_expr_sequence(frame, arguments, 0, Vec::new());
+                values.and_then(self, move |interpreter, values| {
+                    interpreter.sync_eval_task_join(mode, values, span)
+                })
+            }
+        }
+    }
+
+    fn sync_eval_expr_sequence(
+        &mut self,
+        frame: u64,
+        expressions: &'program [Expr],
+        mut cursor: usize,
+        mut values: Vec<Value>,
+    ) -> SyncStep<'program, Vec<Value>> {
+        while let Some(expression) = expressions.get(cursor) {
+            let step = self.sync_eval_expr(frame, expression);
+            match step {
+                SyncStep::Complete(Ok(value)) => {
+                    values.push(value);
+                    cursor += 1;
+                }
+                SyncStep::Complete(Err(abort)) => return SyncStep::Complete(Err(abort)),
+                SyncStep::Call { request, resume } => {
+                    return SyncStep::Call {
+                        request,
+                        resume: Box::new(move |interpreter, outcome| {
+                            resume(interpreter, outcome).and_then(
+                                interpreter,
+                                move |interpreter, value| {
+                                    values.push(value);
+                                    interpreter.sync_eval_expr_sequence(
+                                        frame,
+                                        expressions,
+                                        cursor + 1,
+                                        values,
+                                    )
+                                },
+                            )
+                        }),
+                    };
+                }
+            }
+        }
+        SyncStep::complete(values)
+    }
+
+    fn sync_eval_match(
+        &mut self,
+        frame: u64,
+        value: &Value,
+        arms: &'program [MatchArm],
+        span: Span,
+    ) -> SyncStep<'program, Value> {
+        for arm in arms {
+            let mut bindings = Vec::new();
+            if pattern_matches(&arm.pattern, value, &mut bindings) {
+                if bindings.len() != arm.bindings.len() {
+                    return SyncStep::fail(self.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "match binding count does not match pattern",
+                        span,
+                    ));
+                }
+                for (local, value) in arm.bindings.iter().zip(bindings) {
+                    if let Err(failure) = self.set_slot(frame, *local, Slot::Value(value), span) {
+                        return SyncStep::fail(failure);
+                    }
+                }
+                return self.sync_eval_expr(frame, &arm.value);
+            }
+        }
+        SyncStep::fail(self.runtime_fault(
+            "LOOM_RUNTIME_NON_EXHAUSTIVE_MATCH",
+            "checked MIR reached a non-exhaustive match",
+            span,
+        ))
+    }
+
+    fn sync_eval_sleep(&mut self, duration: Value, span: Span) -> SyncStep<'program, Value> {
+        let milliseconds = match duration {
+            Value::Int { value } => value,
+            Value::Record { ty, fields } if self.program.prelude.duration == Some(ty) => {
+                match record_descriptor(&fields, span) {
+                    Ok(value) => value,
+                    Err(failure) => return SyncStep::fail(failure),
+                }
+            }
+            _ => {
+                return SyncStep::fail(self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "Task.sleep duration did not produce Int or Duration",
+                    span,
+                ));
+            }
+        };
+        if milliseconds < 0 {
+            return SyncStep::fail(self.runtime_fault(
+                INVALID_SLEEP_DURATION_FAULT_CODE,
+                INVALID_SLEEP_DURATION_FAULT_MESSAGE,
+                span,
+            ));
+        }
+        let Some(nanoseconds) = milliseconds.checked_mul(1_000_000) else {
+            return SyncStep::fail(self.runtime_fault(
+                SLEEP_DURATION_OVERFLOW_FAULT_CODE,
+                SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE,
+                span,
+            ));
+        };
+        let Some(deadline) =
+            Instant::now().checked_add(Duration::from_nanos(nanoseconds.cast_unsigned()))
+        else {
+            return SyncStep::fail(self.runtime_fault(
+                SLEEP_DURATION_OVERFLOW_FAULT_CODE,
+                SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE,
+                span,
+            ));
+        };
+        let task_id = self.next_task;
+        let Some(next_task) = self.next_task.checked_add(1) else {
+            return SyncStep::fail(self.runtime_fault(
+                "TaskIdExhausted",
+                "async task identity space was exhausted",
+                span,
+            ));
+        };
+        self.next_task = next_task;
+        self.tasks.insert(
+            task_id,
+            ManagedTask {
+                function: FunctionId(u32::MAX),
+                frame: u64::MAX,
+                parent: self.active_task,
+                children: Vec::new(),
+                cursor: 0,
+                awaiting_state: None,
+                cleanups: Vec::new(),
+                status: TaskStatus::Runnable,
+                queued: false,
+                marked: false,
+                timer_deadline: Some(deadline),
+                host_io: false,
+                contract_state: None,
+                join_mode: TaskJoinMode::All,
+                join_dynamic: false,
+                join_combined: false,
+                join_winner: None,
+                cancel_requested: false,
+            },
+        );
+        self.enqueue_task(task_id);
+        self.gc_stats.allocations = self.gc_stats.allocations.saturating_add(1);
+        self.gc_stats.live = self.tasks.len() as u64;
+        SyncStep::complete(Value::Task { id: task_id })
+    }
+
+    fn sync_eval_task_join(
+        &mut self,
+        mode: TaskJoinMode,
+        values: Vec<Value>,
+        span: Span,
+    ) -> SyncStep<'program, Value> {
+        let (values, dynamic) = match values.as_slice() {
+            [Value::List { elements }] => (elements.clone(), true),
+            _ => (values, false),
+        };
+        let mut tasks = Vec::with_capacity(values.len());
+        for value in values {
+            let Value::Task { id } = value else {
+                return SyncStep::fail(self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "Task join contained a non-task value",
+                    span,
+                ));
+            };
+            tasks.push(id);
+        }
+        SyncStep::complete(Value::TaskJoin {
+            mode,
+            tasks,
+            dynamic,
+        })
+    }
+
+    fn sync_eval_call(
+        &mut self,
+        frame: u64,
+        target: &'program CallTarget,
+        arguments: &'program [CallArgument],
+        witnesses: &'program [WitnessRef],
+        span: Span,
+    ) -> SyncStep<'program, Value> {
+        match target {
+            CallTarget::Builtin(builtin) => {
+                self.sync_eval_builtin_call(frame, *builtin, arguments, span)
+            }
+            CallTarget::Dynamic { requirement } => {
+                self.sync_eval_dynamic_call(frame, *requirement, arguments, span)
+            }
+            CallTarget::StaticConcept {
+                requirement,
+                witness,
+                ..
+            } => self.sync_eval_static_concept_call(
+                frame,
+                *requirement,
+                witness,
+                arguments,
+                witnesses,
+                span,
+            ),
+            CallTarget::Direct(function) | CallTarget::Inherent(function) => {
+                let function = *function;
+                let values = self.sync_eval_bound_arguments(frame, arguments, 0, Vec::new());
+                values.and_then(self, move |interpreter, values| {
+                    let witness_values = witnesses
+                        .iter()
+                        .map(|witness| interpreter.resolve_witness(frame, witness, span))
+                        .collect::<Result<Vec<_>, _>>();
+                    match witness_values {
+                        Ok(witness_values) => SyncStep::call(SyncCall {
+                            function,
+                            arguments: values,
+                            witnesses: witness_values,
+                            span,
+                        }),
+                        Err(abort) => SyncStep::Complete(Err(abort)),
+                    }
+                })
+            }
+        }
+    }
+
+    fn sync_eval_bound_arguments(
+        &mut self,
+        frame: u64,
+        arguments: &'program [CallArgument],
+        mut cursor: usize,
+        mut values: Vec<BoundArgument>,
+    ) -> SyncStep<'program, Vec<BoundArgument>> {
+        while let Some(argument) = arguments.get(cursor) {
+            match argument {
+                CallArgument::InOut(place) => {
+                    values.push(BoundArgument::Alias(Location::from_place(frame, place)));
+                    cursor += 1;
+                }
+                CallArgument::Value(expression) => {
+                    let step = self.sync_eval_expr(frame, expression);
+                    match step {
+                        SyncStep::Complete(Ok(value)) => {
+                            values.push(BoundArgument::Value(value));
+                            cursor += 1;
+                        }
+                        SyncStep::Complete(Err(abort)) => {
+                            return SyncStep::Complete(Err(abort));
+                        }
+                        SyncStep::Call { request, resume } => {
+                            return SyncStep::Call {
+                                request,
+                                resume: Box::new(move |interpreter, outcome| {
+                                    resume(interpreter, outcome).and_then(
+                                        interpreter,
+                                        move |interpreter, value| {
+                                            values.push(BoundArgument::Value(value));
+                                            interpreter.sync_eval_bound_arguments(
+                                                frame,
+                                                arguments,
+                                                cursor + 1,
+                                                values,
+                                            )
+                                        },
+                                    )
+                                }),
+                            };
+                        }
+                    }
+                }
+            }
+        }
+        SyncStep::complete(values)
+    }
+
+    fn sync_eval_builtin_values(
+        &mut self,
+        frame: u64,
+        arguments: &'program [CallArgument],
+        mut cursor: usize,
+        mut values: Vec<Value>,
+        span: Span,
+    ) -> SyncStep<'program, Vec<Value>> {
+        while let Some(argument) = arguments.get(cursor) {
+            match argument {
+                CallArgument::InOut(place) => {
+                    match self.read_place(&Location::from_place(frame, place), span) {
+                        Ok(value) => values.push(value),
+                        Err(failure) => return SyncStep::fail(failure),
+                    }
+                    cursor += 1;
+                }
+                CallArgument::Value(expression) => {
+                    let step = self.sync_eval_expr(frame, expression);
+                    match step {
+                        SyncStep::Complete(Ok(value)) => {
+                            values.push(value);
+                            cursor += 1;
+                        }
+                        SyncStep::Complete(Err(abort)) => {
+                            return SyncStep::Complete(Err(abort));
+                        }
+                        SyncStep::Call { request, resume } => {
+                            return SyncStep::Call {
+                                request,
+                                resume: Box::new(move |interpreter, outcome| {
+                                    resume(interpreter, outcome).and_then(
+                                        interpreter,
+                                        move |interpreter, value| {
+                                            values.push(value);
+                                            interpreter.sync_eval_builtin_values(
+                                                frame,
+                                                arguments,
+                                                cursor + 1,
+                                                values,
+                                                span,
+                                            )
+                                        },
+                                    )
+                                }),
+                            };
+                        }
+                    }
+                }
+            }
+        }
+        SyncStep::complete(values)
+    }
+
+    fn sync_eval_builtin_call(
+        &mut self,
+        frame: u64,
+        builtin: Builtin,
+        arguments: &'program [CallArgument],
+        span: Span,
+    ) -> SyncStep<'program, Value> {
+        if builtin == Builtin::ListAdd {
+            let [CallArgument::InOut(place), CallArgument::Value(value)] = arguments else {
+                return SyncStep::fail(self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "List.add has an invalid checked argument shape",
+                    span,
+                ));
+            };
+            let value = self.sync_eval_expr(frame, value);
+            return value.and_then(self, move |interpreter, value| {
+                let location = Location::from_place(frame, place);
+                let list = match interpreter.read_place(&location, span) {
+                    Ok(value) => value,
+                    Err(failure) => return SyncStep::fail(failure),
+                };
+                let Value::List { mut elements } = unrefined(list) else {
+                    return SyncStep::fail(interpreter.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "List.add receiver is not a List",
+                        span,
+                    ));
+                };
+                elements.push(value);
+                match interpreter.write_place(&location, Value::List { elements }, span) {
+                    Ok(()) => SyncStep::complete(Value::Unit),
+                    Err(failure) => SyncStep::fail(failure),
+                }
+            });
+        }
+        if matches!(builtin, Builtin::FileClose | Builtin::SocketClose) {
+            return match self.eval_resource_close(frame, builtin, arguments, span) {
+                Ok(value) => SyncStep::complete(value),
+                Err(abort) => SyncStep::Complete(Err(abort)),
+            };
+        }
+        let values = self.sync_eval_builtin_values(frame, arguments, 0, Vec::new(), span);
+        values.and_then(self, move |interpreter, values| {
+            match interpreter.eval_builtin(builtin, &values, span) {
+                Ok(value) => SyncStep::complete(value),
+                Err(failure) => SyncStep::fail(failure),
+            }
+        })
+    }
+
+    fn sync_eval_static_concept_call(
+        &mut self,
+        frame: u64,
+        requirement: RequirementId,
+        witness_ref: &'program WitnessRef,
+        arguments: &'program [CallArgument],
+        method_witnesses: &'program [WitnessRef],
+        span: Span,
+    ) -> SyncStep<'program, Value> {
+        let runtime_witness = match self.resolve_witness(frame, witness_ref, span) {
+            Ok(witness) => witness,
+            Err(abort) => return SyncStep::Complete(Err(abort)),
+        };
+        let Some(witness) = self.program.witness(runtime_witness.definition) else {
+            return SyncStep::fail(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "static concept call references an unknown witness",
+                span,
+            ));
+        };
+        let Some(function) = witness.methods.get(&requirement).copied() else {
+            return SyncStep::fail(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "static witness is missing a required method",
+                span,
+            ));
+        };
+        let values = self.sync_eval_bound_arguments(frame, arguments, 0, Vec::new());
+        values.and_then(self, move |interpreter, values| {
+            let mut proof_arguments = runtime_witness.arguments;
+            let method_arguments = method_witnesses
+                .iter()
+                .map(|witness| interpreter.resolve_witness(frame, witness, span))
+                .collect::<Result<Vec<_>, _>>();
+            match method_arguments {
+                Ok(method_arguments) => {
+                    proof_arguments.extend(method_arguments);
+                    SyncStep::call(SyncCall {
+                        function,
+                        arguments: values,
+                        witnesses: proof_arguments,
+                        span,
+                    })
+                }
+                Err(abort) => SyncStep::Complete(Err(abort)),
+            }
+        })
+    }
+
+    fn sync_eval_dynamic_call(
+        &mut self,
+        frame: u64,
+        requirement: RequirementId,
+        arguments: &'program [CallArgument],
+        span: Span,
+    ) -> SyncStep<'program, Value> {
+        let Some(first) = arguments.first() else {
+            return SyncStep::fail(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "dynamic call is missing its receiver",
+                span,
+            ));
+        };
+        let receiver = match first {
+            CallArgument::Value(value) => self.sync_eval_expr(frame, value),
+            CallArgument::InOut(place) => {
+                match self.read_place(&Location::from_place(frame, place), span) {
+                    Ok(value) => SyncStep::complete(value),
+                    Err(failure) => SyncStep::fail(failure),
+                }
+            }
+        };
+        receiver.and_then(self, move |interpreter, receiver| {
+            let Value::DynView {
+                value,
+                writeback,
+                witness,
+                mutable,
+                ..
+            } = receiver
+            else {
+                return SyncStep::fail(interpreter.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "dynamic call receiver is not an erased interface",
+                    span,
+                ));
+            };
+            let Some(witness_definition) = interpreter.program.witness(witness.definition) else {
+                return SyncStep::fail(interpreter.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "erased interface references an unknown witness",
+                    span,
+                ));
+            };
+            let Some(function) = witness_definition.methods.get(&requirement).copied() else {
+                return SyncStep::fail(interpreter.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "dynamic witness is missing a required method",
+                    span,
+                ));
+            };
+            let Some(receiver_kind) = interpreter
+                .program
+                .function(function)
+                .map(|function| function.receiver)
+            else {
+                return SyncStep::fail(interpreter.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "dynamic witness method does not exist",
+                    span,
+                ));
+            };
+            if receiver_kind == Some(Receiver::Mutable) {
+                if !mutable {
+                    return SyncStep::fail(interpreter.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "a readonly interface argument dispatched a `mut self` method",
+                        span,
+                    ));
+                }
+                let CallArgument::InOut(place) = first else {
+                    return SyncStep::fail(interpreter.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "mutable dynamic receiver is not an inout place",
+                        span,
+                    ));
+                };
+                return interpreter.sync_invoke_mutable_dynamic(
+                    frame,
+                    Location::from_place(frame, place),
+                    *value,
+                    writeback,
+                    witness,
+                    function,
+                    &arguments[1..],
+                    span,
+                );
+            }
+            let mut values = vec![BoundArgument::Value(*value)];
+            let trailing =
+                interpreter.sync_eval_bound_arguments(frame, &arguments[1..], 0, Vec::new());
+            trailing.and_then(interpreter, move |_, trailing| {
+                values.extend(trailing);
+                SyncStep::call(SyncCall {
+                    function,
+                    arguments: values,
+                    witnesses: witness.arguments,
+                    span,
+                })
+            })
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn sync_invoke_mutable_dynamic(
+        &mut self,
+        frame: u64,
+        carrier: Location,
+        value: Value,
+        writeback: Option<Location>,
+        witness: RuntimeWitness,
+        function: FunctionId,
+        arguments: &'program [CallArgument],
+        span: Span,
+    ) -> SyncStep<'program, Value> {
+        let trailing = self.sync_eval_bound_arguments(frame, arguments, 0, Vec::new());
+        trailing.and_then(self, move |interpreter, trailing| {
+            let temporary_frame = interpreter.next_frame;
+            let Some(next_frame) = interpreter.next_frame.checked_add(1) else {
+                return SyncStep::fail(interpreter.runtime_fault(
+                    "LOOM_RUNTIME_FRAME_OVERFLOW",
+                    "interpreter frame identifier space was exhausted",
+                    span,
+                ));
+            };
+            interpreter.next_frame = next_frame;
+            interpreter.frames.insert(
+                temporary_frame,
+                Frame {
+                    slots: vec![Slot::Value(value)],
+                    witnesses: Vec::new(),
+                },
+            );
+            let temporary = Location::local(temporary_frame, LocalId(0));
+            let mut values = vec![BoundArgument::Alias(temporary.clone())];
+            values.extend(trailing);
+            let call = SyncStep::call(SyncCall {
+                function,
+                arguments: values,
+                witnesses: witness.arguments.clone(),
+                span,
+            });
+            call.then(interpreter, move |interpreter, outcome| {
+                let mutated = interpreter.read_place(&temporary, span);
+                interpreter.frames.remove(&temporary_frame);
+                let mutated = match mutated {
+                    Ok(mutated) => mutated,
+                    Err(failure) => return SyncStep::fail(failure),
+                };
+                let current = match interpreter.read_place(&carrier, span) {
+                    Ok(current) => current,
+                    Err(failure) => return SyncStep::fail(failure),
+                };
+                let Value::DynView { mutable, token, .. } = current else {
+                    return SyncStep::fail(interpreter.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "mutable dynamic receiver changed representation during its call",
+                        span,
+                    ));
+                };
+                if let Err(failure) = interpreter.write_place(
+                    &carrier,
+                    Value::DynView {
+                        value: Box::new(mutated.clone()),
+                        writeback: writeback.clone(),
+                        witness,
+                        mutable,
+                        token,
+                    },
+                    span,
+                ) {
+                    return SyncStep::fail(failure);
+                }
+                if let Some(writeback) = writeback
+                    && let Err(failure) =
+                        interpreter.propagate_interface_writeback(writeback, mutated, span)
+                {
+                    return SyncStep::fail(failure);
+                }
+                SyncStep::Complete(outcome)
+            })
+        })
     }
 
     #[allow(clippy::too_many_lines)]
@@ -3350,7 +4875,7 @@ impl<'program> Interpreter<'program> {
         }
         if matches!(
             builtin,
-            Builtin::ListAdd | Builtin::ListLength | Builtin::ListGet
+            Builtin::ListAdd | Builtin::ListLength | Builtin::ListGet | Builtin::ListToTextMap
         ) {
             return self.eval_list_builtin(builtin, arguments, span);
         }
@@ -3372,8 +4897,8 @@ impl<'program> Interpreter<'program> {
         ) {
             return self.eval_text_map_builtin(builtin, arguments, span);
         }
-        if matches!(builtin, Builtin::JsonParse | Builtin::JsonFormat) {
-            return self.eval_json_builtin(builtin, arguments, span);
+        if builtin == Builtin::JsonFormat {
+            return self.eval_json_format_builtin(arguments, span);
         }
         if matches!(builtin, Builtin::IoErrorKind | Builtin::IoErrorMessage) {
             return self.eval_io_error_builtin(builtin, arguments, span);
@@ -3455,6 +4980,28 @@ impl<'program> Interpreter<'program> {
                     .and_then(|index| elements.get(index))
                     .cloned();
                 self.option_value(element, span)
+            }
+            (Builtin::ListToTextMap, [Value::List { elements }]) => {
+                let mut entries = elements
+                    .iter()
+                    .map(|element| match element {
+                        Value::Tuple { elements } => match elements.as_slice() {
+                            [Value::Text { value: key }, value] => Ok((key.clone(), value.clone())),
+                            _ => Err(self.invalid_builtin_fault(span)),
+                        },
+                        _ => Err(self.invalid_builtin_fault(span)),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                entries.sort_by(|left, right| left.0.cmp(&right.0));
+                if let Some(key) = entries
+                    .windows(2)
+                    .find_map(|pair| (pair[0].0 == pair[1].0).then(|| pair[0].0.clone()))
+                {
+                    self.result_value(false, Value::Text { value: key }, span)
+                } else {
+                    let map = self.text_map_value_from_sorted_entries(entries, span)?;
+                    self.result_value(true, map, span)
+                }
             }
             (Builtin::ListAdd, _) => Err(self
                 .runtime_fault(
@@ -3542,7 +5089,7 @@ impl<'program> Interpreter<'program> {
                     entries.push((key.clone(), value.clone()));
                 }
                 entries.sort_by(|left, right| left.0.cmp(&right.0));
-                self.text_map_value(entries, span)
+                self.text_map_value_from_sorted_entries(entries, span)
             }
             (Builtin::TextMapRemove, [map, Value::Text { value: key }]) => {
                 let mut entries = self.text_map_entries(map, span)?;
@@ -3579,6 +5126,14 @@ impl<'program> Interpreter<'program> {
         span: Span,
     ) -> Result<Value, ExecutionFailure> {
         entries.sort_by(|left, right| left.0.cmp(&right.0));
+        self.text_map_value_from_sorted_entries(entries, span)
+    }
+
+    fn text_map_value_from_sorted_entries(
+        &self,
+        entries: Vec<(String, Value)>,
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
         let ty = self.program.prelude.text_map.ok_or_else(|| {
             self.runtime_fault(
                 "LOOM_RUNTIME_INVALID_MIR",
@@ -3595,115 +5150,31 @@ impl<'program> Interpreter<'program> {
         })
     }
 
-    fn eval_json_builtin(
+    fn eval_json_format_builtin(
         &self,
-        builtin: Builtin,
         arguments: &[Value],
         span: Span,
     ) -> Result<Value, ExecutionFailure> {
-        match (builtin, arguments) {
-            (Builtin::JsonParse, [Value::Text { value }]) => {
-                match loom_runtime::parse_json(value) {
-                    Ok(value) => self
-                        .json_from_runtime(&value, span)
-                        .and_then(|value| self.result_value(true, value, span)),
-                    Err(error) => match error.kind {
-                        loom_runtime::JsonFailureKind::InvalidSyntax => self.json_error_result(
-                            VariantId(0),
-                            Some(i64::try_from(error.offset).unwrap_or(i64::MAX)),
-                            span,
-                        ),
-                        loom_runtime::JsonFailureKind::NumberOutOfRange => self.json_error_result(
-                            VariantId(1),
-                            Some(i64::try_from(error.offset).unwrap_or(i64::MAX)),
-                            span,
-                        ),
-                        loom_runtime::JsonFailureKind::DepthLimit => {
-                            self.json_error_result(VariantId(2), None, span)
-                        }
-                        loom_runtime::JsonFailureKind::NonFiniteNumber => {
-                            self.json_error_result(VariantId(3), None, span)
-                        }
-                    },
-                }
-            }
-            (Builtin::JsonFormat, [value]) => match self.json_to_runtime(value, span, 0) {
+        match arguments {
+            [value] => match self.json_to_runtime(value, span, 0) {
                 Ok(value) => match loom_runtime::format_json(&value) {
                     Ok(value) => self.result_value(true, Value::Text { value }, span),
-                    Err(error) => match error.kind {
-                        loom_runtime::JsonFailureKind::DepthLimit => {
-                            self.json_error_result(VariantId(2), None, span)
+                    Err(error) => match error {
+                        loom_runtime::JsonFormatFailure::DepthLimit => {
+                            self.json_format_error_result(VariantId(2), span)
                         }
-                        loom_runtime::JsonFailureKind::NonFiniteNumber => {
-                            self.json_error_result(VariantId(3), None, span)
-                        }
-                        loom_runtime::JsonFailureKind::InvalidSyntax
-                        | loom_runtime::JsonFailureKind::NumberOutOfRange => {
-                            Err(self.invalid_builtin_fault(span))
+                        loom_runtime::JsonFormatFailure::NonFiniteNumber => {
+                            self.json_format_error_result(VariantId(3), span)
                         }
                     },
                 },
                 Err(JsonConversionFailure::DepthLimit) => {
-                    self.json_error_result(VariantId(2), None, span)
+                    self.json_format_error_result(VariantId(2), span)
                 }
                 Err(JsonConversionFailure::Invalid(failure)) => Err(failure),
             },
             _ => Err(self.invalid_builtin_fault(span)),
         }
-    }
-
-    fn json_from_runtime(
-        &self,
-        value: &loom_runtime::JsonNode,
-        span: Span,
-    ) -> Result<Value, ExecutionFailure> {
-        let ty = self.program.prelude.json.ok_or_else(|| {
-            self.runtime_fault(
-                "LOOM_RUNTIME_INVALID_MIR",
-                "prelude Json type is missing",
-                span,
-            )
-        })?;
-        let (variant, payload) = match value {
-            loom_runtime::JsonNode::Null => (VariantId(0), Vec::new()),
-            loom_runtime::JsonNode::Bool(value) => {
-                (VariantId(1), vec![Value::Bool { value: *value }])
-            }
-            loom_runtime::JsonNode::Number(value) => {
-                (VariantId(2), vec![Value::Float { value: *value }])
-            }
-            loom_runtime::JsonNode::Text(value) => (
-                VariantId(3),
-                vec![Value::Text {
-                    value: value.clone(),
-                }],
-            ),
-            loom_runtime::JsonNode::Array(values) => (
-                VariantId(4),
-                vec![Value::List {
-                    elements: values
-                        .iter()
-                        .map(|value| self.json_from_runtime(value, span))
-                        .collect::<Result<Vec<_>, _>>()?,
-                }],
-            ),
-            loom_runtime::JsonNode::Object(values) => {
-                let entries = values
-                    .iter()
-                    .map(|(key, value)| {
-                        self.json_from_runtime(value, span)
-                            .map(|value| (key.clone(), value))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let map = self.text_map_value(entries, span)?;
-                (VariantId(5), vec![map])
-            }
-        };
-        Ok(Value::Enum {
-            ty,
-            variant,
-            payload,
-        })
     }
 
     fn json_to_runtime(
@@ -3759,10 +5230,9 @@ impl<'program> Interpreter<'program> {
         }
     }
 
-    fn json_error_result(
+    fn json_format_error_result(
         &self,
         variant: VariantId,
-        offset: Option<i64>,
         span: Span,
     ) -> Result<Value, ExecutionFailure> {
         let ty = self.program.prelude.json_error.ok_or_else(|| {
@@ -3772,16 +5242,12 @@ impl<'program> Interpreter<'program> {
                 span,
             )
         })?;
-        let payload = offset
-            .into_iter()
-            .map(|value| Value::Int { value })
-            .collect();
         self.result_value(
             false,
             Value::Enum {
                 ty,
                 variant,
-                payload,
+                payload: Vec::new(),
             },
             span,
         )
@@ -5796,49 +7262,272 @@ fn unrefined(mut value: Value) -> Value {
 }
 
 fn owned_value_clone(value: &Value) -> Value {
-    match value {
-        Value::Tuple { elements } => Value::Tuple {
-            elements: elements.iter().map(owned_value_clone).collect(),
+    clone_value(value, true)
+}
+
+#[allow(clippy::too_many_lines)]
+fn clone_value(value: &Value, clear_dyn_writeback: bool) -> Value {
+    enum CloneFrame<'a> {
+        Tuple {
+            remaining: &'a [Value],
+            cloned: Vec<Value>,
         },
-        Value::List { elements } => Value::List {
-            elements: elements.iter().map(owned_value_clone).collect(),
+        List {
+            remaining: &'a [Value],
+            cloned: Vec<Value>,
         },
-        Value::Record { ty, fields } => Value::Record {
-            ty: *ty,
-            fields: fields.iter().map(owned_value_clone).collect(),
+        Record {
+            ty: TypeId,
+            remaining: &'a [Value],
+            cloned: Vec<Value>,
         },
-        Value::Enum {
-            ty,
-            variant,
-            payload,
-        } => Value::Enum {
-            ty: *ty,
-            variant: *variant,
-            payload: payload.iter().map(owned_value_clone).collect(),
+        Enum {
+            ty: TypeId,
+            variant: VariantId,
+            remaining: &'a [Value],
+            cloned: Vec<Value>,
         },
-        Value::Refined { ty, value } => Value::Refined {
-            ty: *ty,
-            value: Box::new(owned_value_clone(value)),
+        Refined {
+            ty: TypeId,
         },
-        Value::DynView {
-            value,
-            witness,
-            mutable,
-            token,
-            ..
-        } => Value::DynView {
-            value: Box::new(owned_value_clone(value)),
-            writeback: None,
-            witness: witness.clone(),
-            mutable: *mutable,
-            token: *token,
+        DynView {
+            writeback: Option<Location>,
+            witness: RuntimeWitness,
+            mutable: bool,
+            token: u32,
         },
-        Value::TaskOutcome {
-            outcome: TaskOutcomeValue::Completed(value),
-        } => Value::TaskOutcome {
-            outcome: TaskOutcomeValue::Completed(Box::new(owned_value_clone(value))),
-        },
-        _ => value.clone(),
+        TaskOutcome,
+    }
+
+    let mut frames = Vec::new();
+    let mut current = value;
+    loop {
+        let mut completed = match current {
+            Value::Tuple { elements } => {
+                if let Some((first, remaining)) = elements.split_first() {
+                    frames.push(CloneFrame::Tuple {
+                        remaining,
+                        cloned: Vec::with_capacity(elements.len()),
+                    });
+                    current = first;
+                    continue;
+                }
+                Value::Tuple {
+                    elements: Vec::new(),
+                }
+            }
+            Value::List { elements } => {
+                if let Some((first, remaining)) = elements.split_first() {
+                    frames.push(CloneFrame::List {
+                        remaining,
+                        cloned: Vec::with_capacity(elements.len()),
+                    });
+                    current = first;
+                    continue;
+                }
+                Value::List {
+                    elements: Vec::new(),
+                }
+            }
+            Value::Record { ty, fields } => {
+                if let Some((first, remaining)) = fields.split_first() {
+                    frames.push(CloneFrame::Record {
+                        ty: *ty,
+                        remaining,
+                        cloned: Vec::with_capacity(fields.len()),
+                    });
+                    current = first;
+                    continue;
+                }
+                Value::Record {
+                    ty: *ty,
+                    fields: Vec::new(),
+                }
+            }
+            Value::Enum {
+                ty,
+                variant,
+                payload,
+            } => {
+                if let Some((first, remaining)) = payload.split_first() {
+                    frames.push(CloneFrame::Enum {
+                        ty: *ty,
+                        variant: *variant,
+                        remaining,
+                        cloned: Vec::with_capacity(payload.len()),
+                    });
+                    current = first;
+                    continue;
+                }
+                Value::Enum {
+                    ty: *ty,
+                    variant: *variant,
+                    payload: Vec::new(),
+                }
+            }
+            Value::Refined { ty, value } => {
+                frames.push(CloneFrame::Refined { ty: *ty });
+                current = value;
+                continue;
+            }
+            Value::DynView {
+                value,
+                writeback,
+                witness,
+                mutable,
+                token,
+            } => {
+                frames.push(CloneFrame::DynView {
+                    writeback: if clear_dyn_writeback {
+                        None
+                    } else {
+                        writeback.clone()
+                    },
+                    witness: witness.clone(),
+                    mutable: *mutable,
+                    token: *token,
+                });
+                current = value;
+                continue;
+            }
+            Value::TaskOutcome {
+                outcome: TaskOutcomeValue::Completed(value),
+            } => {
+                frames.push(CloneFrame::TaskOutcome);
+                current = value;
+                continue;
+            }
+            Value::Unit => Value::Unit,
+            Value::Bool { value } => Value::Bool { value: *value },
+            Value::Int { value } => Value::Int { value: *value },
+            Value::Float { value } => Value::Float { value: *value },
+            Value::Text { value } => Value::Text {
+                value: value.clone(),
+            },
+            Value::Bytes { value } => Value::Bytes {
+                value: value.clone(),
+            },
+            Value::ConstraintError { value } => Value::ConstraintError {
+                value: value.clone(),
+            },
+            Value::Task { id } => Value::Task { id: *id },
+            Value::TaskJoin {
+                mode,
+                tasks,
+                dynamic,
+            } => Value::TaskJoin {
+                mode: *mode,
+                tasks: tasks.clone(),
+                dynamic: *dynamic,
+            },
+            Value::TaskOutcome {
+                outcome: TaskOutcomeValue::Faulted,
+            } => Value::TaskOutcome {
+                outcome: TaskOutcomeValue::Faulted,
+            },
+            Value::TaskOutcome {
+                outcome: TaskOutcomeValue::Cancelled,
+            } => Value::TaskOutcome {
+                outcome: TaskOutcomeValue::Cancelled,
+            },
+        };
+
+        loop {
+            let Some(frame) = frames.pop() else {
+                return completed;
+            };
+            match frame {
+                CloneFrame::Tuple {
+                    remaining,
+                    mut cloned,
+                } => {
+                    cloned.push(completed);
+                    if let Some((next, remaining)) = remaining.split_first() {
+                        frames.push(CloneFrame::Tuple { remaining, cloned });
+                        current = next;
+                        break;
+                    }
+                    completed = Value::Tuple { elements: cloned };
+                }
+                CloneFrame::List {
+                    remaining,
+                    mut cloned,
+                } => {
+                    cloned.push(completed);
+                    if let Some((next, remaining)) = remaining.split_first() {
+                        frames.push(CloneFrame::List { remaining, cloned });
+                        current = next;
+                        break;
+                    }
+                    completed = Value::List { elements: cloned };
+                }
+                CloneFrame::Record {
+                    ty,
+                    remaining,
+                    mut cloned,
+                } => {
+                    cloned.push(completed);
+                    if let Some((next, remaining)) = remaining.split_first() {
+                        frames.push(CloneFrame::Record {
+                            ty,
+                            remaining,
+                            cloned,
+                        });
+                        current = next;
+                        break;
+                    }
+                    completed = Value::Record { ty, fields: cloned };
+                }
+                CloneFrame::Enum {
+                    ty,
+                    variant,
+                    remaining,
+                    mut cloned,
+                } => {
+                    cloned.push(completed);
+                    if let Some((next, remaining)) = remaining.split_first() {
+                        frames.push(CloneFrame::Enum {
+                            ty,
+                            variant,
+                            remaining,
+                            cloned,
+                        });
+                        current = next;
+                        break;
+                    }
+                    completed = Value::Enum {
+                        ty,
+                        variant,
+                        payload: cloned,
+                    };
+                }
+                CloneFrame::Refined { ty } => {
+                    completed = Value::Refined {
+                        ty,
+                        value: Box::new(completed),
+                    };
+                }
+                CloneFrame::DynView {
+                    writeback,
+                    witness,
+                    mutable,
+                    token,
+                } => {
+                    completed = Value::DynView {
+                        value: Box::new(completed),
+                        writeback,
+                        witness,
+                        mutable,
+                        token,
+                    };
+                }
+                CloneFrame::TaskOutcome => {
+                    completed = Value::TaskOutcome {
+                        outcome: TaskOutcomeValue::Completed(Box::new(completed)),
+                    };
+                }
+            }
+        }
     }
 }
 

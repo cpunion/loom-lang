@@ -1,7 +1,7 @@
 //! Canonical JSON formatting for compiler-shaped direct values.
 //!
-//! This boundary deliberately does not decode or construct the legacy
-//! universal `ValueSlot`. Generated code supplies one target-data descriptor,
+//! This boundary deliberately does not decode or construct the universal
+//! `ValueSlot`. Generated code supplies one target-data descriptor,
 //! and the runtime reads only the closed direct Json/List/TextMap shapes named
 //! by that descriptor. All input is consumed into ordinary Rust staging
 //! storage before the sole managed Text allocation.

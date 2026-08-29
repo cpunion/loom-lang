@@ -94,13 +94,13 @@ That split permits unchanged module bodies to be reused when a body-only edit
 leaves the declaration graph compatible. Any incompatible shape falls back to
 fresh semantic analysis.
 
-LLVM object keys use separate LCIR and legacy identity domains. Both include
+LLVM object keys use separate LCIR and checked-MIR identity domains. Both include
 the exact linked LLVM identity, target triple and data layout, CPU policy and
 features, implicit-versus-explicit target selection, optimization pipeline,
 PIC relocation, debug sources, and native runtime ABI. The LCIR identity
-streams the complete checked-artifact identity. The legacy identity includes
+streams the complete checked-artifact identity. The checked-MIR identity includes
 the run/test harness kind, selected roots, source reachability, reachable
-functions and witness slots, and the semantic tables consumed by legacy
+functions and witness slots, and the semantic tables consumed by checked-MIR
 lowering. Fingerprint errors disable neither validation nor correctness; they
 are reported instead of being converted into a cache miss.
 

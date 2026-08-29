@@ -13,21 +13,18 @@ their `std.*` path.
 
 Source-backed modules are distributed as Loom source and compile through the
 ordinary module, type, MIR, reachability, and native pipelines. The current
-source package contains the foundational `std.int` algorithms, parser, and
-parse-error enum, the
-`std.log.debug`, `info`, `warn`, and `error` convenience functions, and the
-public `Dispose`, `MustScope`, and `NoSuspend` declarations in `std.resource`.
+source package contains the `std.int` and `std.json` parsers, their public
+parse-error values, the `std.log.debug`, `info`, `warn`, and `error`
+convenience functions, and the public `Dispose`, `MustScope`, and `NoSuspend`
+declarations in `std.resource`.
 The logging conveniences are ordinary Loom functions over the irreducible
 `std.log.write` output boundary. Resource declarations are source-backed, but
 their fixed shapes and irreducible static rules remain part of the language
-core and add no runtime registry. Other documented APIs, including JSON,
-currently use compiler-known or runtime implementations until their Loom
-source modules exist. Those private paths are deleted after their source
-replacements pass the ordinary
-pipeline gates; they are not retained as compatibility layers. The target
-boundary permits only irreducible GC, scheduler, platform, and generic
-construction services to cross into the compiler-private runtime. The
-implementation rule and source-replacement gates are documented in
+core and add no runtime registry. JSON parsing is ordinary Loom source; JSON
+formatting uses the exact typed formatting boundary documented in the JSON
+reference. The target boundary permits only irreducible GC, scheduler,
+platform, output, and generic construction services to cross into the
+compiler-private runtime. The implementation rule is documented in
 [Core, standard library, and runtime boundary](../../internals/core-library-runtime-boundary.md).
 
 ## Library map

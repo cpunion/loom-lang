@@ -51,13 +51,7 @@ const TYPED_TASK_OUTCOMES_FIXTURE: &str = "fixtures/lcir-typed-task-outcomes";
 const TYPED_ASYNC_CLEANUP_FIXTURE: &str = "fixtures/lcir-async-cleanup";
 const TYPED_ASYNC_WRITEBACK_FIXTURE: &str = "fixtures/lcir-async-writeback";
 const FALLIBLE_TYPED_ASYNC_FIXTURE: &str = "fixtures/lcir-fallible-async";
-const QUALITY_EVIDENCE_SCHEMA_VERSION: u32 = 2;
-
-const STANDARD_LIBRARY_LEGACY_ROUTE: NativeRouteExpectation =
-    NativeRouteExpectation::LegacyAllowed {
-        name: "standard-library-managed-runtime",
-        reason: "source-defined JSON parsing is not yet active in typed LCIR",
-    };
+const QUALITY_EVIDENCE_SCHEMA_VERSION: u32 = 3;
 
 const TASKS: &[TaskSpec] = &[
     TaskSpec {
@@ -65,24 +59,18 @@ const TASKS: &[TaskSpec] = &[
         path: "examples/constraints-contracts",
         source: "examples/constraints-contracts/shop.loom",
         sha256: "a452e1c6328d260a471c6352d884f874c1e634f48f2d4f352bf85ea42a7d84b6",
-        main_native_route: NativeRouteExpectation::Lcir,
-        test_native_route: NativeRouteExpectation::Lcir,
     },
     TaskSpec {
         name: "concepts-polymorphism",
         path: "examples/concepts-polymorphism",
         source: "examples/concepts-polymorphism/concepts.loom",
         sha256: "58fecf592ec87c2a0994901dfa58173c6ebc2fdace7db0dbb91956b05a8c7224",
-        main_native_route: NativeRouteExpectation::Lcir,
-        test_native_route: NativeRouteExpectation::Lcir,
     },
     TaskSpec {
         name: "async-resources",
         path: "examples/async-resources",
         source: "examples/async-resources/tasks.loom",
         sha256: "f79a1b90c5b80b697758a1c7c2f81bb7949e41c1bb2c09b4277db86bb40e8dcf",
-        main_native_route: NativeRouteExpectation::Lcir,
-        test_native_route: NativeRouteExpectation::Lcir,
     },
 ];
 
@@ -91,33 +79,6 @@ struct TaskSpec {
     path: &'static str,
     source: &'static str,
     sha256: &'static str,
-    main_native_route: NativeRouteExpectation,
-    test_native_route: NativeRouteExpectation,
-}
-
-#[derive(Clone, Copy)]
-enum NativeRouteExpectation {
-    Lcir,
-    LegacyAllowed {
-        name: &'static str,
-        reason: &'static str,
-    },
-}
-
-impl NativeRouteExpectation {
-    const fn route(self) -> NativeRouteKind {
-        match self {
-            Self::Lcir => NativeRouteKind::Lcir,
-            Self::LegacyAllowed { .. } => NativeRouteKind::Legacy,
-        }
-    }
-
-    const fn legacy_allowlist(self) -> Option<(&'static str, &'static str)> {
-        match self {
-            Self::Lcir => None,
-            Self::LegacyAllowed { name, reason } => Some((name, reason)),
-        }
-    }
 }
 
 struct NativeRuntime {
@@ -261,8 +222,6 @@ struct NativeRouteEvidence {
     scenario: String,
     expected: &'static str,
     actual: &'static str,
-    legacy_allowlist: Option<&'static str>,
-    legacy_reason: Option<&'static str>,
     passed: bool,
 }
 
@@ -572,7 +531,7 @@ fn load_native_runtime(target: &NativeTargetIdentity) -> Result<NativeRuntime, S
 fn native_route_name(route: NativeRouteKind) -> &'static str {
     match route {
         NativeRouteKind::Lcir => "lcir",
-        NativeRouteKind::Legacy => "legacy",
+        NativeRouteKind::CheckedMir => "checked-mir",
     }
 }
 
@@ -582,7 +541,6 @@ fn emit_routed_native(
     options: EmitOptions,
     runtime: &NativeRuntime,
     scenario: impl Into<String>,
-    expectation: NativeRouteExpectation,
     routes: &mut Vec<NativeRouteEvidence>,
 ) -> Result<NativeBuild, String> {
     let scenario = scenario.into();
@@ -591,26 +549,22 @@ fn emit_routed_native(
     let prepared = prepare_native_object(program, options, NativeRoutePolicy::Automatic)
         .map_err(|error| format!("{scenario} native preparation failed: {error}"))?;
     let actual = prepared.route_kind();
-    let expected = expectation.route();
+    let expected = NativeRouteKind::Lcir;
     let passed = actual == expected;
-    let allowlist = expectation.legacy_allowlist();
     routes.push(NativeRouteEvidence {
         scenario: scenario.clone(),
         expected: native_route_name(expected),
         actual: native_route_name(actual),
-        legacy_allowlist: allowlist.map(|(name, _)| name),
-        legacy_reason: allowlist.map(|(_, reason)| reason),
         passed,
     });
     if !passed {
-        let detail = if matches!(expectation, NativeRouteExpectation::Lcir) {
+        let detail =
             match prepare_native_object(program, diagnostic_options, NativeRoutePolicy::LcirOnly) {
-                Ok(_) => "LcirOnly unexpectedly prepared after automatic legacy routing".into(),
+                Ok(_) => {
+                    "LcirOnly unexpectedly prepared after automatic checked-MIR routing".into()
+                }
                 Err(error) => error.to_string(),
-            }
-        } else {
-            "route did not match its reviewed expectation".to_owned()
-        };
+            };
         return Err(format!(
             "{scenario} selected native route `{}`, expected `{}`: {detail}",
             native_route_name(actual),
@@ -669,7 +623,6 @@ fn typed_lcir_gate(
         EmitOptions::run("main").with_optimization(OptimizationProfile::Release),
         runtime,
         "typed-lcir.main",
-        NativeRouteExpectation::Lcir,
         routes,
     )?;
     upper_gate(
@@ -734,7 +687,6 @@ fn typed_logging_gate(
         EmitOptions::run("main").with_optimization(OptimizationProfile::Release),
         runtime,
         "typed-logging.main",
-        NativeRouteExpectation::Lcir,
         routes,
     )?;
     emit_routed_native(
@@ -743,7 +695,6 @@ fn typed_logging_gate(
         EmitOptions::tests().with_optimization(OptimizationProfile::Release),
         runtime,
         "typed-logging.tests",
-        NativeRouteExpectation::Lcir,
         routes,
     )?;
     upper_gate(
@@ -821,7 +772,6 @@ fn typed_async_gate(
         EmitOptions::run("main").with_optimization(OptimizationProfile::Release),
         runtime,
         format!("{scenario}.main"),
-        NativeRouteExpectation::Lcir,
         routes,
     )?;
     emit_routed_native(
@@ -830,7 +780,6 @@ fn typed_async_gate(
         EmitOptions::tests().with_optimization(OptimizationProfile::Release),
         runtime,
         format!("{scenario}.tests"),
-        NativeRouteExpectation::Lcir,
         routes,
     )?;
     upper_gate(
@@ -994,7 +943,6 @@ fn run_standard_library_native(
         EmitOptions::tests().with_optimization(OptimizationProfile::Release),
         runtime,
         "standard-library.tests",
-        STANDARD_LIBRARY_LEGACY_ROUTE,
         routes,
     )
     .map_err(|error| format!("native test build failed: {error}"))?;
@@ -1190,7 +1138,6 @@ fn async_generic_contract_gate(
         EmitOptions::tests().with_optimization(OptimizationProfile::Release),
         runtime,
         "async-generic-contracts.tests",
-        NativeRouteExpectation::Lcir,
         routes,
     )
     .map_err(|error| format!("native test build failed: {error}"))?;
@@ -1301,7 +1248,6 @@ fn run_c3_repository(
         EmitOptions::run(&entry).with_optimization(OptimizationProfile::Release),
         runtime,
         "c3-repository.main",
-        NativeRouteExpectation::Lcir,
         routes,
     )
     .map_err(|error| format!("native main build failed: {error}"))?;
@@ -1312,7 +1258,6 @@ fn run_c3_repository(
         EmitOptions::tests().with_optimization(OptimizationProfile::Release),
         runtime,
         "c3-repository.tests",
-        NativeRouteExpectation::Lcir,
         routes,
     )
     .map_err(|error| format!("native test build failed: {error}"))?;
@@ -1481,7 +1426,6 @@ fn run_task(
         EmitOptions::run("main").with_optimization(OptimizationProfile::Release),
         runtime,
         format!("{}.main", task.name),
-        task.main_native_route,
         routes,
     )
     .map_err(|error| format!("native main build failed: {error}"))?;
@@ -1492,7 +1436,6 @@ fn run_task(
         EmitOptions::tests().with_optimization(OptimizationProfile::Release),
         runtime,
         format!("{}.tests", task.name),
-        task.test_native_route,
         routes,
     )
     .map_err(|error| format!("native test build failed: {error}"))?;

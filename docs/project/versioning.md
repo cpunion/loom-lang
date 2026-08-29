@@ -20,29 +20,29 @@ writers for unreleased formats. Development history belongs in
 | Manifest schema | `1` |
 | Lockfile schema | `1` |
 | Registry protocol and bundle | `1` |
-| Interpreted MIR artifact | `loom.interpreted-mir`, version `28` |
+| Interpreted MIR artifact | `loom.interpreted-mir`, version `29` |
 | Portable library artifact | `loom-library`, source-package version `2` |
 | Persistent compiler cache | schema `4` |
 | Compilation-cache domain | `loom-compilation-cache-v4` |
 | Interpreted final-cache layer | `final-artifact-v3` |
 | Interpreted artifact writer | `loom-interpreted-artifact-writer-v3` |
 | Portable-library final-cache layer | `portable-library-artifact-v3` |
-| LCIR textual dump | `lcir 39` |
-| LCIR artifact identity | schema `41` |
+| LCIR textual dump | `lcir 40` |
+| LCIR artifact identity | schema `42` |
 | LCIR artifact route | `typed-lcir-whole-artifact` |
-| LCIR native-object domain | `loom-lcir-native-object-v37` |
-| MIR native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v42` |
-| Controlled quality evidence | schema `2` |
+| LCIR native-object domain | `loom-lcir-native-object-v38` |
+| Checked-MIR native-object domain | `loom-checked-mir-native-object-v1` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v43` |
+| Controlled quality evidence | schema `3` |
 | Runtime bundle manifest | schema `2` |
-| Native runtime ABI component | `30` |
+| Native runtime ABI component | `31` |
 | Coroutine ABI component | `2` |
 | Typed Task ABI component | `1` |
 | Wait ABI component | `1` |
-| Standard-library ABI component | `5` |
+| Standard-library ABI component | `6` |
 
-The MIR native-object domain is the identity of the currently implemented
-checked-MIR LLVM route. Its name does not make it an artifact compatibility
+The checked-MIR native-object domain identifies the checked-MIR LLVM route. It
+is a compiler-private invalidation boundary, not an artifact compatibility
 layer or a supported public ABI.
 
 The compiler-owned standard library uses the content identity
@@ -54,11 +54,11 @@ cache entries even when no public ABI component changes.
 The complete compiler-private native runtime identity is:
 
 ```text
-loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v24/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v5
+loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v25/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v6
 ```
 
 Runtime bundles compare this entire identity, not only native runtime component
-`30` or one subordinate ABI version.
+`31` or one subordinate ABI version.
 
 ## Source language
 

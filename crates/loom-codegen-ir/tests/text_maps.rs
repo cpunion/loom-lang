@@ -5,12 +5,43 @@ use loom_codegen_ir::{
 };
 use loom_mir::{FunctionId, Type, TypeId};
 
+const RESULT_TYPE_ID: TypeId = TypeId(1);
+const TEXT_MAP_TYPE_ID: TypeId = TypeId(14);
+
 fn text_map(value: Type) -> Type {
     Type::Nominal(TypeId(100), vec![value])
 }
 
 fn option(value: Type) -> Type {
     Type::Nominal(TypeId(101), vec![value])
+}
+
+fn canonical_text_map(value: Type) -> Type {
+    Type::Nominal(TEXT_MAP_TYPE_ID, vec![value])
+}
+
+fn text_map_bulk_types(
+    builder: &mut ProgramBuilder,
+    value: Type,
+) -> (loom_codegen_ir::ValueTypeId, loom_codegen_ir::ValueTypeId) {
+    let entry = Type::Tuple(vec![Type::Text, value.clone()]);
+    builder
+        .add_tuple_type(&[Type::Text, value.clone()])
+        .expect("(Text, V)");
+    let entries = builder
+        .add_managed_list_type(Type::List(Box::new(entry)))
+        .expect("List[(Text, V)]");
+    let map_semantic = canonical_text_map(value);
+    builder
+        .add_managed_text_map_type(map_semantic.clone())
+        .expect("TextMap[V]");
+    let result = builder
+        .add_sum_type(
+            Type::Nominal(RESULT_TYPE_ID, vec![map_semantic.clone(), Type::Text]),
+            &[Box::from([map_semantic]), Box::from([Type::Text])],
+        )
+        .expect("Result[TextMap[V], Text]");
+    (entries, result)
 }
 
 #[test]
@@ -331,6 +362,169 @@ fn text_map_registration_rejects_missing_or_immortal_value_leaves() {
         error.code() == ValidationCode::RepresentationPlan
             && error.message().contains("closed TextMap")
     }));
+}
+
+#[test]
+fn bulk_construction_has_one_exact_shape_and_roots_its_source_list() {
+    let origin = Origin::synthetic(FunctionId(3));
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    builder.add_managed_text_type().expect("managed Text");
+    let (entries, result) = text_map_bulk_types(&mut builder, Type::Int);
+    let root = builder
+        .declare_function(
+            origin,
+            "text_map.bulk.valid",
+            Signature::new([entries], result),
+            Effects::MAY_COLLECT.with_implications(),
+        )
+        .expect("function");
+    let (source, constructed) = {
+        let mut function = builder.function(root).expect("function builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("set entry");
+        let source = function
+            .append_block_parameter(entry, entries)
+            .expect("entries parameter");
+        let constructed = function
+            .append_instruction(
+                entry,
+                InstructionKind::TextMapConstructEntries { entries: source },
+                &[result],
+                origin,
+            )
+            .expect("bulk construction")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(TerminatorKind::Return(constructed), origin),
+            )
+            .expect("return");
+        (source, constructed)
+    };
+    let program = builder
+        .finish_checked()
+        .expect("valid TextMap bulk construction");
+    let function = program.as_program().function(root).expect("bulk function");
+    assert!(function.effects().contains(Effects::MAY_COLLECT));
+    let ValueDefinition::InstructionResult { instruction, .. } = function
+        .value(constructed)
+        .expect("bulk result")
+        .definition()
+    else {
+        panic!("bulk result must be an instruction result")
+    };
+    let plan = plan_managed_roots(&program, root).expect("bulk root plan");
+    assert_eq!(plan.slots().len(), 1, "{plan:?}");
+    assert_eq!(plan.slots()[0].value(), source);
+    assert!(plan.slots()[0].projection().is_empty());
+    assert_eq!(
+        plan.state(ManagedSafepoint::Instruction(instruction)),
+        Some(1)
+    );
+}
+
+#[test]
+fn bulk_construction_rejects_non_tuple_products_non_text_entries_and_non_result_output() {
+    let origin = Origin::synthetic(FunctionId(4));
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    builder.add_managed_text_type().expect("managed Text");
+    let (entries, result) = text_map_bulk_types(&mut builder, Type::Int);
+    let wrong_entry = Type::Tuple(vec![Type::Int, Type::Int]);
+    builder
+        .add_tuple_type(&[Type::Int, Type::Int])
+        .expect("(Int, Int)");
+    let wrong_entries = builder
+        .add_managed_list_type(Type::List(Box::new(wrong_entry)))
+        .expect("List[(Int, Int)]");
+    let record_entry = Type::Nominal(TypeId(200), Vec::new());
+    builder
+        .add_pod_record_type(record_entry.clone(), &[Type::Text, Type::Int])
+        .expect("record with the tuple's physical fields");
+    let record_entries = builder
+        .add_managed_list_type(Type::List(Box::new(record_entry)))
+        .expect("List[record]");
+    let text = builder.type_id(&Type::Text).expect("Text");
+    let unit = builder.type_id(&Type::Unit).expect("Unit");
+    let root = builder
+        .declare_function(
+            origin,
+            "text_map.bulk.invalid",
+            Signature::new([entries, wrong_entries, record_entries], unit),
+            Effects::MAY_COLLECT.with_implications(),
+        )
+        .expect("function");
+    {
+        let mut function = builder.function(root).expect("function builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("set entry");
+        let valid = function
+            .append_block_parameter(entry, entries)
+            .expect("valid entries");
+        let invalid = function
+            .append_block_parameter(entry, wrong_entries)
+            .expect("invalid entries");
+        let forged_product = function
+            .append_block_parameter(entry, record_entries)
+            .expect("record entries");
+        function
+            .append_instruction(
+                entry,
+                InstructionKind::TextMapConstructEntries { entries: invalid },
+                &[result],
+                origin,
+            )
+            .expect("unchecked invalid entries");
+        function
+            .append_instruction(
+                entry,
+                InstructionKind::TextMapConstructEntries {
+                    entries: forged_product,
+                },
+                &[result],
+                origin,
+            )
+            .expect("unchecked record entries");
+        function
+            .append_instruction(
+                entry,
+                InstructionKind::TextMapConstructEntries { entries: valid },
+                &[text],
+                origin,
+            )
+            .expect("unchecked invalid result");
+        let returned = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Unit),
+                &[unit],
+                origin,
+            )
+            .expect("Unit")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(TerminatorKind::Return(returned), origin),
+            )
+            .expect("return");
+    }
+    let errors = validate_program(&builder.finish()).expect_err("malformed bulk operations fail");
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code() == ValidationCode::TypeMismatch && error.path().contains(".entries")
+    }));
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code() == ValidationCode::TypeMismatch && error.path().contains(".result[0]")
+    }));
+    assert!(
+        errors
+            .as_slice()
+            .iter()
+            .filter(|error| {
+                error.code() == ValidationCode::TypeMismatch && error.path().contains(".entries")
+            })
+            .count()
+            >= 2,
+        "{errors:#?}"
+    );
 }
 
 #[test]

@@ -120,6 +120,10 @@ fn source_position(source: &str, needle: &str) -> Value {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one editor contract keeps structured standard-library hover and completion evidence together"
+)]
 fn structured_standard_values_are_discoverable_through_completion_and_hover() {
     let source = r#"module editor.standard
 
@@ -157,7 +161,7 @@ fn inspect(problem IoError, value Json) {
 
     for (id, signature) in [
         (2, "TextMap[V]"),
-        (3, "fn parse_json(text Text) Result[Json, JsonError]"),
+        (3, "`function parse_json`"),
         (
             4,
             "method insert[V](self TextMap[V], key Text, value V) TextMap[V]",
@@ -175,7 +179,16 @@ fn inspect(problem IoError, value Json) {
         assert!(markdown.contains(signature), "{markdown}");
     }
 
-    let source_hover = responses
+    let parser_hover = responses
+        .iter()
+        .find(|message| message.get("id") == Some(&json!(3)))
+        .expect("missing source-backed std.json.parse_json hover response")
+        .pointer("/result/contents/value")
+        .and_then(Value::as_str)
+        .expect("source-backed std.json.parse_json hover markdown");
+    assert!(parser_hover.contains("module `std.json`"), "{parser_hover}");
+
+    let logging_hover = responses
         .iter()
         .find(|message| message.get("id") == Some(&json!(6)))
         .expect("missing source-backed std.log.debug hover response")
@@ -183,16 +196,17 @@ fn inspect(problem IoError, value Json) {
         .and_then(Value::as_str)
         .expect("source-backed std.log.debug hover markdown");
     assert!(
-        source_hover.contains("`function debug`") && source_hover.contains("module `std.log`"),
-        "{source_hover}"
+        logging_hover.contains("`function debug`") && logging_hover.contains("module `std.log`"),
+        "{logging_hover}"
     );
 
-    let labels = responses
+    let completion_items = responses
         .iter()
         .find(|message| message.get("id") == Some(&json!(7)))
         .and_then(|message| message.pointer("/result/items"))
         .and_then(Value::as_array)
-        .expect("completion items")
+        .expect("completion items");
+    let labels = completion_items
         .iter()
         .filter_map(|item| item.get("label").and_then(Value::as_str))
         .collect::<Vec<_>>();
@@ -222,6 +236,21 @@ fn inspect(problem IoError, value Json) {
     ] {
         assert!(labels.contains(&expected), "missing {expected}: {labels:?}");
     }
+    let parser_items = completion_items
+        .iter()
+        .filter(|item| item.get("label") == Some(&json!("parse_json")))
+        .collect::<Vec<_>>();
+    assert_eq!(parser_items.len(), 1, "{parser_items:#?}");
+    assert_eq!(
+        parser_items[0].get("detail"),
+        Some(&json!("function · std.json")),
+        "{parser_items:#?}"
+    );
+    assert_eq!(
+        parser_items[0].get("sortText"),
+        Some(&json!("0-parse_json-std.json")),
+        "parse_json must come from the semantic source index"
+    );
 }
 
 #[test]

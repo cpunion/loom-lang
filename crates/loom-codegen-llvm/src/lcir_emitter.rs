@@ -6768,7 +6768,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             })?;
         // This is a target-emission resource boundary, not unsupported source
         // coverage. Exceeding it is a deterministic ProgramTooLarge failure
-        // and must never select the legacy route.
+        // and must never select the checked-MIR route.
         if u64::try_from(root_plan.slots().len()).unwrap_or(u64::MAX) > GC_MAX_ROOT_SLOTS
             || u64::try_from(root_plan.state_count()).unwrap_or(u64::MAX) > GC_MAX_ROOT_STATES
             || u64::try_from(root_plan.bitmaps().len()).unwrap_or(u64::MAX)
@@ -9846,6 +9846,9 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 one(self.emit_list_get(*list, *index, result_ty)?)
             }
             InstructionKind::TextMapConstruct => one(self.backend.ptr_type.const_null().into()),
+            InstructionKind::TextMapConstructEntries { entries } => {
+                one(self.emit_text_map_construct_entries(instruction, *entries)?)
+            }
             InstructionKind::TextMapInsert { map, key, value } => one(self
                 .emit_text_map_insert(instruction, *map, *key, *value)?
                 .into()),
@@ -12062,6 +12065,408 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .map(BasicValueEnum::into_pointer_value)
     }
 
+    fn allocate_text_map_bulk(
+        &self,
+        ty: ValueTypeId,
+        layout: &TextMapLayout<'ctx>,
+        length: IntValue<'ctx>,
+        site: ManagedSafepoint,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let output = self
+            .backend
+            .builder
+            .build_alloca(self.backend.ptr_type, &format!("{name}.output"))
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_store(output, self.backend.ptr_type.const_null())
+            .map_err(builder_error)?;
+        self.publish_root_state(site)?;
+        let descriptor = self.backend.text_map_descriptor(ty, layout)?;
+        let status = call_int(
+            &self.backend.builder,
+            self.backend.typed_repeated_alloc(),
+            &[descriptor.into(), length.into(), output.into()],
+            &format!("{name}.status"),
+        )?;
+        self.backend.require_zero_status(status, name)?;
+        self.backend
+            .builder
+            .build_load(self.backend.ptr_type, output, &format!("{name}.result"))
+            .map_err(builder_error)
+            .map(BasicValueEnum::into_pointer_value)
+    }
+
+    fn load_text_map_entry_key(
+        &self,
+        layout: &TextMapLayout<'ctx>,
+        object: PointerValue<'ctx>,
+        index: IntValue<'ctx>,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let entry = self.text_map_entry_pointer(layout, object, index, name)?;
+        let key =
+            self.text_map_entry_field_pointer(layout, entry, 0, &format!("{name}.key.pointer"))?;
+        self.backend
+            .builder
+            .build_load(self.backend.ptr_type, key, &format!("{name}.key"))
+            .map_err(builder_error)
+            .map(BasicValueEnum::into_pointer_value)
+    }
+
+    fn swap_text_map_entries(
+        &self,
+        layout: &TextMapLayout<'ctx>,
+        object: PointerValue<'ctx>,
+        left: IntValue<'ctx>,
+        right: IntValue<'ctx>,
+        name: &str,
+    ) -> Result<(), CodegenError> {
+        let left_pointer =
+            self.text_map_entry_pointer(layout, object, left, &format!("{name}.left"))?;
+        let right_pointer =
+            self.text_map_entry_pointer(layout, object, right, &format!("{name}.right"))?;
+        let left_value = self
+            .backend
+            .builder
+            .build_load(layout.entry, left_pointer, &format!("{name}.left.value"))
+            .map_err(builder_error)?;
+        let right_value = self
+            .backend
+            .builder
+            .build_load(layout.entry, right_pointer, &format!("{name}.right.value"))
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_store(left_pointer, right_value)
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_store(right_pointer, left_value)
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one iterative sift-down keeps the no-safepoint heap certificate and its CFG explicit"
+    )]
+    fn sift_down_text_map(
+        &self,
+        layout: &TextMapLayout<'ctx>,
+        object: PointerValue<'ctx>,
+        initial_root: IntValue<'ctx>,
+        limit: IntValue<'ctx>,
+        name: &str,
+    ) -> Result<(), CodegenError> {
+        let source = self.current_block()?;
+        let function = source.get_parent().ok_or_else(|| {
+            CodegenError::new("LlvmBuilderFailed", "TextMap heapsort has no function")
+        })?;
+        let header = self
+            .backend
+            .context
+            .append_basic_block(function, &format!("{name}.header"));
+        let inspect = self
+            .backend
+            .context
+            .append_basic_block(function, &format!("{name}.inspect"));
+        let compare_right = self
+            .backend
+            .context
+            .append_basic_block(function, &format!("{name}.compare_right"));
+        let decide = self
+            .backend
+            .context
+            .append_basic_block(function, &format!("{name}.decide"));
+        let swap = self
+            .backend
+            .context
+            .append_basic_block(function, &format!("{name}.swap"));
+        let done = self
+            .backend
+            .context
+            .append_basic_block(function, &format!("{name}.done"));
+        self.backend
+            .builder
+            .build_unconditional_branch(header)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(header);
+        let root_phi = self
+            .backend
+            .builder
+            .build_phi(self.backend.context.i64_type(), &format!("{name}.root"))
+            .map_err(builder_error)?;
+        root_phi.add_incoming(&[(&initial_root, source)]);
+        let root = root_phi.as_basic_value().into_int_value();
+        let two = self.backend.context.i64_type().const_int(2, false);
+        let one = self.backend.context.i64_type().const_int(1, false);
+        let left = self
+            .backend
+            .builder
+            .build_int_add(
+                self.backend
+                    .builder
+                    .build_int_mul(root, two, &format!("{name}.root_twice"))
+                    .map_err(builder_error)?,
+                one,
+                &format!("{name}.left"),
+            )
+            .map_err(builder_error)?;
+        let has_left = self
+            .backend
+            .builder
+            .build_int_compare(IntPredicate::ULT, left, limit, &format!("{name}.has_left"))
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(has_left, inspect, done)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(inspect);
+        let left_key =
+            self.load_text_map_entry_key(layout, object, left, &format!("{name}.left"))?;
+        let root_key =
+            self.load_text_map_entry_key(layout, object, root, &format!("{name}.root"))?;
+        let (_, left_greater) =
+            self.compare_text_keys(left_key, root_key, &format!("{name}.compare_left"))?;
+        let candidate = self
+            .backend
+            .builder
+            .build_select(left_greater, left, root, &format!("{name}.candidate"))
+            .map_err(builder_error)?
+            .into_int_value();
+        let right = self
+            .backend
+            .builder
+            .build_int_add(left, one, &format!("{name}.right"))
+            .map_err(builder_error)?;
+        let has_right = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::ULT,
+                right,
+                limit,
+                &format!("{name}.has_right"),
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(has_right, compare_right, decide)
+            .map_err(builder_error)?;
+        let no_right = self.current_block()?;
+
+        self.backend.builder.position_at_end(compare_right);
+        let right_key =
+            self.load_text_map_entry_key(layout, object, right, &format!("{name}.right"))?;
+        let candidate_key =
+            self.load_text_map_entry_key(layout, object, candidate, &format!("{name}.candidate"))?;
+        let (_, right_greater) = self.compare_text_keys(
+            right_key,
+            candidate_key,
+            &format!("{name}.compare_right_key"),
+        )?;
+        let right_candidate = self
+            .backend
+            .builder
+            .build_select(
+                right_greater,
+                right,
+                candidate,
+                &format!("{name}.right_candidate"),
+            )
+            .map_err(builder_error)?
+            .into_int_value();
+        self.backend
+            .builder
+            .build_unconditional_branch(decide)
+            .map_err(builder_error)?;
+        let with_right = self.current_block()?;
+
+        self.backend.builder.position_at_end(decide);
+        let candidate_phi = self
+            .backend
+            .builder
+            .build_phi(self.backend.context.i64_type(), &format!("{name}.selected"))
+            .map_err(builder_error)?;
+        candidate_phi.add_incoming(&[(&candidate, no_right), (&right_candidate, with_right)]);
+        let selected = candidate_phi.as_basic_value().into_int_value();
+        let unchanged = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                selected,
+                root,
+                &format!("{name}.unchanged"),
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(unchanged, done, swap)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(swap);
+        self.swap_text_map_entries(layout, object, root, selected, &format!("{name}.swap"))?;
+        self.backend
+            .builder
+            .build_unconditional_branch(header)
+            .map_err(builder_error)?;
+        let swapped = self.current_block()?;
+        root_phi.add_incoming(&[(&selected, swapped)]);
+        self.backend.builder.position_at_end(done);
+        Ok(())
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one no-safepoint heapsort routine keeps heap construction and extraction CFG certificates auditable together"
+    )]
+    fn sort_text_map_entries(
+        &self,
+        layout: &TextMapLayout<'ctx>,
+        object: PointerValue<'ctx>,
+        length: IntValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let source = self.current_block()?;
+        let function = source.get_parent().ok_or_else(|| {
+            CodegenError::new("LlvmBuilderFailed", "TextMap heapsort has no function")
+        })?;
+        let heap_header = self
+            .backend
+            .context
+            .append_basic_block(function, "text_map.bulk.heap.header");
+        let heap_body = self
+            .backend
+            .context
+            .append_basic_block(function, "text_map.bulk.heap.body");
+        let sort_header = self
+            .backend
+            .context
+            .append_basic_block(function, "text_map.bulk.sort.header");
+        let sort_body = self
+            .backend
+            .context
+            .append_basic_block(function, "text_map.bulk.sort.body");
+        let done = self
+            .backend
+            .context
+            .append_basic_block(function, "text_map.bulk.sort.done");
+        let half = self
+            .backend
+            .builder
+            .build_int_unsigned_div(
+                length,
+                self.backend.context.i64_type().const_int(2, false),
+                "text_map.bulk.half",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_unconditional_branch(heap_header)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(heap_header);
+        let heap_index = self
+            .backend
+            .builder
+            .build_phi(self.backend.context.i64_type(), "text_map.bulk.heap.index")
+            .map_err(builder_error)?;
+        heap_index.add_incoming(&[(&half, source)]);
+        let heap_index_value = heap_index.as_basic_value().into_int_value();
+        let heap_more = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::UGT,
+                heap_index_value,
+                self.backend.context.i64_type().const_zero(),
+                "text_map.bulk.heap.more",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(heap_more, heap_body, sort_header)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(heap_body);
+        let root = self
+            .backend
+            .builder
+            .build_int_sub(
+                heap_index_value,
+                self.backend.context.i64_type().const_int(1, false),
+                "text_map.bulk.heap.root",
+            )
+            .map_err(builder_error)?;
+        self.sift_down_text_map(layout, object, root, length, "text_map.bulk.heap.sift")?;
+        self.backend
+            .builder
+            .build_unconditional_branch(heap_header)
+            .map_err(builder_error)?;
+        let heap_end = self.current_block()?;
+        heap_index.add_incoming(&[(&root, heap_end)]);
+
+        self.backend.builder.position_at_end(sort_header);
+        let end_phi = self
+            .backend
+            .builder
+            .build_phi(self.backend.context.i64_type(), "text_map.bulk.sort.end")
+            .map_err(builder_error)?;
+        end_phi.add_incoming(&[(&length, heap_header)]);
+        let end = end_phi.as_basic_value().into_int_value();
+        let more = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::UGT,
+                end,
+                self.backend.context.i64_type().const_int(1, false),
+                "text_map.bulk.sort.more",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(more, sort_body, done)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(sort_body);
+        let next_end = self
+            .backend
+            .builder
+            .build_int_sub(
+                end,
+                self.backend.context.i64_type().const_int(1, false),
+                "text_map.bulk.sort.next_end",
+            )
+            .map_err(builder_error)?;
+        self.swap_text_map_entries(
+            layout,
+            object,
+            self.backend.context.i64_type().const_zero(),
+            next_end,
+            "text_map.bulk.sort.swap",
+        )?;
+        self.sift_down_text_map(
+            layout,
+            object,
+            self.backend.context.i64_type().const_zero(),
+            next_end,
+            "text_map.bulk.sort.sift",
+        )?;
+        self.backend
+            .builder
+            .build_unconditional_branch(sort_header)
+            .map_err(builder_error)?;
+        let sort_end = self.current_block()?;
+        end_phi.add_incoming(&[(&next_end, sort_end)]);
+        self.backend.builder.position_at_end(done);
+        Ok(())
+    }
+
     fn store_text_map_entry(
         &self,
         layout: &TextMapLayout<'ctx>,
@@ -12090,6 +12495,249 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 .map_err(builder_error)?;
         }
         Ok(())
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "bulk construction keeps its single allocation, in-place heapsort, duplicate scan, and exact Result CFG in one auditable boundary"
+    )]
+    fn emit_text_map_construct_entries(
+        &self,
+        instruction: &Instruction,
+        entries: ValueId,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let result = instruction.results().first().copied().ok_or_else(|| {
+            CodegenError::new("LlvmAbiDefect", "TextMap bulk construction has no result")
+        })?;
+        let result_ty = self
+            .source
+            .value(result)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "bulk result is missing"))?
+            .ty();
+        let map_ty = self.sum_variant_field_type(result_ty, 0, 0)?;
+        let error_ty = self.sum_variant_field_type(result_ty, 1, 0)?;
+        let text_ty = self
+            .backend
+            .artifact
+            .representations()
+            .type_id(&Type::Text)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "canonical Text is missing"))?;
+        if error_ty != text_ty {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "TextMap bulk construction error payload is not canonical Text",
+            ));
+        }
+        let list_ty = self.list_type_of_value(entries)?;
+        let list_layout = self.backend.list_layout(list_ty)?;
+        let map_layout = self.backend.text_map_layout(map_ty)?;
+        if list_layout.element != BasicTypeEnum::from(map_layout.entry)
+            || list_layout.element_stride != map_layout.entry_stride
+            || list_layout.element_align != map_layout.entry_align
+        {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "List[(Text, V)] and TextMap[V] entry layouts disagree",
+            ));
+        }
+
+        let list = self.value(entries)?.into_pointer_value();
+        let (length, _) = self.load_list_header(&list_layout, list, "text_map.bulk.list")?;
+        let source = self.current_block()?;
+        let function = source.get_parent().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmBuilderFailed",
+                "TextMap bulk construction has no function",
+            )
+        })?;
+        let empty = self
+            .backend
+            .context
+            .append_basic_block(function, "text_map.bulk.empty");
+        let nonempty = self
+            .backend
+            .context
+            .append_basic_block(function, "text_map.bulk.nonempty");
+        let scan_header = self
+            .backend
+            .context
+            .append_basic_block(function, "text_map.bulk.scan.header");
+        let scan_compare = self
+            .backend
+            .context
+            .append_basic_block(function, "text_map.bulk.scan.compare");
+        let scan_advance = self
+            .backend
+            .context
+            .append_basic_block(function, "text_map.bulk.scan.advance");
+        let success = self
+            .backend
+            .context
+            .append_basic_block(function, "text_map.bulk.success");
+        let duplicate = self
+            .backend
+            .context
+            .append_basic_block(function, "text_map.bulk.duplicate");
+        let merge = self
+            .backend
+            .context
+            .append_basic_block(function, "text_map.bulk.merge");
+        let is_empty = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                length,
+                self.backend.context.i64_type().const_zero(),
+                "text_map.bulk.is_empty",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(is_empty, empty, nonempty)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(empty);
+        let empty_map = self.backend.ptr_type.const_null();
+        let empty_result = self.emit_sum_construct_values(result_ty, 0, &[empty_map.into()])?;
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(nonempty);
+        let object = self.allocate_text_map_bulk(
+            map_ty,
+            &map_layout,
+            length,
+            ManagedSafepoint::Instruction(instruction.id()),
+            "text_map.bulk.allocate",
+        )?;
+        let length_pointer =
+            self.text_map_field_pointer(&map_layout, object, 0, "text_map.bulk.length.pointer")?;
+        self.backend
+            .builder
+            .build_store(length_pointer, length)
+            .map_err(builder_error)?;
+        let relocated_list = self.value(entries)?.into_pointer_value();
+        let source_data =
+            self.list_field_pointer(&list_layout, relocated_list, 2, "text_map.bulk.source")?;
+        let destination_data =
+            self.text_map_field_pointer(&map_layout, object, 1, "text_map.bulk.destination")?;
+        let copy_bytes = self
+            .backend
+            .builder
+            .build_int_mul(
+                length,
+                self.backend
+                    .context
+                    .i64_type()
+                    .const_int(map_layout.entry_stride, false),
+                "text_map.bulk.copy_bytes",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_memcpy(
+                destination_data,
+                map_layout.entry_align,
+                source_data,
+                list_layout.element_align,
+                copy_bytes,
+            )
+            .map_err(builder_error)?;
+        self.sort_text_map_entries(&map_layout, object, length)?;
+        self.backend
+            .builder
+            .build_unconditional_branch(scan_header)
+            .map_err(builder_error)?;
+        let sorted = self.current_block()?;
+
+        self.backend.builder.position_at_end(scan_header);
+        let index_phi = self
+            .backend
+            .builder
+            .build_phi(self.backend.context.i64_type(), "text_map.bulk.scan.index")
+            .map_err(builder_error)?;
+        let one = self.backend.context.i64_type().const_int(1, false);
+        index_phi.add_incoming(&[(&one, sorted)]);
+        let index = index_phi.as_basic_value().into_int_value();
+        let remains = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::ULT,
+                index,
+                length,
+                "text_map.bulk.scan.remains",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(remains, scan_compare, success)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(scan_compare);
+        let previous_index = self
+            .backend
+            .builder
+            .build_int_sub(index, one, "text_map.bulk.scan.previous")
+            .map_err(builder_error)?;
+        let previous_key = self.load_text_map_entry_key(
+            &map_layout,
+            object,
+            previous_index,
+            "text_map.bulk.scan.previous",
+        )?;
+        let current_key =
+            self.load_text_map_entry_key(&map_layout, object, index, "text_map.bulk.scan.current")?;
+        let (equal, _) =
+            self.compare_text_keys(previous_key, current_key, "text_map.bulk.scan.compare_key")?;
+        self.backend
+            .builder
+            .build_conditional_branch(equal, duplicate, scan_advance)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(scan_advance);
+        let next = self
+            .backend
+            .builder
+            .build_int_add(index, one, "text_map.bulk.scan.next")
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_unconditional_branch(scan_header)
+            .map_err(builder_error)?;
+        let advanced = self.current_block()?;
+        index_phi.add_incoming(&[(&next, advanced)]);
+
+        self.backend.builder.position_at_end(success);
+        let success_result = self.emit_sum_construct_values(result_ty, 0, &[object.into()])?;
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(duplicate);
+        let duplicate_result =
+            self.emit_sum_construct_values(result_ty, 1, &[current_key.into()])?;
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(merge);
+        let result_phi = self
+            .backend
+            .builder
+            .build_phi(self.backend.llvm_type(result_ty)?, "text_map.bulk.result")
+            .map_err(builder_error)?;
+        result_phi.add_incoming(&[
+            (&empty_result, empty),
+            (&success_result, success),
+            (&duplicate_result, duplicate),
+        ]);
+        Ok(result_phi.as_basic_value())
     }
 
     #[expect(
@@ -15997,7 +16645,7 @@ impl<'ctx> Backend<'ctx, '_> {
         let (code, message) = fault_properties(fault);
         let display = format!("{code}: {message}");
         // Language-defined fault families expose the same stable RuntimeFault
-        // payload as the interpreter and legacy emitter. Other LCIR-private
+        // payload as the interpreter and checked-MIR emitter. Other LCIR-private
         // families retain their existing backend detail until their source
         // diagnostic contracts are specified separately.
         let detail = if matches!(

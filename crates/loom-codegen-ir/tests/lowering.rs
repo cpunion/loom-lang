@@ -104,6 +104,10 @@ fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
     compile_with_std_module(source, include_str!("../../../library/std/src/log.loom"))
 }
 
+fn compile_with_std_json(source: &str) -> loom_mir::CheckedProgram {
+    compile_with_std_module(source, include_str!("../../../library/std/src/json.loom"))
+}
+
 fn lower_run(source: &str) -> LoweringOutcome {
     let mir = compile(source);
     lower_typed_artifact(
@@ -130,6 +134,18 @@ fn lower_run_with_standard_resource(source: &str) -> LoweringOutcome {
 
 fn lower_run_with_std_log(source: &str) -> LoweringOutcome {
     let mir = compile_with_std_log(source);
+    lower_typed_artifact(
+        &mir,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("lower typed artifact")
+}
+
+fn lower_run_with_std_json(source: &str) -> LoweringOutcome {
+    let mir = compile_with_std_json(source);
     lower_typed_artifact(
         &mir,
         &SourceArtifactRequest::Run {
@@ -2849,7 +2865,7 @@ pub fn main() {
 ",
     );
     let LoweringOutcome::Complete(artifact) = outcome else {
-        panic!("a compile-time-only proof must not force legacy lowering")
+        panic!("a compile-time-only proof must not force checked-MIR lowering")
     };
     let instance = artifact
         .program()
@@ -3533,8 +3549,8 @@ fn helper() {}
 
 pub fn main() {
     return Unit
-    let legacy = "legacy"
-    discard legacy
+    let checked_mir = "checked_mir"
+    discard checked_mir
     helper()
 }
 "#,
@@ -4740,7 +4756,6 @@ pub fn main() {
     var values = List[Int]()
     for index in 0..128 {
         values.add(index)
-        Unit
     }
     let count = values.length()
 }
@@ -5307,8 +5322,8 @@ pub fn main() {
 }
 
 #[test]
-fn json_parse_remains_outside_the_json_format_lcir_slice() {
-    let outcome = lower_run(
+fn source_json_parser_lowers_completely_through_existing_typed_operations() {
+    let outcome = lower_run_with_std_json(
         r#"module typed_json_parse
 
 import std.json.parse_json
@@ -5322,11 +5337,21 @@ pub fn main() {
 }
 "#,
     );
-    let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("parse_json must remain outside this typed LCIR slice: {outcome:?}")
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("source JSON parsing must lower completely: {outcome:?}")
     };
-    assert_eq!(report.items().len(), 1, "{report:?}");
-    assert_eq!(report.items()[0].feature(), UnsupportedFeature::BuiltinCall);
+    let dump = dump_program(artifact.program());
+    for required in [
+        "std.json.parse_json",
+        "std.json.parse_value",
+        "bytes.get",
+        "list.append.unique",
+        "text_map.construct_entries",
+    ] {
+        assert!(dump.contains(required), "missing `{required}`:\n{dump}");
+    }
+    assert_eq!(dump.matches("list.append.unique").count(), 6, "{dump}");
+    assert!(!dump.contains("list.append %"), "{dump}");
 }
 
 #[test]
@@ -5884,7 +5909,7 @@ fn managed_tuple_elements_lower_directly_and_over_budget_tuples_fallback() {
     let managed = lower_run(
         r#"module managed_tuple
 
-fn make() (Int, Text) { (1, "legacy") }
+fn make() (Int, Text) { (1, "checked_mir") }
 
 pub fn main() {
     let number, label = make()

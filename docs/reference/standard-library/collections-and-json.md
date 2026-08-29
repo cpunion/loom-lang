@@ -41,7 +41,7 @@ transferred according to the
 
 ## `TextMap[V]`
 
-`TextMap[V]` is an immutable Text-keyed map:
+`TextMap[V]` is a Text-keyed value map:
 
 ```loom
 let empty = TextMap[Int]()
@@ -55,12 +55,20 @@ map.get(key Text) Option[V]
 map.entry_at(index Int) Option[(Text, V)]
 map.insert(key Text, value V) TextMap[V]
 map.remove(key Text) TextMap[V]
+list.to_text_map() Result[TextMap[V], Text]
 ```
 
 `insert` returns a new map and replaces the previous value when the key already
 exists. `remove` returns a new map and is unchanged when the key is absent. The
 original map remains observably unchanged, so these methods do not require a
 `var` receiver.
+
+`to_text_map` performs one bulk construction from a List of key/value pairs. It
+sorts keys once by lexicographic order of their UTF-8 encoding instead of
+lowering to repeated `insert` calls. Success returns `Ok` with the canonical
+map. When any key occurs more than once, it returns `Err` with the
+lexicographically smallest duplicated Text key. The input List remains
+observably unchanged under normal value semantics.
 
 Map keys have a canonical order: lexicographic order of their UTF-8 encoding.
 This order determines `entry_at`, canonical JSON object output, and structured
@@ -134,14 +142,27 @@ Offsets are zero-based UTF-8 byte offsets from the beginning of the input.
 Parsing consumes one complete JSON document, permitting only JSON whitespace
 around it. It rejects invalid escapes and surrogate sequences, trailing input,
 leading-zero number forms, duplicate object keys, and non-finite or out-of-range
-numbers. A duplicate key reports `InvalidSyntax` at the second key. Container
-nesting deeper than 128 produces `DepthLimit`.
+numbers. Object names are decoded before duplicate selection. A duplicate
+reports `InvalidSyntax` at that key's second source occurrence; if multiple
+distinct keys are duplicated, the selected key is the lexicographically
+smallest duplicated key under canonical UTF-8 ordering. Container nesting
+deeper than 128 produces `DepthLimit`.
+
+`parse_json` is an ordinary function in the compiler-owned `std` source
+package. Its helper graph is type-checked, lowered to direct calls and typed
+collection operations, and removed by normal reachability when unused. There
+is no JSON-parser builtin, MIR opcode, runtime entry point, or runtime type
+switch.
 
 Formatting emits canonical compact JSON with no unnecessary whitespace.
 Object keys use TextMap canonical order, strings use JSON escaping, and finite
 numbers use a shortest decimal representation. `Json.Number` can hold any Float
 value, but formatting NaN or infinity produces `NonFiniteNumber`. Formatting
 also applies the 128-container depth limit.
+
+`format_json` is a compiler-known typed operation over the exact closed `Json`
+and `JsonError` shapes. Its runtime boundary receives a compiler-supplied
+layout descriptor rather than a universal value or source type identifier.
 
 Json equality is recursive value equality. Object equality compares mappings,
 not insertion history.

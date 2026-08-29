@@ -1,0 +1,94 @@
+module lcir_json_parse
+
+import std.json.parse_json
+
+enum Problem { WrongValue }
+
+fn parses_complete_document() Bool {
+    match parse_json(
+    " {\"z\":null,\"a\":[true,-0,1.25,2e3],\"text\":\"line\\n\\u754c\\uD83D\\uDE42\"} "
+    ) {
+        Ok(Json.Object(fields)) => {
+            let first_key = match fields.entry_at(0) {
+                Some(entry) => {
+                    let key, value = entry
+                    discard value
+                    key
+                }
+                None => ""
+            }
+            let array_is_valid = match fields.get("a") {
+                Some(Json.Array(values)) => {
+                    let first = match values.get(0) {
+                        Some(Json.Bool(value)) => value
+                        _ => false
+                    }
+                    let third = match values.get(2) {
+                        Some(Json.Number(value)) => value == 1.25
+                        _ => false
+                    }
+                    let fourth = match values.get(3) {
+                        Some(Json.Number(value)) => value == 2000.0
+                        _ => false
+                    }
+                    values.length() == 4 && first && third && fourth
+                }
+                _ => false
+            }
+            let text_is_valid = match fields.get("text") {
+                Some(Json.Text(value)) => value == "line\n界🙂"
+                _ => false
+            }
+            let null_is_valid = match fields.get("z") {
+                Some(Json.Null) => true
+                _ => false
+            }
+            (
+            fields.length() == 3
+            && first_key == "a"
+            && array_is_valid
+            && text_is_valid
+            && null_is_valid
+            )
+        }
+        _ => false
+    }
+}
+
+fn rejects_invalid_documents() Bool {
+    let duplicate = match parse_json("{\"a\":1,\"a\":2}") {
+        Err(JsonError.InvalidSyntax(offset)) => offset == 7
+        _ => false
+    }
+    let canonical_duplicate = match parse_json("{\"z\":0,\"z\":1,\"a\":2,\"a\":3}") {
+        Err(JsonError.InvalidSyntax(offset)) => offset == 19
+        _ => false
+    }
+    let surrogate = match parse_json("\"\\uD800\"") {
+        Err(JsonError.InvalidSyntax(offset)) => offset == 2
+        _ => false
+    }
+    let overflow = match parse_json("1e999") {
+        Err(JsonError.NumberOutOfRange(offset)) => offset == 0
+        _ => false
+    }
+    duplicate && canonical_duplicate && surrogate && overflow
+}
+
+fn verify() Result[Unit, Problem] {
+    if parses_complete_document() && rejects_invalid_documents() {
+        Ok(Unit)
+    } else {
+        Err(Problem.WrongValue)
+    }
+}
+
+pub fn main() {
+    let valid = match verify() {
+        Ok(_) => true
+        Err(_) => false
+    }
+    assert valid
+}
+
+test fn source_json_parse() Result[Unit, Problem] { verify() }

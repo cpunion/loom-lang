@@ -87,11 +87,18 @@ fn compile_with_standard_resource(source: &str) -> loom_mir::CheckedProgram {
 fn compile_with_standard_log(source: &str) -> loom_mir::CheckedProgram {
     let application = parse_with_file(FileId(0), source);
     let log = parse_with_file(FileId(1), include_str!("../../../library/std/src/log.loom"));
+    let json = parse_with_file(
+        FileId(2),
+        include_str!("../../../library/std/src/json.loom"),
+    );
     assert!(
-        application.diagnostics().is_empty() && log.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} std={:#?}",
+        application.diagnostics().is_empty()
+            && log.diagnostics().is_empty()
+            && json.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} log={:#?} json={:#?}",
         application.diagnostics(),
-        log.diagnostics()
+        log.diagnostics(),
+        json.diagnostics()
     );
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("lowering-test", "0");
@@ -105,6 +112,11 @@ fn compile_with_standard_log(source: &str) -> loom_mir::CheckedProgram {
             file: FileId(1),
             package: std.clone(),
             syntax: log.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(2),
+            package: std.clone(),
+            syntax: json.ast(),
         },
     ]);
     lowered.program.register_package(std.clone(), [], false);
@@ -147,6 +159,51 @@ fn compile_with_standard_int(source: &str) -> loom_mir::CheckedProgram {
             file: FileId(1),
             package: std.clone(),
             syntax: int.ast(),
+        },
+    ]);
+    lowered.program.register_package(std.clone(), [], false);
+    lowered
+        .program
+        .register_package(root, [(Name::new("std"), std)], true);
+    assert!(
+        lowered.diagnostics.is_empty(),
+        "HIR diagnostics: {:#?}",
+        lowered.diagnostics
+    );
+    let analysis = analyze(&lowered.program);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "semantic diagnostics: {:#?}",
+        analysis.diagnostics
+    );
+    lower_to_mir(&lowered.program, &analysis)
+        .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
+}
+
+fn compile_with_standard_json(source: &str) -> loom_mir::CheckedProgram {
+    let application = parse_with_file(FileId(0), source);
+    let json = parse_with_file(
+        FileId(1),
+        include_str!("../../../library/std/src/json.loom"),
+    );
+    assert!(
+        application.diagnostics().is_empty() && json.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} std={:#?}",
+        application.diagnostics(),
+        json.diagnostics()
+    );
+    let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+    let root = PackageId::new("lowering-test", "0");
+    let mut lowered = lower_package_files([
+        PackageSourceUnit {
+            file: FileId(0),
+            package: root.clone(),
+            syntax: application.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(1),
+            package: std.clone(),
+            syntax: json.ast(),
         },
     ]);
     lowered.program.register_package(std.clone(), [], false);
@@ -1255,6 +1312,28 @@ async fn network(host Text, port Int) Result[Unit, IoError] {
 }
 "#,
     );
+    let parse_json = program
+        .functions
+        .iter()
+        .find(|function| function.name == "std.json.parse_json")
+        .expect("ordinary source JSON parser");
+    let values = program
+        .functions
+        .iter()
+        .find(|function| function.name == "structured_standard_lowering.values")
+        .expect("structured values caller");
+    assert!(
+        values.exprs_preorder().any(|expression| {
+            matches!(
+                expression.kind,
+                loom_mir::ExprKind::Call {
+                    target: loom_mir::CallTarget::Direct(target),
+                    ..
+                } if target == parse_json.id
+            )
+        }),
+        "std.json.parse_json must resolve through its ordinary source definition: {program:#?}"
+    );
     let debug = format!("{program:#?}");
     for builtin in [
         "TextMapNew",
@@ -1264,7 +1343,6 @@ async fn network(host Text, port Int) Result[Unit, IoError] {
         "TextMapEntryAt",
         "TextMapInsert",
         "TextMapRemove",
-        "JsonParse",
         "JsonFormat",
         "IoErrorKind",
         "IoErrorMessage",
@@ -1362,4 +1440,66 @@ fn classify(error std.int.ParseIntError) Int {
             .collect::<Vec<_>>(),
         ["InvalidSyntax", "OutOfRange"]
     );
+}
+
+#[test]
+fn standard_parse_json_is_an_ordinary_source_function_with_complete_parser_shapes() {
+    let program = compile_with_standard_json(
+        r"
+module standard_json_lowering
+
+fn idle() {
+}
+",
+    );
+
+    let parse_json = program
+        .functions
+        .iter()
+        .find(|function| function.name == "std.json.parse_json")
+        .expect("source parse_json body");
+    let parse_value = program
+        .functions
+        .iter()
+        .find(|function| function.name == "std.json.parse_value")
+        .expect("source parse_value body");
+    assert!(
+        parse_json.exprs_preorder().any(|expression| {
+            matches!(
+                expression.kind,
+                loom_mir::ExprKind::Call {
+                    target: loom_mir::CallTarget::Direct(target),
+                    ..
+                } if target == parse_value.id
+            )
+        }),
+        "the source parse_json body must call its ordinary parse_value DefId: {program:#?}"
+    );
+    for helper in [
+        "std.json.parse_value",
+        "std.json.parse_string",
+        "std.json.parse_escape",
+        "std.json.parse_number",
+        "std.json.parse_hex_quad",
+    ] {
+        assert!(
+            program
+                .functions
+                .iter()
+                .any(|function| function.name == helper),
+            "missing source JSON helper {helper}: {program:#?}"
+        );
+    }
+    let debug = format!("{program:#?}");
+    for builtin in [
+        "TextEncodeUtf8",
+        "TextFromUtf8Units",
+        "BytesLength",
+        "BytesGet",
+        "ListAdd",
+        "ListToTextMap",
+        "ParseFloat",
+    ] {
+        assert!(debug.contains(builtin), "missing {builtin} in {debug}");
+    }
 }
