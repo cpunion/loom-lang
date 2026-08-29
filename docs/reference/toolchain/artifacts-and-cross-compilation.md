@@ -17,7 +17,10 @@ rather than assuming every build output is executable.
 The interpreted artifact format is `loom.interpreted-mir`, currently version
 `28`. A build checks the complete source program, then writes the closed
 checked-MIR definitions for one selected export. The artifact is decoded and
-fully validated before execution.
+fully validated before execution. A matching version must also use the exact
+current MIR field set: missing fields are not synthesized and unknown fields
+are rejected. There is no shape upgrade or compatibility decoder behind the
+version check.
 
 Portable libraries use source-package format version `2`. They record the Loom
 language version, resolved package graph, exact non-standard-library Loom
@@ -27,49 +30,33 @@ portable paths, and interface fingerprints recomputed from the embedded source.
 The consumer then supplies its matching compiler-distributed standard library
 and runs the normal parse, type-check, proof, and lowering pipeline. A
 `.loomlib` contains no checked MIR, producer-local proof state, or
-compiler-owned standard-library implementation. Version 1 artifacts must be
-rebuilt; they are not upgraded or interpreted as version 2. The compiler does
-not append the `.loomlib` extension automatically.
+compiler-owned standard-library implementation. The compiler does not append
+the `.loomlib` extension automatically. Other portable-library versions are
+rejected rather than upgraded.
 
-Version 22 records the source-module provenance and compiler-known identity of
-the canonical `std.resource.MustScope` marker. Decoding rejects missing,
-redirected, duplicated, or shape-inconsistent identity metadata before the
-program can execute. This is structural validation, not publisher
-authentication; artifact provenance still belongs to the distribution layer.
+A persistent interpreted artifact must contain the complete canonical
+`Dispose`, `MustScope`, and `NoSuspend` identity trio, their prelude ids, and
+the exact `Dispose.dispose` requirement. An identity tag and matching prelude
+id grant authority; source module and name are independent consistency checks
+and cannot create compiler-known semantics. Missing, redirected, duplicated,
+or shape-inconsistent metadata is rejected before execution. These are
+structural guarantees, not publisher authentication.
 
-Version 23 requires the canonical six-field compiler-private
-`ConstraintError` record and rejects the earlier empty synthetic shape.
-
-Version 25 gives `Dispose`, `MustScope`, and `NoSuspend` distinct
-compiler-known MIR identity tags. A tag paired with its matching prelude id is
-the authority; source module and name cannot create language semantics. The
-validator cross-checks each asserted identity against the unique expected
-`std.resource` declaration and fixed shape. Both artifact encoding and
-decoding require the complete identity trio, all corresponding prelude ids,
-and the canonical Dispose requirement. General in-process checked MIR may omit
-the trio for low-level tools, but such a program cannot cross the interpreted
-artifact boundary. These are structural guarantees only; publisher
-authentication remains the responsibility of the registry or distribution
-channel.
-
-Version 26 distinguishes generic compiler-cache artifacts from executable
-artifacts using the existing `entry` field. Generic artifacts require an
-explicit null entry; executable artifacts require a fixed string entry. The
-generic and executable decoders are not interchangeable and reject the wrong
-kind before validating its MIR program body. A fixed executable entry must
-also name an exported function. Before encoding, executable closure removes
-other exports, test roots, and unrelated definitions, densely remaps all global
-MIR identities, and validates the closed program. This does not narrow the
-generic compiler cache used to build another entry.
+Generic compiler-cache artifacts carry an explicit null `entry`; executable
+artifacts carry one exported entry string. The two decoder APIs reject the
+wrong envelope kind before MIR deserialization. Executable encoding removes
+other exports, tests, and unrelated definitions, densely remaps every retained
+global MIR identity, and validates the closed result. The generic checked-MIR
+cache remains complete so it can serve another entry.
 
 Source-local construction proofs are not portable certificates. A `.loomi`
-encodes them as mandatory predicate/invariant rechecks. A successful recheck
-publishes the original nominal value; a failed one raises the canonical
-`ArtifactProofRejected` runtime fault instead of producing a source `Result`.
-The disposition cannot by itself bypass the embedded condition. A version 2
-`.loomlib` instead carries source, so the consuming frontend derives fresh
-proof decisions. Artifact authenticity still depends on the trusted registry
-or distribution channel, not on either artifact envelope.
+encodes them as mandatory predicate or invariant rechecks. A successful
+recheck publishes the original nominal value; a failed one raises the
+canonical `ArtifactProofRejected` runtime fault instead of producing a source
+`Result`. The disposition cannot bypass the embedded condition. A `.loomlib`
+carries source, so the consuming frontend derives fresh proof decisions.
+Artifact authenticity still depends on the trusted registry or distribution
+channel, not on either artifact envelope.
 
 These are internal toolchain formats, not long-term archival formats. Preserve
 the compiler version needed to reproduce important artifacts.

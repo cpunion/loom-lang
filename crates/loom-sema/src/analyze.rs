@@ -9633,7 +9633,7 @@ pub concept NoSuspend {}
         assert!(canonical.canonical_concepts.no_suspend.is_some());
 
         for wrong in [
-            PackageId::legacy(),
+            PackageId::standalone(),
             PackageId::with_language("std", "0.4", "0.4"),
             PackageId::with_language("std", "0.4", LOOM_LANGUAGE_VERSION),
             PackageId::with_language("std", LOOM_LANGUAGE_VERSION, "0.4"),

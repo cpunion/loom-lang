@@ -47,7 +47,7 @@ pub struct LoweringResult {
 pub fn lower_files<'a>(files: impl IntoIterator<Item = SourceUnit<'a>>) -> LoweringResult {
     lower_package_files(files.into_iter().map(|unit| PackageSourceUnit {
         file: unit.file,
-        package: PackageId::legacy(),
+        package: PackageId::standalone(),
         syntax: unit.syntax,
     }))
 }

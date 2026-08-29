@@ -73,51 +73,38 @@ profile, and cache reads cross both ordinary MIR validation and that profile;
 inconsistent or incomplete identity metadata is a cache miss.
 
 Task policy and timer calls store their resolved `StandardLibraryItem` in typed
-body facts. Cache schema 4 and `loom-compilation-cache-v4` reject earlier
-semantic entries that lacked this standard-item identity. Whether a body is
-reused or conservatively reanalyzed, MIR lowering consumes only the resolved
-identity; it never reconstructs a policy from source spelling.
+body facts. Cache schema `4` and the `loom-compilation-cache-v4` domain require
+that identity. Whether a body is reused or conservatively reanalyzed, MIR
+lowering consumes only the resolved identity; it never reconstructs a policy
+from source spelling.
 
-Checked-MIR cache envelopes use artifact version 28. Version 24 added the
-compiler-known `TextMap.entry_at` builtin; version 25 assigns distinct
-compiler-known tags to the three resource concepts resolved from the
-compiler-owned package. Tags paired with prelude ids grant MIR authority;
-module/name and fixed shapes are independent consistency checks. The artifact
-profile rejects a missing or partial trio at both encode and decode.
-Version 26 separates generic cache envelopes, whose `entry` is null, from
-executable envelopes, whose `entry` is a fixed string. Each decoder rejects the
-opposite kind before MIR body validation. Version 27 adds the compiler-known
-`Text.from_utf8_units` operation and its strict
-`List[Int] -> Result[Text, DecodeTextError]` checked shape. Artifact-version
-validation rejects older encodings rather than guessing their meaning. The
-earlier canonical six-field `ConstraintError` shape remains validator-enforced.
-Version 28 removes the compiler-known integer parser and its fixed error type;
-`std.int.parse_int` and `ParseIntError` now enter MIR through ordinary source
-definitions and direct calls.
-These changes require no cache-schema advance because typed semantic cache
-payloads do not encode MIR builtins, canonical concept authority, or executable
-entry state.
-The separate standard-item change above is why the current cache schema is 4.
+Checked-MIR cache envelopes use artifact version `28` and its exact current
+MIR shape. The artifact profile requires the complete compiler-known resource
+identity trio, all matching prelude ids, the canonical six-field
+`ConstraintError`, and the current builtin set. Generic cache envelopes have a
+null `entry`; executable `.loomi` envelopes have one fixed exported entry.
+Each decoder rejects the opposite kind before MIR body validation. Integer
+parsing is ordinary `std.int` source and enters MIR as ordinary definitions and
+direct calls.
 
 The complete compilation key includes the normalized project graph, exact
 sources, language and frontend build identities, embedded standard library,
 and contract mode. A checked-MIR cache hit still runs the artifact decoder and
 MIR validator before execution or code generation. Proof-bearing checked MIR is
-not published; a forged or legacy proof-bearing payload loads as a miss. Source
-reanalysis reconstructs the same fresh `Proven` MIR as a cold build instead of
-permanently replacing its process-local proof with serialized `.loomi`
-`Recheck`. Supported nongeneric replay is typed LCIR; generic or unsupported
-replay remains legacy.
+not published; a forged or malformed proof-bearing payload loads as a miss.
+Source reanalysis reconstructs the same fresh `Proven` MIR as a cold build
+instead of permanently replacing its process-local proof with serialized
+`.loomi` `Recheck`. Supported nongeneric replay is typed LCIR; generic or
+unsupported replay remains legacy.
 
-A version 2 `.loomlib` final artifact is a separate source/interface blob, not
+A `.loomlib` version `2` final artifact is a separate source/interface blob, not
 a checked-MIR cache entry. Its `portable-library-artifact-v3` derived cache
 identity includes the complete compilation key, selected library target,
 library format, and format version. Consequently a compiler or
 compiler-distributed standard-library identity change cannot restore an
 artifact whose producer checks have not run under the current inputs, even
 though the deterministic `.loomlib` bytes themselves omit the standard-library
-implementation. This format replacement does not change persistent cache
-schema 4 or the checked-MIR cache envelope.
+implementation.
 
 ## Native object reuse
 
@@ -131,9 +118,9 @@ identify every SDK, sysroot, CRT, system library, linker subprocess, and debug
 companion as one hermetic input. Interpreter executables and `.loomlib` files
 are portable deterministic bytes and are cached as final artifacts. The
 interpreter's `final-artifact-v3` / `loom-interpreted-artifact-writer-v3`
-domain records that `.loomi` writing now closes and densely remaps the selected
-entry instead of serializing the complete checked-MIR cache payload. The full
-cache entry itself is unchanged and can serve another export.
+domain records that `.loomi` writing closes and densely remaps the selected
+entry rather than serializing the complete checked-MIR cache payload. The full
+cache entry can serve another export.
 
 ## Trust model
 

@@ -11,6 +11,7 @@ Use these terms consistently in code, diagnostics, and documentation.
 | Manifest schema | The syntax/data version of `loom.toml`, independent of language version. |
 | Lockfile schema | The data version of `loom.lock`. |
 | Package | A named, versioned source or portable-artifact unit rooted by `loom.toml`. |
+| Standalone input | A source file or directory compiled without `loom.toml`; it uses the synthetic `<standalone>@0` identity and has no package features, targets, or lockfile. |
 | Module | A source namespace within one package. A module is not a filesystem directory by definition. |
 | Target | A named manifest output selection: `bin`, `test`, or `lib`. Do not confuse it with an LLVM target triple. |
 | Entry | The selected public zero-argument, `Unit`-returning function for an executable. |

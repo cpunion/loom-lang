@@ -6,9 +6,9 @@ use std::sync::{Arc, Barrier};
 use loom_core::{FileId, Span};
 use loom_driver::{
     AnalysisHost, CacheContext, CacheLookup, DiagnosticRecord, LIBRARY_ARTIFACT_MAX_BYTES,
-    LockMode, PersistentCache, PipelineStage, Position, ProjectGraph, ProjectOptions,
-    RelatedDiagnostic, SourceOrigin, SpanRecord, SymbolId, TargetKind, decode_library_artifact,
-    discover_loom_files, encode_library_artifact, format_source,
+    LIBRARY_ARTIFACT_VERSION, LockMode, PersistentCache, PipelineStage, Position, ProjectGraph,
+    ProjectOptions, RelatedDiagnostic, SourceOrigin, SpanRecord, SymbolId, TargetKind,
+    decode_library_artifact, discover_loom_files, encode_library_artifact, format_source,
 };
 use loom_hir::{SourceUnit, lower_files};
 use loom_interpreter::{Interpreter, TestStatus, Value};
@@ -319,15 +319,15 @@ fn std_package_name_alias_and_complete_namespace_are_reserved() {
     );
 
     for module in ["std", "std.int", "std.resource", "std.future.nested"] {
-        let legacy_namespace = TestProject::new();
-        legacy_namespace.write(
+        let standalone_namespace = TestProject::new();
+        standalone_namespace.write(
             "main.loom",
             &format!("module {module}\n\npub fn main() {{}}\n"),
         );
-        let snapshot = AnalysisHost::new(&legacy_namespace.root)
-            .expect("open legacy namespace project")
+        let snapshot = AnalysisHost::new(&standalone_namespace.root)
+            .expect("open standalone namespace project")
             .snapshot()
-            .expect("analyze legacy namespace project");
+            .expect("analyze standalone namespace project");
         assert!(
             snapshot
                 .diagnostics()
@@ -638,14 +638,26 @@ fn portable_library_is_a_consumable_versioned_dependency() {
         "{error}"
     );
 
-    let mut version_one = envelope.clone();
-    version_one["version"] = serde_json::json!(1);
-    version_one["checkedMir"] = serde_json::json!("legacy producer MIR");
-    let error =
-        decode_library_artifact(&serde_json::to_vec(&version_one).expect("encode v1 artifact"))
-            .expect_err("v1 artifact requires rebuilding");
-    assert_eq!(error.code(), "LibraryArtifactVersionMismatch");
-    assert!(error.to_string().contains("version 1"), "{error}");
+    let previous = LIBRARY_ARTIFACT_VERSION
+        .checked_sub(1)
+        .expect("library artifact version must be positive");
+    let next = LIBRARY_ARTIFACT_VERSION
+        .checked_add(1)
+        .expect("library artifact version must fit u32");
+    for unsupported in [previous, next] {
+        let mut mismatched_version = envelope.clone();
+        mismatched_version["version"] = serde_json::json!(unsupported);
+        mismatched_version["checkedMir"] = serde_json::json!("must not be decoded");
+        let error = decode_library_artifact(
+            &serde_json::to_vec(&mismatched_version).expect("encode mismatched artifact"),
+        )
+        .expect_err("a mismatched artifact version must be rejected before its body");
+        assert_eq!(error.code(), "LibraryArtifactVersionMismatch");
+        assert!(
+            error.to_string().contains(&unsupported.to_string()),
+            "{error}"
+        );
+    }
 
     let mut extra_mir = envelope.clone();
     extra_mir["checkedMir"] = serde_json::json!("producer implementation");
