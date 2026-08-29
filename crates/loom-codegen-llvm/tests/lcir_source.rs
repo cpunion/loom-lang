@@ -4944,8 +4944,8 @@ fn static_concepts_emit_direct_msvc_object_without_runtime_witnesses() {
 }
 
 #[test]
-fn core02_main_devirtualizes_unique_dynamic_witnesses_to_direct_calls() {
-    let source = include_str!("../../../examples/core02/concepts.loom");
+fn concepts_polymorphism_main_devirtualizes_unique_dynamic_witnesses_to_direct_calls() {
+    let source = include_str!("../../../examples/concepts-polymorphism/concepts.loom");
     let program = compile_source(source);
     let artifact = lower_source_artifact(
         &program,
@@ -4955,19 +4955,19 @@ fn core02_main_devirtualizes_unique_dynamic_witnesses_to_direct_calls() {
     );
     let dump = dump_program(artifact.program());
     for expected in [
-        "example.concepts.label",
-        "example.concepts.format",
-        "example.concepts.next",
-        "example.concepts.static_label",
-        "example.concepts.dynamic_format",
-        "example.concepts.take_one",
+        "example.concepts_polymorphism.label",
+        "example.concepts_polymorphism.format",
+        "example.concepts_polymorphism.next",
+        "example.concepts_polymorphism.static_label",
+        "example.concepts_polymorphism.dynamic_format",
+        "example.concepts_polymorphism.take_one",
     ] {
         assert!(dump.contains(expected), "missing `{expected}`:\n{dump}");
     }
     for dead in [
-        "example.concepts.erase_label",
-        "example.concepts.forward_label",
-        "example.concepts.erase_source",
+        "example.concepts_polymorphism.erase_label",
+        "example.concepts_polymorphism.forward_label",
+        "example.concepts_polymorphism.erase_source",
     ] {
         assert!(!dump.contains(dead), "retained dead `{dead}`:\n{dump}");
     }
@@ -4976,8 +4976,8 @@ fn core02_main_devirtualizes_unique_dynamic_witnesses_to_direct_calls() {
         "dyn representation leaked:\n{dump}"
     );
 
-    let native = emit_and_run_lcir(&artifact, "source-core02-unique-dyn");
-    let legacy = emit_and_run_legacy(&program, "main", "legacy-core02-unique-dyn");
+    let native = emit_and_run_lcir(&artifact, "source-concepts-unique-dyn");
+    let legacy = emit_and_run_legacy(&program, "main", "mir-concepts-unique-dyn");
     assert!(native.output.status.success(), "{:?}", native.output);
     assert!(legacy.status.success(), "{legacy:?}");
     assert_eq!(native.output.stdout, legacy.stdout);
@@ -4998,7 +4998,7 @@ fn core02_main_devirtualizes_unique_dynamic_witnesses_to_direct_calls() {
     clippy::too_many_lines,
     reason = "one Core02 gate keeps nested dyn erasure, precise repeated descriptors, copy independence, forced relocation, and cross-target objects together"
 )]
-fn core02_tests_erase_dynamic_storage_to_concrete_layouts() {
+fn concepts_polymorphism_tests_erase_dynamic_storage_to_concrete_layouts() {
     let fields = (0..31)
         .map(|index| format!("    n{index} Int"))
         .collect::<Vec<_>>()
@@ -5074,7 +5074,7 @@ test fn dynamicStorageGcPressure() {{
     );
     let source = format!(
         "{}\n{pressure}",
-        include_str!("../../../examples/core02/concepts.loom")
+        include_str!("../../../examples/concepts-polymorphism/concepts.loom")
     );
     let program = compile_source(&source);
     let interpreted = Interpreter::new(&program).run_tests();
@@ -5089,10 +5089,10 @@ test fn dynamicStorageGcPressure() {{
     let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
     let dump = dump_program(artifact.program());
     for required in [
-        "example.concepts.erase_label",
-        "example.concepts.forward_label",
-        "example.concepts.erase_source",
-        "example.concepts.dynamicStorageGcPressure",
+        "example.concepts_polymorphism.erase_label",
+        "example.concepts_polymorphism.forward_label",
+        "example.concepts_polymorphism.erase_source",
+        "example.concepts_polymorphism.dynamicStorageGcPressure",
         "list.construct",
         "list.append",
         "list.get",
@@ -5193,8 +5193,8 @@ test fn dynamicStorageGcPressure() {{
         [concrete_type]
     );
 
-    let native = emit_and_run_lcir(&artifact, "source-core02-dyn-storage");
-    let legacy = emit_and_run_legacy_tests(&program, "legacy-core02-dyn-storage");
+    let native = emit_and_run_lcir(&artifact, "source-concepts-dyn-storage");
+    let legacy = emit_and_run_legacy_tests(&program, "mir-concepts-dyn-storage");
     assert!(native.output.status.success(), "{:?}", native.output);
     assert!(legacy.status.success(), "{legacy:?}");
     assert_eq!(native.output.stdout, legacy.stdout);
@@ -5229,11 +5229,11 @@ test fn dynamicStorageGcPressure() {{
     for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
         let directory = tempfile::tempdir().expect("create dyn-storage target output");
         let object = directory.path().join(if target.contains("windows") {
-            "core02-dyn-storage.obj"
+            "concepts-dyn-storage.obj"
         } else {
-            "core02-dyn-storage.o"
+            "concepts-dyn-storage.o"
         });
-        let ir_path = directory.path().join("core02-dyn-storage.ll");
+        let ir_path = directory.path().join("concepts-dyn-storage.ll");
         emit_lcir_native_object(
             &artifact,
             &object,

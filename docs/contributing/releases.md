@@ -37,7 +37,7 @@ For each archive platform, the workflow:
 2. separately builds `loom-runtime` with the generic CPU policy;
 3. builds `loom-cli` and `loom-lsp` in release mode with `--locked`;
 4. packs the explicit runtime archive into `runtime/` beside `loomc`;
-5. runs the Core 0.1-0.3 check/build/test/run loops on LLVM and interpreter
+5. runs the three semantic example check/build/test/run loops on LLVM and interpreter
    backends, including execution of each emitted artifact;
 6. runs the C3 check/build/test/run loop on both backends, including both
    emitted artifacts;

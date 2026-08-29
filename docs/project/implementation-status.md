@@ -16,7 +16,8 @@ long-term compatibility guarantee.
 | 32-bit triples | no | not a native claim | no runtime/executable support | feature-dependent direct LCIR object only when LLVM provides the target; `Text` and the legacy route reject | no |
 
 The Windows CI job installs LLVM 19.1.7 and Rust 1.88, checks, lints, tests, and
-builds the complete workspace, and runs the Core 0.1-0.3 check/build/test/run
+builds the complete workspace, and runs the three semantic example
+check/build/test/run
 loops on both backends. A real Windows runner has verified the LLVM bootstrap,
 compiler check/lint, runtime packing, target-machine construction, and most
 typed native CLI loops. Its last incomplete run exposed a one-MiB process-stack
@@ -43,9 +44,9 @@ The following repository fixtures are run through real compiler stages:
 
 | Fixture | Evidence |
 | --- | --- |
-| `examples/core01` | constraints/refined values, record invariants, method contracts, check/build/test/run, and built-artifact execution on both backends in Linux CI |
-| `examples/core02` | concepts, associated types, static and dynamic dispatch, mutable receiver writeback, first-class dynamic product/sum/List storage, and typed-LCIR main and test artifacts in the same dual-backend loop |
-| `examples/core03` | moving GC, lexical cleanup, stackless async, all four static Task join policies, cancellation/readiness, and typed-LCIR main/test artifacts in the same dual-backend loop |
+| `examples/constraints-contracts` | constraints/refined values, record invariants, method contracts, check/build/test/run, and built-artifact execution on both backends in Linux CI |
+| `examples/concepts-polymorphism` | concepts, associated types, static and dynamic dispatch, mutable receiver writeback, first-class dynamic product/sum/List storage, and typed-LCIR main and test artifacts in the same dual-backend loop |
+| `examples/async-resources` | moving GC, lexical cleanup, stackless async, all four static Task join policies, cancellation/readiness, and typed-LCIR main/test artifacts in the same dual-backend loop |
 | `fixtures/async-generic-contracts` | bounded generic async instances, precondition/postcondition task faults captured by fixed `Task.settled`, `TaskFault` inspection, `Task.any` cancellation, interpreter execution, and a typed-LCIR native test artifact |
 | `examples/packages/application` | path dependency, binary/test targets, and dual-backend source/artifact execution |
 | `examples/c3/application` | three-package graph, multiple modules, binary/test targets, dual-backend execution on Linux and macOS |
@@ -173,7 +174,8 @@ process stack; Windows runs the same focused closure on its native compiler
 stack. The separate macOS job
 verifies the dSYM metadata and runs the LLDB parameter and step-out inspection.
 The controlled runner prepares every native object through the production
-router, and requires Core 0.1, Core 0.2, Core 0.3, the async generic-contract,
+router, and requires the constraints/contracts, concepts/polymorphism,
+async/resources, async generic-contract,
 typed logging, typed JSON formatting, and complete C3 fixtures to select LCIR
 for their prepared main or test artifacts. The typed logging gate also checks
 the exact JSONL standard-error bytes for both run and test artifacts; the typed

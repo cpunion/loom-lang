@@ -220,22 +220,27 @@ fn contract_contains_binding(expression: &loom_mir::ContractExpr, expected: u32)
 }
 
 #[test]
-fn core01_source_lowers_and_validates() {
-    compile_and_validate(include_str!("../../../examples/core01/shop.loom"));
+fn constraints_contracts_source_lowers_and_validates() {
+    compile_and_validate(include_str!(
+        "../../../examples/constraints-contracts/shop.loom"
+    ));
 }
 
 #[test]
-fn core02_source_lowers_and_validates() {
-    let program = compile_and_validate(include_str!("../../../examples/core02/concepts.loom"));
+fn concepts_polymorphism_source_lowers_and_validates() {
+    let program = compile_and_validate(include_str!(
+        "../../../examples/concepts-polymorphism/concepts.loom"
+    ));
     assert_eq!(program.concepts.len(), 3);
     assert_eq!(program.witnesses.len(), 3);
     assert!(format!("{program:#?}").contains("MakeView"));
 }
 
 #[test]
-fn core03_source_lowers_and_validates() {
-    let program =
-        compile_with_standard_resource(include_str!("../../../examples/core03/tasks.loom"));
+fn async_resources_source_lowers_and_validates() {
+    let program = compile_with_standard_resource(include_str!(
+        "../../../examples/async-resources/tasks.loom"
+    ));
     assert!(program.functions.iter().any(|function| function.is_async));
     assert!(format!("{program:#?}").contains("Await"));
     assert!(format!("{program:#?}").contains("Tuple"));
@@ -587,7 +592,7 @@ fn earlier_contract_clauses_eliminate_weaker_later_clauses() {
 
 #[test]
 fn lowering_and_artifact_are_deterministic() {
-    let source = include_str!("../../../examples/core02/concepts.loom");
+    let source = include_str!("../../../examples/concepts-polymorphism/concepts.loom");
     let first = compile_with_standard_resource(source);
     let second = compile_with_standard_resource(source);
     for function in &first.functions {

@@ -7892,8 +7892,8 @@ fn unrefine_contract_bindings_and_diverging_branches_are_explicit() {
         ..Program::default()
     };
     let program = artifact_program_with_resource_identities(program);
-    let bytes = encode_interpreted_artifact(&program).expect("encode new Core 0.1 nodes");
-    decode_interpreted_artifact(&bytes).expect("round trip new Core 0.1 nodes");
+    let bytes = encode_interpreted_artifact(&program).expect("encode current control-flow nodes");
+    decode_interpreted_artifact(&bytes).expect("round trip current control-flow nodes");
 }
 
 #[test]

@@ -9647,37 +9647,6 @@ pub concept NoSuspend {}
     }
 
     #[test]
-    fn removed_carrier_forms_are_ordinary_unresolved_names() {
-        let source = r"module legacy
-
-dyn concept C {}
-
-fn typed(
-    first view[dyn C],
-    second box[dyn C],
-    third shared[dyn C],
-) {
-}
-
-fn constructed(value Int) {
-    discard view(value)
-    discard box(value)
-    discard shared(value)
-}
-";
-        let (_, analysis) = analyze_source(source);
-        assert!(!analysis.diagnostics.is_empty());
-        assert!(
-            analysis
-                .diagnostics
-                .iter()
-                .all(|diagnostic| diagnostic.code == "UnknownName"),
-            "{:#?}",
-            analysis.diagnostics
-        );
-    }
-
-    #[test]
     fn resolves_generic_data_and_callable_signatures_definition_first() {
         let parsed = parse_with_file(
             FileId(0),
@@ -9749,10 +9718,10 @@ fn constructed(value Int) {
     }
 
     #[test]
-    fn core01_price_order_source_reaches_body_checker() {
+    fn constraints_contracts_source_reaches_body_checker() {
         let parsed = parse_with_file(
             FileId(0),
-            include_str!("../../../examples/core01/shop.loom"),
+            include_str!("../../../examples/constraints-contracts/shop.loom"),
         );
         assert!(
             parsed.diagnostics().is_empty(),
@@ -9772,10 +9741,10 @@ fn constructed(value Int) {
     }
 
     #[test]
-    fn core02_concept_source_reaches_body_checker() {
+    fn concepts_polymorphism_source_reaches_body_checker() {
         let parsed = parse_with_file(
             FileId(0),
-            include_str!("../../../examples/core02/concepts.loom"),
+            include_str!("../../../examples/concepts-polymorphism/concepts.loom"),
         );
         assert!(
             parsed.diagnostics().is_empty(),

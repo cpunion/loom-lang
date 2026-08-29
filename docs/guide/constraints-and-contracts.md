@@ -5,7 +5,7 @@ ordinary base values, and separates expected construction failure from program
 contract faults.
 
 The executable companion for this guide is
-[`examples/core01/shop.loom`](../../examples/core01/shop.loom).
+[`examples/constraints-contracts/shop.loom`](../../examples/constraints-contracts/shop.loom).
 
 ## Constrained nominal values
 

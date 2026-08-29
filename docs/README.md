@@ -73,13 +73,13 @@ request.
 - [Security policy](../SECURITY.md) explains how to report a vulnerability
   privately.
 - [Code of Conduct](../CODE_OF_CONDUCT.md) sets expectations for participation.
-- [Design records](rfcs/README.md) preserve proposals and archived research
-  without presenting them as implemented features.
+- [Design records](rfcs/README.md) contain active proposals without presenting
+  them as implemented features.
 
 ## Reading experimental documentation
 
 The compiler and tests are the final evidence for the current implementation.
-Examples under `examples/core01`, `examples/core02`, `examples/core03`, and
+Examples under `examples/constraints-contracts`, `examples/concepts-polymorphism`, `examples/async-resources`, and
 `examples/packages` are kept in the repository's check/build/test/run closure
 and are the best executable companions to these pages.
 

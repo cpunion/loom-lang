@@ -388,8 +388,6 @@ pub async fn main() {
             "Text literal envelope must write only its tag before data: {envelope}",
         );
     }
-    assert!(!llvm.contains("loom_runtime_text_length"));
-
     let output = Command::new(executable)
         .output()
         .expect("run Text literal executable");
@@ -3391,7 +3389,6 @@ pub fn main() {
     assert!(!direct.contains("assert.fail"), "{direct}");
     assert!(checked.contains("constraint.ok"), "{checked}");
     assert!(checked.contains("constraint.error"), "{checked}");
-    assert!(!checked.contains("loom_runtime_value_summary"), "{checked}");
     let result_branch = checked
         .lines()
         .find(|line| {
@@ -4067,30 +4064,34 @@ fn core_examples_compile_and_run_as_native_programs() {
         .parent()
         .and_then(std::path::Path::parent)
         .expect("workspace root");
-    for version in ["core01", "core02", "core03"] {
-        let source = workspace.join("examples").join(version);
+    for fixture in [
+        "constraints-contracts",
+        "concepts-polymorphism",
+        "async-resources",
+    ] {
+        let source = workspace.join("examples").join(fixture);
         let snapshot = AnalysisHost::new(&source)
             .expect("load project")
             .snapshot()
             .expect("analyze project");
         assert!(
             !snapshot.has_errors(),
-            "{version}: {:?}",
+            "{fixture}: {:?}",
             snapshot.diagnostics()
         );
         let program = snapshot.executable().expect("lower executable MIR");
         let directory = tempfile::tempdir().expect("create temp directory");
         let executable = directory.path().join("program");
         let mut options = EmitOptions::run("main");
-        if version == "core03" {
+        if fixture == "async-resources" {
             options.emit_ir = Some(directory.path().join("program.ll"));
         }
         emit_native(program, &executable, &options)
-            .unwrap_or_else(|error| panic!("{version}: {error}"));
+            .unwrap_or_else(|error| panic!("{fixture}: {error}"));
         let output = Command::new(&executable).output().expect("run executable");
         assert!(
             output.status.success(),
-            "{version}: stdout={} stderr={}",
+            "{fixture}: stdout={} stderr={}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
@@ -4140,11 +4141,11 @@ fn core_examples_compile_and_run_as_native_programs() {
 
         let tests = directory.path().join("tests");
         emit_native(program, &tests, &EmitOptions::tests())
-            .unwrap_or_else(|error| panic!("{version} tests: {error}"));
+            .unwrap_or_else(|error| panic!("{fixture} tests: {error}"));
         let output = Command::new(&tests).output().expect("run native tests");
         assert!(
             output.status.success(),
-            "{version} tests: stdout={} stderr={}",
+            "{fixture} tests: stdout={} stderr={}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );

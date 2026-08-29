@@ -469,24 +469,6 @@ fn store_bytes(output: *mut c_void, bytes: &[u8]) -> i32 {
     0
 }
 
-/// Reads the cached Unicode scalar count from one validated Text object.
-/// Returns `-1` for an invalid object or output pointer.
-#[unsafe(export_name = "loom_runtime_text_length")]
-pub unsafe extern "C" fn text_length(object: *const c_void, output: *mut i64) -> i32 {
-    if output.is_null() {
-        return STANDARD_INVALID_ARGUMENT;
-    }
-    let Some(length) = (unsafe { text::scalar_length(object.cast()) }) else {
-        return STANDARD_INVALID_ARGUMENT;
-    };
-    let Ok(length) = i64::try_from(length) else {
-        return STANDARD_INVALID_ARGUMENT;
-    };
-    // SAFETY: output was checked non-null above.
-    unsafe { output.write(length) };
-    0
-}
-
 /// Returns `1` and writes a one-scalar Text when found, `0` when out of
 /// bounds, or `-1` for an invalid ABI input.
 #[unsafe(export_name = "loom_runtime_text_get")]
@@ -615,17 +597,6 @@ pub unsafe extern "C" fn bytes_get(
     // SAFETY: output was checked non-null above.
     unsafe { output.cast::<ValueSlot>().write(result) };
     1
-}
-
-/// `1` means valid UTF-8, `0` means invalid UTF-8, and `-1` is an invalid ABI
-/// pointer. This is intentionally distinct from Text validation at the type
-/// boundary because arbitrary Bytes are permitted.
-#[unsafe(export_name = "loom_runtime_bytes_is_utf8")]
-pub unsafe extern "C" fn bytes_is_utf8(data: *const c_void, length: u64) -> i32 {
-    let Some(bytes) = (unsafe { input_bytes(data, length) }) else {
-        return STANDARD_INVALID_ARGUMENT;
-    };
-    i32::from(std::str::from_utf8(bytes).is_ok())
 }
 
 /// Validates arbitrary Bytes and writes a distinct managed Text object on
@@ -1429,14 +1400,9 @@ mod tests {
     fn unicode_bytes_and_portable_paths_are_distinct() {
         let _runtime = ActiveRuntime::new();
         let text = "a界🙂";
-        let mut scalar_count = 0;
         let mut scalar = ValueSlot::default();
-        let text_value = text_value(text);
-        let text_object = text::object(&text_value).unwrap();
         // SAFETY: test buffers and outputs remain live for each call.
         unsafe {
-            assert_eq!(text_length(text_object, &raw mut scalar_count), 0);
-            assert_eq!(scalar_count, 3);
             assert_eq!(
                 text_get(
                     text.as_ptr().cast(),
@@ -1448,7 +1414,6 @@ mod tests {
             );
             assert_eq!(text_parts(&scalar).0, "界".as_bytes());
 
-            assert_eq!(bytes_is_utf8([0xff].as_ptr().cast(), 1), 0);
             let mut joined = ValueSlot::default();
             assert_eq!(
                 path_join(

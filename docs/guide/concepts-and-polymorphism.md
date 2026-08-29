@@ -5,7 +5,7 @@ explicit: a matching method name is not enough, imports do not activate an
 implementation, and the runtime does not search for implementations.
 
 The executable companion for this guide is
-[`examples/core02/concepts.loom`](../../examples/core02/concepts.loom).
+[`examples/concepts-polymorphism/concepts.loom`](../../examples/concepts-polymorphism/concepts.loom).
 
 ## Declare and implement a concept
 

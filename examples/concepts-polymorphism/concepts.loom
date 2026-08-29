@@ -1,4 +1,4 @@
-module example.concepts
+module example.concepts_polymorphism
 
 pub record Label {
     text Text

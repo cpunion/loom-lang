@@ -1055,8 +1055,9 @@ pub async fn main() {
 }
 
 #[test]
-fn core03_task_list_joins_are_complete_for_run_and_tests() {
-    let program = compile_with_std_resource(include_str!("../../../examples/core03/tasks.loom"));
+fn async_resources_task_list_joins_are_complete_for_run_and_tests() {
+    let program =
+        compile_with_std_resource(include_str!("../../../examples/async-resources/tasks.loom"));
     for (route, request) in [
         (
             "run",

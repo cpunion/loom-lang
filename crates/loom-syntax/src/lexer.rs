@@ -25,7 +25,7 @@ impl Token {
     }
 }
 
-/// All tokens recognized by the Core 0.1 and Core 0.2 surface grammar.
+/// All tokens recognized by the current surface grammar.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum TokenKind {
     Bom,
@@ -767,19 +767,6 @@ mod tests {
             vec![TokenKind::DiscardKw, TokenKind::Ident, TokenKind::Eof]
         );
         assert!(TokenKind::DiscardKw.is_keyword());
-    }
-
-    #[test]
-    fn removed_carrier_words_are_plain_identifiers() {
-        assert_eq!(
-            kinds("view box shared"),
-            vec![
-                TokenKind::Ident,
-                TokenKind::Ident,
-                TokenKind::Ident,
-                TokenKind::Eof,
-            ]
-        );
     }
 
     #[test]

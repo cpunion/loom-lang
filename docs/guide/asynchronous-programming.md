@@ -17,7 +17,7 @@ See the normative [Task composition](../reference/standard-library/task-composit
 reference for the complete signatures.
 
 The executable companion is
-[`examples/core03/tasks.loom`](../../examples/core03/tasks.loom).
+[`examples/async-resources/tasks.loom`](../../examples/async-resources/tasks.loom).
 
 ## Async functions and suffix `.await`
 
