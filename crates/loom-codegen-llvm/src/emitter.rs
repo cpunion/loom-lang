@@ -8999,23 +8999,39 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         elements: &[Expr],
         destination: PointerValue<'ctx>,
     ) -> Result<bool, CodegenError> {
-        let Some(values) = self.emit_values(elements)? else {
-            return Ok(false);
+        // A List literal may contain far more elements than a native stack can
+        // hold. Keep the partially-built List and one reusable element in
+        // precise root slots instead of materializing one ValueSlot per
+        // element plus a same-sized source-pointer array in the function entry
+        // block. The runtime append helper shallow-copies the evaluated value
+        // into a fresh node before the scratch slot is reused.
+        let list = self.alloc_value("list.literal");
+        self.initialize(list, VALUE_TAG_LIST)?;
+        let Some(first) = elements.first() else {
+            self.shallow_copy_named(destination, list, "list.literal.publish")?;
+            return Ok(true);
         };
-        self.initialize(destination, VALUE_TAG_LIST)?;
-        self.backend.store_i64_field(
-            self.backend.value_type,
-            destination,
-            VALUE_FIELD_AUX,
-            self.backend.tag(values.len() as u64),
-        )?;
-        let head = self.build_value_nodes(&values)?;
-        self.backend.store_pointer_field(
-            self.backend.value_type,
-            destination,
-            VALUE_FIELD_DATA,
-            head,
-        )?;
+        if elements.iter().any(|element| element.ty != first.ty) {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "List literal elements do not share one checked type",
+            ));
+        }
+        let element = self.alloc_typed_value(&first.ty, "list.literal.element");
+        for expression in elements {
+            if !self.emit_expr(expression, element)? {
+                return Ok(false);
+            }
+            self.publish_gc_root_state()?;
+            let status = call_int(
+                &self.backend.builder,
+                self.backend.native_list_add(),
+                &[list.into(), element.into()],
+                "list.literal.append",
+            )?;
+            self.trap_on_runtime_status(status, "list.literal.append")?;
+        }
+        self.shallow_copy_named(destination, list, "list.literal.publish")?;
         Ok(true)
     }
 
