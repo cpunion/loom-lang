@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
 
+#[cfg(not(target_os = "windows"))]
 use inkwell::targets::TargetMachine;
 use loom_codegen_llvm::{
     EmitOptions, OptimizationProfile, emit_native_object, native_object_fingerprint,
@@ -30,6 +31,22 @@ fn assert_exact_stdout_ir(ir: &str) {
     for forbidden in ["@puts", "@printf", "@loom.runtime.print"] {
         assert!(!ir.contains(forbidden), "unexpected `{forbidden}`:\n{ir}");
     }
+}
+
+fn loom_text_literal(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+}
+
+#[test]
+fn loom_text_literals_escape_windows_paths_before_source_interpolation() {
+    assert_eq!(
+        loom_text_literal("C:\\loom\\round-trip.txt"),
+        "C:\\\\loom\\\\round-trip.txt"
+    );
 }
 
 #[test]
@@ -262,14 +279,22 @@ fn release_and_cross_target_object_policies_are_real_target_inputs() {
     assert_eq!(development.data_layout, release.data_layout);
     assert_eq!(development.cpu_policy, release.cpu_policy);
     assert_eq!(development.cpu_features, release.cpu_features);
-    assert_eq!(
-        development.cpu_policy,
-        TargetMachine::get_host_cpu_name().to_string()
-    );
-    assert_eq!(
-        development.cpu_features,
-        TargetMachine::get_host_cpu_features().to_string()
-    );
+    #[cfg(target_os = "windows")]
+    {
+        assert_eq!(development.cpu_policy, "generic");
+        assert!(development.cpu_features.is_empty());
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        assert_eq!(
+            development.cpu_policy,
+            TargetMachine::get_host_cpu_name().to_string()
+        );
+        assert_eq!(
+            development.cpu_features,
+            TargetMachine::get_host_cpu_features().to_string()
+        );
+    }
     assert_ne!(development.optimization, release.optimization);
 
     let portable = target_identity(Some(&development.triple), OptimizationProfile::Development)
@@ -3957,8 +3982,13 @@ fn find_gc_root_slot_index(function: &str, pointer: &str) -> Option<usize> {
 }
 
 fn llvm_basic_blocks(function: &str) -> BTreeMap<&str, &str> {
+    let separator = if function.contains("\r\n\r\n") {
+        "\r\n\r\n"
+    } else {
+        "\n\n"
+    };
     function
-        .split("\n\n")
+        .split(separator)
         .filter_map(|block| {
             let label = block
                 .lines()
@@ -3968,6 +3998,18 @@ fn llvm_basic_blocks(function: &str) -> BTreeMap<&str, &str> {
             Some((label, block))
         })
         .collect()
+}
+
+#[test]
+fn llvm_basic_blocks_accepts_lf_and_crlf_ir() {
+    let lf = "define void @sample() {\nentry:\n  br label %done\n\ndone:\n  ret void\n}";
+    let crlf = lf.replace('\n', "\r\n");
+    for function in [lf, crlf.as_str()] {
+        let blocks = llvm_basic_blocks(function);
+        assert_eq!(blocks.len(), 2, "{function}");
+        assert!(blocks.contains_key("entry"), "{function}");
+        assert!(blocks.contains_key("done"), "{function}");
+    }
 }
 
 fn llvm_block_predecessors(block: &str) -> Vec<&str> {
@@ -4291,6 +4333,10 @@ fn duration_file_and_socket_tasks_run_natively() {
 
     let project = tempfile::tempdir().expect("create I/O project");
     let file = project.path().join("round-trip.txt");
+    let file_literal = loom_text_literal(
+        file.to_str()
+            .expect("temporary I/O path must be valid UTF-8"),
+    );
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind test listener");
     let port = listener.local_addr().expect("listener address").port();
     let server = std::thread::spawn(move || {
@@ -4314,18 +4360,18 @@ pub async fn main() {{
     assert observed == 1
     Task.sleep(delay).await
     {{
-        scoped output = create("{}").await
+        scoped output = create("{file_literal}").await
         output.write_text("hello from loom").await
         Unit
     }}
     {{
-        scoped input = open_read("{}").await
+        scoped input = open_read("{file_literal}").await
         let content = input.read_text().await
         assert content == "hello from loom"
         Unit
     }}
     {{
-        scoped socket = connect("127.0.0.1", {}).await
+        scoped socket = connect("127.0.0.1", {port}).await
         socket.write_text("ping").await
         let response = socket.read_text().await
         assert response == "pong"
@@ -4333,9 +4379,6 @@ pub async fn main() {{
     }}
 }}
 "#,
-        file.display(),
-        file.display(),
-        port,
     );
     std::fs::write(project.path().join("main.loom"), source).expect("write I/O source");
     let snapshot = AnalysisHost::new(project.path())
