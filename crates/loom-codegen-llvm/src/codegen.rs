@@ -14,7 +14,7 @@ use crate::{
     target::{NativeTargetMachine, create_target_machine},
 };
 
-const NATIVE_OBJECT_FORMAT: &str = "loom-legacy-native-object-v5";
+const NATIVE_OBJECT_FORMAT: &str = "loom-checked-mir-native-object-v1";
 
 /// Native executable harness selected by the CLI command.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -204,12 +204,12 @@ pub(crate) fn select_roots(
         })?,
         EmitKind::Tests => SourceRoots::for_tests(program),
     };
-    validate_legacy_root_signatures(program, options, &roots)?;
+    validate_checked_mir_root_signatures(program, options, &roots)?;
     let reachable = analyze_source_reachability(program, &roots)?;
     Ok((roots, reachable))
 }
 
-pub(crate) fn validate_legacy_root_signatures(
+pub(crate) fn validate_checked_mir_root_signatures(
     program: &CheckedProgram,
     options: &EmitOptions,
     roots: &SourceRoots,
@@ -279,10 +279,10 @@ pub fn native_object_fingerprint(
 ) -> Result<String, CodegenError> {
     let (roots, reachable) = select_roots(program, options)?;
     let target = create_target_machine(options.target_triple.as_deref(), options.optimization)?;
-    legacy_object_fingerprint_with_target(program, options, &roots, &reachable, &target)
+    checked_mir_object_fingerprint_with_target(program, options, &roots, &reachable, &target)
 }
 
-pub(crate) fn legacy_object_fingerprint_with_target(
+pub(crate) fn checked_mir_object_fingerprint_with_target(
     program: &CheckedProgram,
     options: &EmitOptions,
     roots: &SourceRoots,
@@ -452,7 +452,10 @@ pub fn emit_native(
 mod tests {
     #[test]
     fn native_object_fingerprint_domain_is_pinned() {
-        assert_eq!(super::NATIVE_OBJECT_FORMAT, "loom-legacy-native-object-v5");
+        assert_eq!(
+            super::NATIVE_OBJECT_FORMAT,
+            "loom-checked-mir-native-object-v1"
+        );
     }
 
     #[test]

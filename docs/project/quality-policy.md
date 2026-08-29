@@ -49,19 +49,14 @@ artifact decoding, and a 64-module incremental edit under generous upper
 bounds. It emits a versioned JSON evidence report.
 
 Every native object is prepared and emitted through the production prepared
-route. Schema 2 records the scenario, expected route, actual route, and any
-named legacy allowance. A supported fixture must select LCIR. A fixture still
-outside typed coverage may select legacy only through a reviewed allowance that
-names the boundary and explains the missing coverage. An unexpected route in
-either direction fails the runner, so newly supported coverage requires removal
-of its stale allowance.
+route. Schema 3 records the scenario, expected LCIR route, actual route, and
+whether they agree. Every controlled fixture must select LCIR; any other route
+fails the runner. The evidence schema has no exception or allowance field.
 
 Run and test artifacts are judged independently because their exact reachable
 graphs may differ. The constraints-and-contracts fixture requires typed LCIR
-for both graphs now that source
-contracts and nongeneric runtime-checked constrained construction are direct.
-Only generic or unsupported-shape runtime construction may retain a reviewed
-allowance in another fixture.
+for both graphs; source contracts and nongeneric runtime-checked constrained
+construction lower directly.
 
 Those time bounds detect gross regressions and runaway behavior on CI; they are
 not user latency service-level objectives. The C3 label in the report means

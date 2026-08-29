@@ -156,7 +156,7 @@ impl NativeTargetMachine {
         Ok(bits)
     }
 
-    pub(crate) fn validate_legacy_value_abi(&self) -> Result<(), CodegenError> {
+    pub(crate) fn validate_checked_mir_value_abi(&self) -> Result<(), CodegenError> {
         let pointer_bits = self.pointer_bits()?;
         if pointer_bits == 64 {
             return Ok(());
@@ -164,7 +164,7 @@ impl NativeTargetMachine {
         Err(CodegenError::new(
             "UnsupportedNativePointerWidth",
             format!(
-                "target {} uses {pointer_bits}-bit pointers; the current native Value ABI requires 64-bit pointers",
+                "target {} uses {pointer_bits}-bit pointers; the checked-MIR universal Value ABI requires 64-bit pointers",
                 self.triple
             ),
         ))
@@ -295,7 +295,7 @@ pub(crate) fn create_target_machine(
     optimization: OptimizationProfile,
 ) -> Result<NativeTargetMachine, CodegenError> {
     let target = create_llvm_target_machine(requested, optimization)?;
-    target.validate_legacy_value_abi()?;
+    target.validate_checked_mir_value_abi()?;
     Ok(target)
 }
 

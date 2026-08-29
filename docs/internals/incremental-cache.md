@@ -78,7 +78,7 @@ that identity. Whether a body is reused or conservatively reanalyzed, MIR
 lowering consumes only the resolved identity; it never reconstructs a policy
 from source spelling.
 
-Checked-MIR cache envelopes use artifact version `28` and its exact current
+Checked-MIR cache envelopes use artifact version `29` and its exact current
 MIR shape. The artifact profile requires the complete compiler-known resource
 identity trio, all matching prelude ids, the canonical six-field
 `ConstraintError`, and the current builtin set. Generic cache envelopes have a
@@ -95,7 +95,7 @@ not published; a forged or malformed proof-bearing payload loads as a miss.
 Source reanalysis reconstructs the same fresh `Proven` MIR as a cold build
 instead of permanently replacing its process-local proof with serialized
 `.loomi` `Recheck`. Supported nongeneric replay is typed LCIR; generic or
-unsupported replay remains legacy.
+unsupported replay remains checked-MIR.
 
 A `.loomlib` version `2` final artifact is a separate source/interface blob, not
 a checked-MIR cache entry. Its `portable-library-artifact-v3` derived cache

@@ -14,7 +14,7 @@
 //! The first whole-artifact lowerer intentionally supports only canonical
 //! direct representations and reports every reachable unsupported MIR site
 //! before constructing SSA. Production LLVM emission remains a separate
-//! vertical slice; no LCIR function is mixed with a legacy function.
+//! vertical slice; no LCIR function is mixed with a checked-MIR function.
 //! Block, instruction, and value identities are owned by one function; the
 //! builder and independent validator never interpret another function's local
 //! identity by its raw table index.

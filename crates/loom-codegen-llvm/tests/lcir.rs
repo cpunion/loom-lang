@@ -137,7 +137,7 @@ fn unit_tests(pointer_bits: u16) -> CheckedArtifact {
     unit_artifact(pointer_bits, true)
 }
 
-fn assert_no_legacy_ir(ir: &str) {
+fn assert_no_universal_value_ir(ir: &str) {
     for forbidden in [
         "loom.Value",
         "ArgNode",
@@ -154,7 +154,7 @@ fn assert_no_legacy_ir(ir: &str) {
     ] {
         assert!(
             !ir.contains(forbidden),
-            "legacy/EH token `{forbidden}` in:\n{ir}"
+            "universal-value/EH token `{forbidden}` in:\n{ir}"
         );
     }
 }
@@ -179,7 +179,7 @@ fn pure_run_has_the_zst_abi_and_only_the_stateless_output_runtime_surface() {
         assert!(!ir.contains(forbidden), "unexpected `{forbidden}`:\n{ir}");
     }
     assert!(!ir.contains("loom_context_raise_fault_v1"), "{ir}");
-    assert_no_legacy_ir(&ir);
+    assert_no_universal_value_ir(&ir);
 }
 
 #[test]
@@ -198,7 +198,7 @@ fn pure_run_returns_failure_when_exact_stdout_is_not_writable() {
         write.contains("i64 5"),
         "Unit plus LF must use the exact five-byte length: {write}"
     );
-    assert_no_legacy_ir(&ir);
+    assert_no_universal_value_ir(&ir);
 
     let failed = run_with_read_only_stdout(
         &directory.path().join("pure-unit-output-failure"),
@@ -227,7 +227,7 @@ fn passing_tests_return_failure_when_exact_stdout_is_not_writable() {
     let (ir, normal) = emit_and_run(&artifact, &directory, "pure-test-output-failure");
     assert!(normal.status.success(), "{normal:?}");
     assert_eq!(normal.stdout, b"passed main\n");
-    assert_no_legacy_ir(&ir);
+    assert_no_universal_value_ir(&ir);
 
     let failed = run_with_read_only_stdout(
         &directory.path().join("pure-test-output-failure"),
@@ -301,7 +301,7 @@ fn cfg_preorder_not_block_insertion_order_drives_llvm_emission() {
         entry < body && body < exit,
         "LLVM CFG is not in preorder:\n{ir}"
     );
-    assert_no_legacy_ir(&ir);
+    assert_no_universal_value_ir(&ir);
 }
 
 #[test]
@@ -552,7 +552,7 @@ fn scalar_abis_direct_calls_phi_predicates_and_float_bits_are_mechanical() {
     assert!(!ir.contains("branch.else.edge"), "{ir}");
     assert!(ir.contains("call i1 @loom.lcir.fn.0"), "{ir}");
     assert!(ir.contains("0x7FF80000000000A5"), "{ir}");
-    assert_no_legacy_ir(&ir);
+    assert_no_universal_value_ir(&ir);
 }
 
 #[test]
@@ -1377,7 +1377,7 @@ fn checked_integer_operations_use_intrinsics_and_guard_signed_division() {
         "{fault_declaration}\n{ir}"
     );
     assert!(ir.contains("cold noinline"), "{ir}");
-    assert_no_legacy_ir(&ir);
+    assert_no_universal_value_ir(&ir);
 }
 
 #[test]
@@ -1578,7 +1578,7 @@ fn invoke_shares_one_first_primary_fault_context_across_active_cleanup() {
         !ir.contains(" invoke "),
         "LLVM EH invoke leaked into:\n{ir}"
     );
-    assert_no_legacy_ir(&ir);
+    assert_no_universal_value_ir(&ir);
 }
 
 #[test]
@@ -1741,7 +1741,7 @@ fn tests_harness_is_ordered_continues_after_fault_and_never_creates_an_executor(
         deactivate < normal_destroy,
         "normal test cleanup must deactivate before destroy:\n{ir}"
     );
-    assert_no_legacy_ir(&ir);
+    assert_no_universal_value_ir(&ir);
 }
 
 #[test]
@@ -1756,7 +1756,7 @@ fn empty_tests_return_success_without_runtime_or_output() {
     assert!(output.status.success(), "{output:?}");
     assert!(output.stdout.is_empty(), "{output:?}");
     assert!(!ir.contains("loom_runtime_"), "{ir}");
-    assert_no_legacy_ir(&ir);
+    assert_no_universal_value_ir(&ir);
 }
 
 #[test]

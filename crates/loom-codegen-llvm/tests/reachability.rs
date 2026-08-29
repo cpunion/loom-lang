@@ -342,7 +342,6 @@ fn dead() {
             Builtin::LogWrite,
         ])
     );
-    assert!(!reachable.builtins.contains(&Builtin::JsonParse));
 }
 
 #[test]
@@ -386,8 +385,6 @@ fn dead(text Text) {
             Builtin::LogWrite,
         ])
     );
-    assert!(!reachable.builtins.contains(&Builtin::JsonParse));
-
     let artifact = encode_interpreted_artifact(program).expect("encode structured artifact");
     assert_eq!(
         artifact,

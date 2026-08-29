@@ -13,7 +13,7 @@ diagnostics. Source root selection and closure accept only
 `loom_mir::CheckedProgram`; raw MIR cannot enter this production pass, and the
 automatic native router either lowers the complete reachable typed artifact
 to independently checked LCIR or stores this exact source graph for one
-whole-artifact legacy emission.
+whole-artifact checked-MIR emission.
 
 ## Interpreted executable closure
 
@@ -63,7 +63,7 @@ graph, and generated typed root maps expand only live aggregate SSA values to
 their deterministic managed leaves. An unreachable concat or Text-bearing
 product/sum cannot change representation or route selection. Other unsupported
 dynamic Text producers, Text inside a transparent/refined carrier, and managed
-lists still change the complete reachable artifact to the legacy route before
+lists still change the complete reachable artifact to the checked-MIR route before
 LCIR construction.
 
 ## Roots
@@ -119,7 +119,7 @@ recursive calls close back onto one key, while recursion that changes the key
 is rejected as unsupported under finite instance, edge, and key-structure
 budgets. This rejection occurs during planning, before any partial LCIR is
 allocated. A generic function that is not reached cannot consume those budgets
-or change direct-versus-legacy route selection.
+or change direct-versus-checked-MIR route selection.
 
 For a concrete `dyn C` view, LCIR additionally groups artifact-reachable
 witnesses by the exact concept and associated-type bindings. One closed

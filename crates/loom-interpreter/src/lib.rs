@@ -3350,7 +3350,7 @@ impl<'program> Interpreter<'program> {
         }
         if matches!(
             builtin,
-            Builtin::ListAdd | Builtin::ListLength | Builtin::ListGet
+            Builtin::ListAdd | Builtin::ListLength | Builtin::ListGet | Builtin::ListToTextMap
         ) {
             return self.eval_list_builtin(builtin, arguments, span);
         }
@@ -3372,8 +3372,8 @@ impl<'program> Interpreter<'program> {
         ) {
             return self.eval_text_map_builtin(builtin, arguments, span);
         }
-        if matches!(builtin, Builtin::JsonParse | Builtin::JsonFormat) {
-            return self.eval_json_builtin(builtin, arguments, span);
+        if builtin == Builtin::JsonFormat {
+            return self.eval_json_format_builtin(arguments, span);
         }
         if matches!(builtin, Builtin::IoErrorKind | Builtin::IoErrorMessage) {
             return self.eval_io_error_builtin(builtin, arguments, span);
@@ -3455,6 +3455,28 @@ impl<'program> Interpreter<'program> {
                     .and_then(|index| elements.get(index))
                     .cloned();
                 self.option_value(element, span)
+            }
+            (Builtin::ListToTextMap, [Value::List { elements }]) => {
+                let mut entries = elements
+                    .iter()
+                    .map(|element| match element {
+                        Value::Tuple { elements } => match elements.as_slice() {
+                            [Value::Text { value: key }, value] => Ok((key.clone(), value.clone())),
+                            _ => Err(self.invalid_builtin_fault(span)),
+                        },
+                        _ => Err(self.invalid_builtin_fault(span)),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                entries.sort_by(|left, right| left.0.cmp(&right.0));
+                if let Some(key) = entries
+                    .windows(2)
+                    .find_map(|pair| (pair[0].0 == pair[1].0).then(|| pair[0].0.clone()))
+                {
+                    self.result_value(false, Value::Text { value: key }, span)
+                } else {
+                    let map = self.text_map_value_from_sorted_entries(entries, span)?;
+                    self.result_value(true, map, span)
+                }
             }
             (Builtin::ListAdd, _) => Err(self
                 .runtime_fault(
@@ -3542,7 +3564,7 @@ impl<'program> Interpreter<'program> {
                     entries.push((key.clone(), value.clone()));
                 }
                 entries.sort_by(|left, right| left.0.cmp(&right.0));
-                self.text_map_value(entries, span)
+                self.text_map_value_from_sorted_entries(entries, span)
             }
             (Builtin::TextMapRemove, [map, Value::Text { value: key }]) => {
                 let mut entries = self.text_map_entries(map, span)?;
@@ -3579,6 +3601,14 @@ impl<'program> Interpreter<'program> {
         span: Span,
     ) -> Result<Value, ExecutionFailure> {
         entries.sort_by(|left, right| left.0.cmp(&right.0));
+        self.text_map_value_from_sorted_entries(entries, span)
+    }
+
+    fn text_map_value_from_sorted_entries(
+        &self,
+        entries: Vec<(String, Value)>,
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
         let ty = self.program.prelude.text_map.ok_or_else(|| {
             self.runtime_fault(
                 "LOOM_RUNTIME_INVALID_MIR",
@@ -3595,115 +3625,31 @@ impl<'program> Interpreter<'program> {
         })
     }
 
-    fn eval_json_builtin(
+    fn eval_json_format_builtin(
         &self,
-        builtin: Builtin,
         arguments: &[Value],
         span: Span,
     ) -> Result<Value, ExecutionFailure> {
-        match (builtin, arguments) {
-            (Builtin::JsonParse, [Value::Text { value }]) => {
-                match loom_runtime::parse_json(value) {
-                    Ok(value) => self
-                        .json_from_runtime(&value, span)
-                        .and_then(|value| self.result_value(true, value, span)),
-                    Err(error) => match error.kind {
-                        loom_runtime::JsonFailureKind::InvalidSyntax => self.json_error_result(
-                            VariantId(0),
-                            Some(i64::try_from(error.offset).unwrap_or(i64::MAX)),
-                            span,
-                        ),
-                        loom_runtime::JsonFailureKind::NumberOutOfRange => self.json_error_result(
-                            VariantId(1),
-                            Some(i64::try_from(error.offset).unwrap_or(i64::MAX)),
-                            span,
-                        ),
-                        loom_runtime::JsonFailureKind::DepthLimit => {
-                            self.json_error_result(VariantId(2), None, span)
-                        }
-                        loom_runtime::JsonFailureKind::NonFiniteNumber => {
-                            self.json_error_result(VariantId(3), None, span)
-                        }
-                    },
-                }
-            }
-            (Builtin::JsonFormat, [value]) => match self.json_to_runtime(value, span, 0) {
+        match arguments {
+            [value] => match self.json_to_runtime(value, span, 0) {
                 Ok(value) => match loom_runtime::format_json(&value) {
                     Ok(value) => self.result_value(true, Value::Text { value }, span),
-                    Err(error) => match error.kind {
-                        loom_runtime::JsonFailureKind::DepthLimit => {
-                            self.json_error_result(VariantId(2), None, span)
+                    Err(error) => match error {
+                        loom_runtime::JsonFormatFailure::DepthLimit => {
+                            self.json_format_error_result(VariantId(2), span)
                         }
-                        loom_runtime::JsonFailureKind::NonFiniteNumber => {
-                            self.json_error_result(VariantId(3), None, span)
-                        }
-                        loom_runtime::JsonFailureKind::InvalidSyntax
-                        | loom_runtime::JsonFailureKind::NumberOutOfRange => {
-                            Err(self.invalid_builtin_fault(span))
+                        loom_runtime::JsonFormatFailure::NonFiniteNumber => {
+                            self.json_format_error_result(VariantId(3), span)
                         }
                     },
                 },
                 Err(JsonConversionFailure::DepthLimit) => {
-                    self.json_error_result(VariantId(2), None, span)
+                    self.json_format_error_result(VariantId(2), span)
                 }
                 Err(JsonConversionFailure::Invalid(failure)) => Err(failure),
             },
             _ => Err(self.invalid_builtin_fault(span)),
         }
-    }
-
-    fn json_from_runtime(
-        &self,
-        value: &loom_runtime::JsonNode,
-        span: Span,
-    ) -> Result<Value, ExecutionFailure> {
-        let ty = self.program.prelude.json.ok_or_else(|| {
-            self.runtime_fault(
-                "LOOM_RUNTIME_INVALID_MIR",
-                "prelude Json type is missing",
-                span,
-            )
-        })?;
-        let (variant, payload) = match value {
-            loom_runtime::JsonNode::Null => (VariantId(0), Vec::new()),
-            loom_runtime::JsonNode::Bool(value) => {
-                (VariantId(1), vec![Value::Bool { value: *value }])
-            }
-            loom_runtime::JsonNode::Number(value) => {
-                (VariantId(2), vec![Value::Float { value: *value }])
-            }
-            loom_runtime::JsonNode::Text(value) => (
-                VariantId(3),
-                vec![Value::Text {
-                    value: value.clone(),
-                }],
-            ),
-            loom_runtime::JsonNode::Array(values) => (
-                VariantId(4),
-                vec![Value::List {
-                    elements: values
-                        .iter()
-                        .map(|value| self.json_from_runtime(value, span))
-                        .collect::<Result<Vec<_>, _>>()?,
-                }],
-            ),
-            loom_runtime::JsonNode::Object(values) => {
-                let entries = values
-                    .iter()
-                    .map(|(key, value)| {
-                        self.json_from_runtime(value, span)
-                            .map(|value| (key.clone(), value))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let map = self.text_map_value(entries, span)?;
-                (VariantId(5), vec![map])
-            }
-        };
-        Ok(Value::Enum {
-            ty,
-            variant,
-            payload,
-        })
     }
 
     fn json_to_runtime(
@@ -3759,10 +3705,9 @@ impl<'program> Interpreter<'program> {
         }
     }
 
-    fn json_error_result(
+    fn json_format_error_result(
         &self,
         variant: VariantId,
-        offset: Option<i64>,
         span: Span,
     ) -> Result<Value, ExecutionFailure> {
         let ty = self.program.prelude.json_error.ok_or_else(|| {
@@ -3772,16 +3717,12 @@ impl<'program> Interpreter<'program> {
                 span,
             )
         })?;
-        let payload = offset
-            .into_iter()
-            .map(|value| Value::Int { value })
-            .collect();
         self.result_value(
             false,
             Value::Enum {
                 ty,
                 variant,
-                payload,
+                payload: Vec::new(),
             },
             span,
         )

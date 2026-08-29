@@ -16,7 +16,7 @@ its typed functions and run/test harness without the universal value ABI.
 Synchronous artifacts do not construct an executor; a typed async root owns one
 executor for its Task lifecycle. Its production prepared router attempts that whole-artifact
 lowering once. `Complete` selects only typed LCIR; only `Unsupported` stores a
-source reachability graph and selects the complete legacy emitter. Both routes
+source reachability graph and selects the complete checked-MIR emitter. Both routes
 have independent object identities. The remaining LCIR coverage and deletion
 gates are in the
 [typed code generation IR RFC](../rfcs/typed-codegen-ir.md).
@@ -130,7 +130,7 @@ whole-artifact fallback.
 Text planning is bounded before LCIR allocation or source storage is cloned.
 One UTF-8 literal may contain at most 1 MiB, and all literal instructions in
 one artifact may contain at most 16 MiB in total. Crossing either bound is
-unsupported coverage and selects the complete legacy route. Independent LCIR
+unsupported coverage and selects the complete checked-MIR route. Independent LCIR
 validation repeats both limits before LLVM constructs any constant object.
 
 Canonical `Bytes` has one tagless managed-pointer representation. The exact
@@ -218,7 +218,9 @@ DCE, and require no universal comparison instruction or runtime type switch.
 
 The recursive `Json` carrier therefore receives ordinary structural equality
 through the same generated List/TextMap helper cycles as user-defined recursive
-types. JSON parsing remains a separate standard-library coverage boundary.
+types. `std.json.parse_json` is an ordinary source call graph over Bytes, List,
+Text, `TextMapConstructEntries`, and Float primitives; LCIR contains no JSON
+parse instruction.
 
 ## Typed JSON formatting
 
@@ -242,7 +244,8 @@ partial Text or activating source fault state.
 LLVM consumes the runtime status and constructs the exact direct Result sum in
 SSA. The boundary contains no universal `ValueSlot`, source type identifier,
 runtime layout registry, scheduler, executor, or source-visible address. JSON
-parsing and recursive Json equality remain separate coverage boundaries.
+parsing and recursive Json equality use ordinary source and generated-helper
+paths, respectively.
 
 Support classification first builds one concrete aggregate plan, without
 allocating LCIR. The plan covers every reachable structural tuple, closed
@@ -262,7 +265,7 @@ Structural size counts every aggregate occurrence, sum variant, and payload or
 product field occurrence. A wide tuple, record, or enum and repeated nested
 aggregates therefore consume the same finite budget as a deep chain. Crossing
 either limit is stable unsupported
-coverage and selects the atomic legacy route; it is not a lowering defect and
+coverage and selects the atomic checked-MIR route; it is not a lowering defect and
 cannot consume the compiler's call stack. Independent LCIR validation enforces
 the same limits for explicit builder clients.
 
@@ -273,7 +276,7 @@ unit per field, writes charge the forward extraction plus reverse insertion,
 and inout calls reserve reconstruction on both normal and fault edges. An
 invalid field path, a path through a protected or managed parent, excessive
 depth, or exhausted work budget produces `Unsupported(ProjectedPlace)` during
-classification. The whole artifact then selects the legacy route before any
+classification. The whole artifact then selects the checked-MIR route before any
 LCIR value or block is allocated.
 
 `ValueType` entries are representation alternatives, not a global uniqueness
@@ -535,8 +538,8 @@ only the active payload, including product fields nested inside it. Slot order
 is deterministic by value and lexicographic projection, bitmap row zero is
 empty, and identical rows are deduplicated. A function with no managed leaf
 live across a safepoint has no typed shadow frame. The runtime ABI limits are
-checked during LLVM emission; an excess is `ProgramTooLarge`, never legacy
-fallback.
+checked during LLVM emission; an excess is `ProgramTooLarge` and does not change
+route selection.
 
 `ListConstruct`, immutable `ListAppend`, `ListLength`, and `ListGet` are
 first-class typed instructions. Allocation sites root even otherwise-dead List
@@ -546,19 +549,25 @@ greatest-fixed-point `Unique` ownership fact across CFG edges and loop phis;
 entry values, copies, calls, aggregate embedding, projections, and ambiguous
 joins are `Shared`. Raw LCIR builders cannot forge this certificate.
 
-`TextMapConstruct`, immutable `TextMapInsert`, `TextMapLength`,
-`TextMapContains`, `TextMapGet`, checked indexed `TextMapEntryGet`, and
-immutable `TextMapRemove` are likewise first-class typed instructions. The
-semantic value argument is part of the concrete map type; `get` must return the
-exact canonical `Option[V]`, while source `entry_at` must return the exact
-canonical `Option[(Text, V)]`. Independent validation requires canonical
-managed `Text` keys. Construct uses the null empty representation. Insert and
-successful multi-entry removal
-perform functional copies, so aliases keep their previous logical value; a
-missing removal reuses the original pointer and removing the final entry
-returns the canonical null value. Future in-place update requires a
-checked-MIR-only uniqueness proof rather than an address or reference-count
-observation.
+`TextMapConstruct`, `TextMapConstructEntries`, immutable `TextMapInsert`,
+`TextMapLength`, `TextMapContains`, `TextMapGet`, checked indexed
+`TextMapEntryGet`, and immutable `TextMapRemove` are likewise first-class typed
+instructions. The semantic value argument is part of the concrete map type;
+`get` must return the exact canonical `Option[V]`, while source `entry_at` must
+return the exact canonical `Option[(Text, V)]`. Independent validation requires
+canonical managed `Text` keys. Construct uses the null empty representation.
+Insert and successful multi-entry removal perform functional copies, so aliases
+keep their previous logical value; a missing removal reuses the original
+pointer and removing the final entry returns the canonical null value.
+
+`TextMapConstructEntries` accepts the exact canonical `List[(Text, V)]` and
+produces the exact canonical `Result[TextMap[V], Text]`. It is one collecting
+bulk construction: successful input is sorted once by canonical UTF-8 key order
+and published as one map, while duplicate input returns the lexicographically
+smallest duplicated Text key. Independent validation rederives the List tuple,
+key, value, map, Result, and error Text identities. The instruction is not a
+chain of `TextMapInsert` operations and exposes neither mutable TextMap storage
+nor ownership syntax.
 
 Insertion roots and reloads the old map, Text key, and every managed leaf of
 `V`. Removal locates and consumes its key before allocation, roots exactly the
@@ -636,7 +645,7 @@ an intermediate composite. A first-class stored `Task.all` lowers to
 one child. LLVM generates one exact typed composite frame and result tuple for
 that static shape. Runtime adoption validates the complete ordered child set
 before transferring it from the current parent and publishing the composite;
-the legacy universal join-result path is never called.
+the checked-MIR universal join-result path is never called.
 
 A nonempty, immediately awaited, fixed-arity `Task.any` also lowers directly to
 `AwaitTasks` when every child has the same exact output type. The plan and frame
@@ -878,7 +887,7 @@ ordinary direct call after closure, and associated projections do not survive
 in a completed key or physical representation. Dynamic instance closure erases
 a unique witness or retains only the called requirement slot for every member
 of a finite closed candidate catalog. Missing, open, generic, and
-prerequisite-dependent candidate sets still select complete legacy lowering;
+prerequisite-dependent candidate sets still select complete checked-MIR lowering;
 no universal value, runtime registry, or witness ABI enters typed LCIR.
 
 One public `INSTANCE_KEY_STRUCTURE_BUDGET` limits the combined nested type and
@@ -987,7 +996,7 @@ it with `Recheck`. For supported nongeneric shapes the lowerer reconstructs the
 typed predicate CFG and emits an explicit runtime-fault guard before the
 crate-private established-value instruction. The raw builder still cannot mint
 that instruction, and a rejected path has no nominal SSA value. Unsupported
-generic or value shapes select the complete checking legacy route.
+generic or value shapes select the complete checked-MIR route.
 
 The validator reports independently discoverable `ValidationErrors`; it does
 not repair a malformed program. Current checks include:
@@ -1067,7 +1076,7 @@ span carried in the coroutine frame. Root async Tasks receive their declaration
 span from the harness. Their fault edges traverse the same lexical cleanup
 suffix as any other fault.
 Contracts over an unsupported representation or operation still select one
-atomic legacy artifact rather than mixing the two native routes.
+atomic checked-MIR artifact rather than mixing the two native routes.
 
 `ContractFaultMetadata` distinguishes assertion, precondition, postcondition,
 and invariant faults. Named contracts carry their source code and the derived
@@ -1143,13 +1152,13 @@ transparent/refined managed carriers.
 Path regressions cover the canonical one-field product, exact closed error
 selectors, non-collecting construction/extraction, collecting join effects,
 stable dumps, malformed shapes, live aliases through moving-GC pressure, and
-production run/test roots without legacy path symbols.
+production run/test roots without untyped path-helper symbols.
 Coroutine regressions cover malformed plan rows, canonical plan identity,
 typed Task construction, four ordered root suspension states, a nested
 two-state coroutine with a live Task handle and deterministic immediate-ready
 second child, scalar/Text/product results, exact managed frame bitmaps, parent
 Text relocation while a child allocates beyond the initial 64 KiB collection
-threshold, run/test root lifecycle, interpreter/legacy/typed differential
+threshold, run/test root lifecycle, interpreter/checked-MIR/typed differential
 execution, and Linux/MSVC objects. Fallible coroutine regressions additionally
 cover managed `Result[Text, E]` completion, exact completed and suspension
 carrier offsets/bitmaps, active-tag shadow-root rebuilds, inactive zero lanes,
@@ -1175,20 +1184,20 @@ bounded persistent-map allocation, and sparse-map reference differentials.
 LLVM-side tests additionally cover typed ABIs, block insertion order independent
 of dominance order, same-target edge normalization, exact scalar predicates,
 checked arithmetic, proved successors, first-primary fault suppression, fatal
-runtime setup failures, ordered tests, atomic automatic/legacy route selection,
+runtime setup failures, ordered tests, atomic automatic/checked-MIR route selection,
 direct-product construction and mutation, closed-sum construction and ordered
 exhaustive matches, tagless/tag-only/tagged ABIs, unusual carrier alignment,
 `Result` test outcomes, normal and fault writebacks,
-source/interpreter/legacy differentials, an explicit checked-MIR float-pattern
+source/interpreter/checked-MIR differentials, an explicit checked-MIR float-pattern
 differential across the interpreter and both native routes, shared typed arm
 blocks for wide enums, high-use validation against wide schemas, live
 optimized sum-carrier SSA, route-separated identity, object-cache
 behavior, linking, execution, and verifier/optimization gates on Linux and
 macOS. The parameter-driven cross-language benchmark remains on the atomic
-legacy route because its root also reaches dynamic text, List, parsing, and
+checked-MIR route because its root also reaches dynamic text, List, parsing, and
 matching;
 the direct aggregate tests are the current closed-workload evidence. The
 platform-independent Windows CI job checks, lints, tests, and builds
 `loom-codegen-ir`; cross-target LLVM tests also emit direct closed-sum MSVC
-COFF objects from the same live carrier fixture without selecting the legacy
+COFF objects from the same live carrier fixture without selecting the checked-MIR
 route.

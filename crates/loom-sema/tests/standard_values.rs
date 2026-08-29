@@ -6,10 +6,15 @@ use loom_syntax::parse_with_file;
 fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
     let root_file = FileId(0);
     let standard_log_file = FileId(1);
+    let standard_json_file = FileId(2);
     let parsed = parse_with_file(root_file, source);
     let standard_log = parse_with_file(
         standard_log_file,
         include_str!("../../../library/std/src/log.loom"),
+    );
+    let standard_json = parse_with_file(
+        standard_json_file,
+        include_str!("../../../library/std/src/json.loom"),
     );
     assert!(
         parsed.diagnostics().is_empty(),
@@ -17,9 +22,10 @@ fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
         parsed.diagnostics()
     );
     assert!(
-        standard_log.diagnostics().is_empty(),
-        "std.log syntax diagnostics: {:#?}",
-        standard_log.diagnostics()
+        standard_log.diagnostics().is_empty() && standard_json.diagnostics().is_empty(),
+        "standard syntax diagnostics: log={:#?} json={:#?}",
+        standard_log.diagnostics(),
+        standard_json.diagnostics()
     );
     let root_package = PackageId::new("sema-test", "0");
     let standard_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
@@ -33,6 +39,11 @@ fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
             file: standard_log_file,
             package: standard_package.clone(),
             syntax: standard_log.ast(),
+        },
+        PackageSourceUnit {
+            file: standard_json_file,
+            package: standard_package.clone(),
+            syntax: standard_json.ast(),
         },
     ]);
     assert!(
@@ -291,6 +302,40 @@ async fn network(host Text, port Int) Result[Unit, IoError] {
 "#,
     );
     assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+}
+
+#[test]
+fn list_tuple_bulk_text_map_constructor_has_one_exact_generic_shape() {
+    let diagnostics = analyze_source(
+        r"
+module bulk_text_map
+
+fn valid(entries List[(Text, Int)]) Result[TextMap[Int], Text] {
+    entries.to_text_map()
+}
+",
+    );
+    assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+
+    let diagnostics = analyze_source(
+        r"
+module invalid_bulk_text_map
+
+fn wrong(values List[Int], wrongKeys List[(Int, Int)], entries List[(Text, Int)]) {
+    let notPairs = values.to_text_map()
+    let notTextKeys = wrongKeys.to_text_map()
+    let extraArgument = entries.to_text_map(1)
+}
+",
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "TypeMismatch")
+            .count()
+            >= 3,
+        "{diagnostics:#?}"
+    );
 }
 
 #[test]

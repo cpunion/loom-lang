@@ -108,16 +108,19 @@ pub fn compile(source: &str) -> Result<loom_mir::CheckedProgram, String> {
         FileId(3),
         include_str!("../../library/std/src/resource.loom"),
     );
+    let standard_json = parse_with_file(FileId(4), include_str!("../../library/std/src/json.loom"));
     if !parsed.diagnostics().is_empty() {
         return Err(format!("syntax diagnostics: {:#?}", parsed.diagnostics()));
     }
     if !standard_int.diagnostics().is_empty()
         || !standard_log.diagnostics().is_empty()
         || !standard_resource.diagnostics().is_empty()
+        || !standard_json.diagnostics().is_empty()
     {
         return Err(format!(
-            "standard-library syntax diagnostics: int={:#?}, log={:#?}, resource={:#?}",
+            "standard-library syntax diagnostics: int={:#?}, json={:#?}, log={:#?}, resource={:#?}",
             standard_int.diagnostics(),
+            standard_json.diagnostics(),
             standard_log.diagnostics(),
             standard_resource.diagnostics()
         ));
@@ -144,6 +147,11 @@ pub fn compile(source: &str) -> Result<loom_mir::CheckedProgram, String> {
             file: FileId(3),
             package: standard_package.clone(),
             syntax: standard_resource.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(4),
+            package: standard_package.clone(),
+            syntax: standard_json.ast(),
         },
     ]);
     if !lowered.diagnostics.is_empty() {

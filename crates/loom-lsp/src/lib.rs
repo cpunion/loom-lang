@@ -1084,12 +1084,6 @@ const STANDARD_SYMBOLS: &[StandardSymbol] = &[
         signature: "enum LogLevel",
     },
     StandardSymbol {
-        name: "parse_json",
-        kind: "function",
-        module: "std.json",
-        signature: "fn parse_json(text Text) Result[Json, JsonError]",
-    },
-    StandardSymbol {
         name: "format_json",
         kind: "function",
         module: "std.json",

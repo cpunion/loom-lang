@@ -3264,8 +3264,8 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             | BuiltinValue::TextMapGet
             | BuiltinValue::TextMapEntryAt
             | BuiltinValue::TextMapInsert
+            | BuiltinValue::ListToTextMap
             | BuiltinValue::TextMapRemove
-            | BuiltinValue::JsonParse
             | BuiltinValue::JsonFormat
             | BuiltinValue::IoErrorKind
             | BuiltinValue::IoErrorMessage
@@ -3739,8 +3739,8 @@ fn executable_builtin(builtin: BuiltinValue) -> Option<Builtin> {
         BuiltinValue::TextMapGet => Builtin::TextMapGet,
         BuiltinValue::TextMapEntryAt => Builtin::TextMapEntryAt,
         BuiltinValue::TextMapInsert => Builtin::TextMapInsert,
+        BuiltinValue::ListToTextMap => Builtin::ListToTextMap,
         BuiltinValue::TextMapRemove => Builtin::TextMapRemove,
-        BuiltinValue::JsonParse => Builtin::JsonParse,
         BuiltinValue::JsonFormat => Builtin::JsonFormat,
         BuiltinValue::IoErrorKind => Builtin::IoErrorKind,
         BuiltinValue::IoErrorMessage => Builtin::IoErrorMessage,

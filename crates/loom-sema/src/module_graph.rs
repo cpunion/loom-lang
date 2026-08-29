@@ -261,7 +261,6 @@ pub(crate) fn is_compiler_known_import(path: &Path) -> bool {
             | "std.file.try_create_path"
             | "std.net.connect"
             | "std.net.try_connect"
-            | "std.json.parse_json"
             | "std.json.format_json"
             | "std.log.write"
     )

@@ -10,12 +10,12 @@ entire reachable artifact. A completely supported direct artifact uses typed
 LCIR for primitive values, direct `Text`, one-pointer typed `Bytes`, structural
 tuples, one-field typed `Path`, closed records, compile-time-established refined
 values, and eligible closed enums. Any reachable feature outside current LCIR
-coverage selects the complete legacy layout below; the two callable ABIs are
+coverage selects the complete checked-MIR layout below; the two callable ABIs are
 never mixed in one object. In particular, supported nongeneric `.loomi` MIR
 `Recheck`
 constructions replay their predicate in typed LCIR before entering the
 transparent representation. Generic or otherwise unsupported proof replay
-uses the legacy checker.
+uses the checked-MIR checker.
 
 ## Universal value envelope
 
@@ -185,12 +185,12 @@ future durability guarantee must come from an explicit flush/sync operation.
 
 The current exact runtime identity is defined in
 [Versioning and compatibility](../project/versioning.md). Typed-task ABI v1,
-coroutine v2, wait v1, standard-library ABI v5, Text v3, and GC v9 remain
-unchanged.
+coroutine v2, wait v1, standard-library ABI v6, Text v3, and GC v9 identify the
+corresponding current components.
 
-## Legacy primitive and aggregate specialization
+## Checked-MIR primitive and aggregate specialization
 
-Within a complete legacy object, `Unit`, `Bool`, `Int`, and `Float` can use
+Within a complete checked-MIR object, `Unit`, `Bool`, `Int`, and `Float` can use
 direct private LLVM values in eligible internal calls. Monomorphic records with
 no invariant and only direct primitive fields can use a separate closed-world
 specialization:
@@ -202,7 +202,7 @@ specialization:
 
 Unsupported specialization boundaries materialize the independent universal
 representation. This preserves value-copy semantics and prevents a private
-stack address from escaping. These layouts are legacy emitter decisions and
+stack address from escaping. These layouts are checked-MIR emitter decisions and
 are not reused by typed LCIR.
 
 Records, enums, refined values, tuples, and generic lists on the universal path
@@ -268,7 +268,7 @@ Shapes outside the current typed-LCIR SupportReport—including non-regular
 generic expansion, protected projections, unsupported contract/cleanup forms,
 explicit mutable coroutine parameters, and finite/open dynamic coroutine
 carriers—still select the complete universal route. Typed LCIR does not change
-the legacy runtime ABI or make either object ABI public.
+the checked-MIR runtime ABI or make either object ABI public.
 
 See [Code generation IR](codegen-ir.md) for the implemented foundation and the
 [typed code generation IR RFC](../rfcs/typed-codegen-ir.md) for the accepted
@@ -373,7 +373,7 @@ aggregate uses are rebuilt from possibly moved leaf reloads. Per-site bitmaps
 are exact and results are excluded at their defining safepoint. Functions with
 no live-across managed leaf emit no frame. Other dynamic producers, Text inside
 transparent/refined carriers, and other unsupported managed shapes remain
-complete legacy fallback. Concrete closed Lists instead use direct managed
+complete checked-MIR fallback. Concrete closed Lists instead use direct managed
 pointers and typed repeated descriptors.
 
 All payload-bearing tagged sums use a target-data-derived byte-class plan.
@@ -451,7 +451,7 @@ tracing. Synchronous native frames publish pointers to live universal slots
 through a versioned shadow-stack descriptor and per-state bitmaps. A separate
 typed shadow-stack descriptor uses the same state/bitmap shape but its entries
 point to direct pointer cells; the collector never guesses which slot
-representation is present. Legacy coroutine descriptors continue to publish
+representation is present. Checked-MIR coroutine descriptors continue to publish
 live universal Task-frame slots and captured witnesses. Typed coroutine and
 stored-join descriptors instead publish exact target byte offsets and state
 bitmaps for their statically known managed leaves. A typed root cell has a
@@ -466,7 +466,7 @@ cell in that prefix. Pointer-free trailing bytes may extend the allocation.
 The runtime validates and copies this metadata into a side table before an
 allocation can become visible. At a moving collection it follows only those
 cells and rewrites them together with typed root cells. Null and unregistered
-static or immortal pointers remain unchanged. Legacy moving pointers, interior
+static or immortal pointers remain unchanged. Checked-MIR moving pointers, interior
 pointers, and unregistered finite-lifetime pointers are not legal typed cell
 contents. The typed allocator's output cell likewise has a stable non-heap
 address throughout its call and any collection that call triggers.
@@ -526,7 +526,7 @@ safepoint; the arena is still marked and swept.
 
 ## Specialized local storage
 
-The legacy LLVM route retains a narrow non-escaping local `List[Int]` layout
+The checked-MIR LLVM route retains a narrow non-escaping local `List[Int]` layout
 using contiguous `i64` storage with length and capacity. It applies only when a
 closed-world use scan proves no copy, escape, generic/witness boundary,
 suspension, or cleanup hazard. All other list shapes use the complete generic

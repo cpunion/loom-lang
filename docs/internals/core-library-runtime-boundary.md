@@ -33,10 +33,10 @@ circularity or loss of static guarantees:
 - primitive scalar operations and compiler-known layout operations;
 - exact checked operations needed to construct and inspect managed values.
 
-The core does not own a JSON grammar, JSON formatting policy, collection
-algorithms, protocol clients, or convenience I/O composition. Adding a feature
-to semantic builtin tables requires evidence that it cannot be expressed as a
-normal source definition over smaller primitives.
+The core does not own a JSON grammar, collection algorithms, protocol clients,
+or convenience I/O composition. Adding a feature to semantic builtin tables
+requires evidence that it cannot be expressed as a normal source definition
+over smaller primitives.
 
 ## Standard library
 
@@ -74,12 +74,12 @@ reachability or dispatch.
 
 The library owns reusable policy and algorithms, including:
 
-- JSON parsing and formatting;
+- JSON parsing and the public formatting contract;
 - collection and text algorithms built from general construction primitives;
 - task-composition conveniences that do not require new scheduler semantics;
 - high-level file, socket, logging, and process APIs over narrow platform
   operations;
-- future protocol, encoding, and data-format modules.
+- protocol, encoding, and data-format modules.
 
 The embedded source content is part of compiler-cache identity. Editing an
 unused private library body may leave a native object reusable when ordinary
@@ -88,8 +88,7 @@ reachable body invalidates the corresponding layers.
 
 ## Native runtime
 
-The runtime is compiler-private and intentionally unaware of standard-library
-data formats. Its durable responsibilities are:
+The runtime is compiler-private. Its responsibilities are:
 
 - precise allocation and moving garbage collection;
 - typed root registration and compiler-provided object descriptors;
@@ -99,10 +98,12 @@ data formats. Its durable responsibilities are:
   as immutable source-level copies would impose unavoidable quadratic work.
 
 Runtime entry points operate on primitive storage or compiler-provided layout
-descriptors. They must not switch on `Json` variants, depend on `JsonError`, or
-embed a JSON parser/formatter. A data-format-specific runtime ABI is a
-transitional implementation and must be removed once its source replacement
-passes the migration gates below.
+descriptors. The runtime contains no JSON parser and does not receive a
+universal value or source type identifier for parsing. The one format-specific
+operation is canonical JSON formatting: generated code supplies the exact
+closed `Json` layout, the runtime stages bounded output bytes, and generated
+code constructs the checked `Result[Text, JsonError]` value from the returned
+status. No runtime registry or dynamic type switch participates.
 
 ## Bootstrap primitives
 
@@ -112,6 +113,8 @@ public values cannot provide directly. Such primitives remain format-neutral:
 - build one `Text` from validated UTF-8 units through the format-neutral
   `Text.from_utf8_units(List[Int])` boundary;
 - build one `List[T]` from uniquely owned append state;
+- build one canonical `TextMap[V]` from a `List[(Text, V)]` in one bulk
+  operation, sorting UTF-8 keys once and rejecting duplicates;
 - enumerate a canonical `TextMap[V]` entry by checked index;
 - allocate and initialize a compiler-described closed value;
 - convert between Unicode scalar values and their canonical encoding.
@@ -119,6 +122,11 @@ public values cannot provide directly. Such primitives remain format-neutral:
 These are implementation capabilities, not an invitation to expose ownership
 or borrowing syntax. The compiler proves uniqueness where an operation needs
 it, and the source model remains automatic-memory-managed value semantics.
+The source-facing bulk operation is
+`List[(Text, V)].to_text_map() Result[TextMap[V], Text]`. Its duplicate
+result is the lexicographically smallest duplicated key in canonical UTF-8
+order. It is a general collection operation, not a JSON-specific runtime
+entry point.
 
 Portable Path operations follow the same narrow-boundary rule. `Path` is one
 Text field, so `Path.from_text` validates U+0000 and `Path.as_text` extracts the
@@ -128,10 +136,9 @@ rejects a leading `/` in the child, and publishes one Text after a possible
 moving collection. Status `0` is success, `-1` is the ordinary `AbsoluteJoin`
 outcome, and every other returned status is an ABI defect. It does not inspect
 filesystem state, recognize host path syntax, normalize `.` or `..`, collapse
-repeated separators, or carry JSON or ownership policy. The older
-`loom_runtime_path_contains_nul` and
-`loom_runtime_path_join` entries are temporary implementation details of the
-still-maintained complete legacy emitter, not dependencies of typed LCIR.
+repeated separators, or carry JSON or ownership policy. The checked-MIR native
+route has its own whole-value Path operations; typed LCIR does not depend on
+them.
 
 ## Generated operations
 
@@ -142,10 +149,9 @@ closed type and ordinary direct calls close recursive cycles. The runtime does
 not receive a universal value or a type switch, and an unused helper is absent
 from the artifact.
 
-## Migration gates
+## Boundary tests
 
-A compiler or runtime special case can be removed only after its Loom source
-replacement proves all of the following:
+Every source-backed standard algorithm must prove all of the following:
 
 1. `check`, `build`, `test`, and `run` succeed through both maintained terminal
    backends for the normative fixtures.
@@ -155,9 +161,8 @@ replacement proves all of the following:
 4. Reachability tests show that a program which does not import or call the
    feature contains no feature-specific function, descriptor, symbol, or data
    table.
-5. The old builtin, MIR operation, LCIR instruction, LLVM emission path,
-   runtime ABI, and compatibility identity are deleted together.
+5. No duplicate builtin, MIR operation, LLVM emission path, runtime ABI, or
+   alternate implementation remains beside the source definition.
 
-There is no permanent compatibility route for superseded internal compiler or
-runtime representations. Versioned artifacts and caches fail closed and are
-rebuilt after a boundary change.
+Versioned artifacts and caches accept only their current exact identities and
+fail closed otherwise.

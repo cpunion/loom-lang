@@ -31,32 +31,9 @@ pub enum JsonNode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum JsonFailureKind {
-    InvalidSyntax,
-    NumberOutOfRange,
+pub enum JsonFormatFailure {
     DepthLimit,
     NonFiniteNumber,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct JsonFailure {
-    pub kind: JsonFailureKind,
-    pub offset: usize,
-}
-
-/// Parses one complete UTF-8 JSON document with deterministic byte offsets.
-///
-/// # Errors
-///
-/// Returns the stable syntax, numeric-range, or depth-limit failure and its
-/// zero-based UTF-8 byte offset.
-pub fn parse_json(source: &str) -> Result<JsonNode, JsonFailure> {
-    JsonParser {
-        source,
-        bytes: source.as_bytes(),
-        index: 0,
-    }
-    .parse()
 }
 
 /// Formats a JSON value using Loom's canonical ordering and escaping rules.
@@ -65,7 +42,7 @@ pub fn parse_json(source: &str) -> Result<JsonNode, JsonFailure> {
 ///
 /// Returns `DepthLimit` for values nested beyond 128 containers and
 /// `NonFiniteNumber` for NaN or infinite numbers.
-pub fn format_json(value: &JsonNode) -> Result<String, JsonFailure> {
+pub fn format_json(value: &JsonNode) -> Result<String, JsonFormatFailure> {
     let mut output = String::new();
     format_json_value(value, 0, &mut output)?;
     Ok(output)
@@ -98,308 +75,24 @@ pub fn escape_json_text(value: &str) -> String {
     output
 }
 
-struct JsonParser<'source> {
-    source: &'source str,
-    bytes: &'source [u8],
-    index: usize,
-}
-
-impl JsonParser<'_> {
-    fn parse(mut self) -> Result<JsonNode, JsonFailure> {
-        self.skip_whitespace();
-        let value = self.parse_value(0)?;
-        self.skip_whitespace();
-        if self.index == self.bytes.len() {
-            Ok(value)
-        } else {
-            Err(Self::failure(JsonFailureKind::InvalidSyntax, self.index))
-        }
-    }
-
-    fn parse_value(&mut self, depth: usize) -> Result<JsonNode, JsonFailure> {
-        let Some(byte) = self.bytes.get(self.index).copied() else {
-            return Err(Self::failure(JsonFailureKind::InvalidSyntax, self.index));
-        };
-        match byte {
-            b'n' => {
-                self.consume_keyword(b"null")?;
-                Ok(JsonNode::Null)
-            }
-            b't' => {
-                self.consume_keyword(b"true")?;
-                Ok(JsonNode::Bool(true))
-            }
-            b'f' => {
-                self.consume_keyword(b"false")?;
-                Ok(JsonNode::Bool(false))
-            }
-            b'"' => self.parse_string().map(JsonNode::Text),
-            b'[' => self.parse_array(depth),
-            b'{' => self.parse_object(depth),
-            b'-' | b'0'..=b'9' => self.parse_number(),
-            _ => Err(Self::failure(JsonFailureKind::InvalidSyntax, self.index)),
-        }
-    }
-
-    fn parse_array(&mut self, depth: usize) -> Result<JsonNode, JsonFailure> {
-        if depth >= JSON_DEPTH_LIMIT {
-            return Err(Self::failure(JsonFailureKind::DepthLimit, self.index));
-        }
-        self.index += 1;
-        self.skip_whitespace();
-        let mut values = Vec::new();
-        if self.consume_byte(b']') {
-            return Ok(JsonNode::Array(values));
-        }
-        loop {
-            values.push(self.parse_value(depth + 1)?);
-            self.skip_whitespace();
-            if self.consume_byte(b']') {
-                return Ok(JsonNode::Array(values));
-            }
-            if !self.consume_byte(b',') {
-                return Err(Self::failure(JsonFailureKind::InvalidSyntax, self.index));
-            }
-            self.skip_whitespace();
-        }
-    }
-
-    fn parse_object(&mut self, depth: usize) -> Result<JsonNode, JsonFailure> {
-        if depth >= JSON_DEPTH_LIMIT {
-            return Err(Self::failure(JsonFailureKind::DepthLimit, self.index));
-        }
-        self.index += 1;
-        self.skip_whitespace();
-        let mut values = BTreeMap::new();
-        if self.consume_byte(b'}') {
-            return Ok(JsonNode::Object(values));
-        }
-        loop {
-            let key_offset = self.index;
-            if self.bytes.get(self.index) != Some(&b'"') {
-                return Err(Self::failure(JsonFailureKind::InvalidSyntax, self.index));
-            }
-            let key = self.parse_string()?;
-            if values.contains_key(&key) {
-                return Err(Self::failure(JsonFailureKind::InvalidSyntax, key_offset));
-            }
-            self.skip_whitespace();
-            if !self.consume_byte(b':') {
-                return Err(Self::failure(JsonFailureKind::InvalidSyntax, self.index));
-            }
-            self.skip_whitespace();
-            values.insert(key, self.parse_value(depth + 1)?);
-            self.skip_whitespace();
-            if self.consume_byte(b'}') {
-                return Ok(JsonNode::Object(values));
-            }
-            if !self.consume_byte(b',') {
-                return Err(Self::failure(JsonFailureKind::InvalidSyntax, self.index));
-            }
-            self.skip_whitespace();
-        }
-    }
-
-    fn parse_string(&mut self) -> Result<String, JsonFailure> {
-        let start = self.index;
-        if !self.consume_byte(b'"') {
-            return Err(Self::failure(JsonFailureKind::InvalidSyntax, start));
-        }
-        let mut output = String::new();
-        loop {
-            let Some(byte) = self.bytes.get(self.index).copied() else {
-                return Err(Self::failure(JsonFailureKind::InvalidSyntax, start));
-            };
-            match byte {
-                b'"' => {
-                    self.index += 1;
-                    return Ok(output);
-                }
-                b'\\' => {
-                    self.index += 1;
-                    self.parse_escape(&mut output)?;
-                }
-                0..=0x1f => {
-                    return Err(Self::failure(JsonFailureKind::InvalidSyntax, self.index));
-                }
-                _ => {
-                    let Some(value) = self.source[self.index..].chars().next() else {
-                        return Err(Self::failure(JsonFailureKind::InvalidSyntax, self.index));
-                    };
-                    output.push(value);
-                    self.index += value.len_utf8();
-                }
-            }
-        }
-    }
-
-    fn parse_escape(&mut self, output: &mut String) -> Result<(), JsonFailure> {
-        let offset = self.index;
-        let Some(byte) = self.bytes.get(self.index).copied() else {
-            return Err(Self::failure(JsonFailureKind::InvalidSyntax, offset));
-        };
-        self.index += 1;
-        match byte {
-            b'"' => output.push('"'),
-            b'\\' => output.push('\\'),
-            b'/' => output.push('/'),
-            b'b' => output.push('\u{0008}'),
-            b'f' => output.push('\u{000c}'),
-            b'n' => output.push('\n'),
-            b'r' => output.push('\r'),
-            b't' => output.push('\t'),
-            b'u' => {
-                let first = self.parse_hex_quad()?;
-                let scalar = if (0xd800..=0xdbff).contains(&first) {
-                    if !self.consume_byte(b'\\') || !self.consume_byte(b'u') {
-                        return Err(Self::failure(JsonFailureKind::InvalidSyntax, offset));
-                    }
-                    let second = self.parse_hex_quad()?;
-                    if !(0xdc00..=0xdfff).contains(&second) {
-                        return Err(Self::failure(JsonFailureKind::InvalidSyntax, offset));
-                    }
-                    0x1_0000 + ((u32::from(first) - 0xd800) << 10) + (u32::from(second) - 0xdc00)
-                } else if (0xdc00..=0xdfff).contains(&first) {
-                    return Err(Self::failure(JsonFailureKind::InvalidSyntax, offset));
-                } else {
-                    u32::from(first)
-                };
-                let Some(scalar) = char::from_u32(scalar) else {
-                    return Err(Self::failure(JsonFailureKind::InvalidSyntax, offset));
-                };
-                output.push(scalar);
-            }
-            _ => return Err(Self::failure(JsonFailureKind::InvalidSyntax, offset)),
-        }
-        Ok(())
-    }
-
-    fn parse_hex_quad(&mut self) -> Result<u16, JsonFailure> {
-        let offset = self.index;
-        let Some(bytes) = self.bytes.get(self.index..self.index.saturating_add(4)) else {
-            return Err(Self::failure(JsonFailureKind::InvalidSyntax, offset));
-        };
-        let mut value = 0_u16;
-        for byte in bytes {
-            let digit = match byte {
-                b'0'..=b'9' => u16::from(*byte - b'0'),
-                b'a'..=b'f' => u16::from(*byte - b'a' + 10),
-                b'A'..=b'F' => u16::from(*byte - b'A' + 10),
-                _ => return Err(Self::failure(JsonFailureKind::InvalidSyntax, offset)),
-            };
-            value = (value << 4) | digit;
-        }
-        self.index += 4;
-        Ok(value)
-    }
-
-    fn parse_number(&mut self) -> Result<JsonNode, JsonFailure> {
-        let start = self.index;
-        self.consume_byte(b'-');
-        match self.bytes.get(self.index).copied() {
-            Some(b'0') => {
-                self.index += 1;
-                if self.bytes.get(self.index).is_some_and(u8::is_ascii_digit) {
-                    return Err(Self::failure(JsonFailureKind::InvalidSyntax, self.index));
-                }
-            }
-            Some(b'1'..=b'9') => {
-                self.index += 1;
-                while self.bytes.get(self.index).is_some_and(u8::is_ascii_digit) {
-                    self.index += 1;
-                }
-            }
-            _ => return Err(Self::failure(JsonFailureKind::InvalidSyntax, self.index)),
-        }
-        if self.consume_byte(b'.') {
-            let fraction = self.index;
-            while self.bytes.get(self.index).is_some_and(u8::is_ascii_digit) {
-                self.index += 1;
-            }
-            if self.index == fraction {
-                return Err(Self::failure(JsonFailureKind::InvalidSyntax, self.index));
-            }
-        }
-        if matches!(self.bytes.get(self.index), Some(b'e' | b'E')) {
-            self.index += 1;
-            if matches!(self.bytes.get(self.index), Some(b'+' | b'-')) {
-                self.index += 1;
-            }
-            let exponent = self.index;
-            while self.bytes.get(self.index).is_some_and(u8::is_ascii_digit) {
-                self.index += 1;
-            }
-            if self.index == exponent {
-                return Err(Self::failure(JsonFailureKind::InvalidSyntax, self.index));
-            }
-        }
-        let Ok(value) = self.source[start..self.index].parse::<f64>() else {
-            return Err(Self::failure(JsonFailureKind::NumberOutOfRange, start));
-        };
-        if value.is_finite() {
-            Ok(JsonNode::Number(value))
-        } else {
-            Err(Self::failure(JsonFailureKind::NumberOutOfRange, start))
-        }
-    }
-
-    fn consume_keyword(&mut self, keyword: &[u8]) -> Result<(), JsonFailure> {
-        let start = self.index;
-        if self.bytes.get(start..start.saturating_add(keyword.len())) == Some(keyword) {
-            self.index += keyword.len();
-            Ok(())
-        } else {
-            Err(Self::failure(JsonFailureKind::InvalidSyntax, start))
-        }
-    }
-
-    fn skip_whitespace(&mut self) {
-        while matches!(
-            self.bytes.get(self.index),
-            Some(b' ' | b'\n' | b'\r' | b'\t')
-        ) {
-            self.index += 1;
-        }
-    }
-
-    fn consume_byte(&mut self, byte: u8) -> bool {
-        if self.bytes.get(self.index) == Some(&byte) {
-            self.index += 1;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn failure(kind: JsonFailureKind, offset: usize) -> JsonFailure {
-        JsonFailure { kind, offset }
-    }
-}
-
 fn format_json_value(
     value: &JsonNode,
     depth: usize,
     output: &mut String,
-) -> Result<(), JsonFailure> {
+) -> Result<(), JsonFormatFailure> {
     match value {
         JsonNode::Null => output.push_str("null"),
         JsonNode::Bool(value) => output.push_str(if *value { "true" } else { "false" }),
         JsonNode::Number(value) => {
             if !value.is_finite() {
-                return Err(JsonFailure {
-                    kind: JsonFailureKind::NonFiniteNumber,
-                    offset: 0,
-                });
+                return Err(JsonFormatFailure::NonFiniteNumber);
             }
             output.push_str(&value.to_string());
         }
         JsonNode::Text(value) => output.push_str(&escape_json_text(value)),
         JsonNode::Array(values) => {
             if depth >= JSON_DEPTH_LIMIT {
-                return Err(JsonFailure {
-                    kind: JsonFailureKind::DepthLimit,
-                    offset: 0,
-                });
+                return Err(JsonFormatFailure::DepthLimit);
             }
             output.push('[');
             for (index, value) in values.iter().enumerate() {
@@ -412,10 +105,7 @@ fn format_json_value(
         }
         JsonNode::Object(values) => {
             if depth >= JSON_DEPTH_LIMIT {
-                return Err(JsonFailure {
-                    kind: JsonFailureKind::DepthLimit,
-                    offset: 0,
-                });
+                return Err(JsonFormatFailure::DepthLimit);
             }
             output.push('{');
             for (index, (key, value)) in values.iter().enumerate() {
@@ -847,13 +537,6 @@ pub unsafe extern "C" fn text_map_remove(
     0
 }
 
-fn scalar_value(tag: u64, scalar: u64) -> ValueSlot {
-    let mut value = ValueSlot::default();
-    value.words[0] = tag;
-    value.words[3] = scalar;
-    value
-}
-
 fn text_value(value: &str) -> ValueSlot {
     gc::text_value(value.as_bytes()).unwrap_or_else(|| std::process::abort())
 }
@@ -868,58 +551,6 @@ fn enum_value(nominal: u64, variant: u64, payload: Vec<ValueSlot>) -> ValueSlot 
 
 fn result_value(nominal: u64, ok: bool, payload: ValueSlot) -> ValueSlot {
     enum_value(nominal, u64::from(!ok), vec![payload])
-}
-
-fn json_slot(value: JsonNode, json_type: u64, text_map_type: u64) -> ValueSlot {
-    match value {
-        JsonNode::Null => enum_value(json_type, 0, Vec::new()),
-        JsonNode::Bool(value) => enum_value(
-            json_type,
-            1,
-            vec![scalar_value(VALUE_TAG_BOOL, u64::from(value))],
-        ),
-        JsonNode::Number(value) => enum_value(
-            json_type,
-            2,
-            vec![scalar_value(VALUE_TAG_FLOAT, value.to_bits())],
-        ),
-        JsonNode::Text(value) => enum_value(json_type, 3, vec![text_value(&value)]),
-        JsonNode::Array(values) => {
-            let mut list = ValueSlot::default();
-            list.words[0] = VALUE_TAG_LIST;
-            let roots = RuntimeRootScope::from_values(vec![list, ValueSlot::default()])
-                .unwrap_or_else(|_| std::process::abort());
-            let stream = NodeStream::new(&roots, 0, list);
-            for value in values.into_iter().rev() {
-                roots.write(1, json_slot(value, json_type, text_map_type));
-                if stream.prepend(1) != GC_OK {
-                    std::process::abort();
-                }
-            }
-            enum_value(json_type, 4, vec![roots.read(0)])
-        }
-        JsonNode::Object(values) => {
-            let mut map = ValueSlot::default();
-            map.words[0] = VALUE_TAG_RECORD;
-            map.words[1] = text_map_type;
-            let roots = RuntimeRootScope::from_values(vec![
-                map,
-                ValueSlot::default(),
-                ValueSlot::default(),
-            ])
-            .unwrap_or_else(|_| std::process::abort());
-            let stream = NodeStream::new(&roots, 0, map);
-            for (key, value) in values.into_iter().rev() {
-                roots.write(1, text_value(&key));
-                roots.write(2, json_slot(value, json_type, text_map_type));
-                // Prepend value first and key second to publish key,value order.
-                if stream.prepend(2) != GC_OK || stream.prepend(1) != GC_OK {
-                    std::process::abort();
-                }
-            }
-            enum_value(json_type, 5, vec![roots.read(0)])
-        }
-    }
 }
 
 unsafe fn node_values(mut node: *const ValueNode, count: u64) -> Option<Vec<ValueSlot>> {
@@ -998,61 +629,12 @@ unsafe fn slot_json(
     }
 }
 
-fn json_error_slot(error: JsonFailure, json_error_type: u64) -> ValueSlot {
-    let (variant, payload) = match error.kind {
-        JsonFailureKind::InvalidSyntax => (
-            0,
-            vec![scalar_value(
-                VALUE_TAG_INT,
-                i64::try_from(error.offset)
-                    .unwrap_or(i64::MAX)
-                    .cast_unsigned(),
-            )],
-        ),
-        JsonFailureKind::NumberOutOfRange => (
-            1,
-            vec![scalar_value(
-                VALUE_TAG_INT,
-                i64::try_from(error.offset)
-                    .unwrap_or(i64::MAX)
-                    .cast_unsigned(),
-            )],
-        ),
-        JsonFailureKind::DepthLimit => (2, Vec::new()),
-        JsonFailureKind::NonFiniteNumber => (3, Vec::new()),
+fn json_error_slot(error: JsonFormatFailure, json_error_type: u64) -> ValueSlot {
+    let variant = match error {
+        JsonFormatFailure::DepthLimit => 2,
+        JsonFormatFailure::NonFiniteNumber => 3,
     };
-    enum_value(json_error_type, variant, payload)
-}
-
-#[unsafe(export_name = "loom_runtime_json_parse")]
-pub unsafe extern "C" fn json_parse(
-    data: *const c_void,
-    length: u64,
-    result_type: u64,
-    json_type: u64,
-    json_error_type: u64,
-    text_map_type: u64,
-    output: *mut c_void,
-) -> i32 {
-    let Some(bytes) = (unsafe { input_bytes(data, length) }) else {
-        return STANDARD_INVALID_ARGUMENT;
-    };
-    let Ok(source) = std::str::from_utf8(bytes) else {
-        return STANDARD_INVALID_ARGUMENT;
-    };
-    let value = match parse_json(source) {
-        Ok(value) => result_value(
-            result_type,
-            true,
-            json_slot(value, json_type, text_map_type),
-        ),
-        Err(error) => result_value(result_type, false, json_error_slot(error, json_error_type)),
-    };
-    if output.is_null() {
-        return STANDARD_INVALID_ARGUMENT;
-    }
-    unsafe { output.cast::<ValueSlot>().write(value) };
-    0
+    enum_value(json_error_type, variant, Vec::new())
 }
 
 #[unsafe(export_name = "loom_runtime_json_format")]
@@ -1071,11 +653,11 @@ pub unsafe extern "C" fn json_format(
     {
         Ok(value) => value,
         Err(SlotJsonFailure::DepthLimit) => {
-            let error = JsonFailure {
-                kind: JsonFailureKind::DepthLimit,
-                offset: 0,
-            };
-            let result = result_value(result_type, false, json_error_slot(error, json_error_type));
+            let result = result_value(
+                result_type,
+                false,
+                json_error_slot(JsonFormatFailure::DepthLimit, json_error_type),
+            );
             unsafe { output.cast::<ValueSlot>().write(result) };
             return 0;
         }
@@ -1303,31 +885,16 @@ mod tests {
     }
 
     #[test]
-    fn nested_json_survives_every_allocator_collection() {
+    fn value_slot_json_format_survives_every_allocator_collection() {
         let runtime = ActiveRuntime::new();
-        let roots = RuntimeRootScope::with_count(2).expect("runtime root scope");
-        let document = br#"{"items":["a","b"],"nested":{"key":"value"}}"#;
+        let roots = RuntimeRootScope::with_count(4).expect("runtime root scope");
+        roots.write(0, text_value("key"));
+        roots.write(1, text_value("value"));
+        roots.write(2, enum_value(16, 3, vec![roots.read(1)]));
+        roots.write(3, build_map(15, vec![(roots.read(0), roots.read(2))]));
+        roots.write(0, enum_value(16, 5, vec![roots.read(3)]));
         unsafe {
             (*runtime.0).heap.collect_before_every_allocation = true;
-            assert_eq!(
-                json_parse(
-                    document.as_ptr().cast(),
-                    document.len() as u64,
-                    1,
-                    16,
-                    17,
-                    15,
-                    roots.pointer(0).cast(),
-                ),
-                0,
-            );
-            let parsed_result = roots.read(0);
-            let parsed_payload = node_values(
-                parsed_result.words[4] as *const ValueNode,
-                parsed_result.words[3],
-            )
-            .unwrap();
-            roots.write(0, parsed_payload[0]);
             assert_eq!(
                 json_format(
                     roots.pointer(0).cast(),
@@ -1345,8 +912,11 @@ mod tests {
                 formatted_result.words[3],
             )
             .unwrap();
-            assert_eq!(text::text_value_bytes(&formatted[0]), Some(&document[..]));
-            assert!((*runtime.0).heap.collections > 10);
+            assert_eq!(
+                text::text_value_bytes(&formatted[0]),
+                Some(&b"{\"key\":\"value\"}"[..]),
+            );
+            assert!((*runtime.0).heap.collections >= 2);
             (*runtime.0).heap.collect_before_every_allocation = false;
         }
         drop(roots);
@@ -1397,6 +967,46 @@ mod tests {
     }
 
     #[test]
+    fn text_concat_stages_an_unrooted_typed_text_before_forced_collection() {
+        let runtime = ActiveRuntime::new();
+        let roots = RuntimeRootScope::with_count(1).expect("runtime root scope");
+        unsafe {
+            let units = [65_i64, 0xe7, 0x95, 0x8c, 0xf0, 0x9f, 0x99, 0x82];
+            let mut typed = ptr::null_mut();
+            assert_eq!(
+                text::from_utf8_units_typed_v1(units.as_ptr(), units.len() as u64, &raw mut typed,),
+                GC_OK,
+            );
+            let typed_bytes = text::text_bytes(typed).expect("typed Text bytes");
+
+            // The compiler's checked-MIR bridge deliberately does not expose
+            // a typed pointer through a universal Value root. Text.concat
+            // must consume the complete borrowed range before this forced
+            // allocation collection reclaims the temporary typed object.
+            (*runtime.0).heap.collect_before_every_allocation = true;
+            assert_eq!(
+                text_concat(
+                    typed_bytes.as_ptr().cast(),
+                    typed_bytes.len() as u64,
+                    ptr::null(),
+                    0,
+                    roots.pointer(0).cast(),
+                ),
+                GC_OK,
+            );
+            assert_eq!(
+                text::text_value_bytes(&roots.read(0)),
+                Some("A界🙂".as_bytes()),
+            );
+            assert_eq!((*runtime.0).heap.typed_object_count(), 0);
+            assert!((*runtime.0).heap.collections >= 1);
+            (*runtime.0).heap.collect_before_every_allocation = false;
+        }
+        drop(roots);
+        drop(runtime);
+    }
+
+    #[test]
     fn unicode_bytes_and_portable_paths_are_distinct() {
         let _runtime = ActiveRuntime::new();
         let text = "a界🙂";
@@ -1440,23 +1050,7 @@ mod tests {
     }
 
     #[test]
-    fn json_is_canonical_bounded_and_reports_byte_offsets() {
-        let duplicate = parse_json("{\"界\":1,\"界\":2}").unwrap_err();
-        assert_eq!(duplicate.kind, JsonFailureKind::InvalidSyntax);
-        assert_eq!(duplicate.offset, 9);
-
-        let overflow = parse_json("1e999").unwrap_err();
-        assert_eq!(overflow.kind, JsonFailureKind::NumberOutOfRange);
-        assert_eq!(overflow.offset, 0);
-
-        let at_limit = format!("{}null{}", "[".repeat(128), "]".repeat(128));
-        assert!(parse_json(&at_limit).is_ok());
-        let beyond_limit = format!("{}null{}", "[".repeat(129), "]".repeat(129));
-        assert_eq!(
-            parse_json(&beyond_limit).unwrap_err().kind,
-            JsonFailureKind::DepthLimit,
-        );
-
+    fn json_format_is_canonical_and_bounded() {
         let mut object = BTreeMap::new();
         object.insert("z".to_owned(), JsonNode::Number(-0.0));
         object.insert("a".to_owned(), JsonNode::Text("line\n".to_owned()));
@@ -1465,10 +1059,8 @@ mod tests {
             "{\"a\":\"line\\n\",\"z\":-0}",
         );
         assert_eq!(
-            format_json(&JsonNode::Number(f64::INFINITY))
-                .unwrap_err()
-                .kind,
-            JsonFailureKind::NonFiniteNumber,
+            format_json(&JsonNode::Number(f64::INFINITY)).unwrap_err(),
+            JsonFormatFailure::NonFiniteNumber,
         );
 
         let mut nested = JsonNode::Null;
@@ -1478,17 +1070,27 @@ mod tests {
         assert!(format_json(&nested).is_ok());
         nested = JsonNode::Array(vec![nested]);
         assert_eq!(
-            format_json(&nested).unwrap_err().kind,
-            JsonFailureKind::DepthLimit,
+            format_json(&nested).unwrap_err(),
+            JsonFormatFailure::DepthLimit,
         );
     }
 
     #[test]
-    fn native_map_and_json_abi_preserve_shapes_and_depth_errors() {
+    fn native_map_and_json_format_abi_preserve_shapes_and_depth_errors() {
         let _runtime = ActiveRuntime::new();
         let empty = build_map(15, Vec::new());
         let key = text_value("key");
-        let value = scalar_value(VALUE_TAG_INT, 42);
+        let mut value = ValueSlot::default();
+        value.words[0] = VALUE_TAG_INT;
+        value.words[3] = 42;
+        let deep_root = RuntimeRootScope::with_count(1).expect("deep JSON root");
+        deep_root.write(0, enum_value(16, 0, Vec::new()));
+        for _ in 0..129 {
+            let mut list = ValueSlot::default();
+            list.words[0] = VALUE_TAG_LIST;
+            let list = build_aggregate(list, vec![deep_root.read(0)]);
+            deep_root.write(0, enum_value(16, 4, vec![list]));
+        }
         let mut inserted = ValueSlot::default();
         // SAFETY: all slots and their runtime-owned payloads remain live for this test.
         unsafe {
@@ -1526,37 +1128,10 @@ mod tests {
             );
             assert_eq!(removed.words[2], 0);
 
-            let mut parsed = ValueSlot::default();
-            let duplicate = b"{\"a\":1,\"a\":2}";
-            assert_eq!(
-                json_parse(
-                    duplicate.as_ptr().cast(),
-                    duplicate.len() as u64,
-                    1,
-                    16,
-                    17,
-                    15,
-                    (&raw mut parsed).cast(),
-                ),
-                0,
-            );
-            assert_eq!(parsed.words[0], VALUE_TAG_ENUM);
-            assert_eq!(parsed.words[2], 1);
-            let error = node_values(parsed.words[4] as *const ValueNode, 1).unwrap()[0];
-            assert_eq!(error.words[1], 17);
-            assert_eq!(error.words[2], 0);
-            let offset = node_values(error.words[4] as *const ValueNode, 1).unwrap()[0];
-            assert_eq!(offset.words[3], 7);
-
-            let mut deep = JsonNode::Null;
-            for _ in 0..129 {
-                deep = JsonNode::Array(vec![deep]);
-            }
-            let deep = json_slot(deep, 16, 15);
             let mut formatted = ValueSlot::default();
             assert_eq!(
                 json_format(
-                    (&raw const deep).cast(),
+                    deep_root.pointer(0).cast(),
                     1,
                     16,
                     17,

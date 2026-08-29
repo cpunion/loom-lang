@@ -16,14 +16,14 @@ use sha2::{Digest, Sha256};
 
 use crate::codegen::{
     DebugSource, EmitKind, EmitOptions, NativeObjectArtifact, NativeObjectOptions,
-    legacy_object_fingerprint_with_target, validate_legacy_root_signatures,
+    checked_mir_object_fingerprint_with_target, validate_checked_mir_root_signatures,
 };
 use crate::emitter::Emitter;
 use crate::lcir_emitter::LcirEmitter;
 use crate::target::{NATIVE_RUNTIME_ABI, NativeTargetMachine, create_llvm_target_machine};
 use crate::{CodegenError, NativeTargetIdentity, trace_llvm_stage};
 
-const LCIR_NATIVE_OBJECT_FORMAT: &str = "loom-lcir-native-object-v37";
+const LCIR_NATIVE_OBJECT_FORMAT: &str = "loom-lcir-native-object-v38";
 
 /// Policy controlling the whole-artifact native route.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -32,18 +32,18 @@ pub enum NativeRoutePolicy {
     /// complete reachable artifact is outside current LCIR coverage.
     Automatic,
     /// Require complete typed LCIR coverage and reject the complete artifact
-    /// with its deterministic support report instead of selecting legacy code
-    /// generation.
+    /// with its deterministic support report instead of selecting checked-MIR
+    /// code generation.
     LcirOnly,
     /// Use the checked-MIR backend without attempting LCIR lowering.
-    LegacyOnly,
+    CheckedMirOnly,
 }
 
 /// The immutable route selected for one prepared native object.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeRouteKind {
     Lcir,
-    Legacy,
+    CheckedMir,
 }
 
 /// Stable class for a failure before a native route can be prepared.
@@ -210,7 +210,7 @@ const fn lowering_defect_error_code(code: LoweringDefectCode) -> &'static str {
 
 enum PreparedRoute<'mir> {
     Lcir(CheckedArtifact),
-    Legacy {
+    CheckedMir {
         mir: &'mir CheckedProgram,
         roots: SourceRoots,
         reachable: ReachableSourceGraph,
@@ -231,7 +231,7 @@ impl PreparedNativeObject<'_> {
     pub const fn route_kind(&self) -> NativeRouteKind {
         match self.route {
             PreparedRoute::Lcir(_) => NativeRouteKind::Lcir,
-            PreparedRoute::Legacy { .. } => NativeRouteKind::Legacy,
+            PreparedRoute::CheckedMir { .. } => NativeRouteKind::CheckedMir,
         }
     }
 }
@@ -241,8 +241,8 @@ impl PreparedNativeObject<'_> {
 /// # Errors
 ///
 /// Returns a structured invalid-root, unsupported, resource, target, or
-/// compiler-defect error. Valid but unsupported LCIR selects one whole legacy
-/// plan only under [`NativeRoutePolicy::Automatic`].
+/// compiler-defect error. Valid but unsupported LCIR selects one whole
+/// checked-MIR plan only under [`NativeRoutePolicy::Automatic`].
 pub fn prepare_native_object(
     mir: &CheckedProgram,
     options: EmitOptions,
@@ -292,10 +292,11 @@ pub fn prepare_native_object(
                         return Err(NativePreparationError::unsupported(report));
                     }
                     target
-                        .validate_legacy_value_abi()
+                        .validate_checked_mir_value_abi()
                         .map_err(|error| NativePreparationError::target(&error))?;
-                    let (roots, reachable) = legacy_graph_after_validated_lowering(mir, &options)?;
-                    PreparedRoute::Legacy {
+                    let (roots, reachable) =
+                        checked_mir_graph_after_validated_lowering(mir, &options)?;
+                    PreparedRoute::CheckedMir {
                         mir,
                         roots,
                         reachable,
@@ -303,8 +304,8 @@ pub fn prepare_native_object(
                 }
             }
         }
-        NativeRoutePolicy::LegacyOnly => {
-            let roots = validated_legacy_roots(mir, &options)?;
+        NativeRoutePolicy::CheckedMirOnly => {
+            let roots = validated_checked_mir_roots(mir, &options)?;
             let reachable = analyze_source_reachability(mir, &roots).map_err(|error| {
                 NativePreparationError::defect(
                     "NativePreparationSourceGraphDefect",
@@ -312,9 +313,9 @@ pub fn prepare_native_object(
                 )
             })?;
             target
-                .validate_legacy_value_abi()
+                .validate_checked_mir_value_abi()
                 .map_err(|error| NativePreparationError::target(&error))?;
-            PreparedRoute::Legacy {
+            PreparedRoute::CheckedMir {
                 mir,
                 roots,
                 reachable,
@@ -349,11 +350,11 @@ pub fn prepared_native_object_fingerprint(
     trace_llvm_stage("prepare.fingerprint.begin");
     let fingerprint = match &prepared.route {
         PreparedRoute::Lcir(artifact) => lcir_object_fingerprint(prepared, artifact),
-        PreparedRoute::Legacy {
+        PreparedRoute::CheckedMir {
             mir,
             roots,
             reachable,
-        } => legacy_object_fingerprint_with_target(
+        } => checked_mir_object_fingerprint_with_target(
             mir,
             &prepared.options,
             roots,
@@ -383,7 +384,7 @@ pub fn emit_prepared_native_object(
             &lcir_options(&prepared.options),
             &prepared.target,
         ),
-        PreparedRoute::Legacy {
+        PreparedRoute::CheckedMir {
             mir,
             roots,
             reachable,
@@ -409,14 +410,14 @@ fn source_request(options: &EmitOptions) -> SourceArtifactRequest {
     }
 }
 
-fn legacy_graph_after_validated_lowering(
+fn checked_mir_graph_after_validated_lowering(
     mir: &CheckedProgram,
     options: &EmitOptions,
 ) -> Result<(SourceRoots, ReachableSourceGraph), NativePreparationError> {
     let roots = raw_roots(mir, options).ok_or_else(|| {
         NativePreparationError::defect(
             "NativePreparationInconsistentPlan",
-            "LCIR classification accepted a root which disappeared before legacy preparation",
+            "LCIR classification accepted a root which disappeared before checked-MIR preparation",
         )
     })?;
     let reachable = analyze_source_reachability(mir, &roots).map_err(|error| {
@@ -428,7 +429,7 @@ fn legacy_graph_after_validated_lowering(
     Ok((roots, reachable))
 }
 
-fn validated_legacy_roots(
+fn validated_checked_mir_roots(
     mir: &CheckedProgram,
     options: &EmitOptions,
 ) -> Result<SourceRoots, NativePreparationError> {
@@ -452,7 +453,7 @@ fn validated_legacy_roots(
             SourceRoots::for_tests(mir)
         }
     };
-    if let Err(error) = validate_legacy_root_signatures(mir, options, &roots) {
+    if let Err(error) = validate_checked_mir_root_signatures(mir, options, &roots) {
         let code = if error.code() == "InvalidFunctionReference" {
             "NativePreparationInvalidRootFunction"
         } else {
@@ -534,7 +535,7 @@ mod tests {
     fn lcir_object_fingerprint_domain_is_pinned() {
         assert_eq!(
             super::LCIR_NATIVE_OBJECT_FORMAT,
-            "loom-lcir-native-object-v37"
+            "loom-lcir-native-object-v38"
         );
     }
 }

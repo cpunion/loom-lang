@@ -104,6 +104,7 @@ fn assert_compiler_owned_source(source: &loom_driver::SourceDocument) {
 fn assert_compiler_owned_overlays_are_ignored(
     host: &mut AnalysisHost,
     int_path: &Path,
+    json_path: &Path,
     log_path: &Path,
     resource_path: &Path,
 ) {
@@ -112,6 +113,11 @@ fn assert_compiler_owned_overlays_are_ignored(
         "module std.int\n\npub fn minimum(left Int, right Int) Int { 999 }\n",
     )
     .expect("install hostile synthetic-path overlay");
+    host.set_overlay(
+        json_path,
+        "module std.json\n\npub fn forged_json() Int { 999 }\n",
+    )
+    .expect("install hostile std.json overlay");
     host.set_overlay(
         log_path,
         "module std.log\n\npub fn debug(message Text) { discard message }\n",
@@ -126,6 +132,7 @@ fn assert_compiler_owned_overlays_are_ignored(
     let protected = host.snapshot().expect("reload protected standard source");
     for (path, expected, message) in [
         (int_path, "Returns the smaller", "std.int source"),
+        (json_path, "fn finish_utf8", "std.json source"),
         (log_path, "Writes one debug-level", "std.log source"),
         (
             resource_path,
@@ -204,6 +211,12 @@ fn compiler_owned_standard_sources_have_protected_authority() {
     assert!(
         standard_sources
             .iter()
+            .any(|source| source.relative_path().ends_with("src/json.loom")),
+        "{standard_sources:#?}"
+    );
+    assert!(
+        standard_sources
+            .iter()
             .any(|source| source.relative_path().ends_with("src/log.loom")),
         "{standard_sources:#?}"
     );
@@ -220,6 +233,12 @@ fn compiler_owned_standard_sources_have_protected_authority() {
         .iter()
         .find(|source| source.relative_path().ends_with("src/resource.loom"))
         .expect("compiler-owned std.resource source")
+        .absolute_path()
+        .to_path_buf();
+    let json_path = standard_sources
+        .iter()
+        .find(|source| source.relative_path().ends_with("src/json.loom"))
+        .expect("compiler-owned std.json source")
         .absolute_path()
         .to_path_buf();
     let log_path = standard_sources
@@ -248,6 +267,7 @@ fn compiler_owned_standard_sources_have_protected_authority() {
     assert_compiler_owned_overlays_are_ignored(
         &mut host,
         &standard_path,
+        &json_path,
         &log_path,
         &resource_path,
     );
@@ -335,7 +355,13 @@ fn std_package_name_alias_and_complete_namespace_are_reserved() {
             .contains("dependency alias `std` is reserved")
     );
 
-    for module in ["std", "std.int", "std.resource", "std.future.nested"] {
+    for module in [
+        "std",
+        "std.int",
+        "std.json",
+        "std.resource",
+        "std.future.nested",
+    ] {
         let standalone_namespace = TestProject::new();
         standalone_namespace.write(
             "main.loom",
@@ -577,6 +603,7 @@ fn manifest_resolves_path_dependencies_sources_and_targets() {
         .collect::<Vec<_>>();
     for expected in [
         "deps/std@0.3/src/int.loom",
+        "deps/std@0.3/src/json.loom",
         "deps/std@0.3/src/log.loom",
         "deps/std@0.3/src/resource.loom",
     ] {
@@ -880,6 +907,12 @@ fn portable_library_is_a_consumable_versioned_dependency() {
         standard_sources
             .iter()
             .any(|source| source.relative_path().ends_with("src/int.loom")),
+        "{standard_sources:#?}"
+    );
+    assert!(
+        standard_sources
+            .iter()
+            .any(|source| source.relative_path().ends_with("src/json.loom")),
         "{standard_sources:#?}"
     );
     assert!(
@@ -2087,6 +2120,7 @@ fn snapshot_assigns_file_ids_by_stable_relative_path_and_builds_executable_mir()
     assert_eq!(paths[1], (FileId(1), "b.loom"));
     for expected in [
         "deps/std@0.3/src/int.loom",
+        "deps/std@0.3/src/json.loom",
         "deps/std@0.3/src/log.loom",
         "deps/std@0.3/src/resource.loom",
     ] {

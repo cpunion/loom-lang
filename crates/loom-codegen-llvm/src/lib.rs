@@ -1,6 +1,6 @@
 //! LLVM object-code backends for checked Loom MIR and checked LCIR.
 //!
-//! The LCIR boundary emits its checked target-typed SSA directly. The older
+//! The LCIR boundary emits its checked target-typed SSA directly. The
 //! checked-MIR boundary remains separate: its erased calls use the
 //! compiler-private `{ data, witness }` ABI described by [`abi`].
 

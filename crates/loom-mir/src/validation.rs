@@ -6264,21 +6264,6 @@ impl<'program> Validator<'program> {
             {
                 Some(types[0].clone()?)
             }
-            Builtin::JsonParse if types_compatible(&Type::Text, types[0].as_ref()?) => {
-                let json = self.expected_prelude_nominal(
-                    self.program.prelude.json,
-                    "json",
-                    expression.span,
-                    path,
-                )?;
-                self.expected_result_type(
-                    json,
-                    self.program.prelude.json_error,
-                    "json_error",
-                    expression.span,
-                    path,
-                )
-            }
             Builtin::JsonFormat
                 if Self::nominal_builtin_argument(&types, 0, self.program.prelude.json) =>
             {
@@ -6459,7 +6444,7 @@ impl<'program> Validator<'program> {
             {
                 Some(Type::Text)
             }
-            Builtin::ListAdd | Builtin::ListLength | Builtin::ListGet => {
+            Builtin::ListAdd | Builtin::ListLength | Builtin::ListGet | Builtin::ListToTextMap => {
                 self.validate_list_builtin(builtin, arguments, &types, expression.span, path)
             }
             _ => {
@@ -6514,6 +6499,7 @@ impl<'program> Validator<'program> {
             | Builtin::PathFromText
             | Builtin::PathAsText
             | Builtin::ListLength
+            | Builtin::ListToTextMap
             | Builtin::ProcessEnvironment
             | Builtin::TaskFaultCode
             | Builtin::TaskFaultMessage
@@ -6528,7 +6514,6 @@ impl<'program> Validator<'program> {
             | Builtin::SocketReadText
             | Builtin::SocketClose
             | Builtin::TextMapLength
-            | Builtin::JsonParse
             | Builtin::JsonFormat
             | Builtin::IoErrorKind
             | Builtin::IoErrorMessage
@@ -6711,6 +6696,10 @@ impl<'program> Validator<'program> {
         );
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one checked-MIR boundary validates every List builtin and the exact List-to-TextMap nominal result shape together"
+    )]
     fn validate_list_builtin(
         &mut self,
         builtin: Builtin,
@@ -6778,6 +6767,61 @@ impl<'program> Validator<'program> {
                     return None;
                 };
                 Some(Type::Nominal(option, vec![element.as_ref().clone()]))
+            }
+            Builtin::ListToTextMap => {
+                let Type::List(element) = types[0].as_ref()? else {
+                    self.push(
+                        MirValidationCode::BuiltinShape,
+                        "ListToTextMap receiver must be List[(Text, V)]",
+                        span,
+                        path,
+                    );
+                    return None;
+                };
+                let Type::Tuple(elements) = element.as_ref() else {
+                    self.push(
+                        MirValidationCode::BuiltinShape,
+                        "ListToTextMap receiver element must be (Text, V)",
+                        span,
+                        path,
+                    );
+                    return None;
+                };
+                let [key, value] = elements.as_slice() else {
+                    self.push(
+                        MirValidationCode::BuiltinShape,
+                        "ListToTextMap receiver element must be (Text, V)",
+                        span,
+                        path,
+                    );
+                    return None;
+                };
+                if !types_compatible(&Type::Text, key) {
+                    self.type_mismatch(&Type::Text, key, span, path);
+                    return None;
+                }
+                let Some(map) = self.program.prelude.text_map else {
+                    self.push(
+                        MirValidationCode::InvalidTypeReference,
+                        "ListToTextMap requires prelude.text_map",
+                        span,
+                        path,
+                    );
+                    return None;
+                };
+                let Some(result) = self.program.prelude.result else {
+                    self.push(
+                        MirValidationCode::InvalidTypeReference,
+                        "ListToTextMap requires prelude.result",
+                        span,
+                        path,
+                    );
+                    return None;
+                };
+                Some(Type::Nominal(
+                    result,
+                    vec![Type::Nominal(map, vec![value.clone()]), Type::Text],
+                ))
             }
             _ => unreachable!("caller filters List builtins"),
         }
@@ -8689,6 +8733,7 @@ impl<'program> Validator<'program> {
             | Builtin::ListAdd
             | Builtin::ListLength
             | Builtin::ListGet
+            | Builtin::ListToTextMap
             | Builtin::ProcessArguments
             | Builtin::ProcessEnvironment
             | Builtin::TaskFaultCode
@@ -8704,7 +8749,6 @@ impl<'program> Validator<'program> {
             | Builtin::TextMapEntryAt
             | Builtin::TextMapInsert
             | Builtin::TextMapRemove
-            | Builtin::JsonParse
             | Builtin::JsonFormat
             | Builtin::IoErrorKind
             | Builtin::IoErrorMessage

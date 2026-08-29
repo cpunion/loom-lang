@@ -5200,9 +5200,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 "try_connect" if self.builtin_is_imported("std.net.try_connect") => {
                     Some(BuiltinValue::SocketTryConnect)
                 }
-                "parse_json" if self.builtin_is_imported("std.json.parse_json") => {
-                    Some(BuiltinValue::JsonParse)
-                }
                 "format_json" if self.builtin_is_imported("std.json.format_json") => {
                     Some(BuiltinValue::JsonFormat)
                 }
@@ -5365,7 +5362,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::FileTryCreatePath
             | BuiltinValue::SocketConnect
             | BuiltinValue::SocketTryConnect
-            | BuiltinValue::JsonParse
             | BuiltinValue::JsonFormat
             | BuiltinValue::LogWrite => {
                 self.check_standard_builtin_call(expression, builtin, arguments)
@@ -5380,6 +5376,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::TextMapGet
             | BuiltinValue::TextMapEntryAt
             | BuiltinValue::TextMapInsert
+            | BuiltinValue::ListToTextMap
             | BuiltinValue::TextMapRemove
             | BuiltinValue::TaskFaultCode
             | BuiltinValue::TaskFaultMessage
@@ -5600,13 +5597,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 let int = self.types().builtin(BuiltinType::Int);
                 self.check_fixed_arguments(expression, arguments, &[text, int]);
                 self.try_resource_task(BuiltinType::Socket)
-            }
-            BuiltinValue::JsonParse => {
-                let text = self.types().builtin(BuiltinType::Text);
-                self.check_fixed_arguments(expression, arguments, &[text]);
-                let json = self.types().builtin(BuiltinType::Json);
-                let error = self.types().builtin(BuiltinType::JsonError);
-                self.types().intern(TyData::Result { ok: json, error })
             }
             BuiltinValue::JsonFormat => {
                 let json = self.types().builtin(BuiltinType::Json);
@@ -6155,6 +6145,10 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         return_ty
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one receiver dispatcher keeps List.add, List reads, and the exact generic bulk TextMap result inference together"
+    )]
     fn check_list_method_call(
         &mut self,
         expression: ExprId,
@@ -6233,6 +6227,41 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     let result = self.types().intern(TyData::Option(element));
                     (BuiltinValue::ListGet, ReceiverPassing::Value, result)
                 }
+            }
+            "to_text_map" => {
+                if !arguments.is_empty() {
+                    self.call_arity(expression, 0, arguments.len());
+                }
+                let result = match self.types().data(element).clone() {
+                    TyData::Tuple(elements) if matches!(elements.as_slice(), [key, _] if *key == self.types().builtin(BuiltinType::Text)) =>
+                    {
+                        let value = elements[1];
+                        if self.has_task_obligation(value, &mut BTreeSet::new(), 0) {
+                            self.error_at(
+                                "TaskContainerExtractionUnsupported",
+                                "List[(Text, V)].to_text_map cannot transfer Task-carrying values before container ownership transfer is available",
+                                receiver,
+                            );
+                            self.types().error()
+                        } else {
+                            let map = self.types().intern(TyData::TextMap(value));
+                            let text = self.types().builtin(BuiltinType::Text);
+                            self.types().intern(TyData::Result {
+                                ok: map,
+                                error: text,
+                            })
+                        }
+                    }
+                    _ => {
+                        self.error_at(
+                            "TypeMismatch",
+                            "to_text_map requires a List[(Text, V)] receiver",
+                            receiver,
+                        );
+                        self.types().error()
+                    }
+                };
+                (BuiltinValue::ListToTextMap, ReceiverPassing::Value, result)
             }
             _ => return None,
         };

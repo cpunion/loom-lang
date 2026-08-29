@@ -3582,6 +3582,18 @@ impl<'a> Validator<'a> {
                     );
                 }
             }
+            InstructionKind::TextMapConstructEntries { entries } => {
+                let entries_type = function.value(*entries).map(|value| value.ty);
+                let result_type = entries_type.and_then(|ty| self.text_map_bulk_result(ty));
+                if entries_type.is_some() && result_type.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.entries"),
+                        "TextMap bulk construction requires canonical List[(Text, V)] and Result[TextMap[V], Text] representations",
+                    );
+                }
+                self.require_results(function, instruction, &[result_type], &path);
+            }
             InstructionKind::TextMapInsert { map, key, value } => {
                 let map_type = function.value(*map).map(|value| value.ty);
                 let value_type = map_type.and_then(|ty| self.text_map_value(ty));
@@ -5989,6 +6001,39 @@ impl<'a> Validator<'a> {
             .type_id(&Type::Tuple(vec![Type::Text, value.semantic().clone()]))
     }
 
+    fn text_map_bulk_result(&self, entries: ValueTypeId) -> Option<ValueTypeId> {
+        let entry = self.list_element(entries)?;
+        let entry_type = self.program.representations.value_type(entry)?;
+        let Type::Tuple(elements) = entry_type.semantic() else {
+            return None;
+        };
+        let [semantic_key, semantic_value] = elements.as_slice() else {
+            return None;
+        };
+        if semantic_key != &Type::Text {
+            return None;
+        }
+        let fields = self.product_fields(entry)?;
+        let [key, value] = fields else {
+            return None;
+        };
+        let text = self.scalar_type(&Type::Text)?;
+        let canonical_value = self.program.representations.type_id(semantic_value)?;
+        if *key != text || *value != canonical_value {
+            return None;
+        }
+        let value_semantic = semantic_value.clone();
+        let map_semantic = Type::Nominal(TEXT_MAP_TYPE_ID, vec![value_semantic]);
+        let map = self.program.representations.type_id(&map_semantic)?;
+        self.text_map_value(map)?;
+        let result_semantic = Type::Nominal(RESULT_TYPE_ID, vec![map_semantic, Type::Text]);
+        let result = self.program.representations.type_id(&result_semantic)?;
+        let sum = self.sum_repr(result)?;
+        let variants = self.program.representations.sum(sum)?.variants();
+        (variants.len() == 2 && variants[0].fields() == [map] && variants[1].fields() == [text])
+            .then_some(result)
+    }
+
     fn option_element(&self, ty: ValueTypeId) -> Option<ValueTypeId> {
         let value_type = self.program.representations.value_type(ty)?;
         let Type::Nominal(_, arguments) = value_type.semantic() else {
@@ -6931,6 +6976,7 @@ fn instruction_direct_effects(kind: &InstructionKind) -> Effects {
             | InstructionKind::ListAppend { .. }
             | InstructionKind::ListAppendUnique { .. }
             | InstructionKind::TextMapInsert { .. }
+            | InstructionKind::TextMapConstructEntries { .. }
             | InstructionKind::TextMapRemove { .. }
             | InstructionKind::DynConstruct { .. }
             | InstructionKind::TaskOutcomeTake { .. }

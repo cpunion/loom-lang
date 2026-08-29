@@ -820,6 +820,12 @@ pub enum InstructionKind {
         key: ValueId,
         value: ValueId,
     },
+    /// Builds one canonical sorted `TextMap` from a `List[(Text, V)]` in one bulk
+    /// allocation. Duplicate input keys return the lexicographically smallest
+    /// duplicate `Text` through the exact `Result[TextMap[V], Text]` result.
+    TextMapConstructEntries {
+        entries: ValueId,
+    },
     /// Returns zero for the canonical empty map and otherwise its exact entry
     /// count. This operation cannot collect.
     TextMapLength {
@@ -992,6 +998,7 @@ impl InstructionKind {
             }
             Self::ListGet { list, index } => vec![*list, *index],
             Self::TextMapInsert { map, key, value } => vec![*map, *key, *value],
+            Self::TextMapConstructEntries { entries } => vec![*entries],
             Self::TextMapLength { map } => vec![*map],
             Self::TextMapContains { map, key }
             | Self::TextMapGet { map, key }

@@ -53,7 +53,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 39")?;
+    writeln!(output, "lcir 40")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -404,6 +404,9 @@ fn write_instruction(
         InstructionKind::TextMapConstruct => output.write_str("text_map.construct"),
         InstructionKind::TextMapInsert { map, key, value } => {
             write!(output, "text_map.insert %{map}, %{key}, %{value}")
+        }
+        InstructionKind::TextMapConstructEntries { entries } => {
+            write!(output, "text_map.construct_entries %{entries}")
         }
         InstructionKind::TextMapLength { map } => write!(output, "text_map.length %{map}"),
         InstructionKind::TextMapContains { map, key } => {

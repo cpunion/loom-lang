@@ -1041,13 +1041,13 @@ const fn builtin_requirements(builtin: Builtin) -> RuntimeRequirements {
         | Builtin::PathJoin
         | Builtin::ListAdd
         | Builtin::ListGet
+        | Builtin::ListToTextMap
         | Builtin::ProcessArguments
         | Builtin::ProcessEnvironment
         | Builtin::DurationMilliseconds
         | Builtin::TextMapGet
         | Builtin::TextMapInsert
         | Builtin::TextMapRemove
-        | Builtin::JsonParse
         | Builtin::JsonFormat => {
             RuntimeRequirements::MAY_FAULT.union(RuntimeRequirements::MAY_COLLECT)
         }
@@ -1409,7 +1409,7 @@ mod tests {
             Builtin::ListGet,
             Builtin::TextMapGet,
             Builtin::TextMapEntryAt,
-            Builtin::JsonParse,
+            Builtin::JsonFormat,
         ] {
             assert!(
                 builtin_requirements(builtin).may_collect(),

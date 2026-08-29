@@ -1886,6 +1886,46 @@ fn text_map_entry_at_has_an_explicit_interpreted_artifact_encoding() {
 }
 
 #[test]
+fn list_to_text_map_rejects_a_non_tuple_list_at_the_checked_boundary() {
+    let list = Type::List(Box::new(Type::Int));
+    let program = Program {
+        functions: vec![function(
+            0,
+            vec![local(0, list.clone(), false)],
+            Vec::new(),
+            Type::Int,
+            Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(Expr {
+                    id: ExprId::UNASSIGNED,
+                    kind: ExprKind::Call {
+                        target: CallTarget::Builtin(loom_mir::Builtin::ListToTextMap),
+                        type_arguments: Vec::new(),
+                        arguments: vec![CallArgument::Value(copy(0, list))],
+                        witnesses: Vec::new(),
+                    },
+                    ty: Type::Int,
+                    span: span(),
+                })),
+                span: span(),
+            },
+        )],
+        ..Program::default()
+    };
+    assert!(validation_errors(&program).contains(MirValidationCode::BuiltinShape));
+}
+
+#[test]
+fn list_to_text_map_has_an_explicit_interpreted_artifact_encoding() {
+    let encoded = serde_json::to_string(&loom_mir::Builtin::ListToTextMap)
+        .expect("encode List.to_text_map builtin");
+    assert_eq!(encoded, r#""list_to_text_map""#);
+    let decoded = serde_json::from_str::<loom_mir::Builtin>(&encoded)
+        .expect("decode List.to_text_map builtin");
+    assert_eq!(decoded, loom_mir::Builtin::ListToTextMap);
+}
+
+#[test]
 fn text_map_equality_requires_value_equality_at_the_checked_boundary() {
     let map = TypeId(0);
     let file = TypeId(1);

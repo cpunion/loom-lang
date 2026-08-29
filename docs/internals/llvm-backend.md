@@ -4,7 +4,7 @@
 one opaque object plan from `loom_mir::CheckedProgram`, owned emission options,
 and an atomic route policy. The plan owns the exact LLVM target machine and
 either a complete checked LCIR artifact or the checked-MIR roots and reachable
-graph for one legacy object. Fingerprinting and emission consume that same
+graph for one checked-MIR object. Fingerprinting and emission consume that same
 plan. Linking is a separate driver operation.
 
 ## LLVM integration
@@ -42,7 +42,7 @@ effects have already crossed independent validation. Predicate truth itself is
 a process-local conclusion supplied by fresh checked MIR. Supported `.loomi`
 nongeneric `Recheck` constructions re-evaluate their serialized predicate in
 LCIR and publish the nominal value only on the accepted path; generic or
-otherwise unsupported replay selects the complete legacy route. The emitter
+otherwise unsupported replay selects the complete checked-MIR route. The emitter
 declares every source function with its typed LCIR ABI, keeps source symbols
 internal, emits a run or ordered test harness, verifies before and after
 optimization, and writes a relocatable object.
@@ -51,7 +51,7 @@ Ordinary `build`, `run`, and `test` use `NativeRoutePolicy::Automatic`. Route
 preparation creates one target machine and attempts the complete direct
 lowering exactly once. `Complete` retains only the checked artifact and selects
 LCIR. Only `Unsupported` constructs and stores `SourceRoots` plus
-`ReachableSourceGraph` for a complete legacy object. Unsupported unreachable
+`ReachableSourceGraph` for a complete checked-MIR object. Unsupported unreachable
 code cannot change the route; one unsupported reachable test changes the
 whole ordered-test artifact. Invalid roots, resource limits, compiler defects,
 and LCIR emitter failures never fall back.
@@ -60,7 +60,7 @@ and LCIR emitter failures never fall back.
 whole-artifact classification, but an `Unsupported` result is a structured
 `NativePreparationUnsupportedLcir` error. The error owns the ordered
 `SupportReport`, including stable feature, function, expression, span, and path
-facts for every unsupported reachable site. `LegacyOnly` skips LCIR
+facts for every unsupported reachable site. `CheckedMirOnly` skips LCIR
 classification and exists for focused backend validation.
 
 Source contracts are part of the checked direct route. LCIR carries canonical
@@ -93,7 +93,7 @@ The production facade consists of:
 
 `PreparedNativeObject` is opaque and remains on the thread that prepared it;
 the contained Inkwell target machine is not made artificially sendable. The
-legacy and LCIR emitters retain low-level direct APIs for focused tests and
+checked-MIR and LCIR emitters retain low-level direct APIs for focused tests and
 library clients, but each is a thin create-target-then-emit wrapper. Production
 CLI paths use only the prepared facade.
 
@@ -117,15 +117,15 @@ The target machine is created before representation selection. Its pointer
 width is converted with checked arithmetic into `TargetLayout`. A complete
 direct LCIR object whose representations are all width-independent can
 therefore be emitted for a matching 32-bit LLVM target. Both direct `Text`
-representations and the legacy universal representation require 64-bit
+representations and the checked-MIR universal representation require 64-bit
 pointers; reachable text
-selects atomic legacy fallback during 32-bit direct classification, and that
-legacy route then reports its existing unsupported-target boundary. None of
+selects atomic checked-MIR fallback during 32-bit direct classification, and that
+checked-MIR route then reports its existing unsupported-target boundary. None of
 these cases establishes 32-bit runtime, linker, CI, or release support; LLVM
 target availability proves only object emission.
 
 Under `LcirOnly`, the same unsupported 32-bit Text artifact returns its
-coverage report before any legacy ABI validation. A complete width-independent
+coverage report before any checked-MIR ABI validation. A complete width-independent
 LCIR artifact remains eligible for 32-bit object emission.
 
 ## Verification and optimization
@@ -277,7 +277,7 @@ at their own safepoint. Successor arguments are rooted only when the paired
 explicit block parameter is live. Functions with no live-across managed leaf
 emit no frame, descriptor, bitmap, push, or pop. Every normal, fault, and
 resumed-fault return pops a frame that was pushed. Root-map ABI-limit overflow
-is an emission-time `ProgramTooLarge` error and cannot select legacy fallback.
+is an emission-time `ProgramTooLarge` error and cannot select checked-MIR fallback.
 
 The harness creates only a synchronous runtime when the root's exact effects
 require one. Managed concat/get introduces no universal root chain, executor,
@@ -347,7 +347,7 @@ queries a filesystem nor normalizes `.`, `..`, repeated `/`, host drive syntax,
 or reverse solidus. It creates no runtime Path object, universal value, JSON
 policy, executor, or ownership/borrow surface. The untyped
 `loom_runtime_path_contains_nul` and `loom_runtime_path_join` declarations are
-confined to the complete legacy emitter.
+confined to the complete checked-MIR emitter.
 
 ## Direct managed Lists
 
@@ -574,7 +574,7 @@ literal is flattened into the same child row without an input List allocation;
 `all` and `settled` build their List result after resume. Empty, stored,
 computed, or runtime-sized List joins and first-class `any`, `settled`, or
 `race` results remain reachable `Unsupported` input and select the complete
-legacy object. The frontend maps canonical, unshadowed Task API members through
+checked-MIR object. The frontend maps canonical, unshadowed Task API members through
 its embedded catalog to a stable `StandardLibraryItem` before
 MIR construction; LLVM never inspects their source spelling. Future trusted
 source-library definitions map to the same items. The minimum private substrate
@@ -661,7 +661,7 @@ Failure while writing an already failing diagnostic leaves the existing
 nonzero status intact; because a prefix may already be visible, the harness
 does not retry or add a second diagnostic.
 
-## Legacy native specialization
+## Checked-MIR native specialization
 
 The universal value path remains the complete semantic implementation. Current
 closed-world fast paths include primitive scalar calls, eligible flat
@@ -693,9 +693,9 @@ object-cache, checked-MIR, and runtime ABI identities are maintained in
 remain route-separated:
 
 - the LCIR route streams the canonical complete checked-artifact identity;
-- the legacy route includes the run/test harness kind, MIR format, exact roots
+- the checked-MIR route includes the run/test harness kind, MIR format, exact roots
   and source reachability, reachable functions, live witness slots, and the
-  semantic type, concept, and prelude tables used by legacy lowering.
+  semantic type, concept, and prelude tables used by checked-MIR lowering.
 
 Both identities include the compiler/backend build fingerprint, linked LLVM
 version, native runtime ABI, exact normalized triple and data layout, CPU and

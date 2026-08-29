@@ -49,7 +49,7 @@ test("requires exact LF byte checks in both release archive branches", () => {
   }
 });
 
-test("rejects duplicated downloads, legacy rebuilds, and unsplatted native arguments", () => {
+test("rejects duplicated downloads, redundant rebuilds, and unsplatted native arguments", () => {
   const errors = checkReleaseWorkflow({
     ci: [
       "./.github/scripts/bootstrap-windows-llvm.ps1 -CacheRoot x -InstallRoot y -EnvironmentFile z -PathFile p",
@@ -61,7 +61,7 @@ test("rejects duplicated downloads, legacy rebuilds, and unsplatted native argum
     bootstrap: [
       "& curl.exe --output archive url",
       "& tar.exe -xf archive",
-      "$libxmlVersion = 'legacy'",
+      "$libxmlVersion = 'sentinel'",
       "& cmake.exe -S source -B build",
     ].join("\n"),
     argumentTest: "",
