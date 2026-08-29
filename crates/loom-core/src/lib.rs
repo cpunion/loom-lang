@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 pub const LOOM_LANGUAGE_VERSION: &str = "0.3";
 
 /// Reserved logical package name of the compiler-distributed Loom library.
-pub const STANDARD_PACKAGE_NAME: &str = "standard";
+pub const STD_PACKAGE_NAME: &str = "std";
 
 /// Stable nominal package identity carried by every source module.
 ///
@@ -47,22 +47,22 @@ impl PackageId {
     }
 
     /// Constructs the reserved nominal identity of the compiler-distributed
-    /// standard package for one language version.
+    /// `std` package for one language version.
     ///
     /// Its package version and source-language version deliberately advance
     /// together. Constructing this value does not make caller-supplied source
     /// compiler-owned.
     #[must_use]
-    pub fn compiler_standard(language: impl Into<String>) -> Self {
+    pub fn compiler_std(language: impl Into<String>) -> Self {
         let language = language.into();
-        Self::with_language(STANDARD_PACKAGE_NAME, language.clone(), language)
+        Self::with_language(STD_PACKAGE_NAME, language.clone(), language)
     }
 
-    /// Whether this exactly matches the current compiler-standard nominal
+    /// Whether this exactly matches the current compiler-owned `std` nominal
     /// identity. This comparison does not authenticate source ownership.
     #[must_use]
-    pub fn is_compiler_standard(&self) -> bool {
-        self == &Self::compiler_standard(LOOM_LANGUAGE_VERSION)
+    pub fn is_compiler_std(&self) -> bool {
+        self == &Self::compiler_std(LOOM_LANGUAGE_VERSION)
     }
 
     #[must_use]
@@ -100,18 +100,18 @@ impl fmt::Display for PackageId {
 
 #[cfg(test)]
 mod package_tests {
-    use super::{LOOM_LANGUAGE_VERSION, PackageId, STANDARD_PACKAGE_NAME};
+    use super::{LOOM_LANGUAGE_VERSION, PackageId, STD_PACKAGE_NAME};
 
     #[test]
-    fn compiler_standard_identity_is_exact_and_version_coupled() {
-        let standard = PackageId::compiler_standard(LOOM_LANGUAGE_VERSION);
-        assert_eq!(standard.name(), STANDARD_PACKAGE_NAME);
-        assert_eq!(standard.version(), LOOM_LANGUAGE_VERSION);
-        assert_eq!(standard.language(), LOOM_LANGUAGE_VERSION);
-        assert!(standard.is_compiler_standard());
-        assert!(!PackageId::compiler_standard("0.4").is_compiler_standard());
-        assert!(!PackageId::with_language("standard", "0.2", "0.3").is_compiler_standard());
-        assert!(!PackageId::with_language("standardish", "0.3", "0.3").is_compiler_standard());
+    fn compiler_std_identity_is_exact_and_version_coupled() {
+        let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+        assert_eq!(std.name(), STD_PACKAGE_NAME);
+        assert_eq!(std.version(), LOOM_LANGUAGE_VERSION);
+        assert_eq!(std.language(), LOOM_LANGUAGE_VERSION);
+        assert!(std.is_compiler_std());
+        assert!(!PackageId::compiler_std("0.4").is_compiler_std());
+        assert!(!PackageId::with_language("std", "0.2", "0.3").is_compiler_std());
+        assert!(!PackageId::with_language("stdish", "0.3", "0.3").is_compiler_std());
     }
 }
 

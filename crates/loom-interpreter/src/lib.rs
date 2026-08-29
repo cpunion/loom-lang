@@ -637,7 +637,7 @@ impl<'program> Interpreter<'program> {
         self.socket_reactor = loom_runtime::WaitSet::new().ok();
     }
 
-    /// Supplies arguments visible through `standard.process.arguments`.
+    /// Supplies arguments visible through `std.process.arguments`.
     /// The executable path is deliberately excluded.
     #[must_use]
     pub fn with_process_arguments(mut self, arguments: Vec<String>) -> Self {

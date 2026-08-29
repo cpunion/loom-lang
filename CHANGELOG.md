@@ -51,16 +51,16 @@ artifact, or runtime compatibility.
   publishes a direct managed Text pointer without a universal `Value`. This
   advances Text identity to `text-v3` and native runtime ABI to component 14
   with `runtime-v8`; the collector remains `gc-v9`.
-- A compiler-distributed, read-only `standard` source package compiled through
+- A compiler-distributed, read-only `std` source package compiled through
   the ordinary frontend, MIR, reachability, and native pipelines. The initial
-  source set includes `standard.int`, which provides `minimum` and `maximum`,
-  and `standard.resource`, which publicly declares `Dispose`, `MustScope`, and
+  source set includes `std.int`, which provides `minimum` and `maximum`, and
+  `std.resource`, which publicly declares `Dispose`, `MustScope`, and
   `NoSuspend`. Resource declarations now pass through the ordinary source
   pipeline, while their fixed shapes and lexical static rules remain in the
   language core and add no runtime registry. Unreachable functions are absent
   from native artifacts. Exact embedded source bytes and the language version
   form the versioned `loom-source-stdlib-v1/<sha256>` cache identity; the
-  `standard` package name, dependency alias, and complete `standard.*` module
+  `std` package name, dependency alias, and complete `std.*` module
   namespace are reserved from user replacement.
 - `TextMap.entry_at(index) -> Option[(Text, V)]`, exposing checked read-only
   enumeration in canonical UTF-8 key order. Negative and out-of-range indices
@@ -480,7 +480,7 @@ artifact, or runtime compatibility.
   domain to v12, and CLI object cache to v17; native runtime ABI component 14,
   `text-v3`, `runtime-v8`, and `gc-v9` are unchanged.
 - Checked MIR now carries source-module provenance and a versioned
-  compiler-known identity for the canonical `standard.resource.MustScope`
+  compiler-known identity for the canonical `std.resource.MustScope`
   marker. Artifact and cache validation independently require that qualified
   concept, its identity tag, the prelude id, and the empty marker shape to
   agree, while same-named concepts in other modules remain ordinary. This

@@ -68,7 +68,7 @@ fn parses_the_core_surface_end_to_end() {
     let parsed = assert_clean(
         r"module shop.order
 
-import standard.float.is_finite
+import std.float.is_finite
 
 pub type Price = Float where self >= 0.0
 

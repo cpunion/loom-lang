@@ -1,6 +1,6 @@
 module lcir_typed_sleep
 
-import standard.time.milliseconds
+import std.time.milliseconds
 
 async fn allocationPressure() Bool {
     var allocated = "x"

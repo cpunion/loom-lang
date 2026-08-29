@@ -194,8 +194,7 @@ pub fn encode_library_artifact(
         if source.is_authoritative_compiler_standard() {
             continue;
         }
-        if source.is_compiler_owned()
-            || package.name() == crate::standard_library::STANDARD_PACKAGE_NAME
+        if source.is_compiler_owned() || package.name() == crate::standard_library::STD_PACKAGE_NAME
         {
             return Err(LibraryArtifactError::InvalidGraph(format!(
                 "source `{}` has inconsistent compiler-owned standard provenance: origin {:?}, package `{package}`",
@@ -331,9 +330,9 @@ fn validate_packages(
                 package.id.name()
             )));
         }
-        if package.id.name() == crate::standard_library::STANDARD_PACKAGE_NAME {
+        if package.id.name() == crate::standard_library::STD_PACKAGE_NAME {
             return Err(LibraryArtifactError::InvalidGraph(
-                "portable libraries cannot define the reserved package `standard`".to_owned(),
+                "portable libraries cannot define the reserved package `std`".to_owned(),
             ));
         }
         Version::parse(package.id.version()).map_err(|error| {
@@ -363,9 +362,9 @@ fn validate_packages(
                     dependency.alias
                 )));
             }
-            if dependency.alias == crate::standard_library::STANDARD_PACKAGE_NAME {
+            if dependency.alias == crate::standard_library::STD_PACKAGE_NAME {
                 return Err(LibraryArtifactError::InvalidGraph(
-                    "portable libraries cannot define the reserved dependency alias `standard`"
+                    "portable libraries cannot define the reserved dependency alias `std`"
                         .to_owned(),
                 ));
             }

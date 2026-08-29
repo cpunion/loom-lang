@@ -10,7 +10,7 @@ Every source file begins with exactly one `module` declaration:
 module shop.pricing
 
 import shop.currency.Currency
-import standard.float.is_finite
+import std.float.is_finite
 
 pub type Price = Float where is_finite(self) && self >= 0.0
 ```
@@ -39,6 +39,9 @@ not execute initialization and does not register implementations at runtime.
 
 Imports participate in a closed module graph. A cycle in that graph is a static
 `ModuleCycle` error.
+
+The first path segment `std` is reserved for the read-only compiler-owned
+standard-library package.
 
 ## Visibility
 

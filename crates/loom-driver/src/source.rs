@@ -146,7 +146,7 @@ pub enum SourceOrigin {
 
 fn is_authoritative_compiler_standard(origin: SourceOrigin, package: Option<&PackageId>) -> bool {
     matches!(origin, SourceOrigin::CompilerOwnedStandardLibrary)
-        && package.is_some_and(PackageId::is_compiler_standard)
+        && package.is_some_and(PackageId::is_compiler_std)
 }
 
 /// One source document in a snapshot.
@@ -640,7 +640,7 @@ mod provenance_tests {
 
     #[test]
     fn compiler_standard_authority_requires_origin_and_exact_package_identity() {
-        let standard = PackageId::compiler_standard(LOOM_LANGUAGE_VERSION);
+        let standard = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
         let application = PackageId::new("application", "1.0.0");
 
         for (origin, package, expected) in [

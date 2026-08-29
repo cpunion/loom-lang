@@ -71,12 +71,12 @@ the statically selected disposal operation exactly once on scope exit.
 
 Built-in `File` and `Socket` values have compiler-known close operations. A
 custom resource imports the canonical concepts from the compiler-distributed
-`standard.resource` source module:
+`std.resource` source module:
 
 ```loom
-import standard.resource.Dispose
-import standard.resource.MustScope
-import standard.resource.NoSuspend
+import std.resource.Dispose
+import std.resource.MustScope
+import std.resource.NoSuspend
 ```
 
 `Dispose` selects lexical cleanup. A type implementing `MustScope` must enter a
@@ -143,8 +143,8 @@ It may call ordinary synchronous functions and methods.
 The standard library exposes fallible asynchronous acquisition and operations:
 
 ```loom
-import standard.file.try_create
-import standard.file.try_open_read
+import std.file.try_create
+import std.file.try_open_read
 
 async fn round_trip(path Text) Result[Text, IoError] {
     {
@@ -157,7 +157,7 @@ async fn round_trip(path Text) Result[Text, IoError] {
 }
 ```
 
-Path-based variants accept `Path`; `standard.net.try_connect(host, port)` opens
+Path-based variants accept `Path`; `std.net.try_connect(host, port)` opens
 a `Socket`. `try_read_text` and `try_write_text` return tasks carrying
 `Result[..., IoError]`.
 

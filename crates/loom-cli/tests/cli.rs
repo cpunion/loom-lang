@@ -491,7 +491,7 @@ fn embedded_loom_standard_source_checks_builds_and_closes_only_reachable_definit
     let project = TestProject::new(
         r"module standard_source_client
 
-import standard.int.minimum
+import std.int.minimum
 
 pub fn main() {
     let value = minimum(9, 4)
@@ -524,13 +524,13 @@ pub fn main() {
     let minimum = program
         .functions
         .iter()
-        .find(|function| function.name == "standard.int.minimum")
+        .find(|function| function.name == "std.int.minimum")
         .expect("minimum source definition")
         .id;
     let maximum = program
         .functions
         .iter()
-        .find(|function| function.name == "standard.int.maximum")
+        .find(|function| function.name == "std.int.maximum")
         .expect("maximum source definition")
         .id;
     let roots = loom_codegen_ir::SourceRoots::for_entry(program, "main").expect("main root");
@@ -3544,7 +3544,7 @@ test async fn discards_awaited_value() {
 #[test]
 fn range_and_growable_list_run_on_both_backends() {
     let project = TestProject::new(
-        "module dynamic\n\nimport standard.int.parse_int\nimport standard.process.arguments\nimport standard.process.environment\n\nasync fn worker(value Int) Int {\n    value * 2\n}\n\npub async fn main() {\n    let processArguments = arguments()\n    let argumentCount = processArguments.length()\n    assert argumentCount == 5\n    let count = match environment(\"LOOM_WORKERS\") {\n        Some(text) => {\n            match parse_int(text) {\n                Ok(value) => value\n                Err(ParseIntError.InvalidSyntax) => 0\n                Err(ParseIntError.OutOfRange) => 0\n            }\n        }\n        None => 0\n    }\n    assert count == 5\n    match environment(\"LOOM_TEST_ENV\") {\n        Some(value) => {\n            assert value == \"visible\"\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    var tasks = List[Task[Int]]()\n    for i in 0..count {\n        tasks.add(worker(i))\n        Unit\n    }\n    let values = Task.all(tasks).await\n    let length = values.length()\n    assert length == count\n    let selected = values.get(3)\n    match selected {\n        Some(value) => {\n            assert value == 6\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    let missing = values.get(-1)\n    match missing {\n        Some(_) => {\n            assert false\n            Unit\n        }\n        None => Unit\n    }\n}\n",
+        "module dynamic\n\nimport std.int.parse_int\nimport std.process.arguments\nimport std.process.environment\n\nasync fn worker(value Int) Int {\n    value * 2\n}\n\npub async fn main() {\n    let processArguments = arguments()\n    let argumentCount = processArguments.length()\n    assert argumentCount == 5\n    let count = match environment(\"LOOM_WORKERS\") {\n        Some(text) => {\n            match parse_int(text) {\n                Ok(value) => value\n                Err(ParseIntError.InvalidSyntax) => 0\n                Err(ParseIntError.OutOfRange) => 0\n            }\n        }\n        None => 0\n    }\n    assert count == 5\n    match environment(\"LOOM_TEST_ENV\") {\n        Some(value) => {\n            assert value == \"visible\"\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    var tasks = List[Task[Int]]()\n    for i in 0..count {\n        tasks.add(worker(i))\n        Unit\n    }\n    let values = Task.all(tasks).await\n    let length = values.length()\n    assert length == count\n    let selected = values.get(3)\n    match selected {\n        Some(value) => {\n            assert value == 6\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    let missing = values.get(-1)\n    match missing {\n        Some(_) => {\n            assert false\n            Unit\n        }\n        None => Unit\n    }\n}\n",
     );
     for backend in ["interpreter", "llvm"] {
         let output = loomc()
@@ -4227,6 +4227,49 @@ fn release_build_produces_a_runnable_native_executable() {
 }
 
 #[test]
+fn source_backed_std_closes_real_check_build_test_and_run_commands() {
+    let project = TestProject::new(include_str!("../../../fixtures/std-source/main.loom"));
+
+    let check = loomc()
+        .args(["--no-cache", "check"])
+        .arg(&project.0)
+        .output()
+        .expect("check source-backed std calls through the production CLI");
+    assert_eq!(check.status.code(), Some(0), "{check:?}");
+
+    let object_path = project.0.join("std-source.o");
+    let build = loomc()
+        .args(["--no-cache", "build", "--emit", "object", "--output"])
+        .arg(&object_path)
+        .arg(&project.0)
+        .output()
+        .expect("build source-backed std calls through the production CLI");
+    assert_eq!(build.status.code(), Some(0), "{build:?}");
+    let object = fs::read(&object_path).expect("read source-backed std object");
+    assert!(contains_bytes(&object, b"loom.lcir.fn"));
+    assert!(!contains_bytes(&object, b"loom.fn."));
+
+    let tests = loomc()
+        .args(["--no-cache", "test"])
+        .arg(&project.0)
+        .output()
+        .expect("test source-backed std calls through the production CLI");
+    assert_eq!(tests.status.code(), Some(0), "{tests:?}");
+    assert!(
+        String::from_utf8_lossy(&tests.stdout).contains("passed std_source.sourceBackedAlgorithms"),
+        "{tests:?}"
+    );
+
+    let run = loomc()
+        .args(["--no-cache", "run"])
+        .arg(&project.0)
+        .output()
+        .expect("run source-backed std calls through the production CLI");
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    assert_eq!(run.stdout, b"Unit\n");
+}
+
+#[test]
 fn core_examples_close_check_build_test_and_run() {
     for (version, source) in [
         ("core01", include_str!("../../../examples/core01/shop.loom")),
@@ -4277,8 +4320,8 @@ fn must_scope_identity_closes_cached_check_build_test_run_and_artifact_decode() 
     let project = TestProject::new(
         r"module resource_identity
 
-import standard.resource.Dispose
-import standard.resource.MustScope
+import std.resource.Dispose
+import std.resource.MustScope
 
 record Resource {
     value Int
@@ -4335,9 +4378,7 @@ test fn resource_identity() {
     let (marker_index, marker) = concepts
         .iter()
         .enumerate()
-        .find(|(_, concept)| {
-            concept["module"] == "standard.resource" && concept["name"] == "MustScope"
-        })
+        .find(|(_, concept)| concept["module"] == "std.resource" && concept["name"] == "MustScope")
         .expect("canonical MustScope concept");
     assert_eq!(marker["identity"], "mustScope");
     assert_eq!(

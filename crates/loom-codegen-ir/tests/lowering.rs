@@ -49,19 +49,19 @@ fn compile(source: &str) -> loom_mir::CheckedProgram {
         .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
 }
 
-fn compile_with_standard_resource(source: &str) -> loom_mir::CheckedProgram {
+fn compile_with_std_resource(source: &str) -> loom_mir::CheckedProgram {
     let application = parse_with_file(FileId(0), source);
     let resource = parse_with_file(
         FileId(1),
-        include_str!("../../../library/standard/src/resource.loom"),
+        include_str!("../../../library/std/src/resource.loom"),
     );
     assert!(
         application.diagnostics().is_empty() && resource.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} standard={:#?}",
+        "syntax diagnostics: application={:#?} std={:#?}",
         application.diagnostics(),
         resource.diagnostics()
     );
-    let standard = PackageId::compiler_standard(LOOM_LANGUAGE_VERSION);
+    let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::legacy();
     let mut lowered = lower_package_files([
         PackageSourceUnit {
@@ -71,16 +71,16 @@ fn compile_with_standard_resource(source: &str) -> loom_mir::CheckedProgram {
         },
         PackageSourceUnit {
             file: FileId(1),
-            package: standard.clone(),
+            package: std_package.clone(),
             syntax: resource.ast(),
         },
     ]);
     lowered
         .program
-        .register_package(standard.clone(), [], false);
+        .register_package(std_package.clone(), [], false);
     lowered
         .program
-        .register_package(root, [(Name::new("standard"), standard)], true);
+        .register_package(root, [(Name::new("std"), std_package)], true);
     assert!(
         lowered.diagnostics.is_empty(),
         "HIR diagnostics: {:#?}",
@@ -109,7 +109,7 @@ fn lower_run(source: &str) -> LoweringOutcome {
 }
 
 fn lower_run_with_standard_resource(source: &str) -> LoweringOutcome {
-    let mir = compile_with_standard_resource(source);
+    let mir = compile_with_std_resource(source);
     lower_typed_artifact(
         &mir,
         &SourceArtifactRequest::Run {
@@ -368,11 +368,11 @@ fn canonical_logging_builtins_lower_to_typed_fault_control_flow() {
     let outcome = lower_run(
         r#"module typed_logging
 
-import standard.log.debug
-import standard.log.info
-import standard.log.warn
-import standard.log.error
-import standard.log.write
+import std.log.debug
+import std.log.info
+import std.log.warn
+import std.log.error
+import std.log.write
 
 pub fn main() {
     debug("debug")
@@ -516,8 +516,8 @@ fn async_scoped_and_defer_cleanup_are_explicit_on_every_suspension_exit() {
     let outcome = lower_run_with_standard_resource(
         r"module typed_async_resource
 
-import standard.resource.Dispose
-import standard.resource.MustScope
+import std.resource.Dispose
+import std.resource.MustScope
 
 record Resource {
     value Int
@@ -1039,8 +1039,7 @@ pub async fn main() {
 
 #[test]
 fn core03_task_list_joins_are_complete_for_run_and_tests() {
-    let program =
-        compile_with_standard_resource(include_str!("../../../examples/core03/tasks.loom"));
+    let program = compile_with_std_resource(include_str!("../../../examples/core03/tasks.loom"));
     for (route, request) in [
         (
             "run",
@@ -1098,7 +1097,7 @@ pub async fn main() {
 fn task_sleep_normalizes_duration_and_preserves_first_class_task_flow() {
     let source = r"module lcir_typed_sleep
 
-import standard.time.milliseconds
+import std.time.milliseconds
 
 pub async fn main() {
     let delay = milliseconds(0)
@@ -2445,7 +2444,7 @@ pub fn main() {
     discard Stored.Interval(Range { low = Money(1.0), high = Money(2.0) })
 }
 ";
-    let fresh = compile_with_standard_resource(source);
+    let fresh = compile_with_std_resource(source);
     let fresh_outcome = lower_typed_artifact(
         &fresh,
         &SourceArtifactRequest::Run {
@@ -2531,7 +2530,7 @@ pub fn main() {
     discard wrap(7)
 }
 "#;
-    let fresh = compile_with_standard_resource(source);
+    let fresh = compile_with_std_resource(source);
     let bytes = loom_mir::encode_interpreted_executable_artifact(&fresh, "main")
         .expect("encode portable generic proof artifact");
     let (decoded, entry) = loom_mir::decode_interpreted_executable_artifact(&bytes)
@@ -5236,7 +5235,7 @@ fn canonical_json_format_lowers_to_one_collecting_typed_instruction() {
     let outcome = lower_run(
         r"module typed_json_format
 
-import standard.json.format_json
+import std.json.format_json
 
 pub fn main() {
     let valid = match format_json(Json.Null) {
@@ -5292,7 +5291,7 @@ fn json_parse_remains_outside_the_json_format_lcir_slice() {
     let outcome = lower_run(
         r#"module typed_json_parse
 
-import standard.json.parse_json
+import std.json.parse_json
 
 pub fn main() {
     let valid = match parse_json("null") {

@@ -91,22 +91,22 @@ fn assert_compiler_owned_overlays_are_ignored(
 ) {
     host.set_overlay(
         int_path,
-        "module standard.int\n\npub fn minimum(left Int, right Int) Int { 999 }\n",
+        "module std.int\n\npub fn minimum(left Int, right Int) Int { 999 }\n",
     )
     .expect("install hostile synthetic-path overlay");
     host.set_overlay(
         resource_path,
-        "module standard.resource\n\npub concept ForgedResourceProtocol {}\n",
+        "module std.resource\n\npub concept ForgedResourceProtocol {}\n",
     )
-    .expect("install hostile standard.resource overlay");
+    .expect("install hostile std.resource overlay");
 
     let protected = host.snapshot().expect("reload protected standard source");
     for (path, expected, message) in [
-        (int_path, "Returns the smaller", "standard.int source"),
+        (int_path, "Returns the smaller", "std.int source"),
         (
             resource_path,
             "Requires a value to transfer directly",
-            "standard.resource protocols",
+            "std.resource protocols",
         ),
     ] {
         let source = protected
@@ -130,7 +130,7 @@ fn compiler_owned_standard_source_resolves_as_an_ordinary_direct_definition() {
         "main.loom",
         r"module embedded_standard_user
 
-import standard.int.minimum
+import std.int.minimum
 
 pub fn main() {
     let value = minimum(9, 4)
@@ -165,7 +165,7 @@ test fn importedMinimum() {
         .filter(|source| {
             source
                 .package()
-                .is_some_and(|package| package.name() == "standard")
+                .is_some_and(|package| package.name() == "std")
         })
         .collect::<Vec<_>>();
     assert!(
@@ -180,13 +180,13 @@ test fn importedMinimum() {
     let resource_path = standard_sources
         .iter()
         .find(|source| source.relative_path().ends_with("src/resource.loom"))
-        .expect("compiler-owned standard.resource source")
+        .expect("compiler-owned std.resource source")
         .absolute_path()
         .to_path_buf();
     let standard_source = standard_sources
         .into_iter()
         .find(|source| source.relative_path().ends_with("src/int.loom"))
-        .expect("compiler-owned standard.int source");
+        .expect("compiler-owned std.int source");
     assert_compiler_owned_source(standard_source);
     assert_eq!(
         standard_source
@@ -195,16 +195,13 @@ test fn importedMinimum() {
             .version(),
         loom_core::LOOM_LANGUAGE_VERSION
     );
-    assert_eq!(
-        standard_source.relative_path(),
-        "deps/standard@0.3/src/int.loom"
-    );
+    assert_eq!(standard_source.relative_path(), "deps/std@0.3/src/int.loom");
 
     let program = snapshot.executable().expect("lower checked MIR");
     let minimum = program
         .functions
         .iter()
-        .find(|function| function.name == "standard.int.minimum")
+        .find(|function| function.name == "std.int.minimum")
         .expect("ordinary source minimum definition");
     assert!(
         program.functions.iter().any(|function| {
@@ -233,39 +230,30 @@ test fn importedMinimum() {
 }
 
 #[test]
-fn standard_package_name_alias_and_complete_namespace_are_reserved() {
-    let named_standard = TestProject::new();
-    named_standard.write(
+fn std_package_name_alias_and_complete_namespace_are_reserved() {
+    let named_std = TestProject::new();
+    named_std.write(
         "loom.toml",
-        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"standard\"\nversion = \"1.0.0\"\n",
+        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"std\"\nversion = \"1.0.0\"\n",
     );
-    named_standard.write("src/main.loom", "module standard\n\npub fn main() {}\n");
-    let error = ProjectGraph::load(&named_standard.root).expect_err("reserved package name");
+    named_std.write("src/main.loom", "module std\n\npub fn main() {}\n");
+    let error = ProjectGraph::load(&named_std.root).expect_err("reserved package name");
+    assert!(error.to_string().contains("package name `std` is reserved"));
+
+    let aliased_std = TestProject::new();
+    aliased_std.write(
+        "loom.toml",
+        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"application\"\nversion = \"1.0.0\"\n[dependencies]\nstd = { path = \"../dependency\" }\n",
+    );
+    aliased_std.write("src/main.loom", "module application\n\npub fn main() {}\n");
+    let error = ProjectGraph::load(&aliased_std.root).expect_err("reserved dependency alias");
     assert!(
         error
             .to_string()
-            .contains("package name `standard` is reserved")
+            .contains("dependency alias `std` is reserved")
     );
 
-    let aliased_standard = TestProject::new();
-    aliased_standard.write(
-        "loom.toml",
-        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"application\"\nversion = \"1.0.0\"\n[dependencies]\nstandard = { path = \"../dependency\" }\n",
-    );
-    aliased_standard.write("src/main.loom", "module application\n\npub fn main() {}\n");
-    let error = ProjectGraph::load(&aliased_standard.root).expect_err("reserved dependency alias");
-    assert!(
-        error
-            .to_string()
-            .contains("dependency alias `standard` is reserved")
-    );
-
-    for module in [
-        "standard",
-        "standard.int",
-        "standard.resource",
-        "standard.future.nested",
-    ] {
+    for module in ["std", "std.int", "std.resource", "std.future.nested"] {
         let legacy_namespace = TestProject::new();
         legacy_namespace.write(
             "main.loom",
@@ -286,10 +274,7 @@ fn standard_package_name_alias_and_complete_namespace_are_reserved() {
     }
 
     let adjacent_namespace = TestProject::new();
-    adjacent_namespace.write(
-        "main.loom",
-        "module standardish.resource\n\npub fn main() {}\n",
-    );
+    adjacent_namespace.write("main.loom", "module stdish.resource\n\npub fn main() {}\n");
     let snapshot = AnalysisHost::new(&adjacent_namespace.root)
         .expect("open adjacent namespace project")
         .snapshot()
@@ -509,8 +494,8 @@ fn manifest_resolves_path_dependencies_sources_and_targets() {
         .map(loom_driver::SourceDocument::relative_path)
         .collect::<Vec<_>>();
     for expected in [
-        "deps/standard@0.3/src/int.loom",
-        "deps/standard@0.3/src/resource.loom",
+        "deps/std@0.3/src/int.loom",
+        "deps/std@0.3/src/resource.loom",
     ] {
         assert!(standard_paths.contains(&expected), "{standard_paths:?}");
     }
@@ -555,24 +540,24 @@ fn portable_library_is_a_consumable_versioned_dependency() {
             .as_array()
             .expect("library sources")
             .iter()
-            .all(|source| source["package"]["name"] != "standard"),
+            .all(|source| source["package"]["name"] != "std"),
         "compiler-owned standard sources must not be serialized into a portable package"
     );
     let mut reserved_package = envelope.clone();
-    reserved_package["packages"][0]["id"]["name"] = serde_json::json!("standard");
+    reserved_package["packages"][0]["id"]["name"] = serde_json::json!("std");
     let error = decode_library_artifact(
         &serde_json::to_vec(&reserved_package).expect("encode reserved package artifact"),
     )
     .expect_err("the public decoder rejects the compiler-owned package name");
     assert!(
-        error.to_string().contains("reserved package `standard`"),
+        error.to_string().contains("reserved package `std`"),
         "{error}"
     );
 
     let mut reserved_alias = envelope.clone();
     let dependency_package = reserved_alias["packages"][0]["id"].clone();
     reserved_alias["packages"][0]["dependencies"] = serde_json::json!([{
-        "alias": "standard",
+        "alias": "std",
         "requirement": null,
         "package": dependency_package,
     }]);
@@ -583,7 +568,7 @@ fn portable_library_is_a_consumable_versioned_dependency() {
     assert!(
         error
             .to_string()
-            .contains("reserved dependency alias `standard`"),
+            .contains("reserved dependency alias `std`"),
         "{error}"
     );
 
@@ -729,7 +714,7 @@ fn portable_library_is_a_consumable_versioned_dependency() {
         decoded
             .interfaces()
             .iter()
-            .all(|interface| !interface.module.starts_with("standard@")),
+            .all(|interface| !interface.module.starts_with("std@")),
         "compiler-owned standard interfaces must not be serialized into a portable package"
     );
     assert!(decoded.interfaces().iter().any(|interface| {
@@ -793,7 +778,7 @@ fn portable_library_is_a_consumable_versioned_dependency() {
         .filter(|source| {
             source
                 .package()
-                .is_some_and(|package| package.name() == "standard")
+                .is_some_and(|package| package.name() == "std")
         })
         .collect::<Vec<_>>();
     assert!(
@@ -1695,13 +1680,13 @@ fn persistent_semantic_reuse_rederives_compiler_owned_must_scope_identity() {
         warm.hir().modules[warm.hir().definitions[semantic_id].module]
             .name
             .as_str(),
-        "standard.resource"
+        "std.resource"
     );
     let mir = warm.executable().expect("warm checked MIR");
     let marker = mir
         .concept(mir.prelude.must_scope_concept.expect("MIR MustScope id"))
         .expect("MIR MustScope concept");
-    assert_eq!(marker.module, "standard.resource");
+    assert_eq!(marker.module, "std.resource");
     assert_eq!(marker.identity, Some(ConceptIdentity::MustScope));
 }
 
@@ -1916,7 +1901,7 @@ fn many_modules_and_call_edges_close_the_checked_mir_pipeline() {
         program
             .functions
             .iter()
-            .filter(|function| !function.name.starts_with("standard."))
+            .filter(|function| !function.name.starts_with("std."))
             .count(),
         MODULES + 1
     );
@@ -1924,7 +1909,7 @@ fn many_modules_and_call_edges_close_the_checked_mir_pipeline() {
         program
             .functions
             .iter()
-            .filter(|function| function.name.starts_with("standard."))
+            .filter(|function| function.name.starts_with("std."))
             .count(),
         2
     );
@@ -1954,8 +1939,8 @@ fn snapshot_assigns_file_ids_by_stable_relative_path_and_builds_executable_mir()
     assert_eq!(paths[0], (FileId(0), "a.loom"));
     assert_eq!(paths[1], (FileId(1), "b.loom"));
     for expected in [
-        "deps/standard@0.3/src/int.loom",
-        "deps/standard@0.3/src/resource.loom",
+        "deps/std@0.3/src/int.loom",
+        "deps/std@0.3/src/resource.loom",
     ] {
         assert!(paths.iter().any(|(_, path)| *path == expected), "{paths:?}");
     }
@@ -2087,8 +2072,8 @@ fn async_tasks_and_lexical_defer_execute_from_source() {
         "async.loom",
         r#"module driver.async_cleanup
 
-import standard.resource.Dispose
-import standard.resource.MustScope
+import std.resource.Dispose
+import std.resource.MustScope
 
 record Resource {
     value Int
@@ -2284,10 +2269,10 @@ fn duration_file_and_socket_tasks_execute_from_source() {
     let source = format!(
         r#"module standard_io
 
-import standard.time.milliseconds
-import standard.file.open_read
-import standard.file.create
-import standard.net.connect
+import std.time.milliseconds
+import std.file.open_read
+import std.file.create
+import std.net.connect
 
 test async fn real_io() {{
     let delay = milliseconds(1)
@@ -2339,8 +2324,8 @@ fn compiler_known_resources_require_scoped_and_reject_manual_close() {
         "resources.loom",
         r#"module resources
 
-import standard.file.open_read
-import standard.net.connect
+import std.file.open_read
+import std.net.connect
 
 async fn leakedFile() {
     let file = open_read("missing.txt").await

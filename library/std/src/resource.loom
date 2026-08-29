@@ -1,4 +1,4 @@
-module standard.resource
+module std.resource
 
 /// Selects the synchronous operation used for lexical `scoped` cleanup.
 pub concept Dispose {

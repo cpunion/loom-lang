@@ -10,7 +10,7 @@ use support::emit_native;
 fn process_arguments_declaration_matches_the_runtime_abi() {
     let source = r#"module process_abi
 
-import standard.process.arguments
+import std.process.arguments
 
 pub fn main() {
     let values = arguments()

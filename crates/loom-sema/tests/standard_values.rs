@@ -28,8 +28,8 @@ fn text_bytes_path_and_path_file_calls_type_check() {
         r#"
 module standard_values
 
-import standard.file.open_read_path
-import standard.file.create_path
+import std.file.open_read_path
+import std.file.create_path
 
 concept IndexSelf {
     method indexSelf(self) TextMap[Self]
@@ -154,18 +154,18 @@ fn text_map_json_typed_io_and_logging_type_check() {
         r#"
 module standard_values_extended
 
-import standard.file.try_open_read
-import standard.file.try_create
-import standard.file.try_open_read_path
-import standard.file.try_create_path
-import standard.net.try_connect
-import standard.json.parse_json
-import standard.json.format_json
-import standard.log.debug
-import standard.log.info
-import standard.log.warn
-import standard.log.error
-import standard.log.write
+import std.file.try_open_read
+import std.file.try_create
+import std.file.try_open_read_path
+import std.file.try_create_path
+import std.net.try_connect
+import std.json.parse_json
+import std.json.format_json
+import std.log.debug
+import std.log.info
+import std.log.warn
+import std.log.error
+import std.log.write
 
 fn values(text Text) {
     let empty = TextMap[Text]()
@@ -272,8 +272,8 @@ fn structured_standard_values_reject_wrong_shapes_and_open_matches() {
         r#"
 module sample
 
-import standard.json.format_json
-import standard.log.write
+import std.json.format_json
+import std.log.write
 
 fn genericEquality[T](left TextMap[T], right TextMap[T]) Bool {
     left == right
@@ -330,7 +330,7 @@ fn wrapped_resources_must_be_unwrapped_directly_into_scoped() {
         r"
 module resources
 
-import standard.file.try_open_read
+import std.file.try_open_read
 
 fn consume[T](value T) {
 }
@@ -408,7 +408,7 @@ fn task_wrapped_resources_can_wait_then_enter_scoped() {
         r"
 module resources
 
-import standard.file.try_open_read
+import std.file.try_open_read
 
 async fn direct(path Text) Result[Unit, IoError] {
     let pending = try_open_read(path)

@@ -109,8 +109,8 @@ fn source_position(source: &str, needle: &str) -> Value {
 fn structured_standard_values_are_discoverable_through_completion_and_hover() {
     let source = r#"module editor.standard
 
-import standard.json.parse_json
-import standard.log.write
+import std.json.parse_json
+import std.log.write
 
 fn inspect(problem IoError, value Json) {
     let fields = TextMap[Text]().insert("key", "value")
@@ -195,8 +195,8 @@ fn inspect(problem IoError, value Json) {
 fn compiler_owned_standard_sources_report_distinct_navigation_and_mutation_policy() {
     let source = r"module editor.compiler_owned
 
-import standard.int.minimum
-import standard.resource.MustScope
+import std.int.minimum
+import std.resource.MustScope
 
 record ResourceMarker {}
 

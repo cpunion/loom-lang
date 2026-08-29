@@ -147,7 +147,7 @@ fn bad(value IoErrorKind) {
         _ => {
             r#"
 module fuzz.structured.reject
-import standard.log.write
+import std.log.write
 fn bad() {
     write(LogLevel.Info, "event", TextMap[Int]())
 }

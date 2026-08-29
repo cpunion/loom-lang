@@ -41,15 +41,15 @@ normal source definition over smaller primitives.
 ## Standard library
 
 The standard library is compiler-distributed Loom source. It is loaded as a
-read-only, versioned `standard` package rather than merged into the user's root
+read-only, versioned `std` package rather than merged into the user's root
 package. Its source is parsed, resolved, type-checked, lowered, instantiated,
 and optimized by the ordinary pipeline.
 
-The `standard.resource` module declares the public `Dispose`, `MustScope`, and
+The `std.resource` module declares the public `Dispose`, `MustScope`, and
 `NoSuspend` concepts in ordinary Loom source. Moving these declarations into
-the standard package removes copies from applications and fixtures; it does not
+the `std` package removes copies from applications and fixtures; it does not
 turn lexical cleanup into a library convention. The compiler identifies the
-definitions from its own `standard` package, validates their fixed shapes, and
+definitions from its own `std` package, validates their fixed shapes, and
 enforces disposal, recursive resource obligations, and suspension restrictions
 statically. Concept witnesses lower through the normal direct-call machinery;
 there is no source-visible runtime resource registry or name-based runtime

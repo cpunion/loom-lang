@@ -1,7 +1,7 @@
 module benchmark.basic
 
-import standard.int.parse_int
-import standard.process.arguments
+import std.int.parse_int
+import std.process.arguments
 
 record Counter {
     total Int

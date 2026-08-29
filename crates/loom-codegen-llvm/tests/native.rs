@@ -406,8 +406,8 @@ pub async fn main() {
 fn stable_output_runtime_abis_publish_roots_and_run() {
     let source = r#"module stable_output_abi
 
-import standard.float.format_float
-import standard.process.environment
+import std.float.format_float
+import std.process.environment
 
 pub fn main() {
     let formatted = format_float(2.5)
@@ -1202,7 +1202,7 @@ pub fn main() {
 fn read_only_aggregate_builtins_borrow_copies_without_collecting() {
     let source = r#"module readonly_builtin_requirements
 
-import standard.log.debug
+import std.log.debug
 
 fn byteCount(value Bytes) Int { value.length() }
 
@@ -3338,7 +3338,7 @@ pub async fn main() {
 fn proven_construction_omits_validation_while_dynamic_input_keeps_it() {
     let source = r"module construction
 
-import standard.float.is_finite
+import std.float.is_finite
 
 type Money = Float where is_finite(self) && self >= 0.0
 
@@ -4310,10 +4310,10 @@ fn duration_file_and_socket_tasks_run_natively() {
     let source = format!(
         r#"module standard_io
 
-import standard.time.milliseconds
-import standard.file.open_read
-import standard.file.create
-import standard.net.connect
+import std.time.milliseconds
+import std.file.open_read
+import std.file.create
+import std.net.connect
 
 pub async fn main() {{
     let delay = milliseconds(1)
@@ -5197,8 +5197,8 @@ pub fn main() {
 fn float_text_builtins_compile_and_run_natively() {
     let source = r#"module sample
 
-import standard.float.parse_float
-import standard.float.format_float
+import std.float.parse_float
+import std.float.format_float
 
 pub fn main() {
     let finite = format_float(1.25)
@@ -5227,14 +5227,14 @@ pub fn main() {
         }
     }
     match parse_float("1") {
-        Err(standard.float.ParseFloatError.InvalidSyntax) => Unit
+        Err(std.float.ParseFloatError.InvalidSyntax) => Unit
         _ => {
             assert false
             Unit
         }
     }
     match parse_float("1e999") {
-        Err(standard.float.ParseFloatError.OutOfRange) => Unit
+        Err(std.float.ParseFloatError.OutOfRange) => Unit
         _ => {
             assert false
             Unit

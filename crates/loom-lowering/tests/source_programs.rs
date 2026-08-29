@@ -38,15 +38,15 @@ fn lower_with_standard_resource(source: &str) -> loom_hir::Program {
     let application = parse_with_file(FileId(0), source);
     let resource = parse_with_file(
         FileId(1),
-        include_str!("../../../library/standard/src/resource.loom"),
+        include_str!("../../../library/std/src/resource.loom"),
     );
     assert!(
         application.diagnostics().is_empty() && resource.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} standard={:#?}",
+        "syntax diagnostics: application={:#?} std={:#?}",
         application.diagnostics(),
         resource.diagnostics()
     );
-    let standard = PackageId::compiler_standard(LOOM_LANGUAGE_VERSION);
+    let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::legacy();
     let mut lowered = lower_package_files([
         PackageSourceUnit {
@@ -56,16 +56,14 @@ fn lower_with_standard_resource(source: &str) -> loom_hir::Program {
         },
         PackageSourceUnit {
             file: FileId(1),
-            package: standard.clone(),
+            package: std.clone(),
             syntax: resource.ast(),
         },
     ]);
+    lowered.program.register_package(std.clone(), [], false);
     lowered
         .program
-        .register_package(standard.clone(), [], false);
-    lowered
-        .program
-        .register_package(root, [(Name::new("standard"), standard)], true);
+        .register_package(root, [(Name::new("std"), std)], true);
     assert!(
         lowered.diagnostics.is_empty(),
         "HIR diagnostics: {:#?}",
@@ -264,8 +262,8 @@ fn scoped_source_lowers_to_first_class_mir_without_a_synthetic_defer() {
         r"
 module custom_resource
 
-import standard.resource.Dispose
-import standard.resource.MustScope
+import std.resource.Dispose
+import std.resource.MustScope
 
 record Resource {
     value Int
@@ -297,14 +295,14 @@ fn main() {
     let no_suspend = program
         .concept(program.prelude.no_suspend_concept.expect("NoSuspend id"))
         .expect("NoSuspend concept");
-    assert_eq!(dispose.module, "standard.resource");
+    assert_eq!(dispose.module, "std.resource");
     assert_eq!(dispose.identity, Some(loom_mir::ConceptIdentity::Dispose));
-    assert_eq!(must_scope.module, "standard.resource");
+    assert_eq!(must_scope.module, "std.resource");
     assert_eq!(
         must_scope.identity,
         Some(loom_mir::ConceptIdentity::MustScope)
     );
-    assert_eq!(no_suspend.module, "standard.resource");
+    assert_eq!(no_suspend.module, "std.resource");
     assert_eq!(
         no_suspend.identity,
         Some(loom_mir::ConceptIdentity::NoSuspend)
@@ -326,8 +324,8 @@ fn source_and_portable_mir_independently_reject_unscoped_must_scope_state() {
         r"
 module unscoped_resource
 
-import standard.resource.Dispose
-import standard.resource.MustScope
+import std.resource.Dispose
+import std.resource.MustScope
 
 record Resource {
     value Int
@@ -647,7 +645,7 @@ fn generic_enum_construction_carries_its_instantiation() {
 #[test]
 fn compiler_builtins_lower_to_validated_calls() {
     compile_and_validate(
-        "module sample\n\nimport standard.float.parse_float\nimport standard.float.format_float\n\ntest fn float_text_boundary() {\n    let parsed = parse_float(\"1.25\")\n    let rendered = format_float(1.25)\n    assert rendered == \"1.25\"\n    match parsed {\n        Ok(value) => {\n            assert value == 1.25\n            Unit\n        }\n        Err(standard.float.ParseFloatError.InvalidSyntax) => {\n            assert false\n            Unit\n        }\n        Err(standard.float.ParseFloatError.OutOfRange) => {\n            assert false\n            Unit\n        }\n    }\n}\n",
+        "module sample\n\nimport std.float.parse_float\nimport std.float.format_float\n\ntest fn float_text_boundary() {\n    let parsed = parse_float(\"1.25\")\n    let rendered = format_float(1.25)\n    assert rendered == \"1.25\"\n    match parsed {\n        Ok(value) => {\n            assert value == 1.25\n            Unit\n        }\n        Err(std.float.ParseFloatError.InvalidSyntax) => {\n            assert false\n            Unit\n        }\n        Err(std.float.ParseFloatError.OutOfRange) => {\n            assert false\n            Unit\n        }\n    }\n}\n",
     );
 }
 
@@ -1005,8 +1003,8 @@ fn text_bytes_path_and_path_file_calls_lower_to_checked_mir() {
         r#"
 module standard_value_lowering
 
-import standard.file.open_read_path
-import standard.file.create_path
+import std.file.open_read_path
+import std.file.create_path
 
 fn values(text Text, bytes Bytes, base Path, child Path, index Int) {
     let scalar_count = text.length()
@@ -1082,16 +1080,16 @@ fn structured_standard_values_lower_to_checked_mir() {
         r#"
 module structured_standard_lowering
 
-import standard.file.try_open_read_path
-import standard.file.try_create_path
-import standard.net.try_connect
-import standard.json.parse_json
-import standard.json.format_json
-import standard.log.debug
-import standard.log.info
-import standard.log.warn
-import standard.log.error
-import standard.log.write
+import std.file.try_open_read_path
+import std.file.try_create_path
+import std.net.try_connect
+import std.json.parse_json
+import std.json.format_json
+import std.log.debug
+import std.log.info
+import std.log.warn
+import std.log.error
+import std.log.write
 
 fn values(text Text) {
     let fields = TextMap[Text]().insert("name", text).remove("absent")

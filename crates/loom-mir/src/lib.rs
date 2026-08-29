@@ -95,17 +95,17 @@ pub struct PreludeIds {
     pub io_error_kind: Option<TypeId>,
     #[serde(default)]
     pub log_level: Option<TypeId>,
-    /// Canonical `standard.resource.Dispose` concept, when that module is
+    /// Canonical `std.resource.Dispose` concept, when that module is
     /// present in the checked program.
     #[serde(default)]
     pub dispose_concept: Option<ConceptId>,
     /// Canonical `Dispose.dispose(mut self)` requirement.
     #[serde(default)]
     pub dispose_requirement: Option<RequirementId>,
-    /// Canonical empty `standard.resource.MustScope` marker concept.
+    /// Canonical empty `std.resource.MustScope` marker concept.
     #[serde(default)]
     pub must_scope_concept: Option<ConceptId>,
-    /// Canonical empty `standard.resource.NoSuspend` marker concept.
+    /// Canonical empty `std.resource.NoSuspend` marker concept.
     #[serde(default)]
     pub no_suspend_concept: Option<ConceptId>,
 }
@@ -283,11 +283,11 @@ pub struct ConceptDef {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ConceptIdentity {
-    /// Canonical `standard.resource.Dispose` cleanup protocol.
+    /// Canonical `std.resource.Dispose` cleanup protocol.
     Dispose,
-    /// Canonical `standard.resource.MustScope` resource obligation marker.
+    /// Canonical `std.resource.MustScope` resource obligation marker.
     MustScope,
-    /// Canonical `standard.resource.NoSuspend` suspension-safety marker.
+    /// Canonical `std.resource.NoSuspend` suspension-safety marker.
     NoSuspend,
 }
 

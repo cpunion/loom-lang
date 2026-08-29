@@ -16,7 +16,7 @@ use crate::registry::{RegistryConfig, fetch_http_registry_package};
 use crate::source::{
     discover_loom_files, has_loom_extension, is_ignored_relative, normalize_absolute, relative_key,
 };
-use crate::standard_library::{self, STANDARD_PACKAGE_NAME};
+use crate::standard_library::{self, STD_PACKAGE_NAME};
 
 pub const MANIFEST_FILE: &str = "loom.toml";
 pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
@@ -634,13 +634,13 @@ impl ProjectGraph {
     }
 
     pub(crate) fn configure_hir_packages(&self, program: &mut loom_hir::Program) {
-        let standard = standard_library::package_id(self.language_version());
-        program.register_package(standard.clone(), [], false);
+        let std_package = standard_library::package_id(self.language_version());
+        program.register_package(std_package.clone(), [], false);
         match &self.kind {
             ProjectKind::Legacy { .. } => {
                 program.register_package(
                     PackageId::legacy(),
-                    [(loom_core::Name::new(STANDARD_PACKAGE_NAME), standard)],
+                    [(loom_core::Name::new(STD_PACKAGE_NAME), std_package)],
                     true,
                 );
             }
@@ -658,8 +658,8 @@ impl ProjectGraph {
                                 )
                             })
                             .chain(std::iter::once((
-                                loom_core::Name::new(STANDARD_PACKAGE_NAME),
-                                standard.clone(),
+                                loom_core::Name::new(STD_PACKAGE_NAME),
+                                std_package.clone(),
                             ))),
                         &package.id == root_package,
                     );
@@ -897,10 +897,10 @@ impl Resolver {
         let mut dependencies = Vec::with_capacity(raw.dependencies.len());
         for (alias, dependency) in &raw.dependencies {
             validate_name("dependency alias", alias, manifest)?;
-            if alias == STANDARD_PACKAGE_NAME {
+            if alias == STD_PACKAGE_NAME {
                 return Err(manifest_error(
                     manifest,
-                    "dependency alias `standard` is reserved for the compiler-owned standard library",
+                    "dependency alias `std` is reserved for the compiler-owned standard library",
                 ));
             }
             if dependency.optional && !enabled_features.contains(&format!("dep:{alias}")) {
@@ -1098,10 +1098,10 @@ impl Resolver {
             .clone();
         for package in &packages {
             validate_name("artifact package", package.id.name(), &artifact_path)?;
-            if package.id.name() == STANDARD_PACKAGE_NAME {
+            if package.id.name() == STD_PACKAGE_NAME {
                 return Err(manifest_error(
                     &artifact_path,
-                    "portable libraries cannot define the reserved package `standard`",
+                    "portable libraries cannot define the reserved package `std`",
                 ));
             }
             Version::parse(package.id.version()).map_err(|error| {
@@ -1119,10 +1119,10 @@ impl Resolver {
                     &dependency.alias,
                     &artifact_path,
                 )?;
-                if dependency.alias == STANDARD_PACKAGE_NAME {
+                if dependency.alias == STD_PACKAGE_NAME {
                     return Err(manifest_error(
                         &artifact_path,
-                        "portable libraries cannot define the reserved dependency alias `standard`",
+                        "portable libraries cannot define the reserved dependency alias `std`",
                     ));
                 }
             }
@@ -1386,10 +1386,10 @@ fn read_manifest(manifest: &Path) -> Result<RawManifest, DriverError> {
         });
     }
     validate_name("package", &raw.package.name, manifest)?;
-    if raw.package.name == STANDARD_PACKAGE_NAME {
+    if raw.package.name == STD_PACKAGE_NAME {
         return Err(manifest_error(
             manifest,
-            "package name `standard` is reserved for the compiler-owned standard library",
+            "package name `std` is reserved for the compiler-owned standard library",
         ));
     }
     Version::parse(&raw.package.version).map_err(|error| {

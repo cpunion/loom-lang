@@ -1,0 +1,24 @@
+module std_source
+
+import std.int.maximum
+import std.int.minimum
+
+fn exercise() {
+    let positive_minimum = minimum(7, 3)
+    let negative_minimum = minimum(-4, 2)
+    let positive_maximum = maximum(7, 3)
+    let negative_maximum = maximum(-4, 2)
+
+    assert positive_minimum == 3
+    assert negative_minimum == -4
+    assert positive_maximum == 7
+    assert negative_maximum == 2
+}
+
+pub fn main() {
+    exercise()
+}
+
+test fn sourceBackedAlgorithms() {
+    exercise()
+}

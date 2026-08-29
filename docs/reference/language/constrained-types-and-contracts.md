@@ -11,7 +11,7 @@ contract produces a non-recoverable `ContractFault`.
 A constrained type gives a base value a new nominal identity and a predicate:
 
 ```loom
-import standard.float.is_finite
+import std.float.is_finite
 
 type Money = Float where is_finite(self) && self >= 0.0
 ```
@@ -194,7 +194,7 @@ The subset accepts:
 - Boolean operators, equality, and numeric comparisons;
 - checked Int arithmetic and Float arithmetic;
 - exhaustive `match` expressions whose contents remain in the subset;
-- the imported total predicate `standard.float.is_finite`.
+- the imported total predicate `std.float.is_finite`.
 
 Int `+`, `-`, `*`, `/`, and unary negation remain checked as they are in
 ordinary code. Overflow and division by zero therefore produce their original

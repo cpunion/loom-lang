@@ -68,15 +68,15 @@ performed only by lexical cleanup.
 
 `File` and `Socket` are built-in scoped resources. A module defining a custom
 resource imports the canonical concepts from the compiler-distributed
-`standard.resource` source module:
+`std.resource` source module:
 
 ```loom
-import standard.resource.Dispose
-import standard.resource.MustScope
-import standard.resource.NoSuspend
+import std.resource.Dispose
+import std.resource.MustScope
+import std.resource.NoSuspend
 ```
 
-Applications do not redeclare these concepts. The standard package declares
+Applications do not redeclare these concepts. The `std` package declares
 `Dispose` as a non-dynamic concept containing exactly
 `method dispose(mut self)` without contracts; `MustScope` and `NoSuspend` are
 empty non-dynamic marker concepts. Their declarations are ordinary public Loom

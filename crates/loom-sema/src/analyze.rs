@@ -21,7 +21,7 @@ use crate::{
     TypedProgram, ViewResolution, ViewSource, ViewTokenId, WitnessSelection, WitnessSource,
 };
 
-const RESOURCE_MODULE: &str = "standard.resource";
+const RESOURCE_MODULE: &str = "std.resource";
 const DISPOSE_CONCEPT: &str = "Dispose";
 const MUST_SCOPE_CONCEPT: &str = "MustScope";
 const NO_SUSPEND_CONCEPT: &str = "NoSuspend";
@@ -45,13 +45,13 @@ pub struct Analysis {
 /// Canonical language concepts whose identity affects executable validation.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CanonicalConcepts {
-    /// The `standard.resource.Dispose` cleanup concept selected by semantic analysis.
+    /// The `std.resource.Dispose` cleanup concept selected by semantic analysis.
     pub dispose: Option<DefId>,
     /// The canonical `Dispose.dispose(mut self)` requirement.
     pub dispose_requirement: Option<DefId>,
-    /// The `standard.resource.MustScope` marker selected by semantic analysis.
+    /// The `std.resource.MustScope` marker selected by semantic analysis.
     pub must_scope: Option<DefId>,
-    /// The `standard.resource.NoSuspend` marker selected by semantic analysis.
+    /// The `std.resource.NoSuspend` marker selected by semantic analysis.
     pub no_suspend: Option<DefId>,
 }
 
@@ -156,13 +156,13 @@ struct TypeContext {
 
 impl Analyzer<'_> {
     fn resolve_language_concept(&self, name: &str) -> Option<DefId> {
-        let standard = PackageId::compiler_standard(LOOM_LANGUAGE_VERSION);
+        let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
         self.program
             .definitions
             .iter()
             .find_map(|(definition, item)| {
                 let module = &self.program.modules[item.module];
-                (module.package == standard
+                (module.package == std
                     && module.name.as_str() == RESOURCE_MODULE
                     && item
                         .name
@@ -213,7 +213,7 @@ impl Analyzer<'_> {
             {
                 self.error(
                     "InvalidResourceMarker",
-                    format!("standard.resource.{marker} must be an empty, non-dyn marker concept"),
+                    format!("std.resource.{marker} must be an empty, non-dyn marker concept"),
                     self.definition_span(definition),
                 );
             }
@@ -257,7 +257,7 @@ impl Analyzer<'_> {
         if !valid_header || !valid_method {
             self.error(
                 "InvalidDisposeConcept",
-                "standard.resource.Dispose must be a non-dyn concept containing only `method dispose(mut self)` without contracts",
+                "std.resource.Dispose must be a non-dyn concept containing only `method dispose(mut self)` without contracts",
                 self.definition_span(definition),
             );
         }
@@ -3139,7 +3139,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         let Some(dispose) = self.analyzer.canonical_concepts.dispose else {
             self.error(
                 "MissingDisposeConcept",
-                "`scoped` requires the canonical standard.resource.Dispose concept",
+                "`scoped` requires the canonical std.resource.Dispose concept",
                 self.local_span(local),
             );
             return;
@@ -3147,7 +3147,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         let Some(requirement) = self.analyzer.canonical_concepts.dispose_requirement else {
             self.error(
                 "InvalidDisposeConcept",
-                "standard.resource.Dispose must declare `method dispose(mut self)`",
+                "std.resource.Dispose must declare `method dispose(mut self)`",
                 self.local_span(local),
             );
             return;
@@ -3160,7 +3160,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             self.error_at(
                 "ScopedRequiresDispose",
                 format!(
-                    "{} does not conform to standard.resource.Dispose",
+                    "{} does not conform to std.resource.Dispose",
                     self.type_name(ty)
                 ),
                 expression,
@@ -5153,78 +5153,72 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 "Some" => Some(BuiltinValue::Some),
                 "Ok" => Some(BuiltinValue::Ok),
                 "Err" => Some(BuiltinValue::Err),
-                "parse_float" if self.builtin_is_imported("standard.float.parse_float") => {
+                "parse_float" if self.builtin_is_imported("std.float.parse_float") => {
                     Some(BuiltinValue::ParseFloat)
                 }
-                "format_float" if self.builtin_is_imported("standard.float.format_float") => {
+                "format_float" if self.builtin_is_imported("std.float.format_float") => {
                     Some(BuiltinValue::FormatFloat)
                 }
-                "is_finite" if self.builtin_is_imported("standard.float.is_finite") => {
+                "is_finite" if self.builtin_is_imported("std.float.is_finite") => {
                     Some(BuiltinValue::IsFinite)
                 }
-                "arguments" if self.builtin_is_imported("standard.process.arguments") => {
+                "arguments" if self.builtin_is_imported("std.process.arguments") => {
                     Some(BuiltinValue::ProcessArguments)
                 }
-                "environment" if self.builtin_is_imported("standard.process.environment") => {
+                "environment" if self.builtin_is_imported("std.process.environment") => {
                     Some(BuiltinValue::ProcessEnvironment)
                 }
-                "parse_int" if self.builtin_is_imported("standard.int.parse_int") => {
+                "parse_int" if self.builtin_is_imported("std.int.parse_int") => {
                     Some(BuiltinValue::ParseInt)
                 }
-                "milliseconds" if self.builtin_is_imported("standard.time.milliseconds") => {
+                "milliseconds" if self.builtin_is_imported("std.time.milliseconds") => {
                     Some(BuiltinValue::DurationMilliseconds)
                 }
-                "open_read" if self.builtin_is_imported("standard.file.open_read") => {
+                "open_read" if self.builtin_is_imported("std.file.open_read") => {
                     Some(BuiltinValue::FileOpenRead)
                 }
-                "create" if self.builtin_is_imported("standard.file.create") => {
+                "create" if self.builtin_is_imported("std.file.create") => {
                     Some(BuiltinValue::FileCreate)
                 }
-                "open_read_path" if self.builtin_is_imported("standard.file.open_read_path") => {
+                "open_read_path" if self.builtin_is_imported("std.file.open_read_path") => {
                     Some(BuiltinValue::FileOpenReadPath)
                 }
-                "create_path" if self.builtin_is_imported("standard.file.create_path") => {
+                "create_path" if self.builtin_is_imported("std.file.create_path") => {
                     Some(BuiltinValue::FileCreatePath)
                 }
-                "try_open_read" if self.builtin_is_imported("standard.file.try_open_read") => {
+                "try_open_read" if self.builtin_is_imported("std.file.try_open_read") => {
                     Some(BuiltinValue::FileTryOpenRead)
                 }
-                "try_create" if self.builtin_is_imported("standard.file.try_create") => {
+                "try_create" if self.builtin_is_imported("std.file.try_create") => {
                     Some(BuiltinValue::FileTryCreate)
                 }
-                "try_open_read_path"
-                    if self.builtin_is_imported("standard.file.try_open_read_path") =>
-                {
+                "try_open_read_path" if self.builtin_is_imported("std.file.try_open_read_path") => {
                     Some(BuiltinValue::FileTryOpenReadPath)
                 }
-                "try_create_path" if self.builtin_is_imported("standard.file.try_create_path") => {
+                "try_create_path" if self.builtin_is_imported("std.file.try_create_path") => {
                     Some(BuiltinValue::FileTryCreatePath)
                 }
-                "connect" if self.builtin_is_imported("standard.net.connect") => {
+                "connect" if self.builtin_is_imported("std.net.connect") => {
                     Some(BuiltinValue::SocketConnect)
                 }
-                "try_connect" if self.builtin_is_imported("standard.net.try_connect") => {
+                "try_connect" if self.builtin_is_imported("std.net.try_connect") => {
                     Some(BuiltinValue::SocketTryConnect)
                 }
-                "parse_json" if self.builtin_is_imported("standard.json.parse_json") => {
+                "parse_json" if self.builtin_is_imported("std.json.parse_json") => {
                     Some(BuiltinValue::JsonParse)
                 }
-                "format_json" if self.builtin_is_imported("standard.json.format_json") => {
+                "format_json" if self.builtin_is_imported("std.json.format_json") => {
                     Some(BuiltinValue::JsonFormat)
                 }
-                "debug" if self.builtin_is_imported("standard.log.debug") => {
+                "debug" if self.builtin_is_imported("std.log.debug") => {
                     Some(BuiltinValue::LogDebug)
                 }
-                "info" if self.builtin_is_imported("standard.log.info") => {
-                    Some(BuiltinValue::LogInfo)
-                }
-                "warn" if self.builtin_is_imported("standard.log.warn") => {
-                    Some(BuiltinValue::LogWarn)
-                }
-                "error" if self.builtin_is_imported("standard.log.error") => {
+                "info" if self.builtin_is_imported("std.log.info") => Some(BuiltinValue::LogInfo),
+                "warn" if self.builtin_is_imported("std.log.warn") => Some(BuiltinValue::LogWarn),
+                "error" if self.builtin_is_imported("std.log.error") => {
                     Some(BuiltinValue::LogError)
                 }
-                "write" if self.builtin_is_imported("standard.log.write") => {
+                "write" if self.builtin_is_imported("std.log.write") => {
                     Some(BuiltinValue::LogWrite)
                 }
                 _ => None,
@@ -8839,7 +8833,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 Expr::Path(path)
                     if path.segments.len() == 1
                         && path.segments[0].name.as_str() == "is_finite"
-                        && self.builtin_is_imported("standard.float.is_finite")
+                        && self.builtin_is_imported("std.float.is_finite")
             ),
             Expr::Tuple(_)
             | Expr::List(_)
@@ -9653,7 +9647,7 @@ fn consume(source Source[Item = Int]) {
     fn analyze_resource_module(package: PackageId) -> (Program, Analysis) {
         let parsed = parse_with_file(
             FileId(0),
-            r"module standard.resource
+            r"module std.resource
 
 pub concept Dispose {
     method dispose(mut self)
@@ -9681,7 +9675,7 @@ pub concept NoSuspend {}
     #[test]
     fn resource_language_items_require_the_exact_current_standard_package() {
         let (_, canonical) =
-            analyze_resource_module(PackageId::compiler_standard(LOOM_LANGUAGE_VERSION));
+            analyze_resource_module(PackageId::compiler_std(LOOM_LANGUAGE_VERSION));
         assert!(
             canonical.diagnostics.is_empty(),
             "{:#?}",
@@ -9694,9 +9688,9 @@ pub concept NoSuspend {}
 
         for wrong in [
             PackageId::legacy(),
-            PackageId::with_language("standard", "0.4", "0.4"),
-            PackageId::with_language("standard", "0.4", LOOM_LANGUAGE_VERSION),
-            PackageId::with_language("standard", LOOM_LANGUAGE_VERSION, "0.4"),
+            PackageId::with_language("std", "0.4", "0.4"),
+            PackageId::with_language("std", "0.4", LOOM_LANGUAGE_VERSION),
+            PackageId::with_language("std", LOOM_LANGUAGE_VERSION, "0.4"),
         ] {
             let (_, ordinary) = analyze_resource_module(wrong);
             assert_eq!(
@@ -10555,7 +10549,7 @@ fn choose(flag Bool) Int {
             r"
 module sample
 
-import standard.float.parse_float
+import std.float.parse_float
 
 fn classify(text Text) Int {
     match parse_float(text) {
@@ -10609,7 +10603,7 @@ fn make_zero() Int {
             r"
 module sample
 
-import standard.float.is_finite
+import std.float.is_finite
 
 type Money = Float where is_finite(self) && self >= 0.0
 

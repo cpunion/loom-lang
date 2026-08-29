@@ -12,10 +12,10 @@ Two operation families are available. The faulting family represents host I/O
 failure as a task fault:
 
 ```loom
-import standard.file.open_read
-import standard.file.create
-import standard.file.open_read_path
-import standard.file.create_path
+import std.file.open_read
+import std.file.create
+import std.file.open_read_path
+import std.file.create_path
 ```
 
 ```text
@@ -28,10 +28,10 @@ create_path(Path) Task[File]
 The recoverable family returns typed I/O errors:
 
 ```loom
-import standard.file.try_open_read
-import standard.file.try_create
-import standard.file.try_open_read_path
-import standard.file.try_create_path
+import std.file.try_open_read
+import std.file.try_create
+import std.file.try_open_read_path
+import std.file.try_create_path
 ```
 
 ```text
@@ -85,8 +85,8 @@ flush/sync API rather than destructor status.
 ## TCP sockets
 
 ```loom
-import standard.net.connect
-import standard.net.try_connect
+import std.net.connect
+import std.net.try_connect
 ```
 
 ```text
@@ -147,11 +147,11 @@ IoError.
 ## Logging
 
 ```loom
-import standard.log.debug
-import standard.log.info
-import standard.log.warn
-import standard.log.error
-import standard.log.write
+import std.log.debug
+import std.log.info
+import std.log.warn
+import std.log.error
+import std.log.write
 ```
 
 ```text
