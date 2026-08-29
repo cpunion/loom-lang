@@ -91,6 +91,7 @@ pub struct Package {
     targets: Vec<Target>,
     enabled_features: BTreeSet<String>,
     source: String,
+    git_selector: Option<String>,
     checksum: Option<String>,
     embedded_sources: Vec<EmbeddedSource>,
 }
@@ -204,6 +205,8 @@ struct LockedPackage {
     version: String,
     language: String,
     source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    selector: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     checksum: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -323,7 +326,12 @@ impl ProjectGraph {
         } else {
             read_lockfile(&lock_path)?
         };
-        let mut resolver = Resolver::new(previous_lock.clone(), options.lock_mode, options.offline);
+        let mut resolver = Resolver::new(
+            root.clone(),
+            previous_lock.clone(),
+            options.lock_mode,
+            options.offline,
+        );
         let request = FeatureRequest {
             names: options.features.clone(),
             use_default: !options.no_default_features,
@@ -732,7 +740,11 @@ struct RawDependency {
     path: Option<String>,
     registry: Option<String>,
     artifact: Option<String>,
-    package: Option<String>,
+    git: Option<String>,
+    branch: Option<String>,
+    tag: Option<String>,
+    rev: Option<String>,
+    module: Option<String>,
     version: Option<String>,
     #[serde(default)]
     optional: bool,
@@ -771,7 +783,14 @@ struct FeatureRequest {
 enum PackageOrigin {
     Root,
     Path,
-    Registry { name: String },
+    Registry {
+        name: String,
+    },
+    Git {
+        url: String,
+        selector: String,
+        commit: String,
+    },
 }
 
 impl PackageOrigin {
@@ -780,11 +799,20 @@ impl PackageOrigin {
             Self::Root => "root".to_owned(),
             Self::Path => "path".to_owned(),
             Self::Registry { name } => format!("registry+{name}"),
+            Self::Git { url, commit, .. } => crate::git::lock_source(url, commit),
+        }
+    }
+
+    fn git_selector(&self) -> Option<&str> {
+        match self {
+            Self::Git { selector, .. } => Some(selector),
+            Self::Root | Self::Path | Self::Registry { .. } => None,
         }
     }
 }
 
 struct Resolver {
+    project_root: PathBuf,
     packages: BTreeMap<PackageId, Package>,
     by_manifest: BTreeMap<PathBuf, PackageId>,
     enabled_features: BTreeMap<PathBuf, BTreeSet<String>>,
@@ -794,8 +822,14 @@ struct Resolver {
 }
 
 impl Resolver {
-    fn new(locked: Option<Lockfile>, lock_mode: LockMode, offline: bool) -> Self {
+    fn new(
+        project_root: PathBuf,
+        locked: Option<Lockfile>,
+        lock_mode: LockMode,
+        offline: bool,
+    ) -> Self {
         Self {
+            project_root,
             packages: BTreeMap::new(),
             by_manifest: BTreeMap::new(),
             enabled_features: BTreeMap::new(),
@@ -807,6 +841,10 @@ impl Resolver {
 }
 
 impl Resolver {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "module resolution validates one manifest and closes its dependency graph"
+    )]
     fn resolve(
         &mut self,
         manifest: &Path,
@@ -828,6 +866,28 @@ impl Resolver {
         }
 
         let raw = read_manifest(&manifest)?;
+        if matches!(origin, PackageOrigin::Git { .. }) {
+            if raw
+                .dependencies
+                .values()
+                .any(|dependency| dependency.path.is_some() || dependency.artifact.is_some())
+            {
+                return Err(manifest_error(
+                    &manifest,
+                    "git modules cannot use path or artifact dependencies",
+                ));
+            }
+            if raw
+                .registries
+                .values()
+                .any(|registry| matches!(registry, RegistryConfig::Path(_)))
+            {
+                return Err(manifest_error(
+                    &manifest,
+                    "git modules cannot configure path registries",
+                ));
+            }
+        }
         let id = PackageId::with_language(
             raw.module.name.clone(),
             raw.module.version.clone(),
@@ -840,6 +900,18 @@ impl Resolver {
             .cloned()
             .unwrap_or_default();
         combined_features.extend(requested_features);
+        if let Some(existing) = self.by_manifest.get(&manifest) {
+            let package = self
+                .packages
+                .get(existing)
+                .expect("resolved manifest has a package");
+            if package.git_selector.as_deref() != origin.git_selector() {
+                return Err(manifest_error(
+                    &manifest,
+                    "the same git module cannot be selected through different selectors",
+                ));
+            }
+        }
         if self.by_manifest.contains_key(&manifest)
             && self
                 .enabled_features
@@ -860,7 +932,10 @@ impl Resolver {
         stack.pop();
 
         let source = origin.source();
-        let checksum = if matches!(origin, PackageOrigin::Registry { .. }) {
+        let checksum = if matches!(
+            origin,
+            PackageOrigin::Registry { .. } | PackageOrigin::Git { .. }
+        ) {
             Some(package_checksum(&manifest, &root)?)
         } else {
             None
@@ -898,6 +973,7 @@ impl Resolver {
                 targets,
                 enabled_features: combined_features.clone(),
                 source,
+                git_selector: origin.git_selector().map(str::to_owned),
                 checksum,
                 embedded_sources: Vec::new(),
             },
@@ -932,6 +1008,10 @@ impl Resolver {
         Ok(dependencies)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "dependency resolution validates the four source forms at one policy boundary"
+    )]
     fn resolve_dependency(
         &mut self,
         manifest: &Path,
@@ -941,20 +1021,51 @@ impl Resolver {
         dependency: &RawDependency,
         stack: &mut Vec<PathBuf>,
     ) -> Result<PackageDependency, DriverError> {
-        let package_name = dependency.package.as_deref().unwrap_or(alias);
-        validate_name("dependency package", package_name, manifest)?;
+        let module_name = dependency.module.as_deref().unwrap_or(alias);
+        validate_name("dependency module", module_name, manifest)?;
+        let source_count = [
+            dependency.path.is_some(),
+            dependency.registry.is_some(),
+            dependency.artifact.is_some(),
+            dependency.git.is_some(),
+        ]
+        .into_iter()
+        .filter(|present| *present)
+        .count();
+        if source_count != 1 {
+            return Err(manifest_error(
+                manifest,
+                format!(
+                    "dependency `{alias}` must set exactly one of path, registry, artifact, or git"
+                ),
+            ));
+        }
+        let selector_count = [
+            dependency.branch.is_some(),
+            dependency.tag.is_some(),
+            dependency.rev.is_some(),
+        ]
+        .into_iter()
+        .filter(|present| *present)
+        .count();
+        if selector_count > 1 {
+            return Err(manifest_error(
+                manifest,
+                format!("dependency `{alias}` can set at most one of branch, tag, or rev"),
+            ));
+        }
+        if dependency.git.is_none() && selector_count != 0 {
+            return Err(manifest_error(
+                manifest,
+                format!("dependency `{alias}` can only use branch, tag, or rev with git"),
+            ));
+        }
         let requirement = dependency
             .version
             .as_deref()
             .map(|value| parse_requirement(manifest, alias, value))
             .transpose()?;
         if let Some(artifact) = &dependency.artifact {
-            if dependency.path.is_some() || dependency.registry.is_some() {
-                return Err(manifest_error(
-                    manifest,
-                    format!("dependency `{alias}` cannot combine artifact with path or registry"),
-                ));
-            }
             if !dependency.features.is_empty() {
                 return Err(manifest_error(
                     manifest,
@@ -967,7 +1078,7 @@ impl Resolver {
             validate_resolved_dependency(
                 manifest,
                 alias,
-                package_name,
+                module_name,
                 dependency.version.as_deref(),
                 requirement.as_ref(),
                 &child,
@@ -979,13 +1090,67 @@ impl Resolver {
                 source: "artifact".to_owned(),
             });
         }
+        if let Some(url) = &dependency.git {
+            let selector = dependency.branch.as_deref().map_or_else(
+                || {
+                    dependency.tag.as_deref().map_or_else(
+                        || {
+                            dependency
+                                .rev
+                                .as_deref()
+                                .map_or(crate::git::GitSelector::Head, |rev| {
+                                    crate::git::GitSelector::Rev(rev)
+                                })
+                        },
+                        crate::git::GitSelector::Tag,
+                    )
+                },
+                crate::git::GitSelector::Branch,
+            );
+            let locked_commit =
+                self.locked_git_commit(url, module_name, requirement.as_ref(), selector);
+            let checkout = crate::git::materialize(
+                manifest,
+                &self.project_root,
+                url,
+                selector,
+                locked_commit.as_deref(),
+                self.offline,
+            )?;
+            let child_manifest = dependency_manifest(&checkout.root)?;
+            let origin = PackageOrigin::Git {
+                url: url.clone(),
+                selector: crate::git::selector_identity(selector),
+                commit: checkout.commit,
+            };
+            let request = FeatureRequest {
+                names: dependency.features.iter().cloned().collect(),
+                use_default: dependency.default_features,
+            };
+            let source = origin.source();
+            let child = self.resolve(&child_manifest, stack, &request, &origin)?;
+            validate_resolved_dependency(
+                manifest,
+                alias,
+                module_name,
+                dependency.version.as_deref(),
+                requirement.as_ref(),
+                &child,
+            )?;
+            return Ok(PackageDependency {
+                alias: alias.to_owned(),
+                requirement: dependency.version.clone(),
+                package: child,
+                source,
+            });
+        }
         let (child_manifest, origin, registry_version) = self.dependency_location(
             manifest,
             root,
             raw,
             alias,
             dependency,
-            package_name,
+            module_name,
             requirement.as_ref(),
         )?;
         let request = FeatureRequest {
@@ -997,7 +1162,7 @@ impl Resolver {
         validate_resolved_dependency(
             manifest,
             alias,
-            package_name,
+            module_name,
             dependency.version.as_deref(),
             requirement.as_ref(),
             &child,
@@ -1190,6 +1355,7 @@ impl Resolver {
                     targets: Vec::new(),
                     enabled_features: BTreeSet::new(),
                     source: "artifact".to_owned(),
+                    git_selector: None,
                     checksum: Some(checksum.clone()),
                     embedded_sources,
                 },
@@ -1317,6 +1483,33 @@ impl Resolver {
         })
     }
 
+    fn locked_git_commit(
+        &self,
+        url: &str,
+        module: &str,
+        requirement: Option<&VersionReq>,
+        selector: crate::git::GitSelector<'_>,
+    ) -> Option<String> {
+        if self.lock_mode == LockMode::Refresh {
+            return None;
+        }
+        let selector = crate::git::selector_identity(selector);
+        self.locked.as_ref()?.modules.iter().find_map(|locked| {
+            let (locked_url, commit) = crate::git::parse_lock_source(&locked.source)?;
+            if locked.name != module
+                || locked_url != url
+                || locked.selector.as_deref() != Some(selector.as_str())
+                || requirement.is_some_and(|requirement| {
+                    Version::parse(&locked.version)
+                        .map_or(true, |version| !requirement.matches(&version))
+                })
+            {
+                return None;
+            }
+            Some(commit.to_owned())
+        })
+    }
+
     fn verify_locked_checksum(
         &self,
         manifest: &Path,
@@ -1325,7 +1518,9 @@ impl Resolver {
         checksum: Option<&str>,
     ) -> Result<(), DriverError> {
         if self.lock_mode == LockMode::Refresh
-            || !(source.starts_with("registry+") || source == "artifact")
+            || !(source.starts_with("registry+")
+                || source.starts_with("git+")
+                || source == "artifact")
         {
             return Ok(());
         }
@@ -1793,7 +1988,32 @@ fn read_lockfile(path: &Path) -> Result<Option<Lockfile>, DriverError> {
                 ),
             ));
         }
-        if (package.source.starts_with("registry+") || package.source == "artifact")
+        if package.source.starts_with("git+") {
+            crate::git::validate_lock_source(path, &package.source)?;
+            let (_, commit) = crate::git::parse_lock_source(&package.source)
+                .expect("validated git lock source has a commit");
+            let Some(selector) = package.selector.as_deref() else {
+                return Err(manifest_error(
+                    path,
+                    format!(
+                        "git package `{}@{}` requires a selector",
+                        package.name, package.version
+                    ),
+                ));
+            };
+            crate::git::validate_lock_selector(path, selector, commit)?;
+        } else if package.selector.is_some() {
+            return Err(manifest_error(
+                path,
+                format!(
+                    "non-git package `{}@{}` cannot carry a git selector",
+                    package.name, package.version
+                ),
+            ));
+        }
+        if (package.source.starts_with("registry+")
+            || package.source.starts_with("git+")
+            || package.source == "artifact")
             && package.checksum.as_deref().is_none_or(|checksum| {
                 checksum.len() != 64 || !checksum.bytes().all(|byte| byte.is_ascii_hexdigit())
             })
@@ -1801,7 +2021,7 @@ fn read_lockfile(path: &Path) -> Result<Option<Lockfile>, DriverError> {
             return Err(manifest_error(
                 path,
                 format!(
-                    "registry package `{}@{}` requires a SHA-256 checksum",
+                    "immutable package `{}@{}` requires a SHA-256 checksum",
                     package.name, package.version
                 ),
             ));
@@ -1818,6 +2038,7 @@ fn lockfile_for_packages(packages: &BTreeMap<PackageId, Package>) -> Lockfile {
             version: package.id.version().to_owned(),
             language: package.language_version().to_owned(),
             source: package.source.clone(),
+            selector: package.git_selector.clone(),
             checksum: package.checksum.clone(),
             dependencies: package
                 .dependencies

@@ -7,6 +7,7 @@
 mod analysis;
 mod cache;
 mod format;
+mod git;
 mod incremental;
 mod library;
 mod project;

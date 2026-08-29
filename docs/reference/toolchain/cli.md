@@ -47,7 +47,7 @@ The interpreter does not support `runtime pack`, `debug`, `--release`,
 - `--no-default-features` disables the root module's `default` feature.
 - `--locked` requires the resolved graph to match `loom.lock` exactly.
 - `--offline` forbids network access and uses only locally available packages
-  and validated registry cache entries.
+  and validated registry or Git cache entries.
 
 These options apply to `resolve` and source commands. They do not apply to
 `fmt`, `publish`, `runtime pack`, or `run --artifact`. `resolve --update`
