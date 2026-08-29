@@ -2272,40 +2272,6 @@ fn interpreted_artifact_boundaries_require_the_complete_resource_identity_trio()
 }
 
 #[test]
-fn artifact_twenty_does_not_cross_the_scoped_mir_boundary() {
-    let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
-    let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-    value["version"] = serde_json::json!(20);
-    value["program"] = serde_json::json!("artifact 20 erased scoped registration intent");
-    let error = decode_interpreted_artifact(&serde_json::to_vec(&value).expect("json"))
-        .expect_err("artifact 20 must fail before its body is decoded");
-    assert!(matches!(
-        error,
-        ArtifactError::VersionMismatch {
-            expected: INTERPRETED_ARTIFACT_VERSION,
-            found: 20
-        }
-    ));
-}
-
-#[test]
-fn artifact_twenty_one_does_not_cross_the_resource_identity_boundary() {
-    let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
-    let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-    value["version"] = serde_json::json!(21);
-    value["program"] = serde_json::json!("artifact 21 has no compiler-known concept identity");
-    let error = decode_interpreted_artifact(&serde_json::to_vec(&value).expect("json"))
-        .expect_err("artifact 21 must fail before its body is decoded");
-    assert!(matches!(
-        error,
-        ArtifactError::VersionMismatch {
-            expected: INTERPRETED_ARTIFACT_VERSION,
-            found: 21
-        }
-    ));
-}
-
-#[test]
 fn forged_must_scope_identities_fail_closed_at_artifact_decode() {
     let main = function(
         1,
@@ -2341,9 +2307,9 @@ fn forged_must_scope_identities_fail_closed_at_artifact_decode() {
     let error = decode_interpreted_artifact(
         &serde_json::to_vec(&omitted_field).expect("encode missing-field artifact"),
     )
-    .expect_err("a version-22 concept cannot omit its identity field");
+    .expect_err("a current concept cannot omit its identity field");
     assert!(
-        matches!(error, ArtifactError::InvalidProgram(ref errors) if errors.contains(MirValidationCode::ConceptShape)),
+        matches!(error, ArtifactError::Malformed(ref message) if message.contains("missing field `identity`")),
         "{error:?}"
     );
 
@@ -4407,6 +4373,65 @@ fn artifact_requires_explicit_witness_segmentation() {
         error,
         ArtifactError::Malformed(message) if message.contains("witness_prefix_count")
     ));
+}
+
+#[test]
+fn current_artifact_requires_the_exact_current_mir_shape() {
+    let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
+    let original: serde_json::Value = serde_json::from_slice(&bytes).expect("artifact JSON");
+
+    let mut missing_prelude_field = original.clone();
+    missing_prelude_field["program"]["prelude"]
+        .as_object_mut()
+        .expect("prelude object")
+        .remove("bytes")
+        .expect("encoded prelude field");
+    let missing_error = decode_interpreted_artifact(
+        &serde_json::to_vec(&missing_prelude_field).expect("missing-field JSON"),
+    )
+    .expect_err("matching-version artifacts cannot inherit omitted fields");
+    assert!(
+        matches!(missing_error, ArtifactError::Malformed(ref message) if message.contains("missing field `bytes`")),
+        "{missing_error:?}"
+    );
+
+    let mut missing_function_field = original.clone();
+    missing_function_field["program"]["functions"][0]
+        .as_object_mut()
+        .expect("function object")
+        .remove("is_async")
+        .expect("encoded function field");
+    let missing_error = decode_interpreted_artifact(
+        &serde_json::to_vec(&missing_function_field).expect("missing-field JSON"),
+    )
+    .expect_err("matching-version functions cannot inherit omitted fields");
+    assert!(
+        matches!(missing_error, ArtifactError::Malformed(ref message) if message.contains("missing field `is_async`")),
+        "{missing_error:?}"
+    );
+
+    let mut unknown_field = original;
+    unknown_field["program"]["prelude"]["unexpected"] = serde_json::Value::Null;
+    let unknown_error = decode_interpreted_artifact(
+        &serde_json::to_vec(&unknown_field).expect("unknown-field JSON"),
+    )
+    .expect_err("matching-version artifacts cannot carry unknown MIR fields");
+    assert!(
+        matches!(unknown_error, ArtifactError::Malformed(ref message) if message.contains("unknown field `unexpected`")),
+        "{unknown_error:?}"
+    );
+
+    let mut unknown_span_field =
+        serde_json::from_slice::<serde_json::Value>(&bytes).expect("artifact JSON");
+    unknown_span_field["program"]["functions"][0]["span"]["unexpected"] = serde_json::Value::Null;
+    let unknown_error = decode_interpreted_artifact(
+        &serde_json::to_vec(&unknown_span_field).expect("unknown-span-field JSON"),
+    )
+    .expect_err("matching-version artifacts cannot carry unknown span fields");
+    assert!(
+        matches!(unknown_error, ArtifactError::Malformed(ref message) if message.contains("unknown field `unexpected`")),
+        "{unknown_error:?}"
+    );
 }
 
 #[test]

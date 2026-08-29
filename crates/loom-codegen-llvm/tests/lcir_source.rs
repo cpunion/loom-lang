@@ -10,8 +10,8 @@ use loom_codegen_ir::{
     lower_typed_artifact,
 };
 use loom_codegen_llvm::{
-    DebugSource, EmitOptions, NativeObjectOptions, NativeRouteKind, NativeRoutePolicy,
-    OptimizationProfile, emit_lcir_native_object, prepare_native_object,
+    DebugSource, EmitOptions, NativeObjectOptions, NativePreparationErrorKind, NativeRouteKind,
+    NativeRoutePolicy, OptimizationProfile, emit_lcir_native_object, prepare_native_object,
 };
 use loom_core::{
     Span,
@@ -3559,6 +3559,97 @@ fn standard_library_text_map_segment_classifies_through_direct_lcir() {
         assert!(dump.contains(required), "missing `{required}`:\n{dump}");
     }
     assert!(!dump.contains("unsupported"), "{dump}");
+}
+
+#[test]
+fn standard_library_mir_route_is_exactly_the_reviewed_lcir_gap() {
+    let source = include_str!("../../../fixtures/standard-library/main.loom")
+        .replace("__ROUND_TRIP_PATH__", "round-trip.txt")
+        .replace("__MISSING_PATH__", "missing.txt")
+        .replace("__REUSE_PATH__", "reuse.txt")
+        .replace("__LOOPBACK_PORT__", "1")
+        .replace("__READ_LOOPBACK_PORT__", "1");
+    let program = compile_source(&source);
+    let error = prepare_native_object(&program, EmitOptions::tests(), NativeRoutePolicy::LcirOnly)
+        .err()
+        .expect("the reviewed standard-library LCIR gap must remain explicit");
+    assert_eq!(error.kind(), NativePreparationErrorKind::Unsupported);
+    assert_eq!(error.code(), "NativePreparationUnsupportedLcir");
+    let report = error
+        .support_report()
+        .expect("unsupported preparation must carry its complete report");
+    assert_eq!(report.len(), 20);
+    assert!(
+        report
+            .items()
+            .iter()
+            .all(|item| item.feature() == UnsupportedFeature::BuiltinCall),
+        "{report:#?}"
+    );
+    let operations = report
+        .items()
+        .iter()
+        .map(|item| {
+            let range = item.span().range;
+            let site = source
+                .get(
+                    usize::try_from(range.start).expect("source offset fits usize")
+                        ..usize::try_from(range.end).expect("source offset fits usize"),
+                )
+                .expect("support-report span belongs to the reviewed fixture");
+            if site.starts_with("parse_json(") {
+                "JsonParse"
+            } else if site.starts_with("try_create(") {
+                "FileTryCreate"
+            } else if site.starts_with("try_open_read(") {
+                "FileTryOpenRead"
+            } else if site.starts_with("input.try_read_text(") {
+                "FileTryReadText"
+            } else if site.starts_with("output.try_write_text(")
+                || site.starts_with("replacement.try_write_text(")
+            {
+                "FileTryWriteText"
+            } else if site.starts_with("try_connect(") {
+                "SocketTryConnect"
+            } else if site.starts_with("socket.try_write_text(") {
+                "SocketTryWriteText"
+            } else if site == "error.kind()" {
+                "IoErrorKind"
+            } else {
+                panic!("unreviewed standard-library LCIR gap: {site}")
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        operations,
+        [
+            "JsonParse",
+            "JsonParse",
+            "FileTryCreate",
+            "FileTryWriteText",
+            "FileTryOpenRead",
+            "FileTryReadText",
+            "FileTryOpenRead",
+            "FileTryReadText",
+            "FileTryCreate",
+            "FileTryWriteText",
+            "SocketTryConnect",
+            "SocketTryWriteText",
+            "FileTryOpenRead",
+            "IoErrorKind",
+            "SocketTryConnect",
+            "IoErrorKind",
+            "SocketTryConnect",
+            "IoErrorKind",
+            "SocketTryConnect",
+            "SocketTryWriteText",
+        ]
+    );
+
+    let prepared =
+        prepare_native_object(&program, EmitOptions::tests(), NativeRoutePolicy::Automatic)
+            .expect("automatic preparation must retain the complete MIR backend");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Legacy);
 }
 
 #[test]

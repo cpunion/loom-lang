@@ -11,6 +11,14 @@ use std::fmt;
 use loom_core::Span;
 use serde::{Deserialize, Serialize};
 
+fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
+
 pub use artifact::{
     ArtifactError, INTERPRETED_ARTIFACT_FORMAT, INTERPRETED_ARTIFACT_VERSION,
     LOOM_LANGUAGE_VERSION, decode_interpreted_artifact, decode_interpreted_executable_artifact,
@@ -45,13 +53,12 @@ id_type!(RequirementId);
 id_type!(WitnessId);
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Program {
     pub types: Vec<TypeDef>,
     /// Compiler-private concept metadata, indexed directly by [`ConceptId`].
-    #[serde(default)]
     pub concepts: Vec<ConceptDef>,
     /// Compiler-private method metadata, indexed directly by [`RequirementId`].
-    #[serde(default)]
     pub requirements: Vec<RequirementDef>,
     pub functions: Vec<Function>,
     pub witnesses: Vec<Witness>,
@@ -59,53 +66,62 @@ pub struct Program {
     pub exports: BTreeMap<String, FunctionId>,
     /// Compiler-known prelude identities. Entries remain optional so focused
     /// MIR tests can construct programs which do not exercise that facility.
-    #[serde(default)]
     pub prelude: PreludeIds,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PreludeIds {
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub result: Option<TypeId>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub option: Option<TypeId>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub constraint_error: Option<TypeId>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub parse_float_error: Option<TypeId>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub task_fault: Option<TypeId>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub task_outcome: Option<TypeId>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub duration: Option<TypeId>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub file: Option<TypeId>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub socket: Option<TypeId>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub bytes: Option<TypeId>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub path: Option<TypeId>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub decode_text_error: Option<TypeId>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub path_error: Option<TypeId>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub text_map: Option<TypeId>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub json: Option<TypeId>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub json_error: Option<TypeId>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub io_error: Option<TypeId>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub io_error_kind: Option<TypeId>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub log_level: Option<TypeId>,
     /// Canonical `std.resource.Dispose` concept, when that module is
     /// present in the checked program.
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub dispose_concept: Option<ConceptId>,
     /// Canonical `Dispose.dispose(mut self)` requirement.
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub dispose_requirement: Option<RequirementId>,
     /// Canonical empty `std.resource.MustScope` marker concept.
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub must_scope_concept: Option<ConceptId>,
     /// Canonical empty `std.resource.NoSuspend` marker concept.
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub no_suspend_concept: Option<ConceptId>,
 }
 
@@ -172,6 +188,7 @@ impl Program {
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum Type {
     /// Internal control-flow bottom; no runtime value can inhabit this type.
     Never,
@@ -235,6 +252,7 @@ pub fn disclosure_type_summary(program: &Program, ty: &Type) -> String {
 /// enter executable MIR. `MethodParameter` is alpha-normalized within one
 /// requirement and is instantiated from a static call's explicit type arguments.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum RequirementType {
     Unit,
     Bool,
@@ -260,6 +278,7 @@ pub enum RequirementType {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConceptDef {
     pub id: ConceptId,
     /// Stable source module metadata cross-checked after a compiler-known
@@ -271,6 +290,7 @@ pub struct ConceptDef {
     /// deliberately separate from module/name metadata: ordinary source
     /// spelling cannot make a concept acquire language-level resource
     /// semantics in checked MIR.
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub identity: Option<ConceptIdentity>,
     pub dynamic: bool,
     pub associated_types: Vec<AssociatedTypeDef>,
@@ -280,7 +300,7 @@ pub struct ConceptDef {
 
 /// Versioned identity for a concept with compiler-defined semantics.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum ConceptIdentity {
     /// Canonical `std.resource.Dispose` cleanup protocol.
     Dispose,
@@ -291,17 +311,20 @@ pub enum ConceptIdentity {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AssociatedTypeDef {
     pub name: String,
     pub span: Span,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RequirementDef {
     pub id: RequirementId,
     pub concept: ConceptId,
     pub name: String,
     pub span: Span,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub receiver: Option<Receiver>,
     pub method_type_parameters: u32,
     /// Includes the receiver as parameter zero for receiver requirements.
@@ -313,6 +336,7 @@ pub struct RequirementDef {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RequirementWitnessParam {
     pub target: RequirementType,
     pub concept: ConceptId,
@@ -321,6 +345,7 @@ pub struct RequirementWitnessParam {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TypeDef {
     pub id: TypeId,
     pub name: String,
@@ -332,9 +357,11 @@ pub struct TypeDef {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum TypeDefKind {
     Record {
         fields: Vec<FieldDef>,
+        #[serde(deserialize_with = "deserialize_required_option")]
         invariant: Option<Contract>,
     },
     Enum {
@@ -347,6 +374,7 @@ pub enum TypeDefKind {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FieldDef {
     pub name: String,
     pub ty: Type,
@@ -354,6 +382,7 @@ pub struct FieldDef {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VariantDef {
     pub id: VariantId,
     pub name: String,
@@ -362,14 +391,13 @@ pub struct VariantDef {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Function {
     pub id: FunctionId,
     pub name: String,
     pub span: Span,
     pub type_parameters: u32,
-    #[serde(default)]
     pub is_async: bool,
-    #[serde(default)]
     pub suspension_points: Vec<SuspensionPoint>,
     pub params: Vec<LocalDecl>,
     pub witness_params: Vec<WitnessParam>,
@@ -379,6 +407,7 @@ pub struct Function {
     pub witness_prefix_count: u32,
     pub locals: Vec<LocalDecl>,
     pub return_ty: Type,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub receiver: Option<Receiver>,
     pub body: Block,
     pub call_plan: CallPlan,
@@ -434,6 +463,7 @@ impl fmt::Display for ExprIdOverflow {
 impl Error for ExprIdOverflow {}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SuspensionPoint {
     /// Resume states start at one; state zero is the coroutine entry.
     pub state: u32,
@@ -444,6 +474,7 @@ pub struct SuspensionPoint {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LocalDecl {
     pub id: LocalId,
     pub name: String,
@@ -453,20 +484,23 @@ pub struct LocalDecl {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Receiver {
     Readonly,
     Mutable,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CallPlan {
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub receiver_invariant: Option<Contract>,
     pub requires: Vec<Contract>,
     pub ensures: Vec<Contract>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Contract {
     pub code: String,
     pub span: Span,
@@ -474,12 +508,14 @@ pub struct Contract {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ContractExpr {
     pub kind: ContractExprKind,
     pub span: Span,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum ContractExprKind {
     Constant(Constant),
     Value(ContractValue),
@@ -497,7 +533,7 @@ pub enum ContractExprKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum ContractValue {
     SelfValue,
     Result,
@@ -507,6 +543,7 @@ pub enum ContractValue {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ContractArm {
     pub pattern: Pattern,
     /// New binding slot types in pattern traversal order. These are appended
@@ -516,19 +553,23 @@ pub struct ContractArm {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Block {
     pub statements: Vec<Statement>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub tail: Option<Box<Expr>>,
     pub span: Span,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Statement {
     pub kind: StatementKind,
     pub span: Span,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum StatementKind {
     Let {
         local: LocalId,
@@ -574,7 +615,7 @@ pub enum StatementKind {
 /// distinguish an authorized lexical cleanup from an arbitrary user call to
 /// `Dispose.dispose`, `File.close`, or `Socket.close`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum ScopedDisposal {
     StaticConcept {
         requirement: RequirementId,
@@ -594,7 +635,7 @@ pub enum ScopedDisposal {
 /// or invariant and raising `ArtifactProofRejected` if it no longer holds.
 /// `Runtime` evaluates the predicate/invariant and returns `Result`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum ConstructionMode {
     Plain,
     Proven,
@@ -603,6 +644,7 @@ pub enum ConstructionMode {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Expr {
     /// Stable identity within the containing function. Checked MIR requires
     /// canonical preorder ids forming a dense range starting at zero.
@@ -633,6 +675,7 @@ impl ExprId {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum ExprKind {
     Constant(Constant),
     Tuple(Vec<Expr>),
@@ -680,6 +723,7 @@ pub enum ExprKind {
     },
     MakeView {
         value: Box<Expr>,
+        #[serde(deserialize_with = "deserialize_required_option")]
         writeback: Option<Place>,
         witness: WitnessRef,
         mutable: bool,
@@ -707,7 +751,7 @@ pub enum ExprKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum TaskJoinMode {
     All,
     Settled,
@@ -716,6 +760,7 @@ pub enum TaskJoinMode {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MatchArm {
     pub pattern: Pattern,
     pub bindings: Vec<LocalId>,
@@ -723,6 +768,7 @@ pub struct MatchArm {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum Pattern {
     Wildcard,
     Binding,
@@ -735,6 +781,7 @@ pub enum Pattern {
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Place {
     pub local: LocalId,
     pub projection: Vec<u32>,
@@ -751,6 +798,7 @@ impl Place {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum CallTarget {
     Direct(FunctionId),
     Inherent(FunctionId),
@@ -768,6 +816,7 @@ pub enum CallTarget {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum CallArgument {
     Value(Expr),
     InOut(Place),
@@ -1021,7 +1070,7 @@ impl ExprIdAssigner {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Builtin {
     IsFinite,
     ParseFloat,
@@ -1083,6 +1132,7 @@ pub enum Builtin {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Witness {
     pub id: WitnessId,
     pub concept: ConceptId,
@@ -1098,6 +1148,7 @@ pub struct Witness {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WitnessParam {
     pub target: Type,
     pub concept: ConceptId,
@@ -1106,7 +1157,7 @@ pub struct WitnessParam {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum WitnessRef {
     Concrete(WitnessId),
     Parameter(u32),
@@ -1117,6 +1168,7 @@ pub enum WitnessRef {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum Constant {
     Unit,
     Bool(bool),
@@ -1126,14 +1178,14 @@ pub enum Constant {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum UnaryOp {
     Negate,
     Not,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum BinaryOp {
     Add,
     Subtract,

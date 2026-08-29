@@ -40,8 +40,8 @@ migration gates.
 `loom-driver` resolves a manifest project into a closed graph before loading
 source. Stable source paths, package identities, dependency aliases, selected
 features, targets, and the lockfile state are part of the project snapshot.
-Standalone file or directory inputs use a synthetic package identity and have
-no manifest features.
+Standalone file or directory inputs use the synthetic `<standalone>@0` package
+identity and have no manifest features.
 
 The source-backed portion of the compiler-distributed standard library is a
 read-only `std` package available through a reserved direct dependency. It

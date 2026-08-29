@@ -617,7 +617,7 @@ impl AnalysisHost {
                     }
                     let owner = &hir.definitions[definition.owner];
                     let source_module = &hir.modules[owner.module];
-                    let module = if source_module.package.name() == "<legacy>" {
+                    let module = if source_module.package.is_standalone() {
                         source_module.name.to_string()
                     } else {
                         format!(

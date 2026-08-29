@@ -180,7 +180,7 @@ impl SourceDocument {
         &self.relative_path
     }
 
-    /// Resolved package owning this source, or `None` for legacy inputs.
+    /// Resolved package owning this source, or `None` for standalone inputs.
     #[must_use]
     pub const fn package(&self) -> Option<&PackageId> {
         self.package.as_ref()

@@ -12,6 +12,9 @@ pub const LOOM_LANGUAGE_VERSION: &str = "0.3";
 /// Reserved logical package name of the compiler-distributed Loom library.
 pub const STD_PACKAGE_NAME: &str = "std";
 
+const STANDALONE_PACKAGE_NAME: &str = "<standalone>";
+const STANDALONE_PACKAGE_VERSION: &str = "0";
+
 /// Stable nominal package identity carried by every source module.
 ///
 /// Package identity includes the resolved version so two versions of the same
@@ -80,15 +83,29 @@ impl PackageId {
         &self.language
     }
 
+    /// Constructs the synthetic package identity used by source files and
+    /// directories that are compiled without a manifest.
     #[must_use]
-    pub fn legacy() -> Self {
-        Self::with_language("<legacy>", "0", LOOM_LANGUAGE_VERSION)
+    pub fn standalone() -> Self {
+        Self::with_language(
+            STANDALONE_PACKAGE_NAME,
+            STANDALONE_PACKAGE_VERSION,
+            LOOM_LANGUAGE_VERSION,
+        )
+    }
+
+    /// Whether this is the exact synthetic identity for a standalone input.
+    #[must_use]
+    pub fn is_standalone(&self) -> bool {
+        self.name == STANDALONE_PACKAGE_NAME
+            && self.version == STANDALONE_PACKAGE_VERSION
+            && self.language == LOOM_LANGUAGE_VERSION
     }
 }
 
 impl Default for PackageId {
     fn default() -> Self {
-        Self::legacy()
+        Self::standalone()
     }
 }
 
@@ -113,6 +130,17 @@ mod package_tests {
         assert!(!PackageId::with_language("std", "0.2", "0.3").is_compiler_std());
         assert!(!PackageId::with_language("stdish", "0.3", "0.3").is_compiler_std());
     }
+
+    #[test]
+    fn standalone_identity_is_the_default() {
+        let standalone = PackageId::standalone();
+        assert_eq!(standalone.name(), "<standalone>");
+        assert_eq!(standalone.version(), "0");
+        assert_eq!(standalone.language(), LOOM_LANGUAGE_VERSION);
+        assert!(standalone.is_standalone());
+        assert!(!PackageId::compiler_std(LOOM_LANGUAGE_VERSION).is_standalone());
+        assert_eq!(PackageId::default(), standalone);
+    }
 }
 
 #[derive(
@@ -124,6 +152,7 @@ pub struct FileId(pub u32);
 #[derive(
     Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
 )]
+#[serde(deny_unknown_fields)]
 pub struct TextRange {
     pub start: u32,
     pub end: u32,
@@ -144,6 +173,7 @@ impl TextRange {
 #[derive(
     Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
 )]
+#[serde(deny_unknown_fields)]
 pub struct Span {
     pub file: FileId,
     pub range: TextRange,

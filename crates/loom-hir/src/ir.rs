@@ -653,7 +653,7 @@ impl Program {
 
     /// Interns a module name, merging files that declare the same module.
     pub fn intern_module(&mut self, name: ModuleName, file: FileId, declaration: Span) -> ModuleId {
-        self.intern_package_module(PackageId::legacy(), name, file, declaration)
+        self.intern_package_module(PackageId::standalone(), name, file, declaration)
     }
 
     /// Interns a package-qualified module, never merging equal source module

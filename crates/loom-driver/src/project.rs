@@ -193,7 +193,7 @@ impl Target {
 
 #[derive(Clone, Debug)]
 enum ProjectKind {
-    Legacy { input: PathBuf },
+    Standalone { input: PathBuf },
     Manifest { root_package: PackageId },
 }
 
@@ -250,7 +250,7 @@ pub(crate) struct ProjectSource {
 }
 
 impl ProjectGraph {
-    /// Resolves a manifest project or a legacy directory/single-file input.
+    /// Resolves a manifest project or a standalone directory/single-file input.
     ///
     /// # Errors
     ///
@@ -317,7 +317,7 @@ impl ProjectGraph {
             return Ok(Self {
                 root,
                 manifest: None,
-                kind: ProjectKind::Legacy { input: canonical },
+                kind: ProjectKind::Standalone { input: canonical },
                 packages: BTreeMap::new(),
                 targets: Vec::new(),
                 lock: None,
@@ -473,7 +473,7 @@ impl ProjectGraph {
 
     pub(crate) fn source_files(&self) -> Result<Vec<ProjectSource>, DriverError> {
         let mut sources = match &self.kind {
-            ProjectKind::Legacy { input } => legacy_sources(&self.root, input)?,
+            ProjectKind::Standalone { input } => standalone_sources(&self.root, input)?,
             ProjectKind::Manifest { root_package } => {
                 let mut sources =
                     BTreeMap::<PathBuf, (String, PackageId, bool, Option<String>)>::new();
@@ -572,7 +572,7 @@ impl ProjectGraph {
             return None;
         }
         match &self.kind {
-            ProjectKind::Legacy { input } => {
+            ProjectKind::Standalone { input } => {
                 let metadata = fs::metadata(input).ok()?;
                 if metadata.is_file() && normalize_absolute(input) != normalize_absolute(path) {
                     return None;
@@ -598,7 +598,7 @@ impl ProjectGraph {
 
     pub(crate) fn semantic_identity_fields(&self) -> Vec<String> {
         match &self.kind {
-            ProjectKind::Legacy { .. } => vec!["project:legacy".to_owned()],
+            ProjectKind::Standalone { .. } => vec!["project:standalone".to_owned()],
             ProjectKind::Manifest { root_package } => {
                 let mut fields = vec![
                     format!("manifest-schema:{MANIFEST_SCHEMA_VERSION}"),
@@ -637,9 +637,9 @@ impl ProjectGraph {
         let std_package = standard_library::package_id(self.language_version());
         program.register_package(std_package.clone(), [], false);
         match &self.kind {
-            ProjectKind::Legacy { .. } => {
+            ProjectKind::Standalone { .. } => {
                 program.register_package(
-                    PackageId::legacy(),
+                    PackageId::standalone(),
                     [(loom_core::Name::new(STD_PACKAGE_NAME), std_package)],
                     true,
                 );
@@ -2048,7 +2048,7 @@ fn discover_package_source(
     Ok(files.into_iter().collect())
 }
 
-fn legacy_sources(root: &Path, input: &Path) -> Result<Vec<ProjectSource>, DriverError> {
+fn standalone_sources(root: &Path, input: &Path) -> Result<Vec<ProjectSource>, DriverError> {
     let paths = if input.is_file() {
         vec![input.to_path_buf()]
     } else {

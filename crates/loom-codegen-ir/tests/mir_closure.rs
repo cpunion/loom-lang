@@ -27,7 +27,7 @@ fn compile_with_std_resource(source: &str) -> CheckedProgram {
     );
 
     let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
-    let root = PackageId::legacy();
+    let root = PackageId::standalone();
     let mut lowered = lower_package_files([
         PackageSourceUnit {
             file: FileId(0),

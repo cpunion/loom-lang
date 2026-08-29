@@ -71,6 +71,14 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- Source files and directories compiled without `loom.toml` now use the exact
+  `Standalone` project mode and synthetic `<standalone>@0` package identity.
+  The former project-mode names and cache identity were replaced outright;
+  there is no alias or migration path. Matching-version interpreted artifacts
+  now require every current MIR field, including explicit `null` for absent
+  optional values, and reject unknown fields throughout the MIR and source-span
+  structure instead of inheriting defaults or ignoring removed data.
+
 - `std.int.parse_int` and `std.int.ParseIntError` are now ordinary Loom source
   definitions. Parsing uses `Text.encode_utf8`, `Bytes`, control flow, checked
   `Int` operations, and ordinary enum/Result construction. The compiler-known
