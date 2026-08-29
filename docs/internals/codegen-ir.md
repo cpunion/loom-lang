@@ -1206,7 +1206,7 @@ macOS. The parameter-driven cross-language benchmark remains on the atomic
 checked-MIR route because its root also reaches dynamic text, List, parsing, and
 matching;
 the direct aggregate tests are the current closed-workload evidence. The
-platform-independent Windows CI job checks, lints, tests, and builds
-`loom-codegen-ir`; cross-target LLVM tests also emit direct closed-sum MSVC
+cross-platform release matrix builds `loom-codegen-ir`; cross-target LLVM tests
+also emit direct closed-sum MSVC
 COFF objects from the same live carrier fixture without selecting the checked-MIR
 route.

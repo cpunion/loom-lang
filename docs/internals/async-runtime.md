@@ -380,7 +380,7 @@ async call boundaries, a general user-facing cancellation handle, generators,
 streams, actors, persistent coroutines, and remote execution are not
 implemented language features.
 
-Linux x86-64 and macOS arm64 run the native async/standard-library gates in CI.
-A complete Windows native job is configured, including async fixture closure,
-but it is not verified runtime or release evidence until a real Windows runner
-result is recorded.
+macOS arm64 runs the native async/standard-library tests in the development
+gate. The release matrix owns Linux and Windows closure; its Windows entry is
+not verified runtime or release evidence until a successful archive run is
+recorded.

@@ -807,8 +807,8 @@ test. Development optimization alone is not a debugger contract and does not
 disable LCIR.
 
 MSVC-targeted objects carry the LLVM `CodeView` module flag, and the linker is
-given `/DEBUG` and an explicit staged `/PDB:` output. The configured Windows
-gate checks typed-LCIR COFF and PDB structures, but source-level debugger
+given `/DEBUG` and an explicit staged `/PDB:` output. The Windows release entry
+checks typed-LCIR COFF and PDB production, but source-level debugger
 behavior remains partial and is not claimed until a native debugger test
 exists.
 

@@ -172,8 +172,8 @@ kqueue on macOS, epoll on Linux, and the `polling` crate's IOCP/AFD backend on
 Windows. Notifications enqueue a ready task; they never re-enter a coroutine
 directly on a callback stack. Pending tasks are registered with a real wait
 source rather than busy-polled. Windows compilation is covered by target checks;
-native Windows scheduling and I/O execution are gated by the configured Windows
-CI job and are not claimed from a Unix cross-check. The raw ABI is an unsafe
+native Windows scheduling and I/O execution belong to the Windows release entry
+and are not claimed from a Unix cross-check. The raw ABI is an unsafe
 runtime boundary, not a Loom language API; see the runtime internals for its
 live-handle contract.
 

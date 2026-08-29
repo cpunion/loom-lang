@@ -40,8 +40,8 @@ domain, and tests. It is an implementation gap, not a compatibility surface.
 
 ### Strengthen reproducible evidence
 
-Keep Linux and macOS native closure tests, the configured Windows native gate,
-fuzzing, package integrity tests, and base-versus-candidate PR benchmarks
+Keep the macOS development gate, cross-platform release closure, explicit fuzz
+campaigns, package integrity tests, and opt-in base-versus-candidate benchmarks
 reproducible. Expand performance evidence with fixed-host trends, warm and
 incremental builds, peak memory, and profiler data before making broader claims.
 

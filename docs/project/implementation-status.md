@@ -34,36 +34,26 @@ implementation remains.
 
 ## Platform support matrix
 
-| Platform / target | CI-tested | Compiler layers | Native runtime and LLVM closure | Cross-target object | Release archive |
+| Platform / target | Automated evidence | Compiler layers | Native runtime and LLVM closure | Cross-target object | Release archive |
 | --- | --- | --- | --- | --- | --- |
-| Linux x86-64 (Ubuntu 24.04) | yes | yes | yes | host and tested 64-bit alternate-object path | yes |
-| macOS arm64 (macOS 15) | yes | yes | yes | host and tested 64-bit alternate-object path | yes |
-| Windows x86-64 (Windows 2025) | real runner, full pass pending | check/lint and most workspace tests verified | runtime pack plus typed object/link/run paths verified; complete job pending | host object path | `.zip` workflow entry configured; no verified archive |
+| Linux x86-64 (Ubuntu 24.04) | release workflow | yes | release closure | host and tested 64-bit alternate-object path | yes |
+| macOS arm64 (macOS 15) | default development gate and release workflow | yes | development and release closure | host and tested 64-bit alternate-object path | yes |
+| Windows x86-64 (Windows 2025) | release workflow entry; successful archive run pending | release build | release closure pending | host object path | `.zip` workflow entry configured; no verified archive |
 | Other LLVM 64-bit triples | no general CI claim | host-dependent | only with a matching validated runtime bundle and linker | possible when LLVM provides the target | no |
 | 32-bit triples | no | not a native claim | no runtime/executable support | feature-dependent direct LCIR object only when LLVM provides the target; `Text` and the checked-MIR route reject | no |
 
-The Windows CI job installs LLVM 19.1.7 and Rust 1.88, checks, lints, tests, and
-builds the complete workspace, and runs the three semantic example
-check/build/test/run
-loops on both backends. A real Windows runner has verified the LLVM bootstrap,
-compiler check/lint, runtime packing, target-machine construction, and most
-typed native CLI loops. Its last incomplete run exposed a one-MiB process-stack
-failure while lowering a long logical chain; lowering now balances associative
-short-circuit chains and the job runs that exact TextMap closure before the full
-workspace. Native builds additionally require the expected `.exe` and `.pdb`
-outputs, parse the PDB, and inspect a compiler-emitted COFF object for CodeView
-sections before executing the artifact. The release job reuses the same pinned
-LLVM bootstrap and is configured to stage `loomc.exe`, `loom-lsp.exe`, the
+The Windows release job installs LLVM 19.1.7 and Rust 1.88, builds the compiler
+and runtime, and runs representative source, standard-library, and controlled
+quality gates. It is configured to stage `loomc.exe`, `loom-lsp.exe`, the
 compiler's `LLVM-C.dll`, and `loom_runtime.lib`, execute Core, C3,
 standard-library, and adjacent-runtime gates, and hash a `.zip`.
-These configurations become Windows toolchain and archive claims only after
+This configuration becomes Windows toolchain and archive evidence only after
 successful Windows runner evidence; source-level cross-checks on another host
 are not described as Windows execution.
 
-Linux, macOS, and the configured Windows job build the complete Cargo workspace
-with Rust 1.88 and LLVM 19 and execute native/runtime integration gates. Linux
-additionally runs the controlled quality runner; macOS runs the C3
-multi-package loop and standard-library differential gates.
+The default development workflow runs only on macOS. Linux and Windows are
+exercised by tagged or manually dispatched release runs rather than every pull
+request.
 
 ## Tested vertical slices
 
@@ -71,7 +61,7 @@ The following repository fixtures are run through real compiler stages:
 
 | Fixture | Evidence |
 | --- | --- |
-| `examples/constraints-contracts` | constraints/refined values, record invariants, method contracts, check/build/test/run, and built-artifact execution on both backends in Linux CI |
+| `examples/constraints-contracts` | constraints/refined values, record invariants, method contracts, check/build/test/run, and built-artifact execution on both backends in repository tests and release gates |
 | `examples/concepts-polymorphism` | concepts, associated types, static and dynamic dispatch, mutable receiver writeback, first-class dynamic product/sum/List storage, and typed-LCIR main and test artifacts in the same dual-backend loop |
 | `examples/async-resources` | moving GC, lexical cleanup, stackless async, all four static Task join policies, cancellation/readiness, and typed-LCIR main/test artifacts in the same dual-backend loop |
 | `fixtures/async-generic-contracts` | bounded generic async instances, precondition/postcondition task faults captured by fixed `Task.settled`, `TaskFault` inspection, `Task.any` cancellation, interpreter execution, and a typed-LCIR native test artifact |
@@ -137,13 +127,13 @@ reclamation, and cleanup even when a typed disposer reports a defect.
 | --- | --- |
 | `check/build/test/run` | Implemented for the tested Core and package fixtures on both backends. |
 | Code generation IR foundation | Implemented for the direct slices listed below. Native preparation is atomic and fails closed to the complete checked-MIR route when any reachable operation is unsupported. |
-| Native LLVM executable | Implemented and CI-tested on Linux x86-64 and macOS arm64; a complete Windows x86-64 native CI gate is configured and must pass before release support is claimed. |
+| Native LLVM executable | Implemented for Linux x86-64 and macOS arm64 release closures, with macOS also covered by the development gate; the Windows x86-64 release entry must pass before release support is claimed. |
 | Interpreted executable artifact | Implemented with strict cache/executable kind separation, selected-entry definition closure, dense identity remapping, deterministic bytes, complete decode validation, and CLI tests. |
 | Portable `.loomlib` | Source/interface format v2 is implemented and release-gated; consumers recompile packaged source, and the artifact is not a native library or stable ABI. |
 | Manifest/lock/features/path dependencies | Implemented with resolver and CLI integration tests. |
 | Local and HTTPS registry | Implemented with authentication, digest verification, bounded downloads, offline validated cache, and hostile-cache tests. Registry-version immutability remains a server protocol requirement. |
 | Persistent compiler cache | Implemented for parse/interface/typed state/checked MIR/route-specific native object/portable artifacts; proof-bearing typed/MIR layers intentionally rebuild from source to preserve cold/warm proof elimination and route identity, canonical `MustScope` identity is rederived from current module-qualified HIR rather than trusted from typed-state bytes, and native final link is intentionally uncached. |
-| Debug source info | Linux DWARF and macOS dSYM metadata are checked in CI. Complete typed LCIR artifacts retain direct emission for `debug` and carry source functions, target-laid-out product and physical return types, stable `argN` parameter locations, artificial status/writeback/fault-context state, and instruction locations; macOS LLDB verifies a fallible parameter and physical step-out result. MSVC objects select LLVM CodeView metadata and links use `/DEBUG` plus an explicit staged `/PDB:` path; the configured Windows gate inspects typed-LCIR COFF/PDB structures, but no source-level Windows debugger session is claimed yet. Unsupported reachable artifacts use the complete checked-MIR route. |
+| Debug source info | Complete typed LCIR artifacts retain direct emission for `debug` and carry source functions, target-laid-out product and physical return types, stable `argN` parameter locations, artificial status/writeback/fault-context state, and instruction locations. Focused Linux DWARF, macOS dSYM/LLDB, and MSVC CodeView/PDB checks remain available, but debugger-container inspection is not part of the lean development gate. Unsupported reachable artifacts use the complete checked-MIR route. |
 | LSP | Built and tested as a workspace crate; this status does not claim editor-specific distribution. |
 | Formatter | Implemented with write/check modes and CLI tests. |
 | Native cross object | Tested with an alternate 64-bit Linux triple; arbitrary triples remain conditional on the installed LLVM targets. |
@@ -193,16 +183,15 @@ empty/stored/computed/runtime-sized Task List joins, first-class
 `Task.any`/`Task.settled`/`Task.race` results, and unsupported projected inout
 shapes.
 
-## CI quality evidence
+## Automated quality evidence
 
-Linux CI runs formatting, workspace check, Clippy with warnings denied, all
-workspace tests and builds, dual-backend fixture loops, standard-library
-differential tests, runtime-bundle tests, Linux DWARF inspection, the controlled
-`loom-quality` runner, and three short fuzz targets. Before the full workspace
-test, Linux repeats the typed TextMap `check/build/test/run` loop with a one-MiB
-process stack; Windows runs the same focused closure on its native compiler
-stack. The separate macOS job
-verifies the dSYM metadata and runs the LLDB parameter and step-out inspection.
+The macOS development gate runs formatting, Clippy with warnings denied, the
+workspace tests once, standard-library tests on both backends, and repository
+documentation checks. It prepares one explicit runtime sidecar for native
+integration tests. The cross-platform release matrix owns Linux, macOS, and
+Windows archive closure. Fuzz campaigns, debugger-container inspection, and
+base-versus-candidate benchmarks are explicit rather than universal pull-request
+jobs.
 The controlled runner prepares every native object through the production
 router, and requires the constraints/contracts, concepts/polymorphism,
 async/resources, async generic-contract,

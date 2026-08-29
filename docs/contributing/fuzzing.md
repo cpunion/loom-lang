@@ -11,7 +11,7 @@ do not depend on libFuzzer. It uses a pinned nightly and `cargo-fuzz` release.
 | `artifact` | arbitrary bytes and structured mutations through envelope decoding, float restoration, entry checking, and complete MIR validation |
 | `semantics` | bounded constrained-integer programs across proof elimination, source rejection, runtime validation, and interpreter results |
 
-## Reproduce the CI configuration
+## Run a smoke campaign
 
 ```sh
 rustup toolchain install nightly-2025-06-26
@@ -27,7 +27,8 @@ cargo +nightly-2025-06-26 fuzz run semantics -- \
 
 For a local campaign, increase `-max_total_time`. Keep the per-input timeout
 and a reasonable RSS bound so a single pathological input does not stall the
-campaign.
+campaign. Fuzzing is explicit rather than part of every pull-request gate; run
+the affected target for parser, artifact, proof, or other hostile-input work.
 
 ## Reproducing a finding
 

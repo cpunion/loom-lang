@@ -55,10 +55,18 @@ gate before requesting review:
 
 ```sh
 cargo +1.88.0 fmt --all -- --check
-cargo +1.88.0 check --locked --workspace --all-targets
 cargo +1.88.0 clippy --locked --workspace --all-targets -- -D warnings
+CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' \
+  cargo +1.88.0 build --locked -p loom-runtime
+cargo +1.88.0 build --locked -p loom-cli
+runtime_bundle_root="$(mktemp -d)/runtime"
+target/debug/loomc runtime pack \
+  --archive target/debug/libloom_runtime.a \
+  --output "$runtime_bundle_root"
+export LOOM_RUNTIME_BUNDLE="$runtime_bundle_root"
 cargo +1.88.0 test --locked --workspace --all-targets
-cargo +1.88.0 build --locked --workspace --all-targets
+target/debug/loomc --no-cache test library/std/tests
+target/debug/loomc --backend interpreter --no-cache test library/std/tests
 ```
 
 Do not weaken a lint, verifier, contract, overflow check, cleanup rule, or test
@@ -135,8 +143,9 @@ When changing a hot path:
 - do not present a shared-runner wall-clock result as a general language rank;
 - add a structural regression test when the optimization has a checkable shape.
 
-Pull requests run a base-versus-candidate benchmark workflow. Its comment is
-diagnostic evidence, not an automatic acceptance threshold.
+For a measured hot-path change, add the `benchmark` label to run the macOS
+base-versus-candidate workflow. Its comment is diagnostic evidence, not an
+automatic acceptance threshold.
 
 ## Documentation
 

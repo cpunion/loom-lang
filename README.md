@@ -120,14 +120,14 @@ The table describes automated evidence, not a stability promise:
 
 | Host | CI coverage | Native release archive |
 | --- | --- | --- |
-| Ubuntu 24.04, x86-64 | Full workspace, LLVM/interpreter closure, packages, runtime, and quality gates | Yes |
-| macOS 15, arm64 | Full workspace, LLVM/interpreter closure, packages, and runtime gates | Yes |
-| Windows Server 2025, x86-64 | Complete native job configured; successful runner evidence pending | `.zip` workflow entry configured; not yet verified or published |
+| Ubuntu 24.04, x86-64 | Release workflow only | Yes |
+| macOS 15, arm64 | Default development gate plus release workflow | Yes |
+| Windows Server 2025, x86-64 | Release workflow only | `.zip` workflow entry configured; not yet verified or published |
 
-The Windows jobs are configured to exercise LLVM code generation, native
-linking, runtime I/O, CodeView/PDB artifacts, and an adjacent-runtime release
-zip. Loom does not claim Windows support or a published Windows archive until
-those jobs have produced successful runner and archive evidence.
+The release workflow exercises Windows LLVM code generation, native linking,
+runtime I/O, CodeView/PDB artifacts, and an adjacent-runtime zip. Loom does not
+claim Windows support or a published Windows archive until that release entry
+has produced successful runner and archive evidence.
 Cross-target object emission exists for supported 64-bit triples; producing a
 cross-target executable still requires a matching Loom runtime bundle and
 linker.

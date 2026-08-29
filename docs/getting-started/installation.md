@@ -10,13 +10,13 @@ The following table describes automated evidence, not a compatibility promise:
 
 | Host | Current evidence | Native archive |
 | --- | --- | --- |
-| Ubuntu 24.04, x86-64 | Full workspace, LLVM and interpreter fixtures, packages, runtime, and quality gates | Yes |
-| macOS 15, arm64 | Full workspace, LLVM and interpreter fixtures, packages, and runtime gates | Yes |
-| Windows Server 2025, x86-64 | Complete native job configured; successful runner evidence pending | `.zip` workflow entry configured; not yet verified or published |
+| Ubuntu 24.04, x86-64 | Release workflow | Yes |
+| macOS 15, arm64 | Default development gate and release workflow | Yes |
+| Windows Server 2025, x86-64 | Release workflow entry; successful archive run pending | `.zip` workflow entry configured; not yet verified or published |
 
-The Windows jobs cover native code generation, linking, runtime I/O,
-CodeView/PDB inspection, and the structure of a release zip, but Windows
-support is not claimed until successful runner and archive evidence exists.
+The Windows release entry covers native code generation, linking, runtime I/O,
+CodeView/PDB production, and the structure of a release zip, but Windows support
+is not claimed until successful runner and archive evidence exists.
 Object emission for another target also does not provide that target's runtime
 or linker.
 
