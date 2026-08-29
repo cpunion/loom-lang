@@ -11,8 +11,8 @@ use loom_runtime_abi::{
     GC_RESOURCE_LIMIT, LAYOUT_ABI_VERSION, LAYOUT_FLAG_LEAF, LAYOUT_FLAG_MANAGED_POINTER,
     LAYOUT_FLAG_TRAILING_BYTES, LAYOUT_KIND_BYTES, LAYOUT_KIND_TEXT, LoomGcObjectDescriptor,
     LoomGcTypedRootDescriptor, LoomGcTypedRootFrame, LoomLayoutDescriptor,
-    TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_INVALID,
-    TEXT_GET_TYPED_MISSING, TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION,
+    PATH_JOIN_TYPED_ABSOLUTE, TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8, TEXT_GET_TYPED_FOUND,
+    TEXT_GET_TYPED_INVALID, TEXT_GET_TYPED_MISSING, TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION,
     TYPED_SHADOW_STACK_ABI_VERSION, VALUE_SLOT_WORDS, VALUE_TAG_TEXT, VALUE_WORD_AUX,
     VALUE_WORD_DATA, VALUE_WORD_NOMINAL, VALUE_WORD_SCALAR, VALUE_WORD_TAG, VALUE_WORD_WITNESS,
 };
@@ -274,12 +274,95 @@ pub unsafe extern "C" fn bytes_decode_utf8_typed_v1(
     unsafe { allocate_typed_text(&staged, scalar_length, output) }
 }
 
-fn enforce_typed_byte_length(byte_length: usize) {
-    let maximum = GC_MAX_OBJECT_BYTES
+/// Portably joins the Text fields of two Path values.
+///
+/// This boundary is deliberately layout-neutral with respect to the Path
+/// product: generated code extracts its sole Text field and passes that direct
+/// managed pointer. Both source objects are validated deeply before their
+/// complete payloads are staged outside the moving heap. The only GC
+/// allocation follows staging, and the initialized result is published last.
+#[unsafe(export_name = "loom_runtime_path_join_typed_v1")]
+pub unsafe extern "C" fn path_join_typed_v1(
+    base: *const c_void,
+    child: *const c_void,
+    output: *mut *mut c_void,
+) -> i32 {
+    if output.is_null() || !output.addr().is_multiple_of(align_of::<*mut c_void>()) {
+        return GC_INVALID_ARGUMENT;
+    }
+    unsafe { output.write(ptr::null_mut()) };
+
+    let staged = (|| -> Result<(Vec<u8>, u64), i32> {
+        // SAFETY: both complete immutable objects are consumed before the one
+        // typed allocation below can enter a moving collection.
+        let (base, base_scalars) =
+            unsafe { canonical_text_bytes(base) }.ok_or(GC_INVALID_ARGUMENT)?;
+        let (child, child_scalars) =
+            unsafe { canonical_text_bytes(child) }.ok_or(GC_INVALID_ARGUMENT)?;
+        if child.first() == Some(&b'/') {
+            return Err(PATH_JOIN_TYPED_ABSOLUTE);
+        }
+
+        let separator = usize::from(!base.is_empty() && !base.ends_with(b"/") && !child.is_empty());
+        let byte_length = base
+            .len()
+            .checked_add(separator)
+            .and_then(|length| length.checked_add(child.len()))
+            .ok_or(GC_RESOURCE_LIMIT)?;
+        if !typed_byte_length_is_valid(byte_length) {
+            return Err(GC_RESOURCE_LIMIT);
+        }
+        let scalar_length = base_scalars
+            .checked_add(child_scalars)
+            .and_then(|length| length.checked_add(separator as u64))
+            .ok_or(GC_RESOURCE_LIMIT)?;
+
+        let mut staged = Vec::new();
+        staged
+            .try_reserve_exact(byte_length)
+            .map_err(|_| GC_RESOURCE_LIMIT)?;
+        staged.extend_from_slice(base);
+        if separator != 0 {
+            staged.push(b'/');
+        }
+        staged.extend_from_slice(child);
+        Ok((staged, scalar_length))
+    })();
+
+    let (staged, scalar_length) = match staged {
+        Ok(staged) => staged,
+        Err(status) => return status,
+    };
+    unsafe { allocate_typed_text(&staged, scalar_length, output) }
+}
+
+unsafe fn canonical_text_bytes<'object>(object: *const c_void) -> Option<(&'object [u8], u64)> {
+    if object.is_null() || !object.addr().is_multiple_of(align_of::<TextObject>()) {
+        return None;
+    }
+    let header = unsafe { object.cast::<TextObject>().as_ref() }?;
+    let byte_length = usize::try_from(header.byte_length).ok()?;
+    if !typed_byte_length_is_valid(byte_length) {
+        return None;
+    }
+    let bytes = unsafe { text_bytes(object) }?;
+    let text = std::str::from_utf8(bytes).ok()?;
+    let scalar_length = u64::try_from(text.chars().count()).ok()?;
+    if scalar_length != header.scalar_length {
+        return None;
+    }
+    Some((bytes, scalar_length))
+}
+
+fn typed_byte_length_is_valid(byte_length: usize) -> bool {
+    GC_MAX_OBJECT_BYTES
         .checked_sub(TEXT_OBJECT_HEADER_SIZE)
         .and_then(|maximum| usize::try_from(maximum).ok())
-        .unwrap_or_else(|| std::process::abort());
-    if byte_length > maximum {
+        .is_some_and(|maximum| byte_length <= maximum)
+}
+
+fn enforce_typed_byte_length(byte_length: usize) {
+    if !typed_byte_length_is_valid(byte_length) {
         std::process::abort();
     }
 }
@@ -647,16 +730,16 @@ mod tests {
     use loom_runtime_abi::{
         BYTES_DECODE_UTF8_TYPED_INVALID_UTF8, GC_INVALID_ARGUMENT, GC_OK,
         LoomGcTypedRootDescriptor, LoomGcTypedRootFrame, LoomLayoutDescriptor,
-        TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_INVALID,
-        TEXT_GET_TYPED_MISSING, TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_HEADER_SIZE,
-        TYPED_SHADOW_STACK_ABI_VERSION, VALUE_SLOT_WORDS, VALUE_TAG_TEXT,
+        PATH_JOIN_TYPED_ABSOLUTE, TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8, TEXT_GET_TYPED_FOUND,
+        TEXT_GET_TYPED_INVALID, TEXT_GET_TYPED_MISSING, TEXT_OBJECT_ALIGNMENT,
+        TEXT_OBJECT_HEADER_SIZE, TYPED_SHADOW_STACK_ABI_VERSION, VALUE_SLOT_WORDS, VALUE_TAG_TEXT,
     };
 
     use super::{
         BYTES_LAYOUT_DESCRIPTOR, ByteObject, TEXT_LAYOUT_DESCRIPTOR, TextObject,
         allocate_byte_storage, allocate_text_storage, bytes, bytes_append_typed_v1,
         bytes_decode_utf8_typed_v1, concat_typed_v1, from_utf8_units_typed_v1, get_typed_v1,
-        scalar_length, text_bytes, validate_text_object_deep,
+        path_join_typed_v1, scalar_length, text_bytes, validate_text_object_deep,
     };
     use crate::gc::{
         activate_runtime_v1, deactivate_runtime_v1, typed_root_pop_v1, typed_root_push_v1,
@@ -843,6 +926,195 @@ mod tests {
         }
         drop(right_storage);
         drop(left_storage);
+    }
+
+    #[test]
+    fn typed_path_join_covers_empty_unicode_and_separator_cases() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            for (base_text, child_text, expected) in [
+                ("", "child", "child"),
+                ("base", "", "base"),
+                ("", "", ""),
+                ("根", "子🙂", "根/子🙂"),
+                ("base/", "child", "base/child"),
+            ] {
+                let (base_storage, base) = allocate_text_storage(base_text.as_bytes()).unwrap();
+                let (child_storage, child) = allocate_text_storage(child_text.as_bytes()).unwrap();
+                let mut output = ptr::dangling_mut::<c_void>();
+                assert_eq!(
+                    path_join_typed_v1(base.cast(), child.cast(), &raw mut output),
+                    GC_OK
+                );
+                assert_eq!(text_bytes(output), Some(expected.as_bytes()));
+                assert_eq!(
+                    scalar_length(output.cast()),
+                    u64::try_from(expected.chars().count()).ok()
+                );
+                drop(child_storage);
+                drop(base_storage);
+            }
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+    }
+
+    #[test]
+    fn typed_path_join_rejects_absolute_child_without_allocating() {
+        let (base_storage, base) = allocate_text_storage(b"base").unwrap();
+        let (child_storage, child) = allocate_text_storage(b"/child").unwrap();
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            (*runtime).heap.collect_before_every_allocation = true;
+            let collections = (*runtime).heap.collections;
+            let mut output = ptr::dangling_mut::<c_void>();
+            assert_eq!(
+                path_join_typed_v1(base.cast(), child.cast(), &raw mut output),
+                PATH_JOIN_TYPED_ABSOLUTE
+            );
+            assert!(output.is_null());
+            assert_eq!((*runtime).heap.collections, collections);
+            (*runtime).heap.collect_before_every_allocation = false;
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+        drop(child_storage);
+        drop(base_storage);
+    }
+
+    #[test]
+    fn typed_path_join_stages_moving_inputs_before_its_only_gc_allocation() {
+        let (base_storage, base_source) = allocate_text_storage("根".as_bytes()).unwrap();
+        let (child_storage, child_source) = allocate_text_storage("子🙂".as_bytes()).unwrap();
+        let (empty_storage, empty) = allocate_text_storage(b"").unwrap();
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            (*runtime).heap.collect_before_every_allocation = true;
+
+            let bitmaps = [0_u64, 7_u64];
+            let descriptor = LoomGcTypedRootDescriptor {
+                abi_version: TYPED_SHADOW_STACK_ABI_VERSION,
+                flags: 0,
+                slot_count: 3,
+                state_count: 2,
+                live_bitmap_words: 1,
+                live_bitmaps: bitmaps.as_ptr(),
+            };
+            let mut base: *mut c_void = ptr::null_mut();
+            let mut child: *mut c_void = ptr::null_mut();
+            let mut output: *mut c_void = ptr::null_mut();
+            let slots = [
+                (&raw mut base).cast::<c_void>(),
+                (&raw mut child).cast::<c_void>(),
+                (&raw mut output).cast::<c_void>(),
+            ];
+            let mut frame = LoomGcTypedRootFrame {
+                abi_version: TYPED_SHADOW_STACK_ABI_VERSION,
+                flags: 0,
+                state: 1,
+                descriptor: &raw const descriptor,
+                slots: slots.as_ptr(),
+                previous: ptr::null_mut(),
+            };
+            assert_eq!(typed_root_push_v1(&raw mut frame), GC_OK);
+
+            assert_eq!(
+                concat_typed_v1(base_source.cast(), empty.cast(), &raw mut base),
+                GC_OK
+            );
+            assert_eq!(
+                concat_typed_v1(child_source.cast(), empty.cast(), &raw mut child),
+                GC_OK
+            );
+            let collections = (*runtime).heap.collections;
+            let relocations = (*runtime).heap.relocations;
+            assert_eq!(path_join_typed_v1(base, child, &raw mut output), GC_OK);
+            assert_eq!((*runtime).heap.collections, collections + 1);
+            assert_eq!((*runtime).heap.relocations, relocations + 2);
+            assert_eq!(text_bytes(output), Some("根/子🙂".as_bytes()));
+            assert_eq!(scalar_length(output.cast()), Some(4));
+
+            assert_eq!(typed_root_pop_v1(&raw mut frame), GC_OK);
+            (*runtime).heap.collect_before_every_allocation = false;
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+        drop(empty_storage);
+        drop(child_storage);
+        drop(base_storage);
+    }
+
+    #[test]
+    fn typed_path_join_rejects_hostile_inputs_and_clears_valid_output() {
+        let (base_storage, base) = allocate_text_storage(b"base").unwrap();
+        let (child_storage, child) = allocate_text_storage(b"child").unwrap();
+        let (bytes_storage, byte_child) = allocate_byte_storage(b"child").unwrap();
+        let (bad_cache_storage, bad_cache) = allocate_text_storage("界".as_bytes()).unwrap();
+        let (bad_utf8_storage, bad_utf8) = allocate_text_storage(b"x").unwrap();
+        let (bad_size_storage, bad_size) = allocate_text_storage(b"size").unwrap();
+        let (forged_storage, forged) = allocate_text_storage(b"forged").unwrap();
+        let forged_descriptor = TEXT_LAYOUT_DESCRIPTOR;
+        unsafe {
+            (*bad_cache).scalar_length += 1;
+            bad_utf8
+                .cast::<u8>()
+                .add(size_of::<TextObject>())
+                .write(0xff);
+            (*bad_size).allocation_size += 1;
+            (*forged).layout = &raw const forged_descriptor;
+
+            let hostile_inputs: [(*const c_void, *const c_void); 8] = [
+                (ptr::null(), child.cast()),
+                (base.cast(), ptr::null()),
+                (base.cast::<u8>().add(1).cast(), child.cast()),
+                (base.cast(), byte_child.cast()),
+                (base.cast(), bad_cache.cast()),
+                (base.cast(), bad_utf8.cast()),
+                (base.cast(), bad_size.cast()),
+                (forged.cast(), child.cast()),
+            ];
+            for (hostile_base, hostile_child) in hostile_inputs {
+                let mut output = ptr::dangling_mut::<c_void>();
+                assert_eq!(
+                    path_join_typed_v1(hostile_base, hostile_child, &raw mut output),
+                    GC_INVALID_ARGUMENT
+                );
+                assert!(output.is_null());
+            }
+
+            let mut unpublished = ptr::dangling_mut::<c_void>();
+            assert_eq!(
+                path_join_typed_v1(base.cast(), child.cast(), &raw mut unpublished),
+                GC_INVALID_ARGUMENT
+            );
+            assert!(unpublished.is_null());
+
+            assert_eq!(
+                path_join_typed_v1(base.cast(), child.cast(), ptr::null_mut()),
+                GC_INVALID_ARGUMENT
+            );
+            let mut output = ptr::dangling_mut::<c_void>();
+            let original = output;
+            let misaligned_output = (&raw mut output).cast::<u8>().add(1).cast();
+            assert_eq!(
+                path_join_typed_v1(base.cast(), child.cast(), misaligned_output),
+                GC_INVALID_ARGUMENT
+            );
+            assert_eq!(output, original);
+        }
+        drop(forged_storage);
+        drop(bad_size_storage);
+        drop(bad_utf8_storage);
+        drop(bad_cache_storage);
+        drop(bytes_storage);
+        drop(child_storage);
+        drop(base_storage);
     }
 
     #[test]

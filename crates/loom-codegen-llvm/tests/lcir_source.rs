@@ -1989,6 +1989,110 @@ fn text_from_utf8_units_is_direct_typed_lcir_on_all_supported_targets() {
 }
 
 #[test]
+fn lexical_path_is_direct_typed_lcir_on_all_supported_targets() {
+    let source = include_str!("../../../fixtures/lcir-typed-path/main.loom");
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let interpreted = Interpreter::new(&program).run_tests();
+    assert!(
+        interpreted
+            .iter()
+            .all(|test| test.status == TestStatus::Passed),
+        "{interpreted:?}"
+    );
+
+    let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
+    let dump = dump_program(artifact.program());
+    for required in [
+        "Nominal#12[] =>",
+        "path.from_text",
+        "path.as_text",
+        "path.join",
+        "Nominal#14[] =>",
+    ] {
+        assert!(dump.contains(required), "missing `{required}`:\n{dump}");
+    }
+    let verifier = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("verifyMovingJoin"))
+        .expect("typed Path relocation verifier");
+    assert!(verifier.effects().contains(Effects::MAY_COLLECT));
+    assert!(verifier.effects().contains(Effects::NEEDS_RUNTIME));
+    assert!(!verifier.effects().contains(Effects::NEEDS_EXECUTOR));
+
+    let native = emit_and_run_lcir(&artifact, "source-typed-path-tests");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    for required in [
+        "declare i32 @loom_runtime_path_join_typed_v1(ptr, ptr, ptr)",
+        "declare i32 @loom_runtime_text_contains(ptr, i64, ptr, i64)",
+        "path.from_text.result",
+        "path.join.status",
+        "loom_gc_typed_root_push_v1",
+        "loom_gc_typed_root_pop_v1",
+    ] {
+        assert!(
+            native.ir.contains(required),
+            "missing `{required}`:\n{}",
+            native.ir
+        );
+    }
+    for forbidden in [
+        "loom_runtime_path_join(",
+        "loom_runtime_path_contains_nul",
+        "loom_executor_",
+    ] {
+        assert!(
+            !native.ir.contains(forbidden),
+            "typed Path exposed `{forbidden}`:\n{}",
+            native.ir
+        );
+    }
+    assert_no_universal_value_surface(&native.ir);
+
+    for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
+        let directory = tempfile::tempdir().expect("create typed Path target directory");
+        let object = directory.path().join(if target.contains("windows") {
+            "typed-path.obj"
+        } else {
+            "typed-path.o"
+        });
+        let ir_path = directory.path().join("typed-path.ll");
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                emit_ir: Some(ir_path.clone()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit typed Path object for {target}: {error}"));
+        assert!(object.is_file(), "missing typed Path object for {target}");
+        let ir = std::fs::read_to_string(ir_path).expect("read typed Path target IR");
+        for required in [
+            "loom_runtime_path_join_typed_v1",
+            "loom_runtime_text_contains",
+            "loom_gc_typed_root_push_v1",
+            "loom_gc_typed_root_pop_v1",
+        ] {
+            assert!(
+                ir.contains(required),
+                "{target} omitted `{required}`:\n{ir}"
+            );
+        }
+        assert!(
+            ir.contains(&format!("target triple = \"{target}\"")),
+            "{ir}"
+        );
+        assert_no_universal_value_surface(&ir);
+        assert!(!ir.contains("loom_runtime_path_join("), "{ir}");
+        assert!(!ir.contains("loom_runtime_path_contains_nul"), "{ir}");
+        assert!(!ir.contains("loom_executor_"), "{ir}");
+    }
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "one source fixture keeps interpreter/native semantics, forced relocation, IR shape, and cross-target objects in one differential gate"

@@ -507,6 +507,15 @@ fn direct_aggregate_shape(
     concrete_type_node_count(ty)?;
     match ty {
         Type::Tuple(elements) => Some(AggregateShape::Product(elements.clone().into_boxed_slice())),
+        Type::Nominal(id, arguments)
+            if program.prelude.path == Some(*id) && arguments.is_empty() =>
+        {
+            let fields = concrete_any_record_fields(program, ty)?;
+            if fields.as_ref() != [Type::Text] {
+                return None;
+            }
+            physical_types(dyn_concepts, fields.into_vec()).map(AggregateShape::InvariantProduct)
+        }
         Type::Nominal(id, arguments) if *id == BYTES_TYPE_ID && arguments.is_empty() => {
             Some(AggregateShape::ManagedBytes)
         }

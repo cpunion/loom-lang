@@ -89,6 +89,9 @@ AbsoluteJoin
 
 `from_text` rejects a Text containing U+0000 with `ContainsNul`; every other
 Text is retained exactly. A path is absolute when its Text begins with `/`.
+The backing Text field is not source-visible: raw record construction and field
+mutation are rejected, so these constructors are the only way to establish a
+Path value.
 
 `base.join(child)` rejects an absolute child with `AbsoluteJoin`. Otherwise it
 returns a lexical concatenation:
@@ -99,3 +102,9 @@ returns a lexical concatenation:
 
 `as_text` returns the exact lexical spelling. Path equality compares that
 spelling.
+
+Path is a lexical value containing an exact Text spelling, not an open
+filesystem object or platform handle. Its API does not query a filesystem,
+canonicalize components, embed JSON policy, or introduce ownership or borrowing
+requirements. Allocation, sharing, and collection remain unobservable and no
+part of this API defines a public FFI representation.

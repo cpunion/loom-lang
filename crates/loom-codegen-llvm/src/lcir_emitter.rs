@@ -61,21 +61,22 @@ use loom_runtime_abi::{
     GC_MAX_OBJECT_BYTES, GC_MAX_OBJECT_POINTERS, GC_MAX_REPEATED_POINTER_CELLS,
     GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, PARSE_FLOAT_SYMBOL,
     PARSE_INT_SYMBOL, PARSE_STATUS_INVALID_SYNTAX, PARSE_STATUS_OK, PARSE_STATUS_OUT_OF_RANGE,
-    STDOUT_WRITE_SYMBOL, TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL,
-    TASK_JOIN_ANY, TASK_JOIN_RACE, TASK_JOIN_SETTLED, TASK_PENDING, TEXT_CONCAT_TYPED_SYMBOL,
-    TEXT_CONTAINS_SYMBOL, TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8,
-    TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_MISSING,
-    TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT,
-    TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH,
-    TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION, TYPED_GC_ALLOC_SYMBOL,
-    TYPED_GC_REPEATED_ABI_VERSION, TYPED_GC_REPEATED_ALLOC_SYMBOL, TYPED_GC_ROOT_POP_SYMBOL,
-    TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_JSON_ABI_VERSION, TYPED_JSON_FORMAT_DEPTH_LIMIT,
-    TYPED_JSON_FORMAT_NON_FINITE_NUMBER, TYPED_JSON_FORMAT_OK, TYPED_JSON_FORMAT_SYMBOL,
-    TYPED_LOG_FIELD_ALIGNMENT, TYPED_LOG_FIELD_KEY_OFFSET, TYPED_LOG_FIELD_SIZE,
-    TYPED_LOG_FIELD_VALUE_OFFSET, TYPED_LOG_OK, TYPED_LOG_WRITE_FAILED, TYPED_LOG_WRITE_SYMBOL,
-    TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET,
-    TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION, TYPED_TASK_PUBLISH_ADOPTING_SYMBOL,
-    TYPED_TASK_TAKE_OUTCOME_SYMBOL, TYPED_TIMER_TASK_CREATE_SYMBOL,
+    PATH_JOIN_TYPED_ABSOLUTE, PATH_JOIN_TYPED_SYMBOL, STDOUT_WRITE_SYMBOL, TASK_CANCELLED,
+    TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL, TASK_JOIN_ANY, TASK_JOIN_RACE, TASK_JOIN_SETTLED,
+    TASK_PENDING, TEXT_CONCAT_TYPED_SYMBOL, TEXT_CONTAINS_SYMBOL,
+    TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8, TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL,
+    TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_MISSING, TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL,
+    TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES,
+    TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION,
+    TYPED_GC_ALLOC_SYMBOL, TYPED_GC_REPEATED_ABI_VERSION, TYPED_GC_REPEATED_ALLOC_SYMBOL,
+    TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_JSON_ABI_VERSION,
+    TYPED_JSON_FORMAT_DEPTH_LIMIT, TYPED_JSON_FORMAT_NON_FINITE_NUMBER, TYPED_JSON_FORMAT_OK,
+    TYPED_JSON_FORMAT_SYMBOL, TYPED_LOG_FIELD_ALIGNMENT, TYPED_LOG_FIELD_KEY_OFFSET,
+    TYPED_LOG_FIELD_SIZE, TYPED_LOG_FIELD_VALUE_OFFSET, TYPED_LOG_OK, TYPED_LOG_WRITE_FAILED,
+    TYPED_LOG_WRITE_SYMBOL, TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE,
+    TYPED_RESOURCE_KIND_SOCKET, TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION,
+    TYPED_TASK_PUBLISH_ADOPTING_SYMBOL, TYPED_TASK_TAKE_OUTCOME_SYMBOL,
+    TYPED_TIMER_TASK_CREATE_SYMBOL,
 };
 
 use crate::codegen::{DebugSource, NativeObjectArtifact, NativeObjectOptions};
@@ -4853,6 +4854,23 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             })
     }
 
+    fn runtime_path_join_typed(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(PATH_JOIN_TYPED_SYMBOL)
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                        self.ptr_type.into(),
+                    ],
+                    false,
+                );
+                self.module
+                    .add_function(PATH_JOIN_TYPED_SYMBOL, function_type, None)
+            })
+    }
+
     fn runtime_bytes_append_typed(&self) -> FunctionValue<'ctx> {
         self.module
             .get_function(BYTES_APPEND_TYPED_SYMBOL)
@@ -5467,6 +5485,15 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         name: &str,
         invalid_status: i32,
     ) -> Result<IntValue<'ctx>, CodegenError> {
+        self.require_zero_or_status(status, name, invalid_status)
+    }
+
+    fn require_zero_or_status(
+        &self,
+        status: IntValue<'ctx>,
+        name: &str,
+        ordinary_status: i32,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
         let function = self
             .builder
             .get_insert_block()
@@ -5483,7 +5510,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         let failure = self
             .context
             .append_basic_block(function, &format!("{name}.status.failed"));
-        let valid_utf8 = self
+        let success = self
             .builder
             .build_int_compare(
                 IntPredicate::EQ,
@@ -5492,22 +5519,22 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                 &format!("{name}.valid"),
             )
             .map_err(builder_error)?;
-        let invalid_utf8_status = self.context.i32_type().const_int(
-            u64::from(u32::from_ne_bytes(invalid_status.to_ne_bytes())),
+        let ordinary_status = self.context.i32_type().const_int(
+            u64::from(u32::from_ne_bytes(ordinary_status.to_ne_bytes())),
             false,
         );
-        let invalid_utf8 = self
+        let ordinary = self
             .builder
             .build_int_compare(
                 IntPredicate::EQ,
                 status,
-                invalid_utf8_status,
-                &format!("{name}.invalid_utf8"),
+                ordinary_status,
+                &format!("{name}.ordinary_error"),
             )
             .map_err(builder_error)?;
         let recognized = self
             .builder
-            .build_or(valid_utf8, invalid_utf8, &format!("{name}.status.valid"))
+            .build_or(success, ordinary, &format!("{name}.status.valid"))
             .map_err(builder_error)?;
         self.builder
             .build_conditional_branch(recognized, accepted, failure)
@@ -5521,7 +5548,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             .map_err(builder_error)?;
         self.builder.build_unreachable().map_err(builder_error)?;
         self.builder.position_at_end(accepted);
-        Ok(valid_utf8)
+        Ok(success)
     }
 
     fn require_parse_status(
@@ -6257,6 +6284,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 InstructionKind::TextConcat { .. }
                     | InstructionKind::TextGet { .. }
                     | InstructionKind::TextFromUtf8Units { .. }
+                    | InstructionKind::PathJoin { .. }
                     | InstructionKind::BytesAppend { .. }
                     | InstructionKind::BytesDecodeUtf8 { .. }
                     | InstructionKind::FormatFloat { .. }
@@ -8442,6 +8470,37 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 *error_variant,
                 *invalid_utf8_variant,
             )?),
+            InstructionKind::PathFromText {
+                text,
+                ok_variant,
+                error_variant,
+                contains_nul_variant,
+            } => one(self.emit_path_from_text(
+                instruction,
+                *text,
+                *ok_variant,
+                *error_variant,
+                *contains_nul_variant,
+            )?),
+            InstructionKind::PathAsText { path } => one(self
+                .backend
+                .builder
+                .build_extract_value(self.value(*path)?.into_struct_value(), 0, "path.as_text")
+                .map_err(builder_error)?),
+            InstructionKind::PathJoin {
+                base,
+                child,
+                ok_variant,
+                error_variant,
+                absolute_join_variant,
+            } => one(self.emit_path_join(
+                instruction,
+                *base,
+                *child,
+                *ok_variant,
+                *error_variant,
+                *absolute_join_variant,
+            )?),
             InstructionKind::BytesLength { bytes } => {
                 let (_, length) = self
                     .backend
@@ -9141,6 +9200,150 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .build_load(self.backend.ptr_type, output, "bytes.append.result")
             .map_err(builder_error)
             .map(BasicValueEnum::into_pointer_value)
+    }
+
+    fn emit_path_from_text(
+        &self,
+        instruction: &Instruction,
+        text: ValueId,
+        ok_variant: u32,
+        error_variant: u32,
+        contains_nul_variant: u32,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let result =
+            instruction.results().first().copied().ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "Path.from_text has no result")
+            })?;
+        let result_ty = self
+            .source
+            .value(result)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "Path.from_text result is missing"))?
+            .ty();
+        let path_ty = self.sum_variant_field_type(result_ty, ok_variant, 0)?;
+        let error_ty = self.sum_variant_field_type(result_ty, error_variant, 0)?;
+        let text = self.value(text)?;
+        let (data, length) = self
+            .backend
+            .text_parts(text.into_pointer_value(), "path.from_text.value")?;
+        let nul = self.backend.emit_text_literal("\0")?;
+        let (nul_data, nul_length) = self.backend.text_parts(nul, "path.from_text.nul")?;
+        let status = call_int(
+            &self.backend.builder,
+            self.backend.runtime_text_contains(),
+            &[
+                data.into(),
+                length.into(),
+                nul_data.into(),
+                nul_length.into(),
+            ],
+            "path.from_text.status",
+        )?;
+        let valid = self
+            .backend
+            .require_zero_or_status(status, "path.from_text", 1)?;
+        let path = self.emit_product_construct_values(path_ty, &[text], "path.from_text.path")?;
+        let ok_value = self.emit_sum_construct_values(result_ty, ok_variant, &[path])?;
+        let contains_nul = self.emit_sum_construct_values(error_ty, contains_nul_variant, &[])?;
+        let error_value =
+            self.emit_sum_construct_values(result_ty, error_variant, &[contains_nul])?;
+        self.backend
+            .builder
+            .build_select(valid, ok_value, error_value, "path.from_text.result")
+            .map_err(builder_error)
+    }
+
+    fn emit_path_join(
+        &self,
+        instruction: &Instruction,
+        base: ValueId,
+        child: ValueId,
+        ok_variant: u32,
+        error_variant: u32,
+        absolute_join_variant: u32,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let result = instruction
+            .results()
+            .first()
+            .copied()
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "Path.join has no result"))?;
+        let result_ty = self
+            .source
+            .value(result)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "Path.join result is missing"))?
+            .ty();
+        let path_ty = self.sum_variant_field_type(result_ty, ok_variant, 0)?;
+        let error_ty = self.sum_variant_field_type(result_ty, error_variant, 0)?;
+        let base = self
+            .backend
+            .builder
+            .build_extract_value(self.value(base)?.into_struct_value(), 0, "path.join.base")
+            .map_err(builder_error)?
+            .into_pointer_value();
+        let child = self
+            .backend
+            .builder
+            .build_extract_value(self.value(child)?.into_struct_value(), 0, "path.join.child")
+            .map_err(builder_error)?
+            .into_pointer_value();
+        let output = self.managed_output_cell(instruction.id())?;
+        self.backend
+            .builder
+            .build_store(output, self.backend.ptr_type.const_null())
+            .map_err(builder_error)?;
+        self.publish_root_state(ManagedSafepoint::Instruction(instruction.id()))?;
+        let status = call_int(
+            &self.backend.builder,
+            self.backend.runtime_path_join_typed(),
+            &[base.into(), child.into(), output.into()],
+            "path.join.status",
+        )?;
+        let success =
+            self.backend
+                .require_zero_or_status(status, "path.join", PATH_JOIN_TYPED_ABSOLUTE)?;
+        let joined = self
+            .backend
+            .builder
+            .build_load(self.backend.ptr_type, output, "path.join.text")
+            .map_err(builder_error)?;
+        let path = self.emit_product_construct_values(path_ty, &[joined], "path.join.path")?;
+        let ok_value = self.emit_sum_construct_values(result_ty, ok_variant, &[path])?;
+        let absolute = self.emit_sum_construct_values(error_ty, absolute_join_variant, &[])?;
+        let error_value = self.emit_sum_construct_values(result_ty, error_variant, &[absolute])?;
+        self.backend
+            .builder
+            .build_select(success, ok_value, error_value, "path.join.result")
+            .map_err(builder_error)
+    }
+
+    fn emit_product_construct_values(
+        &self,
+        ty: ValueTypeId,
+        fields: &[BasicValueEnum<'ctx>],
+        name: &str,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let product = self.backend.llvm_type(ty)?.into_struct_type();
+        if usize::try_from(product.count_fields()).ok() != Some(fields.len()) {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!(
+                    "product type {ty} has {} LLVM fields but {} values",
+                    product.count_fields(),
+                    fields.len()
+                ),
+            ));
+        }
+        let mut value = product.get_undef();
+        for (index, field) in fields.iter().copied().enumerate() {
+            let index = u32::try_from(index)
+                .map_err(|_| CodegenError::new("ProgramTooLarge", "too many product fields"))?;
+            value = self
+                .backend
+                .builder
+                .build_insert_value(value, field, index, name)
+                .map_err(builder_error)?
+                .into_struct_value();
+        }
+        Ok(value.into())
     }
 
     fn emit_text_from_utf8_units(

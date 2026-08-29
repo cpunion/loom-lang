@@ -8,10 +8,11 @@ conventions, and external code must not depend on them.
 Production native compilation selects one representation boundary for an
 entire reachable artifact. A completely supported direct artifact uses typed
 LCIR for primitive values, direct `Text`, one-pointer typed `Bytes`, structural
-tuples, closed records, compile-time-established refined values, and eligible
-closed enums. Any reachable feature outside current LCIR coverage selects the
-complete legacy layout below; the two callable ABIs are never mixed in one
-object. In particular, supported nongeneric `.loomi` MIR `Recheck`
+tuples, one-field typed `Path`, closed records, compile-time-established refined
+values, and eligible closed enums. Any reachable feature outside current LCIR
+coverage selects the complete legacy layout below; the two callable ABIs are
+never mixed in one object. In particular, supported nongeneric `.loomi` MIR
+`Recheck`
 constructions replay their predicate in typed LCIR before entering the
 transparent representation. Generic or otherwise unsupported proof replay
 uses the legacy checker.
@@ -139,6 +140,32 @@ runtime ABI to component 24 with `typed-text-units-v1` and `runtime-v18`, and
 the public standard-library ABI to v5. It does not expose List layout as a
 public ABI and does not add a JSON runtime.
 
+## Typed Path
+
+Canonical `Path` remains an unboxed one-field product containing Text. Its
+LCIR semantic kind is invariant-protected, so generic record construction and
+field insertion cannot bypass `Path.from_text`; this protection adds no runtime
+field or tag. It has no runtime-owned Path object, platform handle, or
+filesystem identity.
+`Path.from_text` scans the canonical Text bytes for U+0000 and constructs the
+exact `Result[Path, PathError]` without allocating. `Path.as_text` extracts and
+returns that same immutable Text pointer. Neither operation is a moving-GC
+safepoint.
+
+`Path.join` extracts the base and child Text fields and calls
+`loom_runtime_path_join_typed_v1`. The runtime validates and stages both
+complete UTF-8 payloads before its sole possible managed allocation, inserts
+one `/` only when the portable lexical rule requires it, and publishes the
+fully initialized Text last through stable output storage. Status `0` is
+success, status `-1` is the ordinary `PathError.AbsoluteJoin` outcome, and any
+positive or unknown status is a compiler/runtime ABI defect. Exact managed-root
+liveness keeps only values live after the call in the typed shadow frame.
+
+This boundary advances the native runtime ABI to component 25 with
+`typed-path-v1` and `runtime-v19`. It adds no filesystem lookup, host path
+normalization, JSON behavior, or ownership/borrow syntax. The older untyped
+path helper symbols belong only to complete legacy objects.
+
 ## Legacy primitive and aggregate specialization
 
 Within a complete legacy object, `Unit`, `Bool`, `Int`, and `Float` can use
@@ -169,10 +196,12 @@ opaque pointers on 64-bit targets. Text uses `ImmortalText` for a literal-only,
 product-free artifact and `ManagedPointer` for the entire artifact when concat
 or a Text-bearing product is reachable. Bytes always uses `ManagedPointer` and
 admits only the compiler-proven Text-backed and ByteObject descriptor forms.
-Each supported structural tuple or closed record is an immutable `Product` of
-canonical element or field value types. Tuples and records may contain one
-another and managed leaves as long as the representation graph is acyclic. The
-product itself remains an unboxed aggregate. An explicit registration table
+Each supported structural tuple, canonical Path, or closed record is an
+immutable `Product` of canonical element or field value types. Path has exactly
+one canonical managed Text field and uses the invariant-protected product kind;
+its LLVM layout is unchanged. Tuples and records may contain one another
+and managed leaves as long as the representation graph is acyclic. The product
+itself remains an unboxed aggregate. An explicit registration table
 chooses the canonical value representation for a semantic type; other
 representation alternatives do not compete merely because they have the same
 semantic type.

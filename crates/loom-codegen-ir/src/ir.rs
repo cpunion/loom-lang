@@ -626,6 +626,32 @@ pub enum InstructionKind {
         error_variant: u32,
         invalid_utf8_variant: u32,
     },
+    /// Validates one canonical managed Text as a lexical path and constructs
+    /// exact `Result[Path, PathError]`. A NUL byte selects the closed
+    /// `ContainsNul` error; success wraps the existing Text pointer without
+    /// allocation or a moving-GC safepoint.
+    PathFromText {
+        text: ValueId,
+        ok_variant: u32,
+        error_variant: u32,
+        contains_nul_variant: u32,
+    },
+    /// Extracts the immutable managed Text field from canonical `Path#12`.
+    /// This is a representation-preserving, non-allocating operation.
+    PathAsText {
+        path: ValueId,
+    },
+    /// Lexically joins two canonical Path values and constructs exact
+    /// `Result[Path, PathError]`. An absolute child selects `AbsoluteJoin`;
+    /// success stages the complete UTF-8 bytes before allocating at most one
+    /// managed Text object, making this instruction a moving-GC safepoint.
+    PathJoin {
+        base: ValueId,
+        child: ValueId,
+        ok_variant: u32,
+        error_variant: u32,
+        absolute_join_variant: u32,
+    },
     /// Reads the exact byte length from a canonical managed Bytes object.
     BytesLength {
         bytes: ValueId,
@@ -914,9 +940,11 @@ impl InstructionKind {
             Self::Constant(_) | Self::TextLiteral { .. } | Self::TextMapConstruct => Vec::new(),
             Self::TextLength { text }
             | Self::TextEncodeUtf8 { text }
+            | Self::PathFromText { text, .. }
             | Self::ParseInt { text, .. }
             | Self::ParseFloat { text, .. } => vec![*text],
             Self::TextFromUtf8Units { units, .. } => vec![*units],
+            Self::PathAsText { path } => vec![*path],
             Self::TextGet { text, index, .. } => vec![*text, *index],
             Self::BytesLength { bytes } | Self::BytesDecodeUtf8 { bytes, .. } => vec![*bytes],
             Self::BytesGet { bytes, index, .. } => vec![*bytes, *index],
@@ -949,6 +977,7 @@ impl InstructionKind {
             | Self::FloatBinary { left, right, .. }
             | Self::IntCompare { left, right, .. }
             | Self::FloatCompare { left, right, .. } => vec![*left, *right],
+            Self::PathJoin { base, child, .. } => vec![*base, *child],
             Self::ListAppend { list, value } | Self::ListAppendUnique { list, value } => {
                 vec![*list, *value]
             }
@@ -1112,7 +1141,10 @@ pub(crate) const OPTION_TYPE_ID: TypeId = TypeId(0);
 pub(crate) const RESULT_TYPE_ID: TypeId = TypeId(1);
 /// Canonical prelude identity of the compiler-known immutable Bytes type.
 pub const BYTES_TYPE_ID: TypeId = TypeId(11);
+/// Canonical prelude identity of the compiler-known lexical Path type.
+pub const PATH_TYPE_ID: TypeId = TypeId(12);
 pub(crate) const DECODE_TEXT_ERROR_TYPE_ID: TypeId = TypeId(13);
+pub(crate) const PATH_ERROR_TYPE_ID: TypeId = TypeId(14);
 pub(crate) const TEXT_MAP_TYPE_ID: TypeId = TypeId(15);
 pub(crate) const JSON_TYPE_ID: TypeId = TypeId(16);
 pub(crate) const JSON_ERROR_TYPE_ID: TypeId = TypeId(17);

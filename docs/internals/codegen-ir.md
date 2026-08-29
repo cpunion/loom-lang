@@ -4,8 +4,9 @@
 selects checked-MIR function roots and computes the closed-world source graph
 used by production native compilation. Separately, its LCIR foundation
 provides target-aware scalar, direct Text, closed-product, closed-sum,
-transparent nominal, managed Bytes and List, compiler-private typed TextMap and
-typed Task-handle representations, canonical structured logging,
+transparent nominal, managed Bytes and List, one-field typed Path,
+compiler-private typed TextMap and typed Task-handle representations,
+canonical structured logging,
 compiler-private finite dynamic catalogs, whole-artifact checked-MIR lowering,
 typed SSA data structures and builders, independent program and artifact-root
 validators, and a textual dump for tests and review.
@@ -57,6 +58,7 @@ explicit byte or address-space layout must add its deciding facts here. The cano
 | literal-only `Text` on a 64-bit target | `ImmortalText`, one opaque pointer |
 | artifact containing `Text.concat` or a Text-bearing product on a 64-bit target | `ManagedPointer`, one opaque pointer for every Text |
 | canonical `Bytes` on a 64-bit target | `ManagedPointer`, one opaque pointer to immutable Text-backed or standalone byte storage |
+| canonical `Path` on a 64-bit target | invariant-protected `Product(Text)`, one field using the artifact's canonical Text representation |
 | structural tuple | `Product(element value types...)` |
 | closed invariant-free record | `Product(field value types...)` |
 | closed record with a proven invariant | protected `Product(field value types...)` |
@@ -163,6 +165,22 @@ constructs the exact Result after the helper returns. Runtime status `0`
 selects `Ok`; `-1` selects `InvalidUtf8`; every positive or unknown status
 traps as a compiler/runtime defect. The input needs a root only when it is live
 after the safepoint because the helper stages all units before allocation.
+
+Canonical Path is one exact invariant-protected product containing the
+canonical Text value. Its physical ABI remains the same unboxed product, while
+checked MIR rejects raw construction/projection and LCIR rejects ordinary
+product construction/insertion for this semantic type.
+`PathFromText` scans the immutable UTF-8 bytes for U+0000 and constructs the
+exact `Result[Path, PathError]`; `PathAsText` extracts the existing field.
+Neither instruction allocates or contributes `MAY_COLLECT`. `PathJoin` takes
+two exact Path products, returns the exact Result, and is an explicit
+`MAY_COLLECT` safepoint. Status `0` from the typed helper selects `Ok`, `-1`
+selects `PathError.AbsoluteJoin`, and every other returned status traps as a
+compiler/runtime ABI defect. Its result is one newly allocated Text wrapped in
+the one-field product. Root planning protects only inputs and aliases live
+after the safepoint because the helper stages both complete Text payloads before
+allocation. No runtime Path object, filesystem policy, JSON operation, or
+ownership syntax enters LCIR.
 
 ## Structural equality lowering
 
@@ -546,6 +564,15 @@ schema to 36, the dump to `lcir 35`, the LCIR native-object domain to
 `loom-lcir-native-object-v32`, and the CLI object-cache domain to
 `loom-llvm-object-cache-v37`.
 
+The typed Path instruction family then adds non-collecting `PathFromText` and
+`PathAsText` plus collecting `PathJoin`. Independent validation requires the
+canonical protected one-field Text product, exact `Result[Path, PathError]` shape, and
+fixed `ContainsNul#0`/`AbsoluteJoin#1` selectors. This advances the artifact
+schema to 37, the dump to `lcir 36`, the LCIR native-object domain to
+`loom-lcir-native-object-v33`, and the CLI object-cache domain to
+`loom-llvm-object-cache-v38`. Checked MIR remains version 27 because it already
+contained the three Path builtins.
+
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
 test roots, validates their source reachability, then closes exact concrete
@@ -557,8 +584,8 @@ Invalid roots, resource limits, source-graph defects, and invalid generated
 LCIR are structured `LoweringError` values and never select fallback.
 
 The current lowering coverage includes synchronous scalar, direct `Text`,
-structural tuple, closed-record, concrete closed-enum, and established refined
-signatures. Async signatures without explicit mutable parameters and their
+one-field direct `Path`, structural tuple, closed-record, concrete closed-enum,
+and established refined signatures. Async signatures without explicit mutable parameters and their
 suspension frames may also use direct scalar/refined/product/Text shapes and
 closed sums whose payload graphs contain those shapes, plus concrete closed
 `List[T]` and compiler-private `TextMap[V]` one-pointer carriers, including when
@@ -641,8 +668,10 @@ scalar faults use only the local fault context. A synchronous caller gains
 synchronous body does not gain that effect merely because it declares
 `requires`. An async precondition instead contributes `MAY_FAULT` to the child
 coroutine's state-zero path. `TaskCreate` does not inherit any child effect.
-`TextConcat` and `TextGet`
-are collecting opcodes and contribute `MAY_COLLECT`. `TaskCreate` contributes
+`TextConcat`, `TextGet`, `TextFromUtf8Units`, `BytesAppend`,
+`BytesDecodeUtf8`, `PathJoin`, `FormatFloat`, and `JsonFormat` are collecting
+opcodes and contribute `MAY_COLLECT`. Path construction and extraction remain
+non-collecting. `TaskCreate` contributes
 `NEEDS_EXECUTOR`, while the `AwaitTasks` terminator contributes `MAY_FAULT` and
 `MAY_SUSPEND`.
 `TaskJoinAll` contributes `NEEDS_EXECUTOR` but does not itself suspend.
@@ -1086,8 +1115,10 @@ The current instruction set is deliberately small:
 - signed integer comparisons;
 - a proof-carrying signed successor below an `Int` upper bound;
 - explicitly ordered or unordered floating-point comparisons;
-- typed Text literal, concat, Unicode-scalar get, length, containment, and
-  content comparison operations;
+- typed Text literal, concat, Unicode-scalar get, length, containment, content
+  comparison, and UTF-8-unit construction operations;
+- typed Bytes operations and exact Path construction, Text extraction, and
+  lexical join;
 - closed integer/float parsing, managed float formatting, and Duration
   construction/extraction through existing scalar, sum, product, and fault
   shapes;
@@ -1258,7 +1289,7 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 35` text includes
+text even when the graphs are otherwise equivalent. The `lcir 36` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys including their contract-boundary role, every function's
 selected entry block and ordered effect set,
@@ -1271,7 +1302,7 @@ guards, closed parse operations, and managed Float formatting,
 managed-pointer representations, finite dynamic candidate catalogs,
 `dyn.construct`, `dyn.switch`, and
 `text.concat`, `text.get`, `text.encode_utf8`, `text.from_utf8_units`, the
-typed Bytes operations,
+typed Bytes operations, `path.from_text`, `path.as_text`, and `path.join`,
 `json.format`, typed resource-close and structured-log
 edges, transient
 protected-receiver updates, typed TextMap containment/removal/indexed-entry
@@ -1310,6 +1341,10 @@ cleanup-crossing returns under forced relocation, pointer-free product frame
 omission, host execution, Linux/MSVC object
 emission, and atomic fallback for unsupported dynamic Text producers or
 transparent/refined managed carriers.
+Path regressions cover the canonical one-field product, exact closed error
+selectors, non-collecting construction/extraction, collecting join effects,
+stable dumps, malformed shapes, live aliases through moving-GC pressure, and
+production run/test roots without legacy path symbols.
 Coroutine regressions cover malformed plan rows, canonical plan identity,
 typed Task construction, four ordered root suspension states, a nested
 two-state coroutine with a live Task handle and deterministic immediate-ready

@@ -69,6 +69,25 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- Typed LCIR now covers the existing `Path.from_text`, `Path.as_text`, and
+  `Path.join` APIs. `Path` remains an exact one-field Text product rather than
+  acquiring a runtime Path object. Construction rejects U+0000 and extraction
+  returns the existing Text without allocating or reaching a collection
+  safepoint. Join calls `loom_runtime_path_join_typed_v1`, which stages both
+  complete Text payloads before its moving-GC allocation and publishes the
+  initialized result last. Status `0` is success, `-1` constructs
+  `PathError.AbsoluteJoin`, and all other statuses are ABI defects. The runtime
+  applies only the specified portable lexical join: it consults no filesystem,
+  normalizes no path components, knows no JSON representation, and introduces
+  no ownership or borrowing model. Checked MIR and LCIR protect this product
+  from generic record construction or field mutation, so a forged artifact
+  cannot bypass its lexical invariant. Legacy path symbols remain confined to
+  the complete legacy emitter. This advances the LCIR dump to 36, artifact schema
+  to 37, native-object domain to v33, LLVM object-cache domain to v38, and
+  native runtime ABI to component 25 with `typed-path-v1` and `runtime-v19`.
+  Checked MIR remains version 27 and the public standard-library ABI remains
+  v5.
+
 - Typed LCIR now covers the existing `Text.encode_utf8`, `Bytes.length`,
   `Bytes.get`, `Bytes.append`, and `Bytes.decode_utf8` APIs. A `Bytes` value is
   one direct managed pointer: encoding shares the immutable Text object without

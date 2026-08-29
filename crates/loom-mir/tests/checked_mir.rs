@@ -2068,6 +2068,80 @@ fn opaque_resource_prelude_shapes_are_checked() {
 }
 
 #[test]
+fn prelude_path_cannot_be_forged_or_projected_in_checked_mir() {
+    let path = TypeId(0);
+    let path_ty = Type::Nominal(path, Vec::new());
+    let forged = expr(
+        ExprKind::Record {
+            ty: path,
+            type_arguments: Vec::new(),
+            fields: vec![constant(Constant::Text("bad\0path".to_owned()), Type::Text)],
+            construction: ConstructionMode::Plain,
+        },
+        path_ty.clone(),
+    );
+    let raw = Place {
+        local: LocalId(0),
+        projection: vec![0],
+    };
+    let program = Program {
+        types: vec![TypeDef {
+            id: path,
+            name: "Path".to_owned(),
+            span: span(),
+            type_parameters: 0,
+            kind: TypeDefKind::Record {
+                fields: vec![FieldDef {
+                    name: "raw".to_owned(),
+                    ty: Type::Text,
+                    span: span(),
+                }],
+                invariant: None,
+            },
+        }],
+        functions: vec![function(
+            0,
+            vec![local(0, path_ty.clone(), false)],
+            vec![local(1, path_ty, false)],
+            Type::Text,
+            Block {
+                statements: vec![Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(1),
+                        value: forged,
+                    },
+                    span: span(),
+                }],
+                tail: Some(Box::new(copy_place(raw, Type::Text))),
+                span: span(),
+            },
+        )],
+        prelude: PreludeIds {
+            path: Some(path),
+            ..PreludeIds::default()
+        },
+        ..Program::default()
+    };
+
+    let errors = validation_errors(&program);
+    for (code, message) in [
+        (
+            MirValidationCode::RecordShape,
+            "Path values may only be established",
+        ),
+        (MirValidationCode::InvalidPlace, "Path storage is opaque"),
+    ] {
+        assert!(
+            errors
+                .as_slice()
+                .iter()
+                .any(|error| error.code == code && error.message.contains(message)),
+            "missing {code:?} `{message}`: {errors:#?}"
+        );
+    }
+}
+
+#[test]
 fn resource_close_requires_an_inout_place() {
     let file = TypeId(0);
     let file_ty = Type::Nominal(file, Vec::new());

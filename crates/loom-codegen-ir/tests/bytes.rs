@@ -385,6 +385,88 @@ fn independent_validation_rejects_wrong_bytes_operands_variants_and_effects() {
 }
 
 #[test]
+fn text_construction_rejects_a_transparent_decode_error_carrier() {
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let unit = builder.type_id(&Type::Unit).expect("Unit");
+    builder
+        .add_managed_text_type()
+        .expect("canonical managed Text");
+    let units = builder
+        .add_managed_list_type(Type::List(Box::new(Type::Int)))
+        .expect("canonical List[Int]");
+    let dummy_error = Type::Nominal(TypeId(90), Vec::new());
+    builder
+        .add_sum_type(dummy_error.clone(), &[Box::new([])])
+        .expect("dummy closed error");
+    let decode_error = Type::Nominal(DECODE_TEXT_ERROR_TYPE_ID, Vec::new());
+    builder
+        .add_transparent_type(decode_error.clone(), &dummy_error)
+        .expect("layout-compatible but noncanonical DecodeTextError");
+    let result = builder
+        .add_sum_type(
+            Type::Nominal(RESULT_TYPE_ID, vec![Type::Text, decode_error.clone()]),
+            &[Box::from([Type::Text]), Box::from([decode_error])],
+        )
+        .expect("Result[Text, DecodeTextError]");
+    let root = builder
+        .declare_function(
+            origin(),
+            "transparent_decode_error",
+            Signature::new([units], unit),
+            Effects::MAY_COLLECT.with_implications(),
+        )
+        .expect("function");
+    {
+        let mut function = builder.function(root).expect("function builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("set entry");
+        let units = function
+            .append_block_parameter(entry, units)
+            .expect("List[Int] parameter");
+        function
+            .append_instruction(
+                entry,
+                InstructionKind::TextFromUtf8Units {
+                    units,
+                    ok_variant: 0,
+                    error_variant: 1,
+                    invalid_utf8_variant: 0,
+                },
+                &[result],
+                origin(),
+            )
+            .expect("Text.from_utf8_units");
+        let unit = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Unit),
+                &[unit],
+                origin(),
+            )
+            .expect("Unit")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(TerminatorKind::Return(unit), origin()),
+            )
+            .expect("return");
+    }
+
+    let errors = builder
+        .finish_checked()
+        .expect_err("DecodeTextError must not reuse a transparent representation boundary");
+    assert!(
+        errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::InstructionShape
+                && error
+                    .message()
+                    .contains("canonical direct DecodeTextError#13")
+        }),
+        "{errors:#?}"
+    );
+}
+
+#[test]
 fn bytes_opcodes_fail_closed_without_the_canonical_registration() {
     let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
     let unit = builder.type_id(&Type::Unit).expect("Unit");

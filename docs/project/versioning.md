@@ -17,14 +17,14 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Persistent compiler cache | schema `4` |
 | Interpreted final-cache layer | `final-artifact-v3` / writer v3 |
 | Portable-library final-cache layer | `portable-library-artifact-v3` |
-| LCIR textual dump | version `35` |
-| LCIR artifact identity | schema `36` |
-| LCIR native-object domain | `loom-lcir-native-object-v32` |
+| LCIR textual dump | version `36` |
+| LCIR artifact identity | schema `37` |
+| LCIR native-object domain | `loom-lcir-native-object-v33` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v37` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v38` |
 | Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
-| Native runtime ABI component | `24` |
+| Native runtime ABI component | `25` |
 | Coroutine/Task ABI component | `2` |
 | Typed Task ABI component | `1` |
 | Wait ABI component | `1` |
@@ -118,6 +118,25 @@ advances `.loomi` to version 27. The explicit `TextFromUtf8Units` instruction
 advances the LCIR dump to 35, artifact schema to 36, native-object domain to
 `loom-lcir-native-object-v32`, and object-cache domain to
 `loom-llvm-object-cache-v37`.
+
+Typed lexical Path operations subsequently add exact `PathFromText`,
+`PathAsText`, and `PathJoin` instructions. `Path` retains its one-field Text
+product representation: construction validates U+0000 and wrapping/extraction
+does not allocate, while join is the sole collecting operation. Generated code
+extracts the two Text fields and calls
+`loom_runtime_path_join_typed_v1`; the helper stages both complete inputs before
+the moving-GC allocation and publishes the initialized Text last. Status `0`
+is success, `-1` selects `PathError.AbsoluteJoin`, and every other returned
+status is a compiler/runtime ABI defect. The helper performs only Loom's
+portable lexical concatenation and has no filesystem, JSON, or ownership
+policy. This advances the LCIR dump to 36, artifact schema to 37, native-object
+domain to `loom-lcir-native-object-v33`, object-cache domain to
+`loom-llvm-object-cache-v38`, and native runtime ABI to component 25 with
+`typed-path-v1` and `runtime-v19`. Existing checked-MIR Path builtins do not
+change, so `.loomi` remains version 27, persistent compiler-cache schema remains
+4, and the public standard-library ABI remains v5. The untyped
+`loom_runtime_path_contains_nul` and `loom_runtime_path_join` symbols remain
+reachable only from the complete legacy emitter.
 
 Task composition and timer calls now remain ordinary HIR calls until semantic
 resolution selects a stable compiler-owned `StandardLibraryItem`. The item is

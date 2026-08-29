@@ -53,7 +53,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 35")?;
+    writeln!(output, "lcir 36")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -274,6 +274,26 @@ fn write_instruction(
         } => write!(
             output,
             "text.from_utf8_units %{units}, ok {ok_variant}, error {error_variant}, invalid_utf8 {invalid_utf8_variant}"
+        ),
+        InstructionKind::PathFromText {
+            text,
+            ok_variant,
+            error_variant,
+            contains_nul_variant,
+        } => write!(
+            output,
+            "path.from_text %{text}, ok {ok_variant}, error {error_variant}, contains_nul {contains_nul_variant}"
+        ),
+        InstructionKind::PathAsText { path } => write!(output, "path.as_text %{path}"),
+        InstructionKind::PathJoin {
+            base,
+            child,
+            ok_variant,
+            error_variant,
+            absolute_join_variant,
+        } => write!(
+            output,
+            "path.join %{base}, %{child}, ok {ok_variant}, error {error_variant}, absolute_join {absolute_join_variant}"
         ),
         InstructionKind::BytesLength { bytes } => write!(output, "bytes.length %{bytes}"),
         InstructionKind::BytesGet {

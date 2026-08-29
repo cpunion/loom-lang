@@ -102,6 +102,19 @@ These are implementation capabilities, not an invitation to expose ownership
 or borrowing syntax. The compiler proves uniqueness where an operation needs
 it, and the source model remains automatic-memory-managed value semantics.
 
+Portable Path operations follow the same narrow-boundary rule. `Path` is one
+Text field, so `Path.from_text` validates U+0000 and `Path.as_text` extracts the
+field directly without allocating. Only lexical join needs a bulk construction
+helper: `loom_runtime_path_join_typed_v1` stages the two complete Text payloads,
+rejects a leading `/` in the child, and publishes one Text after a possible
+moving collection. Status `0` is success, `-1` is the ordinary `AbsoluteJoin`
+outcome, and every other returned status is an ABI defect. It does not inspect
+filesystem state, recognize host path syntax, normalize `.` or `..`, collapse
+repeated separators, or carry JSON or ownership policy. The older
+`loom_runtime_path_contains_nul` and
+`loom_runtime_path_join` entries are temporary implementation details of the
+still-maintained complete legacy emitter, not dependencies of typed LCIR.
+
 ## Generated operations
 
 Representation-dependent operations belong in compiler-generated, typed

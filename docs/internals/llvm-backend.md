@@ -26,10 +26,11 @@ workspace does not silently fall back to another LLVM major version.
 ## LCIR foundation status
 
 The workspace contains a direct typed-SSA foundation in `loom-codegen-ir` for
-primitive values, literal or concat-produced `Text`, structural tuples, closed
-records, established transparent refined values, concrete managed Lists, and
-compiler-private concrete `TextMap[V]` values, plus canonical structured
-logging over direct `Text` and `TextMap[Text]` values. Its checked coroutine
+primitive values, literal or concat-produced `Text`, structural tuples,
+one-field typed Path, closed records, established transparent refined values,
+concrete managed Lists, and compiler-private concrete `TextMap[V]` values,
+plus canonical structured logging over direct `Text` and `TextMap[Text]`
+values. Its checked coroutine
 slice also covers ordered multi-child awaits, nonempty static forms of all four
 standard Task composition policies, exact terminal outcomes, and async
 state-zero preconditions with creation-site blame.
@@ -319,6 +320,34 @@ direct root cell when one exists and otherwise uses a temporary. Decode always
 uses a stable temporary; after the call, LLVM constructs and publishes the
 exact Result without an intervening safepoint. No universal value, executor,
 JSON policy, or ownership/borrow syntax is involved.
+
+## Direct typed Path
+
+Canonical Path is an invariant-protected, unboxed one-field LLVM product whose
+field is the exact direct Text pointer. The protection is enforced in checked
+MIR/LCIR and adds no LLVM field. `PathFromText` scans the immutable Text byte range for NUL
+and constructs `Result[Path, PathError]` in SSA. `PathAsText` is one
+`extractvalue`. Construction reuses the existing non-collecting
+`loom_runtime_text_contains` byte-range helper; extraction emits no call. These
+operations do not allocate, publish a root state, or acquire an executor.
+
+`PathJoin` extracts both Text pointers and calls
+`loom_runtime_path_join_typed_v1(base_text, child_text, out_text)`. The helper
+validates and copies both complete payloads into non-GC staging storage before
+the allocation which may move either source, and publishes a fully initialized
+canonical Text as its final operation. LLVM treats status `0` as success and
+wraps that Text in the exact Path product; status `-1` constructs
+`PathError.AbsoluteJoin`; every positive or unknown status traps as an ABI
+defect. The stable output cell and exact backwards liveness use the established
+typed shadow-root wire. Inputs not live after the call need no root because the
+helper stages them before its safepoint.
+
+The helper implements only Loom's portable lexical separator rule. It neither
+queries a filesystem nor normalizes `.`, `..`, repeated `/`, host drive syntax,
+or reverse solidus. It creates no runtime Path object, universal value, JSON
+policy, executor, or ownership/borrow surface. The untyped
+`loom_runtime_path_contains_nul` and `loom_runtime_path_join` declarations are
+confined to the complete legacy emitter.
 
 ## Direct managed Lists
 
@@ -634,10 +663,10 @@ is correct.
 
 ## Object identity and linking
 
-The canonical textual dump is `lcir 35`, and the checked artifact identity uses
-schema 36. Object identities are route-separated:
+The canonical textual dump is `lcir 36`, and the checked artifact identity uses
+schema 37. Object identities are route-separated:
 
-- `loom-lcir-native-object-v32` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v33` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -649,14 +678,15 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v37` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v38` and never suppresses fingerprint
 errors.
 
 The current LCIR domains encode the explicit transitive effect lattice,
 canonical typed fault metadata, concrete proof-replay guards,
 source-contract placement, direct managed
-Text semantics, one-pointer typed Bytes and its descriptor provenance, managed
-leaves inside unboxed products and closed sums,
+Text semantics, one-pointer typed Bytes and its descriptor provenance,
+one-field typed Path plus its non-collecting validation/extraction and
+collecting lexical join, managed leaves inside unboxed products and closed sums,
 monomorphized managed Lists, compiler-private concrete TextMaps, the generic
 collision-free closed-sum carrier, the canonical recursive Json graph, List
 uniqueness certificates, lexical cleanup, and checked coroutine plans with
@@ -793,6 +823,17 @@ the exact Result success variant, status `-1` selects
 native runtime identity to component 24 with `typed-text-units-v1` and
 `runtime-v18`, the public standard-library ABI to v5, and the LCIR, artifact,
 native-object, and object-cache domains listed above.
+
+Typed Path adds the collecting
+`loom_runtime_path_join_typed_v1(base_text, child_text, out_text)` boundary.
+`Path.from_text` and `Path.as_text` remain non-collecting LCIR;
+construction reuses the established Text containment helper and extraction is
+direct SSA. The join helper stages both validated Text payloads before
+allocation. Status `0` selects the exact Result success value, `-1` selects
+`PathError.AbsoluteJoin`, and any other status traps. This advances the native
+runtime identity to component 25 with `typed-path-v1` and `runtime-v19`, plus
+the LCIR, artifact, native-object, and object-cache domains listed above.
+Checked MIR remains version 27 and the public standard-library ABI remains v5.
 
 They also encode closed static-witness method selection and normalized
 associated types. Those proofs are absent from the machine ABI: LLVM receives

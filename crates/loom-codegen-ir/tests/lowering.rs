@@ -8,8 +8,8 @@ use std::{
 use loom_codegen_ir::{
     AwaitMode, BYTES_TYPE_ID, CheckedIntBinaryOp, Effects, InstanceKey, InstanceRole,
     InstructionKind, InvalidRootCode, LoweringErrorCode, LoweringOutcome, ManagedSafepoint,
-    ResourceLimitCode, SourceArtifactRequest, TargetLayout, TerminatorKind, UnsupportedFeature,
-    artifact_identity, dump_program, lower_typed_artifact, plan_managed_roots,
+    PATH_TYPE_ID, ResourceLimitCode, SourceArtifactRequest, TargetLayout, TerminatorKind,
+    UnsupportedFeature, artifact_identity, dump_program, lower_typed_artifact, plan_managed_roots,
 };
 use loom_core::{FileId, LOOM_LANGUAGE_VERSION, Name, PackageId, Span};
 use loom_hir::{PackageSourceUnit, SourceUnit, lower_files, lower_package_files};
@@ -259,6 +259,108 @@ pub fn main() {
         helper.map(loom_codegen_ir::Function::effects),
         Some(Effects::NONE)
     );
+}
+
+#[test]
+fn canonical_paths_lower_to_exact_typed_operations_effects_and_safepoints() {
+    let outcome = lower_run(
+        r#"module typed_path
+
+fn exercise(base Path, child Path) {
+    discard base.join(child)
+    discard base.as_text()
+}
+
+pub fn main() {
+    match Path.from_text("root") {
+        Ok(base) => match Path.from_text("child") {
+            Ok(child) => exercise(base, child)
+            Err(_) => Unit
+        }
+        Err(_) => Unit
+    }
+}
+"#,
+    );
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("canonical Path source must lower completely: {outcome:?}")
+    };
+    assert!(
+        artifact
+            .representations()
+            .type_id(&Type::Nominal(PATH_TYPE_ID, Vec::new()))
+            .is_some(),
+        "canonical Path#12 representation is missing"
+    );
+
+    let mut from_count = 0_usize;
+    let mut saw_as_text = false;
+    let mut saw_join = false;
+    for function in artifact.functions() {
+        let roots = plan_managed_roots(artifact.program(), function.id())
+            .expect("every checked function has a root plan");
+        for instruction in function.instructions() {
+            match instruction.kind() {
+                InstructionKind::PathFromText {
+                    ok_variant,
+                    error_variant,
+                    contains_nul_variant,
+                    ..
+                } => {
+                    assert_eq!(
+                        (*ok_variant, *error_variant, *contains_nul_variant),
+                        (0, 1, 0)
+                    );
+                    assert!(
+                        roots
+                            .state(ManagedSafepoint::Instruction(instruction.id()))
+                            .is_none(),
+                        "Path.from_text is not a collection safepoint"
+                    );
+                    from_count = from_count.saturating_add(1);
+                }
+                InstructionKind::PathAsText { .. } => {
+                    assert!(
+                        roots
+                            .state(ManagedSafepoint::Instruction(instruction.id()))
+                            .is_none(),
+                        "Path.as_text is not a collection safepoint"
+                    );
+                    saw_as_text = true;
+                }
+                InstructionKind::PathJoin {
+                    ok_variant,
+                    error_variant,
+                    absolute_join_variant,
+                    ..
+                } => {
+                    assert_eq!(
+                        (*ok_variant, *error_variant, *absolute_join_variant),
+                        (0, 1, 1)
+                    );
+                    assert!(function.effects().contains(Effects::MAY_COLLECT));
+                    assert!(
+                        roots
+                            .state(ManagedSafepoint::Instruction(instruction.id()))
+                            .is_some(),
+                        "live base Path requires an exact join root state"
+                    );
+                    saw_join = true;
+                }
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(from_count, 2);
+    assert!(
+        saw_as_text && saw_join,
+        "{}",
+        dump_program(artifact.program())
+    );
+    let dump = dump_program(artifact.program());
+    for opcode in ["path.from_text", "path.as_text", "path.join"] {
+        assert!(dump.contains(opcode), "missing {opcode}: {dump}");
+    }
 }
 
 #[test]
