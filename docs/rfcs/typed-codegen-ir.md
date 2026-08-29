@@ -18,10 +18,10 @@ artifact format, an ownership system, or a public FFI ABI.
 The direct foundation and its first production route are described in the
 current [Code generation IR internals](../internals/codegen-ir.md). Ordinary
 native build, run, and test preparation now selects complete supported
-primitive, direct Text, one-pointer typed Bytes, structural-tuple,
-closed-record, and compile-time-established refined artifacts, plus bounded
-concrete direct generic instances over those representations and eligible
-concrete closed-enum artifacts including managed Text payloads, lexical
+primitive, direct Text, one-pointer typed Bytes, structural-tuple, one-field
+typed Path, closed-record, and compile-time-established refined artifacts, plus
+bounded concrete direct generic instances over those representations and
+eligible concrete closed-enum artifacts including managed Text payloads, lexical
 cleanup, and the supported source-contract subset, plus checked stackless
 coroutines with typed Task handles, `Task.sleep`, and nonempty static forms of
 the standard `Task.all`, `Task.any`, `Task.settled`, and `Task.race` APIs into
@@ -125,6 +125,9 @@ vocabulary is:
   results are typed moving-GC leaves in the same direct pointer ABI;
 - one opaque `ManagedPointer` for canonical `Bytes`; `Text.encode_utf8` shares
   the immutable Text object, while append materializes a distinct ByteObject;
+- an invariant-protected `Product(Text)` for canonical `Path`, retaining
+  exactly one field in the artifact's canonical Text representation and no
+  runtime tag;
 - `Product(element value types...)` for a structural tuple whose transitive
   elements are direct values;
 - `Product(field value types...)` for a closed, invariant-free record whose
@@ -181,6 +184,20 @@ Invalid UTF-8 remains the ordinary `DecodeTextError.InvalidUtf8` value. The
 distinct ByteObject descriptor is runtime layout metadata, not source RTTI.
 This primitive representation adds no JSON policy and no ownership or borrow
 syntax.
+
+The direct Path slice keeps the existing source type as an exact one-field Text
+product. `Path.from_text` validates U+0000 and `Path.as_text` extracts the field
+without allocation or a collection safepoint. `Path.join` is collecting: LLVM
+passes the two extracted Text pointers to
+`loom_runtime_path_join_typed_v1`, which stages both complete payloads before
+allocation and publishes one initialized Text last. Runtime status `0` selects
+the exact Result success variant, `-1` selects `PathError.AbsoluteJoin`, and
+every other returned status is an ABI defect. The helper implements only the
+portable lexical `/` rule. It adds no runtime Path object, filesystem query,
+normalization, JSON behavior, executor, or source ownership syntax.
+The older untyped `loom_runtime_path_contains_nul` and
+`loom_runtime_path_join` symbols remain exclusive to the complete legacy
+emitter.
 
 Concrete structural equality is generated from this same representation plan.
 Products compare exact fields, transparent values compare their declared base,
@@ -354,6 +371,7 @@ source function:
 | `Scalar(F64)` | `double` |
 | `ImmortalText` or `ManagedPointer` Text | opaque pointer |
 | `ManagedPointer` Bytes | opaque pointer |
+| canonical `Product(Text)` Path | one-field literal struct containing the direct Text pointer |
 | `TaskHandle` | opaque scheduler-owned pointer |
 | `Product(fields...)` | literal LLVM struct of the recursively mapped fields |
 | tagless `Sum` | its sole variant payload struct |
@@ -379,8 +397,10 @@ Lowering and independent validation separately compute the least transitive
 closure over direct and invoke edges. A synchronous caller inherits the effect
 of a precondition it evaluates. An async precondition belongs to the child
 coroutine's state-zero path, so `TaskCreate` does not inherit child effects.
-`TextConcat`, `TextGet`, `BytesAppend`, `BytesDecodeUtf8`, `FormatFloat`, and
-`JsonFormat` are collecting opcodes. `TaskCreate` and `TaskJoinAll` require an
+`TextConcat`, `TextGet`, `TextFromUtf8Units`, `BytesAppend`,
+`BytesDecodeUtf8`, `PathJoin`, `FormatFloat`, and `JsonFormat` are collecting
+opcodes. `PathFromText` and `PathAsText` are non-collecting. `TaskCreate` and
+`TaskJoinAll` require an
 executor; neither operation itself suspends. `AwaitTasks` contributes both
 `MAY_FAULT` and `MAY_SUSPEND` and accepts one or more ordered children. The
 explicit fallible `TaskSleep` terminator requires `MAY_FAULT` and
@@ -681,6 +701,19 @@ JSON-specific input, output, or policy. This advances the canonical dump to
 `loom-llvm-object-cache-v37`, native runtime identity to component 24 with
 `typed-text-units-v1` and `runtime-v18`, public standard-library ABI to v5, and
 checked-MIR artifacts to version 27.
+
+Typed Path subsequently adds `PathFromText`, `PathAsText`, and `PathJoin` plus
+the narrow `loom_runtime_path_join_typed_v1` boundary. Construction and
+extraction are non-collecting; join stages both complete Text fields before its
+moving-GC allocation. Status `0` is success, `-1` selects `AbsoluteJoin`, and
+all other statuses are ABI defects. Path uses the protected product kind, and
+checked MIR/LCIR reject generic construction or field mutation that could
+bypass U+0000 validation. This advances the canonical dump to
+`lcir 36`, artifact identity to schema 37, LCIR native-object domain to
+`loom-lcir-native-object-v33`, CLI object-cache domain to
+`loom-llvm-object-cache-v38`, and native runtime identity to component 25 with
+`typed-path-v1` and `runtime-v19`. Existing Path MIR keeps checked-MIR artifacts
+at version 27, and the public standard-library ABI remains v5.
 
 Calls to the C process entry, libc, and versioned Loom runtime functions are
 explicit external boundaries. They do not permit two source-function ABIs in

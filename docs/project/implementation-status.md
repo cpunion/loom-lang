@@ -58,6 +58,7 @@ The following repository fixtures are run through real compiler stages:
 | `fixtures/lcir-text` | literal-proven one-pointer `Text`, allocation-free length/containment/content comparison, direct generic flow, host execution, and direct 64-bit Linux/MSVC object emission |
 | `fixtures/lcir-managed-text` | artifact-wide direct managed `Text`, dynamic concat, exact typed shadow roots, semantic alias preservation, and real check/build/test/run commands |
 | `fixtures/lcir-managed-bytes` | one-pointer typed `Bytes`, zero-allocation Text-backed UTF-8 sharing, content equality, Unicode byte indexing, checked negative and upper-bound misses, append, decode, moving-GC publication, and real check/build/test/run commands |
+| `fixtures/lcir-typed-path` | exact invariant-protected one-field Text-backed Path values, non-collecting construction/extraction, portable lexical join, rejected raw MIR/LCIR construction and mutation, preserved Unicode and `.`/`..`/repeated-separator spelling, ordinary `ContainsNul`/`AbsoluteJoin` errors, live aliases and joined results through moving-GC pressure, and real check/build/test/run commands without legacy path helpers or an executor |
 | `fixtures/lcir-managed-products` | unboxed nested record/tuple products with managed Text leaves, direct product calls/returns, semantic aliases, and real check/build/test/run commands |
 | `fixtures/lcir-managed-sums` | closed unboxed sums with active-variant Text roots, nested product payloads, contract matches over managed leaves, forced collection between call arguments, and real check/build/test/run commands |
 | `fixtures/lcir-managed-lists` | direct repeated storage for scalar/Text/product/sum/nested-List elements, immutable aliases, checked reads, geometric unique append, moving-GC roots, and real check/build/test/run commands |
@@ -116,9 +117,9 @@ Production native preparation performs one whole-artifact MIR-to-LCIR attempt
 and independently validates the result before typed LLVM emission. Current
 direct coverage includes:
 
-- scalar, managed Text, and typed Bytes operations, structural tuples, concrete
-  records, refined values, closed sums, Lists, compiler-private TextMaps, and
-  bounded concrete generic instances;
+- scalar, managed Text, typed Bytes, and one-field typed Path operations,
+  structural tuples, concrete records, refined values, closed sums, Lists,
+  compiler-private TextMaps, and bounded concrete generic instances;
 - canonical recursive Json formatting into the exact
   `Result[Text, JsonError]`, including typed Text publication and ordinary
   depth/non-finite error values;
@@ -172,6 +173,10 @@ The format-neutral `Text.from_utf8_units(List[Int])` source API, interpreter
 semantics, typed LCIR instruction, direct LLVM lowering, and typed runtime ABI
 are complete; this is the construction foundation for moving JSON parsing into
 ordinary Loom source without adding a JSON parser to the runtime.
+The typed Path slice likewise closes `Path.from_text`, `Path.as_text`, and
+`Path.join` without a runtime Path object: construction and extraction are
+non-collecting, join stages both Text inputs before moving-GC allocation, and
+the native object contains neither legacy path symbols nor an executor.
 
 The PR benchmark workflow compares the base and candidate merge revisions on
 one Ubuntu x86-64 runner and one macOS arm64 runner. A separate trusted workflow
