@@ -1973,7 +1973,7 @@ pub async fn main() {
     clippy::too_many_lines,
     reason = "the hand-built canonical File fixture keeps MIR identity and cleanup-edge evidence local"
 )]
-fn builtin_scoped_file_cleanup_lowers_to_one_typed_runtime_edge() {
+fn builtin_scoped_file_cleanup_rejects_a_synchronous_executor_root() {
     let span = Span::default();
     let file_id = TypeId(8);
     let file = Type::Nominal(file_id, Vec::new());
@@ -2068,20 +2068,22 @@ fn builtin_scoped_file_cleanup_lowers_to_one_typed_runtime_edge() {
     let program = program
         .into_checked()
         .expect("resource fixture is valid checked MIR");
-    let LoweringOutcome::Complete(artifact) = lower_typed_artifact(
+    let error = lower_typed_artifact(
         &program,
         &SourceArtifactRequest::Run {
             entry: "main".into(),
         },
         TargetLayout::new(64).expect("test target"),
     )
-    .expect("lower typed resource cleanup") else {
-        panic!("canonical File cleanup must be in typed LCIR coverage")
-    };
-    let dump = dump_program(artifact.program());
-    assert_eq!(dump.matches("resource.close.file").count(), 1, "{dump}");
-    assert!(dump.contains("effects=may_fault+needs_runtime"), "{dump}");
-    assert!(!dump.contains("loom.Value"), "{dump}");
+    .expect_err("a synchronous ResourceClose root must not manufacture an executor");
+    assert_eq!(
+        error.code(),
+        LoweringErrorCode::InvalidRoot(InvalidRootCode::RootCapability)
+    );
+    assert!(
+        error.message().contains("cannot require an executor"),
+        "{error}"
+    );
 }
 
 #[test]

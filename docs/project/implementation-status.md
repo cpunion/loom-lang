@@ -92,8 +92,10 @@ special case.
 The workspace also has focused parser, semantic, MIR-validator, interpreter,
 runtime, codegen, CLI, package, registry, cache, formatter, LSP, and hostile
 input tests. Current cleanup evidence independently rejects noncanonical or
-kind-mismatched `ResourceClose` inputs and checks that LLVM maps only close
-status `2` to `ResourceCloseFault`, trapping on invalid or unknown statuses.
+kind-mismatched `ResourceClose` inputs and checks that LLVM accepts only close
+status `0`, trapping on every nonzero ABI status. File and Socket records carry
+process-monotonic capability tokens; raw OS handles, stale tokens, sibling
+tokens, and wrong-kind tokens cannot reach resource operations.
 Runtime ownership tests cover successful completed-result transfer before
 child retirement, root-Task retention in the executor-owned task registry, no
 transfer for fault/cancellation/loser/unconsumed paths, opposite-kind close
@@ -177,10 +179,11 @@ for their prepared main or test artifacts. The typed logging gate also checks
 the exact JSONL standard-error bytes for both run and test artifacts; the typed
 JSON gate executes all canonical formatting and error cases through each
 artifact.
-The remaining reviewed legacy allowance covers the broader standard-library
-fixture's JSON parsing and typed external I/O operations. `IoError.kind()` and
-`IoError.message()` are already ordinary direct product projections in LCIR and
-do not contribute to that allowance.
+The remaining reviewed legacy allowance covers only the broader
+standard-library fixture's JSON parsing. Recoverable file and socket operations
+already create typed Tasks with exact `Result[T, IoError]` coroutine frames,
+and `IoError.kind()` and `IoError.message()` are ordinary direct product
+projections in LCIR.
 The format-neutral `Text.from_utf8_units(List[Int])` source API, interpreter
 semantics, typed LCIR instruction, direct LLVM lowering, and typed runtime ABI
 are complete; this is the construction foundation for moving JSON parsing into

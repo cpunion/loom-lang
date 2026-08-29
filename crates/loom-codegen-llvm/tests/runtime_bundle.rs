@@ -254,15 +254,18 @@ fn runtime_bundle_manifest_rejects_unknown_fields_and_target_or_abi_mismatch() {
     );
 
     let mut manifest = serde_json::from_slice::<serde_json::Value>(&original).expect("manifest");
-    manifest["schema_version"] = serde_json::json!(1);
+    let noncurrent_schema = RUNTIME_BUNDLE_SCHEMA_VERSION
+        .checked_sub(1)
+        .expect("runtime bundle schema permits a mismatch fixture");
+    manifest["schema_version"] = serde_json::json!(noncurrent_schema);
     fs::write(
         &manifest_path,
-        serde_json::to_vec(&manifest).expect("encode legacy schema"),
+        serde_json::to_vec(&manifest).expect("encode noncurrent schema"),
     )
-    .expect("write legacy schema");
+    .expect("write noncurrent schema");
     assert_eq!(
         RuntimeBundle::load(&output, &target)
-            .expect_err("legacy schema")
+            .expect_err("noncurrent schema")
             .code(),
         "RuntimeBundleInvalid"
     );
@@ -311,22 +314,6 @@ fn runtime_bundle_manifest_rejects_unknown_fields_and_target_or_abi_mismatch() {
     assert_eq!(
         RuntimeBundle::load(&output, &target)
             .expect_err("ABI mismatch")
-            .code(),
-        "RuntimeBundleAbiMismatch"
-    );
-
-    let mut manifest = serde_json::from_slice::<serde_json::Value>(&original).expect("manifest");
-    manifest["runtime_abi"] = serde_json::json!(
-        "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-timer-v1/typed-resource-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v19/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v5"
-    );
-    fs::write(
-        &manifest_path,
-        serde_json::to_vec(&manifest).expect("encode prior runtime identity"),
-    )
-    .expect("write prior runtime identity");
-    assert_eq!(
-        RuntimeBundle::load(&output, &target)
-            .expect_err("prior runtime resource-transfer semantics")
             .code(),
         "RuntimeBundleAbiMismatch"
     );

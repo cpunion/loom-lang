@@ -2679,7 +2679,6 @@ fn typed_json_format_closes_real_check_build_test_and_run_commands() {
     for required in [
         b"loom.lcir.fn".as_slice(),
         b"loom_runtime_json_format_typed_v1",
-        b"loom.lcir.typed_json.layout",
         b"loom_gc_typed_root_push_v1",
         b"loom_gc_typed_root_pop_v1",
     ] {

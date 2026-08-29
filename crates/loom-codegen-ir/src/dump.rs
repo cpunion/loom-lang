@@ -53,7 +53,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 37")?;
+    writeln!(output, "lcir 39")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -476,6 +476,25 @@ fn write_instruction(
             write_arguments(output, arguments)?;
             write!(output, ")")
         }
+        InstructionKind::IoTaskCreate {
+            operation,
+            arguments,
+        } => {
+            write!(
+                output,
+                "io.task_create.{}(",
+                io_task_operation_name(*operation)
+            )?;
+            write_arguments(output, arguments)?;
+            write!(output, ")")
+        }
+        InstructionKind::ResourceClose { kind, resource } => {
+            let kind = match kind {
+                crate::ResourceKind::File => "file",
+                crate::ResourceKind::Socket => "socket",
+            };
+            write!(output, "resource.close.{kind} %{resource}")
+        }
         InstructionKind::TaskJoinAll { tasks } => {
             write!(output, "task.join_all(")?;
             write_arguments(output, tasks)?;
@@ -484,6 +503,18 @@ fn write_instruction(
         InstructionKind::TaskOutcomeTake { task } => {
             write!(output, "task.outcome_take %{task}")
         }
+    }
+}
+
+const fn io_task_operation_name(operation: crate::IoTaskOperation) -> &'static str {
+    match operation {
+        crate::IoTaskOperation::FileOpenRead => "file_open_read",
+        crate::IoTaskOperation::FileCreate => "file_create",
+        crate::IoTaskOperation::FileReadText => "file_read_text",
+        crate::IoTaskOperation::FileWriteText => "file_write_text",
+        crate::IoTaskOperation::SocketConnect => "socket_connect",
+        crate::IoTaskOperation::SocketReadText => "socket_read_text",
+        crate::IoTaskOperation::SocketWriteText => "socket_write_text",
     }
 }
 
@@ -657,21 +688,6 @@ fn write_terminator(
             write_result_target(output, normal, writebacks)?;
             write!(output, ", unwind ")?;
             write_unwind_target(output, unwind, writebacks)
-        }
-        TerminatorKind::ResourceClose {
-            kind,
-            resource,
-            normal,
-            fault,
-        } => {
-            let kind = match kind {
-                crate::ResourceKind::File => "file",
-                crate::ResourceKind::Socket => "socket",
-            };
-            write!(output, "resource.close.{kind} %{resource}, normal ")?;
-            write_result_target(output, normal, 1)?;
-            write!(output, ", fault ")?;
-            write_unwind_target(output, fault, 1)
         }
         TerminatorKind::LogWrite {
             level,
@@ -942,7 +958,6 @@ const fn fault_code_name(code: crate::FaultCode) -> &'static str {
         crate::FaultCode::InvalidSleepDuration => "InvalidSleepDuration",
         crate::FaultCode::SleepDurationOverflow => "SleepDurationOverflow",
         crate::FaultCode::TaskAnyFailed => "TaskAnyFailed",
-        crate::FaultCode::ResourceClose => "ResourceCloseFault",
         crate::FaultCode::LogWrite => "LogWriteFault",
     }
 }

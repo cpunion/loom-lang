@@ -63,6 +63,20 @@ fn decode_frames(mut bytes: &[u8]) -> Vec<Value> {
     messages
 }
 
+fn response_with_id(responses: &[Value], id: i64) -> &Value {
+    responses
+        .iter()
+        .find(|message| message.get("id") == Some(&json!(id)))
+        .unwrap_or_else(|| panic!("missing response {id}: {responses:#?}"))
+}
+
+fn run_framed_session(messages: &[Value]) -> Vec<Value> {
+    let input = messages.iter().flat_map(frame).collect::<Vec<_>>();
+    let mut output = Vec::new();
+    loom_lsp::run(BufReader::new(input.as_slice()), &mut output).expect("run LSP session");
+    decode_frames(&output)
+}
+
 fn read_frame(reader: &mut impl BufRead) -> Value {
     let mut length = None;
     loop {
@@ -139,10 +153,7 @@ fn inspect(problem IoError, value Json) {
         json!({"jsonrpc":"2.0","id":8,"method":"shutdown","params":null}),
         json!({"jsonrpc":"2.0","method":"exit","params":null}),
     ];
-    let input = messages.iter().flat_map(frame).collect::<Vec<_>>();
-    let mut output = Vec::new();
-    loom_lsp::run(BufReader::new(input.as_slice()), &mut output).expect("run LSP session");
-    let responses = decode_frames(&output);
+    let responses = run_framed_session(&messages);
 
     for (id, signature) in [
         (2, "TextMap[V]"),
@@ -239,16 +250,10 @@ fn parse(text Text) Result[Int, ParseIntError] {
         json!({"jsonrpc":"2.0","id":7,"method":"shutdown","params":null}),
         json!({"jsonrpc":"2.0","method":"exit","params":null}),
     ];
-    let input = messages.iter().flat_map(frame).collect::<Vec<_>>();
-    let mut output = Vec::new();
-    loom_lsp::run(BufReader::new(input.as_slice()), &mut output).expect("run LSP session");
-    let responses = decode_frames(&output);
+    let responses = run_framed_session(&messages);
 
     for (id, signature) in [(2, "`function parse_int`"), (3, "`enum ParseIntError`")] {
-        let markdown = responses
-            .iter()
-            .find(|message| message.get("id") == Some(&json!(id)))
-            .unwrap_or_else(|| panic!("missing hover response {id}"))
+        let markdown = response_with_id(&responses, id)
             .pointer("/result/contents/value")
             .and_then(Value::as_str)
             .unwrap_or_else(|| panic!("missing source-backed hover markdown: {responses:#?}"));
@@ -256,10 +261,8 @@ fn parse(text Text) Result[Int, ParseIntError] {
         assert!(markdown.contains("module `std.int`"), "{markdown}");
     }
 
-    let completion_items = responses
-        .iter()
-        .find(|message| message.get("id") == Some(&json!(4)))
-        .and_then(|message| message.pointer("/result/items"))
+    let completion_items = response_with_id(&responses, 4)
+        .pointer("/result/items")
         .and_then(Value::as_array)
         .expect("completion items");
     for (name, kind) in [("parse_int", "function"), ("ParseIntError", "enum")] {
@@ -281,10 +284,7 @@ fn parse(text Text) Result[Int, ParseIntError] {
     }
 
     for id in [5, 6] {
-        let definition = responses
-            .iter()
-            .find(|message| message.get("id") == Some(&json!(id)))
-            .unwrap_or_else(|| panic!("missing definition response {id}"));
+        let definition = response_with_id(&responses, id);
         assert_eq!(
             definition.pointer("/error/data/code"),
             Some(&json!("CompilerOwnedSourceNotNavigable")),

@@ -27,9 +27,10 @@ use crate::{
     BuildErrorCode, CheckedArtifact, CheckedIntBinaryOp, Constant, ContractFaultKind,
     ContractFaultMetadata, CoroutinePlan, CoroutineSuspension, Effects, FaultCode, FaultMetadata,
     FloatBinaryOp, FloatPredicate, FunctionBuilder, InstanceId, InstanceKey, InstancePlan,
-    InstanceRole, InstructionKind, IntPredicate, Origin, ProgramBuilder, ResourceKind,
-    ResultTarget, Signature, SourceRoots, SumCase, TargetLayout, Terminator, TerminatorKind,
-    TestOutcomePlan, UnwindTarget, ValueId, ValueTypeId, analyze_source_reachability,
+    InstanceRole, InstructionKind, IntPredicate, IoTaskOperation, Origin, ProgramBuilder,
+    ResourceKind, ResultTarget, Signature, SourceRoots, SumCase, TargetLayout, Terminator,
+    TerminatorKind, TestOutcomePlan, UnwindTarget, ValueId, ValueTypeId,
+    analyze_source_reachability,
 };
 
 const DIRECT_CLEANUP_MAX_ACTIVE_ACTIONS: usize = 1_024;
@@ -3278,6 +3279,15 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         | mir::Builtin::JsonFormat
                         | mir::Builtin::IoErrorKind
                         | mir::Builtin::IoErrorMessage
+                        | mir::Builtin::FileTryOpenRead
+                        | mir::Builtin::FileTryCreate
+                        | mir::Builtin::FileTryOpenReadPath
+                        | mir::Builtin::FileTryCreatePath
+                        | mir::Builtin::FileTryReadText
+                        | mir::Builtin::FileTryWriteText
+                        | mir::Builtin::SocketTryConnect
+                        | mir::Builtin::SocketTryReadText
+                        | mir::Builtin::SocketTryWriteText
                         | mir::Builtin::TaskFaultCode
                         | mir::Builtin::TaskFaultMessage
                         | mir::Builtin::DurationMilliseconds
@@ -3297,6 +3307,15 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                                     | mir::Builtin::TextMapGet
                                     | mir::Builtin::TextMapEntryAt
                                     | mir::Builtin::TextMapRemove
+                                    | mir::Builtin::FileTryOpenRead
+                                    | mir::Builtin::FileTryCreate
+                                    | mir::Builtin::FileTryOpenReadPath
+                                    | mir::Builtin::FileTryCreatePath
+                                    | mir::Builtin::FileTryReadText
+                                    | mir::Builtin::FileTryWriteText
+                                    | mir::Builtin::SocketTryConnect
+                                    | mir::Builtin::SocketTryReadText
+                                    | mir::Builtin::SocketTryWriteText
                                     | mir::Builtin::TaskFaultCode
                                     | mir::Builtin::TaskFaultMessage
                             )
@@ -3837,7 +3856,7 @@ fn scan_effect_statement(
                     mir::ScopedDisposal::FileClose | mir::ScopedDisposal::SocketClose
                 )
             {
-                summary.include(Effects::MAY_FAULT.union(Effects::NEEDS_RUNTIME));
+                summary.include(Effects::NEEDS_EXECUTOR);
             }
             continues
         }
@@ -4036,9 +4055,35 @@ fn scan_effect_expr(
                         | mir::Builtin::TextMapRemove
                         | mir::Builtin::FormatFloat
                         | mir::Builtin::JsonFormat
+                        | mir::Builtin::FileTryOpenRead
+                        | mir::Builtin::FileTryCreate
+                        | mir::Builtin::FileTryOpenReadPath
+                        | mir::Builtin::FileTryCreatePath
+                        | mir::Builtin::FileTryReadText
+                        | mir::Builtin::FileTryWriteText
+                        | mir::Builtin::SocketTryConnect
+                        | mir::Builtin::SocketTryReadText
+                        | mir::Builtin::SocketTryWriteText
                 )
             ) {
-                summary.include(Effects::MAY_COLLECT);
+                if matches!(
+                    target,
+                    CallTarget::Builtin(
+                        mir::Builtin::FileTryOpenRead
+                            | mir::Builtin::FileTryCreate
+                            | mir::Builtin::FileTryOpenReadPath
+                            | mir::Builtin::FileTryCreatePath
+                            | mir::Builtin::FileTryReadText
+                            | mir::Builtin::FileTryWriteText
+                            | mir::Builtin::SocketTryConnect
+                            | mir::Builtin::SocketTryReadText
+                            | mir::Builtin::SocketTryWriteText
+                    )
+                ) {
+                    summary.include(Effects::NEEDS_EXECUTOR);
+                } else {
+                    summary.include(Effects::MAY_COLLECT);
+                }
             } else if matches!(
                 target,
                 CallTarget::Builtin(mir::Builtin::DurationMilliseconds | mir::Builtin::LogWrite)
@@ -6963,57 +7008,22 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         flow = next_flow;
         let resource_type = place.leaf_type();
         let unit_type = self.type_id(&Type::Unit)?;
-
-        let normal = self.create_block()?;
-        let _unit = self
+        let results = self
             .builder
-            .append_block_parameter(normal, unit_type)
+            .append_instruction(
+                flow.block,
+                InstructionKind::ResourceClose { kind, resource },
+                &[unit_type, resource_type],
+                origin,
+            )
             .map_err(LoweringError::from)?;
-        let normal_resource = self
-            .builder
-            .append_block_parameter(normal, resource_type)
-            .map_err(LoweringError::from)?;
-        let normal_flow = self.write_place(
-            Flow {
-                block: normal,
-                env: flow.env,
-            },
-            &place,
-            normal_resource,
-            origin,
-        )?;
-
-        let fault = self.create_block()?;
-        let fault_resource = self
-            .builder
-            .append_block_parameter(fault, resource_type)
-            .map_err(LoweringError::from)?;
-        let fault_flow = self.write_place(
-            Flow {
-                block: fault,
-                env: flow.env,
-            },
-            &place,
-            fault_resource,
-            origin,
-        )?;
-        let propagation = self.fault_target(fault_flow)?;
-        self.terminate(
-            fault_flow.block,
-            TerminatorKind::Jump(BlockTarget::new(propagation.block, propagation.arguments)),
-            origin,
-        )?;
-        self.terminate(
-            flow.block,
-            TerminatorKind::ResourceClose {
-                kind,
-                resource,
-                normal: ResultTarget::new(normal, []),
-                fault: UnwindTarget::new(fault, []),
-            },
-            origin,
-        )?;
-        Ok(normal_flow)
+        let closed_resource = results.get(1).copied().ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::Builder,
+                "built-in scoped resource close produced no resource writeback",
+            )
+        })?;
+        self.write_place(flow, &place, closed_resource, origin)
     }
 
     #[expect(
@@ -11370,6 +11380,45 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             (mir::Builtin::IoErrorMessage, [error]) => InstructionKind::ProductExtract {
                 aggregate: *error,
                 field: 1,
+            }
+            .into(),
+            (mir::Builtin::FileTryOpenRead | mir::Builtin::FileTryOpenReadPath, [path]) => {
+                InstructionKind::IoTaskCreate {
+                    operation: IoTaskOperation::FileOpenRead,
+                    arguments: Box::new([*path]),
+                }
+                .into()
+            }
+            (mir::Builtin::FileTryCreate | mir::Builtin::FileTryCreatePath, [path]) => {
+                InstructionKind::IoTaskCreate {
+                    operation: IoTaskOperation::FileCreate,
+                    arguments: Box::new([*path]),
+                }
+                .into()
+            }
+            (mir::Builtin::FileTryReadText, [file]) => InstructionKind::IoTaskCreate {
+                operation: IoTaskOperation::FileReadText,
+                arguments: Box::new([*file]),
+            }
+            .into(),
+            (mir::Builtin::FileTryWriteText, [file, text]) => InstructionKind::IoTaskCreate {
+                operation: IoTaskOperation::FileWriteText,
+                arguments: Box::new([*file, *text]),
+            }
+            .into(),
+            (mir::Builtin::SocketTryConnect, [host, port]) => InstructionKind::IoTaskCreate {
+                operation: IoTaskOperation::SocketConnect,
+                arguments: Box::new([*host, *port]),
+            }
+            .into(),
+            (mir::Builtin::SocketTryReadText, [socket]) => InstructionKind::IoTaskCreate {
+                operation: IoTaskOperation::SocketReadText,
+                arguments: Box::new([*socket]),
+            }
+            .into(),
+            (mir::Builtin::SocketTryWriteText, [socket, text]) => InstructionKind::IoTaskCreate {
+                operation: IoTaskOperation::SocketWriteText,
+                arguments: Box::new([*socket, *text]),
             }
             .into(),
             (mir::Builtin::IsFinite, [value]) => {

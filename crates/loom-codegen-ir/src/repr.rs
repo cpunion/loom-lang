@@ -912,8 +912,8 @@ mod tests {
     use super::*;
     use crate::{
         Constant, CoroutinePlan, Effects, InstructionKind, Origin, Program, ProgramBuilder,
-        ResourceKind, ResultTarget, Signature, Terminator, TerminatorKind, UnwindTarget,
-        ValidationCode, ValueDefinition, validate_program,
+        ResourceKind, Signature, Terminator, TerminatorKind, ValidationCode, ValueDefinition,
+        validate_program,
     };
 
     #[test]
@@ -1030,50 +1030,34 @@ mod tests {
                 origin,
                 "resource.close.noncanonical",
                 Signature::new([file], unit),
-                Effects::MAY_FAULT.union(Effects::NEEDS_RUNTIME),
+                Effects::NEEDS_EXECUTOR.with_implications(),
             )
             .expect("declare resource close");
         {
             let mut function = builder.function(function).expect("function builder");
             let entry = function.create_block().expect("entry");
-            let normal = function.create_block().expect("normal");
-            let fault = function.create_block().expect("fault");
             function.set_entry(entry).expect("set entry");
             let resource = function
                 .append_block_parameter(entry, file)
                 .expect("File parameter");
-            let returned = function
-                .append_block_parameter(normal, unit)
-                .expect("Unit result");
-            function
-                .append_block_parameter(normal, file)
-                .expect("normal File writeback");
-            function
-                .append_block_parameter(fault, file)
-                .expect("fault File writeback");
+            let results = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::ResourceClose {
+                        kind: ResourceKind::File,
+                        resource,
+                    },
+                    &[unit, file],
+                    origin,
+                )
+                .expect("resource close");
+            let returned = results[0];
             function
                 .terminate(
                     entry,
-                    Terminator::new(
-                        TerminatorKind::ResourceClose {
-                            kind: ResourceKind::File,
-                            resource,
-                            normal: ResultTarget::new(normal, []),
-                            fault: UnwindTarget::new(fault, []),
-                        },
-                        origin,
-                    ),
-                )
-                .expect("resource close");
-            function
-                .terminate(
-                    normal,
                     Terminator::new(TerminatorKind::Return(returned), origin),
                 )
                 .expect("return");
-            function
-                .terminate(fault, Terminator::new(TerminatorKind::ResumeFault, origin))
-                .expect("resume fault");
         }
 
         let program = builder.finish();
@@ -1085,7 +1069,7 @@ mod tests {
         let errors = validate_program(program).expect_err(context);
         assert!(errors.as_slice().iter().any(|error| {
             error.code() == ValidationCode::TypeMismatch
-                && error.path() == "function[0].block[0].terminator.resource"
+                && error.path() == "function[0].instruction[0].resource"
                 && error.message().contains("canonical File#8")
         }));
     }
@@ -1102,7 +1086,7 @@ mod tests {
         let canonical = alternative_resource.representations.types[file.index()].clone();
         alternative_resource.representations.types.push(canonical);
         alternative_resource.functions[0].signature = Signature::new([alternative], unit);
-        for value in [0_usize, 2, 3] {
+        for value in [0_usize, 2] {
             alternative_resource.functions[0].values[value].ty = alternative;
         }
         assert_file_close_type_mismatch(

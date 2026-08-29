@@ -56,7 +56,7 @@ const QUALITY_EVIDENCE_SCHEMA_VERSION: u32 = 2;
 const STANDARD_LIBRARY_LEGACY_ROUTE: NativeRouteExpectation =
     NativeRouteExpectation::LegacyAllowed {
         name: "standard-library-managed-runtime",
-        reason: "JSON parsing and typed external I/O are not yet complete in typed LCIR",
+        reason: "source-defined JSON parsing is not yet active in typed LCIR",
     };
 
 const TASKS: &[TaskSpec] = &[

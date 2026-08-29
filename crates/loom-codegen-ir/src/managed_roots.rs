@@ -483,7 +483,6 @@ fn successors(kind: &TerminatorKind) -> Vec<BlockId> {
         TerminatorKind::CheckedIntNegate { normal, fault, .. }
         | TerminatorKind::CheckedIntBinary { normal, fault, .. }
         | TerminatorKind::TaskSleep { normal, fault, .. }
-        | TerminatorKind::ResourceClose { normal, fault, .. }
         | TerminatorKind::LogWrite { normal, fault, .. } => {
             vec![normal.block, fault.block]
         }
@@ -542,7 +541,6 @@ fn add_terminator_local_uses(
         TerminatorKind::CheckedIntBinary { left, right, .. } => vec![*left, *right],
         TerminatorKind::Invoke { arguments, .. } => arguments.to_vec(),
         TerminatorKind::AwaitTasks { tasks, .. } => tasks.to_vec(),
-        TerminatorKind::ResourceClose { resource, .. } => vec![*resource],
         TerminatorKind::LogWrite {
             level,
             message,
@@ -579,7 +577,6 @@ fn edge_live_values(
         TerminatorKind::CheckedIntNegate { normal, fault, .. }
         | TerminatorKind::CheckedIntBinary { normal, fault, .. }
         | TerminatorKind::TaskSleep { normal, fault, .. }
-        | TerminatorKind::ResourceClose { normal, fault, .. }
         | TerminatorKind::LogWrite { normal, fault, .. } => vec![
             (normal.block, normal.arguments.as_ref()),
             (fault.block, fault.arguments.as_ref()),

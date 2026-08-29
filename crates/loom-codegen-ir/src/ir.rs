@@ -859,6 +859,24 @@ pub enum InstructionKind {
         coroutine: InstanceId,
         arguments: Box<[ValueId]>,
     },
+    /// Creates one runtime-owned typed I/O leaf Task. The operation fixes the
+    /// exact argument and `Task[Result[T, IoError]]` shape; the runtime copies
+    /// every borrowed source value before this instruction returns. Completion
+    /// crosses the private ABI only as primitive status data, and a
+    /// compiler-generated callback constructs the target-native direct result
+    /// in the Task frame without a universal value envelope.
+    IoTaskCreate {
+        operation: IoTaskOperation,
+        arguments: Box<[ValueId]>,
+    },
+    /// Closes one compiler-known File or Socket token without a universal
+    /// value envelope. Final RAII release produces Unit and functionally
+    /// returns the closed resource as the second result. Runtime status zero
+    /// is the only ordinary outcome; every nonzero status is a defect.
+    ResourceClose {
+        kind: ResourceKind,
+        resource: ValueId,
+    },
     /// Allocates one exact heterogeneous composite Task. The child tasks are
     /// consumed in source order and the result is the canonical
     /// `Task[(T0, ..., Tn)]` handle for their exact output types.
@@ -954,7 +972,10 @@ impl InstructionKind {
             | Self::BoolNot { value }
             | Self::FloatNegate { value }
             | Self::FormatFloat { value }
-            | Self::DynConstruct { value, .. } => vec![*value],
+            | Self::DynConstruct { value, .. }
+            | Self::ResourceClose {
+                resource: value, ..
+            } => vec![*value],
             Self::JsonFormat { json, .. } => vec![*json],
             Self::SumConstruct { payload, .. } => payload.to_vec(),
             Self::TextConcat { left, right }
@@ -976,9 +997,9 @@ impl InstructionKind {
             | Self::TextMapGet { map, key }
             | Self::TextMapRemove { map, key } => vec![*map, *key],
             Self::TextMapEntryGet { map, index } => vec![*map, *index],
-            Self::TaskCreate { arguments, .. } | Self::DirectCall { arguments, .. } => {
-                arguments.to_vec()
-            }
+            Self::TaskCreate { arguments, .. }
+            | Self::IoTaskCreate { arguments, .. }
+            | Self::DirectCall { arguments, .. } => arguments.to_vec(),
             Self::TaskJoinAll { tasks } => tasks.to_vec(),
             Self::TaskOutcomeTake { task } => vec![*task],
             Self::IntSuccessorBelow {
@@ -1088,7 +1109,6 @@ pub enum FaultCode {
     InvalidSleepDuration,
     SleepDurationOverflow,
     TaskAnyFailed,
-    ResourceClose,
     LogWrite,
 }
 
@@ -1138,7 +1158,23 @@ pub(crate) const PATH_ERROR_TYPE_ID: TypeId = TypeId(13);
 pub(crate) const TEXT_MAP_TYPE_ID: TypeId = TypeId(14);
 pub(crate) const JSON_TYPE_ID: TypeId = TypeId(15);
 pub(crate) const JSON_ERROR_TYPE_ID: TypeId = TypeId(16);
+pub(crate) const IO_ERROR_TYPE_ID: TypeId = TypeId(17);
+pub(crate) const IO_ERROR_KIND_TYPE_ID: TypeId = TypeId(18);
 pub(crate) const LOG_LEVEL_TYPE_ID: TypeId = TypeId(19);
+
+/// Closed runtime-owned I/O leaves admitted by direct LCIR. Only the
+/// Result-returning source APIs belong here; ordinary operating-system errors
+/// are values, while scheduler/runtime defects remain fault edges.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum IoTaskOperation {
+    FileOpenRead,
+    FileCreate,
+    FileReadText,
+    FileWriteText,
+    SocketConnect,
+    SocketReadText,
+    SocketWriteText,
+}
 
 /// Statically known external-resource class for typed lexical disposal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1471,15 +1507,6 @@ pub enum TerminatorKind {
         normal: ResultTarget,
         unwind: UnwindTarget,
     },
-    /// Closes one compiler-known File or Socket handle without a universal
-    /// value envelope. The operation functionally writes the closed resource
-    /// back on both edges so lexical disposal preserves exact inout state.
-    ResourceClose {
-        kind: ResourceKind,
-        resource: ValueId,
-        normal: ResultTarget,
-        fault: UnwindTarget,
-    },
     /// Writes one structured JSON log line through the direct Text ABI.
     /// `fields` is the canonical managed `TextMap[Text]` value. A successful
     /// operation defines Unit only on `normal`; a device failure activates
@@ -1616,19 +1643,6 @@ impl TerminatorKind {
                 operands.extend_from_slice(&unwind.arguments);
                 operands
             }
-            Self::ResourceClose {
-                resource,
-                normal,
-                fault,
-                ..
-            } => {
-                let mut operands =
-                    Vec::with_capacity(1 + normal.arguments.len() + fault.arguments.len());
-                operands.push(*resource);
-                operands.extend_from_slice(&normal.arguments);
-                operands.extend_from_slice(&fault.arguments);
-                operands
-            }
             Self::LogWrite {
                 level,
                 message,
@@ -1694,7 +1708,6 @@ impl TerminatorKind {
             Self::TaskSleep { normal, fault, .. }
             | Self::CheckedIntNegate { normal, fault, .. }
             | Self::CheckedIntBinary { normal, fault, .. }
-            | Self::ResourceClose { normal, fault, .. }
             | Self::LogWrite { normal, fault, .. } => {
                 vec![preserve(normal.block), activate(fault.block)]
             }

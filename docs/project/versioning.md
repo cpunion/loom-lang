@@ -27,15 +27,15 @@ writers for unreleased formats. Development history belongs in
 | Interpreted final-cache layer | `final-artifact-v3` |
 | Interpreted artifact writer | `loom-interpreted-artifact-writer-v3` |
 | Portable-library final-cache layer | `portable-library-artifact-v3` |
-| LCIR textual dump | `lcir 37` |
-| LCIR artifact identity | schema `39` |
+| LCIR textual dump | `lcir 39` |
+| LCIR artifact identity | schema `41` |
 | LCIR artifact route | `typed-lcir-whole-artifact` |
-| LCIR native-object domain | `loom-lcir-native-object-v35` |
+| LCIR native-object domain | `loom-lcir-native-object-v37` |
 | MIR native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v40` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v42` |
 | Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
-| Native runtime ABI component | `27` |
+| Native runtime ABI component | `29` |
 | Coroutine ABI component | `2` |
 | Typed Task ABI component | `1` |
 | Wait ABI component | `1` |
@@ -54,11 +54,11 @@ cache entries even when no public ABI component changes.
 The complete compiler-private native runtime identity is:
 
 ```text
-loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v21/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v5
+loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v23/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v5
 ```
 
 Runtime bundles compare this entire identity, not only native runtime component
-`27` or one subordinate ABI version.
+`29` or one subordinate ABI version.
 
 ## Source language
 

@@ -1,0 +1,59 @@
+module lcir_typed_io
+
+import std.file.try_open_read
+import std.file.try_create
+import std.net.try_connect
+
+async fn round_trip(path Text) Result[Text, IoError] {
+    {
+        scoped output = try_create(path).await?
+        output.try_write_text("direct typed I/O").await?
+    }
+    scoped input = try_open_read(path).await?
+    input.try_read_text().await
+}
+
+pub async fn roundTripMain() {
+    match round_trip("round-trip.txt").await {
+        Ok(value) => {
+            assert value == "direct typed I/O"
+        }
+        Err(_) => {
+            assert false
+        }
+    }
+}
+
+pub async fn missingMain() {
+    match try_open_read("missing.txt").await {
+        Ok(file) => {
+            scoped file = file
+            assert false
+        }
+        Err(error) => {
+            let kind = error.kind()
+            assert kind == IoErrorKind.NotFound
+        }
+    }
+}
+
+pub async fn socketMain() {
+    match try_connect("localhost", -1).await {
+        Ok(socket) => {
+            scoped socket = socket
+            discard socket.try_read_text().await
+            discard socket.try_write_text("").await
+            assert false
+        }
+        Err(error) => {
+            let kind = error.kind()
+            assert kind == IoErrorKind.InvalidInput
+        }
+    }
+}
+
+pub async fn main() {
+    roundTripMain().await
+    missingMain().await
+    socketMain().await
+}

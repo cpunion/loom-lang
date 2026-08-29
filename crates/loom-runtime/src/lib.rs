@@ -56,19 +56,19 @@ pub use scheduler::{
     executor_gc_collections, executor_gc_live_objects, executor_gc_reclaimed,
     executor_gc_relocations, executor_live_tasks, executor_run, executor_tasks_reclaimed,
     file_try_create, file_try_open_read, file_try_read_text, file_try_write_text, join_add_list,
-    join_add_task, join_create, join_task, resource_close_typed_v1, socket_try_connect,
-    socket_try_read_text, socket_try_write_text, task_add_join_child, task_cancel,
-    task_capture_witnesses_v1, task_from_wait_source, task_is_cancelled, task_join_count,
-    task_join_result, task_join_result_step, task_join_step, task_join_winner, task_prepare_join,
-    task_report_fault, task_result, task_set_fault, task_set_state, task_slot, task_spawn,
-    task_spawn_descriptor, task_suspend_join, task_suspend_value, task_suspend_wait,
-    task_trace_live_slots, task_witness_v1, task_write_join_result,
-    typed_task_abort_unpublished_v1, typed_task_create_v1, typed_task_fault_view_v1,
-    typed_task_frame_v1, typed_task_initialize_v1, typed_task_is_cancel_requested_v1,
-    typed_task_publish_adopting_v1, typed_task_publish_result_v1, typed_task_publish_v1,
-    typed_task_record_fault_v1, typed_task_request_cancel_v1, typed_task_set_root_state_v1,
-    typed_task_status_v1, typed_task_take_outcome_v1, typed_task_take_result_v1,
-    typed_timer_task_create_v1,
+    join_add_task, join_create, join_task, socket_try_connect, socket_try_read_text,
+    socket_try_write_text, task_add_join_child, task_cancel, task_capture_witnesses_v1,
+    task_from_wait_source, task_is_cancelled, task_join_count, task_join_result,
+    task_join_result_step, task_join_step, task_join_winner, task_prepare_join, task_report_fault,
+    task_result, task_set_fault, task_set_state, task_slot, task_spawn, task_spawn_descriptor,
+    task_suspend_join, task_suspend_value, task_suspend_wait, task_trace_live_slots,
+    task_witness_v1, task_write_join_result, typed_io_cancel_v1, typed_io_poll_v1,
+    typed_io_task_create_v1, typed_resource_close_v1, typed_task_abort_unpublished_v1,
+    typed_task_create_v1, typed_task_fault_view_v1, typed_task_frame_v1, typed_task_initialize_v1,
+    typed_task_is_cancel_requested_v1, typed_task_publish_adopting_v1,
+    typed_task_publish_result_v1, typed_task_publish_v1, typed_task_record_fault_v1,
+    typed_task_request_cancel_v1, typed_task_set_root_state_v1, typed_task_status_v1,
+    typed_task_take_outcome_v1, typed_task_take_result_v1, typed_timer_task_create_v1,
 };
 pub use standard::{
     JSON_DEPTH_LIMIT, JsonFailure, JsonFailureKind, JsonNode, bytes_append, bytes_decode_utf8,
@@ -94,23 +94,30 @@ pub use loom_runtime_abi::{
     LAYOUT_KIND_BYTES, LAYOUT_KIND_TEXT, LoomByteView, LoomGcObjectDescriptor,
     LoomGcRepeatedObjectDescriptor, LoomGcRootDescriptor, LoomGcRootFrame,
     LoomGcTypedRootDescriptor, LoomGcTypedRootFrame, LoomLayoutDescriptor,
-    LoomTypedCoroutineDescriptor, LoomTypedJsonLayout, LoomTypedLogField, LoomTypedTaskCallback,
-    LoomTypedTaskFaultView, LoomWitnessDescriptor, LoomWitnessInstance,
-    NATIVE_RUNTIME_ABI_IDENTITY, PATH_JOIN_TYPED_ABSOLUTE, PATH_JOIN_TYPED_SYMBOL, READY_CLOSED,
-    READY_COMPLETED, READY_ERROR, READY_READABLE, READY_TIMER, READY_WRITABLE, RUNTIME_ABI_VERSION,
-    SHADOW_STACK_ABI_VERSION, STANDARD_LIBRARY_ABI_VERSION, STDOUT_WRITE_FAILED,
-    STDOUT_WRITE_INVALID_ARGUMENT, STDOUT_WRITE_OK, STDOUT_WRITE_SYMBOL, TASK_CANCELLED,
-    TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL, TASK_JOIN_ANY, TASK_JOIN_RACE, TASK_JOIN_SETTLED,
-    TASK_PENDING, TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8, TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL,
+    LoomTypedCoroutineDescriptor, LoomTypedIoOutcome, LoomTypedIoRequest, LoomTypedJsonLayout,
+    LoomTypedLogField, LoomTypedTaskCallback, LoomTypedTaskFaultView, LoomWitnessDescriptor,
+    LoomWitnessInstance, NATIVE_RUNTIME_ABI_IDENTITY, PATH_JOIN_TYPED_ABSOLUTE,
+    PATH_JOIN_TYPED_SYMBOL, READY_CLOSED, READY_COMPLETED, READY_ERROR, READY_READABLE,
+    READY_TIMER, READY_WRITABLE, RUNTIME_ABI_VERSION, SHADOW_STACK_ABI_VERSION,
+    STANDARD_LIBRARY_ABI_VERSION, STDOUT_WRITE_FAILED, STDOUT_WRITE_INVALID_ARGUMENT,
+    STDOUT_WRITE_OK, STDOUT_WRITE_SYMBOL, TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED,
+    TASK_JOIN_ALL, TASK_JOIN_ANY, TASK_JOIN_RACE, TASK_JOIN_SETTLED, TASK_PENDING,
+    TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8, TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL,
     TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_INVALID, TEXT_GET_TYPED_MISSING, TEXT_GET_TYPED_SYMBOL,
     TYPED_GC_ABI_VERSION, TYPED_GC_ALLOC_SYMBOL, TYPED_GC_REPEATED_ABI_VERSION,
     TYPED_GC_REPEATED_ALLOC_SYMBOL, TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL,
-    TYPED_JSON_ABI_VERSION, TYPED_JSON_FORMAT_ABI_MISMATCH, TYPED_JSON_FORMAT_DEPTH_LIMIT,
-    TYPED_JSON_FORMAT_DESCRIPTOR_INVALID, TYPED_JSON_FORMAT_INVALID_ARGUMENT,
-    TYPED_JSON_FORMAT_NON_FINITE_NUMBER, TYPED_JSON_FORMAT_OK, TYPED_JSON_FORMAT_RESOURCE_LIMIT,
-    TYPED_JSON_FORMAT_SYMBOL, TYPED_LOG_FIELD_ALIGNMENT, TYPED_LOG_FIELD_KEY_OFFSET,
-    TYPED_LOG_FIELD_SIZE, TYPED_LOG_FIELD_VALUE_OFFSET, TYPED_LOG_INVALID_ARGUMENT, TYPED_LOG_OK,
-    TYPED_LOG_WRITE_FAILED, TYPED_LOG_WRITE_SYMBOL, TYPED_RESOURCE_CLOSE_FAILED,
+    TYPED_IO_ABI_VERSION, TYPED_IO_CANCEL_SYMBOL, TYPED_IO_INVALID_RESOURCE_TOKEN,
+    TYPED_IO_OPERATION_FILE_CREATE, TYPED_IO_OPERATION_FILE_OPEN_READ,
+    TYPED_IO_OPERATION_FILE_READ_TEXT, TYPED_IO_OPERATION_FILE_WRITE_TEXT,
+    TYPED_IO_OPERATION_SOCKET_CONNECT, TYPED_IO_OPERATION_SOCKET_READ_TEXT,
+    TYPED_IO_OPERATION_SOCKET_WRITE_TEXT, TYPED_IO_OUTCOME_ERROR, TYPED_IO_OUTCOME_RESOURCE,
+    TYPED_IO_OUTCOME_TEXT, TYPED_IO_OUTCOME_UNIT, TYPED_IO_POLL_SYMBOL,
+    TYPED_IO_TASK_CREATE_SYMBOL, TYPED_JSON_ABI_VERSION, TYPED_JSON_FORMAT_ABI_MISMATCH,
+    TYPED_JSON_FORMAT_DEPTH_LIMIT, TYPED_JSON_FORMAT_DESCRIPTOR_INVALID,
+    TYPED_JSON_FORMAT_INVALID_ARGUMENT, TYPED_JSON_FORMAT_NON_FINITE_NUMBER, TYPED_JSON_FORMAT_OK,
+    TYPED_JSON_FORMAT_RESOURCE_LIMIT, TYPED_JSON_FORMAT_SYMBOL, TYPED_LOG_FIELD_ALIGNMENT,
+    TYPED_LOG_FIELD_KEY_OFFSET, TYPED_LOG_FIELD_SIZE, TYPED_LOG_FIELD_VALUE_OFFSET,
+    TYPED_LOG_INVALID_ARGUMENT, TYPED_LOG_OK, TYPED_LOG_WRITE_FAILED, TYPED_LOG_WRITE_SYMBOL,
     TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT, TYPED_RESOURCE_CLOSE_OK, TYPED_RESOURCE_CLOSE_SYMBOL,
     TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET, TYPED_SHADOW_STACK_ABI_VERSION,
     TYPED_TASK_ABI_VERSION, TYPED_TASK_CLEANUP_FAULTED, TYPED_TASK_INVALID_ARGUMENT,
@@ -899,17 +906,24 @@ mod tests {
     }
 
     #[test]
-    fn blocking_worker_does_not_delay_timer_or_cancellation() {
+    fn timer_wins_before_a_blocking_loser_is_structurally_drained() {
+        let _serial = scheduler::lock_slow_blocking_fixture();
         let runtime = runtime_create_v1();
         assert!(!runtime.is_null());
         let executor = unsafe { executor_create_for_runtime_v1(runtime) };
         assert!(!executor.is_null());
+        scheduler::reset_slow_blocking_fixture();
         let started = std::time::Instant::now();
         unsafe {
             let root = task_spawn(executor, Some(blocking_race_resume), 2, 0);
             assert!(!root.is_null());
             assert_eq!(executor_run(executor, root), TASK_COMPLETED);
-            assert!(started.elapsed() < std::time::Duration::from_millis(100));
+            let elapsed = started.elapsed();
+            let (work_started, work_finished) = scheduler::slow_blocking_fixture_state();
+            assert!(!work_started || work_finished);
+            if work_started {
+                assert!(elapsed >= std::time::Duration::from_millis(150));
+            }
             executor_destroy(executor);
             assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }
