@@ -1,10 +1,10 @@
 module lcir_typed_logging
 
-import standard.log.debug
-import standard.log.error
-import standard.log.info
-import standard.log.warn
-import standard.log.write
+import std.log.debug
+import std.log.error
+import std.log.info
+import std.log.warn
+import std.log.write
 
 fn selectedLevel(useWarn Bool) LogLevel {
     if useWarn { LogLevel.Warn } else { LogLevel.Info }

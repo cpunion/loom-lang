@@ -1,4 +1,4 @@
-module standard.int
+module std.int
 
 /// Returns the smaller of two Int values.
 pub fn minimum(left Int, right Int) Int {

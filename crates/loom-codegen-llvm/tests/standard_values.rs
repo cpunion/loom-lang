@@ -28,8 +28,8 @@ fn text_bytes_paths_and_path_files_match_in_both_backends() {
     let source = format!(
         r#"module standard_values
 
-import standard.file.open_read_path
-import standard.file.create_path
+import std.file.open_read_path
+import std.file.create_path
 
 test fn text_bytes_and_paths() {{
     let text = "a界🙂"

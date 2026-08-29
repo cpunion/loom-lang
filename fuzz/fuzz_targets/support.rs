@@ -7,16 +7,16 @@ use loom_syntax::parse_with_file;
 pub const STRUCTURED_STANDARD_SOURCE: &str = r#"
 module fuzz.structured_standard
 
-import standard.file.try_open_read_path
-import standard.file.try_create_path
-import standard.net.try_connect
-import standard.json.parse_json
-import standard.json.format_json
-import standard.log.debug
-import standard.log.info
-import standard.log.warn
-import standard.log.error
-import standard.log.write
+import std.file.try_open_read_path
+import std.file.try_create_path
+import std.net.try_connect
+import std.json.parse_json
+import std.json.format_json
+import std.log.debug
+import std.log.info
+import std.log.warn
+import std.log.error
+import std.log.write
 
 fn jsonValue(value Json) {
     match value {

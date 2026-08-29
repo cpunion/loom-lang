@@ -44,24 +44,27 @@ Standalone file or directory inputs use a synthetic package identity and have
 no manifest features.
 
 The source-backed portion of the compiler-distributed standard library is a
-read-only `standard` package available through a reserved direct dependency. It
+read-only `std` package available through a reserved direct dependency. It
 is not concatenated with a root source file and it receives no privileged
 frontend pass: migrated modules are parsed, resolved, checked, lowered, and
 selected by the same reachability rules as user packages. The current package
-contains the foundational `standard.int` algorithms and the public resource
-concept declarations in `standard.resource`. `Dispose`, `MustScope`, and
+contains the foundational `std.int` algorithms and the public resource concept
+declarations in `std.resource`. `Dispose`, `MustScope`, and
 `NoSuspend` pass through the ordinary source pipeline, while their canonical
 identity, required shapes, and lexical static rules remain compiler-enforced
 and require no runtime registry. JSON and other documented APIs still have
 transitional compiler-known or runtime paths. See
 [Core, standard library, and runtime boundary](core-library-runtime-boundary.md).
 
+The `std` identity is the only compiler-owned package identity in language
+version 0.3.
+
 A version 2 `.loomlib` dependency enters at this same source boundary. Its
 decoder validates the bounded package/source structure and recomputes the
 stored public interfaces, then exposes the embedded files as read-only package
 sources. It does not supply checked MIR, producer proof decisions, or a
 standard-library implementation. The consumer injects its compiler-distributed
-standard package and compiles the resulting graph normally.
+`std` package and compiles the resulting graph normally.
 
 All source files in the selected graph are parsed and checked. Native
 reachability is a later code-generation concern; it never suppresses a type or

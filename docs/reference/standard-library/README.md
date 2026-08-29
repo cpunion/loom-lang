@@ -8,18 +8,22 @@ as user declarations. Standard functions are available only after an explicit
 import; standard value types and their built-in constructors and methods are in
 the prelude.
 
-The source-backed migration has begun: migrated modules are distributed as Loom
-source and compile through the ordinary module, type, MIR, reachability, and
-native pipelines. The current source package contains the foundational
-`standard.int` algorithms and the public `Dispose`, `MustScope`, and
-`NoSuspend` declarations in `standard.resource`. Resource declarations are
-source-backed, but their fixed shapes and irreducible static rules remain part
-of the language core and add no runtime registry. Other documented APIs,
-including JSON, still have transitional compiler-known or runtime
-implementations and must pass the migration gates before those paths are
-deleted. The target boundary permits only irreducible GC, scheduler, platform,
-and generic construction services to cross into the compiler-private runtime.
-The implementation rule and migration gates are documented in
+The compiler-owned source package is `std`. Source imports library APIs by
+their `std.*` path.
+
+Source-backed modules are distributed as Loom source and compile through the
+ordinary module, type, MIR, reachability, and native pipelines. The current
+source package contains the foundational `std.int` algorithms and the public
+`Dispose`, `MustScope`, and `NoSuspend` declarations in `std.resource`.
+Resource declarations are source-backed, but their fixed shapes and
+irreducible static rules remain part of the language core and add no runtime
+registry. Other documented APIs, including JSON, currently use compiler-known
+or runtime implementations until their Loom source modules exist. Those
+private paths are deleted after their source replacements pass the ordinary
+pipeline gates; they are not retained as compatibility layers. The target
+boundary permits only irreducible GC, scheduler, platform, and generic
+construction services to cross into the compiler-private runtime. The
+implementation rule and source-replacement gates are documented in
 [Core, standard library, and runtime boundary](../../internals/core-library-runtime-boundary.md).
 
 ## Library map
@@ -39,9 +43,9 @@ The language behavior of `scoped`, `defer`, and `Task` is defined in the
 ### Float
 
 ```loom
-import standard.float.parse_float
-import standard.float.format_float
-import standard.float.is_finite
+import std.float.parse_float
+import std.float.format_float
+import std.float.is_finite
 ```
 
 ```text
@@ -82,7 +86,7 @@ infinity.
 ### Int
 
 ```loom
-import standard.int.parse_int
+import std.int.parse_int
 ```
 
 ```text
@@ -98,8 +102,8 @@ A syntactically valid integer outside the signed 64-bit range produces
 ## Process values
 
 ```loom
-import standard.process.arguments
-import standard.process.environment
+import std.process.arguments
+import std.process.environment
 ```
 
 ```text
@@ -116,7 +120,7 @@ The library does not expose a mutable process-environment operation.
 ## Time values
 
 ```loom
-import standard.time.milliseconds
+import std.time.milliseconds
 ```
 
 ```text

@@ -13,7 +13,7 @@ must be imported explicitly:
 ```loom
 module shop.price
 
-import standard.float.is_finite
+import std.float.is_finite
 ```
 
 Declarations are private to their module unless marked `pub`. Source paths are

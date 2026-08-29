@@ -1,6 +1,6 @@
 module foundation.money
 
-import standard.float.is_finite
+import std.float.is_finite
 
 pub type Money = Float where is_finite(self) && self >= 0.0
 

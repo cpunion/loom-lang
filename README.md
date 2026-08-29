@@ -23,7 +23,7 @@ This excerpt is adapted from the checked and executed
 ```loom
 module example.shop
 
-import standard.float.is_finite
+import std.float.is_finite
 
 pub type Price = Float where is_finite(self) && self >= 0.0
 

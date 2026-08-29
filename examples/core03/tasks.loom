@@ -1,7 +1,7 @@
 module example.tasks
 
-import standard.resource.Dispose
-import standard.resource.MustScope
+import std.resource.Dispose
+import std.resource.MustScope
 
 record Resource {
     value Int

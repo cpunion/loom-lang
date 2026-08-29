@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 
 use crate::project::ProjectSource;
 
-pub(crate) use loom_core::STANDARD_PACKAGE_NAME;
+pub(crate) use loom_core::STD_PACKAGE_NAME;
 const STANDARD_LIBRARY_IDENTITY_DOMAIN: &str = "loom-source-stdlib-v1";
 
 struct StandardSource {
@@ -19,19 +19,19 @@ struct StandardSource {
 const STANDARD_SOURCES: &[StandardSource] = &[
     StandardSource {
         path: "src/int.loom",
-        module: "standard.int",
-        text: include_str!("../../../library/standard/src/int.loom"),
+        module: "std.int",
+        text: include_str!("../../../library/std/src/int.loom"),
     },
     StandardSource {
         path: "src/resource.loom",
-        module: "standard.resource",
-        text: include_str!("../../../library/standard/src/resource.loom"),
+        module: "std.resource",
+        text: include_str!("../../../library/std/src/resource.loom"),
     },
 ];
 
 #[must_use]
 pub(crate) fn package_id(language_version: &str) -> PackageId {
-    PackageId::compiler_standard(language_version)
+    PackageId::compiler_std(language_version)
 }
 
 #[must_use]
@@ -57,9 +57,9 @@ pub(crate) fn project_sources(root: &Path, language_version: &str) -> Vec<Projec
 /// colliding with a user module that happened to claim the same path first.
 #[must_use]
 pub(crate) fn owns_module(module: &str) -> bool {
-    module == STANDARD_PACKAGE_NAME
+    module == STD_PACKAGE_NAME
         || module
-            .strip_prefix(STANDARD_PACKAGE_NAME)
+            .strip_prefix(STD_PACKAGE_NAME)
             .is_some_and(|suffix| suffix.starts_with('.'))
 }
 
@@ -72,7 +72,7 @@ fn synthetic_root(root: &Path, language_version: &str) -> PathBuf {
     root.join("target")
         .join("loom")
         .join("compiler-owned")
-        .join(STANDARD_PACKAGE_NAME)
+        .join(STD_PACKAGE_NAME)
         .join(language_version)
 }
 
@@ -105,45 +105,32 @@ mod tests {
 
     #[test]
     fn identity_tracks_language_paths_and_contents() {
-        let base = identity_for_sources(
-            "0.3",
-            &[source("src/a.loom", "standard.a", "module standard.a\n")],
-        );
+        let base = identity_for_sources("0.3", &[source("src/a.loom", "std.a", "module std.a\n")]);
         assert!(base.starts_with(&format!("{STANDARD_LIBRARY_IDENTITY_DOMAIN}/")));
         assert_eq!(base.len(), STANDARD_LIBRARY_IDENTITY_DOMAIN.len() + 1 + 64);
         assert_ne!(
             base,
-            identity_for_sources(
-                "0.4",
-                &[source("src/a.loom", "standard.a", "module standard.a\n")],
-            )
+            identity_for_sources("0.4", &[source("src/a.loom", "std.a", "module std.a\n")],)
+        );
+        assert_ne!(
+            base,
+            identity_for_sources("0.3", &[source("src/b.loom", "std.a", "module std.a\n")],)
         );
         assert_ne!(
             base,
             identity_for_sources(
                 "0.3",
-                &[source("src/b.loom", "standard.a", "module standard.a\n")],
-            )
-        );
-        assert_ne!(
-            base,
-            identity_for_sources(
-                "0.3",
-                &[source(
-                    "src/a.loom",
-                    "standard.changed",
-                    "module standard.changed\n",
-                )],
+                &[source("src/a.loom", "std.changed", "module std.changed\n",)],
             )
         );
     }
 
     #[test]
-    fn complete_standard_namespace_is_reserved_without_matching_prefixes() {
-        assert!(owns_module("standard"));
-        assert!(owns_module("standard.resource"));
-        assert!(owns_module("standard.future.nested"));
-        assert!(!owns_module("standardish.resource"));
-        assert!(!owns_module("application.standard"));
+    fn complete_std_namespace_is_reserved_without_matching_prefixes() {
+        assert!(owns_module("std"));
+        assert!(owns_module("std.resource"));
+        assert!(owns_module("std.future.nested"));
+        assert!(!owns_module("stdish.resource"));
+        assert!(!owns_module("application.std"));
     }
 }

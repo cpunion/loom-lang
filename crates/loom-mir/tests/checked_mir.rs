@@ -267,7 +267,7 @@ fn resource_program(mut main: Function, mut extra: Vec<Function>, no_suspend: bo
         concepts: vec![
             ConceptDef {
                 id: ConceptId(0),
-                module: "standard.resource".to_owned(),
+                module: "std.resource".to_owned(),
                 name: "Dispose".to_owned(),
                 span: span(),
                 identity: Some(ConceptIdentity::Dispose),
@@ -277,7 +277,7 @@ fn resource_program(mut main: Function, mut extra: Vec<Function>, no_suspend: bo
             },
             ConceptDef {
                 id: ConceptId(1),
-                module: "standard.resource".to_owned(),
+                module: "std.resource".to_owned(),
                 name: "MustScope".to_owned(),
                 span: span(),
                 identity: Some(ConceptIdentity::MustScope),
@@ -287,7 +287,7 @@ fn resource_program(mut main: Function, mut extra: Vec<Function>, no_suspend: bo
             },
             ConceptDef {
                 id: ConceptId(2),
-                module: "standard.resource".to_owned(),
+                module: "std.resource".to_owned(),
                 name: "NoSuspend".to_owned(),
                 span: span(),
                 identity: Some(ConceptIdentity::NoSuspend),
@@ -335,7 +335,7 @@ fn artifact_program_with_resource_identities(mut program: Program) -> CheckedPro
     program.concepts.extend([
         ConceptDef {
             id: dispose,
-            module: "standard.resource".to_owned(),
+            module: "std.resource".to_owned(),
             name: "Dispose".to_owned(),
             span: span(),
             identity: Some(ConceptIdentity::Dispose),
@@ -345,7 +345,7 @@ fn artifact_program_with_resource_identities(mut program: Program) -> CheckedPro
         },
         ConceptDef {
             id: must_scope,
-            module: "standard.resource".to_owned(),
+            module: "std.resource".to_owned(),
             name: "MustScope".to_owned(),
             span: span(),
             identity: Some(ConceptIdentity::MustScope),
@@ -355,7 +355,7 @@ fn artifact_program_with_resource_identities(mut program: Program) -> CheckedPro
         },
         ConceptDef {
             id: no_suspend,
-            module: "standard.resource".to_owned(),
+            module: "std.resource".to_owned(),
             name: "NoSuspend".to_owned(),
             span: span(),
             identity: Some(ConceptIdentity::NoSuspend),
@@ -2442,7 +2442,7 @@ fn dispose_and_no_suspend_reject_forged_tags_names_and_modules_at_artifact_decod
 
 #[test]
 fn source_spelling_without_a_compiler_identity_tag_has_no_resource_semantics() {
-    for module in ["application", "standard.resource"] {
+    for module in ["application", "std.resource"] {
         let concept = ConceptDef {
             id: ConceptId(0),
             module: module.to_owned(),
@@ -3646,7 +3646,7 @@ fn portable_mir_rejects_non_place_resource_receiver_roots() {
                 (
                     vec![ConceptDef {
                         id: ConceptId(0),
-                        module: "standard.resource".to_owned(),
+                        module: "std.resource".to_owned(),
                         name: "MustScope".to_owned(),
                         span: span(),
                         identity: Some(ConceptIdentity::MustScope),
@@ -4027,7 +4027,7 @@ fn canonical_file_obligation_budget_exhaustion_fails_closed_without_marker_proof
         let concepts = with_marker
             .then(|| ConceptDef {
                 id: ConceptId(0),
-                module: "standard.resource".to_owned(),
+                module: "std.resource".to_owned(),
                 name: "MustScope".to_owned(),
                 span: span(),
                 identity: Some(ConceptIdentity::MustScope),

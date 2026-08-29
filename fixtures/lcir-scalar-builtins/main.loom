@@ -1,10 +1,10 @@
 module lcir_scalar_builtins
 
-import standard.float.format_float
-import standard.float.is_finite
-import standard.float.parse_float
-import standard.int.parse_int
-import standard.time.milliseconds
+import std.float.format_float
+import std.float.is_finite
+import std.float.parse_float
+import std.int.parse_int
+import std.time.milliseconds
 
 fn parsedIntEquals(input Text, expected Int) Bool {
     match parse_int(input) {
@@ -37,11 +37,11 @@ fn scalarBuiltins() {
 
     let parsedFinite = parsedFloatEquals("1.25e2", 125.0)
     let invalidFloat = match parse_float("1") {
-        Err(standard.float.ParseFloatError.InvalidSyntax) => true
+        Err(std.float.ParseFloatError.InvalidSyntax) => true
         _ => false
     }
     let largeFloat = match parse_float("1e999") {
-        Err(standard.float.ParseFloatError.OutOfRange) => true
+        Err(std.float.ParseFloatError.OutOfRange) => true
         _ => false
     }
     let finite = is_finite(1.25)

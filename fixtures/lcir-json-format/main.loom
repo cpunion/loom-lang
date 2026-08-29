@@ -1,6 +1,6 @@
 module lcir_json_format
 
-import standard.json.format_json
+import std.json.format_json
 
 enum Problem { WrongValue }
 

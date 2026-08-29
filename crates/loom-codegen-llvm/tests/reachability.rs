@@ -283,9 +283,9 @@ fn structured_builtins_scan_nested_witnesses_only_from_live_roots() {
         source.path().join("main.loom"),
         r#"module structured_graph
 
-import standard.json.parse_json
-import standard.log.info
-import standard.log.warn
+import std.json.parse_json
+import std.log.info
+import std.log.warn
 
 pub dyn concept Marker {}
 
@@ -338,9 +338,9 @@ fn structured_artifact_and_native_cache_identities_respect_dce_boundary() {
         &source,
         r#"module cache.structured
 
-import standard.json.parse_json
-import standard.log.info
-import standard.log.warn
+import std.json.parse_json
+import std.log.info
+import std.log.warn
 
 pub fn main() {
     let fields = TextMap[Text]().insert("live", "value")

@@ -1333,10 +1333,10 @@ pub fn main() {
 fn scalar_builtins_match_interpreter_and_legacy_without_universal_values() {
     let source = r#"module lcir_scalar_builtins
 
-import standard.float.is_finite
-import standard.float.parse_float
-import standard.int.parse_int
-import standard.time.milliseconds
+import std.float.is_finite
+import std.float.parse_float
+import std.int.parse_int
+import std.time.milliseconds
 
 fn join(left Text, right Text) Text { left.concat(right) }
 
@@ -1370,14 +1370,14 @@ fn parsedFloatEquals(input Text, expected Float) Bool {
 
 fn floatInvalid(input Text) Bool {
     match parse_float(input) {
-        Err(standard.float.ParseFloatError.InvalidSyntax) => true
+        Err(std.float.ParseFloatError.InvalidSyntax) => true
         _ => false
     }
 }
 
 fn floatOutOfRange(input Text) Bool {
     match parse_float(input) {
-        Err(standard.float.ParseFloatError.OutOfRange) => true
+        Err(std.float.ParseFloatError.OutOfRange) => true
         _ => false
     }
 }
@@ -1525,7 +1525,7 @@ fn typed_float_formatting_matches_all_backends_and_preserves_moving_text() {
     let source = format!(
         r#"module lcir_typed_float_format
 
-import standard.float.format_float
+import std.float.format_float
 
 fn join(left Text, right Text) Text {{ left.concat(right) }}
 
@@ -1646,7 +1646,7 @@ pub fn main() {{
 fn negative_duration_fault_matches_interpreter_and_legacy() {
     let source = r"module lcir_negative_duration
 
-import standard.time.milliseconds
+import std.time.milliseconds
 
 pub fn main() {
     discard milliseconds(-1)
@@ -1694,7 +1694,7 @@ pub fn main() {
 fn invalid_duration_during_cleanup_cannot_replace_the_primary_fault() {
     let source = r"module lcir_duration_cleanup_fault
 
-import standard.time.milliseconds
+import std.time.milliseconds
 
 pub fn main() {
     defer {
@@ -3679,7 +3679,7 @@ fn typed_json_format_hoists_loop_storage_and_reloads_after_moving_collection() {
     let source = format!(
         r#"module lcir_json_format_relocation
 
-import standard.json.format_json
+import std.json.format_json
 
 fn verify(value Json, expectedLength Int) Bool {{
     var valid = true
@@ -5635,8 +5635,8 @@ pub fn cleanupFaultMain() {
 fn typed_scoped_disposal_is_one_static_inout_call_after_initialization() {
     let source = r"module lcir_scoped_disposal
 
-import standard.resource.Dispose
-import standard.resource.MustScope
+import std.resource.Dispose
+import std.resource.MustScope
 
 record Resource {
     value Int

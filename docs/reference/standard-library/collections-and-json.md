@@ -111,8 +111,8 @@ match value {
 ## Parsing and formatting JSON
 
 ```loom
-import standard.json.parse_json
-import standard.json.format_json
+import std.json.parse_json
+import std.json.format_json
 ```
 
 ```text

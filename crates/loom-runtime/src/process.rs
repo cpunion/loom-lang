@@ -1,4 +1,4 @@
-//! Process boundary used by compiler-known `standard.process` operations.
+//! Process boundary used by compiler-known `std.process` operations.
 
 use std::ffi::{CStr, c_char};
 use std::slice;

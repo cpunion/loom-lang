@@ -19,7 +19,7 @@ use crate::{
 const MAX_VALIDATION_DEPTH: u16 = 64;
 const MAX_PATTERN_ANALYSIS_STEPS: usize = 4_096;
 const MAX_VALIDATION_TYPE_NODES: usize = 4_096;
-const RESOURCE_MODULE: &str = "standard.resource";
+const RESOURCE_MODULE: &str = "std.resource";
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum MirValidationCode {
@@ -1538,7 +1538,7 @@ impl<'program> Validator<'program> {
         if identity == ResourceConceptIdentity::Invalid {
             self.push(
                 MirValidationCode::ConceptShape,
-                "canonical Dispose identity tag must occur exactly once, match prelude.dispose_concept, and identify the unique standard.resource.Dispose declaration",
+                "canonical Dispose identity tag must occur exactly once, match prelude.dispose_concept, and identify the unique std.resource.Dispose declaration",
                 dispose
                     .and_then(|id| self.program.concept(id))
                     .map_or_else(Span::default, |concept| concept.span),
@@ -1610,7 +1610,7 @@ impl<'program> Validator<'program> {
             self.push(
                 MirValidationCode::ConceptShape,
                 format!(
-                    "canonical {name} identity tag must occur exactly once, match {path}, and identify the unique standard.resource.{name} declaration"
+                    "canonical {name} identity tag must occur exactly once, match {path}, and identify the unique std.resource.{name} declaration"
                 ),
                 prelude_id
                     .and_then(|id| self.program.concept(id))

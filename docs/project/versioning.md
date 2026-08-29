@@ -209,7 +209,7 @@ encoding of `scoped` with an atomic scoped-initialization and disposal record.
 Version 20 is intentionally rejected rather than inferred or upgraded.
 
 Interpreted MIR version 22 carries each concept's source-module provenance and
-the compiler-known identity of the canonical `standard.resource.MustScope`
+the compiler-known identity of the canonical `std.resource.MustScope`
 marker. Validation independently requires the qualified concept, identity tag,
 prelude id, dense concept id, and empty non-dynamic marker shape to agree.
 Missing, redirected, duplicated, or inconsistent metadata fails closed before
@@ -235,9 +235,9 @@ layout, so LCIR, native-object, runtime, and cache schema versions do not
 advance.
 
 Interpreted MIR version 25 resolves `Dispose`, `MustScope`, and `NoSuspend`
-only from the compiler-owned standard package and assigns distinct MIR
+only from the compiler-owned `std` package and assigns distinct MIR
 identity tags. Each tag and prelude id form the authority while exact
-`standard.resource` module/name provenance and fixed shapes are consistency
+`std.resource` module/name provenance and fixed shapes are consistency
 checks. Interpreted artifact encoding and decoding require the complete trio;
 focused non-artifact checked MIR may omit all three. It changes no LCIR or
 runtime ABI.
@@ -252,7 +252,7 @@ dense-remaps all global MIR identities, and independently revalidates the
 result. The generic checked-MIR cache remains complete and keeps schema 4.
 
 Portable library version 2 replaces version 1's checked-MIR payload with a
-source-and-interface package envelope. It stores the resolved non-standard
+source-and-interface package envelope. It stores the resolved non-stdlib
 package graph, exact source text, language version, and canonical public
 interfaces. Decoding validates structural and byte/count bounds, identities,
 graph closure, portable paths, and public-interface fingerprints recomputed

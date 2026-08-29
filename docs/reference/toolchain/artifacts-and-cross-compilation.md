@@ -32,7 +32,7 @@ rebuilt; they are not upgraded or interpreted as version 2. The compiler does
 not append the `.loomlib` extension automatically.
 
 Version 22 records the source-module provenance and compiler-known identity of
-the canonical `standard.resource.MustScope` marker. Decoding rejects missing,
+the canonical `std.resource.MustScope` marker. Decoding rejects missing,
 redirected, duplicated, or shape-inconsistent identity metadata before the
 program can execute. This is structural validation, not publisher
 authentication; artifact provenance still belongs to the distribution layer.
@@ -44,7 +44,7 @@ Version 25 gives `Dispose`, `MustScope`, and `NoSuspend` distinct
 compiler-known MIR identity tags. A tag paired with its matching prelude id is
 the authority; source module and name cannot create language semantics. The
 validator cross-checks each asserted identity against the unique expected
-`standard.resource` declaration and fixed shape. Both artifact encoding and
+`std.resource` declaration and fixed shape. Both artifact encoding and
 decoding require the complete identity trio, all corresponding prelude ids,
 and the canonical Dispose requirement. General in-process checked MIR may omit
 the trio for low-level tools, but such a program cannot cross the interpreted

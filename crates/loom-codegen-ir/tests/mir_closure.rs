@@ -13,20 +13,20 @@ use loom_mir::{
 use loom_sema::analyze;
 use loom_syntax::parse_with_file;
 
-fn compile_with_standard_resource(source: &str) -> CheckedProgram {
+fn compile_with_std_resource(source: &str) -> CheckedProgram {
     let application = parse_with_file(FileId(0), source);
     let resource = parse_with_file(
         FileId(1),
-        include_str!("../../../library/standard/src/resource.loom"),
+        include_str!("../../../library/std/src/resource.loom"),
     );
     assert!(
         application.diagnostics().is_empty() && resource.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} standard={:#?}",
+        "syntax diagnostics: application={:#?} std={:#?}",
         application.diagnostics(),
         resource.diagnostics()
     );
 
-    let standard = PackageId::compiler_standard(LOOM_LANGUAGE_VERSION);
+    let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::legacy();
     let mut lowered = lower_package_files([
         PackageSourceUnit {
@@ -36,16 +36,16 @@ fn compile_with_standard_resource(source: &str) -> CheckedProgram {
         },
         PackageSourceUnit {
             file: FileId(1),
-            package: standard.clone(),
+            package: std_package.clone(),
             syntax: resource.ast(),
         },
     ]);
     lowered
         .program
-        .register_package(standard.clone(), [], false);
+        .register_package(std_package.clone(), [], false);
     lowered
         .program
-        .register_package(root, [(Name::new("standard"), standard)], true);
+        .register_package(root, [(Name::new("std"), std_package)], true);
     assert!(
         lowered.diagnostics.is_empty(),
         "HIR diagnostics: {:#?}",
@@ -115,8 +115,8 @@ fn assert_dense_global_ids(program: &CheckedProgram) {
 const CLOSURE_SOURCE: &str = r"
 module executable_closure
 
-import standard.resource.MustScope
-import standard.resource.NoSuspend
+import std.resource.MustScope
+import std.resource.NoSuspend
 
 concept DeadOps {
     method dead(self) Int
@@ -176,7 +176,7 @@ pub fn main() {
 
 #[test]
 fn closes_and_densely_remaps_all_global_identity_domains() {
-    let program = compile_with_standard_resource(CLOSURE_SOURCE);
+    let program = compile_with_std_resource(CLOSURE_SOURCE);
     let live_type = program
         .types
         .iter()
@@ -277,7 +277,7 @@ fn closes_serialized_references_even_after_return() {
         "pub fn main() {\n    let value = LiveValue { value = 7 }\n    let actual = mainHelper(value)\n    assert actual == 7\n}",
         "fn template() Int {\n    LiveValue { value = 7 }.used()\n}\n\npub fn main() {}",
     );
-    let checked = compile_with_standard_resource(&source);
+    let checked = compile_with_std_resource(&source);
     let mut program = checked.as_program().clone();
     let template = program
         .functions
@@ -351,13 +351,13 @@ fn closes_serialized_references_even_after_return() {
 
 #[test]
 fn preserves_scoped_resource_and_task_metadata() {
-    let program = compile_with_standard_resource(
+    let program = compile_with_std_resource(
         r"
 module resource_task_closure
 
-import standard.resource.Dispose
-import standard.resource.MustScope
-import standard.resource.NoSuspend
+import std.resource.Dispose
+import std.resource.MustScope
+import std.resource.NoSuspend
 
 record DeadRecord {
     value Int
@@ -444,7 +444,7 @@ pub async fn main() {
 
 #[test]
 fn rejects_an_unknown_entry_without_mutating_the_program() {
-    let program = compile_with_standard_resource("module missing_entry\n\npub fn main() {}\n");
+    let program = compile_with_std_resource("module missing_entry\n\npub fn main() {}\n");
     let before = serde_json::to_value(program.as_program()).expect("serialize fixture");
 
     let error = close_interpreted_executable(&program, "missing").expect_err("unknown entry");

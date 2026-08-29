@@ -12,7 +12,7 @@ The executable companion for this guide is
 Define a constrained type with a base type and a `where` predicate:
 
 ```loom
-import standard.float.is_finite
+import std.float.is_finite
 
 type Money = Float where is_finite(self) && self >= 0.0
 ```
@@ -182,7 +182,7 @@ Contract expressions use an intentionally closed, effect-restricted subset.
 They include literals, parameters, fields, `self`, `result`, valid `old`
 expressions, Boolean logic, comparisons, checked `Int` arithmetic, Float
 arithmetic, exhaustive matching, and the compiler-known pure predicate
-`standard.float.is_finite`.
+`std.float.is_finite`.
 
 User function calls, indexing, assignment, I/O, checked construction, and other
 potentially effectful operations are rejected in a contract. Integer `+`, `-`,

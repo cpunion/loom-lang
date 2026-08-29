@@ -196,7 +196,7 @@ Task.sleep(duration Duration) Task[Unit]
 Sleep duration must be non-negative. A negative `Int` raises the
 `InvalidSleepDuration` RuntimeFault; overflow while converting or adding the
 monotonic deadline raises `SleepDurationOverflow`. The standard function
-`standard.time.milliseconds` constructs a non-negative `Duration`, whose
+`std.time.milliseconds` constructs a non-negative `Duration`, whose
 `.as_milliseconds()` method returns `Int`.
 
 File and socket operations expose typed tasks. There is no Loom source

@@ -134,7 +134,7 @@ fn scoped_cleanup_fault_program(outer_raw: i64, inner_raw: i64) -> CheckedProgra
     };
     let dispose = Function {
         id: FunctionId(0),
-        name: "standard.resource.Resource.dispose".into(),
+        name: "std.resource.Resource.dispose".into(),
         span: span(),
         type_parameters: 0,
         is_async: false,
@@ -227,7 +227,7 @@ fn scoped_cleanup_fault_program(outer_raw: i64, inner_raw: i64) -> CheckedProgra
     checked(Program {
         types: vec![TypeDef {
             id: TypeId(0),
-            name: "standard.resource.Resource".into(),
+            name: "std.resource.Resource".into(),
             span: span(),
             type_parameters: 0,
             kind: TypeDefKind::Record {
@@ -242,7 +242,7 @@ fn scoped_cleanup_fault_program(outer_raw: i64, inner_raw: i64) -> CheckedProgra
         concepts: vec![
             ConceptDef {
                 id: ConceptId(0),
-                module: "standard.resource".into(),
+                module: "std.resource".into(),
                 name: "Dispose".into(),
                 span: span(),
                 identity: Some(ConceptIdentity::Dispose),
@@ -252,7 +252,7 @@ fn scoped_cleanup_fault_program(outer_raw: i64, inner_raw: i64) -> CheckedProgra
             },
             ConceptDef {
                 id: ConceptId(1),
-                module: "standard.resource".into(),
+                module: "std.resource".into(),
                 name: "MustScope".into(),
                 span: span(),
                 identity: Some(ConceptIdentity::MustScope),
@@ -262,7 +262,7 @@ fn scoped_cleanup_fault_program(outer_raw: i64, inner_raw: i64) -> CheckedProgra
             },
             ConceptDef {
                 id: ConceptId(2),
-                module: "standard.resource".into(),
+                module: "std.resource".into(),
                 name: "NoSuspend".into(),
                 span: span(),
                 identity: Some(ConceptIdentity::NoSuspend),
@@ -438,7 +438,7 @@ fn result_type() -> TypeDef {
 fn parse_float_error_type() -> TypeDef {
     TypeDef {
         id: TypeId(1),
-        name: "standard.float.ParseFloatError".into(),
+        name: "std.float.ParseFloatError".into(),
         span: span(),
         type_parameters: 0,
         kind: TypeDefKind::Enum {

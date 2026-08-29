@@ -98,7 +98,7 @@ text, and canonical public-interface fingerprints. It deliberately contains no
 checked MIR, producer-local proof state, or compiler-owned standard-library
 implementation. The decoder rejects incompatible versions and languages,
 malformed or oversized graphs and sources, non-portable paths, reserved
-`standard` package or dependency identities, and interfaces that do not match
+`std` package or dependency identities, and interfaces that do not match
 the embedded source. The loader bounds the artifact before reading it into
 memory. Per-package Merkle identities include dependency identities and their
 content, so two artifacts may share an identical transitive package while a

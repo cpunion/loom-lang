@@ -18,8 +18,8 @@ A MIR `Program` contains dense tables for:
 
 Concept metadata retains its source module separately from its unqualified
 name. Semantic analysis resolves `Dispose`, `MustScope`, and `NoSuspend` only
-from the exact current compiler-owned `standard` package and its
-`standard.resource` module. Lowering consumes those resolved `DefId` values
+from the exact current compiler-owned `std` package and its `std.resource`
+module. Lowering consumes those resolved `DefId` values
 without reconstructing names and assigns distinct compiler-known `Dispose`,
 `MustScope`, and `NoSuspend` identity tags only to those three definitions.
 
@@ -73,9 +73,9 @@ Validation covers:
 For resource concepts, only a compiler-known identity tag paired with its
 matching prelude id grants language semantics. Module and name metadata cannot
 create an identity: even an untagged low-level concept spelled exactly
-`standard.resource.MustScope` remains ordinary. Once an identity is asserted,
+`std.resource.MustScope` remains ordinary. Once an identity is asserted,
 the validator cross-checks that its tagged dense id is the unique declaration
-with the expected `standard.resource` module and name. It also requires the
+with the expected `std.resource` module and name. It also requires the
 fixed non-dynamic shape, including the exact `Dispose.dispose(mut self)`
 requirement. A missing, redirected, duplicated, or cross-tagged identity is a
 fail-closed resource result for all loss, escape, receiver, and place-use
@@ -223,7 +223,7 @@ checked program remains unchanged for incremental reuse and other entry
 selections.
 
 Portable library artifacts use a separate source-package envelope
-(`.loomlib` version `2`). It contains the resolved non-standard package graph,
+(`.loomlib` version `2`). It contains the resolved non-stdlib package graph,
 exact Loom source text, and canonical public interfaces. It contains no checked
 MIR, producer-local construction dispositions, or compiler-owned
 standard-library implementation. Decoding enforces structural and byte/count
