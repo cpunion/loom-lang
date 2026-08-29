@@ -5,8 +5,9 @@ use std::fmt;
 use loom_mir::Type;
 
 use crate::ir::{
-    BYTES_TYPE_ID, DECODE_TEXT_ERROR_TYPE_ID, JSON_ERROR_TYPE_ID, JSON_TYPE_ID, LOG_LEVEL_TYPE_ID,
-    OPTION_TYPE_ID, PATH_ERROR_TYPE_ID, PATH_TYPE_ID, RESULT_TYPE_ID, TEXT_MAP_TYPE_ID,
+    BYTES_TYPE_ID, DECODE_TEXT_ERROR_TYPE_ID, FILE_TYPE_ID, JSON_ERROR_TYPE_ID, JSON_TYPE_ID,
+    LOG_LEVEL_TYPE_ID, OPTION_TYPE_ID, PATH_ERROR_TYPE_ID, PATH_TYPE_ID, RESULT_TYPE_ID,
+    SOCKET_TYPE_ID, TEXT_MAP_TYPE_ID,
 };
 use crate::{
     AwaitMode, BlockId, Constant, Effects, Function, InstanceId, InstanceRole, Instruction,
@@ -4600,27 +4601,24 @@ impl<'a> Validator<'a> {
                 self.require_may_fault_effect(function, &path, "invoke");
             }
             TerminatorKind::ResourceClose {
+                kind,
                 resource,
                 normal,
                 fault,
-                ..
             } => {
                 let resource_type = function.value(*resource).map(super::ir::Value::ty);
-                let int_type = self.scalar_type(&Type::Int);
-                let valid_resource = resource_type.is_some_and(|ty| {
-                    self.program
-                        .representations
-                        .value_type(ty)
-                        .is_some_and(|value_type| {
-                            value_type.kind() == ValueTypeKind::Direct
-                                && matches!(value_type.semantic(), Type::Nominal(_, arguments) if arguments.is_empty())
-                        }) && matches!((self.product_fields(ty), int_type), (Some(fields), Some(int)) if fields == [int])
-                });
+                let valid_resource = resource_type == self.canonical_resource_type(*kind);
                 if resource_type.is_some() && !valid_resource {
+                    let expected = match kind {
+                        crate::ResourceKind::File => "File#9",
+                        crate::ResourceKind::Socket => "Socket#10",
+                    };
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.resource"),
-                        "typed resource close requires a direct monomorphic one-Int resource product",
+                        format!(
+                            "typed resource close requires canonical {expected} as one direct canonical Int product"
+                        ),
                     );
                 }
                 self.validate_result_target(
@@ -5645,6 +5643,33 @@ impl<'a> Validator<'a> {
         (path_type.kind() == ValueTypeKind::InvariantProduct
             && self.product_fields(path) == Some(&[text]))
         .then_some((path, text))
+    }
+
+    fn canonical_resource_type(&self, kind: crate::ResourceKind) -> Option<ValueTypeId> {
+        let semantic = Type::Nominal(
+            match kind {
+                crate::ResourceKind::File => FILE_TYPE_ID,
+                crate::ResourceKind::Socket => SOCKET_TYPE_ID,
+            },
+            Vec::new(),
+        );
+        let resource = self.scalar_type(&semantic)?;
+        let mut registrations = self
+            .program
+            .representations
+            .registrations()
+            .iter()
+            .filter(|registration| registration.semantic() == &semantic);
+        let registration = registrations.next()?;
+        if registration.value_type() != resource || registrations.next().is_some() {
+            return None;
+        }
+        let value_type = self.program.representations.value_type(resource)?;
+        let integer = self.scalar_type(&Type::Int)?;
+        (value_type.semantic() == &semantic
+            && value_type.kind() == ValueTypeKind::Direct
+            && self.product_fields(resource) == Some(&[integer]))
+        .then_some(resource)
     }
 
     fn product_fields(&self, ty: ValueTypeId) -> Option<&[ValueTypeId]> {

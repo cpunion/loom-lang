@@ -138,6 +138,16 @@ Matching must be exhaustive. `TaskFault` reports a task-local fault. A business
 `Result.Err` is an ordinary completed value and is not reinterpreted as a task
 fault. Process-level failures such as OOM do not become `TaskOutcome` values.
 
+If `Completed(value)` contains a File, Socket, or another `MustScope` value,
+bind it directly with `scoped` in that arm. For built-in File and Socket
+handles, completion transfers runtime ownership from the child to its owner
+Task, which may itself be the root Task, before the child is retired. Faulted,
+cancelled, losing, and unconsumed tasks transfer no completed-result handle.
+Terminal cleanup or typed result disposal closes their remaining built-in
+handles before retired-task memory reclamation. This guarantee adds no
+ownership or borrowing syntax; user-defined `MustScope` obligations remain
+entirely static.
+
 An empty list is valid for `all` and `settled`. `any` and `race` require a
 non-empty input.
 

@@ -71,8 +71,9 @@ complete direct Text object pointer, and its optional fields are a contiguous
 view of canonical `TextMap[Text]` entries, each exactly two pointers. Empty
 fields use a null pointer and zero count. The runtime validates Text headers,
 UTF-8, field ordering, and bounds before producing one compact JSONL line. The
-call does not enter the Loom collector or scheduler. This advances the current
-native runtime ABI to component 21 with `typed-log-v1` and `runtime-v15`; the
+call does not enter the Loom collector or scheduler. At that stage this
+advanced the native runtime ABI to component 21 with `typed-log-v1` and
+`runtime-v15`; the
 exact identity remains compiler-private.
 
 ## Typed JSON formatting
@@ -165,6 +166,40 @@ This boundary advances the native runtime ABI to component 25 with
 `typed-path-v1` and `runtime-v19`. It adds no filesystem lookup, host path
 normalization, JSON behavior, or ownership/borrow syntax. The older untyped
 path helper symbols belong only to complete legacy objects.
+
+## Typed external resources
+
+Canonical `File#9` and `Socket#10` are direct one-field products containing an
+`Int` platform-handle value. The type identity, monomorphic registration,
+direct representation, product shape, and canonical `Int` field must all
+agree; a merely layout-compatible nominal is not an ABI substitute.
+`loom_runtime_resource_close_typed_v1(runtime, kind, handle_cell)` borrows a
+stable handle cell for one synchronous call. Status `0` closes the resource and
+writes the invalid-handle sentinel, status `2` is the ordinary
+`ResourceCloseFault`, and invalid argument status `1` or any unknown status is
+a compiler/runtime defect. No task is scheduled and no managed allocation can
+occur at this boundary.
+
+Status `2` is limited to rejecting a host handle before runtime ownership is
+consumed, so the source cell can safely remain unchanged. After a handle has
+been accepted, File/Socket cleanup is a final RAII close: a platform close
+completion error is not exposed or retried because the numeric handle may
+already have been released and reused. A future durability guarantee must come
+from an explicit flush/sync operation rather than from destructor status.
+
+If the active executor already tracks the handle, lookup is exact in both
+handle bits and File/Socket kind. An opposite-only match or duplicate exact
+entries return invalid status without closing or removing anything. On
+Windows, a unique exact File HANDLE remains selectable even when an unrelated
+Socket SOCKET has the same numeric bits; the two host handle domains are not
+collapsed into one uniqueness namespace.
+
+The close wire and the typed-task result-take wires keep their existing symbol
+names, arguments, status-code shapes, and layouts. The corrected completed-
+result ownership order nevertheless advances the exact native runtime identity
+to component 26 with `typed-resource-ownership-v1` and `runtime-v20`.
+Typed-task ABI v1, coroutine v2, wait v1, standard-library ABI v5, Text v3, and
+GC v9 remain unchanged.
 
 ## Legacy primitive and aggregate specialization
 
@@ -294,6 +329,25 @@ sums use the ordinary collision-free closed-sum carrier and exact managed Text
 leaves for `TaskFault`. A sole nonempty List literal is flattened to the same
 static row; empty, stored, computed, and runtime-sized List joins and
 first-class `any`, `settled`, or `race` results remain complete fallback.
+
+The runtime separately tracks built-in File and Socket handles owned by a
+published typed result; that ledger is not a field in `Task[T]` or in the
+source value. A successful exact child-result take, including the Completed
+branch of outcome take, moves the child's ledger entries to its owner Task,
+which may itself be the root Task, before retiring the child. If result-take is
+applied directly to the ownerless root Task, its entries remain attached to
+that Task in the executor-owned task registry. Faulted, cancelled, losing, and
+unconsumed tasks do not transfer entries. Terminal cleanup and typed result
+disposal release their remaining built-in handles at the deterministic cleanup
+boundary, even if a disposer reports a fault or protocol defect; retired-task
+reaping only reclaims memory. Validation failure commits neither a topology
+change nor an ownership move.
+
+Child extraction also rechecks its complete scheduler protocol before copying:
+one exact owned/join membership, a settled successful join, result take only
+for ALL/ANY, outcome take only for SETTLED/RACE, and completed winner
+finalization for ANY/RACE. A mismatch leaves output cells, Task topology, and
+the resource ledger unchanged.
 
 ## `Text`
 

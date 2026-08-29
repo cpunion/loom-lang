@@ -18,13 +18,13 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Interpreted final-cache layer | `final-artifact-v3` / writer v3 |
 | Portable-library final-cache layer | `portable-library-artifact-v3` |
 | LCIR textual dump | version `36` |
-| LCIR artifact identity | schema `37` |
-| LCIR native-object domain | `loom-lcir-native-object-v33` |
+| LCIR artifact identity | schema `38` |
+| LCIR native-object domain | `loom-lcir-native-object-v34` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v38` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v39` |
 | Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
-| Native runtime ABI component | `25` |
+| Native runtime ABI component | `26` |
 | Coroutine/Task ABI component | `2` |
 | Typed Task ABI component | `1` |
 | Wait ABI component | `1` |
@@ -34,9 +34,44 @@ The exact compiler-private native ABI identity contains additional layout,
 text, shadow-stack, witness, list, and runtime component versions. Runtime
 bundles compare the whole identity, not only the numeric runtime component.
 
-Compiler-generated native harness output adds the exact-length
-`loom_runtime_stdout_write_v1(data, length)` boundary and advances the current
-native runtime ABI identity to component 20 with `stdout-v1` and
+Resource-close validation and completed-task result ownership form the current
+semantic invalidation boundary. `ResourceClose` now requires the exact
+canonical `File#9` or `Socket#10` one-`Int` product selected by its resource
+kind. LLVM recognizes only status `0` as success and status `2` as the ordinary
+source fault; every other status traps as an ABI defect. On a successful
+completed-result take, the runtime moves the child's owned File/Socket result
+resources to its non-null owner Task, which may itself be the root Task, before
+child retirement. When result-take is applied directly to the ownerless root
+Task, ownership remains attached to that Task in the executor-owned task
+registry. Faulted, cancelled, losing, and unconsumed tasks do not transfer
+their resources. Terminal cleanup and typed result disposal close remaining
+built-in File/Socket ledger entries at the deterministic cleanup boundary;
+retired-task reaping is only memory reclamation.
+
+The same boundary makes take preflight topology-exact: a child must occur once
+in both owner rows after a successful join settlement, result take is limited
+to ALL/ANY, outcome take is limited to SETTLED/RACE, and ANY/RACE winner
+finalization must already have disposed and retired losers. Invalid calls are
+transactional. An attached resource ledger also rejects an opposite-only match
+and duplicate exact handle entries without closing them; a unique exact File
+HANDLE or Socket SOCKET remains independently selectable on Windows.
+
+These changes alter checked meaning and runtime ownership semantics without
+changing an LCIR field, textual grammar, runtime symbol, function signature,
+status-code shape, typed-task layout, or standard-library surface. The LCIR
+dump therefore remains `lcir 36`, checked MIR remains version 27, typed-task
+ABI remains v1, runtime-bundle manifest remains schema 2, persistent compiler
+cache remains schema 4, and standard-library ABI remains v5. The checked
+artifact identity advances to schema 38, the typed LCIR native-object domain to
+`loom-lcir-native-object-v34`, the LLVM object-cache domain to
+`loom-llvm-object-cache-v39`, and the exact runtime identity to component 26
+with `typed-resource-ownership-v1` and `runtime-v20`. Runtime bundles with
+the prior exact identity fail closed even though their exported symbol set has
+the same shape.
+
+Earlier, compiler-generated native harness output added the exact-length
+`loom_runtime_stdout_write_v1(data, length)` boundary and advanced the native
+runtime ABI identity at that stage to component 20 with `stdout-v1` and
 `runtime-v14`. The byte range includes any intended literal LF and bypasses C
 runtime text-mode translation; the runtime does not scan for NUL or append a
 delimiter. Success means that the complete range was accepted and flushed.

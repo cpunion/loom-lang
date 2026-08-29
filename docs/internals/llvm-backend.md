@@ -553,6 +553,22 @@ constructed across subsequent captures. `race` shares generalized winner
 finalization with `any`, retaining the original winner while disposing and
 retiring losers in reverse source order.
 
+A successful completed-result take moves the child's built-in File/Socket
+handles to its owner Task, which may itself be the root Task, before retiring
+the child. Faulted and cancelled outcomes transfer no result handles, and
+completed losing or unconsumed children instead release any remaining built-in
+handles at typed result disposal, before retired-task memory reclamation. This
+ordering prevents reclaiming a File or Socket already delivered to its
+consumer, while also avoiding cleanup latency for undelivered handles; it does
+not add a value field, hidden source ownership token, or new typed-task ABI
+argument.
+
+The runtime does not trust generated call order for this ownership commit. A
+child take requires exact membership in both owner rows, a settled successful
+join, the matching ALL/ANY result or SETTLED/RACE outcome shape, and completed
+ANY/RACE winner finalization. A hostile early or wrong-shaped call therefore
+cannot remove a child before loser disposal or reinterpret a terminal state.
+
 This direct slice is deliberately static and nonempty. A sole nonempty List
 literal is flattened into the same child row without an input List allocation;
 `all` and `settled` build their List result after resume. Empty, stored,
@@ -593,6 +609,13 @@ the exact owned handle, writes the invalid-handle sentinel only on success, and
 does not schedule, enqueue, suspend, or drive an executor. Its normal and fault
 edges rebuild the exact resource value before the next cleanup action. There is
 no universal `loom.Value`, indirect witness call, or synchronous executor route.
+
+Emission follows the validator's exact canonical `File#9`/`Socket#10` kind
+agreement. The returned status is switched explicitly: `0` enters the normal
+edge, `2` records `ResourceCloseFault` and enters the checked fault edge, and
+the default edge calls `llvm.trap` and is unreachable. In particular, invalid
+argument status `1` and any future unknown status cannot be misreported as a
+source-level close failure.
 
 Managed return values captured before a deferred collecting call remain normal
 LCIR SSA liveness. The root planner expands their Text-bearing product leaves,
@@ -664,9 +687,9 @@ is correct.
 ## Object identity and linking
 
 The canonical textual dump is `lcir 36`, and the checked artifact identity uses
-schema 37. Object identities are route-separated:
+schema 38. Object identities are route-separated:
 
-- `loom-lcir-native-object-v33` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v34` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -678,7 +701,7 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v38` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v39` and never suppresses fingerprint
 errors.
 
 The current LCIR domains encode the explicit transitive effect lattice,
@@ -716,10 +739,10 @@ the runtime ABI component is 10, with `text-v2` and `runtime-v4` identity
 components while GC remains `gc-v8`.
 Product leaf rooting reuses that exact typed-shadow-stack v1 wire and therefore
 did not advance runtime ABI component 11 or `runtime-v5`. Typed File/Socket
-close now adds `typed-resource-v1` and advances the current runtime ABI
-component to 12 with `runtime-v6`; deferred and static-concept cleanup adds no
+close added `typed-resource-v1` and advanced the runtime ABI at that stage to
+component 12 with `runtime-v6`; deferred and static-concept cleanup added no
 runtime ABI.
-The current runtime bundle also exports the additive
+A later runtime bundle also exports the additive
 `loom_gc_typed_repeated_alloc_v1` boundary. It advances the native component to
 13 with `runtime-v7`, `gc-v9`, and `typed-repeated-v1`; existing emitted fixed
 typed allocations remain on their unchanged v1 symbol.
@@ -834,6 +857,18 @@ allocation. Status `0` selects the exact Result success value, `-1` selects
 runtime identity to component 25 with `typed-path-v1` and `runtime-v19`, plus
 the LCIR, artifact, native-object, and object-cache domains listed above.
 Checked MIR remains version 27 and the public standard-library ABI remains v5.
+
+The later resource-close and completed-result ownership hardening changes no
+LCIR field, dump grammar, runtime symbol, signature, status-code shape, or
+typed-task layout. It nevertheless changes which LCIR is valid, how close
+statuses branch, and when result-resource ownership moves relative to child
+retirement. The dump remains `lcir 36`; artifact identity advances to schema
+38, the typed LCIR native-object domain to `loom-lcir-native-object-v34`, and
+the CLI object-cache domain to `loom-llvm-object-cache-v39`. The exact native
+runtime identity advances to component 26 with
+`typed-resource-ownership-v1` and `runtime-v20`; typed-task ABI v1,
+coroutine v2, wait v1, checked MIR 27, and standard-library ABI v5 remain
+unchanged.
 
 They also encode closed static-witness method selection and normalized
 associated types. Those proofs are absent from the machine ABI: LLVM receives

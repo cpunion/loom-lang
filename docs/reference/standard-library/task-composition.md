@@ -92,6 +92,15 @@ Capturing a fault through `settled` or `race` makes it data; it does not resume
 or rethrow the child. OOM remains a process-level fault and cannot become a
 `TaskOutcome`.
 
+`Completed(T)` retains any recursive `MustScope` obligation in `T`. A File,
+Socket, or aggregate containing one must move directly into a `scoped` binding
+in that match arm; it cannot be ignored or discarded. For built-in File and
+Socket handles, the runtime transfers ownership from the completed child to
+its owner Task, which may itself be the root Task, before retiring the child.
+Faulted, cancelled, losing, and unconsumed tasks transfer no completed-result
+handle. Terminal cleanup or typed result disposal closes their remaining built-
+in handles before retired-task memory reclamation.
+
 ## Timer tasks
 
 The Task API also provides:

@@ -270,6 +270,29 @@ from that status and the exact payloads. Each capture is an explicit collecting
 safepoint, so outcomes already constructed remain in the ordinary exact root
 plan while a later fault is captured.
 
+Successful completion consumption preserves built-in File/Socket ownership
+before that retirement. `loom_typed_task_take_result_v1` moves those handles to
+the task's non-null owner Task before detaching and retiring the child. When it
+is applied directly to the ownerless root Task, the handles remain on that
+Task's `owned_result_resources` ledger in the executor-owned task registry.
+The Completed branch of `loom_typed_task_take_outcome_v1` always consumes a
+child and moves its handles to that child's owner Task, which may itself be the
+root Task. The transfer is part of the successful commit: validation failure
+leaves both task topology and ownership unchanged, and a repeated take cannot
+duplicate ownership. Faulted and cancelled outcomes transfer no completed-
+result handles. Fault/cancellation cleanup and completed loser or unconsumed
+result disposal release all remaining built-in File/Socket ledger entries at
+that deterministic cleanup boundary, even if a result disposer reports a fault
+or protocol defect. Retired-task reaping then reclaims memory only.
+
+For a child take, preflight independently requires exactly one entry in the
+owner's structured-child row and current join row, a settled successful join,
+and the matching policy shape: result take is valid only for ALL/ANY, while
+outcome take is valid only for SETTLED/RACE. ANY/RACE also requires winner
+finalization to have completed before the winner can be removed. This prevents
+an early or wrong-shaped take from changing winner ordinals, retaining stale
+Task pointers, or bypassing loser disposal.
+
 Both `any` and `race` use generalized winner finalization when the source
 callback consumes `loom_task_join_step`. It retains the original winner,
 disposes completed loser results, and retires losers in static reverse-input
@@ -277,6 +300,12 @@ order. A loser-disposal fault becomes primary before source cleanup. That
 revision advanced the exact native runtime identity to component 19 with
 `typed-task-winner-finalize-v1`, `typed-task-outcome-v1`, and `runtime-v13`.
 Typed-task v1, coroutine v2, wait v1, and GC v9 remain unchanged.
+
+The ownership-order correction uses those same take symbols, arguments,
+terminal statuses, task layout, and typed-task v1 wire. It advances the exact
+native runtime identity to component 26 with
+`typed-resource-ownership-v1` and `runtime-v20`, so a runtime bundle with
+the prior semantics is rejected even though its exported ABI shape matches.
 
 A sole nonempty List literal is also a closed static row. Lowering consumes its
 elements directly without allocating the input List. `all` and `settled`
@@ -327,8 +356,12 @@ of:
 - `Task.race`.
 
 Tuple inputs preserve heterogeneous result types. List inputs support a dynamic
-number of homogeneous tasks. Join-result resources are transferred to the
-parent before retired children are reclaimed.
+number of homogeneous tasks. A successfully consumed completed result transfers
+its built-in File/Socket handles to the child's owner Task, which may itself be
+the root Task, before the child is retired or reclaimed. Faulted, cancelled,
+losing, and unconsumed tasks do not transfer completed-result handles. Their
+terminal cleanup or typed result disposal releases remaining built-in handles
+before retired-task memory reclamation.
 
 The complete runtime and legacy compiler route implement all of those source
 forms. The typed-LCIR route admits nonempty immediately awaited fixed-argument

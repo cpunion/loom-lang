@@ -69,6 +69,37 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- Typed resource cleanup and completed-task resource ownership now fail closed
+  at their existing boundaries. LCIR accepts `ResourceClose` only for the exact
+  canonical one-handle `File#9` or `Socket#10` representation selected by the
+  resource kind. LLVM treats close status `0` as success, status `2` as the
+  ordinary `ResourceCloseFault`, and every other status as a compiler/runtime
+  ABI defect. Successful `loom_typed_task_take_result_v1` and completed
+  `loom_typed_task_take_outcome_v1` calls transfer a child's owned result
+  resources to the child's non-null owner Task, which may itself be the root
+  Task, before retiring the child. When result-take is applied directly to the
+  ownerless root Task, ownership remains attached to that Task in the
+  executor-owned task registry. Child take now also requires one exact
+  owned/join membership, a successfully settled join, the matching
+  result-versus-outcome policy, and completed ANY/RACE winner finalization;
+  invalid calls change neither output, topology, nor ownership. Tracked close
+  rejects an opposite-only match or duplicate exact ledger entries without
+  closing them; a unique exact match remains valid across the distinct Windows
+  HANDLE and SOCKET numeric domains;
+  faulted, cancelled, losing, and unconsumed tasks do not transfer resources.
+  Typed result disposal now releases every remaining built-in File/Socket
+  ledger entry at the deterministic disposal boundary, even if a disposer
+  reports a fault or protocol defect; retired-task reaping is only memory
+  reclamation. No LCIR field, textual
+  grammar, runtime symbol, function signature, status-code shape, typed-task
+  layout, or public source API changes. The LCIR dump therefore remains
+  `lcir 36`, checked MIR remains 27, typed-task ABI remains v1, and the
+  standard-library ABI remains v5. The stricter checked meaning advances
+  artifact identity to schema 38, the typed LCIR native-object domain to v34,
+  the LLVM object-cache domain to v39, and the native runtime identity to
+  component 26 with
+  `typed-resource-ownership-v1` and `runtime-v20`.
+
 - Typed LCIR now covers the existing `Path.from_text`, `Path.as_text`, and
   `Path.join` APIs. `Path` remains an exact one-field Text product rather than
   acquiring a runtime Path object. Construction rejects U+0000 and extraction

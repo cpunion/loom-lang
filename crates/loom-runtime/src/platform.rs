@@ -233,7 +233,10 @@ fn raw_socket(handle: i64) -> io::Result<RawSocket> {
 }
 
 /// Closes a resource which has left scheduler ownership but still obeys the
-/// compiler-private File/Socket ABI.
+/// compiler-private File/Socket ABI. Conversion rejects an invalid handle
+/// before ownership is consumed. Once accepted, RAII close is final: platform
+/// close completion errors are intentionally not observable or retryable,
+/// because the numeric handle may already have been released and reused.
 pub(crate) unsafe fn close_untracked(handle: i64, file: bool) -> io::Result<()> {
     if file {
         close_untracked_file(handle)

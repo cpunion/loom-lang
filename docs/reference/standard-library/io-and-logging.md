@@ -76,6 +76,11 @@ such as `FileReadFault` or `FileWriteFault`. The `try_` methods return
 File cleanup is lexical. A manual `file.close()` call on the required scoped
 receiver is rejected as `ManualDisposeOfScopedValue`; there is no valid
 double-close or function-exit-only cleanup pattern.
+The lexical destructor performs a final RAII close. It does not expose or retry
+the host close syscall's completion status, because a reported error can occur
+after the numeric handle has already been released. The current Core slice does
+not promise durable storage; a future durability guarantee requires an explicit
+flush/sync API rather than destructor status.
 
 ## TCP sockets
 
@@ -107,7 +112,8 @@ Recoverable invalid UTF-8 maps to `InvalidInput`.
 
 Socket methods create structured child tasks and preserve cancellation and
 cleanup behavior. Manual `socket.close()` is rejected for the same reason as
-File close.
+File close. Socket destruction follows the same final, non-retryable RAII close
+rule.
 
 ## `IoError`
 

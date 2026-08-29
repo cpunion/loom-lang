@@ -911,8 +911,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        Constant, CoroutinePlan, Effects, InstructionKind, Origin, ProgramBuilder, Signature,
-        Terminator, TerminatorKind, ValidationCode, ValueDefinition, validate_program,
+        Constant, CoroutinePlan, Effects, InstructionKind, Origin, Program, ProgramBuilder,
+        ResourceKind, ResultTarget, Signature, Terminator, TerminatorKind, UnwindTarget,
+        ValidationCode, ValueDefinition, validate_program,
     };
 
     #[test]
@@ -1013,6 +1014,150 @@ mod tests {
                 .map(ValueTypeId::raw),
             Some(3),
             "canonical lookup remains fixed by its explicit registration"
+        );
+    }
+
+    fn canonical_file_close_program() -> (Program, ValueTypeId, ValueTypeId) {
+        let origin = Origin::synthetic(MirFunctionId(93));
+        let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        let file_semantic = Type::Nominal(TypeId(9), Vec::new());
+        let file = builder
+            .add_pod_record_type(file_semantic, &[Type::Int])
+            .expect("canonical File#9");
+        let unit = builder.type_id(&Type::Unit).expect("Unit");
+        let function = builder
+            .declare_function(
+                origin,
+                "resource.close.noncanonical",
+                Signature::new([file], unit),
+                Effects::MAY_FAULT.union(Effects::NEEDS_RUNTIME),
+            )
+            .expect("declare resource close");
+        {
+            let mut function = builder.function(function).expect("function builder");
+            let entry = function.create_block().expect("entry");
+            let normal = function.create_block().expect("normal");
+            let fault = function.create_block().expect("fault");
+            function.set_entry(entry).expect("set entry");
+            let resource = function
+                .append_block_parameter(entry, file)
+                .expect("File parameter");
+            let returned = function
+                .append_block_parameter(normal, unit)
+                .expect("Unit result");
+            function
+                .append_block_parameter(normal, file)
+                .expect("normal File writeback");
+            function
+                .append_block_parameter(fault, file)
+                .expect("fault File writeback");
+            function
+                .terminate(
+                    entry,
+                    Terminator::new(
+                        TerminatorKind::ResourceClose {
+                            kind: ResourceKind::File,
+                            resource,
+                            normal: ResultTarget::new(normal, []),
+                            fault: UnwindTarget::new(fault, []),
+                        },
+                        origin,
+                    ),
+                )
+                .expect("resource close");
+            function
+                .terminate(
+                    normal,
+                    Terminator::new(TerminatorKind::Return(returned), origin),
+                )
+                .expect("return");
+            function
+                .terminate(fault, Terminator::new(TerminatorKind::ResumeFault, origin))
+                .expect("resume fault");
+        }
+
+        let program = builder.finish();
+        validate_program(&program).expect("canonical File cleanup");
+        (program, file, unit)
+    }
+
+    fn assert_file_close_type_mismatch(program: &Program, context: &str) {
+        let errors = validate_program(program).expect_err(context);
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::TypeMismatch
+                && error.path() == "function[0].block[0].terminator.resource"
+                && error.message().contains("canonical File#9")
+        }));
+    }
+
+    #[test]
+    fn resource_close_rejects_an_unregistered_file_value_type() {
+        let (program, file, unit) = canonical_file_close_program();
+        let mut alternative_resource = program.clone();
+        let alternative = ValueTypeId::from_index(
+            alternative_resource.brand,
+            alternative_resource.representations.types.len(),
+        )
+        .expect("alternative value type identity");
+        let canonical = alternative_resource.representations.types[file.index()].clone();
+        alternative_resource.representations.types.push(canonical);
+        alternative_resource.functions[0].signature = Signature::new([alternative], unit);
+        for value in [0_usize, 2, 3] {
+            alternative_resource.functions[0].values[value].ty = alternative;
+        }
+        assert_file_close_type_mismatch(
+            &alternative_resource,
+            "ResourceClose must reject a noncanonical File ValueType",
+        );
+    }
+
+    #[test]
+    fn resource_close_rejects_a_duplicate_file_registration() {
+        let (program, _, _) = canonical_file_close_program();
+        let mut duplicate_registration = program.clone();
+        let duplicate = duplicate_registration
+            .representations
+            .registrations
+            .iter()
+            .find(|registration| registration.semantic == Type::Nominal(TypeId(9), Vec::new()))
+            .cloned()
+            .expect("File registration");
+        duplicate_registration
+            .representations
+            .registrations
+            .push(duplicate);
+        assert_file_close_type_mismatch(
+            &duplicate_registration,
+            "ResourceClose must reject duplicate File registrations",
+        );
+    }
+
+    #[test]
+    fn resource_close_rejects_an_unregistered_int_field_value_type() {
+        let (program, file, _) = canonical_file_close_program();
+        let mut alternative_field = program;
+        let integer = alternative_field
+            .representations
+            .type_id(&Type::Int)
+            .expect("canonical Int");
+        let alternative_integer = ValueTypeId::from_index(
+            alternative_field.brand,
+            alternative_field.representations.types.len(),
+        )
+        .expect("alternative Int value type identity");
+        let integer_value = alternative_field.representations.types[integer.index()].clone();
+        alternative_field.representations.types.push(integer_value);
+        let file_repr = alternative_field.representations.types[file.index()].repr;
+        let Repr::Product(file_product) =
+            alternative_field.representations.reprs[file_repr.index()]
+        else {
+            panic!("File must retain a product representation")
+        };
+        alternative_field.representations.products[file_product.index()].fields[0] =
+            alternative_integer;
+        assert_file_close_type_mismatch(
+            &alternative_field,
+            "ResourceClose must reject a noncanonical Int field ValueType",
         );
     }
 

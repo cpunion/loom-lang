@@ -573,6 +573,34 @@ schema to 37, the dump to `lcir 36`, the LCIR native-object domain to
 `loom-llvm-object-cache-v38`. Checked MIR remains version 27 because it already
 contained the three Path builtins.
 
+Resource-close hardening subsequently changes checked meaning without changing
+the LCIR textual grammar. Independent validation now rederives the exact
+canonical direct one-field `Int` product for `File#9` or `Socket#10` and
+requires the `ResourceClose` kind to select that same nominal type. The
+existing LLVM boundary interprets status `0` as success and status `2` as the
+ordinary `ResourceCloseFault`; any other status is an ABI defect. Completed
+typed-task result consumption transfers built-in File/Socket handles to the
+child's non-null owner Task, which may itself be the root Task, before child
+retirement. When result-take is applied directly to the ownerless root Task,
+the handles remain attached to that Task in the executor-owned task registry;
+faulted, cancelled, losing, and unconsumed tasks do not transfer them. Terminal
+cleanup or typed result disposal closes their remaining built-in handles before
+retired-task memory reclamation. No LCIR field, runtime symbol, signature,
+status-code shape, or typed-task layout changes. The dump therefore remains
+`lcir 36`, while the changed checked semantics advance artifact identity to
+schema 38, the typed LCIR native-object domain to
+`loom-lcir-native-object-v34`, and the CLI object-cache domain to
+`loom-llvm-object-cache-v39`. The exact native runtime identity advances to
+component 26 with `typed-resource-ownership-v1` and `runtime-v20`;
+typed-task ABI v1 remains unchanged. Checked MIR remains version 27.
+
+Runtime take preflight additionally rechecks the LCIR protocol assumptions:
+the child has one exact owned/join membership, the join has settled
+successfully, `TaskResultTake` is an ALL/ANY operation, `TaskOutcomeTake` is a
+SETTLED/RACE operation, and ANY/RACE winner finalization has completed.
+Rejection is transactional and cannot mutate the result cell, join topology,
+or resource ledger.
+
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
 test roots, validates their source reachability, then closes exact concrete
@@ -723,10 +751,16 @@ witness method and uses the ordinary direct or fallible typed call ABI. A
 mutable receiver is written back on both normal and unwind edges. Canonical
 File and Socket disposal uses the `ResourceClose` terminator: it carries one
 exact nominal resource value, returns `Unit` plus the closed resource on its
-normal edge, and returns the resource writeback on its fault edge. LLVM calls
-the typed close ABI directly; it does not construct a universal `Value`, a
-runtime cleanup stack, or an executor. MIR rejects suspension in cleanup, and
-LCIR independently rejects a suspending exact callee or an invented suspension
+normal edge, and returns the resource writeback on its fault edge. Independent
+validation accepts only canonical `File#9` for the File kind or canonical
+`Socket#10` for the Socket kind. Each is the registered direct one-field
+product whose sole field is canonical `Int`; an unregistered, generic,
+structurally similar, or representation-alternative nominal fails closed.
+LLVM calls the typed close ABI directly. Runtime status `0` follows the normal
+edge, status `2` records `ResourceCloseFault`, and every other status traps as
+an ABI defect. The path does not construct a universal `Value`, a runtime
+cleanup stack, or an executor. MIR rejects suspension in cleanup, and LCIR
+independently rejects a suspending exact callee or an invented suspension
 effect in the resulting cleanup graph.
 
 When any reachable instance contains `TextConcat`, `TextGet`, a TextMap, or a
@@ -879,6 +913,15 @@ checks the canonical `TaskFault` and `TaskOutcome` shapes, and enforces one
 consumption. The instruction is `MAY_COLLECT | NEEDS_EXECUTOR`: completed values
 move directly, fault code and message become managed Text, cancelled values have
 no payload, and existing live outcomes are rooted across later captures.
+
+On the completed branch, exact outcome extraction transfers any runtime-owned
+File or Socket handles to the child's owner Task, which may itself be the root
+Task, before the terminal child is retired. Faulted and cancelled outcome
+branches transfer no result handles. Completed loser or unconsumed result
+disposal releases any remaining built-in handles before retired-task memory
+reclamation, including when a disposer reports a fault or protocol defect. This
+is runtime bookkeeping behind the existing exact typed take instructions, not
+an LCIR ownership field or a source ownership operation.
 
 A sole nonempty List literal is flattened to the same static child row without
 constructing the input List. `all` and `settled` build a fresh result List from
@@ -1228,8 +1271,10 @@ not repair a malformed program. Current checks include:
   only canonical direct Text/List values or compiler-private `ManagedTextMap`
   values, while dynamic boxes continue to fail closed;
 - implicit result/writeback parameter shape and type on normal and fault edges;
-- exact nominal one-handle File/Socket resource shape, typed close
-  result/writeback edges, and required runtime/fault capabilities;
+- exact canonical direct one-`Int` product registration for `File#9` or
+  `Socket#10`, exact agreement between the nominal type and `ResourceClose`
+  kind, typed close result/writeback edges, and required runtime/fault
+  capabilities;
 - return types and operation-specific fault-effect requirements;
 - the exact minimal transitive effect closure across the complete call graph,
   including capability implications and active-cleanup fault masking;

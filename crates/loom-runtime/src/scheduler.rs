@@ -1054,6 +1054,12 @@ unsafe fn dispose_typed_result(executor: &mut LoomExecutor, task: *mut LoomTask)
     }
     executor.active_task = previous_active;
 
+    // A result disposer may explicitly close one or more published built-in
+    // resources. Whatever remains in the compiler-private ledger is the
+    // runtime fallback for an unconsumed result and must be released at this
+    // structured disposal boundary, even when the callback reports a fault or
+    // protocol defect. Reaping the retired Task is only memory reclamation.
+    unsafe { (*task).owned_result_resources.clear() };
     let typed = unsafe { (*task).typed.as_mut().expect("typed result owner") };
     if typed.result_size != 0 {
         unsafe { ptr::write_bytes(typed.result_pointer(), 0, typed.result_size) };
@@ -2911,9 +2917,74 @@ unsafe fn retire_typed_child(
     }
 }
 
+unsafe fn transfer_result_resources(owner: *mut LoomTask, child: *mut LoomTask) {
+    let resources = unsafe { std::mem::take(&mut (*child).owned_result_resources) };
+    unsafe { (*owner).owned_result_resources.extend(resources) };
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TypedTaskTakeKind {
+    Result,
+    Outcome,
+}
+
+unsafe fn typed_child_take_ready(
+    executor: &LoomExecutor,
+    owner: *mut LoomTask,
+    child: *mut LoomTask,
+    take_kind: TypedTaskTakeKind,
+) -> bool {
+    !owner.is_null()
+        && executor.active_task == owner
+        && executor_owns(executor, owner)
+        && executor_owns(executor, child)
+        && unsafe { (*owner).status } == TaskStatus::Running
+        && !unsafe { (*owner).join_active }
+        && unsafe { (*owner).join_step } == TASK_COMPLETED
+        && unsafe {
+            (*owner)
+                .owned_children
+                .iter()
+                .filter(|candidate| **candidate == child)
+                .count()
+                == 1
+        }
+        && unsafe {
+            (*owner)
+                .join_children
+                .iter()
+                .filter(|candidate| **candidate == child)
+                .count()
+                == 1
+        }
+        && match take_kind {
+            TypedTaskTakeKind::Result => {
+                matches!(unsafe { (*owner).join_mode }, TASK_JOIN_ALL | TASK_JOIN_ANY)
+            }
+            TypedTaskTakeKind::Outcome => matches!(
+                unsafe { (*owner).join_mode },
+                TASK_JOIN_SETTLED | TASK_JOIN_RACE
+            ),
+        }
+        && (!matches!(
+            unsafe { (*owner).join_mode },
+            TASK_JOIN_ANY | TASK_JOIN_RACE
+        ) || unsafe {
+            (*owner)
+                .typed
+                .as_ref()
+                .is_some_and(|typed| typed.join_winner_finalized)
+        })
+}
+
 /// Moves a completed result out of its stable Task frame and consumes the
 /// structured child handle. Size and alignment are repeated by the caller so
 /// an ABI/layout disagreement fails before touching either storage location.
+/// A non-root child must belong exactly once to a successfully settled
+/// ALL/ANY join; ANY winner finalization must already be complete.
+/// A child transfers its result-resource ledger to the active owner before
+/// retirement. A root has no owner, so its ledger remains discoverable through
+/// the executor-owned Task registry until explicit close or executor teardown.
 #[unsafe(export_name = "loom_typed_task_take_result_v1")]
 pub unsafe extern "C" fn typed_task_take_result_v1(
     task: *mut LoomTask,
@@ -2966,9 +3037,7 @@ pub unsafe extern "C" fn typed_task_take_result_v1(
     }
     let owner = task_ref.owner;
     if !owner.is_null()
-        && (unsafe { (*executor).active_task } != owner
-            || !executor_owns(unsafe { &*executor }, owner)
-            || unsafe { (*owner).status } != TaskStatus::Running)
+        && !unsafe { typed_child_take_ready(&*executor, owner, task, TypedTaskTakeKind::Result) }
     {
         return TYPED_TASK_INVALID_ARGUMENT;
     }
@@ -2984,6 +3053,7 @@ pub unsafe extern "C" fn typed_task_take_result_v1(
     typed.result_initialized = false;
     typed.result_taken = true;
     if !owner.is_null() {
+        unsafe { transfer_result_resources(owner, task) };
         unsafe { retire_typed_child(&mut *executor, owner, task) };
     }
     TYPED_TASK_OK
@@ -2996,7 +3066,11 @@ pub unsafe extern "C" fn typed_task_take_result_v1(
 ///
 /// The caller must keep all output cells in stable, non-GC storage for the
 /// complete call. Contract validation is a preflight and does not modify caller
-/// storage. On success the child is detached from its active join and retired.
+/// storage. On success the child is detached from its active join and retired;
+/// the child must belong to a settled SETTLED/RACE join, with RACE winner
+/// finalization complete;
+/// only a Completed outcome first transfers its result-resource ledger to the
+/// active owner.
 #[unsafe(export_name = "loom_typed_task_take_outcome_v1")]
 #[allow(clippy::too_many_lines)]
 pub unsafe extern "C" fn typed_task_take_outcome_v1(
@@ -3078,26 +3152,7 @@ pub unsafe extern "C" fn typed_task_take_outcome_v1(
     if executor.is_null()
         || owner.is_null()
         || unsafe { (*executor).cleanup_active() }
-        || !executor_owns(unsafe { &*executor }, task)
-        || !executor_owns(unsafe { &*executor }, owner)
-        || unsafe { (*executor).active_task } != owner
-        || unsafe { (*owner).status } != TaskStatus::Running
-        || unsafe {
-            (*owner)
-                .owned_children
-                .iter()
-                .filter(|child| **child == task)
-                .count()
-                != 1
-        }
-        || unsafe {
-            (*owner)
-                .join_children
-                .iter()
-                .filter(|child| **child == task)
-                .count()
-                != 1
-        }
+        || !unsafe { typed_child_take_ready(&*executor, owner, task, TypedTaskTakeKind::Outcome) }
     {
         return TYPED_TASK_STATUS_INVALID;
     }
@@ -3153,6 +3208,9 @@ pub unsafe extern "C" fn typed_task_take_outcome_v1(
         | TaskStatus::Waiting
         | TaskStatus::Draining => unreachable!("terminal status was validated above"),
     };
+    if outcome == TASK_COMPLETED {
+        unsafe { transfer_result_resources(owner, task) };
+    }
     unsafe { retire_typed_child(&mut *executor, owner, task) };
     outcome
 }
@@ -3970,30 +4028,70 @@ pub unsafe extern "C" fn io_close(executor: *mut LoomExecutor, value: *mut c_voi
     WAIT_OK
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CloseResourceError {
+    InvalidOwnership,
+    CloseFailed,
+}
+
+fn select_tracked_resource(
+    candidates: impl IntoIterator<Item = (usize, usize, bool)>,
+) -> Result<Option<(usize, usize)>, CloseResourceError> {
+    let mut exact = None;
+    let mut opposite_seen = false;
+    for (task_index, resource_index, kind_matches) in candidates {
+        if kind_matches {
+            if exact.replace((task_index, resource_index)).is_some() {
+                return Err(CloseResourceError::InvalidOwnership);
+            }
+        } else {
+            opposite_seen = true;
+        }
+    }
+    match (exact, opposite_seen) {
+        (Some(location), _) => Ok(Some(location)),
+        (None, true) => Err(CloseResourceError::InvalidOwnership),
+        (None, false) => Ok(None),
+    }
+}
+
 fn close_resource_handle(
     executor: Option<&mut LoomExecutor>,
     handle: i64,
     kind: IoResourceKind,
-) -> io::Result<()> {
-    let mut owned = None;
+) -> Result<(), CloseResourceError> {
     if let Some(executor) = executor {
-        for task in &mut executor.tasks {
-            if let Some(index) = task.owned_result_resources.iter().position(|candidate| {
-                candidate.handle_bits() == handle && candidate.is_file() == kind.is_file()
-            }) {
-                owned = Some(task.owned_result_resources.swap_remove(index));
-                break;
-            }
+        let candidates = executor
+            .tasks
+            .iter()
+            .enumerate()
+            .flat_map(|(task_index, task)| {
+                task.owned_result_resources.iter().enumerate().filter_map(
+                    move |(resource_index, candidate)| {
+                        (candidate.handle_bits() == handle).then_some((
+                            task_index,
+                            resource_index,
+                            candidate.is_file() == kind.is_file(),
+                        ))
+                    },
+                )
+            });
+        if let Some((task_index, resource_index)) = select_tracked_resource(candidates)? {
+            drop(
+                executor.tasks[task_index]
+                    .owned_result_resources
+                    .swap_remove(resource_index),
+            );
+            return Ok(());
         }
     }
-    if let Some(owned) = owned {
-        drop(owned);
-    } else {
-        // SAFETY: a well-formed externally transferred File/Socket value owns
-        // its raw handle when it is no longer tracked by a runtime task.
-        unsafe { close_untracked(handle, kind.is_file()) }?;
-    }
-    Ok(())
+    // SAFETY: a well-formed externally transferred File/Socket value owns its
+    // raw handle when it is no longer tracked by a runtime task. A handle still
+    // present in any task ledger without a unique exact match was rejected
+    // above, so this path cannot leave a second runtime owner behind. A unique
+    // exact match is handled earlier even when an unrelated opposite-kind
+    // Windows handle has the same numeric bits.
+    unsafe { close_untracked(handle, kind.is_file()) }.map_err(|_| CloseResourceError::CloseFailed)
 }
 
 /// Closes one exact typed File/Socket record in place.
@@ -4001,7 +4099,9 @@ fn close_resource_handle(
 /// The current generated-code interval must already own `runtime`. This call
 /// performs no scheduling and never constructs the legacy universal value
 /// envelope. An attached executor is consulted only as an ownership registry
-/// for a handle returned by an async IO task.
+/// for a handle returned by an async IO task. An opposite-only match or
+/// duplicate exact ledger entries fail before any close or ownership mutation;
+/// a unique exact match wins across distinct Windows handle domains.
 #[unsafe(export_name = "loom_runtime_resource_close_typed_v1")]
 pub unsafe extern "C" fn resource_close_typed_v1(
     runtime: *mut LoomRuntime,
@@ -4036,8 +4136,12 @@ pub unsafe extern "C" fn resource_close_typed_v1(
         }
         Some(executor)
     };
-    if close_resource_handle(executor, current, kind).is_err() {
-        return TYPED_RESOURCE_CLOSE_FAILED;
+    match close_resource_handle(executor, current, kind) {
+        Ok(()) => {}
+        Err(CloseResourceError::InvalidOwnership) => {
+            return TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT;
+        }
+        Err(CloseResourceError::CloseFailed) => return TYPED_RESOURCE_CLOSE_FAILED,
     }
     unsafe { *handle = INVALID_HANDLE };
     TYPED_RESOURCE_CLOSE_OK
@@ -5014,8 +5118,7 @@ unsafe fn retire_join_children(parent: *mut LoomTask) {
 
 unsafe fn transfer_child_result_resources(parent: *mut LoomTask, index: usize) {
     let child = unsafe { (&(*parent).join_children)[index] };
-    let resources = unsafe { std::mem::take(&mut (*child).owned_result_resources) };
-    unsafe { (*parent).owned_result_resources.extend(resources) };
+    unsafe { transfer_result_resources(parent, child) };
 }
 
 fn referenced_tasks_in_value(value: &ValueSlot, referenced: &mut std::collections::HashSet<usize>) {
@@ -5735,7 +5838,9 @@ pub unsafe extern "C" fn executor_tasks_reclaimed(executor: *const LoomExecutor)
 
 #[cfg(test)]
 mod resource_ownership_tests {
+    use std::ffi::c_void;
     use std::io::{self, Read};
+    use std::mem::{align_of, size_of};
     use std::net::{TcpListener, TcpStream};
 
     use super::*;
@@ -5747,6 +5852,134 @@ mod resource_ownership_tests {
         _executor: *mut LoomExecutor,
     ) -> i32 {
         TASK_COMPLETED
+    }
+
+    unsafe extern "C" fn typed_pending_fixture(
+        _task: *mut c_void,
+        _executor: *mut c_void,
+        _frame: *mut c_void,
+    ) -> i32 {
+        TASK_PENDING
+    }
+
+    unsafe extern "C" fn typed_cancel_fixture(
+        _task: *mut c_void,
+        _executor: *mut c_void,
+        _frame: *mut c_void,
+    ) -> i32 {
+        TASK_CANCELLED
+    }
+
+    unsafe extern "C" fn typed_invalid_dispose_fixture(
+        _task: *mut c_void,
+        _executor: *mut c_void,
+        _frame: *mut c_void,
+    ) -> i32 {
+        i32::MIN
+    }
+
+    fn typed_resource_descriptor() -> LoomTypedCoroutineDescriptor {
+        LoomTypedCoroutineDescriptor {
+            abi_version: TYPED_TASK_ABI_VERSION,
+            flags: 0,
+            resume: Some(typed_pending_fixture),
+            cancel: Some(typed_cancel_fixture),
+            dispose_result: None,
+            frame_size: size_of::<i64>() as u64,
+            frame_align: align_of::<i64>() as u64,
+            result_offset: 0,
+            result_size: size_of::<i64>() as u64,
+            result_align: align_of::<i64>() as u64,
+            root_slot_count: 0,
+            root_state_count: 1,
+            root_bitmap_words: 0,
+            root_offsets: ptr::null(),
+            live_bitmaps: ptr::null(),
+            completed_root_state: 0,
+        }
+    }
+
+    unsafe fn create_typed_resource_task(executor: *mut LoomExecutor) -> *mut LoomTask {
+        let descriptor = typed_resource_descriptor();
+        let task = unsafe { typed_task_create_v1(executor, &raw const descriptor) };
+        assert!(!task.is_null());
+        assert_eq!(unsafe { typed_task_initialize_v1(task, 0) }, TYPED_TASK_OK);
+        assert_eq!(
+            unsafe { typed_task_publish_v1(executor, task) },
+            TYPED_TASK_OK
+        );
+        task
+    }
+
+    unsafe fn activate_typed_task(executor: *mut LoomExecutor, task: *mut LoomTask) {
+        let index = unsafe {
+            (*executor)
+                .runnable
+                .iter()
+                .position(|candidate| *candidate == task)
+                .expect("typed fixture must be runnable")
+        };
+        assert_eq!(unsafe { (*executor).runnable.remove(index) }, Some(task));
+        unsafe {
+            (*task).queued = false;
+            (*task).status = TaskStatus::Running;
+            (*executor).active_task = task;
+        }
+    }
+
+    unsafe fn detach_from_ready_queue(executor: *mut LoomExecutor, task: *mut LoomTask) {
+        unsafe {
+            (*executor).runnable.retain(|candidate| *candidate != task);
+            (*task).queued = false;
+        }
+    }
+
+    unsafe fn complete_typed_resource(
+        executor: *mut LoomExecutor,
+        task: *mut LoomTask,
+        resource: OwnedResource,
+    ) -> i64 {
+        let handle = resource.handle_bits();
+        unsafe { detach_from_ready_queue(executor, task) };
+        unsafe {
+            let typed = (*task).typed.as_mut().expect("typed resource fixture");
+            typed.frame_pointer().cast::<i64>().write(handle);
+            typed.result_initialized = true;
+            typed.root_state = typed.completed_root_state;
+            (*task).owned_result_resources.push(resource);
+            (*task).status = TaskStatus::Completed;
+        }
+        handle
+    }
+
+    unsafe fn attach_terminal_resource(
+        executor: *mut LoomExecutor,
+        task: *mut LoomTask,
+        status: TaskStatus,
+        resource: OwnedResource,
+    ) -> i64 {
+        assert!(matches!(
+            status,
+            TaskStatus::Faulted | TaskStatus::Cancelled
+        ));
+        let handle = resource.handle_bits();
+        unsafe { detach_from_ready_queue(executor, task) };
+        unsafe {
+            (*task).owned_result_resources.push(resource);
+            (*task).status = status;
+        }
+        handle
+    }
+
+    unsafe fn cancel_test_parent(executor: *mut LoomExecutor, parent: *mut LoomTask) {
+        unsafe {
+            if (*executor).active_task == parent {
+                (*executor).active_task = ptr::null_mut();
+            }
+            if !terminal((*parent).status) {
+                complete_terminal(&mut *executor, parent, TASK_CANCELLED);
+            }
+        }
     }
 
     #[test]
@@ -5761,6 +5994,23 @@ mod resource_ownership_tests {
         );
         assert_eq!(IoResourceKind::from_nominal(0), None);
         assert_eq!(IoResourceKind::from_nominal(u64::MAX), None);
+    }
+
+    #[test]
+    fn tracked_resource_selection_keeps_windows_handle_domains_distinct() {
+        assert_eq!(select_tracked_resource([]), Ok(None));
+        assert_eq!(
+            select_tracked_resource([(0, 0, false)]),
+            Err(CloseResourceError::InvalidOwnership)
+        );
+        assert_eq!(
+            select_tracked_resource([(0, 0, false), (1, 2, true)]),
+            Ok(Some((1, 2)))
+        );
+        assert_eq!(
+            select_tracked_resource([(0, 0, true), (1, 2, true)]),
+            Err(CloseResourceError::InvalidOwnership)
+        );
     }
 
     #[test]
@@ -5883,6 +6133,790 @@ mod resource_ownership_tests {
             assert!((*task).owned_result_resources.is_empty());
             assert_peer_closed(&mut peer);
             crate::gc::leave_executor();
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn typed_resource_close_rejects_a_tracked_opposite_kind_without_closing_it() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        let (socket, mut peer) = socket_pair().expect("create socket pair");
+        peer.set_nonblocking(true).expect("make peer nonblocking");
+        let mut handle = crate::platform::socket_handle_bits(&socket);
+
+        unsafe {
+            let task = task_spawn(executor, Some(complete_fixture), 1, 0);
+            assert!(!task.is_null());
+            crate::gc::enter_executor(executor);
+            assert_eq!(
+                store_resource_result(task, SOCKET_TYPE, socket.into()),
+                TASK_COMPLETED
+            );
+            assert_eq!(
+                resource_close_typed_v1(runtime, TYPED_RESOURCE_KIND_FILE, &raw mut handle),
+                TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT
+            );
+            assert_eq!((*task).owned_result_resources.len(), 1);
+            assert_peer_still_connected(&mut peer);
+
+            assert_eq!(
+                resource_close_typed_v1(runtime, TYPED_RESOURCE_KIND_SOCKET, &raw mut handle),
+                TYPED_RESOURCE_CLOSE_OK
+            );
+            assert_eq!(handle, INVALID_HANDLE);
+            assert!((*task).owned_result_resources.is_empty());
+            assert_peer_closed(&mut peer);
+            crate::gc::leave_executor();
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn root_typed_take_keeps_a_real_resource_in_the_executor_task_registry() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        let (socket, mut peer) = socket_pair().expect("create root resource pair");
+        peer.set_nonblocking(true).expect("make peer nonblocking");
+
+        unsafe {
+            let root = create_typed_resource_task(executor);
+            let expected = complete_typed_resource(executor, root, socket.into());
+            let mut handle = INVALID_HANDLE;
+
+            assert_eq!(
+                typed_task_take_result_v1(
+                    root,
+                    (&raw mut handle).cast(),
+                    size_of::<u32>() as u64,
+                    align_of::<i64>() as u64,
+                ),
+                TYPED_TASK_INVALID_ARGUMENT
+            );
+            assert_eq!(handle, INVALID_HANDLE);
+            assert_eq!((*root).owned_result_resources.len(), 1);
+            assert!(!(*executor).retired_tasks.contains(&root));
+            assert_peer_still_connected(&mut peer);
+
+            assert_eq!(
+                typed_task_take_result_v1(
+                    root,
+                    (&raw mut handle).cast(),
+                    size_of::<i64>() as u64,
+                    align_of::<i64>() as u64,
+                ),
+                TYPED_TASK_OK
+            );
+            assert_eq!(handle, expected);
+            assert_eq!((*root).owned_result_resources.len(), 1);
+            reap_retired_tasks(&mut *executor, root);
+            assert_eq!(executor_live_tasks(executor), 1);
+            assert_peer_still_connected(&mut peer);
+
+            enter_executor(executor);
+            assert_eq!(
+                resource_close_typed_v1(runtime, TYPED_RESOURCE_KIND_SOCKET, &raw mut handle),
+                TYPED_RESOURCE_CLOSE_OK
+            );
+            leave_executor();
+            assert_eq!(handle, INVALID_HANDLE);
+            assert!((*root).owned_result_resources.is_empty());
+            assert_peer_closed(&mut peer);
+
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn ownerless_root_take_keeps_the_resource_until_executor_teardown() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        let (socket, mut peer) = socket_pair().expect("create root teardown pair");
+        peer.set_nonblocking(true).expect("make peer nonblocking");
+
+        unsafe {
+            let root = create_typed_resource_task(executor);
+            let expected = complete_typed_resource(executor, root, socket.into());
+            let mut handle = INVALID_HANDLE;
+            assert_eq!(
+                typed_task_take_result_v1(
+                    root,
+                    (&raw mut handle).cast(),
+                    size_of::<i64>() as u64,
+                    align_of::<i64>() as u64,
+                ),
+                TYPED_TASK_OK
+            );
+            assert_eq!(handle, expected);
+            assert_eq!((*root).owned_result_resources.len(), 1);
+            assert_peer_still_connected(&mut peer);
+
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+            assert_peer_closed(&mut peer);
+        }
+    }
+
+    #[test]
+    fn typed_take_rejects_an_owned_child_outside_the_active_join_transactionally() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        let (socket, mut peer) = socket_pair().expect("create sibling resource pair");
+        peer.set_nonblocking(true).expect("make peer nonblocking");
+
+        unsafe {
+            let parent = create_typed_resource_task(executor);
+            activate_typed_task(executor, parent);
+            let sibling = create_typed_resource_task(executor);
+            let expected = complete_typed_resource(executor, sibling, socket.into());
+            assert_eq!(
+                (*parent)
+                    .owned_children
+                    .iter()
+                    .filter(|child| **child == sibling)
+                    .count(),
+                1
+            );
+            assert!(!(*parent).join_children.contains(&sibling));
+
+            let mut handle = INVALID_HANDLE;
+            assert_eq!(
+                typed_task_take_result_v1(
+                    sibling,
+                    (&raw mut handle).cast(),
+                    size_of::<i64>() as u64,
+                    align_of::<i64>() as u64,
+                ),
+                TYPED_TASK_INVALID_ARGUMENT
+            );
+            assert_eq!(handle, INVALID_HANDLE);
+            assert_eq!((*sibling).owned_result_resources.len(), 1);
+            assert_eq!(
+                (*sibling)
+                    .typed
+                    .as_ref()
+                    .expect("typed sibling")
+                    .frame_pointer()
+                    .cast::<i64>()
+                    .read(),
+                expected
+            );
+            assert!(!(*executor).retired_tasks.contains(&sibling));
+            assert_peer_still_connected(&mut peer);
+
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+            assert_peer_closed(&mut peer);
+        }
+    }
+
+    #[test]
+    fn typed_take_rejects_a_child_before_the_join_settles_transactionally() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        let (socket, mut peer) = socket_pair().expect("create unsettled resource pair");
+        peer.set_nonblocking(true).expect("make peer nonblocking");
+
+        unsafe {
+            let parent = create_typed_resource_task(executor);
+            activate_typed_task(executor, parent);
+            assert_eq!(task_prepare_join(executor, parent, TASK_JOIN_ALL), WAIT_OK);
+            let child = create_typed_resource_task(executor);
+            assert_eq!(task_add_join_child(executor, parent, child), WAIT_OK);
+            let expected = complete_typed_resource(executor, child, socket.into());
+
+            let mut handle = INVALID_HANDLE;
+            assert_eq!(
+                typed_task_take_result_v1(
+                    child,
+                    (&raw mut handle).cast(),
+                    size_of::<i64>() as u64,
+                    align_of::<i64>() as u64,
+                ),
+                TYPED_TASK_INVALID_ARGUMENT
+            );
+            assert_eq!(handle, INVALID_HANDLE);
+            assert_eq!((*parent).owned_children, vec![child]);
+            assert_eq!((*parent).join_children, vec![child]);
+            assert_eq!((*child).owned_result_resources.len(), 1);
+            assert_peer_still_connected(&mut peer);
+
+            assert_eq!(task_suspend_join(executor, parent), 0);
+            let sentinel = ptr::dangling_mut::<c_void>();
+            let mut code = sentinel;
+            let mut message = sentinel;
+            assert_eq!(
+                typed_task_take_outcome_v1(
+                    child,
+                    (&raw mut handle).cast(),
+                    size_of::<i64>() as u64,
+                    align_of::<i64>() as u64,
+                    &raw mut code,
+                    &raw mut message,
+                ),
+                TYPED_TASK_STATUS_INVALID
+            );
+            assert_eq!(handle, INVALID_HANDLE);
+            assert_eq!(code, sentinel);
+            assert_eq!(message, sentinel);
+            assert_eq!(
+                typed_task_take_result_v1(
+                    child,
+                    (&raw mut handle).cast(),
+                    size_of::<i64>() as u64,
+                    align_of::<i64>() as u64,
+                ),
+                TYPED_TASK_OK
+            );
+            assert_eq!(handle, expected);
+            assert_eq!((*parent).owned_result_resources.len(), 1);
+
+            enter_executor(executor);
+            assert_eq!(
+                resource_close_typed_v1(runtime, TYPED_RESOURCE_KIND_SOCKET, &raw mut handle),
+                TYPED_RESOURCE_CLOSE_OK
+            );
+            leave_executor();
+            assert_peer_closed(&mut peer);
+            cancel_test_parent(executor, parent);
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn fault_and_cancellation_terminal_cleanup_close_live_result_ledgers() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        let (fault_socket, mut fault_peer) = socket_pair().expect("create fault pair");
+        let (cancel_socket, mut cancel_peer) = socket_pair().expect("create cancellation pair");
+        fault_peer
+            .set_nonblocking(true)
+            .expect("make fault peer nonblocking");
+        cancel_peer
+            .set_nonblocking(true)
+            .expect("make cancellation peer nonblocking");
+
+        unsafe {
+            let faulted = create_typed_resource_task(executor);
+            detach_from_ready_queue(executor, faulted);
+            (*faulted).status = TaskStatus::Running;
+            (*faulted).owned_result_resources.push(fault_socket.into());
+            record_primary_task_fault(
+                &mut *faulted,
+                "FixtureFault".into(),
+                "fixture failed".into(),
+                String::new(),
+            );
+            complete_terminal(&mut *executor, faulted, TASK_FAULTED);
+            assert!((*faulted).status == TaskStatus::Faulted);
+            assert!((*faulted).owned_result_resources.is_empty());
+            assert_peer_closed(&mut fault_peer);
+
+            let cancelled = create_typed_resource_task(executor);
+            detach_from_ready_queue(executor, cancelled);
+            (*cancelled).status = TaskStatus::Running;
+            (*cancelled).cancel_requested = true;
+            (*cancelled)
+                .owned_result_resources
+                .push(cancel_socket.into());
+            complete_terminal(&mut *executor, cancelled, TASK_CANCELLED);
+            assert!((*cancelled).status == TaskStatus::Cancelled);
+            assert!((*cancelled).owned_result_resources.is_empty());
+            assert_peer_closed(&mut cancel_peer);
+
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn typed_resource_close_failure_preserves_an_untracked_handle() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        #[cfg(unix)]
+        let mut handle = -2_i64;
+        #[cfg(windows)]
+        let mut handle = 0_i64;
+        let original = handle;
+
+        unsafe {
+            assert_eq!(crate::gc::activate_runtime_v1(runtime), WAIT_OK);
+            assert_eq!(
+                resource_close_typed_v1(runtime, TYPED_RESOURCE_KIND_FILE, &raw mut handle),
+                TYPED_RESOURCE_CLOSE_FAILED
+            );
+            assert_eq!(handle, original);
+            assert_eq!(crate::gc::deactivate_runtime_v1(runtime), WAIT_OK);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn typed_all_take_transfers_every_real_resource_before_child_reaping() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        let (left_socket, mut left_peer) = socket_pair().expect("create left resource pair");
+        let (right_socket, mut right_peer) = socket_pair().expect("create right resource pair");
+        left_peer
+            .set_nonblocking(true)
+            .expect("make left peer nonblocking");
+        right_peer
+            .set_nonblocking(true)
+            .expect("make right peer nonblocking");
+
+        unsafe {
+            let parent = create_typed_resource_task(executor);
+            activate_typed_task(executor, parent);
+            assert_eq!(task_prepare_join(executor, parent, TASK_JOIN_ALL), WAIT_OK);
+            let left = create_typed_resource_task(executor);
+            let right = create_typed_resource_task(executor);
+            assert_eq!(task_add_join_child(executor, parent, left), WAIT_OK);
+            assert_eq!(task_add_join_child(executor, parent, right), WAIT_OK);
+            let expected_left = complete_typed_resource(executor, left, left_socket.into());
+            let expected_right = complete_typed_resource(executor, right, right_socket.into());
+
+            assert_eq!(task_suspend_join(executor, parent), 0);
+            assert_eq!(task_join_step(parent), TASK_COMPLETED);
+            let mut left_handle = INVALID_HANDLE;
+            let mut right_handle = INVALID_HANDLE;
+            for (child, output) in [(left, &raw mut left_handle), (right, &raw mut right_handle)] {
+                assert_eq!(
+                    typed_task_take_result_v1(
+                        child,
+                        output.cast(),
+                        size_of::<i64>() as u64,
+                        align_of::<i64>() as u64,
+                    ),
+                    TYPED_TASK_OK
+                );
+            }
+            assert_eq!([left_handle, right_handle], [expected_left, expected_right]);
+            assert_eq!((*parent).owned_result_resources.len(), 2);
+            assert!((*left).owned_result_resources.is_empty());
+            assert!((*right).owned_result_resources.is_empty());
+            assert!((*parent).owned_children.is_empty());
+            assert!((*parent).join_children.is_empty());
+
+            reap_retired_tasks(&mut *executor, parent);
+            assert_eq!(executor_live_tasks(executor), 1);
+            assert_peer_still_connected(&mut left_peer);
+            assert_peer_still_connected(&mut right_peer);
+
+            enter_executor(executor);
+            for handle in [&raw mut left_handle, &raw mut right_handle] {
+                assert_eq!(
+                    resource_close_typed_v1(runtime, TYPED_RESOURCE_KIND_SOCKET, handle),
+                    TYPED_RESOURCE_CLOSE_OK
+                );
+            }
+            leave_executor();
+            assert_peer_closed(&mut left_peer);
+            assert_peer_closed(&mut right_peer);
+            cancel_test_parent(executor, parent);
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn transferred_result_resource_closes_when_its_owner_faults() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        let (socket, mut peer) = socket_pair().expect("create transferred fault pair");
+        peer.set_nonblocking(true).expect("make peer nonblocking");
+
+        unsafe {
+            let parent = create_typed_resource_task(executor);
+            activate_typed_task(executor, parent);
+            assert_eq!(task_prepare_join(executor, parent, TASK_JOIN_ALL), WAIT_OK);
+            let child = create_typed_resource_task(executor);
+            assert_eq!(task_add_join_child(executor, parent, child), WAIT_OK);
+            complete_typed_resource(executor, child, socket.into());
+            assert_eq!(task_suspend_join(executor, parent), 0);
+            assert_eq!(task_join_step(parent), TASK_COMPLETED);
+
+            let mut handle = INVALID_HANDLE;
+            assert_eq!(
+                typed_task_take_result_v1(
+                    child,
+                    (&raw mut handle).cast(),
+                    size_of::<i64>() as u64,
+                    align_of::<i64>() as u64,
+                ),
+                TYPED_TASK_OK
+            );
+            assert_eq!((*parent).owned_result_resources.len(), 1);
+            assert_peer_still_connected(&mut peer);
+
+            (*executor).active_task = ptr::null_mut();
+            record_primary_task_fault(
+                &mut *parent,
+                "FixtureFault".into(),
+                "owner failed".into(),
+                String::new(),
+            );
+            complete_terminal(&mut *executor, parent, TASK_FAULTED);
+            assert!((*parent).status == TaskStatus::Faulted);
+            assert!((*parent).owned_result_resources.is_empty());
+            assert_peer_closed(&mut peer);
+
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn typed_outcome_transfers_only_completed_resources_and_is_transactional() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        let (completed_socket, mut completed_peer) =
+            socket_pair().expect("create completed resource pair");
+        let (faulted_socket, mut faulted_peer) =
+            socket_pair().expect("create faulted resource pair");
+        let (cancelled_socket, mut cancelled_peer) =
+            socket_pair().expect("create cancelled resource pair");
+        for peer in [&mut completed_peer, &mut faulted_peer, &mut cancelled_peer] {
+            peer.set_nonblocking(true).expect("make peer nonblocking");
+        }
+
+        unsafe {
+            let parent = create_typed_resource_task(executor);
+            activate_typed_task(executor, parent);
+            assert_eq!(
+                task_prepare_join(executor, parent, TASK_JOIN_SETTLED),
+                WAIT_OK
+            );
+            let completed = create_typed_resource_task(executor);
+            let faulted = create_typed_resource_task(executor);
+            let cancelled = create_typed_resource_task(executor);
+            for child in [completed, faulted, cancelled] {
+                assert_eq!(task_add_join_child(executor, parent, child), WAIT_OK);
+            }
+            let expected = complete_typed_resource(executor, completed, completed_socket.into());
+            record_primary_task_fault(
+                &mut *faulted,
+                "FixtureFault".into(),
+                "fixture failed".into(),
+                String::new(),
+            );
+            attach_terminal_resource(
+                executor,
+                faulted,
+                TaskStatus::Faulted,
+                faulted_socket.into(),
+            );
+            attach_terminal_resource(
+                executor,
+                cancelled,
+                TaskStatus::Cancelled,
+                cancelled_socket.into(),
+            );
+            assert_eq!(task_suspend_join(executor, parent), 0);
+            assert_eq!(task_join_step(parent), TASK_COMPLETED);
+
+            let sentinel = ptr::dangling_mut::<c_void>();
+            let mut handle = INVALID_HANDLE;
+            assert_eq!(
+                typed_task_take_result_v1(
+                    completed,
+                    (&raw mut handle).cast(),
+                    size_of::<i64>() as u64,
+                    align_of::<i64>() as u64,
+                ),
+                TYPED_TASK_INVALID_ARGUMENT
+            );
+            assert_eq!(handle, INVALID_HANDLE);
+            assert_eq!((*completed).owned_result_resources.len(), 1);
+            let mut aliased_text = sentinel;
+            assert_eq!(
+                typed_task_take_outcome_v1(
+                    completed,
+                    (&raw mut handle).cast(),
+                    size_of::<i64>() as u64,
+                    align_of::<i64>() as u64,
+                    &raw mut aliased_text,
+                    &raw mut aliased_text,
+                ),
+                TYPED_TASK_STATUS_INVALID
+            );
+            assert_eq!(handle, INVALID_HANDLE);
+            assert_eq!(aliased_text, sentinel);
+            assert_eq!((*completed).owned_result_resources.len(), 1);
+            assert!(!(*executor).retired_tasks.contains(&completed));
+            assert_peer_still_connected(&mut completed_peer);
+
+            enter_executor(executor);
+            let mut completed_code = sentinel;
+            let mut completed_message = sentinel;
+            assert_eq!(
+                typed_task_take_outcome_v1(
+                    completed,
+                    (&raw mut handle).cast(),
+                    size_of::<i64>() as u64,
+                    align_of::<i64>() as u64,
+                    &raw mut completed_code,
+                    &raw mut completed_message,
+                ),
+                TASK_COMPLETED
+            );
+            assert_eq!(handle, expected);
+            assert!(completed_code.is_null());
+            assert!(completed_message.is_null());
+
+            let mut fault_value = 17_i64;
+            let mut fault_code = ptr::null_mut();
+            let mut fault_message = ptr::null_mut();
+            assert_eq!(
+                typed_task_take_outcome_v1(
+                    faulted,
+                    (&raw mut fault_value).cast(),
+                    size_of::<i64>() as u64,
+                    align_of::<i64>() as u64,
+                    &raw mut fault_code,
+                    &raw mut fault_message,
+                ),
+                TASK_FAULTED
+            );
+            assert_eq!(fault_value, 17);
+            assert_eq!(
+                crate::text::text_bytes(fault_code).unwrap(),
+                b"FixtureFault"
+            );
+            assert_eq!(
+                crate::text::text_bytes(fault_message).unwrap(),
+                b"fixture failed"
+            );
+
+            let mut cancelled_value = 19_i64;
+            let mut cancelled_code = sentinel;
+            let mut cancelled_message = sentinel;
+            assert_eq!(
+                typed_task_take_outcome_v1(
+                    cancelled,
+                    (&raw mut cancelled_value).cast(),
+                    size_of::<i64>() as u64,
+                    align_of::<i64>() as u64,
+                    &raw mut cancelled_code,
+                    &raw mut cancelled_message,
+                ),
+                TASK_CANCELLED
+            );
+            leave_executor();
+            assert_eq!(cancelled_value, 19);
+            assert!(cancelled_code.is_null());
+            assert!(cancelled_message.is_null());
+
+            assert_eq!((*parent).owned_result_resources.len(), 1);
+            assert!((*completed).owned_result_resources.is_empty());
+            assert_eq!((*faulted).owned_result_resources.len(), 1);
+            assert_eq!((*cancelled).owned_result_resources.len(), 1);
+            reap_retired_tasks(&mut *executor, parent);
+            assert_eq!(executor_live_tasks(executor), 1);
+            assert_peer_still_connected(&mut completed_peer);
+            assert_peer_closed(&mut faulted_peer);
+            assert_peer_closed(&mut cancelled_peer);
+
+            enter_executor(executor);
+            assert_eq!(
+                resource_close_typed_v1(runtime, TYPED_RESOURCE_KIND_SOCKET, &raw mut handle),
+                TYPED_RESOURCE_CLOSE_OK
+            );
+            leave_executor();
+            assert_peer_closed(&mut completed_peer);
+            cancel_test_parent(executor, parent);
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn typed_any_loser_resource_is_closed_instead_of_transferred() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        let (winner_socket, mut winner_peer) = socket_pair().expect("create winner resource pair");
+        let (loser_socket, mut loser_peer) = socket_pair().expect("create loser resource pair");
+        winner_peer
+            .set_nonblocking(true)
+            .expect("make winner peer nonblocking");
+        loser_peer
+            .set_nonblocking(true)
+            .expect("make loser peer nonblocking");
+
+        unsafe {
+            let parent = create_typed_resource_task(executor);
+            activate_typed_task(executor, parent);
+            assert_eq!(task_prepare_join(executor, parent, TASK_JOIN_ANY), WAIT_OK);
+            let winner = create_typed_resource_task(executor);
+            let loser = create_typed_resource_task(executor);
+            assert_eq!(task_add_join_child(executor, parent, winner), WAIT_OK);
+            assert_eq!(task_add_join_child(executor, parent, loser), WAIT_OK);
+            let expected = complete_typed_resource(executor, winner, winner_socket.into());
+            complete_typed_resource(executor, loser, loser_socket.into());
+
+            assert_eq!(task_suspend_join(executor, parent), 0);
+            let mut handle = INVALID_HANDLE;
+            assert!(
+                !(*parent)
+                    .typed
+                    .as_ref()
+                    .expect("typed parent")
+                    .join_winner_finalized
+            );
+            assert_eq!(
+                typed_task_take_result_v1(
+                    winner,
+                    (&raw mut handle).cast(),
+                    size_of::<i64>() as u64,
+                    align_of::<i64>() as u64,
+                ),
+                TYPED_TASK_INVALID_ARGUMENT
+            );
+            assert_eq!(handle, INVALID_HANDLE);
+            assert_eq!((*parent).owned_children, vec![winner, loser]);
+            assert_eq!((*parent).join_children, vec![winner, loser]);
+            assert_eq!((*winner).owned_result_resources.len(), 1);
+            assert_eq!((*loser).owned_result_resources.len(), 1);
+            assert_peer_still_connected(&mut winner_peer);
+            assert_peer_still_connected(&mut loser_peer);
+
+            assert_eq!(task_join_step(parent), TASK_COMPLETED);
+            assert_eq!((*parent).owned_children, vec![winner]);
+            assert_eq!((*parent).join_children, vec![winner]);
+            assert!((*parent).owned_result_resources.is_empty());
+            assert_eq!((*winner).owned_result_resources.len(), 1);
+            assert!((*loser).owned_result_resources.is_empty());
+            assert_peer_still_connected(&mut winner_peer);
+            assert_peer_closed(&mut loser_peer);
+
+            reap_retired_tasks(&mut *executor, parent);
+            assert_eq!(executor_live_tasks(executor), 2);
+
+            assert_eq!(
+                typed_task_take_result_v1(
+                    winner,
+                    (&raw mut handle).cast(),
+                    size_of::<i64>() as u64,
+                    align_of::<i64>() as u64,
+                ),
+                TYPED_TASK_OK
+            );
+            assert_eq!(handle, expected);
+            assert_eq!((*parent).owned_result_resources.len(), 1);
+            reap_retired_tasks(&mut *executor, parent);
+            assert_eq!(executor_live_tasks(executor), 1);
+            assert_peer_still_connected(&mut winner_peer);
+
+            enter_executor(executor);
+            assert_eq!(
+                resource_close_typed_v1(runtime, TYPED_RESOURCE_KIND_SOCKET, &raw mut handle),
+                TYPED_RESOURCE_CLOSE_OK
+            );
+            leave_executor();
+            assert_peer_closed(&mut winner_peer);
+            cancel_test_parent(executor, parent);
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn unconsumed_typed_resource_closes_at_disposal_before_child_reaping() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        let (socket, mut peer) = socket_pair().expect("create unconsumed resource pair");
+        peer.set_nonblocking(true).expect("make peer nonblocking");
+
+        unsafe {
+            let parent = create_typed_resource_task(executor);
+            activate_typed_task(executor, parent);
+            let child = create_typed_resource_task(executor);
+            complete_typed_resource(executor, child, socket.into());
+            {
+                let typed = (*parent).typed.as_mut().expect("typed parent fixture");
+                typed.frame_pointer().cast::<i64>().write(7);
+                typed.result_initialized = true;
+                typed.root_state = typed.completed_root_state;
+            }
+            (*executor).active_task = ptr::null_mut();
+            complete_terminal(&mut *executor, parent, TASK_COMPLETED);
+            assert!((*parent).status == TaskStatus::Completed);
+            assert!((*parent).owned_result_resources.is_empty());
+            assert!((*child).owned_result_resources.is_empty());
+            assert!((*executor).retired_tasks.contains(&child));
+            assert_peer_closed(&mut peer);
+
+            reap_retired_tasks(&mut *executor, parent);
+            assert_eq!(executor_live_tasks(executor), 1);
+            let mut result = 0_i64;
+            assert_eq!(
+                typed_task_take_result_v1(
+                    parent,
+                    (&raw mut result).cast(),
+                    size_of::<i64>() as u64,
+                    align_of::<i64>() as u64,
+                ),
+                TYPED_TASK_OK
+            );
+            assert_eq!(result, 7);
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn typed_result_disposal_closes_remaining_resources_after_a_disposer_defect() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        let (socket, mut peer) = socket_pair().expect("create disposal resource pair");
+        peer.set_nonblocking(true).expect("make peer nonblocking");
+
+        unsafe {
+            let mut descriptor = typed_resource_descriptor();
+            descriptor.dispose_result = Some(typed_invalid_dispose_fixture);
+            let task = typed_task_create_v1(executor, &raw const descriptor);
+            assert!(!task.is_null());
+            assert_eq!(typed_task_initialize_v1(task, 0), TYPED_TASK_OK);
+            assert_eq!(typed_task_publish_v1(executor, task), TYPED_TASK_OK);
+            complete_typed_resource(executor, task, socket.into());
+            assert_eq!((*task).owned_result_resources.len(), 1);
+            assert_peer_still_connected(&mut peer);
+
+            assert_eq!(
+                dispose_typed_result(&mut *executor, task),
+                CleanupOutcome::Defect
+            );
+            assert!((*task).owned_result_resources.is_empty());
+            assert_peer_closed(&mut peer);
+
             executor_destroy(executor);
             assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }

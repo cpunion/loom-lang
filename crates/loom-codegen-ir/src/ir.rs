@@ -1139,6 +1139,8 @@ pub const TASK_OUTCOME_CANCELLED_VARIANT: u32 = 2;
 /// validation rechecks both semantic identity and physical shape.
 pub(crate) const OPTION_TYPE_ID: TypeId = TypeId(0);
 pub(crate) const RESULT_TYPE_ID: TypeId = TypeId(1);
+pub(crate) const FILE_TYPE_ID: TypeId = TypeId(9);
+pub(crate) const SOCKET_TYPE_ID: TypeId = TypeId(10);
 /// Canonical prelude identity of the compiler-known immutable Bytes type.
 pub const BYTES_TYPE_ID: TypeId = TypeId(11);
 /// Canonical prelude identity of the compiler-known lexical Path type.

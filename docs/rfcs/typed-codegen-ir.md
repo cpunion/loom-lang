@@ -517,6 +517,23 @@ static child row without constructing the input List; `all` and `settled`
 construct their List result after resume. These are compiler specializations of
 standard-library APIs, not additional language syntax.
 
+Successful exact result consumption transfers built-in File and Socket handles
+owned by a completed child's published result to the child's non-null owner
+Task, which may itself be the root Task, before child retirement. When
+result-take is applied directly to the ownerless root Task, the handles remain
+attached to that Task in the executor-owned task registry. Faulted, cancelled,
+losing, and unconsumed tasks transfer nothing. Terminal cleanup or typed result
+disposal closes their remaining built-in handles before retired-task memory
+reclamation, even if a disposer reports a fault or protocol defect. The
+transfer is committed only after take validation succeeds and is not an LCIR
+value field or source ownership token.
+
+Runtime preflight does not assume generated ordering: it requires one exact
+owned/join membership, a settled successful join, result take only for ALL/ANY,
+outcome take only for SETTLED/RACE, and completed ANY/RACE winner finalization.
+An invalid call is transactional, so it cannot remove the winner before loser
+disposal or reinterpret terminal fault/cancellation as an ordinary result.
+
 The frontend keeps an ordinary method call through HIR. Version 0.3 maps a
 canonical, unshadowed standard Task API member through its embedded catalog to
 stable `StandardLibraryItem` identity, and only then constructs specialized
@@ -561,7 +578,12 @@ Typed File and Socket cleanup calls
 It adds `typed-resource-v1` and advances the runtime ABI component to 12 with
 `runtime-v6`. The handle cell is a fixed LLVM entry allocation, not a runtime
 cleanup node, and the helper neither constructs a universal value nor enters
-the executor. Static-concept and deferred cleanup require no new runtime ABI.
+the executor. Independent validation rederives canonical direct one-`Int`
+`File#9` and `Socket#10` products and requires the close kind to agree exactly.
+Status `0` follows the normal edge, status `2` records
+`ResourceCloseFault`, and invalid argument status `1` or any unknown status
+traps as an ABI defect. Static-concept and deferred cleanup require no new
+runtime ABI.
 
 The runtime subsequently adds a bounded repeated-element descriptor. This
 additive `typed-repeated-v1` symbol advances the
@@ -714,6 +736,16 @@ bypass U+0000 validation. This advances the canonical dump to
 `loom-llvm-object-cache-v38`, and native runtime identity to component 25 with
 `typed-path-v1` and `runtime-v19`. Existing Path MIR keeps checked-MIR artifacts
 at version 27, and the public standard-library ABI remains v5.
+
+Resource-close validation and completed-result ownership ordering later change
+semantic validity without changing an LCIR field, textual grammar, runtime
+symbol, signature, status-code shape, typed-task layout, or source API. The
+canonical dump remains `lcir 36`; artifact identity advances to schema 38,
+typed LCIR native-object domain to `loom-lcir-native-object-v34`, and CLI
+object-cache domain to `loom-llvm-object-cache-v39`. The native runtime
+identity advances to component 26 with
+`typed-resource-ownership-v1` and `runtime-v20`. Checked MIR remains 27,
+typed-task ABI remains v1, and standard-library ABI remains v5.
 
 Calls to the C process entry, libc, and versioned Loom runtime functions are
 explicit external boundaries. They do not permit two source-function ABIs in

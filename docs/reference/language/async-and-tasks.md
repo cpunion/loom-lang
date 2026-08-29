@@ -173,6 +173,17 @@ fault.message() Text
 first terminal state. Capturing a fault as `TaskFault` reports it as data from
 the join; it does not add a source operation to resume or rethrow that task.
 
+`Completed(T)` preserves every recursive `MustScope` obligation inside `T`.
+If it contains a File, Socket, or another scoped resource, the successful arm
+must bind that payload to `scoped` immediately; `_` and `discard` cannot erase
+the obligation. For built-in File and Socket handles, the runtime transfers
+ownership from a completed child to its owner Task, which may itself be the
+root Task, before retiring the child. Faulted, cancelled, losing, and
+unconsumed tasks do not transfer completed-result handles. Terminal cleanup or
+typed result disposal closes their remaining built-in handles before retired-
+task memory reclamation. User-defined `MustScope` obligations add no runtime
+ledger entries.
+
 ## Timers and I/O tasks
 
 The standard Task API provides:

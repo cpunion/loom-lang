@@ -838,6 +838,51 @@ fn emitted_lcir_function<'ir>(ir: &'ir str, artifact: &CheckedArtifact, suffix: 
     &ir[start..end]
 }
 
+fn assert_typed_resource_close_guard(
+    ir: &str,
+    artifact: &CheckedArtifact,
+    suffix: &str,
+    resource_kind: u32,
+) {
+    let function = emitted_lcir_function(ir, artifact, suffix);
+    for required in [
+        "switch i32 %resource.close",
+        "label %resource.close.invalid_status",
+        "i32 0, label",
+        "i32 2, label %resource.close.fault",
+        "resource.close.invalid_status:",
+        "call void @llvm.trap()",
+        "unreachable",
+        "resource.close.fault:",
+    ] {
+        assert!(
+            function.contains(required),
+            "typed close status guard omitted `{required}`:\n{function}"
+        );
+    }
+    let call = function
+        .lines()
+        .find(|line| line.contains("call i32 @loom_runtime_resource_close_typed_v1"))
+        .expect("typed resource close call");
+    assert!(
+        call.contains(&format!("i32 {resource_kind}")),
+        "typed resource close omitted kind {resource_kind}: {call}"
+    );
+    let switch = function
+        .split_once("switch i32 %resource.close")
+        .and_then(|(_, suffix)| suffix.split_once(']'))
+        .map(|(switch, _)| switch)
+        .expect("typed resource close status switch");
+    assert!(
+        !switch.contains("i32 1, label"),
+        "invalid-argument status must use the trapping default edge: {switch}"
+    );
+    assert!(
+        !function.contains("resource.close.succeeded"),
+        "typed close must not collapse every nonzero status into a source fault:\n{function}"
+    );
+}
+
 fn checked_float_pattern_fixture() -> CheckedProgram {
     let source = r"module lcir_float_patterns
 
@@ -893,11 +938,38 @@ pub fn main() {
     CheckedProgram::new(program).expect("manually edited IEEE-pattern MIR must validate")
 }
 
-fn checked_builtin_file_cleanup_fixture() -> CheckedProgram {
+fn builtin_resource_cleanup_parts(
+    file: bool,
+) -> (TypeId, &'static str, ScopedDisposal, PreludeIds) {
+    let resource = TypeId(if file { 9 } else { 10 });
+    if file {
+        (
+            resource,
+            "File",
+            ScopedDisposal::FileClose,
+            PreludeIds {
+                file: Some(resource),
+                ..PreludeIds::default()
+            },
+        )
+    } else {
+        (
+            resource,
+            "Socket",
+            ScopedDisposal::SocketClose,
+            PreludeIds {
+                socket: Some(resource),
+                ..PreludeIds::default()
+            },
+        )
+    }
+}
+
+fn checked_builtin_resource_cleanup_fixture(file: bool) -> CheckedProgram {
     let span = Span::default();
-    let file_id = TypeId(9);
-    let file = Type::Nominal(file_id, Vec::new());
-    let mut types = (0_u32..9)
+    let (resource_id, resource_name, disposal, prelude) = builtin_resource_cleanup_parts(file);
+    let resource = Type::Nominal(resource_id, Vec::new());
+    let mut types = (0_u32..resource_id.0)
         .map(|id| TypeDef {
             id: TypeId(id),
             name: format!("Placeholder{id}"),
@@ -910,8 +982,8 @@ fn checked_builtin_file_cleanup_fixture() -> CheckedProgram {
         })
         .collect::<Vec<_>>();
     types.push(TypeDef {
-        id: file_id,
-        name: "File".into(),
+        id: resource_id,
+        name: resource_name.into(),
         span,
         type_parameters: 0,
         kind: TypeDefKind::Record {
@@ -938,8 +1010,8 @@ fn checked_builtin_file_cleanup_fixture() -> CheckedProgram {
             witness_prefix_count: 0,
             locals: vec![LocalDecl {
                 id: LocalId(0),
-                name: "file".into(),
-                ty: file.clone(),
+                name: "resource".into(),
+                ty: resource.clone(),
                 mutable: true,
                 span,
             }],
@@ -951,7 +1023,7 @@ fn checked_builtin_file_cleanup_fixture() -> CheckedProgram {
                         local: LocalId(0),
                         value: Expr::new(
                             ExprKind::Record {
-                                ty: file_id,
+                                ty: resource_id,
                                 type_arguments: Vec::new(),
                                 fields: vec![Expr::new(
                                     ExprKind::Constant(MirConstant::Int(-1)),
@@ -960,10 +1032,10 @@ fn checked_builtin_file_cleanup_fixture() -> CheckedProgram {
                                 )],
                                 construction: ConstructionMode::Plain,
                             },
-                            file,
+                            resource,
                             span,
                         ),
-                        disposal: ScopedDisposal::FileClose,
+                        disposal,
                     },
                     span,
                 }],
@@ -976,10 +1048,7 @@ fn checked_builtin_file_cleanup_fixture() -> CheckedProgram {
             },
             call_plan: CallPlan::default(),
         }],
-        prelude: PreludeIds {
-            file: Some(file_id),
-            ..PreludeIds::default()
-        },
+        prelude,
         ..Program::default()
     };
     program
@@ -5667,7 +5736,7 @@ pub fn initializerFaultMain() {
 
 #[test]
 fn typed_builtin_scoped_cleanup_matches_interpreter_and_legacy_without_executor_routing() {
-    let program = checked_builtin_file_cleanup_fixture();
+    let program = checked_builtin_resource_cleanup_fixture(true);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let artifact = lower_source_artifact(
         &program,
@@ -5696,8 +5765,67 @@ fn typed_builtin_scoped_cleanup_matches_interpreter_and_legacy_without_executor_
         "{}",
         lcir.ir
     );
+    assert_typed_resource_close_guard(&lcir.ir, &artifact, "manual.main", 1);
     assert_fallible_surface(&lcir.ir);
     assert_no_indirect_calls(&lcir.ir);
+
+    for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
+        let directory = tempfile::tempdir().expect("create typed close target directory");
+        let object = directory.path().join(if target.contains("windows") {
+            "typed-resource-close.obj"
+        } else {
+            "typed-resource-close.o"
+        });
+        let ir_path = directory.path().join("typed-resource-close.ll");
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                emit_ir: Some(ir_path.clone()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit typed resource close object for {target}: {error}"));
+        assert!(object.is_file(), "missing typed close object for {target}");
+        let ir = std::fs::read_to_string(ir_path).expect("read typed close target IR");
+        assert!(
+            ir.contains(&format!("target triple = \"{target}\"")),
+            "{ir}"
+        );
+        assert_typed_resource_close_guard(&ir, &artifact, "manual.main", 1);
+        assert_no_universal_value_surface(&ir);
+        assert!(!ir.contains("@loom_io_close"), "{ir}");
+    }
+}
+
+#[test]
+fn typed_builtin_socket_cleanup_emits_the_exact_kind_two_boundary() {
+    let program = checked_builtin_resource_cleanup_fixture(false);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    assert_eq!(dump.matches("resource.close.socket").count(), 1, "{dump}");
+    let native = emit_and_run_lcir_machine_fault(&artifact, "lcir-scoped-socket-close");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert_typed_resource_close_guard(&native.ir, &artifact, "manual.main", 2);
+    assert_eq!(
+        native
+            .ir
+            .matches("call i32 @loom_runtime_resource_close_typed_v1")
+            .count(),
+        1,
+        "{}",
+        native.ir
+    );
+    assert_no_universal_value_surface(&native.ir);
+    assert!(!native.ir.contains("@loom_io_close"), "{}", native.ir);
+    assert_no_indirect_calls(&native.ir);
 }
 
 #[test]

@@ -73,10 +73,10 @@ use loom_runtime_abi::{
     TYPED_JSON_FORMAT_DEPTH_LIMIT, TYPED_JSON_FORMAT_NON_FINITE_NUMBER, TYPED_JSON_FORMAT_OK,
     TYPED_JSON_FORMAT_SYMBOL, TYPED_LOG_FIELD_ALIGNMENT, TYPED_LOG_FIELD_KEY_OFFSET,
     TYPED_LOG_FIELD_SIZE, TYPED_LOG_FIELD_VALUE_OFFSET, TYPED_LOG_OK, TYPED_LOG_WRITE_FAILED,
-    TYPED_LOG_WRITE_SYMBOL, TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE,
-    TYPED_RESOURCE_KIND_SOCKET, TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION,
-    TYPED_TASK_PUBLISH_ADOPTING_SYMBOL, TYPED_TASK_TAKE_OUTCOME_SYMBOL,
-    TYPED_TIMER_TASK_CREATE_SYMBOL,
+    TYPED_LOG_WRITE_SYMBOL, TYPED_RESOURCE_CLOSE_FAILED, TYPED_RESOURCE_CLOSE_OK,
+    TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET,
+    TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION, TYPED_TASK_PUBLISH_ADOPTING_SYMBOL,
+    TYPED_TASK_TAKE_OUTCOME_SYMBOL, TYPED_TIMER_TASK_CREATE_SYMBOL,
 };
 
 use crate::codegen::{DebugSource, NativeObjectArtifact, NativeObjectOptions};
@@ -13622,16 +13622,14 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .build_insert_value(resource, closed_handle, 0, "resource.close.writeback")
             .map_err(builder_error)?
             .into_struct_value();
-        let succeeded = self
+        let report = self
             .backend
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                status,
-                self.backend.context.i32_type().const_zero(),
-                "resource.close.succeeded",
-            )
-            .map_err(builder_error)?;
+            .context
+            .append_basic_block(self.function, "resource.close.fault");
+        let invalid = self
+            .backend
+            .context
+            .append_basic_block(self.function, "resource.close.invalid_status");
         let predecessor = self.current_block()?;
         self.add_result_incoming(
             normal,
@@ -13641,14 +13639,43 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             ],
             predecessor,
         )?;
-        let report = self
-            .backend
-            .context
-            .append_basic_block(self.function, "resource.close.fault");
         self.backend
             .builder
-            .build_conditional_branch(succeeded, self.block(normal.block)?, report)
+            .build_switch(
+                status,
+                invalid,
+                &[
+                    (
+                        self.backend
+                            .context
+                            .i32_type()
+                            .const_int(u64::from(TYPED_RESOURCE_CLOSE_OK.cast_unsigned()), false),
+                        self.block(normal.block)?,
+                    ),
+                    (
+                        self.backend.context.i32_type().const_int(
+                            u64::from(TYPED_RESOURCE_CLOSE_FAILED.cast_unsigned()),
+                            false,
+                        ),
+                        report,
+                    ),
+                ],
+            )
             .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(invalid);
+        let trap = inkwell::intrinsics::Intrinsic::find("llvm.trap")
+            .and_then(|intrinsic| intrinsic.get_declaration(&self.backend.module, &[]))
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "missing llvm.trap"))?;
+        self.backend
+            .builder
+            .build_call(trap, &[], "resource.close.status.trap")
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_unreachable()
+            .map_err(builder_error)?;
+
         self.backend.builder.position_at_end(report);
         self.emit_source_fault(FaultCode::ResourceClose, origin)?;
         let predecessor = self.current_block()?;
