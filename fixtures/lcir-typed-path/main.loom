@@ -1,0 +1,121 @@
+module lcir_typed_path
+
+fn requireRoundTrip(source Text) {
+    match Path.from_text(source) {
+        Ok(path) => {
+            let rendered = path.as_text()
+            assert rendered == source
+        }
+        Err(ContainsNul) => { assert false }
+        Err(AbsoluteJoin) => { assert false }
+    }
+}
+
+fn requireContainsNul(source Text) {
+    match Path.from_text(source) {
+        Err(ContainsNul) => {}
+        Err(AbsoluteJoin) => { assert false }
+        Ok(_) => { assert false }
+    }
+}
+
+fn requireJoin(baseText Text, childText Text, expected Text) {
+    match Path.from_text(baseText) {
+        Ok(base) => match Path.from_text(childText) {
+            Ok(child) => match base.join(child) {
+                Ok(joined) => {
+                    let rendered = joined.as_text()
+                    let renderedBase = base.as_text()
+                    let renderedChild = child.as_text()
+                    assert rendered == expected
+                    assert renderedBase == baseText
+                    assert renderedChild == childText
+                }
+                Err(ContainsNul) => { assert false }
+                Err(AbsoluteJoin) => { assert false }
+            }
+            Err(ContainsNul) => { assert false }
+            Err(AbsoluteJoin) => { assert false }
+        }
+        Err(ContainsNul) => { assert false }
+        Err(AbsoluteJoin) => { assert false }
+    }
+}
+
+fn requireAbsoluteJoin(baseText Text, childText Text) {
+    match Path.from_text(baseText) {
+        Ok(base) => match Path.from_text(childText) {
+            Ok(child) => match base.join(child) {
+                Err(AbsoluteJoin) => {}
+                Err(ContainsNul) => { assert false }
+                Ok(_) => { assert false }
+            }
+            Err(ContainsNul) => { assert false }
+            Err(AbsoluteJoin) => { assert false }
+        }
+        Err(ContainsNul) => { assert false }
+        Err(AbsoluteJoin) => { assert false }
+    }
+}
+
+fn verifyPathRules() {
+    requireRoundTrip("")
+    requireRoundTrip("./根/../🙂//leaf")
+    requireRoundTrip("alpha//./beta/../gamma")
+    requireContainsNul("left\0right")
+
+    requireJoin("root", "child", "root/child")
+    requireJoin("root/", "child", "root/child")
+    requireJoin("", "child", "child")
+    requireJoin("root", "", "root")
+    requireJoin("/root", "./child//../leaf", "/root/./child//../leaf")
+    requireAbsoluteJoin("root", "/absolute//../child")
+}
+
+fn verifyMovingJoin() {
+    match Path.from_text("./root//父") {
+        Ok(base) => match Path.from_text("child/../🙂") {
+            Ok(child) => {
+                let retainedBase = base
+                let retainedChild = child
+                match base.join(child) {
+                    Ok(retainedJoined) => {
+                        for index in 0..4096 {
+                            match base.join(child) {
+                                Ok(joined) => {
+                                    let rendered = joined.as_text()
+                                    assert rendered == "./root//父/child/../🙂"
+                                }
+                                Err(ContainsNul) => { assert false }
+                                Err(AbsoluteJoin) => { assert false }
+                            }
+                            assert index >= 0
+                        }
+                        let retainedJoinedText = retainedJoined.as_text()
+                        assert retainedJoinedText == "./root//父/child/../🙂"
+                    }
+                    Err(ContainsNul) => { assert false }
+                    Err(AbsoluteJoin) => { assert false }
+                }
+                let retainedBaseText = retainedBase.as_text()
+                let retainedChildText = retainedChild.as_text()
+                assert retainedBaseText == "./root//父"
+                assert retainedChildText == "child/../🙂"
+            }
+            Err(ContainsNul) => { assert false }
+            Err(AbsoluteJoin) => { assert false }
+        }
+        Err(ContainsNul) => { assert false }
+        Err(AbsoluteJoin) => { assert false }
+    }
+}
+
+pub fn main() {
+    verifyPathRules()
+    verifyMovingJoin()
+}
+
+test fn typedPath() {
+    verifyPathRules()
+    verifyMovingJoin()
+}
