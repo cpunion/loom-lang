@@ -4,15 +4,7 @@ use loom_codegen_llvm::EmitOptions;
 use loom_driver::AnalysisHost;
 
 mod support;
-use support::emit_native;
-
-fn loom_text_literal(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-}
+use support::{emit_native, loom_text_literal};
 
 #[test]
 #[allow(clippy::too_many_lines)]

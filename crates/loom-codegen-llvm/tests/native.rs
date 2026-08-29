@@ -19,7 +19,7 @@ use loom_mir::{
 mod support;
 #[cfg(unix)]
 use support::run_with_closed_stdout;
-use support::{emit_native, run_with_read_only_stdout};
+use support::{emit_native, loom_text_literal, run_with_read_only_stdout};
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 const CROSS_TRIPLE: &str = "x86_64-unknown-linux-gnu";
@@ -31,14 +31,6 @@ fn assert_exact_stdout_ir(ir: &str) {
     for forbidden in ["@puts", "@printf", "@loom.runtime.print"] {
         assert!(!ir.contains(forbidden), "unexpected `{forbidden}`:\n{ir}");
     }
-}
-
-fn loom_text_literal(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
 }
 
 #[test]

@@ -46,6 +46,22 @@ impl Drop for TestProject {
     }
 }
 
+fn loom_text_literal(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+}
+
+#[test]
+fn loom_text_literals_escape_windows_paths_before_source_interpolation() {
+    assert_eq!(
+        loom_text_literal("C:\\loom\\round-trip.txt"),
+        "C:\\\\loom\\\\round-trip.txt"
+    );
+}
+
 fn relative(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .expect("discovered file is below root")
@@ -2389,6 +2405,10 @@ fn duration_file_and_socket_tasks_execute_from_source() {
 
     let project = TestProject::new();
     let file = project.root.join("round-trip.txt");
+    let file_literal = loom_text_literal(
+        file.to_str()
+            .expect("temporary I/O path must be valid UTF-8"),
+    );
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind test listener");
     let port = listener.local_addr().expect("listener address").port();
     let server = std::thread::spawn(move || {
@@ -2412,18 +2432,18 @@ test async fn real_io() {{
     assert observed == 1
     Task.sleep(delay).await
     {{
-        scoped output = create("{}").await
+        scoped output = create("{file_literal}").await
         output.write_text("hello from loom").await
         Unit
     }}
     {{
-        scoped input = open_read("{}").await
+        scoped input = open_read("{file_literal}").await
         let content = input.read_text().await
         assert content == "hello from loom"
         Unit
     }}
     {{
-        scoped socket = connect("127.0.0.1", {}).await
+        scoped socket = connect("127.0.0.1", {port}).await
         socket.write_text("ping").await
         let response = socket.read_text().await
         assert response == "pong"
@@ -2431,9 +2451,6 @@ test async fn real_io() {{
     }}
 }}
 "#,
-        file.display(),
-        file.display(),
-        port,
     );
     project.write("io.loom", &source);
 

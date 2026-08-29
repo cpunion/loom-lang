@@ -6,7 +6,7 @@ use loom_codegen_llvm::{EmitOptions, NATIVE_RUNTIME_ABI};
 use loom_driver::AnalysisHost;
 
 mod support;
-use support::{emit_native, runtime_bundle_identity};
+use support::{emit_native, loom_text_literal, runtime_bundle_identity};
 
 const CHILD_PROJECT_ENV: &str = "LOOM_STDLIB_INTERPRETER_CHILD_PROJECT";
 const EXPECTED_LOGS: &str = concat!(
@@ -51,6 +51,14 @@ fn structured_values_match_in_interpreter_and_native_runtime() {
     let round_trip = project.path().join("round-trip.txt");
     let reuse = project.path().join("reuse.txt");
     let missing = project.path().join("missing.txt");
+    let round_trip_literal = loom_text_literal(
+        round_trip
+            .to_str()
+            .expect("temporary round-trip path is UTF-8"),
+    );
+    let reuse_literal = loom_text_literal(reuse.to_str().expect("temporary reuse path is UTF-8"));
+    let missing_literal =
+        loom_text_literal(missing.to_str().expect("temporary missing path is UTF-8"));
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind loopback fixture");
     let port = listener.local_addr().expect("loopback address").port();
     let server = std::thread::spawn(move || {
@@ -79,20 +87,9 @@ fn structured_values_match_in_interpreter_and_native_runtime() {
         }
     });
     let source = include_str!("../../../fixtures/standard-library/main.loom")
-        .replace(
-            "__ROUND_TRIP_PATH__",
-            round_trip
-                .to_str()
-                .expect("temporary round-trip path is UTF-8"),
-        )
-        .replace(
-            "__MISSING_PATH__",
-            missing.to_str().expect("temporary missing path is UTF-8"),
-        )
-        .replace(
-            "__REUSE_PATH__",
-            reuse.to_str().expect("temporary reuse path is UTF-8"),
-        )
+        .replace("__ROUND_TRIP_PATH__", &round_trip_literal)
+        .replace("__MISSING_PATH__", &missing_literal)
+        .replace("__REUSE_PATH__", &reuse_literal)
         .replace("__LOOPBACK_PORT__", &port.to_string())
         .replace("__READ_LOOPBACK_PORT__", &read_port.to_string());
     std::fs::write(project.path().join("main.loom"), source).expect("write fixture source");
