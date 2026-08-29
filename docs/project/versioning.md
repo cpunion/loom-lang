@@ -12,19 +12,19 @@ artifact, cache, registry, and runtime versions are deliberately independent.
 | Manifest schema | `1` |
 | Lockfile schema | `1` |
 | Registry protocol/bundle | `1` |
-| Interpreted MIR artifact | format `loom.interpreted-mir`, version `27` |
+| Interpreted MIR artifact | format `loom.interpreted-mir`, version `28` |
 | Portable library artifact | source-package version `2` |
 | Persistent compiler cache | schema `4` |
 | Interpreted final-cache layer | `final-artifact-v3` / writer v3 |
 | Portable-library final-cache layer | `portable-library-artifact-v3` |
-| LCIR textual dump | version `36` |
-| LCIR artifact identity | schema `38` |
-| LCIR native-object domain | `loom-lcir-native-object-v34` |
+| LCIR textual dump | version `37` |
+| LCIR artifact identity | schema `39` |
+| LCIR native-object domain | `loom-lcir-native-object-v35` |
 | Legacy native-object domain | `loom-legacy-native-object-v5` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v39` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v40` |
 | Controlled quality evidence | schema `2` |
 | Runtime bundle manifest | schema `2` |
-| Native runtime ABI component | `26` |
+| Native runtime ABI component | `27` |
 | Coroutine/Task ABI component | `2` |
 | Typed Task ABI component | `1` |
 | Wait ABI component | `1` |
@@ -34,18 +34,29 @@ The exact compiler-private native ABI identity contains additional layout,
 text, shadow-stack, witness, list, and runtime component versions. Runtime
 bundles compare the whole identity, not only the numeric runtime component.
 
-Resource-close validation and completed-task result ownership form the current
-semantic invalidation boundary. `ResourceClose` now requires the exact
-canonical `File#9` or `Socket#10` one-`Int` product selected by its resource
-kind. LLVM recognizes only status `0` as success and status `2` as the ordinary
-source fault; every other status traps as an ABI defect. On a successful
-completed-result take, the runtime moves the child's owned File/Socket result
-resources to its non-null owner Task, which may itself be the root Task, before
-child retirement. When result-take is applied directly to the ownerless root
-Task, ownership remains attached to that Task in the executor-owned task
-registry. Faulted, cancelled, losing, and unconsumed tasks do not transfer
-their resources. Terminal cleanup and typed result disposal close remaining
-built-in File/Socket ledger entries at the deterministic cleanup boundary;
+`std.int.ParseIntError` and `std.int.parse_int` are now ordinary distributed
+source definitions. Removing the former MIR builtin, the ParseInt LCIR
+instruction, its fixed nominal slot, and `loom_runtime_parse_int` advances the
+interpreted artifact to 28, the LCIR dump to 37, artifact identity to schema
+39, the native-object domain to `loom-lcir-native-object-v35`, the LLVM cache
+domain to `loom-llvm-object-cache-v40`, and the native runtime identity to
+component 27 with `runtime-v21`. These are rejection boundaries only: no old
+opcode, nominal tombstone, runtime alias, compatibility decoder, or migration
+path remains.
+
+The immediately preceding semantic invalidation boundary covered
+resource-close validation and completed-task result ownership. `ResourceClose`
+requires the exact canonical `File#8` or `Socket#9` one-`Int` product selected
+by its resource kind. LLVM recognizes only status `0` as success and status
+`2` as the ordinary source fault; every other status traps as an ABI defect.
+On a successful completed-result take, the runtime moves the child's owned
+File/Socket result resources to its non-null owner Task, which may itself be
+the root Task, before child retirement. When result-take is applied directly to
+the ownerless root Task, ownership remains attached to that Task in the
+executor-owned task registry. Faulted, cancelled, losing, and unconsumed tasks
+do not transfer their resources. Terminal cleanup and typed result disposal
+close remaining built-in File/Socket ledger entries at the deterministic
+cleanup boundary;
 retired-task reaping is only memory reclamation.
 
 The same boundary makes take preflight topology-exact: a child must occur once
@@ -290,10 +301,9 @@ ABI can collide. The LCIR dump remains 31, artifact schema 32, native-object
 domain v28, object-cache domain v33, and native runtime ABI component 21.
 
 Typed scalar builtins advance the LCIR dump to 19, artifact schema to 20,
-native-object domain to v16, and LLVM object-cache domain to v21. `ParseInt`
-and `ParseFloat` reuse their existing closed status ABI; `IsFinite` and
-`Duration` lower to typed comparisons, products, and canonical runtime-fault
-assertions. `FormatFloat` adds
+native-object domain to v16, and LLVM object-cache domain to v21. `ParseFloat`
+reuses its closed status ABI. `IsFinite` and `Duration` lower to typed
+comparisons, products, and canonical runtime-fault assertions. `FormatFloat` adds
 `loom_runtime_format_float_typed_v1(value, out_cell)`, advancing the native
 runtime ABI component to 15 with `format-float-v1` and `runtime-v9`. The Text
 layout remains `text-v3`, and collection remains `gc-v9`.

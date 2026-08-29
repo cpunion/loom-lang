@@ -1027,10 +1027,9 @@ const fn builtin_requirements(builtin: Builtin) -> RuntimeRequirements {
         Builtin::TextContains | Builtin::TextMapContains | Builtin::LogWrite => {
             RuntimeRequirements::MAY_FAULT
         }
-        Builtin::ParseFloat
-        | Builtin::ParseInt
-        | Builtin::TextEncodeUtf8
-        | Builtin::TextMapEntryAt => RuntimeRequirements::MAY_COLLECT,
+        Builtin::ParseFloat | Builtin::TextEncodeUtf8 | Builtin::TextMapEntryAt => {
+            RuntimeRequirements::MAY_COLLECT
+        }
         Builtin::FormatFloat
         | Builtin::TextGet
         | Builtin::TextConcat

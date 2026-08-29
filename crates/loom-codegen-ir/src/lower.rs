@@ -3273,7 +3273,6 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         | mir::Builtin::TextMapEntryAt
                         | mir::Builtin::TextMapRemove
                         | mir::Builtin::IsFinite
-                        | mir::Builtin::ParseInt
                         | mir::Builtin::ParseFloat
                         | mir::Builtin::FormatFloat
                         | mir::Builtin::JsonFormat
@@ -11340,14 +11339,6 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 ok_variant: 0,
                 error_variant: 1,
                 invalid_utf8_variant: 0,
-            }
-            .into(),
-            (mir::Builtin::ParseInt, [text]) => InstructionKind::ParseInt {
-                text: *text,
-                ok_variant: 0,
-                error_variant: 1,
-                invalid_syntax_variant: 0,
-                out_of_range_variant: 1,
             }
             .into(),
             (mir::Builtin::ParseFloat, [text]) => InstructionKind::ParseFloat {

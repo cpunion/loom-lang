@@ -438,8 +438,8 @@ value representation, or runtime ABI component changes.
 Typed scalar builtins then advance the artifact identity to schema 20, the
 dump to `lcir 19`, the LCIR native-object domain to
 `loom-lcir-native-object-v16`, and the CLI object-cache domain to
-`loom-llvm-object-cache-v21`. `ParseInt` and `ParseFloat` reuse their existing
-closed status boundaries. `IsFinite` and `Duration` expand into typed LCIR;
+`loom-llvm-object-cache-v21`. `ParseFloat` reuses its closed status boundary.
+`IsFinite` and `Duration` expand into typed LCIR;
 negative Duration construction uses the canonical runtime-fault `Assert`
 path. `FormatFloat` adds `loom_runtime_format_float_typed_v1`, advancing the
 native runtime component to 15 with `format-float-v1` and `runtime-v9` while
@@ -575,7 +575,7 @@ contained the three Path builtins.
 
 Resource-close hardening subsequently changes checked meaning without changing
 the LCIR textual grammar. Independent validation now rederives the exact
-canonical direct one-field `Int` product for `File#9` or `Socket#10` and
+canonical direct one-field `Int` product for `File#8` or `Socket#9` and
 requires the `ResourceClose` kind to select that same nominal type. The
 existing LLVM boundary interprets status `0` as success and status `2` as the
 ordinary `ResourceCloseFault`; any other status is an ABI defect. Completed
@@ -593,6 +593,13 @@ schema 38, the typed LCIR native-object domain to
 `loom-llvm-object-cache-v39`. The exact native runtime identity advances to
 component 26 with `typed-resource-ownership-v1` and `runtime-v20`;
 typed-task ABI v1 remains unchanged. Checked MIR remains version 27.
+
+Integer parsing is implemented completely in `std.int` source. The current
+boundaries are checked MIR 28, `lcir 37`, artifact schema 39, native-object
+domain `loom-lcir-native-object-v35`, CLI object-cache domain
+`loom-llvm-object-cache-v40`, and runtime component 27 with `runtime-v21`.
+Canonical nominal ids are dense; there is no integer-parser opcode, runtime
+symbol, decoder, or reserved type slot.
 
 Runtime take preflight additionally rechecks the LCIR protocol assumptions:
 the child has one exact owned/join membership, the join has settled
@@ -752,8 +759,8 @@ mutable receiver is written back on both normal and unwind edges. Canonical
 File and Socket disposal uses the `ResourceClose` terminator: it carries one
 exact nominal resource value, returns `Unit` plus the closed resource on its
 normal edge, and returns the resource writeback on its fault edge. Independent
-validation accepts only canonical `File#9` for the File kind or canonical
-`Socket#10` for the Socket kind. Each is the registered direct one-field
+validation accepts only canonical `File#8` for the File kind or canonical
+`Socket#9` for the Socket kind. Each is the registered direct one-field
 product whose sole field is canonical `Int`; an unregistered, generic,
 structurally similar, or representation-alternative nominal fails closed.
 LLVM calls the typed close ABI directly. Runtime status `0` follows the normal
@@ -1271,8 +1278,8 @@ not repair a malformed program. Current checks include:
   only canonical direct Text/List values or compiler-private `ManagedTextMap`
   values, while dynamic boxes continue to fail closed;
 - implicit result/writeback parameter shape and type on normal and fault edges;
-- exact canonical direct one-`Int` product registration for `File#9` or
-  `Socket#10`, exact agreement between the nominal type and `ResourceClose`
+- exact canonical direct one-`Int` product registration for `File#8` or
+  `Socket#9`, exact agreement between the nominal type and `ResourceClose`
   kind, typed close result/writeback edges, and required runtime/fault
   capabilities;
 - return types and operation-specific fault-effect requirements;
@@ -1334,7 +1341,7 @@ text. Origins are omitted by default and can be included explicitly.
 
 The dump is not canonical across independently constructed programs. Changing
 function, block, parameter, or instruction insertion order may change IDs and
-text even when the graphs are otherwise equivalent. The `lcir 36` text includes
+text even when the graphs are otherwise equivalent. The `lcir 37` text includes
 canonical representation registrations, the dense instance plan, complete
 instance keys including their contract-boundary role, every function's
 selected entry block and ordered effect set,
@@ -1343,7 +1350,8 @@ precondition blame, and Task control flow, including fallible `task.sleep`,
 explicit await modes and normal/fault/cancel targets, `task.outcome_take`, and
 `task.cancelled`,
 typed runtime/contract fault identity including proof-replay and Duration
-guards, closed parse operations, and managed Float formatting,
+guards, the closed Float parse operation, ordinary source-lowered integer
+parsing, and managed Float formatting,
 managed-pointer representations, finite dynamic candidate catalogs,
 `dyn.construct`, `dyn.switch`, and
 `text.concat`, `text.get`, `text.encode_utf8`, `text.from_utf8_units`, the

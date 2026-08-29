@@ -3408,18 +3408,6 @@ impl<'program> Interpreter<'program> {
                     })
                 },
             ),
-            (Builtin::ParseInt, [Value::Text { value }]) => match value.parse::<i64>() {
-                Ok(number) => self.result_value(true, Value::Int { value: number }, span),
-                Err(error) => {
-                    let error = match error.kind() {
-                        std::num::IntErrorKind::PosOverflow
-                        | std::num::IntErrorKind::NegOverflow => ParseIntFailure::OutOfRange,
-                        _ => ParseIntFailure::InvalidSyntax,
-                    };
-                    let error = self.parse_int_error_value(error, span)?;
-                    self.result_value(false, error, span)
-                }
-            },
             (
                 Builtin::TaskFaultCode | Builtin::TaskFaultMessage,
                 [Value::Record { ty, fields }],
@@ -5218,53 +5206,6 @@ impl<'program> Interpreter<'program> {
         })
     }
 
-    fn parse_int_error_value(
-        &self,
-        error: ParseIntFailure,
-        span: Span,
-    ) -> Result<Value, ExecutionFailure> {
-        let definition = self
-            .program
-            .prelude
-            .parse_int_error
-            .and_then(|id| self.program.type_def(id))
-            .ok_or_else(|| {
-                ExecutionFailure::from(self.runtime_fault(
-                    "LOOM_RUNTIME_INVALID_MIR",
-                    "prelude ParseIntError type is missing",
-                    span,
-                ))
-            })?;
-        let TypeDefKind::Enum { variants } = &definition.kind else {
-            return Err(self
-                .runtime_fault(
-                    "LOOM_RUNTIME_INVALID_MIR",
-                    "prelude ParseIntError is not an enum",
-                    span,
-                )
-                .into());
-        };
-        let expected = match error {
-            ParseIntFailure::InvalidSyntax => "InvalidSyntax",
-            ParseIntFailure::OutOfRange => "OutOfRange",
-        };
-        let variant = variants
-            .iter()
-            .find(|variant| variant.name == expected)
-            .ok_or_else(|| {
-                ExecutionFailure::from(self.runtime_fault(
-                    "LOOM_RUNTIME_INVALID_MIR",
-                    format!("prelude ParseIntError is missing {expected}"),
-                    span,
-                ))
-            })?;
-        Ok(Value::Enum {
-            ty: definition.id,
-            variant: variant.id,
-            payload: Vec::new(),
-        })
-    }
-
     fn eval_contract(
         &mut self,
         expression: &ContractExpr,
@@ -5911,12 +5852,6 @@ fn as_float(value: &Value) -> Option<f64> {
 
 #[derive(Clone, Copy)]
 enum ParseFloatFailure {
-    InvalidSyntax,
-    OutOfRange,
-}
-
-#[derive(Clone, Copy)]
-enum ParseIntFailure {
     InvalidSyntax,
     OutOfRange,
 }
@@ -6735,7 +6670,7 @@ mod standard_value_tests {
                 ],
             },
         });
-        for index in 2..11 {
+        for index in 2..10 {
             types.push(TypeDef {
                 id: TypeId(index),
                 name: format!("unused#{index}"),
@@ -6747,7 +6682,7 @@ mod standard_value_tests {
                 },
             });
         }
-        for (id, name) in [(11, "Bytes"), (12, "Path")] {
+        for (id, name) in [(10, "Bytes"), (11, "Path")] {
             types.push(TypeDef {
                 id: TypeId(id),
                 name: name.into(),
@@ -6764,7 +6699,7 @@ mod standard_value_tests {
             });
         }
         types.push(TypeDef {
-            id: TypeId(13),
+            id: TypeId(12),
             name: "DecodeTextError".into(),
             span: Span::default(),
             type_parameters: 0,
@@ -6773,7 +6708,7 @@ mod standard_value_tests {
             },
         });
         types.push(TypeDef {
-            id: TypeId(14),
+            id: TypeId(13),
             name: "PathError".into(),
             span: Span::default(),
             type_parameters: 0,
@@ -6789,10 +6724,10 @@ mod standard_value_tests {
             prelude: loom_mir::PreludeIds {
                 option: Some(TypeId(0)),
                 result: Some(TypeId(1)),
-                bytes: Some(TypeId(11)),
-                path: Some(TypeId(12)),
-                decode_text_error: Some(TypeId(13)),
-                path_error: Some(TypeId(14)),
+                bytes: Some(TypeId(10)),
+                path: Some(TypeId(11)),
+                decode_text_error: Some(TypeId(12)),
+                path_error: Some(TypeId(13)),
                 ..loom_mir::PreludeIds::default()
             },
             ..Program::default()
@@ -6825,7 +6760,7 @@ mod standard_value_tests {
         ));
 
         let invalid = Value::Record {
-            ty: TypeId(11),
+            ty: TypeId(10),
             fields: vec![Value::Bytes {
                 value: vec![0xff, 0xfe],
             }],
@@ -6837,7 +6772,7 @@ mod standard_value_tests {
             decoded,
             Value::Enum { ty: TypeId(1), variant: VariantId(1), payload, .. }
                 if matches!(payload.as_slice(), [Value::Enum {
-                    ty: TypeId(13), variant: VariantId(0), payload, ..
+                    ty: TypeId(12), variant: VariantId(0), payload, ..
                 }] if payload.is_empty())
         ));
 
@@ -6870,7 +6805,7 @@ mod standard_value_tests {
                 decoded,
                 Value::Enum { ty: TypeId(1), variant: VariantId(1), payload, .. }
                     if matches!(payload.as_slice(), [Value::Enum {
-                        ty: TypeId(13), variant: VariantId(0), payload, ..
+                        ty: TypeId(12), variant: VariantId(0), payload, ..
                     }] if payload.is_empty())
             ));
         }

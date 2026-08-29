@@ -579,7 +579,7 @@ It adds `typed-resource-v1` and advances the runtime ABI component to 12 with
 `runtime-v6`. The handle cell is a fixed LLVM entry allocation, not a runtime
 cleanup node, and the helper neither constructs a universal value nor enters
 the executor. Independent validation rederives canonical direct one-`Int`
-`File#9` and `Socket#10` products and requires the close kind to agree exactly.
+`File#8` and `Socket#9` products and requires the close kind to agree exactly.
 Status `0` follows the normal edge, status `2` records
 `ResourceCloseFault`, and invalid argument status `1` or any unknown status
 traps as an ABI defect. Static-concept and deferred cleanup require no new
@@ -746,6 +746,13 @@ object-cache domain to `loom-llvm-object-cache-v39`. The native runtime
 identity advances to component 26 with
 `typed-resource-ownership-v1` and `runtime-v20`. Checked MIR remains 27,
 typed-task ABI remains v1, and standard-library ABI remains v5.
+
+The source-backed integer parser removes its checked-MIR builtin, fixed error
+nominal, LCIR opcode, LLVM special case, and runtime export. The resulting
+current boundaries are checked MIR 28, `lcir 37`, artifact schema 39,
+`loom-lcir-native-object-v35`, `loom-llvm-object-cache-v40`, and native runtime
+component 27 with `runtime-v21`. No tombstone, alias, or compatibility decoder
+is retained.
 
 Calls to the C process entry, libc, and versioned Loom runtime functions are
 explicit external boundaries. They do not permit two source-function ABIs in

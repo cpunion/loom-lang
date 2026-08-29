@@ -310,7 +310,7 @@ pub fn main() {
             .representations()
             .type_id(&Type::Nominal(PATH_TYPE_ID, Vec::new()))
             .is_some(),
-        "canonical Path#12 representation is missing"
+        "canonical Path#11 representation is missing"
     );
 
     let mut from_count = 0_usize;
@@ -1975,9 +1975,9 @@ pub async fn main() {
 )]
 fn builtin_scoped_file_cleanup_lowers_to_one_typed_runtime_edge() {
     let span = Span::default();
-    let file_id = TypeId(9);
+    let file_id = TypeId(8);
     let file = Type::Nominal(file_id, Vec::new());
-    let mut types = (0_u32..9)
+    let mut types = (0_u32..8)
         .map(|id| TypeDef {
             id: TypeId(id),
             name: format!("Placeholder{id}"),

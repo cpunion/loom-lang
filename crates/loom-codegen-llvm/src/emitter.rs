@@ -38,7 +38,7 @@ use loom_mir::{
 };
 use loom_runtime_abi::{
     GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, PARSE_FLOAT_SYMBOL,
-    PARSE_INT_SYMBOL, SHADOW_STACK_ABI_VERSION, STDOUT_WRITE_SYMBOL, TEXT_OBJECT_ALIGNMENT,
+    SHADOW_STACK_ABI_VERSION, STDOUT_WRITE_SYMBOL, TEXT_OBJECT_ALIGNMENT,
     TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH,
     TEXT_OBJECT_HEADER_SIZE,
 };
@@ -1854,23 +1854,6 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                 );
                 self.module
                     .add_function(PARSE_FLOAT_SYMBOL, function_type, None)
-            })
-    }
-
-    fn native_parse_int(&self) -> FunctionValue<'ctx> {
-        self.module
-            .get_function(PARSE_INT_SYMBOL)
-            .unwrap_or_else(|| {
-                let function_type = self.context.i32_type().fn_type(
-                    &[
-                        self.ptr_type.into(),
-                        self.i64_type.into(),
-                        self.ptr_type.into(),
-                    ],
-                    false,
-                );
-                self.module
-                    .add_function(PARSE_INT_SYMBOL, function_type, None)
             })
     }
 
@@ -10673,7 +10656,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 Ok(true)
             }
             (Builtin::ParseFloat, [value]) => self.emit_parse_float(*value, destination),
-            (Builtin::ParseInt, [value]) => self.emit_parse_int(*value, destination),
             (Builtin::FormatFloat, [value]) => self.emit_format_float(*value, destination),
             _ => Err(CodegenError::new(
                 "InvalidBuiltinCall",
@@ -12573,90 +12555,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         for (block, variant) in [(invalid, 0), (out_of_range, 1)] {
             self.backend.builder.position_at_end(block);
             let error = self.alloc_value("parse.error");
-            self.emit_variant_from_pointers(error_type, variant, &[], error)?;
-            self.emit_result(false, error, destination)?;
-            self.backend.branch(merge)?;
-        }
-        self.backend.builder.position_at_end(merge);
-        Ok(true)
-    }
-
-    fn emit_parse_int(
-        &self,
-        value: PointerValue<'ctx>,
-        destination: PointerValue<'ctx>,
-    ) -> Result<bool, CodegenError> {
-        let (data, length) = self.text_parts(value, "parse.int")?;
-        let parsed = self.alloc_temporary(self.backend.i64_type, "parse.int.output")?;
-        let status = call_int(
-            &self.backend.builder,
-            self.backend.native_parse_int(),
-            &[data.into(), length.into(), parsed.into()],
-            "parse.int",
-        )?;
-        let success = self.append_block("parse.int.success");
-        let failure = self.append_block("parse.int.failure");
-        let invalid = self.append_block("parse.int.invalid");
-        let out_of_range = self.append_block("parse.int.out_of_range");
-        let merge = self.append_block("parse.int.merge");
-        let ok = self
-            .backend
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                status,
-                self.backend.context.i32_type().const_zero(),
-                "parse.int.ok",
-            )
-            .map_err(builder_error)?;
-        self.backend
-            .builder
-            .build_conditional_branch(ok, success, failure)
-            .map_err(builder_error)?;
-
-        self.backend.builder.position_at_end(success);
-        let number = self
-            .backend
-            .builder
-            .build_load(self.backend.i64_type, parsed, "parse.int.value")
-            .map_err(builder_error)?
-            .into_int_value();
-        let payload = self.alloc_value("parse.int.payload");
-        self.initialize(payload, VALUE_TAG_INT)?;
-        self.backend.store_i64_field(
-            self.backend.value_type,
-            payload,
-            VALUE_FIELD_SCALAR,
-            number,
-        )?;
-        self.emit_result(true, payload, destination)?;
-        self.backend.branch(merge)?;
-
-        self.backend.builder.position_at_end(failure);
-        let range_error = self
-            .backend
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                status,
-                self.backend.context.i32_type().const_int(2, false),
-                "parse.int.range",
-            )
-            .map_err(builder_error)?;
-        self.backend
-            .builder
-            .build_conditional_branch(range_error, out_of_range, invalid)
-            .map_err(builder_error)?;
-
-        let error_type = self
-            .backend
-            .program
-            .prelude
-            .parse_int_error
-            .ok_or_else(|| CodegenError::new("InvalidPrelude", "ParseIntError is missing"))?;
-        for (block, variant) in [(invalid, 0), (out_of_range, 1)] {
-            self.backend.builder.position_at_end(block);
-            let error = self.alloc_value("parse.int.error");
             self.emit_variant_from_pointers(error_type, variant, &[], error)?;
             self.emit_result(false, error, destination)?;
             self.backend.branch(merge)?;

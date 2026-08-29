@@ -533,11 +533,18 @@ pub fn main() {
         .find(|function| function.name == "std.int.maximum")
         .expect("maximum source definition")
         .id;
+    let parse_int = program
+        .functions
+        .iter()
+        .find(|function| function.name == "std.int.parse_int")
+        .expect("parse_int source definition")
+        .id;
     let roots = loom_codegen_ir::SourceRoots::for_entry(program, "main").expect("main root");
     let reachable = loom_codegen_ir::analyze_source_reachability(program, &roots)
         .expect("close source call graph");
     assert!(reachable.functions.contains(&minimum));
     assert!(!reachable.functions.contains(&maximum));
+    assert!(!reachable.functions.contains(&parse_int));
     assert_eq!(reachable.functions.len(), 2);
 }
 
@@ -1671,21 +1678,65 @@ fn generic_products_close_real_check_build_test_and_run_commands() {
 }
 
 #[test]
-fn scalar_builtins_close_real_check_build_test_and_run_commands() {
+fn scalar_standard_apis_close_both_backends_and_typed_object_surface() {
     let project = TestProject::new(include_str!(
         "../../../fixtures/lcir-scalar-builtins/main.loom"
     ));
 
-    let check = loomc()
-        .args(["--no-cache", "check"])
-        .arg(&project.0)
-        .output()
-        .expect("check scalar-builtin source through the production CLI");
-    assert_eq!(check.status.code(), Some(0), "{check:?}");
+    for backend in ["interpreter", "llvm"] {
+        for command in ["check", "test", "run"] {
+            let output = loomc()
+                .args(["--backend", backend, "--no-cache", command])
+                .arg(&project.0)
+                .output()
+                .expect("run scalar standard APIs through the production CLI");
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "{backend} {command}: stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            if command == "test" {
+                assert!(
+                    String::from_utf8_lossy(&output.stdout)
+                        .contains("passed lcir_scalar_builtins.typedScalarBuiltins"),
+                    "{backend}: {output:?}"
+                );
+            } else if command == "run" {
+                assert_eq!(output.stdout, b"Unit\n", "{backend} run");
+            }
+        }
+
+        let artifact = project.0.join(format!("scalar-{backend}.artifact"));
+        let build = loomc()
+            .args(["--backend", backend, "--no-cache", "build", "--output"])
+            .arg(&artifact)
+            .arg(&project.0)
+            .output()
+            .expect("build scalar standard API artifact");
+        assert_eq!(build.status.code(), Some(0), "{backend}: {build:?}");
+
+        let run = loomc()
+            .args(["--backend", backend, "run", "--artifact"])
+            .arg(&artifact)
+            .output()
+            .expect("run scalar standard API artifact");
+        assert_eq!(run.status.code(), Some(0), "{backend}: {run:?}");
+        assert_eq!(run.stdout, b"Unit\n", "{backend} artifact run");
+    }
 
     let object_path = project.0.join("scalar-builtins.o");
     let build = loomc()
-        .args(["--no-cache", "build", "--emit", "object", "--output"])
+        .args([
+            "--backend",
+            "llvm",
+            "--no-cache",
+            "build",
+            "--emit",
+            "object",
+            "--output",
+        ])
         .arg(&object_path)
         .arg(&project.0)
         .output()
@@ -1694,7 +1745,6 @@ fn scalar_builtins_close_real_check_build_test_and_run_commands() {
     let object = fs::read(object_path).expect("read scalar-builtin object");
     for required in [
         b"loom.lcir.fn".as_slice(),
-        b"loom_runtime_parse_int",
         b"loom_runtime_parse_float",
         b"loom_runtime_format_float_typed_v1",
         b"loom_gc_typed_root_push_v1",
@@ -1711,6 +1761,7 @@ fn scalar_builtins_close_real_check_build_test_and_run_commands() {
         b"loom.Value",
         b"ValueNode",
         b"loom_runtime_format_float(",
+        b"loom_runtime_parse_int",
         b"loom_gc_root_push_v1",
         b"loom_gc_root_pop_v1",
         b"loom_executor_",
@@ -1721,26 +1772,6 @@ fn scalar_builtins_close_real_check_build_test_and_run_commands() {
             String::from_utf8_lossy(forbidden)
         );
     }
-
-    let tests = loomc()
-        .args(["--no-cache", "test"])
-        .arg(&project.0)
-        .output()
-        .expect("test scalar-builtin source through the production CLI");
-    assert_eq!(tests.status.code(), Some(0), "{tests:?}");
-    assert!(
-        String::from_utf8_lossy(&tests.stdout)
-            .contains("passed lcir_scalar_builtins.typedScalarBuiltins"),
-        "{tests:?}"
-    );
-
-    let run = loomc()
-        .args(["--no-cache", "run"])
-        .arg(&project.0)
-        .output()
-        .expect("run scalar-builtin source through the production CLI");
-    assert_eq!(run.status.code(), Some(0), "{run:?}");
-    assert_eq!(run.stdout, b"Unit\n");
 }
 
 #[test]
@@ -3544,7 +3575,7 @@ test async fn discards_awaited_value() {
 #[test]
 fn range_and_growable_list_run_on_both_backends() {
     let project = TestProject::new(
-        "module dynamic\n\nimport std.int.parse_int\nimport std.process.arguments\nimport std.process.environment\n\nasync fn worker(value Int) Int {\n    value * 2\n}\n\npub async fn main() {\n    let processArguments = arguments()\n    let argumentCount = processArguments.length()\n    assert argumentCount == 5\n    let count = match environment(\"LOOM_WORKERS\") {\n        Some(text) => {\n            match parse_int(text) {\n                Ok(value) => value\n                Err(ParseIntError.InvalidSyntax) => 0\n                Err(ParseIntError.OutOfRange) => 0\n            }\n        }\n        None => 0\n    }\n    assert count == 5\n    match environment(\"LOOM_TEST_ENV\") {\n        Some(value) => {\n            assert value == \"visible\"\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    var tasks = List[Task[Int]]()\n    for i in 0..count {\n        tasks.add(worker(i))\n        Unit\n    }\n    let values = Task.all(tasks).await\n    let length = values.length()\n    assert length == count\n    let selected = values.get(3)\n    match selected {\n        Some(value) => {\n            assert value == 6\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    let missing = values.get(-1)\n    match missing {\n        Some(_) => {\n            assert false\n            Unit\n        }\n        None => Unit\n    }\n}\n",
+        "module dynamic\n\nimport std.int.ParseIntError\nimport std.int.parse_int\nimport std.process.arguments\nimport std.process.environment\n\nasync fn worker(value Int) Int {\n    value * 2\n}\n\npub async fn main() {\n    let processArguments = arguments()\n    let argumentCount = processArguments.length()\n    assert argumentCount == 5\n    let count = match environment(\"LOOM_WORKERS\") {\n        Some(text) => {\n            match parse_int(text) {\n                Ok(value) => value\n                Err(ParseIntError.InvalidSyntax) => 0\n                Err(ParseIntError.OutOfRange) => 0\n            }\n        }\n        None => 0\n    }\n    assert count == 5\n    match environment(\"LOOM_TEST_ENV\") {\n        Some(value) => {\n            assert value == \"visible\"\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    var tasks = List[Task[Int]]()\n    for i in 0..count {\n        tasks.add(worker(i))\n        Unit\n    }\n    let values = Task.all(tasks).await\n    let length = values.length()\n    assert length == count\n    let selected = values.get(3)\n    match selected {\n        Some(value) => {\n            assert value == 6\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    let missing = values.get(-1)\n    match missing {\n        Some(_) => {\n            assert false\n            Unit\n        }\n        None => Unit\n    }\n}\n",
     );
     for backend in ["interpreter", "llvm"] {
         let output = loomc()

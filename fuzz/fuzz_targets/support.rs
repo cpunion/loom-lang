@@ -12,6 +12,8 @@ import std.file.try_create_path
 import std.net.try_connect
 import std.json.parse_json
 import std.json.format_json
+import std.int.ParseIntError
+import std.int.parse_int
 import std.log.debug
 import std.log.info
 import std.log.warn
@@ -54,6 +56,14 @@ fn ioFailure(error IoError) {
     }
 }
 
+fn parsedInteger(text Text) Int {
+    match parse_int(text) {
+        Ok(value) => value
+        Err(ParseIntError.InvalidSyntax) => -1
+        Err(ParseIntError.OutOfRange) => -2
+    }
+}
+
 async fn files(path Path) Result[Unit, IoError] {
     scoped input = try_open_read_path(path).await?
     let content = input.try_read_text().await?
@@ -70,6 +80,12 @@ async fn network(host Text, port Int) Result[Unit, IoError] {
 }
 
 pub fn main() {
+    let integer = parsedInteger("42")
+    let invalidInteger = parsedInteger("not-an-integer")
+    let outOfRangeInteger = parsedInteger("9223372036854775808")
+    assert integer == 42
+    assert invalidInteger == -1
+    assert outOfRangeInteger == -2
     let fields = TextMap[Text]().insert("key", "value").remove("missing")
     let present = fields.contains("key")
     let found = fields.get("key")
@@ -136,11 +152,9 @@ pub fn compile(source: &str) -> Result<loom_mir::CheckedProgram, String> {
     lowered
         .program
         .register_package(standard_package.clone(), [], false);
-    lowered.program.register_package(
-        root_package,
-        [(Name::new("std"), standard_package)],
-        true,
-    );
+    lowered
+        .program
+        .register_package(root_package, [(Name::new("std"), standard_package)], true);
     let analysis = analyze(&lowered.program);
     if !analysis.diagnostics.is_empty() {
         return Err(format!("semantic diagnostics: {:#?}", analysis.diagnostics));

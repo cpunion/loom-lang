@@ -250,7 +250,6 @@ pub(crate) fn is_compiler_known_import(path: &Path) -> bool {
             | "std.float.is_finite"
             | "std.process.arguments"
             | "std.process.environment"
-            | "std.int.parse_int"
             | "std.time.milliseconds"
             | "std.file.open_read"
             | "std.file.create"

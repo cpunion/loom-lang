@@ -131,6 +131,28 @@ mod tests {
     }
 
     #[test]
+    fn identity_tracks_exact_source_bytes_at_the_same_path_and_module() {
+        let base = identity_for_sources(
+            "0.3",
+            &[source(
+                "src/int.loom",
+                "std.int",
+                "module std.int\n\npub fn parse_int(text Text) Int { 1 }\n",
+            )],
+        );
+        let changed_body = identity_for_sources(
+            "0.3",
+            &[source(
+                "src/int.loom",
+                "std.int",
+                "module std.int\n\npub fn parse_int(text Text) Int { 2 }\n",
+            )],
+        );
+
+        assert_ne!(base, changed_body);
+    }
+
+    #[test]
     fn complete_std_namespace_is_reserved_without_matching_prefixes() {
         assert!(owns_module("std"));
         assert!(owns_module("std.resource"));

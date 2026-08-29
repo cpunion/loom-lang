@@ -15,7 +15,7 @@ rather than assuming every build output is executable.
 | Runtime bundle | `runtime pack` or a release archive | target-specific | used by the linker |
 
 The interpreted artifact format is `loom.interpreted-mir`, currently version
-`26`. A build checks the complete source program, then writes the closed
+`28`. A build checks the complete source program, then writes the closed
 checked-MIR definitions for one selected export. The artifact is decoded and
 fully validated before execution.
 

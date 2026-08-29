@@ -681,10 +681,6 @@ impl SerializationClosure {
             | Builtin::ListGet => {
                 self.add_optional_type(prelude.option);
             }
-            Builtin::ParseInt => {
-                self.add_optional_type(prelude.result);
-                self.add_optional_type(prelude.parse_int_error);
-            }
             Builtin::ParseFloat => {
                 self.add_optional_type(prelude.result);
                 self.add_optional_type(prelude.parse_float_error);
@@ -1327,7 +1323,6 @@ impl IdMaps {
         prelude.option = self.optional_type(prelude.option);
         prelude.constraint_error = self.optional_type(prelude.constraint_error);
         prelude.parse_float_error = self.optional_type(prelude.parse_float_error);
-        prelude.parse_int_error = self.optional_type(prelude.parse_int_error);
         prelude.task_fault = self.optional_type(prelude.task_fault);
         prelude.task_outcome = self.optional_type(prelude.task_outcome);
         prelude.duration = self.optional_type(prelude.duration);

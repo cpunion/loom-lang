@@ -4,7 +4,7 @@
 //! values crossing the runtime boundary are defined here once and consumed by
 //! both generated-code declarations and the Rust runtime implementation.
 
-pub const RUNTIME_ABI_VERSION: u32 = 26;
+pub const RUNTIME_ABI_VERSION: u32 = 27;
 pub const COROUTINE_ABI_VERSION: u32 = 2;
 pub const TYPED_TASK_ABI_VERSION: u32 = 1;
 pub const WAIT_ABI_VERSION: u32 = 1;
@@ -16,7 +16,7 @@ pub const TYPED_GC_REPEATED_ABI_VERSION: u32 = 1;
 pub const TYPED_SHADOW_STACK_ABI_VERSION: u32 = 1;
 pub const WITNESS_ABI_VERSION: u32 = 1;
 pub const TYPED_JSON_ABI_VERSION: u32 = 1;
-pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v20/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v5";
+pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v21/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v5";
 
 /// Writes exactly `length` bytes to the process standard-output stream.
 ///
@@ -166,15 +166,14 @@ pub const BYTES_DECODE_UTF8_TYPED_INVALID_UTF8: i32 = -1;
 /// or runtime defects.
 pub const PATH_JOIN_TYPED_SYMBOL: &str = "loom_runtime_path_join_typed_v1";
 pub const PATH_JOIN_TYPED_ABSOLUTE: i32 = -1;
-/// Existing scalar parse boundaries shared by both native backends. These
-/// symbols predate the typed LCIR route; naming them here prevents either
-/// emitter from inventing an ABI spelling. These pre-existing symbols do not
-/// account for the component-15 bump, which belongs to typed float formatting.
-pub const PARSE_INT_SYMBOL: &str = "loom_runtime_parse_int";
+/// Scalar Float parsing shared by both native backends. Naming the symbol and
+/// closed status domain here prevents either emitter from inventing an ABI
+/// spelling. Integer parsing is ordinary standard-library Loom source and has
+/// no runtime boundary.
 pub const PARSE_FLOAT_SYMBOL: &str = "loom_runtime_parse_float";
-pub const PARSE_STATUS_OK: i32 = 0;
-pub const PARSE_STATUS_INVALID_SYNTAX: i32 = 1;
-pub const PARSE_STATUS_OUT_OF_RANGE: i32 = 2;
+pub const PARSE_FLOAT_STATUS_OK: i32 = 0;
+pub const PARSE_FLOAT_STATUS_INVALID_SYNTAX: i32 = 1;
+pub const PARSE_FLOAT_STATUS_OUT_OF_RANGE: i32 = 2;
 /// Direct File/Socket cleanup taking `(runtime, kind, inout handle)`.
 ///
 /// This compiler-private boundary never constructs a universal `Value`,
@@ -603,8 +602,8 @@ mod tests {
         LoomGcRepeatedObjectDescriptor, LoomGcRootDescriptor, LoomGcRootFrame,
         LoomGcTypedRootDescriptor, LoomGcTypedRootFrame, LoomTypedCoroutineDescriptor,
         LoomTypedJsonLayout, LoomTypedLogField, LoomTypedTaskFaultView, LoomWitnessDescriptor,
-        LoomWitnessInstance, NATIVE_RUNTIME_ABI_IDENTITY, PARSE_FLOAT_SYMBOL, PARSE_INT_SYMBOL,
-        PARSE_STATUS_INVALID_SYNTAX, PARSE_STATUS_OK, PARSE_STATUS_OUT_OF_RANGE,
+        LoomWitnessInstance, NATIVE_RUNTIME_ABI_IDENTITY, PARSE_FLOAT_STATUS_INVALID_SYNTAX,
+        PARSE_FLOAT_STATUS_OK, PARSE_FLOAT_STATUS_OUT_OF_RANGE, PARSE_FLOAT_SYMBOL,
         PATH_JOIN_TYPED_ABSOLUTE, PATH_JOIN_TYPED_SYMBOL, RUNTIME_ABI_VERSION,
         SHADOW_STACK_ABI_VERSION, STANDARD_LIBRARY_ABI_VERSION, STDOUT_WRITE_FAILED,
         STDOUT_WRITE_INVALID_ARGUMENT, STDOUT_WRITE_OK, STDOUT_WRITE_SYMBOL, TEXT_CONTAINS_SYMBOL,
@@ -632,7 +631,7 @@ mod tests {
 
     #[test]
     fn native_runtime_identity_is_pinned() {
-        assert_eq!(RUNTIME_ABI_VERSION, 26);
+        assert_eq!(RUNTIME_ABI_VERSION, 27);
         assert_eq!(COROUTINE_ABI_VERSION, 2);
         assert_eq!(TYPED_TASK_ABI_VERSION, 1);
         assert_eq!(LAYOUT_ABI_VERSION, 1);
@@ -679,11 +678,10 @@ mod tests {
         assert_eq!(BYTES_DECODE_UTF8_TYPED_INVALID_UTF8, -1);
         assert_eq!(PATH_JOIN_TYPED_SYMBOL, "loom_runtime_path_join_typed_v1");
         assert_eq!(PATH_JOIN_TYPED_ABSOLUTE, -1);
-        assert_eq!(PARSE_INT_SYMBOL, "loom_runtime_parse_int");
         assert_eq!(PARSE_FLOAT_SYMBOL, "loom_runtime_parse_float");
-        assert_eq!(PARSE_STATUS_OK, 0);
-        assert_eq!(PARSE_STATUS_INVALID_SYNTAX, 1);
-        assert_eq!(PARSE_STATUS_OUT_OF_RANGE, 2);
+        assert_eq!(PARSE_FLOAT_STATUS_OK, 0);
+        assert_eq!(PARSE_FLOAT_STATUS_INVALID_SYNTAX, 1);
+        assert_eq!(PARSE_FLOAT_STATUS_OUT_OF_RANGE, 2);
         assert_eq!(STDOUT_WRITE_SYMBOL, "loom_runtime_stdout_write_v1");
         assert_eq!(STDOUT_WRITE_OK, 0);
         assert_eq!(STDOUT_WRITE_INVALID_ARGUMENT, 1);
@@ -725,7 +723,7 @@ mod tests {
         assert_eq!(STANDARD_LIBRARY_ABI_VERSION, 5);
         assert_eq!(
             NATIVE_RUNTIME_ABI_IDENTITY,
-            "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v20/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v5",
+            "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v21/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v5",
         );
     }
 

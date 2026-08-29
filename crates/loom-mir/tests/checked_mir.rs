@@ -1713,7 +1713,6 @@ fn prelude_ids_are_explicit_and_shape_checked() {
             option: Some(TypeId(99)),
             constraint_error: Some(TypeId(1)),
             parse_float_error: None,
-            parse_int_error: None,
             task_fault: None,
             task_outcome: None,
             duration: None,
@@ -4370,123 +4369,30 @@ fn all_nan_payloads_encode_to_identical_bytes() {
 #[test]
 fn artifact_rejects_version_mismatch_before_program_decode() {
     let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
-    let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-    value["version"] = serde_json::json!(99);
-    value["program"] = serde_json::json!("future incompatible body");
-    let error = decode_interpreted_artifact(&serde_json::to_vec(&value).expect("json"))
-        .expect_err("version must fail first");
-    assert!(matches!(
-        error,
-        ArtifactError::VersionMismatch {
-            expected,
-            found: 99
-        } if expected == INTERPRETED_ARTIFACT_VERSION
-    ));
+    let previous = INTERPRETED_ARTIFACT_VERSION
+        .checked_sub(1)
+        .expect("artifact version must be positive");
+    let next = INTERPRETED_ARTIFACT_VERSION
+        .checked_add(1)
+        .expect("artifact version must fit u32");
+    for found in [previous, next] {
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        value["version"] = serde_json::json!(found);
+        value["program"] = serde_json::json!("incompatible body");
+        let error = decode_interpreted_artifact(&serde_json::to_vec(&value).expect("json"))
+            .expect_err("version must fail before body decoding");
+        assert!(matches!(
+            error,
+            ArtifactError::VersionMismatch {
+                expected,
+                found: actual
+            } if expected == INTERPRETED_ARTIFACT_VERSION && actual == u64::from(found)
+        ));
+    }
 }
 
 #[test]
-fn artifact_rejects_pre_structured_values_version_fourteen() {
-    let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
-    let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-    value["version"] = serde_json::json!(14);
-    let error = decode_interpreted_artifact(&serde_json::to_vec(&value).expect("json"))
-        .expect_err("version 14 lacks structured standard value shapes");
-    assert!(matches!(
-        error,
-        ArtifactError::VersionMismatch {
-            expected,
-            found: 14
-        } if expected == INTERPRETED_ARTIFACT_VERSION
-    ));
-}
-
-#[test]
-fn artifact_rejects_pre_expression_identity_version_fifteen_before_body_decode() {
-    let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
-    let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-    value["version"] = serde_json::json!(15);
-    value["program"] = serde_json::json!("version 15 has no expression identities");
-    let error = decode_interpreted_artifact(&serde_json::to_vec(&value).expect("json"))
-        .expect_err("version 15 must fail at the header boundary");
-    assert!(matches!(
-        error,
-        ArtifactError::VersionMismatch {
-            expected,
-            found: 15
-        } if expected == INTERPRETED_ARTIFACT_VERSION
-    ));
-}
-
-#[test]
-fn artifact_rejects_pre_witness_segmentation_version_sixteen_before_body_decode() {
-    let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
-    let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-    value["version"] = serde_json::json!(16);
-    value["program"] = serde_json::json!("version 16 has no witness proof segmentation");
-    let error = decode_interpreted_artifact(&serde_json::to_vec(&value).expect("json"))
-        .expect_err("version 16 must fail at the header boundary");
-    assert!(matches!(
-        error,
-        ArtifactError::VersionMismatch {
-            expected,
-            found: 16
-        } if expected == INTERPRETED_ARTIFACT_VERSION
-    ));
-}
-
-#[test]
-fn artifact_rejects_raw_wait_version_seventeen_before_body_decode() {
-    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 27);
-    let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
-    let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-    value["version"] = serde_json::json!(17);
-    value["program"] = serde_json::json!("version 17 could encode raw-handle wait expressions");
-    let error = decode_interpreted_artifact(&serde_json::to_vec(&value).expect("json"))
-        .expect_err("version 17 must fail at the header boundary");
-    assert!(matches!(
-        error,
-        ArtifactError::VersionMismatch {
-            expected,
-            found: 17
-        } if expected == INTERPRETED_ARTIFACT_VERSION
-    ));
-}
-
-#[test]
-fn artifact_rejects_pre_constraint_error_shape_version_twenty_two() {
-    let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
-    let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-    value["version"] = serde_json::json!(22);
-    value["program"] = serde_json::json!("version 22 allowed an empty ConstraintError record");
-    let error = decode_interpreted_artifact(&serde_json::to_vec(&value).expect("json"))
-        .expect_err("version 22 must fail at the header boundary");
-    assert!(matches!(
-        error,
-        ArtifactError::VersionMismatch {
-            expected,
-            found: 22
-        } if expected == INTERPRETED_ARTIFACT_VERSION
-    ));
-}
-
-#[test]
-fn artifact_rejects_pre_proof_provenance_version_eighteen() {
-    let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
-    let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-    value["version"] = serde_json::json!(18);
-    let error = decode_interpreted_artifact(&serde_json::to_vec(&value).expect("json"))
-        .expect_err("version 18 could trust serialized Proven construction modes");
-    assert!(matches!(
-        error,
-        ArtifactError::VersionMismatch {
-            expected,
-            found: 18
-        } if expected == INTERPRETED_ARTIFACT_VERSION
-    ));
-}
-
-#[test]
-fn artifact_version_nineteen_requires_explicit_witness_segmentation() {
+fn artifact_requires_explicit_witness_segmentation() {
     let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
     let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
     value["program"]["functions"]
@@ -4496,7 +4402,7 @@ fn artifact_version_nineteen_requires_explicit_witness_segmentation() {
         .and_then(|function| function.remove("witness_prefix_count"))
         .expect("encoded function witness segmentation field");
     let error = decode_interpreted_artifact(&serde_json::to_vec(&value).expect("json"))
-        .expect_err("version 19 function segmentation is required");
+        .expect_err("function segmentation is required");
     assert!(matches!(
         error,
         ArtifactError::Malformed(message) if message.contains("witness_prefix_count")

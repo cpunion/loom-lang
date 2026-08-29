@@ -647,12 +647,12 @@ fn outcome_take_rechecks_the_complete_canonical_nominal_shapes() {
         (
             FaultShape::Canonical,
             OutcomeShape::WrongNominal,
-            "Nominal#7[T]",
+            "Nominal#6[T]",
         ),
         (
             FaultShape::WrongMessageType,
             OutcomeShape::Canonical,
-            "Nominal#6",
+            "Nominal#5",
         ),
         (
             FaultShape::Canonical,

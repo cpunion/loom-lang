@@ -48,8 +48,9 @@ read-only `std` package available through a reserved direct dependency. It
 is not concatenated with a root source file and it receives no privileged
 frontend pass: migrated modules are parsed, resolved, checked, lowered, and
 selected by the same reachability rules as user packages. The current package
-contains the foundational `std.int` algorithms, ordinary `std.log` convenience
-functions over the single output boundary, and the public resource concept
+contains the foundational `std.int` algorithms and integer parser with its
+ordinary source enum, ordinary `std.log` convenience functions over the single
+output boundary, and the public resource concept
 declarations in `std.resource`. `Dispose`, `MustScope`, and
 `NoSuspend` pass through the ordinary source pipeline, while their canonical
 identity, required shapes, and lexical static rules remain compiler-enforced

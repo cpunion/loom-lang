@@ -610,7 +610,7 @@ does not schedule, enqueue, suspend, or drive an executor. Its normal and fault
 edges rebuild the exact resource value before the next cleanup action. There is
 no universal `loom.Value`, indirect witness call, or synchronous executor route.
 
-Emission follows the validator's exact canonical `File#9`/`Socket#10` kind
+Emission follows the validator's exact canonical `File#8`/`Socket#9` kind
 agreement. The returned status is switched explicitly: `0` enters the normal
 edge, `2` records `ResourceCloseFault` and enters the checked fault edge, and
 the default edge calls `llvm.trap` and is unreachable. In particular, invalid
@@ -686,10 +686,10 @@ is correct.
 
 ## Object identity and linking
 
-The canonical textual dump is `lcir 36`, and the checked artifact identity uses
-schema 38. Object identities are route-separated:
+The canonical textual dump is `lcir 37`, and the checked artifact identity uses
+schema 39. Object identities are route-separated:
 
-- `loom-lcir-native-object-v34` streams the canonical checked-artifact identity;
+- `loom-lcir-native-object-v35` streams the canonical checked-artifact identity;
 - `loom-legacy-native-object-v5` includes the run/test harness kind, MIR
   format, exact roots and source reachability, reachable functions, live
   witness slots, and the semantic type/concept/prelude tables used by legacy
@@ -701,7 +701,7 @@ policy, implicit-versus-explicit target selection, optimization pipeline, PIC
 relocation, and stable debug-source metadata. Output and LLVM-IR side-artifact
 paths are excluded. A requested IR side artifact bypasses the object cache so
 the file is always produced. The CLI object-cache domain is independently
-versioned as `loom-llvm-object-cache-v39` and never suppresses fingerprint
+versioned as `loom-llvm-object-cache-v40` and never suppresses fingerprint
 errors.
 
 The current LCIR domains encode the explicit transitive effect lattice,
@@ -869,6 +869,13 @@ runtime identity advances to component 26 with
 `typed-resource-ownership-v1` and `runtime-v20`; typed-task ABI v1,
 coroutine v2, wait v1, checked MIR 27, and standard-library ABI v5 remain
 unchanged.
+
+Source-backing `std.int.parse_int` subsequently removes its MIR builtin, LCIR
+instruction, fixed error-type identity, LLVM special emission, and runtime
+symbol. The current boundaries are `lcir 37`, artifact schema 39,
+`loom-lcir-native-object-v35`, `loom-llvm-object-cache-v40`, checked MIR 28,
+and runtime component 27 with `runtime-v21`. Neither native backend retains a
+dedicated integer-parser path.
 
 They also encode closed static-witness method selection and normalized
 associated types. Those proofs are absent from the machine ABI: LLVM receives

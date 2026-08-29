@@ -209,7 +209,7 @@ fn malformed_sum_construction_and_switch_are_rejected_independently() {
 }
 
 #[test]
-fn forged_parse_status_variants_are_rejected_at_the_typed_boundary() {
+fn forged_float_parse_status_variants_are_rejected_at_the_typed_boundary() {
     let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
     let text = builder
         .add_immortal_text_type()
@@ -217,13 +217,13 @@ fn forged_parse_status_variants_are_rejected_at_the_typed_boundary() {
     let parse_error_semantic = nominal(31);
     let _parse_error = builder
         .add_sum_type(parse_error_semantic.clone(), &[Box::new([]), Box::new([])])
-        .expect("ParseIntError");
+        .expect("ParseFloatError");
     let result = builder
         .add_sum_type(
-            Type::Nominal(TypeId(32), vec![Type::Int, parse_error_semantic.clone()]),
-            &[Box::from([Type::Int]), Box::from([parse_error_semantic])],
+            Type::Nominal(TypeId(32), vec![Type::Float, parse_error_semantic.clone()]),
+            &[Box::from([Type::Float]), Box::from([parse_error_semantic])],
         )
-        .expect("Result[Int, ParseIntError]");
+        .expect("Result[Float, ParseFloatError]");
     let origin = Origin::synthetic(FunctionId(31));
     let root = builder
         .declare_function(
@@ -248,7 +248,7 @@ fn forged_parse_status_variants_are_rejected_at_the_typed_boundary() {
         let parsed = function
             .append_instruction(
                 entry,
-                InstructionKind::ParseInt {
+                InstructionKind::ParseFloat {
                     text: input,
                     ok_variant: 0,
                     error_variant: 1,

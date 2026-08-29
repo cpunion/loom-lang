@@ -76,7 +76,7 @@ The following repository fixtures are run through real compiler stages:
 | `fixtures/lcir-json-format` | direct typed formatting of all six canonical `Json` variants, canonical TextMap key order, exact string escaping and negative-zero spelling, ordinary `DepthLimit`/`NonFiniteNumber` errors for deep, NaN, and infinite inputs, and real main/test `check/build/test/run` commands without a universal value or executor |
 | `fixtures/lcir-sum-layout-collisions` | unrelated and nested closed sums, including opposing pointer-first/scalar-first record variants, with scalar, product, Text, List, TextMap, and recursive Json payloads; one target-data-derived carrier plan drives pack/unpack, exact repeated descriptors, and forced moving-GC relocation across interpreter/legacy/typed differential execution, Linux/MSVC objects, 32-bit fail-closed emission, artifact-wide placement/emission bounds, and real `check/build/test/run` commands |
 | `fixtures/lcir-fallible-async` | checked fallible stackless coroutines, ordinary managed `Result` completion, exact child source/contract fault propagation, cancellation, collision-free completed/live sum roots, balanced callback roots, forced moving-GC relocation, interpreter/legacy/typed differential execution, Linux/MSVC objects, 32-bit fail-closed behavior, and real `check/build/test/run` commands |
-| `fixtures/lcir-scalar-builtins` | exact parse-result sums, finite checks, managed Float formatting, direct Duration values, typed roots, and real check/build/test/run commands without universal values or an executor |
+| `fixtures/lcir-scalar-builtins` | source-backed integer parsing and exact parse-result sums, typed Float parsing and formatting, finite checks, direct Duration values, typed roots, and real check/build/test/run commands without universal values, a dedicated integer-parser runtime symbol, or an executor |
 | `fixtures/lcir-typed-logging` | canonical structured logging through typed LCIR, including exact JSONL stderr, escaping, empty fields, and canonical TextMap key order |
 | `fixtures/lcir-lexical-cleanup` | direct typed assertions and source contracts, checked-root and assumed-body boundaries, mutable invariant writeback, lexical `defer`, static-concept `scoped` disposal, exact LIFO/fault behavior, and real check/build/test/run commands without universal values or an executor |
 | `fixtures/lcir-static-concepts` | concrete static method selection, conditional proof forwarding, associated-type normalization, direct host execution, and MSVC COFF emission without runtime witness or universal-value surfaces |
@@ -133,7 +133,7 @@ direct coverage includes:
 - canonical structured logging with direct Text and `TextMap[Text]` values;
 - supported contracts and proof replay, static concepts, closed dynamic-concept
   catalogs, exact moving-GC roots, and static lexical cleanup, including exact
-  canonical `File#9`/`Socket#10` close validation and fail-closed status
+  canonical `File#8`/`Socket#9` close validation and fail-closed status
   classification;
 - checked stackless coroutines, typed Task handles, exact suspension rows,
   fallible timers, and executor-owned roots;

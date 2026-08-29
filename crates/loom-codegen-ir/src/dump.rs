@@ -53,7 +53,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 36")?;
+    writeln!(output, "lcir 37")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -325,16 +325,6 @@ fn write_instruction(
             output,
             "bytes.compare.{} %{left}, %{right}",
             bool_predicate_name(*predicate)
-        ),
-        InstructionKind::ParseInt {
-            text,
-            ok_variant,
-            error_variant,
-            invalid_syntax_variant,
-            out_of_range_variant,
-        } => write!(
-            output,
-            "parse.int %{text}, ok {ok_variant}, error {error_variant}, invalid_syntax {invalid_syntax_variant}, out_of_range {out_of_range_variant}"
         ),
         InstructionKind::ParseFloat {
             text,
