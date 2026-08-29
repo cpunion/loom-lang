@@ -138,16 +138,16 @@ jobs:
             --archive "$RUNTIME_ARCHIVE" \
             --output "$runtime_bundle"
           echo "LOOM_RUNTIME_BUNDLE=$runtime_bundle" >> "$GITHUB_ENV"
-      - name: Core release check/build/test/run smoke
+      - name: Canonical examples release check/build/test/run smoke
         shell: bash
         env:
           RELEASE_COMPILER: ${{ matrix.compiler }}
           EXECUTABLE_SUFFIX: ${{ matrix.executable_suffix }}
         run: |
-          for version in core01 core02 core03; do
-            source="examples/$version"
-            native="target/release-$version"
-            interpreted="target/release-$version.loomi"
+          for example in constraints-contracts concepts-polymorphism async-resources; do
+            source="examples/$example"
+            native="target/release-$example"
+            interpreted="target/release-$example.loomi"
             "$RELEASE_COMPILER" --no-cache check "$source"
             "$RELEASE_COMPILER" --no-cache build --output "$native" "$source"
             "$RELEASE_COMPILER" --no-cache test "$source"
@@ -222,7 +222,8 @@ jobs:
           cp -R docs "$staging/docs"
           cp -R "$LOOM_RUNTIME_BUNDLE" "$staging/runtime"
           env -u LOOM_RUNTIME_BUNDLE \
-            "$staging/loomc" --no-cache build --output target/release-bundle-smoke examples/core01
+            "$staging/loomc" --no-cache build --output target/release-bundle-smoke \
+              examples/constraints-contracts
           smoke_stdout="$RUNNER_TEMP/loom-release-bundle-smoke-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.stdout"
           target/release-bundle-smoke > "$smoke_stdout"
           smoke_hex="$(od -An -v -tx1 "$smoke_stdout" | tr -d '[:space:]')"
@@ -258,7 +259,8 @@ jobs:
           Remove-Item Env:LOOM_RUNTIME_BUNDLE
           $llvmBin = Join-Path $env:LLVM_PATH "bin"
           $env:PATH = (($env:PATH -split ';') | Where-Object { $_ -ne $llvmBin }) -join ';'
-          & "$staging/loomc.exe" --no-cache build --output target/release-bundle-smoke examples/core01
+          & "$staging/loomc.exe" --no-cache build --output target/release-bundle-smoke `
+            examples/constraints-contracts
           if ($LASTEXITCODE -ne 0) {
             throw "the staged Windows compiler could not discover its adjacent runtime bundle"
           }
