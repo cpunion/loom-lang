@@ -1,5 +1,3 @@
-module example.concepts_polymorphism
-
 pub record Label {
     text Text
 }
@@ -109,92 +107,6 @@ pub fn main() {
 
     var counter = Counter { value = 0 }
     match take_one(counter) {
-        Some(value) => {
-            assert value == 1
-            Unit
-        }
-        None => {
-            assert false
-            Unit
-        }
-    }
-}
-
-test fn static_and_readonly_dynamic_dispatch() {
-    let label = Label { text = "loom" }
-    let rendered = static_label(label)
-    assert rendered == "loom"
-
-    let formatter = IdentityFormatter {}
-    match dynamic_format(formatter, "value") {
-        Ok(text) => {
-            assert text == "value"
-            Unit
-        }
-        Err(_) => {
-            assert false
-            Unit
-        }
-    }
-}
-
-test fn mutable_dynamic_dispatch_writes_the_owner() {
-    var counter = Counter { value = 0 }
-    match take_one(counter) {
-        Some(value) => {
-            assert value == 1
-            Unit
-        }
-        None => {
-            assert false
-            Unit
-        }
-    }
-}
-
-test fn dynamic_interfaces_are_first_class_values() {
-    let returned = erase_label(Label { text = "returned" })
-    let forwarded = forward_label(returned)
-    let returnedText = returned.label()
-    let forwardedText = forwarded.label()
-    assert returnedText == "returned"
-    assert forwardedText == "returned"
-
-    let holder = LabelHolder { item = returned }
-    let holderText = holder.item.label()
-    assert holderText == "returned"
-
-    let packet = LabelPacket.Item(forwarded)
-    match packet {
-        Item(value) => {
-            let packetText = value.label()
-            assert packetText == "returned"
-            Unit
-        }
-    }
-
-    let collection = LabelCollection {
-        items = [
-            erase_label(Label { text = "one" }),
-            erase_label(Label { text = "two" }),
-        ]
-    }
-    let collectionLength = collection.items.length()
-    assert collectionLength == 2
-
-    var source = erase_source(Counter { value = 0 })
-    var copied = source
-    match copied.next() {
-        Some(value) => {
-            assert value == 1
-            Unit
-        }
-        None => {
-            assert false
-            Unit
-        }
-    }
-    match source.next() {
         Some(value) => {
             assert value == 1
             Unit

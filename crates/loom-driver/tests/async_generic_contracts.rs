@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use loom_driver::AnalysisHost;
+use loom_driver::{AnalysisHost, ProjectOptions};
 use loom_interpreter::TestStatus;
 
 #[test]
@@ -10,10 +10,16 @@ fn generic_async_contracts_witnesses_and_cancellation_execute_in_interpreter() {
         .and_then(Path::parent)
         .expect("workspace root");
     let source = workspace.join("fixtures/async-generic-contracts");
-    let snapshot = AnalysisHost::new(source)
-        .expect("load generic async fixture")
-        .snapshot()
-        .expect("analyze generic async fixture");
+    let snapshot = AnalysisHost::new_with_options(
+        source,
+        &ProjectOptions {
+            include_tests: true,
+            ..ProjectOptions::default()
+        },
+    )
+    .expect("load generic async fixture")
+    .snapshot()
+    .expect("analyze generic async fixture");
     assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
 
     let results = snapshot.run_tests().expect("run generic async fixture");

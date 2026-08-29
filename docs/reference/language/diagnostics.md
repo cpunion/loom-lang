@@ -14,7 +14,7 @@ checking or building. Human output has this leading form and may include a code
 frame, related locations, and notes:
 
 ```text
-src/main.loom:4:5: error[UnknownName]: unknown callable `missing`
+main.loom:4:5: error[UnknownName]: unknown callable `missing`
 ```
 
 Paths are project-relative. Line and column numbers are one-based. Byte offsets
@@ -38,7 +38,7 @@ and standard error is empty for source diagnostics. The schema is:
   "code": "UnknownName",
   "message": "unknown callable `missing`",
   "primary_span": {
-    "path": "src/main.loom",
+    "path": "main.loom",
     "start_byte": 42,
     "end_byte": 51,
     "start_line": 4,
@@ -64,8 +64,8 @@ codes include:
 | Area | Codes |
 | --- | --- |
 | source text | `InvalidUtf8`, `InvalidSourceCharacter`, `NewlineInString`, `UnterminatedString`, `InvalidEscape`, `InvalidUnicodeEscape`, `InvalidIntegerLiteral`, `InvalidFloatLiteral` |
-| file grammar | `MissingModuleDeclaration`, `DuplicateModuleDeclaration`, `UnexpectedToken`, `SyntaxNestingLimit`, `ChainedComparison` |
-| names and modules | `UnknownName`, `NameNotVisible`, `DuplicateDeclaration`, `ModuleCycle` |
+| file grammar | `UnexpectedToken`, `SyntaxNestingLimit`, `ChainedComparison` |
+| names and packages | `UnknownName`, `NameNotVisible`, `DuplicateDeclaration`, `ModuleCycle` |
 | typing and inference | `TypeMismatch`, `CannotInferType`, `CannotInferListElement`, `InvalidGenericOperation`, `InvalidAssignmentTarget` |
 | values and patterns | `UnusedValue`, `NonExhaustiveMatch`, `UnreachableMatchArm`, `TupleArityMismatch` |
 | constrained data | `ConstraintUnsatisfied`, `InvariantUnsatisfied`, `InvalidContractExpression` |

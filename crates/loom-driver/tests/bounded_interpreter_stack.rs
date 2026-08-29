@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use loom_core::Span;
-use loom_driver::AnalysisHost;
+use loom_driver::{AnalysisHost, ProjectOptions};
 use loom_interpreter::{Interpreter, TestStatus, Value};
 
 const ONE_MIB: usize = 1024 * 1024;
@@ -17,16 +17,22 @@ fn source_json_fixture_runs_on_a_one_mib_interpreter_stack() {
         .name("loom-one-mib-source-json".into())
         .stack_size(ONE_MIB)
         .spawn(move || {
-            let snapshot = AnalysisHost::new(&fixture)
-                .expect("source JSON analysis host")
-                .snapshot()
-                .expect("source JSON snapshot");
+            let snapshot = AnalysisHost::new_with_options(
+                &fixture,
+                &ProjectOptions {
+                    include_tests: true,
+                    ..ProjectOptions::default()
+                },
+            )
+            .expect("source JSON analysis host")
+            .snapshot()
+            .expect("source JSON snapshot");
             assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
             let program = snapshot.executable().expect("source JSON executable");
             let main = program
                 .functions
                 .iter()
-                .find(|function| function.name == "lcir_json_parse.main")
+                .find(|function| function.name == "standalone.main")
                 .expect("source JSON main")
                 .id;
 

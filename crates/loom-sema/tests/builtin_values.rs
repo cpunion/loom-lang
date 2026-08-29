@@ -1,4 +1,4 @@
-use loom_core::{FileId, LOOM_LANGUAGE_VERSION, Name, PackageId};
+use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId};
 use loom_hir::{PackageSourceUnit, lower_package_files};
 use loom_sema::analyze;
 use loom_syntax::parse_with_file;
@@ -10,11 +10,11 @@ fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
     let parsed = parse_with_file(root_file, source);
     let std_log = parse_with_file(
         std_log_file,
-        include_str!("../../../library/std/src/log.loom"),
+        include_str!("../../../library/std/log/log.loom"),
     );
     let std_json = parse_with_file(
         std_json_file,
-        include_str!("../../../library/std/src/json.loom"),
+        include_str!("../../../library/std/json/json.loom"),
     );
     assert!(
         parsed.diagnostics().is_empty(),
@@ -33,16 +33,19 @@ fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
         PackageSourceUnit {
             file: root_file,
             package: root_package.clone(),
+            module: ModuleName::new("sema_test"),
             syntax: parsed.ast(),
         },
         PackageSourceUnit {
             file: std_log_file,
             package: std_package.clone(),
+            module: ModuleName::new("std.log"),
             syntax: std_log.ast(),
         },
         PackageSourceUnit {
             file: std_json_file,
             package: std_package.clone(),
+            module: ModuleName::new("std.json"),
             syntax: std_json.ast(),
         },
     ]);
@@ -64,8 +67,6 @@ fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
 fn text_bytes_path_and_path_file_calls_type_check() {
     let diagnostics = analyze_source(
         r#"
-module builtin_values
-
 import std.file.open_read_path
 import std.file.create_path
 
@@ -135,8 +136,6 @@ async fn pathFiles(path Path) {
 fn text_from_utf8_units_requires_exactly_one_int_list() {
     let diagnostics = analyze_source(
         r#"
-module sample
-
 fn wrong() {
     let textList = Text.from_utf8_units(["not", "bytes"])
     let floatList = Text.from_utf8_units([65.0])
@@ -158,8 +157,6 @@ fn wrong() {
 fn builtin_value_calls_reject_wrong_shapes_and_incomplete_error_matches() {
     let diagnostics = analyze_source(
         r#"
-module sample
-
 fn wrong(text Text, bytes Bytes, path Path) {
     let scalar = text.get("zero")
     let appended = bytes.append(text)
@@ -190,8 +187,6 @@ fn incomplete(error PathError) {
 fn text_map_json_typed_io_and_logging_type_check() {
     let diagnostics = analyze_source(
         r#"
-module builtin_values_extended
-
 import std.file.try_open_read
 import std.file.try_create
 import std.file.try_open_read_path
@@ -308,8 +303,6 @@ async fn network(host Text, port Int) Result[Unit, IoError] {
 fn list_tuple_bulk_text_map_constructor_has_one_exact_generic_shape() {
     let diagnostics = analyze_source(
         r"
-module bulk_text_map
-
 fn valid(entries List[(Text, Int)]) Result[TextMap[Int], Text] {
     entries.to_text_map()
 }
@@ -319,8 +312,6 @@ fn valid(entries List[(Text, Int)]) Result[TextMap[Int], Text] {
 
     let diagnostics = analyze_source(
         r"
-module invalid_bulk_text_map
-
 fn wrong(values List[Int], wrongKeys List[(Int, Int)], entries List[(Text, Int)]) {
     let notPairs = values.to_text_map()
     let notTextKeys = wrongKeys.to_text_map()
@@ -342,8 +333,6 @@ fn wrong(values List[Int], wrongKeys List[(Int, Int)], entries List[(Text, Int)]
 fn structured_builtin_values_reject_wrong_shapes_and_open_matches() {
     let diagnostics = analyze_source(
         r#"
-module sample
-
 import std.json.format_json
 import std.log.write
 
@@ -400,8 +389,6 @@ fn incompleteIo(kind IoErrorKind) {
 fn wrapped_resources_must_be_unwrapped_directly_into_scoped() {
     let diagnostics = analyze_source(
         r"
-module resources
-
 import std.file.try_open_read
 
 fn consume[T](value T) {
@@ -478,8 +465,6 @@ async fn aggregate() {
 fn task_wrapped_resources_can_wait_then_enter_scoped() {
     let diagnostics = analyze_source(
         r"
-module resources
-
 import std.file.try_open_read
 
 async fn direct(path Text) Result[Unit, IoError] {

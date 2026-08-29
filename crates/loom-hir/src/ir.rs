@@ -52,6 +52,7 @@ impl Path {
 
 #[derive(Clone, Debug)]
 pub struct Import {
+    pub file: FileId,
     pub path: Path,
     pub span: Span,
 }

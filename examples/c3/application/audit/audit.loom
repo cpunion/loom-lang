@@ -1,0 +1,11 @@
+pub record AuditEvent {
+    action Text
+    accepted Bool
+}
+
+pub fn accepted_event(action Text) AuditEvent {
+    AuditEvent {
+        action = action
+        accepted = true
+    }
+}

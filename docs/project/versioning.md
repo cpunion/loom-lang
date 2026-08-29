@@ -17,11 +17,11 @@ writers for unreleased formats. Development history belongs in
 | --- | --- |
 | Cargo toolchain packages | `0.1.0` |
 | Loom language | `0.3` |
-| Manifest schema | `1` |
-| Lockfile schema | `1` |
+| Manifest schema | `2` |
+| Lockfile schema | `2` |
 | Registry protocol and bundle | `1` |
 | Interpreted MIR artifact | `loom.interpreted-mir`, version `29` |
-| Portable library artifact | `loom-library`, source-package version `2` |
+| Portable library artifact | `loom-library`, source-and-interface version `2` |
 | Persistent compiler cache | schema `5` |
 | Compilation-cache domain | `loom-compilation-cache-v5` |
 | Interpreted final-cache layer | `final-artifact-v3` |
@@ -47,7 +47,7 @@ layer or a supported public ABI.
 
 The compiler-owned standard library uses the content identity
 `loom-source-stdlib-v1/<sha256>`. The digest covers the Loom language version
-and the ordered path, module name, and exact bytes of every distributed Loom
+and the ordered path, package name, and exact bytes of every distributed Loom
 source file. A source-library change therefore invalidates dependent compiler
 cache entries even when no public ABI component changes.
 
@@ -84,7 +84,7 @@ boundaries, and every affected boundary must advance together.
 | Manifest or lockfile schema | Fields, canonical encoding, defaults, validation, or the meaning of recorded dependency state changes. |
 | Registry protocol/bundle | Request, index, source-bundle, authentication, checksum, or materialization semantics change. |
 | Interpreted MIR artifact | The envelope, exact MIR field set, serialized enum set, required compiler-known identity, validation contract, or execution meaning changes. |
-| Portable library artifact | Its package graph, source payload, public-interface encoding, bounds, or validation meaning changes. |
+| Portable library artifact | Its module graph, source payload, public-interface encoding, bounds, or validation meaning changes. |
 | Persistent cache schema | A persisted reference, envelope, payload, namespace, or trust check changes in a way that can make an existing entry unsafe to read or reuse. |
 | Final-cache layer or writer identity | Artifact selection, closure, dense remapping, writing, or final-byte derivation changes even when the underlying artifact schema does not. |
 | LCIR dump | Serialized LCIR syntax, field set, instruction set, type encoding, control-flow meaning, or validation contract changes. |
@@ -117,7 +117,7 @@ When a boundary advances:
 | Boundary | Incompatible input behavior |
 | --- | --- |
 | Manifest or lockfile | Reject with a configuration or version diagnostic. |
-| Registry index or bundle | Reject before package bytes are trusted or materialized. |
+| Registry index or bundle | Reject before module bytes are trusted or materialized. |
 | `.loomi` | Reject format, artifact version, language version, or envelope-kind mismatch before execution; matching headers still undergo exact deserialization and complete MIR validation. |
 | `.loomlib` | Reject format, artifact version, or language mismatch before import; matching input still undergoes bounded graph, path, identity, source, and interface validation. |
 | Compiler cache | Treat the entry as a miss and recompute from authoritative inputs. |

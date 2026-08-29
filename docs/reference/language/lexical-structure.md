@@ -29,12 +29,13 @@ The reserved words are:
 
 ```text
 as associated assert async await concept defer discard dyn else ensures enum
-false fn for if impl import in invariant let match method module mut old pub
+false fn for if impl import in invariant let match method mut old pub
 record requires result return scoped self static test true type var where
 ```
 
 `Self` and `Unit` are not keywords. They are names resolved by the type and
-value namespaces.
+value namespaces. `module` is also an ordinary identifier; module membership is
+defined by `loom.toml` and source directories, not by a source declaration.
 
 ## Comments
 

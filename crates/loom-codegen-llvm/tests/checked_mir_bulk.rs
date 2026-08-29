@@ -5,7 +5,6 @@ use loom_codegen_llvm::{
     EmitOptions, NativeRouteKind, NativeRoutePolicy, emit_prepared_native_object,
     prepare_native_object,
 };
-use loom_driver::AnalysisHost;
 use loom_interpreter::{Interpreter, Value};
 
 mod support;
@@ -14,7 +13,7 @@ use support::link_native_object;
 fn compile_source(source: &str) -> loom_mir::CheckedProgram {
     let project = tempfile::tempdir().expect("create checked-MIR bulk source project");
     std::fs::write(project.path().join("main.loom"), source).expect("write source fixture");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load source project")
         .snapshot()
         .expect("analyze source project");
@@ -29,9 +28,7 @@ fn compile_source(source: &str) -> loom_mir::CheckedProgram {
 #[test]
 fn duplicate_after_prior_insert_keeps_loop_output_roots_live_across_moving_collection() {
     const KEY_COUNT: usize = 384;
-    let mut source = String::from(
-        "module checked_mir_bulk_roots\n\nfn verify() Bool {\n    var entries = List[(Text, Int)]()\n",
-    );
+    let mut source = String::from("fn verify() Bool {\n    var entries = List[(Text, Int)]()\n");
     for index in 0..KEY_COUNT {
         writeln!(source, "    entries.add((\"key{index:04}\", {index}))")
             .expect("append unique source entry");

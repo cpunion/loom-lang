@@ -8,7 +8,7 @@ as user declarations. Standard functions are available only after an explicit
 import; standard value types and their built-in constructors and methods are in
 the prelude.
 
-The compiler-owned source package is `std`. Source imports library APIs by
+The compiler-owned source module is `std`. Source imports library APIs by
 their `std.*` path.
 
 The standard library's public behavior is tested in Loom itself. From the
@@ -22,9 +22,9 @@ These tests use the same compiler and runtime path as application tests. Rust
 tests remain for ABI and compiler boundaries rather than duplicating ordinary
 library behavior.
 
-Source-backed modules are distributed as Loom source and compile through the
-ordinary module, type, MIR, reachability, and native pipelines. The current
-source package contains the `std.int` and `std.json` parsers, their public
+Source-backed packages are distributed as Loom source and compile through the
+ordinary package, type, MIR, reachability, and native pipelines. The current
+source module contains the `std.int` and `std.json` parsers, their public
 parse-error values, the `std.log.debug`, `info`, `warn`, and `error`
 convenience functions, and the public `Dispose`, `MustScope`, and `NoSuspend`
 declarations in `std.resource`.

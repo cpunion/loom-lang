@@ -1,7 +1,6 @@
 use std::process::Command;
 
 use loom_codegen_llvm::EmitOptions;
-use loom_driver::AnalysisHost;
 use loom_interpreter::{Interpreter, TestStatus, Value};
 
 mod support;
@@ -13,9 +12,7 @@ fn explicit_discard_evaluates_values_on_both_backends() {
     let project = tempfile::tempdir().expect("create discard project");
     std::fs::write(
         project.path().join("main.loom"),
-        r"module discard_values
-
-record Counter {
+        r"record Counter {
     value Int
 }
 
@@ -76,7 +73,7 @@ test async fn nested_control_discard() {
     )
     .expect("write discard source");
 
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("open discard project")
         .snapshot()
         .expect("compile discard project");
@@ -131,15 +128,15 @@ test async fn nested_control_discard() {
     );
     let stdout = String::from_utf8(native_tests.stdout).expect("native output is UTF-8");
     assert!(
-        stdout.contains("passed discard_values.synchronous_discard\n"),
+        stdout.contains("passed standalone.synchronous_discard\n"),
         "{stdout}"
     );
     assert!(
-        stdout.contains("passed discard_values.awaited_discard\n"),
+        stdout.contains("passed standalone.awaited_discard\n"),
         "{stdout}"
     );
     assert!(
-        stdout.contains("passed discard_values.nested_control_discard\n"),
+        stdout.contains("passed standalone.nested_control_discard\n"),
         "{stdout}"
     );
 }

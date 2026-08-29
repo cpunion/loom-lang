@@ -1,0 +1,19 @@
+import application.config.maximum_order
+import catalog.checkout.checkout
+import catalog.product.Product
+import foundation.error.CheckoutError
+import foundation.money.Money
+import foundation.policy.within_limit
+
+pub fn execute(product Product) Result[Money, CheckoutError] {
+    match checkout(product) {
+        Ok(total) => {
+            if within_limit(total, maximum_order()) {
+                Ok(total)
+            } else {
+                Err(CheckoutError.Rejected)
+            }
+        }
+        Err(error) => Err(error)
+    }
+}

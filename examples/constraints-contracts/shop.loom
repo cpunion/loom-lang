@@ -1,5 +1,3 @@
-module example.constraints_contracts
-
 import std.float.is_finite
 
 pub type Price = Float where is_finite(self) && self >= 0.0
@@ -57,59 +55,4 @@ pub fn main() {
     }
     let total = order.total()
     assert total == 80.0
-}
-
-test fn constrained_values_and_record_invariant() {
-    let subtotal = Price(100.0)
-    let discount = Price(20.0)
-    let order = Order {
-        subtotal = subtotal
-        discount = discount
-    }
-    let total = order.total()
-    assert total == 80.0
-}
-
-test fn negative_price_is_rejected() {
-    match checked_price(-0.01) {
-        Err(_) => Unit
-        Ok(_) => {
-            assert false
-            Unit
-        }
-    }
-}
-
-test fn invalid_order_is_rejected_at_dynamic_boundary() {
-    let subtotal = Price(10.0)
-    let discount = Price(20.0)
-    match checked_order(subtotal, discount) {
-        Err(_) => Unit
-        Ok(_) => {
-            assert false
-            Unit
-        }
-    }
-}
-
-test fn rejected_discount_preserves_receiver() {
-    let subtotal = Price(100.0)
-    let discount = Price(0.0)
-    let order = Order {
-        subtotal = subtotal
-        discount = discount
-    }
-    let too_large = Price(120.0)
-    var mutable_order = order
-    match mutable_order.apply_discount(too_large) {
-        Ok(_) => {
-            assert false
-            Unit
-        }
-        Err(DiscountError.ExceedsSubtotal) => {
-            let total = mutable_order.total()
-            assert total == 100.0
-            Unit
-        }
-    }
 }

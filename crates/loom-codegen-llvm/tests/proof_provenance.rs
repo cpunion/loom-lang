@@ -10,7 +10,7 @@ use loom_core::Span;
 use loom_core::runtime_fault::{
     ARTIFACT_PROOF_REJECTED_FAULT_CODE, ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
 };
-use loom_driver::{AnalysisHost, PersistentCache};
+use loom_driver::PersistentCache;
 use loom_interpreter::{ExecutionFailure, Interpreter, Value};
 use loom_mir::{
     CheckedProgram, StatementKind, decode_interpreted_executable_artifact,
@@ -24,7 +24,7 @@ use support::{emit_native, link_native_object};
 fn compile_source(source: &str) -> CheckedProgram {
     let project = tempfile::tempdir().expect("create proof source project");
     std::fs::write(project.path().join("main.loom"), source).expect("write proof source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load proof source")
         .snapshot()
         .expect("analyze proof source");
@@ -155,9 +155,7 @@ fn emit_automatic_executable(
 
 #[test]
 fn runtime_constraint_errors_are_exact_typed_values_without_secret_disclosure() {
-    let source = r#"module runtime_constraint_values
-
-record Token {
+    let source = r#"record Token {
     secret Text
 
     invariant self.secret == "allowed"
@@ -250,9 +248,7 @@ pub fn main() {
 
 #[test]
 fn decoded_refinement_proof_rechecks_before_interpreter_or_typed_execution() {
-    let source = r"module proof_provenance
-
-type Positive = Float where self >= 0.0
+    let source = r"type Positive = Float where self >= 0.0
 
 pub fn main() {
     discard Positive(10.0)
@@ -356,9 +352,7 @@ pub fn main() {
 
 #[test]
 fn decoded_record_proof_uses_the_same_canonical_fault_and_span() {
-    let source = r"module record_proof_provenance
-
-record NonNegative {
+    let source = r"record NonNegative {
     value Float
 
     invariant self.value >= 0.0
@@ -405,9 +399,7 @@ pub fn main() {
 
 #[test]
 fn decoded_generic_record_recheck_preserves_instantiated_contract_types() {
-    let source = r"module generic_proof_provenance
-
-record Boxed[T] {
+    let source = r"record Boxed[T] {
     payload T
     marker Float
 
@@ -473,9 +465,7 @@ pub fn main() {
 
 #[test]
 fn tampered_generic_record_recheck_faults_identically_on_typed_lcir() {
-    let source = r"module generic_proof_rejection
-
-record Boxed[T] {
+    let source = r"record Boxed[T] {
     payload T
     marker Float
 
@@ -537,9 +527,7 @@ pub fn main() {
 
 #[test]
 fn proof_bearing_disk_cache_reanalysis_preserves_native_route_and_ir() {
-    let source = r"module proof_cache_parity
-
-type Positive = Float where self >= 0.0
+    let source = r"type Positive = Float where self >= 0.0
 
 pub fn main() {
     discard Positive(10.0)
@@ -549,7 +537,7 @@ pub fn main() {
     std::fs::write(project.path().join("main.loom"), source).expect("write proof cache source");
     let cache = PersistentCache::new(project.path().join("compiler-cache"));
 
-    let cold_host = AnalysisHost::new(project.path()).expect("load cold proof project");
+    let cold_host = support::analysis_host(project.path()).expect("load cold proof project");
     let cold_sources = cold_host.load_sources().expect("load cold proof sources");
     let source_count = cold_sources.documents().len();
     let (cold, cold_parse) = cold_host.snapshot_from_sources_with_parse_cache(
@@ -561,7 +549,7 @@ pub fn main() {
     assert_eq!(cold_parse.misses, source_count);
     let cold_program = cold.executable().expect("lower cold proof MIR");
 
-    let warm_host = AnalysisHost::new(project.path()).expect("load warm proof project");
+    let warm_host = support::analysis_host(project.path()).expect("load warm proof project");
     let warm_sources = warm_host.load_sources().expect("load warm proof sources");
     assert_eq!(warm_sources.documents().len(), source_count);
     let (warm, warm_parse) = warm_host.snapshot_from_sources_with_parse_cache(
@@ -606,9 +594,7 @@ pub fn main() {
 
 #[test]
 fn decoded_proof_faults_follow_normal_settled_and_race_task_containment() {
-    let source = r#"module async_proof_provenance
-
-type Positive = Float where self >= 0.0
+    let source = r#"type Positive = Float where self >= 0.0
 
 async fn invalid() Positive {
     Positive(10.0)

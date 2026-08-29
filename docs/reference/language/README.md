@@ -17,7 +17,7 @@ lifetime, pointer, or runtime type-registry syntax.
 For a first pass through the language, read these pages in order:
 
 1. [Lexical structure](lexical-structure.md)
-2. [Modules and declarations](modules-and-declarations.md)
+2. [Packages and declarations](packages-and-declarations.md)
 3. [Types and values](types-and-values.md)
 4. [Expressions and control flow](expressions-and-control-flow.md)
 5. [Functions and methods](functions-and-methods.md)
@@ -43,8 +43,8 @@ Code examples use significant newlines. Loom has no semicolon token. A final
 expression in a block is that block's value; a block without a final expression
 has value `Unit`.
 
-Short fragments may omit their enclosing `module`, required imports, and
-nearby declarations when those details are not the rule being illustrated.
+Short fragments may omit required imports and nearby declarations when those
+details are not the rule being illustrated.
 
 The words *must*, *must not*, and *requires* state static or runtime rules. A
 program that violates a static rule is rejected before execution. Runtime

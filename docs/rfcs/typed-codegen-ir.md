@@ -554,7 +554,7 @@ must not be serialized as public policy identity, and is removed rather than
 preserved when the source library can declare these functions.
 
 In the accepted end state, each public Task policy resolves to an ordinary
-source `DefId` in the compiler-owned `std` package. Instance closure follows
+source `DefId` in the compiler-owned `std` module. Instance closure follows
 the source body, and any specialized path begins at compiler-private
 join/select, result-or-outcome extraction, or cancellation-and-drain primitives
 called by that body. No compiler stage reconstructs a policy from the public

@@ -74,11 +74,11 @@ struct RegistryBundle {
 struct BundleManifest {
     schema: u32,
     language: Option<String>,
-    package: BundleManifestPackage,
+    module: BundleManifestModule,
 }
 
 #[derive(Deserialize)]
-struct BundleManifestPackage {
+struct BundleManifestModule {
     name: String,
     version: String,
 }
@@ -490,8 +490,8 @@ fn validate_bundle(
         .as_deref()
         .unwrap_or(crate::CURRENT_LANGUAGE_VERSION);
     if embedded.schema != MANIFEST_SCHEMA_VERSION
-        || embedded.package.name != bundle.package
-        || embedded.package.version != bundle.version
+        || embedded.module.name != bundle.package
+        || embedded.module.version != bundle.version
         || embedded_language != bundle.language
     {
         return Err(registry_error(
@@ -1171,13 +1171,13 @@ mod tests {
                 RegistryFile {
                     path: MANIFEST_FILE.to_owned(),
                     text: format!(
-                        "schema = {MANIFEST_SCHEMA_VERSION}\nlanguage = {:?}\n[package]\nname = \"utility\"\nversion = \"1.2.0\"\n",
+                        "schema = {MANIFEST_SCHEMA_VERSION}\nlanguage = {:?}\n[module]\nname = \"utility\"\nversion = \"1.2.0\"\n",
                         crate::CURRENT_LANGUAGE_VERSION
                     ),
                 },
                 RegistryFile {
-                    path: "src/lib.loom".to_owned(),
-                    text: "module utility\n\npub fn answer() Int { 42 }\n".to_owned(),
+                    path: "lib.loom".to_owned(),
+                    text: "pub fn answer() Int { 42 }\n".to_owned(),
                 },
             ],
         }
@@ -1274,7 +1274,7 @@ mod tests {
 
         let mut prefix_conflict = fixture_bundle();
         prefix_conflict.files.push(RegistryFile {
-            path: "src".to_owned(),
+            path: "lib.loom/nested".to_owned(),
             text: "not a directory".to_owned(),
         });
         assert!(validate_bundle(manifest, &prefix_conflict, "utility", "1.2.0").is_err());
@@ -1320,7 +1320,7 @@ mod tests {
             .is_some()
         );
 
-        fs::write(root.join("src/lib.loom"), "module utility\n").expect("tamper source");
+        fs::write(root.join("lib.loom"), "").expect("tamper source");
         let error = valid_cached_record(
             root,
             "https://registry.example",

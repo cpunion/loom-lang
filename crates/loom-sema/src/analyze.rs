@@ -1840,6 +1840,17 @@ impl Analyzer<'_> {
             .iter()
             .map(|(id, _)| id)
             .collect::<Vec<_>>();
+        let mut bodies = bodies;
+        bodies.sort_by_key(|body| {
+            let rank = match self.program.bodies[*body].kind {
+                BodyKind::RefinementPredicate => 0,
+                BodyKind::RecordInvariant => 1,
+                BodyKind::Requires => 2,
+                BodyKind::Ensures => 3,
+                BodyKind::Function | BodyKind::Method => 4,
+            };
+            (rank, body.raw())
+        });
         for body in bodies {
             if let Some((previous, reusable)) = previous
                 && reusable.contains(&body)
@@ -5843,7 +5854,10 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         if self.analyzer.program.modules[module]
             .imports
             .iter()
-            .any(|import| crate::module_graph::imported_name(import) == Some(&segment.name))
+            .any(|import| {
+                import.file == segment.span.file
+                    && crate::module_graph::imported_name(import) == Some(&segment.name)
+            })
         {
             return false;
         }
@@ -6897,7 +6911,17 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             .def_maps
             .map(module)
             .into_iter()
-            .flat_map(|map| map.entries(Namespace::Concept))
+            .flat_map(|map| {
+                map.entries(
+                    Namespace::Concept,
+                    self.analyzer
+                        .program
+                        .source_map
+                        .definition(self.environment.owner)
+                        .unwrap_or_default()
+                        .file,
+                )
+            })
             .filter_map(|(_, binding)| binding.unique())
             .collect::<Vec<_>>();
         let environment = ParamEnv {
@@ -8843,10 +8867,17 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
 
     fn builtin_is_imported(&self, qualified: &str) -> bool {
         let module = self.analyzer.program.definitions[self.environment.owner].module;
+        let file = self
+            .analyzer
+            .program
+            .source_map
+            .definition(self.environment.owner)
+            .unwrap_or_default()
+            .file;
         self.analyzer.program.modules[module]
             .imports
             .iter()
-            .any(|import| import.path.as_string() == qualified)
+            .any(|import| import.file == file && import.path.as_string() == qualified)
     }
 
     fn compiler_std_primitive_call(
@@ -9576,7 +9607,7 @@ fn sort_diagnostics(diagnostics: &mut [Diagnostic]) {
 
 #[cfg(test)]
 mod tests {
-    use loom_core::{FileId, LOOM_LANGUAGE_VERSION, PackageId};
+    use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, PackageId};
     use loom_hir::{
         Expr, PackageSourceUnit, Program, SourceUnit, lower_files, lower_package_files,
     };
@@ -9589,8 +9620,6 @@ mod tests {
     };
 
     const DYNAMIC_SOURCE_FIXTURE: &str = r"
-module sample
-
 pub record Counter {
     value Int
 }
@@ -9637,9 +9666,7 @@ fn consume(source Source[Item = Int]) {
     fn analyze_resource_module(package: PackageId) -> (Program, Analysis) {
         let parsed = parse_with_file(
             FileId(0),
-            r"module std.resource
-
-pub concept Dispose {
+            r"pub concept Dispose {
     method dispose(mut self)
 }
 
@@ -9655,6 +9682,7 @@ pub concept NoSuspend {}
         let lowered = lower_package_files([PackageSourceUnit {
             file: FileId(0),
             package,
+            module: ModuleName::new("std.resource"),
             syntax: parsed.ast(),
         }]);
         assert!(lowered.diagnostics.is_empty(), "{:#?}", lowered.diagnostics);
@@ -9694,7 +9722,7 @@ pub concept NoSuspend {}
     fn resolves_generic_data_and_callable_signatures_definition_first() {
         let parsed = parse_with_file(
             FileId(0),
-            "module sample\n\nrecord Boxed[T] {\n    value T\n}\n\nfn wrap[T](value T) Boxed[T] {\n    Boxed { value = value }\n}\n",
+            "record Boxed[T] {\n    value T\n}\n\nfn wrap[T](value T) Boxed[T] {\n    Boxed { value = value }\n}\n",
         );
         assert!(
             parsed.diagnostics().is_empty(),
@@ -9728,10 +9756,7 @@ pub concept NoSuspend {}
 
     #[test]
     fn test_signature_uses_implicit_unit_and_rejects_parameters() {
-        let parsed = parse_with_file(
-            FileId(0),
-            "module sample\n\ntest fn ok() {}\n\ntest fn bad(value Int) {}\n",
-        );
+        let parsed = parse_with_file(FileId(0), "test fn ok() {}\n\ntest fn bad(value Int) {}\n");
         let lowered = lower_files([SourceUnit {
             file: FileId(0),
             syntax: parsed.ast(),
@@ -9747,12 +9772,10 @@ pub concept NoSuspend {}
 
     #[test]
     fn int_min_has_one_legal_literal_spelling() {
-        let (_, valid) =
-            analyze_source("module sample\n\npub fn minimum() Int { -9223372036854775808 }\n");
+        let (_, valid) = analyze_source("pub fn minimum() Int { -9223372036854775808 }\n");
         assert!(valid.diagnostics.is_empty(), "{:#?}", valid.diagnostics);
 
-        let (_, invalid) =
-            analyze_source("module sample\n\npub fn too_large() Int { 9223372036854775808 }\n");
+        let (_, invalid) = analyze_source("pub fn too_large() Int { 9223372036854775808 }\n");
         assert!(
             invalid
                 .diagnostics
@@ -9786,10 +9809,12 @@ pub concept NoSuspend {}
 
     #[test]
     fn concepts_polymorphism_source_reaches_body_checker() {
-        let parsed = parse_with_file(
-            FileId(0),
+        let source = format!(
+            "{}\n{}",
             include_str!("../../../examples/concepts-polymorphism/concepts.loom"),
+            include_str!("../../../examples/concepts-polymorphism/concepts_test.loom"),
         );
+        let parsed = parse_with_file(FileId(0), &source);
         assert!(
             parsed.diagnostics().is_empty(),
             "{:?}",
@@ -9909,8 +9934,6 @@ pub concept NoSuspend {}
     fn invariant_isolation_forks_branches_and_joins_dirty_state() {
         let (_, analysis) = analyze_source(
             r"
-module sample
-
 pub record Pair {
     value Int
     invariant self.value >= 0
@@ -9943,8 +9966,6 @@ impl Pair {
     fn successful_assertion_restores_the_receiver_invariant_boundary() {
         let (_, analysis) = analyze_source(
             r"
-module sample
-
 pub record Counter {
     value Int
     invariant self.value >= 0
@@ -9973,8 +9994,6 @@ impl Counter {
     fn nested_variant_binding_does_not_make_match_exhaustive() {
         let (_, analysis) = analyze_source(
             r"
-module sample
-
 fn unwrap_some(value Option[Int]) Int {
     match value {
         Some(inner) => inner
@@ -9994,8 +10013,6 @@ fn unwrap_some(value Option[Int]) Int {
     fn nested_boolean_variant_patterns_require_every_payload_case() {
         let (_, incomplete) = analyze_source(
             r"
-module sample
-
 fn classify(value Option[Bool]) Int {
     match value {
         Some(true) => 1
@@ -10015,8 +10032,6 @@ fn classify(value Option[Bool]) Int {
 
         let (_, complete) = analyze_source(
             r"
-module sample
-
 fn classify(value Option[Bool]) Int {
     match value {
         Some(true) => 1
@@ -10037,8 +10052,6 @@ fn classify(value Option[Bool]) Int {
     fn match_usefulness_reports_duplicate_and_shadowed_arms() {
         let (_, duplicate) = analyze_source(
             r"
-module sample
-
 fn classify(value Option[Bool]) Int {
     match value {
         Some(true) => 1
@@ -10070,8 +10083,6 @@ fn classify(value Option[Bool]) Int {
 
         let (_, shadowed) = analyze_source(
             r"
-module sample
-
 fn classify(value Option[Int]) Int {
     match value {
         _ => 1
@@ -10094,8 +10105,6 @@ fn classify(value Option[Int]) Int {
     fn equality_requires_a_statically_derivable_value_equality_capability() {
         let (_, generic) = analyze_source(
             r"
-module sample
-
 fn same[T](left T, right T) Bool {
     left == right
 }
@@ -10112,8 +10121,6 @@ fn same[T](left T, right T) Bool {
 
         let (_, aggregate) = analyze_source(
             r"
-module sample
-
 record Boxed[T] {
     value T
 }
@@ -10134,8 +10141,6 @@ fn same[T](left Boxed[T], right Boxed[T]) Bool {
 
         let (_, resources) = analyze_source(
             r"
-module sample
-
 fn same_file(left File, right File) Bool {
     left == right
 }
@@ -10152,8 +10157,6 @@ fn same_file(left File, right File) Bool {
 
         let (_, dynamic) = analyze_source(
             r"
-module sample
-
 dyn concept Display {
     method display(self) Text
 }
@@ -10177,8 +10180,6 @@ fn same_view(left dyn Display, right dyn Display) Bool {
     fn structural_values_derive_equality_when_every_component_supports_it() {
         let (_, analysis) = analyze_source(
             r"
-module sample
-
 record Pair {
     names List[Text]
     count Int
@@ -10205,8 +10206,6 @@ fn same(left MaybePair, right MaybePair) Bool {
     fn record_side_table_preserves_source_evaluation_and_canonical_layout() {
         let (program, analysis) = analyze_source(
             r"
-module sample
-
 pub record Pair {
     first Int
     second Int
@@ -10273,8 +10272,6 @@ fn make_pair() Pair {
     fn unique_bound_resolves_unqualified_associated_projection() {
         let (_, analysis) = analyze_source(
             r"
-module sample
-
 pub concept Source {
     associated type Item
     method read(self) Self.Item
@@ -10315,8 +10312,6 @@ fn read[T: Source](source T) T.Item {
     fn associated_type_bindings_must_satisfy_declared_bounds() {
         let (_, valid) = analyze_source(
             r"
-module sample
-
 concept Display {
     method display(self) Text
 }
@@ -10348,8 +10343,6 @@ impl Source for Labels {
 
         let (_, invalid) = analyze_source(
             r"
-module sample
-
 concept Display {
     method display(self) Text
 }
@@ -10383,8 +10376,6 @@ impl Source for Number {
     fn associated_type_bounds_use_conditional_conformance_proofs() {
         let (_, analysis) = analyze_source(
             r"
-module sample
-
 concept Display {
     method display(self) Text
 }
@@ -10415,8 +10406,6 @@ impl[T: Display] Source for Boxed[T] {
     fn associated_projection_cycles_are_rejected() {
         let (_, analysis) = analyze_source(
             r"
-module sample
-
 concept Pair {
     associated type First
     associated type Second
@@ -10444,8 +10433,6 @@ impl Pair for Broken {
     fn concrete_call_normalizes_associated_projection_from_selected_witness() {
         let (_, analysis) = analyze_source(
             r"
-module sample
-
 pub concept Source {
     associated type Item
     method read(self) Self.Item
@@ -10484,8 +10471,6 @@ test fn concrete_projection() {
     fn never_branch_joins_to_the_other_if_type() {
         let (_, analysis) = analyze_source(
             r"
-module sample
-
 fn choose(flag Bool) Int {
     if flag {
         return 0
@@ -10506,8 +10491,6 @@ fn choose(flag Bool) Int {
     fn parse_float_error_variants_are_matchable_and_exhaustive() {
         let (_, analysis) = analyze_source(
             r"
-module sample
-
 import std.float.parse_float
 
 fn classify(text Text) Int {
@@ -10532,8 +10515,6 @@ fn classify(text Text) Int {
     fn concept_owner_can_implement_a_concrete_primitive_head() {
         let (_, analysis) = analyze_source(
             r"
-module sample
-
 pub concept Zero {
     static method zero() Self
 }
@@ -10560,8 +10541,6 @@ fn make_zero() Int {
     fn constrained_construction_uses_constants_and_established_path_facts() {
         let (_, analysis) = analyze_source(
             r"
-module sample
-
 import std.float.is_finite
 
 type Money = Float where is_finite(self) && self >= 0.0
@@ -10622,11 +10601,79 @@ fn branched(raw Float) Result[Money, ConstraintError] {
     }
 
     #[test]
+    fn constrained_literal_proof_is_independent_of_package_file_order() {
+        let application_file = FileId(0);
+        let foundation_file = FileId(1);
+        let application = parse_with_file(
+            application_file,
+            r"import foundation.money.Money
+
+fn maximum_order() Money {
+    Money(1000.0)
+}
+",
+        );
+        let foundation = parse_with_file(
+            foundation_file,
+            r"import std.float.is_finite
+
+pub type Money = Float where is_finite(self) && self >= 0.0
+",
+        );
+        assert!(
+            application.diagnostics().is_empty() && foundation.diagnostics().is_empty(),
+            "application={:#?}, foundation={:#?}",
+            application.diagnostics(),
+            foundation.diagnostics()
+        );
+
+        let application_package = PackageId::new("application", "0");
+        let foundation_package = PackageId::new("foundation", "0");
+        let mut lowered = lower_package_files([
+            PackageSourceUnit {
+                file: application_file,
+                package: application_package.clone(),
+                module: ModuleName::new("application.config"),
+                syntax: application.ast(),
+            },
+            PackageSourceUnit {
+                file: foundation_file,
+                package: foundation_package.clone(),
+                module: ModuleName::new("foundation.money"),
+                syntax: foundation.ast(),
+            },
+        ]);
+        lowered
+            .program
+            .register_package(foundation_package.clone(), [], false);
+        lowered.program.register_package(
+            application_package,
+            [(loom_core::Name::new("foundation"), foundation_package)],
+            true,
+        );
+
+        let analysis = analyze(&lowered.program);
+        assert!(
+            analysis.diagnostics.is_empty(),
+            "{:#?}",
+            analysis.diagnostics
+        );
+        assert_eq!(
+            analysis
+                .typed
+                .bodies
+                .values()
+                .flat_map(|body| body.construction_checks.values())
+                .copied()
+                .collect::<Vec<_>>(),
+            [ConstructionCheck::Proven]
+        );
+    }
+
+    #[test]
     fn invariant_literals_share_the_same_proof_and_runtime_boundary() {
         let (_, analysis) = analyze_source(
             r"
-module sample
-
 type Money = Float where self >= 0.0
 
 record Range {
@@ -10685,8 +10732,6 @@ fn required(low Money, high Money) Range
     fn statically_false_constraint_and_invariant_are_source_errors() {
         let (_, analysis) = analyze_source(
             r"
-module sample
-
 type Money = Float where self >= 0.0
 
 record Range {
@@ -10717,8 +10762,6 @@ fn bad_range() Range {
     fn constrained_conversion_matrix_is_one_way_and_check_free_when_established() {
         let (_, valid) = analyze_source(
             r"
-module sample
-
 type Money = Float where self >= 0.0
 type Positive = Float where self > 0.0
 
@@ -10768,8 +10811,6 @@ fn wallet_from_established_field() Wallet {
 
         let (_, invalid) = analyze_source(
             r"
-module sample
-
 type Money = Float where self >= 0.0
 type Percentage = Float where self >= 0.0
 
@@ -10789,8 +10830,6 @@ fn cross_nominal(value Money) Percentage { value }
     fn conformance_implementation_uses_its_requirement_contract_facts() {
         let (_, analysis) = analyze_source(
             r"
-module sample
-
 type Money = Float where self >= 0.0
 
 concept Factory {
@@ -10825,8 +10864,6 @@ impl Factory for DefaultFactory {
     fn loops_and_impure_conditions_do_not_create_stale_proofs() {
         let (_, analysis) = analyze_source(
             r"
-module sample
-
 type Money = Float where self >= 0.0
 
 record Cell { value Float }

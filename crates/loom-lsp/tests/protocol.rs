@@ -125,9 +125,7 @@ fn source_position(source: &str, needle: &str) -> Value {
     reason = "one editor contract keeps structured standard-library hover and completion evidence together"
 )]
 fn structured_std_values_are_discoverable_through_completion_and_hover() {
-    let source = r#"module editor.builtin
-
-import std.json.parse_json
+    let source = r#"import std.json.parse_json
 import std.log.debug
 import std.log.error
 import std.log.info
@@ -255,9 +253,7 @@ fn inspect(problem IoError, value Json) {
 
 #[test]
 fn source_backed_int_parsing_is_indexed_without_an_lsp_catalog_entry() {
-    let source = r"module editor.parse_int
-
-import std.int.ParseIntError
+    let source = r"import std.int.ParseIntError
 import std.int.parse_int
 
 fn parse(text Text) Result[Int, ParseIntError] {
@@ -351,7 +347,7 @@ fn parse(text Text) Result[Int, ParseIntError] {
         assert!(definition_source.is_read_only());
         assert!(!definition_source.is_navigable());
         assert!(
-            definition_source.relative_path().ends_with("src/int.loom"),
+            definition_source.relative_path().ends_with("int/int.loom"),
             "{}",
             definition_source.relative_path()
         );
@@ -360,9 +356,7 @@ fn parse(text Text) Result[Int, ParseIntError] {
 
 #[test]
 fn source_backed_process_functions_hover_and_resolve_to_read_only_source() {
-    let source = r"module editor.process
-
-import std.process.arguments
+    let source = r"import std.process.arguments
 import std.process.environment
 
 fn inspect(name Text) Option[Text] {
@@ -450,7 +444,7 @@ fn inspect(name Text) Option[Text] {
         assert!(
             definition_source
                 .relative_path()
-                .ends_with("src/process.loom"),
+                .ends_with("process/process.loom"),
             "{}",
             definition_source.relative_path()
         );
@@ -459,9 +453,7 @@ fn inspect(name Text) Option[Text] {
 
 #[test]
 fn compiler_std_sources_report_distinct_navigation_and_mutation_policy() {
-    let source = r"module editor.compiler_owned
-
-import std.int.minimum
+    let source = r"import std.int.minimum
 import std.resource.MustScope
 
 record ResourceMarker {}
@@ -548,7 +540,7 @@ pub fn main() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn stdio_session_exposes_semantic_navigation_and_refuses_an_incomplete_index() {
-    let source = "module demo\n\npub fn identity[T](value T) T {\n    let copy = value\n    copy\n}\n\npub fn main() {\n    let answer = identity(42)\n    assert answer == 42  \n}\n";
+    let source = "pub fn identity[T](value T) T {\n    let copy = value\n    copy\n}\n\npub fn main() {\n    let answer = identity(42)\n    assert answer == 42  \n}\n";
     let project = TestProject::new(source);
     let root_uri = loom_lsp::path_to_file_uri(&project.0);
     let file_uri = loom_lsp::path_to_file_uri(&project.0.join("main.loom"));
@@ -556,15 +548,15 @@ fn stdio_session_exposes_semantic_navigation_and_refuses_an_incomplete_index() {
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":root_uri}}),
         json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
         json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":file_uri,"languageId":"loom","version":1,"text":source}}}),
-        json!({"jsonrpc":"2.0","id":2,"method":"textDocument/definition","params":{"textDocument":{"uri":file_uri},"position":{"line":8,"character":22}}}),
-        json!({"jsonrpc":"2.0","id":3,"method":"textDocument/references","params":{"textDocument":{"uri":file_uri},"position":{"line":3,"character":16},"context":{"includeDeclaration":true}}}),
-        json!({"jsonrpc":"2.0","id":4,"method":"textDocument/prepareRename","params":{"textDocument":{"uri":file_uri},"position":{"line":4,"character":5}}}),
-        json!({"jsonrpc":"2.0","id":5,"method":"textDocument/rename","params":{"textDocument":{"uri":file_uri},"position":{"line":4,"character":5},"newName":"cloned"}}),
-        json!({"jsonrpc":"2.0","id":6,"method":"textDocument/completion","params":{"textDocument":{"uri":file_uri},"position":{"line":4,"character":4}}}),
+        json!({"jsonrpc":"2.0","id":2,"method":"textDocument/definition","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "identity(42)")}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"textDocument/references","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "value\n"),"context":{"includeDeclaration":true}}}),
+        json!({"jsonrpc":"2.0","id":4,"method":"textDocument/prepareRename","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "copy\n}")}}),
+        json!({"jsonrpc":"2.0","id":5,"method":"textDocument/rename","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "copy\n}"),"newName":"cloned"}}),
+        json!({"jsonrpc":"2.0","id":6,"method":"textDocument/completion","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "copy\n}")}}),
         json!({"jsonrpc":"2.0","id":7,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":file_uri}}}),
         json!({"jsonrpc":"2.0","id":8,"method":"workspace/symbol","params":{"query":"identity"}}),
         json!({"jsonrpc":"2.0","id":11,"method":"textDocument/formatting","params":{"textDocument":{"uri":file_uri},"options":{"tabSize":4,"insertSpaces":true}}}),
-        json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":file_uri,"version":2},"contentChanges":[{"text":"module demo\n\nfn broken("}]}}),
+        json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":file_uri,"version":2},"contentChanges":[{"text":"fn broken("}]}}),
         json!({"jsonrpc":"2.0","id":9,"method":"textDocument/rename","params":{"textDocument":{"uri":file_uri},"position":{"line":0,"character":1},"newName":"renamed"}}),
         json!({"jsonrpc":"2.0","id":10,"method":"shutdown","params":null}),
         json!({"jsonrpc":"2.0","method":"exit","params":null}),
@@ -623,7 +615,7 @@ fn stdio_session_exposes_semantic_navigation_and_refuses_an_incomplete_index() {
     assert_eq!(definition.pointer("/result/uri"), Some(&json!(file_uri)));
     assert_eq!(
         definition.pointer("/result/range/start"),
-        Some(&json!({"line": 2, "character": 7}))
+        Some(&json!({"line": 0, "character": 7}))
     );
 
     let references = responses
@@ -734,8 +726,8 @@ fn stdio_session_exposes_semantic_navigation_and_refuses_an_incomplete_index() {
 
 #[test]
 fn workspace_folders_are_independent_and_can_be_reloaded() {
-    let alpha = TestProject::new("module alpha\n\npub fn apple() Int { 1 }\n");
-    let beta = TestProject::new("module beta\n\npub fn banana() Int { 2 }\n");
+    let alpha = TestProject::new("pub fn apple() Int { 1 }\n");
+    let beta = TestProject::new("pub fn banana() Int { 2 }\n");
     let alpha_uri = loom_lsp::path_to_file_uri(&alpha.0);
     let beta_uri = loom_lsp::path_to_file_uri(&beta.0);
     let watched_manifest = loom_lsp::path_to_file_uri(&alpha.0.join("loom.toml"));
@@ -833,19 +825,13 @@ fn workspace_folders_are_independent_and_can_be_reloaded() {
 
 #[test]
 fn manifest_and_lock_notifications_rebuild_the_project_graph() {
-    let project = TestProject::new("module ignored\n");
+    let project = TestProject::new("");
     project.write(
         "loom.toml",
-        "schema = 1\n[package]\nname = \"reload\"\nversion = \"1.0.0\"\n",
+        "schema = 2\n[module]\nname = \"reload\"\nversion = \"1.0.0\"\n",
     );
-    project.write(
-        "src/main.loom",
-        "module reload\n\npub fn old_value() Int { 1 }\n",
-    );
-    project.write(
-        "generated/main.loom",
-        "module reload\n\npub fn new_value() Int { 2 }\n",
-    );
+    project.write("src/main.loom", "pub fn old_value() Int { 1 }\n");
+    project.write("generated/main.loom", "pub fn new_value() Int { 2 }\n");
     let root_uri = loom_lsp::path_to_file_uri(&project.0);
     let manifest_uri = loom_lsp::path_to_file_uri(&project.0.join("loom.toml"));
     let lock_uri = loom_lsp::path_to_file_uri(&project.0.join("loom.lock"));
@@ -867,7 +853,7 @@ fn manifest_and_lock_notifications_rebuild_the_project_graph() {
 
     project.write(
         "loom.toml",
-        "schema = 1\n[package]\nname = \"reload\"\nversion = \"1.0.0\"\nsources = [\"generated\"]\n",
+        "schema = 2\n[module]\nname = \"reload\"\nversion = \"1.0.0\"\n",
     );
     stdin
         .write_all(&frame(&json!({"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":manifest_uri,"type":2}]}})))
@@ -939,20 +925,17 @@ fn manifest_and_lock_notifications_rebuild_the_project_graph() {
 
 #[test]
 fn nested_workspace_documents_route_to_the_most_specific_root() {
-    let project = TestProject::new("module ignored\n");
+    let project = TestProject::new("");
     project.write(
         "loom.toml",
-        "schema = 1\n[package]\nname = \"outer\"\nversion = \"1.0.0\"\n",
+        "schema = 2\n[module]\nname = \"outer\"\nversion = \"1.0.0\"\n",
     );
-    project.write(
-        "src/main.loom",
-        "module outer\n\npub fn outer_value() Int { 1 }\n",
-    );
+    project.write("src/main.loom", "pub fn outer_value() Int { 1 }\n");
     project.write(
         "nested/loom.toml",
-        "schema = 1\n[package]\nname = \"inner\"\nversion = \"1.0.0\"\n",
+        "schema = 2\n[module]\nname = \"inner\"\nversion = \"1.0.0\"\n",
     );
-    let inner_source = "module inner\n\npub fn inner_value() Int { 2 }\n";
+    let inner_source = "pub fn inner_value() Int { 2 }\n";
     project.write("nested/src/main.loom", inner_source);
     let outer_uri = loom_lsp::path_to_file_uri(&project.0);
     let inner_root_uri = loom_lsp::path_to_file_uri(&project.0.join("nested"));
@@ -1006,14 +989,14 @@ fn nested_workspace_documents_route_to_the_most_specific_root() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn portable_dependency_implementations_are_opaque_and_read_only() {
-    let project = TestProject::new("module placeholder\n");
+    let project = TestProject::new("");
     project.write(
         "utility/loom.toml",
-        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"utility\"\nversion = \"1.0.0\"\n",
+        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"utility\"\nversion = \"1.0.0\"\n",
     );
     project.write(
-        "utility/src/lib.loom",
-        "module utility\n\npub fn increment(value Int) Int { value + 1 }\n\nfn hidden() Int { 99 }\n",
+        "utility/lib.loom",
+        "pub fn increment(value Int) Int { value + 1 }\n\nfn hidden() Int { 99 }\n",
     );
     let producer = AnalysisHost::new(project.0.join("utility")).expect("open producer");
     let snapshot = producer.snapshot().expect("compile producer");
@@ -1025,13 +1008,14 @@ fn portable_dependency_implementations_are_opaque_and_read_only() {
 
     project.write(
         "consumer/loom.toml",
-        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"consumer\"\nversion = \"1.0.0\"\n[dependencies]\nutility = { artifact = \"../utility.loomlib\", version = \"^1\" }\n",
+        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"consumer\"\nversion = \"1.0.0\"\n[dependencies]\nutility = { artifact = \"../utility.loomlib\", version = \"^1\" }\n",
     );
-    let consumer_source = "module consumer\n\nimport utility.increment\n\npub fn main() {\n    let value = increment(41)\n    assert value == 42\n}\n";
-    project.write("consumer/src/main.loom", consumer_source);
+    let consumer_source = "import utility.increment\n\npub fn main() {\n    let value = increment(41)\n    assert value == 42\n}\n";
+    project.write("consumer/main.loom", consumer_source);
     let root_uri = loom_lsp::path_to_file_uri(&project.0.join("consumer"));
-    let file_uri = loom_lsp::path_to_file_uri(&project.0.join("consumer/src/main.loom"));
+    let file_uri = loom_lsp::path_to_file_uri(&project.0.join("consumer/main.loom"));
     let artifact_uri = loom_lsp::path_to_file_uri(&artifact_path);
+    let increment_position = source_position(consumer_source, "increment(41)");
     let mut child = Command::new(env!("CARGO_BIN_EXE_loom-lsp"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1072,8 +1056,8 @@ fn portable_dependency_implementations_are_opaque_and_read_only() {
     for message in [
         json!({"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{"changes":[{"uri":artifact_uri,"type":2}]}}),
         json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":file_uri,"languageId":"loom","version":1,"text":consumer_source}}}),
-        json!({"jsonrpc":"2.0","id":3,"method":"textDocument/definition","params":{"textDocument":{"uri":file_uri},"position":{"line":5,"character":20}}}),
-        json!({"jsonrpc":"2.0","id":4,"method":"textDocument/prepareRename","params":{"textDocument":{"uri":file_uri},"position":{"line":5,"character":20}}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"textDocument/definition","params":{"textDocument":{"uri":file_uri},"position":increment_position}}),
+        json!({"jsonrpc":"2.0","id":4,"method":"textDocument/prepareRename","params":{"textDocument":{"uri":file_uri},"position":increment_position}}),
         json!({"jsonrpc":"2.0","id":5,"method":"workspace/symbol","params":{"query":"increment"}}),
     ] {
         stdin.write_all(&frame(&message)).expect("write request");

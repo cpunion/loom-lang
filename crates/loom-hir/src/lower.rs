@@ -118,6 +118,7 @@ impl LowerContext {
     fn lower_file(&mut self, file: FileId, module: ModuleId, source: &syntax::SourceFile) {
         for import in &source.imports {
             self.program.modules[module].imports.push(Import {
+                file,
                 path: lower_path(file, &import.path),
                 span: span(file, import.range),
             });
@@ -1145,6 +1146,25 @@ mod tests {
             .expect("child directory module");
         assert_eq!(lowered.program.modules[root].files, vec![FileId(1)]);
         assert_eq!(lowered.program.modules[child].files, vec![FileId(2)]);
+    }
+
+    #[test]
+    fn lowering_keeps_each_import_source_file() {
+        let file = FileId(7);
+        let parsed = parse_with_file(file, "import std.float.parse_float\n");
+        assert!(
+            parsed.diagnostics().is_empty(),
+            "{:?}",
+            parsed.diagnostics()
+        );
+
+        let lowered = lower_files([SourceUnit {
+            file,
+            syntax: parsed.ast(),
+        }]);
+        let module = lowered.program.modules.iter().next().unwrap().1;
+        assert_eq!(module.imports.len(), 1);
+        assert_eq!(module.imports[0].file, file);
     }
 
     #[test]

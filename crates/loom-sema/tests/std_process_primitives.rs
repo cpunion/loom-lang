@@ -1,11 +1,9 @@
-use loom_core::{FileId, LOOM_LANGUAGE_VERSION, Name, PackageId};
+use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId};
 use loom_hir::{DefId, DefinitionKind, PackageSourceUnit, Program, lower_package_files};
 use loom_sema::{Analysis, BuiltinValue, CallTarget, analyze};
 use loom_syntax::parse_with_file;
 
 const PROCESS_SOURCE: &str = r"
-module std.process
-
 import std.process.__arguments
 import std.process.__environment
 
@@ -90,8 +88,6 @@ fn public_process_calls_resolve_to_source_functions_and_wrappers_own_builtins() 
     let application = parse_with_file(
         application_file,
         r"
-module application
-
 import std.process.arguments
 import std.process.environment
 
@@ -113,11 +109,13 @@ pub fn environment_value(name Text) Option[Text] {
         PackageSourceUnit {
             file: std_file,
             package: std_package.clone(),
+            module: ModuleName::new("std.process"),
             syntax: process.ast(),
         },
         PackageSourceUnit {
             file: application_file,
             package: application_package.clone(),
+            module: ModuleName::new("application"),
             syntax: application.ast(),
         },
     ]);
@@ -181,8 +179,6 @@ fn private_process_calls_reject_application_wrong_owner_and_wrong_package() {
     let wrong_owner = parse_with_file(
         wrong_owner_file,
         r"
-module std.other
-
 import std.process.__arguments
 
 pub fn wrong_owner() List[Text] {
@@ -193,8 +189,6 @@ pub fn wrong_owner() List[Text] {
     let wrong_package = parse_with_file(
         wrong_package_file,
         r"
-module std.process
-
 import std.process.__arguments
 
 pub fn wrong_package() List[Text] {
@@ -205,8 +199,6 @@ pub fn wrong_package() List[Text] {
     let application = parse_with_file(
         application_file,
         r"
-module application
-
 import std.process.__arguments
 
 pub fn application_private_import() List[Text] {
@@ -229,21 +221,25 @@ pub fn application_private_import() List[Text] {
         PackageSourceUnit {
             file: process_file,
             package: std_package.clone(),
+            module: ModuleName::new("std.process"),
             syntax: process.ast(),
         },
         PackageSourceUnit {
             file: wrong_owner_file,
             package: std_package.clone(),
+            module: ModuleName::new("std.other"),
             syntax: wrong_owner.ast(),
         },
         PackageSourceUnit {
             file: wrong_package_file,
             package: hostile_package.clone(),
+            module: ModuleName::new("std.process"),
             syntax: wrong_package.ast(),
         },
         PackageSourceUnit {
             file: application_file,
             package: application_package.clone(),
+            module: ModuleName::new("application"),
             syntax: application.ast(),
         },
     ]);

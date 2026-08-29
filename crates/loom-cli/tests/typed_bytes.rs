@@ -48,6 +48,11 @@ fn write_fixture(root: &Path) {
         include_str!("../../../fixtures/lcir-managed-bytes/main.loom"),
     )
     .expect("write managed-Bytes fixture");
+    std::fs::write(
+        root.join("main_test.loom"),
+        include_str!("../../../fixtures/lcir-managed-bytes/main_test.loom"),
+    )
+    .expect("write managed-Bytes tests");
 }
 
 #[test]
@@ -107,7 +112,7 @@ fn managed_bytes_close_typed_native_check_build_test_and_run() {
         .expect("test managed-Bytes source through the production CLI");
     assert_success("test", &tests);
     assert!(
-        String::from_utf8_lossy(&tests.stdout).contains("passed lcir_managed_bytes.typedBytes"),
+        String::from_utf8_lossy(&tests.stdout).contains("passed standalone.typedBytes"),
         "unexpected test output:\n{}",
         String::from_utf8_lossy(&tests.stdout),
     );

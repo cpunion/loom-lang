@@ -155,7 +155,7 @@ impl<'a> Resolver<'a> {
             return binding_result(
                 self.def_maps
                     .map(self.module)
-                    .and_then(|map| map.resolve(namespace, name)),
+                    .and_then(|map| map.resolve(namespace, name, path.segments[0].span.file)),
             );
         }
 

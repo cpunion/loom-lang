@@ -9,20 +9,19 @@ use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use loom_core::ModuleName;
 pub use loom_core::PackageId;
 
 use crate::DriverError;
 use crate::registry::{RegistryConfig, fetch_http_registry_package};
-use crate::source::{
-    discover_loom_files, has_loom_extension, is_ignored_relative, normalize_absolute, relative_key,
-};
+use crate::source::{has_loom_extension, is_ignored_relative, normalize_absolute, relative_key};
 use crate::stdlib::{self, STD_PACKAGE_NAME};
 
 pub const MANIFEST_FILE: &str = "loom.toml";
-pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
+pub const MANIFEST_SCHEMA_VERSION: u32 = 2;
 pub const CURRENT_LANGUAGE_VERSION: &str = loom_core::LOOM_LANGUAGE_VERSION;
 pub const LOCK_FILE: &str = "loom.lock";
-pub const LOCK_SCHEMA_VERSION: u32 = 1;
+pub const LOCK_SCHEMA_VERSION: u32 = 2;
 
 /// How manifest resolution consults an existing lockfile.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -43,6 +42,8 @@ pub struct ProjectOptions {
     pub no_default_features: bool,
     pub lock_mode: LockMode,
     pub offline: bool,
+    /// Include root-module `*_test.loom` files in the source set.
+    pub include_tests: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -76,13 +77,6 @@ impl PackageDependency {
 }
 
 #[derive(Clone, Debug)]
-struct SourceRoot {
-    declared: String,
-    absolute: PathBuf,
-    is_file: bool,
-}
-
-#[derive(Clone, Debug)]
 struct EmbeddedSource {
     path: String,
     text: String,
@@ -93,7 +87,6 @@ pub struct Package {
     id: PackageId,
     root: PathBuf,
     manifest: PathBuf,
-    source_roots: Vec<SourceRoot>,
     dependencies: Vec<PackageDependency>,
     targets: Vec<Target>,
     enabled_features: BTreeSet<String>,
@@ -116,12 +109,6 @@ impl Package {
     #[must_use]
     pub fn manifest(&self) -> &Path {
         &self.manifest
-    }
-
-    pub fn source_roots(&self) -> impl Iterator<Item = &str> {
-        self.source_roots
-            .iter()
-            .map(|source| source.declared.as_str())
     }
 
     #[must_use]
@@ -152,7 +139,6 @@ impl Package {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TargetKind {
     Bin,
-    Test,
     Lib,
 }
 
@@ -161,7 +147,6 @@ impl TargetKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Bin => "bin",
-            Self::Test => "test",
             Self::Lib => "lib",
         }
     }
@@ -208,8 +193,8 @@ struct LockState {
 #[serde(deny_unknown_fields)]
 struct Lockfile {
     schema: u32,
-    #[serde(rename = "package")]
-    packages: Vec<LockedPackage>,
+    #[serde(rename = "module")]
+    modules: Vec<LockedPackage>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -236,6 +221,7 @@ pub struct ProjectGraph {
     packages: BTreeMap<PackageId, Package>,
     targets: Vec<Target>,
     lock: Option<LockState>,
+    include_tests: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -243,6 +229,7 @@ pub(crate) struct ProjectSource {
     pub absolute: PathBuf,
     pub stable_path: String,
     pub package: Option<PackageId>,
+    pub module: ModuleName,
     pub is_root_package: bool,
     pub embedded_text: Option<String>,
     pub origin: crate::SourceOrigin,
@@ -280,8 +267,7 @@ impl ProjectGraph {
         })?;
 
         let manifest = if metadata.is_dir() {
-            let candidate = canonical.join(MANIFEST_FILE);
-            candidate.is_file().then_some(candidate)
+            nearest_manifest(&canonical)
         } else if metadata.is_file()
             && canonical
                 .file_name()
@@ -320,6 +306,7 @@ impl ProjectGraph {
                 packages: BTreeMap::new(),
                 targets: Vec::new(),
                 lock: None,
+                include_tests: options.include_tests,
             });
         }
         Err(DriverError::InvalidRoot(canonical))
@@ -375,6 +362,7 @@ impl ProjectGraph {
                 rendered,
                 current,
             }),
+            include_tests: options.include_tests,
         })
     }
 
@@ -470,12 +458,20 @@ impl ProjectGraph {
         Ok(true)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "source discovery keeps standalone, workspace, embedded, and directory-package policy together"
+    )]
     pub(crate) fn source_files(&self) -> Result<Vec<ProjectSource>, DriverError> {
         let mut sources = match &self.kind {
-            ProjectKind::Standalone { input } => standalone_sources(&self.root, input)?,
+            ProjectKind::Standalone { input } => {
+                standalone_sources(&self.root, input, self.include_tests)?
+            }
             ProjectKind::Manifest { root_package } => {
-                let mut sources =
-                    BTreeMap::<PathBuf, (String, PackageId, bool, Option<String>)>::new();
+                let mut sources = BTreeMap::<
+                    PathBuf,
+                    (String, PackageId, ModuleName, bool, Option<String>),
+                >::new();
                 for package in self.packages.values() {
                     let is_root = &package.id == root_package;
                     for source in &package.embedded_sources {
@@ -490,11 +486,17 @@ impl ProjectGraph {
                         } else {
                             format!("deps/{}/{path}", package.id, path = source.path)
                         };
-                        if let Some((previous, _, _, _)) = sources.insert(
+                        let module = source_module_name(
+                            &package.id,
+                            Path::new(&source.path),
+                            &package.manifest,
+                        )?;
+                        if let Some((previous, _, _, _, _)) = sources.insert(
                             path.clone(),
                             (
                                 stable_path.clone(),
                                 package.id.clone(),
+                                module,
                                 is_root,
                                 Some(source.text.clone()),
                             ),
@@ -509,35 +511,53 @@ impl ProjectGraph {
                             ));
                         }
                     }
-                    for source_root in &package.source_roots {
-                        for path in discover_package_source(source_root, &package.root)? {
-                            let relative = relative_key(&package.root, &path)
-                                .ok_or_else(|| DriverError::NonUtf8Path(path.clone()))?;
-                            let stable_path = if is_root {
-                                relative
-                            } else {
-                                format!("deps/{}/{relative}", package.id)
-                            };
-                            if let Some((previous, _, _, _)) = sources.insert(
-                                path.clone(),
-                                (stable_path.clone(), package.id.clone(), is_root, None),
-                            ) && previous != stable_path
-                            {
-                                return Err(manifest_error(
-                                    &package.manifest,
-                                    format!(
-                                        "source `{}` is selected through both `{previous}` and `{stable_path}`",
-                                        path.display()
-                                    ),
-                                ));
-                            }
+                    if package.source == "artifact" {
+                        continue;
+                    }
+                    for path in discover_package_sources(&package.root)? {
+                        if is_test_source(&path) && (!is_root || !self.include_tests) {
+                            continue;
+                        }
+                        let relative = relative_key(&package.root, &path)
+                            .ok_or_else(|| DriverError::NonUtf8Path(path.clone()))?;
+                        let module = source_module_name(
+                            &package.id,
+                            path.strip_prefix(&package.root).unwrap_or(&path),
+                            &package.manifest,
+                        )?;
+                        let stable_path = if is_root {
+                            relative
+                        } else {
+                            format!("deps/{}/{relative}", package.id)
+                        };
+                        if let Some((previous, _, _, _, _)) = sources.insert(
+                            path.clone(),
+                            (
+                                stable_path.clone(),
+                                package.id.clone(),
+                                module,
+                                is_root,
+                                None,
+                            ),
+                        ) && previous != stable_path
+                        {
+                            return Err(manifest_error(
+                                &package.manifest,
+                                format!(
+                                    "source `{}` is selected through both `{previous}` and `{stable_path}`",
+                                    path.display()
+                                ),
+                            ));
                         }
                     }
                 }
                 let mut result = sources
                     .into_iter()
                     .map(
-                        |(absolute, (stable_path, package, is_root_package, embedded_text))| {
+                        |(
+                            absolute,
+                            (stable_path, package, module, is_root_package, embedded_text),
+                        )| {
                             let origin = if embedded_text.is_some() {
                                 crate::SourceOrigin::PortableLibrary
                             } else {
@@ -547,6 +567,7 @@ impl ProjectGraph {
                                 absolute,
                                 stable_path,
                                 package: Some(package),
+                                module,
                                 is_root_package,
                                 embedded_text,
                                 origin,
@@ -563,33 +584,48 @@ impl ProjectGraph {
         Ok(sources)
     }
 
-    pub(crate) fn overlay_stable_path(&self, path: &Path) -> Option<String> {
+    pub(crate) fn overlay_source(
+        &self,
+        path: &Path,
+    ) -> Result<Option<(String, ModuleName)>, DriverError> {
         if !has_loom_extension(path) || is_ignored_relative(&self.root, path) {
-            return None;
+            return Ok(None);
         }
-        match &self.kind {
+        let source = match &self.kind {
             ProjectKind::Standalone { input } => {
-                let metadata = fs::metadata(input).ok()?;
+                let Ok(metadata) = fs::metadata(input) else {
+                    return Ok(None);
+                };
                 if metadata.is_file() && normalize_absolute(input) != normalize_absolute(path) {
-                    return None;
+                    return Ok(None);
                 }
-                relative_key(&self.root, path)
+                relative_key(&self.root, path).map(|stable| (stable, ModuleName::new("standalone")))
             }
             ProjectKind::Manifest { root_package } => {
-                let package = self.packages.get(root_package)?;
+                let Some(package) = self.packages.get(root_package) else {
+                    return Ok(None);
+                };
                 let normalized = normalize_absolute(path);
-                let selected = package.source_roots.iter().any(|source| {
-                    if source.is_file {
-                        normalize_absolute(&source.absolute) == normalized
-                    } else {
-                        normalized.strip_prefix(&source.absolute).is_ok()
-                    }
-                });
-                selected
-                    .then(|| relative_key(&package.root, &normalized))
-                    .flatten()
+                let selected = normalized.strip_prefix(&package.root).is_ok()
+                    && !is_nested_module_source(&package.root, &normalized)
+                    && (!is_test_source(&normalized) || self.include_tests);
+                if !selected {
+                    return Ok(None);
+                }
+                let Some(stable) = relative_key(&package.root, &normalized) else {
+                    return Err(DriverError::NonUtf8Path(normalized));
+                };
+                let module = source_module_name(
+                    &package.id,
+                    normalized
+                        .strip_prefix(&package.root)
+                        .unwrap_or(&normalized),
+                    &package.manifest,
+                )?;
+                Some((stable, module))
             }
-        }
+        };
+        Ok(source)
     }
 
     pub(crate) fn semantic_identity_fields(&self) -> Vec<String> {
@@ -610,9 +646,6 @@ impl ProjectGraph {
                     ));
                     for feature in &package.enabled_features {
                         fields.push(format!("feature:{}:{feature}", package.id));
-                    }
-                    for source in &package.source_roots {
-                        fields.push(format!("source-root:{}:{}", package.id, source.declared));
                     }
                     for dependency in &package.dependencies {
                         fields.push(format!(
@@ -671,7 +704,7 @@ struct RawManifest {
     schema: u32,
     #[serde(default = "default_language_version")]
     language: String,
-    package: RawPackage,
+    module: RawModule,
     #[serde(default)]
     dependencies: BTreeMap<String, RawDependency>,
     #[serde(default)]
@@ -684,15 +717,9 @@ struct RawManifest {
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawPackage {
+struct RawModule {
     name: String,
     version: String,
-    #[serde(default = "default_sources")]
-    sources: Vec<String>,
-}
-
-fn default_sources() -> Vec<String> {
-    vec!["src".to_owned()]
 }
 
 fn default_language_version() -> String {
@@ -731,7 +758,6 @@ struct RawTarget {
 #[serde(rename_all = "lowercase")]
 enum RawTargetKind {
     Bin,
-    Test,
     Lib,
 }
 
@@ -803,8 +829,8 @@ impl Resolver {
 
         let raw = read_manifest(&manifest)?;
         let id = PackageId::with_language(
-            raw.package.name.clone(),
-            raw.package.version.clone(),
+            raw.module.name.clone(),
+            raw.module.version.clone(),
             raw.language.clone(),
         );
         let requested_features = resolve_features(&manifest, &raw, request)?;
@@ -826,7 +852,6 @@ impl Resolver {
             .parent()
             .expect("canonical manifest has a parent")
             .to_path_buf();
-        let source_roots = resolve_source_roots(&root, &manifest, raw.package.sources.clone())?;
         let targets = resolve_targets(&manifest, raw.targets.clone())?;
 
         stack.push(manifest.clone());
@@ -836,7 +861,7 @@ impl Resolver {
 
         let source = origin.source();
         let checksum = if matches!(origin, PackageOrigin::Registry { .. }) {
-            Some(package_checksum(&manifest, &root, &source_roots)?)
+            Some(package_checksum(&manifest, &root)?)
         } else {
             None
         };
@@ -869,7 +894,6 @@ impl Resolver {
                 id: id.clone(),
                 root,
                 manifest: manifest.clone(),
-                source_roots,
                 dependencies,
                 targets,
                 enabled_features: combined_features.clone(),
@@ -1162,7 +1186,6 @@ impl Resolver {
                         .expect("artifact path has a parent")
                         .to_path_buf(),
                     manifest: artifact_path.clone(),
-                    source_roots: Vec::new(),
                     dependencies,
                     targets: Vec::new(),
                     enabled_features: BTreeSet::new(),
@@ -1286,7 +1309,7 @@ impl Resolver {
             return None;
         }
         let source = format!("registry+{registry}");
-        self.locked.as_ref()?.packages.iter().find_map(|locked| {
+        self.locked.as_ref()?.modules.iter().find_map(|locked| {
             (locked.name == package && locked.source == source)
                 .then(|| Version::parse(&locked.version).ok())
                 .flatten()
@@ -1307,7 +1330,7 @@ impl Resolver {
             return Ok(());
         }
         let Some(locked) = self.locked.as_ref().and_then(|lock| {
-            lock.packages.iter().find(|locked| {
+            lock.modules.iter().find(|locked| {
                 locked.name == package.name()
                     && locked.version == package.version()
                     && locked.source == source
@@ -1381,19 +1404,19 @@ fn read_manifest(manifest: &Path) -> Result<RawManifest, DriverError> {
             supported: CURRENT_LANGUAGE_VERSION,
         });
     }
-    validate_name("package", &raw.package.name, manifest)?;
-    if raw.package.name == STD_PACKAGE_NAME {
+    validate_name("module", &raw.module.name, manifest)?;
+    if raw.module.name == STD_PACKAGE_NAME {
         return Err(manifest_error(
             manifest,
-            "package name `std` is reserved for the compiler-owned `std` package",
+            "module name `std` is reserved for the compiler-owned `std` module",
         ));
     }
-    Version::parse(&raw.package.version).map_err(|error| {
+    Version::parse(&raw.module.version).map_err(|error| {
         manifest_error(
             manifest,
             format!(
-                "package version `{}` is not SemVer: {error}",
-                raw.package.version
+                "module version `{}` is not SemVer: {error}",
+                raw.module.version
             ),
         )
     })?;
@@ -1579,11 +1602,7 @@ fn registry_dependency_manifest(
     })
 }
 
-fn package_checksum(
-    manifest: &Path,
-    package_root: &Path,
-    source_roots: &[SourceRoot],
-) -> Result<String, DriverError> {
+fn package_checksum(manifest: &Path, package_root: &Path) -> Result<String, DriverError> {
     let mut hasher = Sha256::new();
     hash_field(&mut hasher, b"loom-registry-package-v1");
     hash_field(
@@ -1593,11 +1612,10 @@ fn package_checksum(
             source,
         })?,
     );
-    let mut paths = BTreeSet::new();
-    for root in source_roots {
-        paths.extend(discover_package_source(root, package_root)?);
-    }
-    for path in paths {
+    for path in discover_package_sources(package_root)? {
+        if is_test_source(&path) {
+            continue;
+        }
         let relative = relative_key(package_root, &path)
             .ok_or_else(|| DriverError::NonUtf8Path(path.clone()))?;
         hash_field(&mut hasher, relative.as_bytes());
@@ -1743,7 +1761,7 @@ fn read_lockfile(path: &Path) -> Result<Option<Lockfile>, DriverError> {
         ));
     }
     let mut identities = BTreeSet::new();
-    for package in &lock.packages {
+    for package in &lock.modules {
         validate_name("locked package", &package.name, path)?;
         Version::parse(&package.version).map_err(|error| {
             manifest_error(
@@ -1793,7 +1811,7 @@ fn read_lockfile(path: &Path) -> Result<Option<Lockfile>, DriverError> {
 }
 
 fn lockfile_for_packages(packages: &BTreeMap<PackageId, Package>) -> Lockfile {
-    let packages = packages
+    let modules = packages
         .values()
         .map(|package| LockedPackage {
             name: package.id.name().to_owned(),
@@ -1811,7 +1829,7 @@ fn lockfile_for_packages(packages: &BTreeMap<PackageId, Package>) -> Lockfile {
         .collect();
     Lockfile {
         schema: LOCK_SCHEMA_VERSION,
-        packages,
+        modules,
     }
 }
 
@@ -1850,59 +1868,6 @@ fn dependency_manifest(input: &Path) -> Result<PathBuf, DriverError> {
     }
 }
 
-fn resolve_source_roots(
-    package_root: &Path,
-    manifest: &Path,
-    declared_roots: Vec<String>,
-) -> Result<Vec<SourceRoot>, DriverError> {
-    if declared_roots.is_empty() {
-        return Err(manifest_error(manifest, "package.sources cannot be empty"));
-    }
-    let mut seen = BTreeSet::new();
-    let mut roots = Vec::new();
-    for declared in declared_roots {
-        let relative = manifest_relative_path(manifest, "source root", &declared, false)?;
-        let absolute =
-            fs::canonicalize(package_root.join(&relative)).map_err(|source| DriverError::Io {
-                path: package_root.join(&relative),
-                source,
-            })?;
-        if absolute.strip_prefix(package_root).is_err() {
-            return Err(manifest_error(
-                manifest,
-                format!("source root `{declared}` leaves its package"),
-            ));
-        }
-        let metadata = fs::metadata(&absolute).map_err(|source| DriverError::Io {
-            path: absolute.clone(),
-            source,
-        })?;
-        let is_file = metadata.is_file();
-        if !(metadata.is_dir() || is_file && has_loom_extension(&absolute)) {
-            return Err(manifest_error(
-                manifest,
-                format!("source root `{declared}` must be a directory or .loom file"),
-            ));
-        }
-        let normalized = relative_key(package_root, &absolute)
-            .ok_or_else(|| DriverError::NonUtf8Path(absolute.clone()))?;
-        let normalized = if normalized.is_empty() {
-            ".".to_owned()
-        } else {
-            normalized
-        };
-        if seen.insert(absolute.clone()) {
-            roots.push(SourceRoot {
-                declared: normalized,
-                absolute,
-                is_file,
-            });
-        }
-    }
-    roots.sort_by(|left, right| left.declared.cmp(&right.declared));
-    Ok(roots)
-}
-
 fn resolve_targets(
     manifest: &Path,
     raw_targets: Vec<RawTarget>,
@@ -1928,15 +1893,6 @@ fn resolve_targets(
                 }
                 (TargetKind::Bin, Some(entry))
             }
-            RawTargetKind::Test => {
-                if raw.entry.is_some() {
-                    return Err(manifest_error(
-                        manifest,
-                        format!("test target `{}` cannot declare entry", raw.name),
-                    ));
-                }
-                (TargetKind::Test, None)
-            }
             RawTargetKind::Lib => {
                 if raw.entry.is_some() {
                     return Err(manifest_error(
@@ -1958,21 +1914,23 @@ fn resolve_targets(
 }
 
 fn validate_name(kind: &str, name: &str, manifest: &Path) -> Result<(), DriverError> {
-    let valid = name
-        .bytes()
-        .next()
-        .is_some_and(|byte| byte.is_ascii_lowercase())
-        && name.bytes().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_-".contains(&byte)
-        });
-    if valid {
+    if valid_source_name(name) {
         Ok(())
     } else {
         Err(manifest_error(
             manifest,
-            format!("{kind} name `{name}` must match [a-z][a-z0-9_-]*"),
+            format!("{kind} name `{name}` must match [a-z][a-z0-9_]*"),
         ))
     }
+}
+
+fn valid_source_name(name: &str) -> bool {
+    name.bytes()
+        .next()
+        .is_some_and(|byte| byte.is_ascii_lowercase())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
 fn manifest_relative_path(
@@ -2001,14 +1959,8 @@ fn manifest_relative_path(
     Ok(path.to_path_buf())
 }
 
-fn discover_package_source(
-    source: &SourceRoot,
-    package_root: &Path,
-) -> Result<Vec<PathBuf>, DriverError> {
-    if source.is_file {
-        return Ok(vec![source.absolute.clone()]);
-    }
-    let mut pending = vec![source.absolute.clone()];
+fn discover_package_sources(package_root: &Path) -> Result<Vec<PathBuf>, DriverError> {
+    let mut pending = vec![package_root.to_path_buf()];
     let mut files = BTreeSet::new();
     while let Some(directory) = pending.pop() {
         let entries = fs::read_dir(&directory).map_err(|source| DriverError::Io {
@@ -2044,14 +1996,39 @@ fn discover_package_source(
     Ok(files.into_iter().collect())
 }
 
-fn standalone_sources(root: &Path, input: &Path) -> Result<Vec<ProjectSource>, DriverError> {
+fn standalone_sources(
+    root: &Path,
+    input: &Path,
+    include_tests: bool,
+) -> Result<Vec<ProjectSource>, DriverError> {
     let paths = if input.is_file() {
         vec![input.to_path_buf()]
     } else {
-        discover_loom_files(root)?
+        let entries = fs::read_dir(root).map_err(|source| DriverError::Io {
+            path: root.to_path_buf(),
+            source,
+        })?;
+        let mut paths = entries
+            .filter_map(|entry| match entry {
+                Ok(entry)
+                    if entry.file_type().is_ok_and(|kind| kind.is_file())
+                        && has_loom_extension(&entry.path()) =>
+                {
+                    Some(Ok(normalize_absolute(&entry.path())))
+                }
+                Ok(_) => None,
+                Err(source) => Some(Err(DriverError::Io {
+                    path: root.to_path_buf(),
+                    source,
+                })),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        paths.sort();
+        paths
     };
     paths
         .into_iter()
+        .filter(|path| include_tests || !is_test_source(path))
         .map(|absolute| {
             let stable_path = relative_key(root, &absolute)
                 .ok_or_else(|| DriverError::NonUtf8Path(absolute.clone()))?;
@@ -2059,12 +2036,86 @@ fn standalone_sources(root: &Path, input: &Path) -> Result<Vec<ProjectSource>, D
                 absolute,
                 stable_path,
                 package: None,
+                module: ModuleName::new("standalone"),
                 is_root_package: true,
                 embedded_text: None,
                 origin: crate::SourceOrigin::FileSystem,
             })
         })
         .collect()
+}
+
+fn source_module_name(
+    package: &PackageId,
+    relative_source: &Path,
+    manifest: &Path,
+) -> Result<ModuleName, DriverError> {
+    package_module_name(package, relative_source)
+        .map_err(|message| manifest_error(manifest, message))
+}
+
+pub(crate) fn package_module_name(
+    package: &PackageId,
+    relative_source: &Path,
+) -> Result<ModuleName, String> {
+    let mut segments = vec![package.name().to_owned()];
+    if let Some(parent) = relative_source.parent() {
+        for component in parent.components() {
+            let Component::Normal(segment) = component else {
+                return Err(format!(
+                    "source path `{}` is not module-relative",
+                    relative_source.display()
+                ));
+            };
+            let Some(segment) = segment.to_str() else {
+                return Err(format!(
+                    "source path `{}` is not valid UTF-8",
+                    relative_source.display()
+                ));
+            };
+            if !segment.is_empty() {
+                if !valid_source_name(segment) {
+                    return Err(format!(
+                        "source directory name `{segment}` must match [a-z][a-z0-9_]*"
+                    ));
+                }
+                segments.push(segment.to_owned());
+            }
+        }
+    }
+    Ok(ModuleName::new(segments.join(".")))
+}
+
+fn is_test_source(path: &Path) -> bool {
+    path.file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|stem| stem.ends_with("_test"))
+}
+
+fn is_nested_module_source(root: &Path, path: &Path) -> bool {
+    let mut directory = path.parent();
+    while let Some(candidate) = directory {
+        if candidate == root {
+            return false;
+        }
+        if candidate.join(MANIFEST_FILE).is_file() {
+            return true;
+        }
+        directory = candidate.parent();
+    }
+    true
+}
+
+fn nearest_manifest(directory: &Path) -> Option<PathBuf> {
+    let mut current = Some(directory);
+    while let Some(candidate) = current {
+        let manifest = candidate.join(MANIFEST_FILE);
+        if manifest.is_file() {
+            return Some(manifest);
+        }
+        current = candidate.parent();
+    }
+    None
 }
 
 fn manifest_error(path: &Path, message: impl Into<String>) -> DriverError {

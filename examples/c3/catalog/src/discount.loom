@@ -1,7 +1,0 @@
-module catalog.discount
-
-import foundation.money.Money
-
-pub fn apply_discount(price Money, amount Money) Result[Money, ConstraintError] {
-    Money(price - amount)
-}

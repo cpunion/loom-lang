@@ -9,36 +9,36 @@ Loom has two complementary forms of reuse:
 Both are correctness-preserving optimizations. Any incompatible or invalid
 entry falls back to fresh analysis.
 
-## Module fingerprints
+## Package fingerprints
 
-For each module, the driver derives three independent identities:
+For each directory package, the driver derives three independent identities:
 
 1. public interface: externally visible declarations and signatures;
 2. semantic shape: the declaration graph with bodies removed;
 3. body: body content and implementation facts.
 
-Package name, version, Loom language version, and module name are part of the
-canonical module identity. Stable serialization and SHA-256 make the keys
+Module name, version, Loom language version, and package path are part of the
+canonical package identity. Stable serialization and SHA-256 make the keys
 independent of process addresses.
 
 When a snapshot changes:
 
 - an identical parse identity can reuse the parsed source;
-- an identical public interface preserves dependent-module interface
+- an identical public interface preserves dependent-package interface
   compatibility;
 - an identical semantic shape permits typed body facts to be considered for
   reuse;
-- an identical body reuses that module's checked body facts.
+- an identical body reuses that package's checked body facts.
 
-If the module set, declaration shape, or other graph precondition is
+If the package set, declaration shape, or other graph precondition is
 incompatible, semantic analysis starts fresh. Reuse is guarded by validation
 and a panic boundary; a failed reuse attempt never escapes as a partially
 trusted analysis.
 
 ## In-process evidence
 
-`loom-quality` constructs a 64-module project, changes one function body, and
-requires at least 63 typed-HIR modules to be reused and no more than one to be
+`loom-quality` constructs a 64-package project, changes one function body, and
+requires at least 63 typed-HIR packages to be reused and no more than one to be
 rechecked. The gate also has a bounded elapsed-time budget.
 
 This is controlled implementation evidence for a body-only edit. It is not a
@@ -49,12 +49,12 @@ larger graph.
 ## Persistent layers
 
 The persistent cache schema is `5`. Current layers include source parse,
-module-interface presence, typed module state, complete checked MIR, target
+package-interface presence, typed package state, complete checked MIR, target
 objects, and deterministic final artifacts.
 
-The typed-module-state key deliberately excludes body fingerprints while its
-payload records them per module. This lets a later process load the compatible
-graph and retain unchanged modules after one body edit. Cached semantic state
+The typed-package-state key deliberately excludes body fingerprints while its
+payload records them per package. This lets a later process load the compatible
+graph and retain unchanged packages after one body edit. Cached semantic state
 containing error diagnostics is rejected.
 
 Proof-elision dispositions are process-local. Typed states containing them are
@@ -66,8 +66,8 @@ inside one `AnalysisHost` process.
 Compiler-known resource identities are likewise not accepted from persistent
 typed-state bytes. A compatible state can supply reusable body facts, but
 semantic analysis rederives `Dispose`, `MustScope`, and `NoSuspend` from the
-exact current compiler-owned package and HIR module. Checked-MIR cache entries
-carry the three resulting identity tags, source-module consistency metadata,
+exact current compiler-owned module and HIR package. Checked-MIR cache entries
+carry the three resulting identity tags, source-package consistency metadata,
 and prelude ids. Cache serialization requires the complete artifact resource
 profile, and cache reads cross both ordinary MIR validation and that profile;
 inconsistent or incomplete identity metadata is a cache miss.
@@ -132,8 +132,8 @@ miss. Cache stores are atomic and compilation treats ordinary cache I/O
 failure as non-fatal.
 
 The CAS digest is an integrity check, not an authenticity mechanism against a
-same-permission local attacker. Portable package authenticity is a separate
+same-permission local attacker. Portable module authenticity is a separate
 registry/distribution concern.
 
-The HTTP package cache is separate and has its own bundle and materialized-file
+The HTTP module cache is separate and has its own bundle and materialized-file
 validation. See [Toolchain caching](../reference/toolchain/caching.md).

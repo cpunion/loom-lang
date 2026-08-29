@@ -30,7 +30,7 @@ once, with the same signature after substituting `Self`. Additional inherent
 behavior belongs in `impl Label`, not in the conformance body.
 
 Coherence is closed and deterministic. An implementation must be declared in
-the module that owns the concept or the outer nominal target type, and only one
+the package that owns the concept or the outer nominal target type, and only one
 implementation may apply to a concrete `(Type, Concept)` pair. Loom does not
 support specialization, negative implementations, or link-order priority.
 

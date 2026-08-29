@@ -1,0 +1,6 @@
+import std.resource.Dispose
+import std.resource.MustScope
+
+test fn lexicalCleanup() {
+    exercise()
+}

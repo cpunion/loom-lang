@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use loom_core::{Diagnostic, FileId, Severity};
 use loom_driver::{
-    AnalysisHost, AnalysisSnapshot, Position, SourceDocument, SourceMap, SourceOrigin,
-    format_source, is_valid_identifier,
+    AnalysisHost, AnalysisSnapshot, Position, ProjectOptions, SourceDocument, SourceMap,
+    SourceOrigin, format_source, is_valid_identifier,
 };
 use serde_json::{Value, json};
 
@@ -366,7 +366,7 @@ impl<R: BufRead, W: Write> Server<R, W> {
                     self.log_error("workspace folder URI is not a local file URI")?;
                     continue;
                 };
-                match AnalysisHost::new(&path) {
+                match open_workspace_host(&path) {
                     Ok(mut host) => {
                         replay_open_documents(&mut host, &self.open_documents);
                         self.hosts.insert(host.root().to_path_buf(), host);
@@ -382,7 +382,7 @@ impl<R: BufRead, W: Write> Server<R, W> {
     }
 
     fn reload_workspace(&mut self, workspace: &Path) -> Result<(), String> {
-        let mut host = AnalysisHost::new(workspace)
+        let mut host = open_workspace_host(workspace)
             .map_err(|error| format!("cannot reload workspace {}: {error}", workspace.display()))?;
         replay_open_documents(&mut host, &self.open_documents);
         self.hosts.insert(host.root().to_path_buf(), host);
@@ -1027,7 +1027,6 @@ const COMPLETION_KEYWORDS: &[&str] = &[
     "invariant",
     "let",
     "match",
-    "module",
     "pub",
     "record",
     "requires",
@@ -1309,10 +1308,20 @@ fn open_workspace_hosts(
 ) -> Result<BTreeMap<PathBuf, AnalysisHost>, loom_driver::DriverError> {
     let mut hosts = BTreeMap::new();
     for root in roots {
-        let host = AnalysisHost::new(root)?;
+        let host = open_workspace_host(root)?;
         hosts.insert(host.root().to_path_buf(), host);
     }
     Ok(hosts)
+}
+
+fn open_workspace_host(root: impl AsRef<Path>) -> Result<AnalysisHost, loom_driver::DriverError> {
+    AnalysisHost::new_with_options(
+        root,
+        &ProjectOptions {
+            include_tests: true,
+            ..ProjectOptions::default()
+        },
+    )
 }
 
 fn replay_open_documents(host: &mut AnalysisHost, documents: &BTreeMap<String, OpenDocument>) {

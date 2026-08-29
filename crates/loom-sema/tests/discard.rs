@@ -26,8 +26,6 @@ fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
 fn ordinary_values_and_unit_may_be_explicitly_discarded() {
     let diagnostics = analyze_source(
         r#"
-module discard_values
-
 fn number() Int {
     42
 }
@@ -50,8 +48,6 @@ fn omittedReturnIsUnit() {
 fn an_omitted_unit_return_does_not_discard_its_tail_expression() {
     let diagnostics = analyze_source(
         r"
-module discard_tail
-
 fn invalid() {
     42
 }
@@ -65,8 +61,6 @@ fn invalid() {
 fn discarding_a_diverging_block_does_not_require_a_return_value() {
     let diagnostics = analyze_source(
         r"
-module discard_never
-
 fn exits() {
     discard {
         return
@@ -81,8 +75,6 @@ fn exits() {
 fn a_bare_non_unit_statement_remains_an_error() {
     let diagnostics = analyze_source(
         r"
-module discard_values
-
 fn number() Int {
     42
 }
@@ -108,8 +100,6 @@ fn bareValues() {
 fn must_scope_obligations_cannot_be_discarded_through_wrappers() {
     let diagnostics = analyze_source(
         r"
-module discard_resources
-
 fn direct(file File) {
     discard file
 }
@@ -133,8 +123,6 @@ fn wrapped(value Result[Option[File], IoError]) {
 fn tasks_cannot_be_discarded_directly_or_through_wrappers() {
     let diagnostics = analyze_source(
         r"
-module discard_tasks
-
 record TaskBox[T] {
     task Task[T]
 }
@@ -174,8 +162,6 @@ fn boxed(value TaskBox[Int]) {
 fn unconstrained_generic_values_cannot_be_discarded() {
     let diagnostics = analyze_source(
         r"
-module discard_generics
-
 fn ignore[T](value T) {
     discard value
 }
@@ -189,8 +175,6 @@ fn ignore[T](value T) {
 fn bare_resource_and_task_statements_report_their_stronger_obligations() {
     let diagnostics = analyze_source(
         r"
-module discard_priorities
-
 async fn work() Int {
     42
 }
@@ -214,8 +198,6 @@ fn bare(file File) {
 fn dyn_erasure_rejects_hidden_resource_task_and_unknown_obligations() {
     let diagnostics = analyze_source(
         r#"
-module discard_dyn
-
 dyn concept Label {
     method label(self) Text
 }

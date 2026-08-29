@@ -1,0 +1,258 @@
+import std.file.try_open_read
+import std.file.try_create
+import std.net.try_connect
+import std.json.parse_json
+import std.json.format_json
+import std.log.debug
+import std.log.write
+
+test fn text_map_and_json() {
+    typed_text_map_segment()
+
+    let object = Json.Object(
+        TextMap[Json]()
+            .insert("z", Json.Number(-0.0))
+            .insert("a", Json.Text("line\n\"quoted\""))
+    )
+    match format_json(object) {
+        Ok(value) => {
+            assert value == "{\"a\":\"line\\n\\\"quoted\\\"\",\"z\":-0}"
+            Unit
+        }
+        Err(_) => {
+            assert false
+            Unit
+        }
+    }
+
+    match parse_json("{\"a\":1,\"a\":2}") {
+        Err(InvalidSyntax(offset)) => {
+            assert offset == 7
+            Unit
+        }
+        Err(_) => {
+            assert false
+            Unit
+        }
+        Ok(_) => {
+            assert false
+            Unit
+        }
+    }
+    match parse_json("[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[null]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]") {
+        Err(DepthLimit) => Unit
+        Err(_) => {
+            assert false
+            Unit
+        }
+        Ok(_) => {
+            assert false
+            Unit
+        }
+    }
+    match format_json(deeply_nested_json()) {
+        Err(DepthLimit) => Unit
+        Err(_) => {
+            assert false
+            Unit
+        }
+        Ok(_) => {
+            assert false
+            Unit
+        }
+    }
+    match format_json(Json.Number(1.0 / 0.0)) {
+        Err(NonFiniteNumber) => Unit
+        Err(_) => {
+            assert false
+            Unit
+        }
+        Ok(_) => {
+            assert false
+            Unit
+        }
+    }
+}
+
+test async fn text_map_copy_and_gc() {
+    var original = Counter { value = 0 }
+    let map = TextMap[Counter]().insert("counter", original)
+    original.increment()
+    let original_value = original.value
+    assert original_value == 1
+    match map.get("counter") {
+        Some(stored) => {
+            assert stored.value == 0
+            Unit
+        }
+        None => {
+            assert false
+            Unit
+        }
+    }
+
+    var fetched = match map.get("counter") {
+        Some(value) => value
+        None => Counter { value = -1 }
+    }
+    fetched.increment()
+    let fetched_value = fetched.value
+    assert fetched_value == 1
+    match map.get("counter") {
+        Some(stored) => {
+            assert stored.value == 0
+            Unit
+        }
+        None => {
+            assert false
+            Unit
+        }
+    }
+
+    var pressure = map
+    for index in 0..512 {
+        pressure = pressure.insert("counter", Counter { value = index })
+        Unit
+    }
+    Task.sleep(1).await
+    match pressure.get("counter") {
+        Some(stored) => {
+            assert stored.value == 511
+            Unit
+        }
+        None => {
+            assert false
+            Unit
+        }
+    }
+}
+
+async fn file_round_trip(path Text) Result[Text, IoError] {
+    {
+        scoped output = try_create(path).await?
+        output.try_write_text("typed I/O").await?
+        Unit
+    }
+    scoped input = try_open_read(path).await?
+    input.try_read_text().await
+}
+
+async fn escaped_file_read(path Text, reuse Text) Result[Text, IoError] {
+    let pending = {
+        scoped input = try_open_read(path).await?
+        input.try_read_text()
+    }
+    match try_create(reuse).await {
+        Err(error) => {
+            discard pending.await
+            return Err(error)
+        }
+        Ok(replacement) => {
+            scoped replacement = replacement
+            match replacement.try_write_text("reused descriptor").await {
+                Err(error) => {
+                    discard pending.await
+                    return Err(error)
+                }
+                Ok(_) => Unit
+            }
+        }
+    }
+    pending.await
+}
+
+async fn escaped_socket_write(port Int) Result[Unit, IoError] {
+    let pending = {
+        scoped socket = try_connect("127.0.0.1", port).await?
+        socket.try_write_text("socket snapshot")
+    }
+    pending.await
+}
+
+test async fn typed_io() {
+    match file_round_trip("__ROUND_TRIP_PATH__").await {
+        Ok(value) => {
+            assert value == "typed I/O"
+            Unit
+        }
+        Err(_) => {
+            assert false
+            Unit
+        }
+    }
+    match escaped_file_read("__ROUND_TRIP_PATH__", "__REUSE_PATH__").await {
+        Ok(value) => {
+            assert value == "typed I/O"
+            Unit
+        }
+        Err(_) => {
+            assert false
+            Unit
+        }
+    }
+    match try_open_read("__MISSING_PATH__").await {
+        Err(error) => {
+            let kind = error.kind()
+            assert kind == IoErrorKind.NotFound
+            Unit
+        }
+        Ok(file) => {
+            scoped file = file
+            assert false
+        }
+    }
+    match try_connect("invalid host name", 80).await {
+        Err(error) => {
+            let kind = error.kind()
+            assert kind == IoErrorKind.Other
+            Unit
+        }
+        Ok(socket) => {
+            scoped socket = socket
+            assert false
+        }
+    }
+    match try_connect("localhost", -1).await {
+        Err(error) => {
+            let kind = error.kind()
+            assert kind == IoErrorKind.InvalidInput
+            Unit
+        }
+        Ok(socket) => {
+            scoped socket = socket
+            assert false
+        }
+    }
+    match try_connect("127.0.0.1", __LOOPBACK_PORT__).await {
+        Ok(socket) => {
+            scoped socket = socket
+            match socket.try_write_text("").await {
+                Ok(_) => Unit
+                Err(_) => {
+                    assert false
+                    Unit
+                }
+            }
+        }
+        Err(_) => {
+            assert false
+            Unit
+        }
+    }
+    match escaped_socket_write(__READ_LOOPBACK_PORT__).await {
+        Ok(_) => Unit
+        Err(_) => {
+            assert false
+            Unit
+        }
+    }
+}
+
+test fn canonical_logging() {
+    debug("debug \"line\"")
+    write(
+        LogLevel.Warn,
+        "event\nline",
+        TextMap[Text]().insert("z", "last").insert("a", "first")
+    )
+}

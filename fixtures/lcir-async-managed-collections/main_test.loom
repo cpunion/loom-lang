@@ -1,0 +1,4 @@
+test async fn managedCollectionsCrossAwait() {
+    let valid = verify().await
+    if valid { Unit } else { impossible() }
+}

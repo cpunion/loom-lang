@@ -1,0 +1,636 @@
+import std.float.parse_float
+
+fn finish_utf8(units List[Int]) Text {
+    match Text.from_utf8_units(units) {
+        Ok(text) => text
+        Err(_) => {
+            assert false
+            ""
+        }
+    }
+}
+
+fn utf8_length(scalar Int) Int {
+    if scalar <= 127 {
+        1
+    } else if scalar <= 2047 {
+        2
+    } else if scalar <= 65535 {
+        3
+    } else {
+        4
+    }
+}
+
+fn utf8_unit(scalar Int, index Int) Int {
+    if scalar <= 127 {
+        scalar
+    } else if scalar <= 2047 {
+        if index == 0 {
+            192 + scalar / 64
+        } else {
+            128 + scalar - (scalar / 64) * 64
+        }
+    } else if scalar <= 65535 {
+        if index == 0 {
+            224 + scalar / 4096
+        } else if index == 1 {
+            128 + (scalar / 64 - (scalar / 4096) * 64)
+        } else {
+            128 + scalar - (scalar / 64) * 64
+        }
+    } else if index == 0 {
+        240 + scalar / 262144
+    } else if index == 1 {
+        128 + (scalar / 4096 - (scalar / 262144) * 64)
+    } else if index == 2 {
+        128 + (scalar / 64 - (scalar / 4096) * 64)
+    } else {
+        128 + scalar - (scalar / 64) * 64
+    }
+}
+
+fn byte_at(input Bytes, index Int) Int {
+    match input.get(index) {
+        Some(byte) => byte
+        None => -1
+    }
+}
+
+fn is_whitespace(byte Int) Bool {
+    byte == 32 || byte == 10 || byte == 13 || byte == 9
+}
+
+fn is_digit(byte Int) Bool {
+    byte >= 48 && byte <= 57
+}
+
+fn hex_digit(byte Int) Option[Int] {
+    if byte >= 48 && byte <= 57 {
+        Some(byte - 48)
+    } else if byte >= 97 && byte <= 102 {
+        Some(byte - 87)
+    } else if byte >= 65 && byte <= 70 {
+        Some(byte - 55)
+    } else {
+        None
+    }
+}
+
+fn skip_whitespace(input Bytes, index Int) Int {
+    var next = index
+    let length = input.length()
+    for iteration in index..length {
+        discard iteration
+        if is_whitespace(byte_at(input, next)) {
+            next = next + 1
+        } else {
+            return next
+        }
+    }
+    next
+}
+
+fn consume_keyword(input Bytes, index Int, expected List[Int]) Result[Int, JsonError] {
+    var next = index
+    let length = expected.length()
+    for offset in 0..length {
+        let wanted = match expected.get(offset) {
+            Some(byte) => byte
+            None => {
+                return Err(JsonError.InvalidSyntax(index))
+            }
+        }
+        if byte_at(input, next) != wanted {
+            return Err(JsonError.InvalidSyntax(index))
+        }
+        next = next + 1
+    }
+    Ok(next)
+}
+
+fn parse_hex_quad(input Bytes, index Int) Result[(Int, Int), JsonError] {
+    var next = index
+    var value = 0
+    for offset in 0..4 {
+        discard offset
+        let digit = match hex_digit(byte_at(input, next)) {
+            Some(digit) => digit
+            None => {
+                return Err(JsonError.InvalidSyntax(index))
+            }
+        }
+        value = value * 16 + digit
+        next = next + 1
+    }
+    Ok((value, next))
+}
+
+fn parse_escape(input Bytes, index Int) Result[(Int, Int), JsonError] {
+    let escaped = byte_at(input, index)
+    var next = index + 1
+    match escaped {
+        34 => Ok((34, next))
+        92 => Ok((92, next))
+        47 => Ok((47, next))
+        98 => Ok((8, next))
+        102 => Ok((12, next))
+        110 => Ok((10, next))
+        114 => Ok((13, next))
+        116 => Ok((9, next))
+        117 => {
+            let first, after_first = parse_hex_quad(input, next)?
+            next = after_first
+            if first >= 55296 && first <= 56319 {
+                if byte_at(input, next) != 92 || byte_at(input, next + 1) != 117 {
+                    return Err(JsonError.InvalidSyntax(index))
+                }
+                let second, after_second = parse_hex_quad(input, next + 2)?
+                if second < 56320 || second > 57343 {
+                    return Err(JsonError.InvalidSyntax(index))
+                }
+                next = after_second
+                Ok((65536 + (first - 55296) * 1024 + second - 56320, next))
+            } else if first >= 56320 && first <= 57343 {
+                Err(JsonError.InvalidSyntax(index))
+            } else {
+                Ok((first, next))
+            }
+        }
+        _ => Err(JsonError.InvalidSyntax(index))
+    }
+}
+
+fn scan_string(input Bytes, index Int) Result[(Int, Int), JsonError] {
+    if byte_at(input, index) != 34 {
+        return Err(JsonError.InvalidSyntax(index))
+    }
+
+    var next = index + 1
+    var decoded_length = 0
+    let length = input.length()
+    for iteration in 0..length {
+        discard iteration
+        let byte = byte_at(input, next)
+        if byte == -1 {
+            return Err(JsonError.InvalidSyntax(index))
+        }
+        if byte == 34 {
+            return Ok((next + 1, decoded_length))
+        }
+        if byte == 92 {
+            let scalar, after_escape = parse_escape(input, next + 1)?
+            decoded_length = decoded_length + utf8_length(scalar)
+            next = after_escape
+        } else if byte <= 31 {
+            return Err(JsonError.InvalidSyntax(next))
+        } else {
+            decoded_length = decoded_length + 1
+            next = next + 1
+        }
+    }
+    Err(JsonError.InvalidSyntax(index))
+}
+
+fn parse_string(input Bytes, index Int) Result[(Text, Int), JsonError] {
+    let after_string, decoded_length = scan_string(input, index)?
+    var next = index + 1
+    var pending_scalar = 0
+    var pending_index = 0
+    var pending_length = 0
+    var output = List[Int]()
+
+    for emitted in 0..decoded_length {
+        discard emitted
+        var unit = 0
+        if pending_index < pending_length {
+            unit = utf8_unit(pending_scalar, pending_index)
+            pending_index = pending_index + 1
+        } else {
+            let byte = byte_at(input, next)
+            if byte == 92 {
+                let scalar, after_escape = parse_escape(input, next + 1)?
+                pending_scalar = scalar
+                pending_index = 1
+                pending_length = utf8_length(scalar)
+                unit = utf8_unit(scalar, 0)
+                next = after_escape
+            } else {
+                unit = byte
+                next = next + 1
+            }
+        }
+        output.add(unit)
+    }
+
+    Ok((finish_utf8(output), after_string))
+}
+
+fn consume_digits(input Bytes, index Int) (Int, Int) {
+    var next = index
+    let length = input.length()
+    for iteration in index..length {
+        discard iteration
+        if is_digit(byte_at(input, next)) {
+            next = next + 1
+        } else {
+            return (next - index, next)
+        }
+    }
+    (next - index, next)
+}
+
+fn parse_number(input Bytes, index Int) Result[(Json, Int), JsonError] {
+    var next = index
+    if byte_at(input, next) == 45 {
+        next = next + 1
+    }
+
+    let leading = byte_at(input, next)
+    if leading == 48 {
+        next = next + 1
+    } else if leading >= 49 && leading <= 57 {
+        next = next + 1
+        let count, after_digits = consume_digits(input, next)
+        discard count
+        next = after_digits
+    } else {
+        return Err(JsonError.InvalidSyntax(next))
+    }
+    if leading == 48 && is_digit(byte_at(input, next)) {
+        return Err(JsonError.InvalidSyntax(next))
+    }
+
+    var has_fraction = false
+    var fraction_is_valid = true
+    if byte_at(input, next) == 46 {
+        has_fraction = true
+        next = next + 1
+        let count, after_fraction = consume_digits(input, next)
+        next = after_fraction
+        fraction_is_valid = count > 0
+    }
+    if !fraction_is_valid {
+        return Err(JsonError.InvalidSyntax(next))
+    }
+
+    var has_exponent = false
+    var exponent_is_valid = true
+    let exponent_marker = byte_at(input, next)
+    if exponent_marker == 101 || exponent_marker == 69 {
+        has_exponent = true
+        next = next + 1
+        let sign = byte_at(input, next)
+        if sign == 43 || sign == 45 {
+            next = next + 1
+        }
+        let count, after_exponent = consume_digits(input, next)
+        next = after_exponent
+        exponent_is_valid = count > 0
+    }
+    if !exponent_is_valid {
+        return Err(JsonError.InvalidSyntax(next))
+    }
+
+    var token = List[Int]()
+    for offset in index..next {
+        token.add(byte_at(input, offset))
+    }
+    if !has_fraction && !has_exponent {
+        token.add(46)
+        token.add(48)
+    }
+
+    match parse_float(finish_utf8(token)) {
+        Ok(number) => Ok((Json.Number(number), next))
+        Err(ParseFloatError.OutOfRange) => Err(JsonError.NumberOutOfRange(index))
+        Err(ParseFloatError.InvalidSyntax) => Err(JsonError.InvalidSyntax(index))
+    }
+}
+
+record ArrayItem {
+    value Json
+    rest List[ArrayItem]
+}
+
+record ObjectEntry {
+    key Text
+    value Json
+    key_offset Int
+    rest List[ObjectEntry]
+}
+
+record ContainerFrame {
+    parent List[ContainerFrame]
+    is_object Bool
+    array_items List[ArrayItem]
+    object_entries List[ObjectEntry]
+    count Int
+    key Text
+    key_offset Int
+}
+
+fn first_array_item(items List[ArrayItem]) ArrayItem {
+    match items.get(0) {
+        Some(item) => item
+        None => {
+            assert false
+            ArrayItem { value = Json.Null, rest = List[ArrayItem]() }
+        }
+    }
+}
+
+fn first_object_entry(entries List[ObjectEntry]) ObjectEntry {
+    match entries.get(0) {
+        Some(entry) => entry
+        None => {
+            assert false
+            ObjectEntry {
+                key = "",
+                value = Json.Null,
+                key_offset = 0,
+                rest = List[ObjectEntry]()
+            }
+        }
+    }
+}
+
+fn first_frame(frames List[ContainerFrame]) ContainerFrame {
+    match frames.get(0) {
+        Some(frame) => frame
+        None => {
+            assert false
+            ContainerFrame {
+                parent = List[ContainerFrame](),
+                is_object = false,
+                array_items = List[ArrayItem](),
+                object_entries = List[ObjectEntry](),
+                count = 0,
+                key = "",
+                key_offset = 0
+            }
+        }
+    }
+}
+
+fn finish_array(items List[ArrayItem], count Int) Json {
+    var remaining = items
+    var forward = List[ArrayItem]()
+    for offset in 0..count {
+        discard offset
+        let item = first_array_item(remaining)
+        remaining = item.rest
+        forward = [ArrayItem { value = item.value, rest = forward }]
+    }
+
+    var values = List[Json]()
+    remaining = forward
+    for offset in 0..count {
+        discard offset
+        let item = first_array_item(remaining)
+        remaining = item.rest
+        values.add(item.value)
+    }
+    Json.Array(values)
+}
+
+fn finish_object(entries List[ObjectEntry], count Int) Result[Json, JsonError] {
+    var remaining = entries
+    var forward = List[ObjectEntry]()
+    for offset in 0..count {
+        discard offset
+        let entry = first_object_entry(remaining)
+        remaining = entry.rest
+        forward = [ObjectEntry {
+            key = entry.key,
+            value = entry.value,
+            key_offset = entry.key_offset,
+            rest = forward
+        }]
+    }
+
+    var pairs = List[(Text, Json)]()
+    remaining = forward
+    for offset in 0..count {
+        discard offset
+        let entry = first_object_entry(remaining)
+        remaining = entry.rest
+        pairs.add((entry.key, entry.value))
+    }
+
+    match pairs.to_text_map() {
+        Ok(values) => Ok(Json.Object(values))
+        Err(duplicate_key) => {
+            var seen = false
+            var duplicate_offset = -1
+            remaining = forward
+            for offset in 0..count {
+                discard offset
+                let entry = first_object_entry(remaining)
+                remaining = entry.rest
+                if entry.key == duplicate_key {
+                    if seen && duplicate_offset < 0 {
+                        duplicate_offset = entry.key_offset
+                    }
+                    seen = true
+                }
+            }
+            if duplicate_offset >= 0 {
+                Err(JsonError.InvalidSyntax(duplicate_offset))
+            } else {
+                assert false
+                Err(JsonError.InvalidSyntax(0))
+            }
+        }
+    }
+}
+
+fn parse_value(input Bytes, index Int, initial_depth Int) Result[(Json, Int), JsonError] {
+    var frames = List[ContainerFrame]()
+    var depth = initial_depth
+    var next = index
+    var pending = Json.Null
+    var has_pending = false
+    let length = input.length()
+
+    // Every active step consumes source or finishes the root. Two bounded
+    // passes therefore cover every non-empty input without recursive calls.
+    for pass in 0..2 {
+        discard pass
+        for iteration in 0..length {
+            discard iteration
+            if has_pending {
+                if frames.length() == 0 {
+                    return Ok((pending, next))
+                } else {
+                    let frame = first_frame(frames)
+                    let after_value = skip_whitespace(input, next)
+                    if frame.is_object {
+                        let entries = [ObjectEntry {
+                            key = frame.key,
+                            value = pending,
+                            key_offset = frame.key_offset,
+                            rest = frame.object_entries
+                        }]
+                        let count = frame.count + 1
+                        if byte_at(input, after_value) == 125 {
+                            pending = finish_object(entries, count)?
+                            frames = frame.parent
+                            depth = depth - 1
+                            next = after_value + 1
+                        } else if byte_at(input, after_value) == 44 {
+                            let key_offset = skip_whitespace(input, after_value + 1)
+                            let key, after_key = parse_string(input, key_offset)?
+                            let colon = skip_whitespace(input, after_key)
+                            if byte_at(input, colon) != 58 {
+                                return Err(JsonError.InvalidSyntax(colon))
+                            }
+                            frames = [ContainerFrame {
+                                parent = frame.parent,
+                                is_object = true,
+                                array_items = List[ArrayItem](),
+                                object_entries = entries,
+                                count = count,
+                                key = key,
+                                key_offset = key_offset
+                            }]
+                            next = skip_whitespace(input, colon + 1)
+                            has_pending = false
+                        } else {
+                            return Err(JsonError.InvalidSyntax(after_value))
+                        }
+                    } else {
+                        let items = [ArrayItem { value = pending, rest = frame.array_items }]
+                        let count = frame.count + 1
+                        if byte_at(input, after_value) == 93 {
+                            pending = finish_array(items, count)
+                            frames = frame.parent
+                            depth = depth - 1
+                            next = after_value + 1
+                        } else if byte_at(input, after_value) == 44 {
+                            frames = [ContainerFrame {
+                                parent = frame.parent,
+                                is_object = false,
+                                array_items = items,
+                                object_entries = List[ObjectEntry](),
+                                count = count,
+                                key = "",
+                                key_offset = 0
+                            }]
+                            next = skip_whitespace(input, after_value + 1)
+                            has_pending = false
+                        } else {
+                            return Err(JsonError.InvalidSyntax(after_value))
+                        }
+                    }
+                }
+            } else {
+                match byte_at(input, next) {
+                    110 => {
+                        next = consume_keyword(input, next, [110, 117, 108, 108])?
+                        pending = Json.Null
+                        has_pending = true
+                    }
+                    116 => {
+                        next = consume_keyword(input, next, [116, 114, 117, 101])?
+                        pending = Json.Bool(true)
+                        has_pending = true
+                    }
+                    102 => {
+                        next = consume_keyword(input, next, [102, 97, 108, 115, 101])?
+                        pending = Json.Bool(false)
+                        has_pending = true
+                    }
+                    34 => {
+                        let value, after_text = parse_string(input, next)?
+                        pending = Json.Text(value)
+                        next = after_text
+                        has_pending = true
+                    }
+                    91 => {
+                        if depth >= 128 {
+                            return Err(JsonError.DepthLimit)
+                        }
+                        let first = skip_whitespace(input, next + 1)
+                        if byte_at(input, first) == 93 {
+                            pending = Json.Array(List[Json]())
+                            next = first + 1
+                            has_pending = true
+                        } else {
+                            frames = [ContainerFrame {
+                                parent = frames,
+                                is_object = false,
+                                array_items = List[ArrayItem](),
+                                object_entries = List[ObjectEntry](),
+                                count = 0,
+                                key = "",
+                                key_offset = 0
+                            }]
+                            depth = depth + 1
+                            next = first
+                        }
+                    }
+                    123 => {
+                        if depth >= 128 {
+                            return Err(JsonError.DepthLimit)
+                        }
+                        let first = skip_whitespace(input, next + 1)
+                        if byte_at(input, first) == 125 {
+                            pending = Json.Object(TextMap[Json]())
+                            next = first + 1
+                            has_pending = true
+                        } else {
+                            let key, after_key = parse_string(input, first)?
+                            let colon = skip_whitespace(input, after_key)
+                            if byte_at(input, colon) != 58 {
+                                return Err(JsonError.InvalidSyntax(colon))
+                            }
+                            next = skip_whitespace(input, colon + 1)
+                            frames = [ContainerFrame {
+                                parent = frames,
+                                is_object = true,
+                                array_items = List[ArrayItem](),
+                                object_entries = List[ObjectEntry](),
+                                count = 0,
+                                key = key,
+                                key_offset = first
+                            }]
+                            depth = depth + 1
+                        }
+                    }
+                    45 => {
+                        let value, after_number = parse_number(input, next)?
+                        pending = value
+                        next = after_number
+                        has_pending = true
+                    }
+                    byte => {
+                        if is_digit(byte) {
+                            let value, after_number = parse_number(input, next)?
+                            pending = value
+                            next = after_number
+                            has_pending = true
+                        } else {
+                            return Err(JsonError.InvalidSyntax(next))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Err(JsonError.InvalidSyntax(next))
+}
+
+/// Parses one complete JSON document and reports zero-based UTF-8 byte offsets.
+pub fn parse_json(text Text) Result[Json, JsonError] {
+    let input = text.encode_utf8()
+    let start = skip_whitespace(input, 0)
+    let value, after_value = parse_value(input, start, 0)?
+    let end = skip_whitespace(input, after_value)
+    if end == input.length() {
+        Ok(value)
+    } else {
+        Err(JsonError.InvalidSyntax(end))
+    }
+}

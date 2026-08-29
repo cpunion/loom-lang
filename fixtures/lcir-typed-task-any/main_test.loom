@@ -1,0 +1,3 @@
+test async fn fixedTaskAnySelectsTheSecondManagedWinnerRepeatedly() {
+    exerciseAny().await
+}

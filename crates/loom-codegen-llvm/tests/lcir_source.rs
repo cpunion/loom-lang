@@ -23,7 +23,6 @@ use loom_core::{
         TASK_ANY_FAILED_FAULT_CODE, TASK_ANY_FAILED_FAULT_MESSAGE,
     },
 };
-use loom_driver::AnalysisHost;
 use loom_interpreter::{ExecutionFailure, Interpreter, TestStatus, Value};
 use loom_mir::{
     Block, CallPlan, CheckedProgram, Constant as MirConstant, ConstructionMode, ContractExprKind,
@@ -52,7 +51,7 @@ struct NativeRun {
 fn analyze_source(source: &str) -> loom_driver::AnalysisSnapshot {
     let project = tempfile::tempdir().expect("create source project");
     std::fs::write(project.path().join("main.loom"), source).expect("write source fixture");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load source project")
         .snapshot()
         .expect("analyze source project");
@@ -124,7 +123,10 @@ fn lower_source_artifact_with_layout(
     reason = "one source gate keeps normal, child-fault, and sibling-cancellation cleanup plus exact callback descriptors together"
 )]
 fn typed_async_cleanup_crosses_suspension_without_a_runtime_cleanup_stack() {
-    let source = include_str!("../../../fixtures/lcir-async-cleanup/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-async-cleanup/main.loom"),
+        include_str!("../../../fixtures/lcir-async-cleanup/main_test.loom")
+    );
     let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
 
@@ -328,7 +330,10 @@ fn typed_async_cleanup_crosses_suspension_without_a_runtime_cleanup_stack() {
     reason = "one source gate keeps managed normal, fault, and cancellation writeback together"
 )]
 fn typed_async_callers_reuse_synchronous_functional_writeback() {
-    let source = include_str!("../../../fixtures/lcir-async-writeback/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-async-writeback/main.loom"),
+        include_str!("../../../fixtures/lcir-async-writeback/main_test.loom")
+    );
     let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
 
@@ -473,8 +478,10 @@ fn typed_async_callers_reuse_synchronous_functional_writeback() {
     }
 }
 
-const PROJECTED_PLACE_SOURCE: &str =
-    include_str!("../../../fixtures/lcir-projected-places/main.loom");
+const PROJECTED_PLACE_SOURCE: &str = concat!(
+    include_str!("../../../fixtures/lcir-projected-places/main.loom"),
+    include_str!("../../../fixtures/lcir-projected-places/main_test.loom")
+);
 
 fn emit_and_run_lcir(artifact: &CheckedArtifact, stem: &str) -> NativeRun {
     emit_and_run_lcir_with_options(artifact, stem, NativeObjectOptions::default())
@@ -650,9 +657,7 @@ fn fallible_debug_metadata_describes_the_physical_abi_and_visible_parameters() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn product_debug_metadata_matches_direct_and_fallible_inout_physical_returns() {
-    let source = r"module lcir_product_debug
-
-record Counter {
+    let source = r"record Counter {
     value Int
     enabled Bool
 }
@@ -934,9 +939,7 @@ fn assert_typed_resource_close_guard(
 }
 
 fn checked_float_pattern_fixture() -> CheckedProgram {
-    let source = r"module lcir_float_patterns
-
-fn classify(value Float) Int {
+    let source = r"fn classify(value Float) Int {
     match value {
         0.0 => 10
         1.0 => 20
@@ -1189,9 +1192,7 @@ fn assert_fallible_surface(ir: &str) {
     assert!(!ir.contains("loom_gc_"), "{ir}");
 }
 
-const LIVE_SUM_CARRIER_SOURCE: &str = r"module lcir_live_sum_carrier
-
-enum Packet {
+const LIVE_SUM_CARRIER_SOURCE: &str = r"enum Packet {
     Empty
     Wide(Int)
     Bytes(Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool)
@@ -1216,9 +1217,7 @@ test fn carriesAcrossLoop() Result[Unit, Problem] {
 }
 ";
 
-const INTERLEAVED_MANAGED_SUM_RELEASE_SOURCE: &str = r#"module lcir_interleaved_managed_release
-
-record PointerThenScalar { label Text, number Int }
+const INTERLEAVED_MANAGED_SUM_RELEASE_SOURCE: &str = r#"record PointerThenScalar { label Text, number Int }
 record ScalarThenPointer { number Int, label Text }
 
 enum Interleaved {
@@ -1285,9 +1284,7 @@ fn float_patterns_use_ieee_ordered_equality_in_all_three_backends() {
 
 #[test]
 fn source_lowered_pure_scalars_run_without_runtime_or_universal_values() {
-    let source = r"module lcir_source_pure
-
-fn choose(flag Bool, left Float, right Float) Bool {
+    let source = r"fn choose(flag Bool, left Float, right Float) Bool {
     if flag { left < right } else { !flag }
 }
 
@@ -1313,9 +1310,7 @@ pub fn main() {
 
 #[test]
 fn user_task_policy_method_names_stay_on_the_pure_native_call_path() {
-    let source = r"module lcir_user_task_methods
-
-record Scheduler { base Int }
+    let source = r"record Scheduler { base Int }
 
 impl Scheduler {
     method any(self, value Int) Int { value }
@@ -1376,9 +1371,7 @@ pub fn main() {
     reason = "one gate covers the source integer parser, scalar ABI status, managed Text input, target objects, and universal-surface exclusion"
 )]
 fn scalar_builtin_apis_match_interpreter_and_close_typed_targets() {
-    let source = r#"module lcir_scalar_builtins
-
-import std.float.is_finite
+    let source = r#"import std.float.is_finite
 import std.float.parse_float
 import std.int.ParseIntError
 import std.int.parse_int
@@ -1601,9 +1594,7 @@ pub fn main() {
 fn typed_float_formatting_matches_all_backends_and_preserves_moving_text() {
     let pressure = "x".repeat(40 * 1024);
     let source = format!(
-        r#"module lcir_typed_float_format
-
-import std.float.format_float
+        r#"import std.float.format_float
 
 fn join(left Text, right Text) Text {{ left.concat(right) }}
 
@@ -1722,9 +1713,7 @@ pub fn main() {{
 
 #[test]
 fn negative_duration_fault_matches_interpreter_and_checked_mir() {
-    let source = r"module lcir_negative_duration
-
-import std.time.milliseconds
+    let source = r"import std.time.milliseconds
 
 pub fn main() {
     discard milliseconds(-1)
@@ -1774,9 +1763,7 @@ pub fn main() {
 
 #[test]
 fn invalid_duration_during_cleanup_cannot_replace_the_primary_fault() {
-    let source = r"module lcir_duration_cleanup_fault
-
-import std.time.milliseconds
+    let source = r"import std.time.milliseconds
 
 pub fn main() {
     defer {
@@ -1819,9 +1806,7 @@ pub fn main() {
 #[test]
 fn pure_immortal_text_operations_need_no_active_runtime_gc_or_executor() {
     let program = compile_source(
-        r#"module lcir_text_pure
-
-fn inspect(value Text) Bool {
+        r#"fn inspect(value Text) Bool {
     value.length() == 6 && value.contains("界") && value == "hello界" && value != "other"
 }
 
@@ -1870,7 +1855,10 @@ pub fn main() {
 
 #[test]
 fn immortal_text_uses_one_pointer_and_allocation_free_runtime_abi_on_all_targets() {
-    let source = include_str!("../../../fixtures/lcir-text/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-text/main.loom"),
+        include_str!("../../../fixtures/lcir-text/main_test.loom")
+    );
     let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let artifact = lower_source_artifact(
@@ -1944,7 +1932,10 @@ fn immortal_text_uses_one_pointer_and_allocation_free_runtime_abi_on_all_targets
     reason = "one differential gate keeps the complete existing Bytes API, managed roots, direct byte operations, and cross-target objects together"
 )]
 fn managed_bytes_close_the_typed_lcir_route_on_all_supported_targets() {
-    let source = include_str!("../../../fixtures/lcir-managed-bytes/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-managed-bytes/main.loom"),
+        include_str!("../../../fixtures/lcir-managed-bytes/main_test.loom")
+    );
     let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let interpreted = Interpreter::new(&program).run_tests();
@@ -2057,7 +2048,10 @@ fn managed_bytes_close_the_typed_lcir_route_on_all_supported_targets() {
 
 #[test]
 fn text_from_utf8_units_is_direct_typed_lcir_on_all_supported_targets() {
-    let source = include_str!("../../../fixtures/lcir-text-from-utf8-units/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-text-from-utf8-units/main.loom"),
+        include_str!("../../../fixtures/lcir-text-from-utf8-units/main_test.loom")
+    );
     let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let interpreted = Interpreter::new(&program).run_tests();
@@ -2147,7 +2141,10 @@ fn text_from_utf8_units_is_direct_typed_lcir_on_all_supported_targets() {
 
 #[test]
 fn lexical_path_is_direct_typed_lcir_on_all_supported_targets() {
-    let source = include_str!("../../../fixtures/lcir-typed-path/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-typed-path/main.loom"),
+        include_str!("../../../fixtures/lcir-typed-path/main_test.loom")
+    );
     let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let interpreted = Interpreter::new(&program).run_tests();
@@ -2257,9 +2254,7 @@ fn lexical_path_is_direct_typed_lcir_on_all_supported_targets() {
 fn managed_text_concat_runs_tests_reloads_roots_and_emits_on_all_supported_targets() {
     let pressure = "x".repeat(40 * 1024);
     let source = format!(
-        r#"module lcir_managed_text
-
-enum Problem {{ WrongText }}
+        r#"enum Problem {{ WrongText }}
 
 fn join(left Text, right Text) Text {{ left.concat(right) }}
 
@@ -2393,9 +2388,7 @@ test fn concatMovesAndAliases() Result[Unit, Problem] {{
 fn managed_text_get_returns_option_and_preserves_live_aliases_across_collection() {
     let pressure = "x".repeat(40 * 1024);
     let source = format!(
-        r#"module lcir_managed_text_get
-
-enum Problem {{ WrongText }}
+        r#"enum Problem {{ WrongText }}
 
 fn join(left Text, right Text) Text {{ left.concat(right) }}
 
@@ -2537,9 +2530,7 @@ pub fn main() {{
 fn managed_product_leaves_relocate_exactly_across_collecting_calls() {
     let pressure = "x".repeat(40 * 1024);
     let source = format!(
-        r#"module lcir_managed_products
-
-enum Problem {{ WrongText }}
+        r#"enum Problem {{ WrongText }}
 
 record Pair {{
     left Text
@@ -2801,7 +2792,11 @@ test fn managedProducts() Result[Unit, Problem] {{ verify() }}
 )]
 fn managed_sum_leaves_relocate_only_for_the_active_variant() {
     let pressure = "x".repeat(40 * 1024);
-    let source = include_str!("../../../fixtures/lcir-managed-sums/main.loom").replace(
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-managed-sums/main.loom"),
+        include_str!("../../../fixtures/lcir-managed-sums/main_test.loom")
+    )
+    .replace(
         "fn collectPressure() Text { join(\"small\", \"pressure\") }",
         &format!("fn collectPressure() Text {{ join(\"{pressure}\", \"{pressure}\") }}"),
     );
@@ -2994,15 +2989,18 @@ fn managed_lists_use_precise_repeated_descriptors_and_survive_forced_relocation(
     let pressure = format!(
         "record Wide {{\n    text Text\n{fields}\n}}\n\nfn forcedLists() Bool {{\n    let kept = join(\"Rel\", \"ocated\")\n    let wide = Wide {{ text = kept, {initializers} }}\n    var values = [{repeated}]\n    let alias = values\n    values.add(wide)\n    let trigger = [{repeated}]\n    (trigger.length() == 129\n        && values.length() == 130\n        && alias.length() == 129\n        && match values.get(129) {{ Some(item) => item.text == \"Relocated\", None => false }}\n        && match alias.get(0) {{ Some(item) => item.text == \"Relocated\", None => false }})\n}}\n\nfn uniqueForcedLists() Bool {{\n    let kept = join(\"Uni\", \"que\")\n    let wide = Wide {{ text = kept, {initializers} }}\n    var values = List[Wide]()\n    for index in 0..130 {{\n        values.add(wide)\n        Unit\n    }}\n    (values.length() == 130\n        && match values.get(0) {{ Some(item) => item.text == \"Unique\", None => false }}\n        && match values.get(129) {{ Some(item) => item.text == \"Unique\", None => false }})\n}}\n\n"
     );
-    let source = include_str!("../../../fixtures/lcir-managed-lists/main.loom")
-        .replace(
-            "fn join(left Text, right Text) Text",
-            &(pressure + "fn join(left Text, right Text) Text"),
-        )
-        .replace(
-            "    verdict(\n",
-            "    verdict(\n        forcedLists()\n        && uniqueForcedLists()\n        && ",
-        );
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-managed-lists/main.loom"),
+        include_str!("../../../fixtures/lcir-managed-lists/main_test.loom")
+    )
+    .replace(
+        "fn join(left Text, right Text) Text",
+        &(pressure + "fn join(left Text, right Text) Text"),
+    )
+    .replace(
+        "    verdict(\n",
+        "    verdict(\n        forcedLists()\n        && uniqueForcedLists()\n        && ",
+    );
     let program = compile_source(&source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let interpreted = Interpreter::new(&program).run_tests();
@@ -3145,7 +3143,7 @@ fn managed_lists_use_precise_repeated_descriptors_and_survive_forced_relocation(
 #[test]
 fn managed_list_source_is_direct_on_64_bit_and_fails_closed_on_32_bit() {
     let program = compile_source(
-        "module list_target\npub fn main() {\n    let values = [1, 2]\n    discard values.length()\n}\n",
+        "pub fn main() {\n    let values = [1, 2]\n    discard values.length()\n}\n",
     );
     let request = SourceArtifactRequest::Run {
         entry: "main".into(),
@@ -3185,7 +3183,10 @@ fn typed_logging_interpreter_child() {
     let Some(mode) = std::env::var_os(TYPED_LOGGING_INTERPRETER_CHILD_ENV) else {
         return;
     };
-    let source = include_str!("../../../fixtures/lcir-typed-logging/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-typed-logging/main.loom"),
+        include_str!("../../../fixtures/lcir-typed-logging/main_test.loom")
+    );
     let program = compile_source(source);
     if mode == "unwritable" {
         let failure =
@@ -3210,7 +3211,10 @@ fn typed_logging_interpreter_child() {
     reason = "one gate keeps five public logging calls over two reachable source bodies, exact interpreter/MIR/typed stderr, release IR purity, and Linux/MSVC object ABIs together"
 )]
 fn typed_logging_uses_one_direct_fallible_runtime_boundary() {
-    let source = include_str!("../../../fixtures/lcir-typed-logging/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-typed-logging/main.loom"),
+        include_str!("../../../fixtures/lcir-typed-logging/main_test.loom")
+    );
     let program = compile_source(source);
 
     for mode in ["run", "tests"] {
@@ -3406,7 +3410,10 @@ fn typed_logging_uses_one_direct_fallible_runtime_boundary() {
     reason = "one native differential gate keeps typed TextMap value shapes, immutable aliasing, exact lookup, moving-GC roots, and cross-target descriptors together"
 )]
 fn typed_text_maps_are_direct_exact_and_survive_forced_relocation() {
-    let source = include_str!("../../../fixtures/lcir-typed-textmap/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-typed-textmap/main.loom"),
+        include_str!("../../../fixtures/lcir-typed-textmap/main_test.loom")
+    );
     let program = compile_source(source);
 
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
@@ -3596,9 +3603,12 @@ fn typed_text_maps_are_direct_exact_and_survive_forced_relocation() {
 
 #[test]
 fn std_text_map_segment_classifies_through_direct_lcir() {
-    let source = include_str!("../../../fixtures/std/main.loom")
-        .replace("__LOOPBACK_PORT__", "1")
-        .replace("__READ_LOOPBACK_PORT__", "1");
+    let source = concat!(
+        include_str!("../../../fixtures/std/main.loom"),
+        include_str!("../../../fixtures/std/main_test.loom")
+    )
+    .replace("__LOOPBACK_PORT__", "1")
+    .replace("__READ_LOOPBACK_PORT__", "1");
     let program = compile_source(&source);
     let artifact = lower_source_artifact(
         &program,
@@ -3620,12 +3630,15 @@ fn std_text_map_segment_classifies_through_direct_lcir() {
 
 #[test]
 fn complete_std_tests_route_through_lcir() {
-    let source = include_str!("../../../fixtures/std/main.loom")
-        .replace("__ROUND_TRIP_PATH__", "round-trip.txt")
-        .replace("__MISSING_PATH__", "missing.txt")
-        .replace("__REUSE_PATH__", "reuse.txt")
-        .replace("__LOOPBACK_PORT__", "1")
-        .replace("__READ_LOOPBACK_PORT__", "1");
+    let source = concat!(
+        include_str!("../../../fixtures/std/main.loom"),
+        include_str!("../../../fixtures/std/main_test.loom")
+    )
+    .replace("__ROUND_TRIP_PATH__", "round-trip.txt")
+    .replace("__MISSING_PATH__", "missing.txt")
+    .replace("__REUSE_PATH__", "reuse.txt")
+    .replace("__LOOPBACK_PORT__", "1")
+    .replace("__READ_LOOPBACK_PORT__", "1");
     let program = compile_source(&source);
     for policy in [NativeRoutePolicy::Automatic, NativeRoutePolicy::LcirOnly] {
         let prepared = prepare_native_object(&program, EmitOptions::tests(), policy)
@@ -3638,9 +3651,7 @@ fn complete_std_tests_route_through_lcir() {
 
 #[test]
 fn async_scoped_resource_close_uses_the_checked_executor() {
-    let source = r#"module lcir_async_scoped_resource_close
-
-import std.file.try_create
+    let source = r#"import std.file.try_create
 
 pub async fn main() {
     match try_create("scoped-close.txt").await {
@@ -3788,7 +3799,10 @@ fn typed_io_tasks_use_direct_result_frames_and_real_scheduler_io() {
     reason = "one gate keeps source JSON call-graph reachability, bulk construction, both harnesses, and runtime purity together"
 )]
 fn source_json_parser_is_direct_bulk_lcir_in_run_and_test_harnesses() {
-    let source = include_str!("../../../fixtures/lcir-json-parse/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-json-parse/main.loom"),
+        include_str!("../../../fixtures/lcir-json-parse/main_test.loom")
+    );
     let program = compile_source(source);
 
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
@@ -3914,7 +3928,7 @@ fn source_json_parser_is_direct_bulk_lcir_in_run_and_test_harnesses() {
     );
     assert!(
         String::from_utf8_lossy(&native_tests.output.stdout)
-            .contains("passed lcir_json_parse.source_json_parse"),
+            .contains("passed standalone.source_json_parse"),
         "{:#?}",
         native_tests.output
     );
@@ -3942,9 +3956,7 @@ fn source_json_parser_is_direct_bulk_lcir_in_run_and_test_harnesses() {
 fn text_map_bulk_copy_sort_preserves_source_alias_across_moving_collection() {
     let half = "x".repeat(20 * 1024);
     let source = format!(
-        r#"module lcir_text_map_bulk_relocation
-
-record Pair {{
+        r#"record Pair {{
     left Text
     right Text
 }}
@@ -4074,7 +4086,10 @@ pub fn main() {{
     reason = "one source gate keeps the direct typed JSON boundary, run/test harnesses, runtime purity, and Linux/MSVC object ABIs together"
 )]
 fn typed_json_format_uses_one_direct_collecting_runtime_boundary() {
-    let source = include_str!("../../../fixtures/lcir-json-format/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-json-format/main.loom"),
+        include_str!("../../../fixtures/lcir-json-format/main_test.loom")
+    );
     let program = compile_source(source);
 
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
@@ -4176,7 +4191,7 @@ fn typed_json_format_uses_one_direct_collecting_runtime_boundary() {
     );
     assert!(
         String::from_utf8_lossy(&native_tests.output.stdout)
-            .contains("passed lcir_json_format.typedJsonFormat"),
+            .contains("passed standalone.typedJsonFormat"),
         "{:#?}",
         native_tests.output
     );
@@ -4220,9 +4235,7 @@ fn typed_json_format_uses_one_direct_collecting_runtime_boundary() {
 fn typed_json_format_hoists_loop_storage_and_reloads_after_moving_collection() {
     let half = "x".repeat(20 * 1024);
     let source = format!(
-        r#"module lcir_json_format_relocation
-
-import std.json.format_json
+        r#"import std.json.format_json
 
 fn verify(value Json, expectedLength Int) Bool {{
     var valid = true
@@ -4298,7 +4311,10 @@ pub fn main() {{
     reason = "one gate keeps recursive Json carrier layout, exact tracing, forced relocation, backend differential behavior, and cross-target emission together"
 )]
 fn recursive_json_uses_one_exact_managed_cell_and_survives_forced_relocation() {
-    let source = include_str!("../../../fixtures/lcir-typed-json/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-typed-json/main.loom"),
+        include_str!("../../../fixtures/lcir-typed-json/main_test.loom")
+    );
     let program = compile_source(source);
 
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
@@ -4411,7 +4427,10 @@ fn recursive_json_uses_one_exact_managed_cell_and_survives_forced_relocation() {
 
 #[test]
 fn recursive_json_is_typed_on_64_bit_and_fails_closed_on_32_bit() {
-    let program = compile_source(include_str!("../../../fixtures/lcir-typed-json/main.loom"));
+    let program = compile_source(concat!(
+        include_str!("../../../fixtures/lcir-typed-json/main.loom"),
+        include_str!("../../../fixtures/lcir-typed-json/main_test.loom")
+    ));
     let request = SourceArtifactRequest::Run {
         entry: "main".into(),
     };
@@ -4447,7 +4466,10 @@ fn recursive_json_is_typed_on_64_bit_and_fails_closed_on_32_bit() {
     reason = "one gate proves compact collision-free Choice/Interleaved/Outer sum bytes, exact repeated tracing, forced relocation, differential behavior, and cross-target emission together"
 )]
 fn closed_sum_byte_classes_never_alias_scalar_bytes_with_managed_pointer_cells() {
-    let source = include_str!("../../../fixtures/lcir-sum-layout-collisions/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-sum-layout-collisions/main.loom"),
+        include_str!("../../../fixtures/lcir-sum-layout-collisions/main_test.loom")
+    );
     let program = compile_source(source);
 
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
@@ -4580,8 +4602,7 @@ fn closed_sum_byte_classes_never_alias_scalar_bytes_with_managed_pointer_cells()
 #[test]
 fn deep_nested_sum_layout_is_cached_and_bounded_across_the_complete_graph() {
     const LAYERS: usize = 24;
-    let mut source =
-        String::from("module lcir_deep_sum_layout\n\nenum Layer0 { Number(Int), Label(Text) }\n");
+    let mut source = String::from("enum Layer0 { Number(Int), Label(Text) }\n");
     for layer in 1..LAYERS {
         writeln!(
             source,
@@ -4687,7 +4708,7 @@ fn assert_sum_emission_resource_error(source: &str, label: &str, message: &str) 
 fn independent_wide_sums_share_one_bounded_carrier_placement_budget() {
     const SCALAR_FIELDS: usize = 250;
     const SUMS: usize = 11;
-    let mut source = String::from("module lcir_shared_sum_placement\n\n");
+    let mut source = String::new();
     for index in 0..SUMS {
         source.push_str(&wide_sum_definition(&format!("Wide{index}"), SCALAR_FIELDS));
     }
@@ -4704,7 +4725,7 @@ fn independent_wide_sums_share_one_bounded_carrier_placement_budget() {
 fn repeated_wide_sum_packing_shares_one_bounded_ir_emission_budget() {
     const SCALAR_FIELDS: usize = 250;
     const CONSTRUCTS: usize = 34;
-    let mut source = String::from("module lcir_shared_sum_emission\n\n");
+    let mut source = String::new();
     source.push_str(&wide_sum_definition("Wide", SCALAR_FIELDS));
     source.push_str("\npub fn main() {\n");
     for _ in 0..CONSTRUCTS {
@@ -4718,7 +4739,7 @@ fn repeated_wide_sum_packing_shares_one_bounded_ir_emission_budget() {
 #[test]
 fn typed_text_map_source_is_direct_on_64_bit_and_fails_closed_on_32_bit() {
     let program = compile_source(
-        "module text_map_target\npub fn main() {\n    let values = TextMap[Int]().insert(\"answer\", 42)\n    let same = TextMap[Int]().insert(\"answer\", 42)\n    discard values.contains(\"answer\")\n    discard values.remove(\"missing\")\n    discard values.get(\"answer\")\n    discard values == same\n}\n",
+        "pub fn main() {\n    let values = TextMap[Int]().insert(\"answer\", 42)\n    let same = TextMap[Int]().insert(\"answer\", 42)\n    discard values.contains(\"answer\")\n    discard values.remove(\"missing\")\n    discard values.get(\"answer\")\n    discard values == same\n}\n",
     );
     let request = SourceArtifactRequest::Run {
         entry: "main".into(),
@@ -4775,8 +4796,8 @@ fn generic_instance_plan(
                 |function| function.id,
             )
     };
-    let identity_source = source_function("lcir_generics.identity");
-    let preserve_source = source_function("lcir_generics.preserve");
+    let identity_source = source_function("standalone.identity");
+    let preserve_source = source_function("standalone.preserve");
     let dump = dump_program(artifact.program());
     let mut identity_instances = BTreeMap::new();
     let mut preserve_instance = None;
@@ -4827,7 +4848,10 @@ fn generic_instance_plan(
 
 #[test]
 fn generic_instances_use_direct_host_and_msvc_target_abis() {
-    let source = include_str!("../../../fixtures/lcir-generics/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-generics/main.loom"),
+        include_str!("../../../fixtures/lcir-generics/main_test.loom")
+    );
     let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let artifact = lower_source_artifact(
@@ -4915,7 +4939,10 @@ fn generic_instances_use_direct_host_and_msvc_target_abis() {
 
 #[test]
 fn generic_products_and_proven_wrappers_execute_through_typed_lcir() {
-    let source = include_str!("../../../fixtures/lcir-generic-products/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-generic-products/main.loom"),
+        include_str!("../../../fixtures/lcir-generic-products/main_test.loom")
+    );
     let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let artifact = lower_source_artifact(
@@ -4972,7 +4999,10 @@ fn generic_products_and_proven_wrappers_execute_through_typed_lcir() {
 
 #[test]
 fn structural_equality_executes_products_sums_contracts_and_lists_through_typed_lcir() {
-    let source = include_str!("../../../fixtures/lcir-structural-equality/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-structural-equality/main.loom"),
+        include_str!("../../../fixtures/lcir-structural-equality/main_test.loom")
+    );
     let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let artifact = lower_source_artifact(
@@ -5052,7 +5082,10 @@ fn structural_equality_executes_products_sums_contracts_and_lists_through_typed_
 
 #[test]
 fn recursive_structural_equality_executes_typed_helper_cycles_without_runtime_type_dispatch() {
-    let source = include_str!("../../../fixtures/lcir-recursive-equality/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-recursive-equality/main.loom"),
+        include_str!("../../../fixtures/lcir-recursive-equality/main_test.loom")
+    );
     let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let interpreted_tests = Interpreter::new(&program).run_tests();
@@ -5152,12 +5185,15 @@ fn recursive_structural_equality_executes_typed_helper_cycles_without_runtime_ty
 }
 
 fn static_concepts_test_artifact() -> CheckedArtifact {
-    let source = include_str!("../../../fixtures/lcir-static-concepts/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-static-concepts/main.loom"),
+        include_str!("../../../fixtures/lcir-static-concepts/main_test.loom")
+    );
     let program = compile_source(source);
     let interpreted = Interpreter::new(&program).run_tests();
     assert_eq!(interpreted.len(), 1, "{interpreted:#?}");
     assert_eq!(
-        interpreted[0].name, "lcir_static_concepts.staticConcepts",
+        interpreted[0].name, "standalone.staticConcepts",
         "{interpreted:#?}"
     );
     assert_eq!(
@@ -5179,8 +5215,7 @@ fn static_concepts_run_directly_on_host_without_runtime_witnesses() {
     let native = emit_and_run_lcir(&artifact, "source-static-concepts");
     assert!(native.output.status.success(), "{:?}", native.output);
     assert!(
-        String::from_utf8_lossy(&native.output.stdout)
-            .contains("passed lcir_static_concepts.staticConcepts"),
+        String::from_utf8_lossy(&native.output.stdout).contains("passed standalone.staticConcepts"),
         "{:?}",
         native.output
     );
@@ -5254,19 +5289,19 @@ fn concepts_polymorphism_main_devirtualizes_unique_dynamic_witnesses_to_direct_c
     );
     let dump = dump_program(artifact.program());
     for expected in [
-        "example.concepts_polymorphism.label",
-        "example.concepts_polymorphism.format",
-        "example.concepts_polymorphism.next",
-        "example.concepts_polymorphism.static_label",
-        "example.concepts_polymorphism.dynamic_format",
-        "example.concepts_polymorphism.take_one",
+        "standalone.label",
+        "standalone.format",
+        "standalone.next",
+        "standalone.static_label",
+        "standalone.dynamic_format",
+        "standalone.take_one",
     ] {
         assert!(dump.contains(expected), "missing `{expected}`:\n{dump}");
     }
     for dead in [
-        "example.concepts_polymorphism.erase_label",
-        "example.concepts_polymorphism.forward_label",
-        "example.concepts_polymorphism.erase_source",
+        "standalone.erase_label",
+        "standalone.forward_label",
+        "standalone.erase_source",
     ] {
         assert!(!dump.contains(dead), "retained dead `{dead}`:\n{dump}");
     }
@@ -5372,8 +5407,9 @@ test fn dynamicStorageGcPressure() {{
 "#
     );
     let source = format!(
-        "{}\n{pressure}",
-        include_str!("../../../examples/concepts-polymorphism/concepts.loom")
+        "{}\n{}\n{pressure}",
+        include_str!("../../../examples/concepts-polymorphism/concepts.loom"),
+        include_str!("../../../examples/concepts-polymorphism/concepts_test.loom")
     );
     let program = compile_source(&source);
     let interpreted = Interpreter::new(&program).run_tests();
@@ -5388,10 +5424,10 @@ test fn dynamicStorageGcPressure() {{
     let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
     let dump = dump_program(artifact.program());
     for required in [
-        "example.concepts_polymorphism.erase_label",
-        "example.concepts_polymorphism.forward_label",
-        "example.concepts_polymorphism.erase_source",
-        "example.concepts_polymorphism.dynamicStorageGcPressure",
+        "standalone.erase_label",
+        "standalone.forward_label",
+        "standalone.erase_source",
+        "standalone.dynamicStorageGcPressure",
         "list.construct",
         "list.append",
         "list.get",
@@ -5563,7 +5599,10 @@ test fn dynamicStorageGcPressure() {{
 
 #[test]
 fn unique_dynamic_witness_dce_ignores_dead_conformances_and_method_slots() {
-    let source = include_str!("../../../fixtures/lcir-dyn-unique/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-dyn-unique/main.loom"),
+        include_str!("../../../fixtures/lcir-dyn-unique/main_test.loom")
+    );
     let program = compile_source(source);
     let interpreted = Interpreter::new(&program).run_tests();
     assert_eq!(interpreted.len(), 1, "{interpreted:#?}");
@@ -5574,13 +5613,13 @@ fn unique_dynamic_witness_dce_ignores_dead_conformances_and_method_slots() {
     );
     let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
     let dump = dump_program(artifact.program());
-    assert!(dump.contains("lcir_dyn_unique.read"), "{dump}");
-    assert!(dump.contains("lcir_dyn_unique.measure"), "{dump}");
+    assert!(dump.contains("standalone.read"), "{dump}");
+    assert!(dump.contains("standalone.measure"), "{dump}");
     assert!(
         dump.matches("inout=[0]").count() >= 2,
         "mutable interface and concrete method must both retain writeback:\n{dump}"
     );
-    for dead in ["lcir_dyn_unique.cold", "UnusedCounter", "9001", "9002"] {
+    for dead in ["standalone.cold", "UnusedCounter", "9001", "9002"] {
         assert!(!dump.contains(dead), "retained dead `{dead}`:\n{dump}");
     }
 
@@ -5588,13 +5627,13 @@ fn unique_dynamic_witness_dce_ignores_dead_conformances_and_method_slots() {
     assert!(native.output.status.success(), "{:?}", native.output);
     assert!(
         String::from_utf8_lossy(&native.output.stdout)
-            .contains("passed lcir_dyn_unique.uniqueDynamicWitness"),
+            .contains("passed standalone.uniqueDynamicWitness"),
         "{:?}",
         native.output
     );
     assert_stateless_direct_lcir_surface(&native.ir);
     assert_no_indirect_calls(&native.ir);
-    for forbidden in ["lcir_dyn_unique.cold", "UnusedCounter", "loom_witness_"] {
+    for forbidden in ["standalone.cold", "UnusedCounter", "loom_witness_"] {
         assert!(
             !native.ir.contains(forbidden),
             "unexpected `{forbidden}`:\n{}",
@@ -5629,7 +5668,10 @@ fn unique_dynamic_witness_dce_ignores_dead_conformances_and_method_slots() {
     reason = "one finite-dyn gate keeps checked representation, DCE, moving-GC value semantics, differential execution, and cross-target objects together"
 )]
 fn finite_dynamic_witnesses_use_precise_single_pointer_boxes_and_direct_dispatch() {
-    let source = include_str!("../../../fixtures/lcir-dyn-finite/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-dyn-finite/main.loom"),
+        include_str!("../../../fixtures/lcir-dyn-finite/main_test.loom")
+    );
     let program = compile_source(source);
     let interpreted = Interpreter::new(&program).run_tests();
     assert_eq!(interpreted.len(), 1, "{interpreted:#?}");
@@ -5683,7 +5725,7 @@ fn finite_dynamic_witnesses_use_precise_single_pointer_boxes_and_direct_dispatch
     ] {
         assert!(dump.contains(required), "missing `{required}`:\n{dump}");
     }
-    for dead in ["lcir_dyn_finite.cold", "7001", "7002"] {
+    for dead in ["standalone.cold", "7001", "7002"] {
         assert!(!dump.contains(dead), "retained dead `{dead}`:\n{dump}");
     }
 
@@ -5695,7 +5737,7 @@ fn finite_dynamic_witnesses_use_precise_single_pointer_boxes_and_direct_dispatch
     assert_eq!(native.output.stderr, checked_mir.stderr);
     assert!(
         String::from_utf8_lossy(&native.output.stdout)
-            .contains("passed lcir_dyn_finite.finiteDynamicWitnesses"),
+            .contains("passed standalone.finiteDynamicWitnesses"),
         "{:?}",
         native.output
     );
@@ -5738,7 +5780,7 @@ fn finite_dynamic_witnesses_use_precise_single_pointer_boxes_and_direct_dispatch
         "loom_witness_",
         "WitnessInstance",
         "dyn.registry",
-        "lcir_dyn_finite.cold",
+        "standalone.cold",
     ] {
         assert!(
             !native.ir.contains(forbidden),
@@ -5829,9 +5871,7 @@ fn finite_dynamic_witnesses_use_precise_single_pointer_boxes_and_direct_dispatch
 
 #[test]
 fn source_ranges_emit_proved_nsw_successors_without_fault_abi() {
-    let source = r"module lcir_source_proved_ranges
-
-fn highBit() Int {
+    let source = r"fn highBit() Int {
     var seen = 0
     for index in 9223372036854775806..9223372036854775807 {
         seen = index
@@ -5895,9 +5935,7 @@ pub fn main() {
 
 #[test]
 fn recursive_and_iterative_source_computation_agree_across_backends() {
-    let source = r"module lcir_source_fibonacci
-
-fn recursive(value Int) Int {
+    let source = r"fn recursive(value Int) Int {
     if value < 2 {
         value
     } else {
@@ -5961,9 +5999,7 @@ pub fn main() {
 
 #[test]
 fn source_short_circuit_never_executes_its_faulting_rhs() {
-    let source = r"module lcir_source_short_circuit
-
-fn trap() Bool {
+    let source = r"fn trap() Bool {
     discard 1 / 0
     true
 }
@@ -6007,8 +6043,7 @@ fn source_integer_faults_match_interpreter_and_checked_mir_diagnostics() {
     ];
 
     for (name, statement, expected) in cases {
-        let source =
-            format!("module lcir_source_{name}\n\npub fn main() {{\n    {statement}\n}}\n");
+        let source = format!("pub fn main() {{\n    {statement}\n}}\n");
         let program = compile_source(&source);
         let failure = interpret_run(&program, "main").expect_err("interpreter fault");
         assert!(
@@ -6046,9 +6081,7 @@ fn source_integer_faults_match_interpreter_and_checked_mir_diagnostics() {
     reason = "one differential gate keeps all lexical cleanup exit shapes and exact fault metadata together"
 )]
 fn typed_lexical_cleanup_matches_interpreter_and_checked_mir_on_every_exit_shape() {
-    let source = r"module typed_lexical_cleanup
-
-fn requireEqual(actual Int, expected Int) {
+    let source = r"fn requireEqual(actual Int, expected Int) {
     assert actual == expected
 }
 
@@ -6190,9 +6223,7 @@ pub fn cleanupFaultMain() {
 
 #[test]
 fn typed_scoped_disposal_is_one_static_inout_call_after_initialization() {
-    let source = r"module lcir_scoped_disposal
-
-import std.resource.Dispose
+    let source = r"import std.resource.Dispose
 import std.resource.MustScope
 
 record Resource {
@@ -6331,9 +6362,7 @@ fn synchronous_builtin_scoped_cleanup_is_an_invalid_executor_root() {
 
 #[test]
 fn integer_overflow_json_matches_at_each_direct_operation_span() {
-    let source = r"module lcir_integer_overflow_diagnostics
-
-fn negate(value Int) Int { -value }
+    let source = r"fn negate(value Int) Int { -value }
 fn add(left Int, right Int) Int { left + right }
 fn subtract(left Int, right Int) Int { left - right }
 fn multiply(left Int, right Int) Int { left * right }
@@ -6362,7 +6391,7 @@ pub fn multiplyMain() {
         ("subtractMain", "subtract"),
         ("multiplyMain", "multiply"),
     ] {
-        let qualified_operation = format!("lcir_integer_overflow_diagnostics.{operation_name}");
+        let qualified_operation = format!("standalone.{operation_name}");
         let operation = source_function(&program, &qualified_operation);
         let expression = operation.body.tail.as_deref().expect("operation tail");
         assert!(
@@ -6413,9 +6442,7 @@ pub fn multiplyMain() {
 
 #[test]
 fn provable_integer_arithmetic_remains_fault_free() {
-    let source = r"module lcir_provable_integer_arithmetic
-
-pub fn main() {
+    let source = r"pub fn main() {
     let value = (20 + 22) * 1 - 0
     assert value == 42
 }
@@ -6454,9 +6481,7 @@ pub fn main() {
 
 #[test]
 fn contract_int_negation_overflow_matches_interpreter_lcir_and_checked_mir() {
-    let source = r"module contract_int_negation
-
-fn guarded(value Int)
+    let source = r"fn guarded(value Int)
     requires -value >= 0
 {
 }
@@ -6559,9 +6584,7 @@ pub fn assertMain() {
 
 #[test]
 fn checked_contract_binary_overflow_and_short_circuit_match_all_backends() {
-    let source = r"module contract_checked_binary
-
-fn overflow(value Int)
+    let source = r"fn overflow(value Int)
     requires value + 1 > 0
 {
 }
@@ -6629,9 +6652,7 @@ pub fn shortCircuitMain() {
 
 #[test]
 fn contract_precondition_blame_matches_each_closed_world_call_and_checked_root() {
-    let source = r"module contract_blame
-
-fn positive(value Int)
+    let source = r"fn positive(value Int)
     requires value > 0
 {
 }
@@ -6733,9 +6754,7 @@ pub fn argumentFaultMain() {
     reason = "one differential gate keeps both coroutine call-site blame and the async-root boundary"
 )]
 fn typed_async_precondition_blame_preserves_each_call_site_and_root_span() {
-    let source = r"module async_contract_blame
-
-async fn positive(value Int)
+    let source = r"async fn positive(value Int)
     requires value > 0
 {
 }
@@ -6905,9 +6924,7 @@ test async fn c_checked_root()
 
 #[test]
 fn mutable_receiver_old_current_and_cleanup_order_match_all_backends() {
-    let source = r"module contract_mutable_receiver
-
-record Boxed { value Int }
+    let source = r"record Boxed { value Int }
 
 fn requireEqual(actual Int, expected Int) {
     assert actual == expected
@@ -6981,9 +6998,7 @@ pub fn main() {
 
 #[test]
 fn cleanup_fault_precedes_the_postcondition_and_matches_all_backends() {
-    let source = r"module contract_cleanup_fault
-
-fn failDuringCleanup()
+    let source = r"fn failDuringCleanup()
     ensures false
 {
     defer {
@@ -7046,9 +7061,7 @@ pub fn main() {
 
 #[test]
 fn nested_contract_matches_and_static_concept_calls_match_all_backends() {
-    let source = r"module contract_static_match
-
-concept Source {
+    let source = r"concept Source {
     method first(self, allowed Bool) Option[Int]
         requires allowed
         ensures match result {
@@ -7125,9 +7138,7 @@ pub fn main() {
 
 #[test]
 fn managed_text_product_remains_typed_and_live_through_a_contract_check() {
-    let source = r#"module contract_managed_product
-
-record Label { value Text }
+    let source = r#"record Label { value Text }
 
 fn accept(label Label, pressure Text)
     requires label.value == "Keep"
@@ -7169,9 +7180,7 @@ pub fn main() {
 
 #[test]
 fn source_test_roots_preserve_declaration_order_in_one_pure_artifact() {
-    let source = r"module lcir_source_tests
-
-test fn zeta() {}
+    let source = r"test fn zeta() {}
 test fn alpha() {}
 test fn middle() {}
 ";
@@ -7189,11 +7198,7 @@ test fn middle() {}
             .iter()
             .map(|result| result.name.as_str())
             .collect::<Vec<_>>(),
-        [
-            "lcir_source_tests.zeta",
-            "lcir_source_tests.alpha",
-            "lcir_source_tests.middle",
-        ]
+        ["standalone.zeta", "standalone.alpha", "standalone.middle",]
     );
     let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
     let root_names = artifact
@@ -7204,11 +7209,7 @@ test fn middle() {}
         .collect::<Vec<_>>();
     assert_eq!(
         root_names,
-        [
-            "lcir_source_tests.zeta",
-            "lcir_source_tests.alpha",
-            "lcir_source_tests.middle",
-        ]
+        ["standalone.zeta", "standalone.alpha", "standalone.middle",]
     );
     let native = emit_and_run_lcir(&artifact, "source-tests");
 
@@ -7221,9 +7222,9 @@ test fn middle() {}
     assert_eq!(
         results,
         [
-            "passed lcir_source_tests.zeta",
-            "passed lcir_source_tests.alpha",
-            "passed lcir_source_tests.middle",
+            "passed standalone.zeta",
+            "passed standalone.alpha",
+            "passed standalone.middle",
         ]
     );
     assert_pure_surface(&native.ir);
@@ -7231,9 +7232,7 @@ test fn middle() {}
 
 #[test]
 fn source_pod_records_use_direct_ssa_products_and_functional_receiver_writeback() {
-    let source = r"module lcir_source_records
-
-record Counter {
+    let source = r"record Counter {
     total Int
     calls Int
 }
@@ -7391,9 +7390,7 @@ fn projected_places_preserve_sibling_updates_and_loop_product_phis() {
 
 #[test]
 fn nested_receiver_aliases_preserve_root_to_leaf_projection_order() {
-    let source = r"module lcir_nested_receiver_aliases
-
-record Counter { value Int }
+    let source = r"record Counter { value Int }
 record Pair { left Counter, right Counter }
 record Holder { guard Int, pair Pair }
 
@@ -7506,9 +7503,7 @@ fn projected_place_products_emit_exact_i686_and_msvc_objects() {
 
 #[test]
 fn source_tuples_cross_direct_abi_and_destructure_across_three_backends() {
-    let source = r"module lcir_source_tuples
-
-record Packet { pair (Int, Bool) }
+    let source = r"record Packet { pair (Int, Bool) }
 
 fn rearrange(input (Packet, Float)) (Bool, Packet) {
     let packet, ignored = input
@@ -7595,9 +7590,7 @@ pub fn main() {
     reason = "one end-to-end fixture keeps transparent, invariant-product, direct-sum, three-backend, release, and debug evidence together"
 )]
 fn proven_refinements_and_invariant_records_are_zero_cost_typed_lcir_values() {
-    let source = r"module lcir_source_refined
-
-type Money = Float where self >= 0.0
+    let source = r"type Money = Float where self >= 0.0
 
 record Range {
     low Money
@@ -7716,9 +7709,7 @@ pub fn main() {
 
 #[test]
 fn runtime_refinement_checks_return_typed_constraint_results() {
-    let source = r"module lcir_source_dynamic_refined
-
-type Money = Float where self >= 0.0
+    let source = r"type Money = Float where self >= 0.0
 
 fn checked(raw Float) Result[Money, ConstraintError] {
     Money(raw)
@@ -7762,9 +7753,7 @@ pub fn main() {
 
 #[test]
 fn release_tuple_ir_needs_no_storage_runtime_or_executor_surface() {
-    let source = r"module lcir_release_tuples
-
-record Packet { pair (Int, Bool) }
+    let source = r"record Packet { pair (Int, Bool) }
 
 fn roundTrip(input (Packet, Float)) (Bool, Packet) {
     let packet, ignored = input
@@ -7818,9 +7807,7 @@ pub fn main() {
     reason = "one end-to-end fixture keeps tagless, tag-only, aligned tagged, nested aggregate, dead managed, and three-backend evidence together"
 )]
 fn closed_sums_cross_exact_abi_and_match_across_three_backends() {
-    let source = r"module lcir_source_sums
-
-enum Single { Wrapped(Int) }
+    let source = r"enum Single { Wrapped(Int) }
 
 enum Flag { Off, On }
 
@@ -7945,9 +7932,7 @@ pub fn main() {
 
 #[test]
 fn release_sum_ir_eliminates_carrier_scratch_and_runtime_surfaces() {
-    let source = r"module lcir_release_sums
-
-enum Odd {
+    let source = r"enum Odd {
     Empty
     Wide(Int)
     Bytes(Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool, Bool)
@@ -8123,9 +8108,7 @@ fn closed_sum_carriers_emit_as_native_msvc_objects_without_fallback() {
 
 #[test]
 fn result_unit_test_outcomes_drive_native_and_checked_mir_harnesses() {
-    let source = r"module lcir_result_tests
-
-enum Problem { Failed(Int) }
+    let source = r"enum Problem { Failed(Int) }
 
 test fn succeeds() Result[Unit, Problem] { Ok(Unit) }
 
@@ -8137,7 +8120,7 @@ test fn fails() Result[Unit, Problem] { Err(Problem.Failed(7)) }
     assert_eq!(
         interpreted
             .iter()
-            .find(|result| result.name == "lcir_result_tests.succeeds")
+            .find(|result| result.name == "standalone.succeeds")
             .expect("success test")
             .status,
         TestStatus::Passed,
@@ -8146,7 +8129,7 @@ test fn fails() Result[Unit, Problem] { Err(Problem.Failed(7)) }
     assert_eq!(
         interpreted
             .iter()
-            .find(|result| result.name == "lcir_result_tests.fails")
+            .find(|result| result.name == "standalone.fails")
             .expect("failure test")
             .status,
         TestStatus::Failed,
@@ -8158,7 +8141,7 @@ test fn fails() Result[Unit, Problem] { Err(Problem.Failed(7)) }
     let checked_mir = emit_and_run_checked_mir_tests(&program, "checked-mir-result-tests");
     assert!(!lcir.output.status.success(), "{:?}", lcir.output);
     assert!(!checked_mir.status.success(), "{checked_mir:?}");
-    let expected = b"passed lcir_result_tests.succeeds\nfailed lcir_result_tests.fails\n";
+    let expected = b"passed standalone.succeeds\nfailed standalone.fails\n";
     assert_eq!(lcir.output.stdout, expected);
     assert_eq!(checked_mir.stdout, expected);
     assert!(lcir.ir.contains("test.result.succeeded"), "{}", lcir.ir);
@@ -8168,9 +8151,7 @@ test fn fails() Result[Unit, Problem] { Err(Problem.Failed(7)) }
 
 #[test]
 fn fallible_result_test_checks_runtime_status_before_the_sum_outcome() {
-    let source = r"module lcir_fallible_result_tests
-
-enum Problem { Failed }
+    let source = r"enum Problem { Failed }
 
 test fn passes() Result[Unit, Problem] { Ok(Unit) }
 
@@ -8185,7 +8166,7 @@ test fn faults() Result[Unit, Problem] {
     assert_eq!(
         interpreted
             .iter()
-            .find(|result| result.name == "lcir_fallible_result_tests.passes")
+            .find(|result| result.name == "standalone.passes")
             .expect("passing test")
             .status,
         TestStatus::Passed,
@@ -8194,7 +8175,7 @@ test fn faults() Result[Unit, Problem] {
     assert_eq!(
         interpreted
             .iter()
-            .find(|result| result.name == "lcir_fallible_result_tests.faults")
+            .find(|result| result.name == "standalone.faults")
             .expect("faulting test")
             .status,
         TestStatus::Failed,
@@ -8211,14 +8192,8 @@ test fn faults() Result[Unit, Problem] {
     );
     assert!(!lcir.output.status.success(), "{:?}", lcir.output);
     let stdout = String::from_utf8(lcir.output.stdout).expect("UTF-8 LCIR test output");
-    assert!(
-        stdout.contains("passed lcir_fallible_result_tests.passes"),
-        "{stdout}"
-    );
-    assert!(
-        stdout.contains("failed lcir_fallible_result_tests.faults"),
-        "{stdout}"
-    );
+    assert!(stdout.contains("passed standalone.passes"), "{stdout}");
+    assert!(stdout.contains("failed standalone.faults"), "{stdout}");
     assert!(lcir.ir.contains("test.outcome.succeeded"), "{}", lcir.ir);
     assert!(
         lcir.ir.contains("name: \"LoomFallible<LoomSum<t"),
@@ -8231,9 +8206,7 @@ test fn faults() Result[Unit, Problem] {
 
 #[test]
 fn nested_projected_fault_edges_reconstruct_each_mutable_receiver() {
-    let source = r"module lcir_source_record_fault
-
-record Counter { value Int }
+    let source = r"record Counter { value Int }
 record Pair { left Counter, right Counter }
 record Holder { pair Pair, guard Int }
 
@@ -8316,7 +8289,10 @@ pub fn main() {
     reason = "one differential gate keeps typed coroutine planning, forced parent-root relocation, run/test harnesses, ABI shape, and cross-target object emission together"
 )]
 fn typed_async_state_machines_survive_forced_relocation_on_all_targets() {
-    let source = include_str!("../../../fixtures/lcir-typed-async/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-typed-async/main.loom"),
+        include_str!("../../../fixtures/lcir-typed-async/main_test.loom")
+    );
     let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let prepared = prepare_native_object(
@@ -8482,7 +8458,10 @@ fn typed_async_state_machines_survive_forced_relocation_on_all_targets() {
     reason = "one differential gate keeps List/TextMap coroutine signatures, suspension roots, debug types, relocation pressure, and cross-target objects together"
 )]
 fn managed_collections_are_exact_typed_coroutine_frame_carriers() {
-    let source = include_str!("../../../fixtures/lcir-async-managed-collections/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-async-managed-collections/main.loom"),
+        include_str!("../../../fixtures/lcir-async-managed-collections/main_test.loom")
+    );
     let (program, debug_sources) = compile_source_with_debug_sources(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let interpreted = Interpreter::new(&program).run_tests();
@@ -8653,7 +8632,10 @@ fn managed_collections_are_exact_typed_coroutine_frame_carriers() {
     reason = "one source gate proves direct, transitive, fallible, composite, debug, native, and cross-target hidden-executor ABI behavior"
 )]
 fn synchronous_task_helpers_borrow_one_checked_executor_context() {
-    let source = include_str!("../../../fixtures/lcir-sync-task-helpers/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-sync-task-helpers/main.loom"),
+        include_str!("../../../fixtures/lcir-sync-task-helpers/main_test.loom")
+    );
     let (program, debug_sources) = compile_source_with_debug_sources(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let interpreted_tests = Interpreter::new(&program).run_tests();
@@ -8866,7 +8848,10 @@ fn synchronous_task_helpers_borrow_one_checked_executor_context() {
 
 #[test]
 fn typed_sleep_uses_checked_lcir_and_the_narrow_timer_runtime_abi() {
-    let source = include_str!("../../../fixtures/lcir-typed-sleep/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-typed-sleep/main.loom"),
+        include_str!("../../../fixtures/lcir-typed-sleep/main_test.loom")
+    );
     let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let prepared = prepare_native_object(
@@ -8965,9 +8950,7 @@ fn typed_sleep_uses_checked_lcir_and_the_narrow_timer_runtime_abi() {
 
 #[test]
 fn typed_sleep_source_faults_match_interpreter_and_checked_mir_codegen() {
-    let source = r"module lcir_typed_sleep_faults
-
-pub async fn negativeMain() {
+    let source = r"pub async fn negativeMain() {
     let timer = Task.sleep(-1)
     timer.await
 }
@@ -9036,7 +9019,10 @@ pub async fn overflowMain() {
     reason = "one differential gate keeps direct and first-class heterogeneous Task.all lowering, exact moving-GC roots, shape reuse, failure propagation, and cross-target objects together"
 )]
 fn typed_static_task_all_uses_exact_direct_and_first_class_codegen() {
-    let source = include_str!("../../../fixtures/lcir-typed-task-all/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-typed-task-all/main.loom"),
+        include_str!("../../../fixtures/lcir-typed-task-all/main_test.loom")
+    );
     let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let prepared = prepare_native_object(
@@ -9210,9 +9196,7 @@ fn typed_static_task_all_uses_exact_direct_and_first_class_codegen() {
 
 #[test]
 fn typed_fixed_task_any_selects_one_exact_winner_and_reports_all_failed() {
-    let source = r#"module lcir_typed_task_any
-
-async fn slow() Text {
+    let source = r#"async fn slow() Text {
     Task.sleep(20).await
     "slow"
 }
@@ -9304,7 +9288,10 @@ pub async fn allFailed() {
     reason = "one source gate keeps settled/race outcome capture, managed fault roots, winner selection, loser cleanup, tests, and cross-target objects together"
 )]
 fn typed_fixed_task_outcomes_capture_faults_and_race_nonzero_winners() {
-    let source = include_str!("../../../fixtures/lcir-typed-task-outcomes/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-typed-task-outcomes/main.loom"),
+        include_str!("../../../fixtures/lcir-typed-task-outcomes/main_test.loom")
+    );
     let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
 
@@ -9427,9 +9414,7 @@ fn typed_fixed_task_outcomes_capture_faults_and_race_nonzero_winners() {
 
 #[test]
 fn typed_first_class_task_all_propagates_fault_and_cancels_siblings() {
-    let source = r#"module typed_task_all_fault
-
-fn increment(value Int) Int { value + 1 }
+    let source = r#"fn increment(value Int) Int { value + 1 }
 
 async fn overflowChild() Int { increment(9223372036854775807) }
 
@@ -9485,7 +9470,10 @@ pub async fn main() {
     reason = "one differential gate keeps fallible coroutine effects, ordinary Result values, exact child-fault inheritance, root lifecycles, and cross-target objects together"
 )]
 fn fallible_typed_async_results_and_faults_close_the_native_route() {
-    let source = include_str!("../../../fixtures/lcir-fallible-async/main.loom");
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-fallible-async/main.loom"),
+        include_str!("../../../fixtures/lcir-fallible-async/main_test.loom")
+    );
     let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     for policy in [NativeRoutePolicy::Automatic, NativeRoutePolicy::LcirOnly] {
@@ -9738,9 +9726,7 @@ fn fallible_typed_async_results_and_faults_close_the_native_route() {
         );
     }
 
-    let fault_source = r"module fallible_async_faults
-
-fn increment(value Int) Int { value + 1 }
+    let fault_source = r"fn increment(value Int) Int { value + 1 }
 
 async fn overflowChild() Int { increment(9223372036854775807) }
 

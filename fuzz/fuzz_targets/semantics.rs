@@ -50,8 +50,7 @@ fuzz_target!(|input: &[u8]| {
     };
 
     let source = format!(
-        "module fuzz.proof\n\n\
-         type Checked = Int where {predicate}\n\n\
+        "type Checked = Int where {predicate}\n\n\
          fn direct() Checked {{\n\
              Checked({proven})\n\
          }}\n\n\
@@ -85,8 +84,7 @@ fuzz_target!(|input: &[u8]| {
     // A literal that contradicts the same predicate must never be silently
     // accepted as a direct constrained value.
     let rejected_source = format!(
-        "module fuzz.reject\n\n\
-         type Checked = Int where {predicate}\n\n\
+        "type Checked = Int where {predicate}\n\n\
          fn rejected() Checked {{ Checked({rejected}) }}\n"
     );
     assert!(compile(&rejected_source).is_err());
@@ -106,19 +104,16 @@ fn exercise_structured_builtin_values(input: &[u8]) {
     let invalid = match input.get(1).copied().unwrap_or_default() % 6 {
         0 => {
             r#"
-module fuzz.structured.reject
 fn bad[V](left TextMap[V], right TextMap[V]) Bool { left == right }
 "#
         }
         1 => {
             r#"
-module fuzz.structured.reject
 fn bad() TextMap[Int] { TextMap[Int]().insert("key", "wrong") }
 "#
         }
         2 => {
             r#"
-module fuzz.structured.reject
 fn bad(value Json) {
     match value {
         Null => Unit
@@ -129,13 +124,11 @@ fn bad(value Json) {
         }
         3 => {
             r#"
-module fuzz.structured.reject
 fn bad() Json { Json.Null() }
 "#
         }
         4 => {
             r#"
-module fuzz.structured.reject
 fn bad(value IoErrorKind) {
     match value {
         NotFound => Unit
@@ -146,7 +139,6 @@ fn bad(value IoErrorKind) {
         }
         _ => {
             r#"
-module fuzz.structured.reject
 import std.log.write
 fn bad() {
     write(LogLevel.Info, "event", TextMap[Int]())

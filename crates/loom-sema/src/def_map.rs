@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use loom_core::{Diagnostic, Name, Span};
+use loom_core::{Diagnostic, FileId, Name, Span};
 use loom_hir::{DefId, DefinitionKind, ModuleId, Program, Visibility};
 use serde::{Deserialize, Serialize};
 
@@ -56,28 +56,19 @@ impl Binding {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct DefMap {
+struct ScopeMap {
     types: BTreeMap<Name, Binding>,
     values: BTreeMap<Name, Binding>,
     concepts: BTreeMap<Name, Binding>,
-    local_types: BTreeMap<Name, Binding>,
-    local_values: BTreeMap<Name, Binding>,
-    local_concepts: BTreeMap<Name, Binding>,
 }
 
-impl DefMap {
-    #[must_use]
-    pub fn resolve(&self, namespace: Namespace, name: &Name) -> Option<&Binding> {
+impl ScopeMap {
+    fn resolve(&self, namespace: Namespace, name: &Name) -> Option<&Binding> {
         self.namespace(namespace).get(name)
     }
 
-    pub fn entries(&self, namespace: Namespace) -> impl Iterator<Item = (&Name, &Binding)> {
+    fn entries(&self, namespace: Namespace) -> impl Iterator<Item = (&Name, &Binding)> {
         self.namespace(namespace).iter()
-    }
-
-    #[must_use]
-    pub fn resolve_local(&self, namespace: Namespace, name: &Name) -> Option<&Binding> {
-        self.local_namespace(namespace).get(name)
     }
 
     fn namespace(&self, namespace: Namespace) -> &BTreeMap<Name, Binding> {
@@ -96,35 +87,61 @@ impl DefMap {
         }
     }
 
-    fn local_namespace(&self, namespace: Namespace) -> &BTreeMap<Name, Binding> {
-        match namespace {
-            Namespace::Type => &self.local_types,
-            Namespace::Value => &self.local_values,
-            Namespace::Concept => &self.local_concepts,
-        }
-    }
-
-    fn local_namespace_mut(&mut self, namespace: Namespace) -> &mut BTreeMap<Name, Binding> {
-        match namespace {
-            Namespace::Type => &mut self.local_types,
-            Namespace::Value => &mut self.local_values,
-            Namespace::Concept => &mut self.local_concepts,
-        }
-    }
-
     fn insert(&mut self, namespace: Namespace, name: Name, definition: DefId) {
         self.namespace_mut(namespace)
             .entry(name)
             .and_modify(|binding| binding.merge(definition))
             .or_insert(Binding::Unique(definition));
     }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct DefMap {
+    local: ScopeMap,
+    files: BTreeMap<FileId, ScopeMap>,
+}
+
+impl DefMap {
+    /// Resolves an unqualified name in one source file. Declarations from the
+    /// directory package are shared, while imported bindings are file-local.
+    #[must_use]
+    pub fn resolve(&self, namespace: Namespace, name: &Name, file: FileId) -> Option<&Binding> {
+        self.files
+            .get(&file)
+            .unwrap_or(&self.local)
+            .resolve(namespace, name)
+    }
+
+    pub fn entries(
+        &self,
+        namespace: Namespace,
+        file: FileId,
+    ) -> impl Iterator<Item = (&Name, &Binding)> {
+        self.files
+            .get(&file)
+            .unwrap_or(&self.local)
+            .entries(namespace)
+    }
+
+    #[must_use]
+    pub fn resolve_local(&self, namespace: Namespace, name: &Name) -> Option<&Binding> {
+        self.local.resolve(namespace, name)
+    }
+
+    fn local_entries(&self, namespace: Namespace) -> impl Iterator<Item = (&Name, &Binding)> {
+        self.local.entries(namespace)
+    }
 
     fn insert_local(&mut self, namespace: Namespace, name: Name, definition: DefId) {
-        self.local_namespace_mut(namespace)
-            .entry(name.clone())
-            .and_modify(|binding| binding.merge(definition))
-            .or_insert(Binding::Unique(definition));
-        self.insert(namespace, name, definition);
+        self.local.insert(namespace, name, definition);
+    }
+
+    fn insert_import(&mut self, file: FileId, namespace: Namespace, name: Name, definition: DefId) {
+        let local = self.local.clone();
+        self.files
+            .entry(file)
+            .or_insert(local)
+            .insert(namespace, name, definition);
     }
 }
 
@@ -174,7 +191,7 @@ impl DefMapBuild {
     fn report_local_duplicates(&mut self, program: &Program) {
         for (module, map) in &self.maps {
             for namespace in [Namespace::Type, Namespace::Value, Namespace::Concept] {
-                for (name, binding) in map.entries(namespace) {
+                for (name, binding) in map.local_entries(namespace) {
                     let Binding::Duplicate(candidates) = binding else {
                         continue;
                     };
@@ -235,7 +252,8 @@ impl DefMapBuild {
                     found = true;
                     for definition in binding.candidates() {
                         if program.definitions[*definition].visibility == Visibility::Public {
-                            self.maps.entry(module).or_default().insert(
+                            self.maps.entry(module).or_default().insert_import(
+                                import.file,
                                 namespace,
                                 imported_name.clone(),
                                 *definition,
@@ -328,6 +346,7 @@ mod tests {
     fn import(file: FileId, module: &str, item: &str) -> Import {
         let span = Span::new(file, 0, 10);
         Import {
+            file,
             path: Path {
                 segments: module
                     .split('.')
@@ -359,6 +378,27 @@ mod tests {
                 }),
             },
             Span::new(FileId(0), 0, 1),
+        )
+    }
+
+    fn private_function(
+        program: &mut Program,
+        module: loom_hir::ModuleId,
+        file: FileId,
+        name: &str,
+    ) -> loom_hir::DefId {
+        program.alloc_definition(
+            Definition {
+                module,
+                name: Some(Name::new(name)),
+                visibility: Visibility::Private,
+                kind: DefinitionKind::Function(FunctionDef {
+                    signature: CallableSignature::default(),
+                    is_async: false,
+                    body: loom_hir::BodyId::from_raw(0),
+                }),
+            },
+            Span::new(file, 0, 1),
         )
     }
 
@@ -407,9 +447,69 @@ mod tests {
         let binding = build
             .map(module)
             .unwrap()
-            .resolve(Namespace::Value, &Name::new("same"))
+            .resolve(Namespace::Value, &Name::new("same"), FileId(0))
             .unwrap();
         assert!(matches!(binding, Binding::Duplicate(candidates) if candidates.len() == 2));
+    }
+
+    #[test]
+    fn imports_are_file_local_while_directory_declarations_are_shared() {
+        let mut program = Program::default();
+        let application_package = PackageId::new("application", "0");
+        let dependency_package = PackageId::new("dependency", "0");
+        let first_file = FileId(1);
+        let second_file = FileId(2);
+        let application = program.intern_package_module(
+            application_package.clone(),
+            ModuleName::new("application"),
+            first_file,
+            Span::new(first_file, 0, 1),
+        );
+        program.intern_package_module(
+            application_package.clone(),
+            ModuleName::new("application"),
+            second_file,
+            Span::new(second_file, 0, 1),
+        );
+        let dependency = program.intern_package_module(
+            dependency_package.clone(),
+            ModuleName::new("dependency.tools"),
+            FileId(3),
+            Span::new(FileId(3), 0, 1),
+        );
+        let imported = public_function(&mut program, dependency, "answer");
+        let shared = private_function(&mut program, application, second_file, "shared");
+        program.modules[application]
+            .imports
+            .push(import(first_file, "dep.tools", "answer"));
+        program.register_package(dependency_package.clone(), [], false);
+        program.register_package(
+            application_package,
+            [(Name::new("dep"), dependency_package)],
+            true,
+        );
+
+        let build = DefMapBuild::build(&program);
+        assert!(build.diagnostics.is_empty(), "{:#?}", build.diagnostics);
+        let map = build.map(application).expect("application definition map");
+        assert_eq!(
+            map.resolve(Namespace::Value, &Name::new("answer"), first_file)
+                .and_then(Binding::unique),
+            Some(imported)
+        );
+        assert!(
+            map.resolve(Namespace::Value, &Name::new("answer"), second_file)
+                .is_none(),
+            "an import from the first file must not leak into the second file"
+        );
+        for file in [first_file, second_file] {
+            assert_eq!(
+                map.resolve(Namespace::Value, &Name::new("shared"), file)
+                    .and_then(Binding::unique),
+                Some(shared),
+                "directory-package declarations remain shared"
+            );
+        }
     }
 
     #[test]
@@ -481,14 +581,14 @@ mod tests {
             build
                 .map(process)
                 .unwrap()
-                .resolve(Namespace::Value, &Name::new("__arguments"))
+                .resolve(Namespace::Value, &Name::new("__arguments"), FileId(1),)
                 .is_none()
         );
         assert_eq!(
             build
                 .map(application)
                 .unwrap()
-                .resolve(Namespace::Value, &Name::new("arguments"))
+                .resolve(Namespace::Value, &Name::new("arguments"), FileId(4))
                 .and_then(Binding::unique),
             Some(arguments)
         );

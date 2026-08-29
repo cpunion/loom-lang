@@ -1,5 +1,5 @@
-use loom_core::FileId;
-use loom_hir::{Program, SourceUnit, lower_files};
+use loom_core::{FileId, ModuleName, Name, PackageId};
+use loom_hir::{PackageSourceUnit, Program, SourceUnit, lower_files, lower_package_files};
 use loom_sema::{Analysis, CallTarget, TaskIntrinsic, analyze};
 use loom_syntax::parse_with_file;
 
@@ -42,8 +42,6 @@ fn task_intrinsics(analysis: &Analysis) -> Vec<TaskIntrinsic> {
 fn canonical_task_members_resolve_to_task_intrinsics() {
     let (_, analysis) = analyze_source(
         r"
-module canonical_task
-
 async fn child() Int { 1 }
 
 pub async fn main() {
@@ -76,8 +74,6 @@ pub async fn main() {
 fn local_and_parameter_named_task_keep_ordinary_method_identity() {
     let (_, analysis) = analyze_source(
         r"
-module shadowed_task
-
 record Scheduler {}
 
 impl Scheduler {
@@ -126,8 +122,6 @@ fn parameterReceiver(Task Scheduler) {
 fn ambiguous_value_named_task_never_falls_back_to_task_intrinsics() {
     let (_, analysis) = analyze_source(
         r"
-module ambiguous_task
-
 record Scheduler {}
 
 fn Task() Scheduler { Scheduler {} }
@@ -163,8 +157,6 @@ fn invalid_private_task_import_never_falls_back_to_task_intrinsics() {
     let library = parse_with_file(
         FileId(0),
         r"
-module library
-
 record Scheduler {}
 fn Task() Scheduler { Scheduler {} }
 ",
@@ -172,8 +164,6 @@ fn Task() Scheduler { Scheduler {} }
     let application = parse_with_file(
         FileId(1),
         r"
-module application
-
 import library.Task
 
 fn useTask() {
@@ -183,17 +173,31 @@ fn useTask() {
     );
     assert!(library.diagnostics().is_empty());
     assert!(application.diagnostics().is_empty());
-    let lowered = lower_files([
-        SourceUnit {
+    let library_package = PackageId::new("library", "0");
+    let application_package = PackageId::new("application", "0");
+    let mut lowered = lower_package_files([
+        PackageSourceUnit {
             file: FileId(0),
+            package: library_package.clone(),
+            module: ModuleName::new("library"),
             syntax: library.ast(),
         },
-        SourceUnit {
+        PackageSourceUnit {
             file: FileId(1),
+            package: application_package.clone(),
+            module: ModuleName::new("application"),
             syntax: application.ast(),
         },
     ]);
     assert!(lowered.diagnostics.is_empty(), "{:#?}", lowered.diagnostics);
+    lowered
+        .program
+        .register_package(library_package.clone(), [], false);
+    lowered.program.register_package(
+        application_package,
+        [(Name::new("library"), library_package)],
+        true,
+    );
     let analysis = analyze(&lowered.program);
     assert!(analysis.has_errors());
     assert!(task_intrinsics(&analysis).is_empty());
@@ -212,8 +216,6 @@ fn imported_enum_constructors_still_use_the_type_namespace() {
     let library = parse_with_file(
         FileId(0),
         r"
-module library
-
 pub enum CheckoutError {
     OutOfStock
     Rejected
@@ -223,8 +225,6 @@ pub enum CheckoutError {
     let application = parse_with_file(
         FileId(1),
         r"
-module application
-
 import library.CheckoutError
 
 fn rejected() CheckoutError { CheckoutError.Rejected }
@@ -233,17 +233,31 @@ fn outOfStock() CheckoutError { CheckoutError.OutOfStock }
     );
     assert!(library.diagnostics().is_empty());
     assert!(application.diagnostics().is_empty());
-    let lowered = lower_files([
-        SourceUnit {
+    let library_package = PackageId::new("library", "0");
+    let application_package = PackageId::new("application", "0");
+    let mut lowered = lower_package_files([
+        PackageSourceUnit {
             file: FileId(0),
+            package: library_package.clone(),
+            module: ModuleName::new("library"),
             syntax: library.ast(),
         },
-        SourceUnit {
+        PackageSourceUnit {
             file: FileId(1),
+            package: application_package.clone(),
+            module: ModuleName::new("application"),
             syntax: application.ast(),
         },
     ]);
     assert!(lowered.diagnostics.is_empty(), "{:#?}", lowered.diagnostics);
+    lowered
+        .program
+        .register_package(library_package.clone(), [], false);
+    lowered.program.register_package(
+        application_package,
+        [(Name::new("library"), library_package)],
+        true,
+    );
     let analysis = analyze(&lowered.program);
     assert!(
         analysis.diagnostics.is_empty(),
@@ -265,8 +279,6 @@ fn outOfStock() CheckoutError { CheckoutError.OutOfStock }
 fn user_type_named_task_cannot_forge_a_task_intrinsic() {
     let (_, analysis) = analyze_source(
         r"
-module forged_task_type
-
 record Task {}
 
 fn useTask() {
@@ -282,8 +294,6 @@ fn useTask() {
 fn generic_parameter_named_task_cannot_forge_a_task_intrinsic() {
     let (_, analysis) = analyze_source(
         r"
-module forged_task_parameter
-
 async fn child() Int { 1 }
 
 async fn useTask[Task]() {

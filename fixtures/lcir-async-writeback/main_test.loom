@@ -1,0 +1,3 @@
+test async fn synchronousWritebackInsideCoroutine() {
+    verifyWriteback().await
+}

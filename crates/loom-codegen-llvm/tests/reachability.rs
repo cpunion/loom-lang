@@ -5,7 +5,8 @@ use std::fs;
 
 use loom_codegen_ir::{SourceRoots, analyze_source_reachability};
 use loom_codegen_llvm::{EmitOptions, native_object_fingerprint};
-use loom_driver::AnalysisHost;
+
+mod support;
 use loom_mir::{
     Block, Builtin, CallArgument, CallPlan, CallTarget, CheckedProgram, ConceptDef, ConceptId,
     Constant, Expr, ExprId, ExprKind, Function, FunctionId, LocalDecl, LocalId, Place, Program,
@@ -281,9 +282,7 @@ fn structured_builtins_scan_nested_witnesses_only_from_live_roots() {
     let source = tempfile::tempdir().expect("create structured graph project");
     fs::write(
         source.path().join("main.loom"),
-        r#"module structured_graph
-
-import std.json.parse_json
+        r#"import std.json.parse_json
 import std.log.info
 import std.log.warn
 
@@ -309,7 +308,7 @@ fn dead() {
 "#,
     )
     .expect("write structured graph source");
-    let snapshot = AnalysisHost::new(source.path())
+    let snapshot = support::analysis_host(source.path())
         .expect("load structured graph source")
         .snapshot()
         .expect("analyze structured graph source");
@@ -329,8 +328,8 @@ fn dead() {
         BTreeSet::from([
             "std.log.info",
             "std.log.write_without_fields",
-            "structured_graph.main",
-            "structured_graph.markInt",
+            "standalone.main",
+            "standalone.markInt",
         ])
     );
     assert_eq!(reachable.witnesses.len(), 1);
@@ -350,9 +349,7 @@ fn structured_artifact_and_native_cache_identities_respect_dce_boundary() {
     let source = directory.path().join("main.loom");
     fs::write(
         &source,
-        r#"module cache.structured
-
-import std.json.parse_json
+        r#"import std.json.parse_json
 import std.log.info
 import std.log.warn
 
@@ -368,7 +365,7 @@ fn dead(text Text) {
 "#,
     )
     .expect("write source");
-    let snapshot = AnalysisHost::new(&source)
+    let snapshot = support::analysis_host(&source)
         .expect("load source")
         .snapshot()
         .expect("analyze source");

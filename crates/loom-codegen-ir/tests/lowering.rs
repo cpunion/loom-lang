@@ -11,7 +11,7 @@ use loom_codegen_ir::{
     PATH_TYPE_ID, ResourceLimitCode, SourceArtifactRequest, TargetLayout, TerminatorKind,
     UnsupportedFeature, artifact_identity, dump_program, lower_typed_artifact, plan_managed_roots,
 };
-use loom_core::{FileId, LOOM_LANGUAGE_VERSION, Name, PackageId, Span};
+use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId, Span};
 use loom_hir::{PackageSourceUnit, SourceUnit, lower_files, lower_package_files};
 use loom_lowering::lower_to_mir;
 use loom_mir::{
@@ -24,16 +24,32 @@ use loom_syntax::parse_with_file;
 use wait_timeout::ChildExt as _;
 
 fn compile(source: &str) -> loom_mir::CheckedProgram {
-    let parsed = parse_with_file(FileId(0), source);
+    compile_source_files(&[source])
+}
+
+fn compile_source_files(sources: &[&str]) -> loom_mir::CheckedProgram {
+    let parsed = sources
+        .iter()
+        .enumerate()
+        .map(|(index, source)| {
+            parse_with_file(
+                FileId(u32::try_from(index).expect("test source count fits FileId")),
+                source,
+            )
+        })
+        .collect::<Vec<_>>();
     assert!(
-        parsed.diagnostics().is_empty(),
+        parsed.iter().all(|parsed| parsed.diagnostics().is_empty()),
         "syntax diagnostics: {:#?}",
-        parsed.diagnostics()
+        parsed
+            .iter()
+            .flat_map(loom_syntax::Parse::diagnostics)
+            .collect::<Vec<_>>()
     );
-    let lowered = lower_files([SourceUnit {
-        file: FileId(0),
+    let lowered = lower_files(parsed.iter().enumerate().map(|(index, parsed)| SourceUnit {
+        file: FileId(u32::try_from(index).expect("test source count fits FileId")),
         syntax: parsed.ast(),
-    }]);
+    }));
     assert!(
         lowered.diagnostics.is_empty(),
         "HIR diagnostics: {:#?}",
@@ -49,7 +65,11 @@ fn compile(source: &str) -> loom_mir::CheckedProgram {
         .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
 }
 
-fn compile_with_std_module(source: &str, std_source: &str) -> loom_mir::CheckedProgram {
+fn compile_with_std_module(
+    source: &str,
+    std_module_name: &str,
+    std_source: &str,
+) -> loom_mir::CheckedProgram {
     let application = parse_with_file(FileId(0), source);
     let std_module = parse_with_file(FileId(1), std_source);
     assert!(
@@ -64,11 +84,13 @@ fn compile_with_std_module(source: &str, std_source: &str) -> loom_mir::CheckedP
         PackageSourceUnit {
             file: FileId(0),
             package: root.clone(),
+            module: ModuleName::new("codegen_ir_test"),
             syntax: application.ast(),
         },
         PackageSourceUnit {
             file: FileId(1),
             package: std_package.clone(),
+            module: ModuleName::new(std_module_name),
             syntax: std_module.ast(),
         },
     ]);
@@ -96,16 +118,25 @@ fn compile_with_std_module(source: &str, std_source: &str) -> loom_mir::CheckedP
 fn compile_with_std_resource(source: &str) -> loom_mir::CheckedProgram {
     compile_with_std_module(
         source,
-        include_str!("../../../library/std/src/resource.loom"),
+        "std.resource",
+        include_str!("../../../library/std/resource/resource.loom"),
     )
 }
 
 fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
-    compile_with_std_module(source, include_str!("../../../library/std/src/log.loom"))
+    compile_with_std_module(
+        source,
+        "std.log",
+        include_str!("../../../library/std/log/log.loom"),
+    )
 }
 
 fn compile_with_std_json(source: &str) -> loom_mir::CheckedProgram {
-    compile_with_std_module(source, include_str!("../../../library/std/src/json.loom"))
+    compile_with_std_module(
+        source,
+        "std.json",
+        include_str!("../../../library/std/json/json.loom"),
+    )
 }
 
 fn lower_run(source: &str) -> LoweringOutcome {
@@ -171,9 +202,7 @@ fn complete_dump(source: &str) -> String {
 )]
 fn canonical_bytes_lower_to_exact_typed_operations_effects_roots_and_content_equality() {
     let outcome = lower_run(
-        r#"module typed_bytes
-
-fn exercise(left Text, right Text) Bool {
+        r#"fn exercise(left Text, right Text) Bool {
     let bytes = left.encode_utf8()
     let appended = bytes.append("!".encode_utf8())
     let count = appended.length()
@@ -300,9 +329,7 @@ pub fn main() {
 #[test]
 fn canonical_paths_lower_to_exact_typed_operations_effects_and_safepoints() {
     let outcome = lower_run(
-        r#"module typed_path
-
-fn exercise(base Path, child Path) {
+        r#"fn exercise(base Path, child Path) {
     discard base.join(child)
     discard base.as_text()
 }
@@ -402,9 +429,7 @@ pub fn main() {
 #[test]
 fn source_backed_logging_helpers_lower_to_typed_fault_control_flow() {
     let outcome = lower_run_with_std_log(
-        r#"module typed_logging
-
-import std.log.debug
+        r#"import std.log.debug
 import std.log.info
 import std.log.warn
 import std.log.error
@@ -476,9 +501,7 @@ pub fn main() {
     }
 }
 
-const TYPED_ASYNC_SOURCE: &str = r"module lcir_typed_async
-
-async fn echo(value Bool) Bool {
+const TYPED_ASYNC_SOURCE: &str = r"async fn echo(value Bool) Bool {
     value
 }
 
@@ -492,7 +515,10 @@ pub async fn main() {
 }
 ";
 
-const TYPED_TASK_ALL_SOURCE: &str = include_str!("../../../fixtures/lcir-typed-task-all/main.loom");
+const TYPED_TASK_ALL_SOURCE: &str = concat!(
+    include_str!("../../../fixtures/lcir-typed-task-all/main.loom"),
+    include_str!("../../../fixtures/lcir-typed-task-all/main_test.loom")
+);
 
 #[test]
 fn async_scalar_call_and_await_lower_to_a_checked_coroutine_plan() {
@@ -547,9 +573,7 @@ fn async_scalar_call_and_await_lower_to_a_checked_coroutine_plan() {
 #[test]
 fn async_scoped_and_defer_cleanup_are_explicit_on_every_suspension_exit() {
     let outcome = lower_run_with_std_resource(
-        r"module typed_async_resource
-
-import std.resource.Dispose
+        r"import std.resource.Dispose
 import std.resource.MustScope
 
 record Resource {
@@ -747,9 +771,7 @@ fn static_heterogeneous_task_all_uses_direct_and_first_class_checked_shapes() {
     reason = "one route-selection matrix pins fixed, generic, stored, dynamic, and unsupported join modes together"
 )]
 fn immediately_awaited_fixed_task_any_lowers_but_stored_and_dynamic_joins_fall_back() {
-    let fixed = r"module fixed_task_any
-
-async fn child(value Int) Int { value }
+    let fixed = r"async fn child(value Int) Int { value }
 
 pub async fn main() {
     discard Task.any(child(1), child(2)).await
@@ -793,9 +815,7 @@ pub async fn main() {
     );
     assert!(dump_program(fixed.program()).contains("await_tasks any state 1"));
 
-    let generic = r"module generic_task_any
-
-async fn child[T](value T) T { value }
+    let generic = r"async fn child[T](value T) T { value }
 
 async fn choose[T](first T, second T) T {
     Task.any(child(first), child(second)).await
@@ -810,9 +830,7 @@ pub async fn main() {
     };
     assert!(dump_program(generic.program()).contains("await_tasks any"));
 
-    let stored = r"module stored_task_any
-
-async fn child(value Int) Int { value }
+    let stored = r"async fn child(value Int) Int { value }
 
 pub async fn main() {
     let pending = Task.any(child(1), child(2))
@@ -829,9 +847,7 @@ pub async fn main() {
             .any(|item| { item.feature() == UnsupportedFeature::TaskOperation })
     );
 
-    let dynamic = r"module dynamic_task_all
-
-async fn child(value Int) Int { value }
+    let dynamic = r"async fn child(value Int) Int { value }
 
 pub async fn main() {
     let tasks = [child(1), child(2)]
@@ -848,9 +864,7 @@ pub async fn main() {
             .any(|item| { item.feature() == UnsupportedFeature::TaskOperation })
     );
 
-    let terminal = r#"module terminal_task_joins
-
-async fn child(value Int) Int { value }
+    let terminal = r#"async fn child(value Int) Int { value }
 async fn label() Text { "two" }
 
 pub async fn main() {
@@ -883,9 +897,7 @@ pub async fn main() {
 
 #[test]
 fn sole_nonempty_task_list_literals_expand_to_fixed_rows_without_input_list_values() {
-    let source = r"module static_task_list_joins
-
-async fn child(value Int) Int { value }
+    let source = r"async fn child(value Int) Int { value }
 
 pub async fn main() {
     discard Task.all([child(1), child(2)]).await
@@ -987,9 +999,7 @@ pub async fn main() {
 
 #[test]
 fn empty_and_stored_task_list_joins_remain_whole_artifact_fallbacks() {
-    let empty = r"module empty_task_list_join
-
-pub async fn main() {
+    let empty = r"pub async fn main() {
     discard Task.all(List[Task[Int]]()).await
 }
 ";
@@ -1003,9 +1013,7 @@ pub async fn main() {
         )
     }));
 
-    let stored = r"module stored_task_list_join
-
-async fn child(value Int) Int { value }
+    let stored = r"async fn child(value Int) Int { value }
 
 pub async fn main() {
     let pending = Task.all([child(1), child(2)])
@@ -1025,9 +1033,7 @@ pub async fn main() {
 
 #[test]
 fn task_fault_accessors_lower_to_direct_product_extracts() {
-    let source = r"module task_fault_accessors
-
-async fn broken() Int {
+    let source = r"async fn broken() Int {
     assert false
     0
 }
@@ -1097,9 +1103,7 @@ fn async_resources_task_list_joins_are_complete_for_run_and_tests() {
 
 #[test]
 fn task_all_in_a_sync_helper_receives_the_transitive_executor_capability() {
-    let source = r"module sync_task_all
-
-async fn child(value Int) Int { value }
+    let source = r"async fn child(value Int) Int { value }
 
 fn combined() Task[(Int, Int)] {
     Task.all(child(1), child(2))
@@ -1129,9 +1133,7 @@ pub async fn main() {
 
 #[test]
 fn task_sleep_normalizes_duration_and_preserves_first_class_task_flow() {
-    let source = r"module lcir_typed_sleep
-
-import std.time.milliseconds
+    let source = r"import std.time.milliseconds
 
 pub async fn main() {
     let delay = milliseconds(0)
@@ -1201,9 +1203,7 @@ fn typed_task_handles_fail_closed_on_a_32_bit_target() {
 
 #[test]
 fn fallible_async_calls_contracts_and_pointer_free_results_lower_atomically() {
-    let source = r"module fallible_async
-
-enum Problem { Wrong }
+    let source = r"enum Problem { Wrong }
 
 fn checkedDivide(value Int, divisor Int) Int { value / divisor }
 
@@ -1274,9 +1274,7 @@ pub async fn main() {
 
 #[test]
 fn async_exit_contract_parameters_cross_suspension_without_retaining_unused_inputs() {
-    let source = r"module async_exit_contract_liveness
-
-async fn constrained(ignored Int, required Int, oldRequired Int) Int
+    let source = r"async fn constrained(ignored Int, required Int, oldRequired Int) Int
     ensures result >= required && old(oldRequired) == oldRequired
 {
     Task.sleep(0).await
@@ -1340,9 +1338,10 @@ pub async fn main() {
 
 #[test]
 fn async_generic_contract_fixture_has_a_complete_contract_aware_lcir_test_route() {
-    let mir = compile(include_str!(
-        "../../../fixtures/async-generic-contracts/main.loom"
-    ));
+    let mir = compile_source_files(&[
+        include_str!("../../../fixtures/async-generic-contracts/main.loom"),
+        include_str!("../../../fixtures/async-generic-contracts/main_test.loom"),
+    ]);
     let violates_postcondition = mir
         .as_program()
         .functions
@@ -1391,9 +1390,7 @@ fn async_generic_contract_fixture_has_a_complete_contract_aware_lcir_test_route(
 
 #[test]
 fn async_root_preconditions_lower_into_the_checked_task_entry() {
-    let source = r"module async_root_contract
-
-pub async fn main()
+    let source = r"pub async fn main()
     requires false
     ensures false
 {
@@ -1422,9 +1419,7 @@ pub async fn main()
 
 #[test]
 fn task_creation_does_not_inherit_child_body_collection_effects() {
-    let source = r#"module async_effect_boundary
-
-async fn child(value Int) Int
+    let source = r#"async fn child(value Int) Int
     requires value > 0
 {
     discard "left".concat("right").length()
@@ -1465,9 +1460,7 @@ pub async fn main() {
 
 #[test]
 fn managed_sum_coroutine_frames_lower_with_exact_direct_types() {
-    let source = r#"module managed_result_async
-
-enum Problem { Wrong }
+    let source = r#"enum Problem { Wrong }
 
 async fn child() Result[Text, Problem] { Ok("man".concat("aged")) }
 
@@ -1498,9 +1491,7 @@ pub async fn main() {
 
 #[test]
 fn async_local_inout_calls_reuse_synchronous_functional_writeback() {
-    let source = r"module async_local_inout
-
-record Counter { value Int }
+    let source = r"record Counter { value Int }
 
 impl Counter {
     method update(mut self) {
@@ -1538,9 +1529,7 @@ pub async fn main() {
 
 #[test]
 fn async_mutable_view_parameters_are_independent_task_frame_values() {
-    let source = r"module async_owned_view
-
-dyn concept Source {
+    let source = r"dyn concept Source {
     method next(mut self) Int
 }
 
@@ -1613,9 +1602,7 @@ pub async fn main() {
 
 #[test]
 fn async_nested_unique_views_are_physicalized_at_every_frame_node() {
-    let source = r"module async_nested_owned_view
-
-dyn concept Source {
+    let source = r"dyn concept Source {
     method next(mut self) Int
 }
 
@@ -1664,9 +1651,7 @@ pub async fn main() {
 
 #[test]
 fn async_finite_and_open_views_remain_atomic_signature_fallback() {
-    let finite = r"module async_finite_view
-
-dyn concept Source {
+    let finite = r"dyn concept Source {
     method next(mut self) Int
 }
 
@@ -1692,9 +1677,7 @@ pub async fn main() {
     assert second == 2
 }
 ";
-    let open = r"module async_open_view
-
-dyn concept Source {
+    let open = r"dyn concept Source {
     method next(mut self) Int
 }
 
@@ -1713,9 +1696,7 @@ pub async fn main() {
     assert observed == 1
 }
 ";
-    let nested_finite = r"module async_nested_finite_view
-
-dyn concept Source {
+    let nested_finite = r"dyn concept Source {
     method next(mut self) Int
 }
 
@@ -1763,9 +1744,7 @@ pub async fn main() {
 
 #[test]
 fn async_unique_views_may_contain_managed_lists() {
-    let source = r"module async_unique_view_with_list
-
-dyn concept Source {
+    let source = r"dyn concept Source {
     method next(mut self) Int
 }
 
@@ -1821,9 +1800,7 @@ pub async fn main() {
 
 #[test]
 fn async_fault_cleanup_reads_the_synchronous_callee_writeback() {
-    let source = r"module async_fault_writeback
-
-record Counter { value Int }
+    let source = r"record Counter { value Int }
 
 impl Counter {
     method updateThenFail(mut self) {
@@ -1904,9 +1881,7 @@ pub async fn main() {
 fn task_creation_in_sync_functions_propagates_the_executor_capability() {
     for (source, expected_task_create, expected_sleep) in [
         (
-            r"module sync_task_create
-
-async fn child() Int { 1 }
+            r"async fn child() Int { 1 }
 
 fn helper() Task[Int] { child() }
 
@@ -1918,9 +1893,7 @@ pub async fn main() {
             false,
         ),
         (
-            r"module nested_sync_task_create
-
-async fn child() Int { 1 }
+            r"async fn child() Int { 1 }
 
 fn inner() Task[Int] { child() }
 
@@ -1934,9 +1907,7 @@ pub async fn main() {
             false,
         ),
         (
-            r"module sync_task_sleep
-
-fn helper() Task[Unit] { Task.sleep(0) }
+            r"fn helper() Task[Unit] { Task.sleep(0) }
 
 pub async fn main() {
     helper().await
@@ -2106,7 +2077,7 @@ fn builtin_scoped_file_cleanup_rejects_a_synchronous_executor_root() {
 #[test]
 fn direct_cleanup_depth_has_a_stable_program_too_large_boundary() {
     let cleanups = "    defer { Unit }\n".repeat(1_025);
-    let source = format!("module cleanup_budget\n\npub fn main() {{\n{cleanups}}}\n");
+    let source = format!("pub fn main() {{\n{cleanups}}}\n");
     let mir = compile(&source);
     let error = lower_typed_artifact(
         &mir,
@@ -2131,9 +2102,7 @@ fn direct_cleanup_depth_has_a_stable_program_too_large_boundary() {
 #[test]
 fn literal_only_text_values_and_allocation_free_operations_lower_directly() {
     let dump = complete_dump(
-        r#"module lcir_text
-
-fn identity[T](value T) T { value }
+        r#"fn identity[T](value T) T { value }
 
 fn inspect(value Text) Bool {
     value.length() == 6 && value.contains("界") && value == "hello界" && value != "other"
@@ -2161,9 +2130,7 @@ pub fn main() {
 #[test]
 fn text_literal_bytes_participate_in_artifact_identity() {
     let identity = |literal: &str| {
-        let source = format!(
-            "module lcir_text_identity\n\npub fn main() {{\n    discard \"{literal}\".length()\n}}\n"
-        );
+        let source = format!("pub fn main() {{\n    discard \"{literal}\".length()\n}}\n");
         let LoweringOutcome::Complete(artifact) = lower_run(&source) else {
             panic!("bounded Text literal should lower directly")
         };
@@ -2175,9 +2142,7 @@ fn text_literal_bytes_participate_in_artifact_identity() {
 #[test]
 fn immortal_text_requires_the_pinned_64_bit_runtime_layout() {
     let mir = compile(
-        r#"module lcir_text_32
-
-pub fn main() {
+        r#"pub fn main() {
     discard "literal".length()
 }
 "#,
@@ -2205,9 +2170,7 @@ pub fn main() {
 #[test]
 fn text_product_without_a_literal_still_obeys_the_64_bit_pointer_boundary() {
     let mir = compile(
-        r"module lcir_text_product_32
-
-fn spin() (Text, Int) { spin() }
+        r"fn spin() (Text, Int) { spin() }
 
 pub fn main() {
     discard spin()
@@ -2259,9 +2222,7 @@ pub fn main() {
 #[test]
 fn text_sum_without_a_literal_still_obeys_the_64_bit_pointer_boundary() {
     let mir = compile(
-        r"module lcir_text_sum_32
-
-enum MaybeText {
+        r"enum MaybeText {
     Missing
     Present(Text)
 }
@@ -2307,9 +2268,7 @@ pub fn main() {
 #[test]
 fn text_selection_lowers_to_one_managed_collecting_instruction() {
     let outcome = lower_run(
-        r#"module lcir_text_get
-
-pub fn main() {
+        r#"pub fn main() {
     discard "a界🙂".get(1)
     discard "value".get(-1)
 }
@@ -2351,9 +2310,7 @@ pub fn main() {
 #[test]
 fn concat_selects_one_managed_text_representation_and_collection_effect() {
     let outcome = lower_run(
-        r#"module lcir_text_concat
-
-fn join(left Text, right Text) Text { left.concat(right) }
+        r#"fn join(left Text, right Text) Text { left.concat(right) }
 
 pub fn main() {
     let joined = join("left", "right")
@@ -2395,9 +2352,7 @@ pub fn main() {
 #[test]
 fn text_product_selects_managed_provenance_without_inventing_runtime_effects() {
     let outcome = lower_run(
-        r#"module lcir_text_product
-
-record Named { value Text }
+        r#"record Named { value Text }
 
 pub fn main() {
     discard Named { value = "safe" }
@@ -2432,9 +2387,7 @@ pub fn main() {
 #[test]
 fn checked_mir_is_the_only_source_of_proven_refinement_instructions() {
     let dump = complete_dump(
-        r"module proven_boundaries
-
-type Money = Float where self >= 0.0
+        r"type Money = Float where self >= 0.0
 
 record Range {
     low Money
@@ -2459,9 +2412,7 @@ pub fn main() {
 
 #[test]
 fn portable_nongeneric_proof_rechecks_lower_to_typed_fault_guards() {
-    let source = r"module portable_proof_fallback
-
-type Money = Float where self >= 0.0
+    let source = r"type Money = Float where self >= 0.0
 
 record Range {
     low Money
@@ -2545,9 +2496,7 @@ pub fn main() {
 
 #[test]
 fn portable_generic_record_proof_rechecks_use_concrete_contract_types() {
-    let source = r#"module portable_generic_proof
-
-record Guarded[Label, Payload] {
+    let source = r#"record Guarded[Label, Payload] {
     label Label
     payload Option[Payload]
     marker Float
@@ -2599,9 +2548,7 @@ pub fn main() {
 
 #[test]
 fn generic_invariant_and_refined_record_instantiations_lower_directly() {
-    let source = r"module generic_products
-
-record Boxed[T] {
+    let source = r"record Boxed[T] {
     value T
 }
 
@@ -2653,7 +2600,7 @@ pub fn main() {
 
 #[test]
 fn empty_tests_are_one_complete_empty_artifact() {
-    let mir = compile("module empty\n");
+    let mir = compile("");
     let outcome = lower_typed_artifact(
         &mir,
         &SourceArtifactRequest::Tests,
@@ -2669,7 +2616,7 @@ fn empty_tests_are_one_complete_empty_artifact() {
 
 #[test]
 fn ordered_test_roots_form_one_complete_artifact() {
-    let mir = compile("module tests\n\ntest fn first() {}\n\ntest fn second() {}\n");
+    let mir = compile("test fn first() {}\n\ntest fn second() {}\n");
     let outcome = lower_typed_artifact(
         &mir,
         &SourceArtifactRequest::Tests,
@@ -2686,16 +2633,14 @@ fn ordered_test_roots_form_one_complete_artifact() {
             .iter()
             .map(|root| artifact.function(*root).expect("root function").name())
             .collect::<Vec<_>>(),
-        ["tests.first", "tests.second"]
+        ["standalone.first", "standalone.second"]
     );
 }
 
 #[test]
 fn source_lowering_routes_declarations_calls_and_roots_through_monomorphic_instance_keys() {
     let LoweringOutcome::Complete(artifact) = lower_run(
-        r"module instance_regression
-
-fn helper() {}
+        r"fn helper() {}
 
 pub fn main() { helper() }
 ",
@@ -2747,9 +2692,7 @@ pub fn main() { helper() }
 #[test]
 fn reachable_generic_calls_lower_to_exact_concrete_instances() {
     let outcome = lower_run(
-        r"module generic_fallback
-
-fn identity[T](value T) T { value }
+        r"fn identity[T](value T) T { value }
 
 pub fn main() {
     discard identity(1)
@@ -2779,9 +2722,7 @@ pub fn main() {
 #[test]
 fn generic_sum_construction_and_matches_plan_each_concrete_instance() {
     let dump = complete_dump(
-        r"module generic_sums
-
-fn unwrap[T](value Option[T], fallback T) T {
+        r"fn unwrap[T](value Option[T], fallback T) T {
     match value {
         Some(found) => found
         None => fallback
@@ -2804,9 +2745,7 @@ pub fn main() {
 
 #[test]
 fn regular_generic_recursion_deduplicates_each_exact_instantiation() {
-    let source = r"module generic_recursion
-
-fn repeat[T](value T, remaining Int) T {
+    let source = r"fn repeat[T](value T, remaining Int) T {
     if remaining == 0 {
         value
     } else {
@@ -2852,9 +2791,7 @@ pub fn main() {
 #[test]
 fn erased_generic_proofs_remain_part_of_static_instance_identity() {
     let outcome = lower_run(
-        r"module witnessed_instance
-
-concept Marker {}
+        r"concept Marker {}
 impl Marker for Int {}
 
 fn preserve[T: Marker](value T) T { value }
@@ -2888,9 +2825,7 @@ pub fn main() {
 
 #[test]
 fn static_concept_calls_normalize_associated_types_and_conditional_proofs() {
-    let source = r"module static_concepts
-
-concept Truth {
+    let source = r"concept Truth {
     method truth(self) Bool
 }
 
@@ -2966,9 +2901,7 @@ pub fn main() {
 #[test]
 fn regular_static_dispatch_recursion_is_deduplicated_and_unused_witnesses_stay_dead() {
     let outcome = lower_run(
-        r"module static_recursion
-
-concept Step { method step(self, remaining Int) Int }
+        r"concept Step { method step(self, remaining Int) Int }
 concept Unused { method unused(self) Int }
 
 record Counter { value Int }
@@ -3016,9 +2949,7 @@ pub fn main() {
 #[test]
 fn competing_closed_dynamic_witnesses_form_one_managed_catalog() {
     let LoweringOutcome::Complete(artifact) = lower_run(
-        r"module dynamic_stays_erased
-
-dyn concept Truth { method truth(self) Bool }
+        r"dyn concept Truth { method truth(self) Bool }
 record Atom { value Bool }
 record Other { value Bool }
 impl Truth for Atom { method truth(self) Bool { self.value } }
@@ -3080,9 +3011,7 @@ pub fn main() {
 #[test]
 fn missing_dynamic_concept_witness_selects_one_atomic_fallback() {
     let LoweringOutcome::Unsupported(report) = lower_run(
-        r"module dynamic_missing_witness
-
-dyn concept Truth { method truth(self) Bool }
+        r"dyn concept Truth { method truth(self) Bool }
 
 fn missing() dyn Truth { missing() }
 
@@ -3105,9 +3034,7 @@ pub fn main() {
 #[test]
 fn generic_conditional_dynamic_witness_set_selects_one_atomic_fallback() {
     let LoweringOutcome::Unsupported(report) = lower_run(
-        r"module dynamic_conditional_witness
-
-dyn concept Truth { method truth(self) Bool }
+        r"dyn concept Truth { method truth(self) Bool }
 record Atom { value Bool }
 record Wrapped[T] { value T }
 
@@ -3140,9 +3067,7 @@ pub fn main() {
 #[test]
 fn test_roots_share_one_reachable_generic_instance() {
     let mir = compile(
-        r"module generic_tests
-
-fn identity[T](value T) T { value }
+        r"fn identity[T](value T) T { value }
 
 test fn first() {
     discard identity(1)
@@ -3179,9 +3104,7 @@ test fn second() {
 #[test]
 fn unreachable_generic_definitions_do_not_change_the_complete_route() {
     let dump = complete_dump(
-        r"module unreachable_generic
-
-fn spiral[T](value T) {
+        r"fn spiral[T](value T) {
     spiral((value, value))
 }
 
@@ -3194,9 +3117,7 @@ pub fn main() {}
 
 #[test]
 fn unreachable_task_policy_items_create_no_executor_or_artifact_identity_edge() {
-    let any_source = r"module dead_task_policy
-
-pub fn main() {}
+    let any_source = r"pub fn main() {}
 
 async fn child() Int { 1 }
 
@@ -3204,9 +3125,7 @@ async fn deadPolicy() {
     discard Task.any(child(), child()).await
 }
 ";
-    let race_source = r"module dead_task_policy
-
-pub fn main() {}
+    let race_source = r"pub fn main() {}
 
 async fn child() Int { 1 }
 
@@ -3214,9 +3133,7 @@ async fn deadPolicy() {
     discard Task.race(child(), child()).await
 }
 ";
-    let sync_source = r"module dead_task_policy
-
-pub fn main() {}
+    let sync_source = r"pub fn main() {}
 
 async fn child() Int { 1 }
 
@@ -3255,9 +3172,7 @@ fn deadFactory() Task[Int] {
 #[test]
 fn user_methods_on_a_value_named_task_remain_plain_reachable_calls() {
     let outcome = lower_run(
-        r"module user_task_methods
-
-record Scheduler {}
+        r"record Scheduler {}
 
 impl Scheduler {
     method any(self, value Int) Int { value }
@@ -3289,9 +3204,7 @@ pub fn main() {
 #[test]
 fn nonregular_generic_recursion_selects_atomic_unsupported() {
     let outcome = lower_run(
-        r"module nonregular_generic
-
-fn spiral[T](value T) {
+        r"fn spiral[T](value T) {
     spiral((value, value))
 }
 
@@ -3316,7 +3229,7 @@ fn oversized_generic_call_key_is_rejected_before_lcir_allocation() {
         .collect::<Vec<_>>()
         .join(", ");
     let source = format!(
-        "module generic_budget\n\nfn expand[T](value T) {{\n    expand(({values}))\n}}\n\npub fn main() {{\n    expand(1)\n}}\n"
+        "fn expand[T](value T) {{\n    expand(({values}))\n}}\n\npub fn main() {{\n    expand(1)\n}}\n"
     );
     let outcome = lower_run(&source);
     let LoweringOutcome::Unsupported(report) = outcome else {
@@ -3332,9 +3245,7 @@ fn oversized_generic_call_key_is_rejected_before_lcir_allocation() {
 #[test]
 fn sema_valid_result_test_root_is_supported_with_an_explicit_outcome() {
     let mir = compile(
-        r"module fallible_tests
-
-enum Problem { Failed }
+        r"enum Problem { Failed }
 
 test fn fallible() Result[Unit, Problem] { Ok(Unit) }
 ",
@@ -3511,7 +3422,7 @@ fn hidden_run_root_inputs_are_invalid_not_unsupported() {
 
 #[test]
 fn invalid_run_name_is_an_error_not_unsupported() {
-    let mir = compile("module roots\n\npub fn main() {}\n");
+    let mir = compile("pub fn main() {}\n");
     let error = lower_typed_artifact(
         &mir,
         &SourceArtifactRequest::Run {
@@ -3529,23 +3440,19 @@ fn invalid_run_name_is_an_error_not_unsupported() {
 #[test]
 fn unreachable_concat_does_not_select_managed_text_or_fallback() {
     let dump = complete_dump(
-        r#"module unreachable
-
-fn deadText() Text { "left".concat("right") }
+        r#"fn deadText() Text { "left".concat("right") }
 
 pub fn main() {}
 "#,
     );
-    assert!(dump.contains("fn i0 mir=f1 \"unreachable.main\""), "{dump}");
+    assert!(dump.contains("fn i0 mir=f1 \"standalone.main\""), "{dump}");
     assert!(!dump.contains("deadText"), "{dump}");
 }
 
 #[test]
 fn unreachable_code_inside_a_reachable_function_is_ignored_exactly() {
     let outcome = lower_run(
-        r#"module dead_control
-
-fn helper() {}
+        r#"fn helper() {}
 
 pub fn main() {
     return Unit
@@ -3559,8 +3466,8 @@ pub fn main() {
         panic!("dead unsupported values and calls must not select fallback")
     };
     let dump = dump_program(artifact.program());
-    assert!(dump.contains("dead_control.main"), "{dump}");
-    assert!(!dump.contains("dead_control.helper"), "{dump}");
+    assert!(dump.contains("standalone.main"), "{dump}");
+    assert!(!dump.contains("standalone.helper"), "{dump}");
     assert!(!dump.contains("text"), "{dump}");
 }
 
@@ -3773,9 +3680,7 @@ fn diverging_prefixes_do_not_require_unmaterialized_unsupported_heads() {
 #[test]
 fn reachable_concat_is_repeatably_supported_as_one_complete_artifact() {
     let mir = compile(
-        r#"module coverage
-
-fn textValue() Text { "left".concat("right") }
+        r#"fn textValue() Text { "left".concat("right") }
 
 pub fn main() {
     let value = textValue()
@@ -3816,9 +3721,7 @@ pub fn main() {
 #[test]
 fn scalar_constants_locals_blocks_short_circuit_and_returns_dump_as_typed_ssa() {
     let dump = complete_dump(
-        r"module scalar
-
-fn choose(flag Bool, integer Int, decimal Float) Int {
+        r"fn choose(flag Bool, integer Int, decimal Float) Int {
     var selected = 0
     if flag && decimal != 0.0 {
         selected = integer
@@ -3859,9 +3762,7 @@ pub fn main() {
 #[test]
 fn implicit_unit_and_all_explicit_return_branches_are_supported() {
     let dump = complete_dump(
-        r"module returns
-
-fn implicitUnit() {}
+        r"fn implicitUnit() {}
 
 fn selected(flag Bool) Int {
     if flag {
@@ -3877,7 +3778,7 @@ pub fn main() {
 }
 ",
     );
-    assert!(dump.contains("\"returns.implicitUnit\""), "{dump}");
+    assert!(dump.contains("\"standalone.implicitUnit\""), "{dump}");
     assert!(dump.matches("return").count() >= 4, "{dump}");
     assert!(dump.contains("call i0()"), "{dump}");
 }
@@ -3885,9 +3786,7 @@ pub fn main() {
 #[test]
 fn pure_recursive_cycle_stays_infallible_and_uses_direct_calls() {
     let dump = complete_dump(
-        r"module pure_recursion
-
-fn recurse(flag Bool) {
+        r"fn recurse(flag Bool) {
     if flag {
         recurse(flag)
     } else {
@@ -4383,9 +4282,7 @@ fn conditional_moves_preserve_only_values_available_on_continuing_paths() {
 #[test]
 fn source_nested_blocks_and_if_arms_preserve_function_local_values() {
     let dump = complete_dump(
-        r"module local_flow
-
-fn throughBlock() Int {
+        r"fn throughBlock() Int {
     var value = 0
     {
         value = 41
@@ -4412,17 +4309,15 @@ pub fn main() {
 }
 ",
     );
-    assert!(dump.contains("local_flow.throughBlock"), "{dump}");
-    assert!(dump.contains("local_flow.throughBranches"), "{dump}");
+    assert!(dump.contains("standalone.throughBlock"), "{dump}");
+    assert!(dump.contains("standalone.throughBranches"), "{dump}");
     assert!(dump.contains("branch"), "{dump}");
 }
 
 #[test]
 fn canonical_joins_omit_single_path_and_identity_parameters() {
     let dump = complete_dump(
-        r"module canonical_join
-
-fn onePath(flag Bool) Int {
+        r"fn onePath(flag Bool) Int {
     if flag {
         return 1
     } else {
@@ -4458,9 +4353,7 @@ pub fn main() {
 #[test]
 fn short_circuit_skip_edge_reuses_the_lhs_without_a_constant_block() {
     let dump = complete_dump(
-        r"module canonical_short_circuit
-
-fn stopOnRhs(flag Bool) Bool {
+        r"fn stopOnRhs(flag Bool) Bool {
     flag && { return flag }
 }
 
@@ -4482,9 +4375,7 @@ pub fn main() {
 #[test]
 fn range_header_carries_only_values_changed_on_continuing_paths() {
     let dump = complete_dump(
-        r"module canonical_range
-
-fn accumulate(limit Int, readonly Int) Int {
+        r"fn accumulate(limit Int, readonly Int) Int {
     var changed = 0
     for index in 0..limit {
         changed = changed + readonly
@@ -4518,9 +4409,7 @@ pub fn main() {
 #[test]
 fn pure_and_nested_ranges_use_proved_successors_without_fault_effects() {
     let dump = complete_dump(
-        r"module pure_ranges
-
-fn lastBelow(limit Int) Int {
+        r"fn lastBelow(limit Int) Int {
     var last = 0
     for index in 0..limit {
         last = index
@@ -4691,9 +4580,7 @@ fn checked_mir_locals_initialized_in_a_block_or_both_if_arms_survive() {
 #[test]
 fn structurally_recursive_fibonacci_uses_checked_edges_and_recursive_invokes() {
     let dump = complete_dump(
-        r"module recursive_fib
-
-fn fibonacci(value Int) Int {
+        r"fn fibonacci(value Int) Int {
     if value < 2 {
         value
     } else {
@@ -4720,9 +4607,7 @@ pub fn main() {
 #[test]
 fn structurally_iterative_fibonacci_lowers_for_range_and_loop_carried_assignments() {
     let dump = complete_dump(
-        r"module iterative_fib
-
-fn fibonacci(limit Int) Int {
+        r"fn fibonacci(limit Int) Int {
     var previous = 0
     var current = 1
     for index in 0..limit {
@@ -4750,9 +4635,7 @@ pub fn main() {
 #[test]
 fn canonical_direct_local_list_loop_carries_a_trusted_unique_certificate() {
     let dump = complete_dump(
-        r"module list_unique_loop
-
-pub fn main() {
+        r"pub fn main() {
     var values = List[Int]()
     for index in 0..128 {
         values.add(index)
@@ -4768,9 +4651,7 @@ pub fn main() {
 #[test]
 fn assert_and_defer_lower_to_direct_lexical_cleanup_control_flow() {
     let dump = complete_dump(
-        r"module cleanup
-
-fn check(condition Bool) {
+        r"fn check(condition Bool) {
     defer { Unit }
     assert condition
 }
@@ -4788,9 +4669,7 @@ pub fn main() {
 #[test]
 fn source_contracts_lower_to_checked_call_boundaries_and_assumed_bodies() {
     let mir = compile(
-        r"module contract_fallback
-
-fn positive(value Int) Int
+        r"fn positive(value Int) Int
     requires value > 0
     ensures result > 0
 {
@@ -4825,9 +4704,7 @@ pub fn main() {
 #[test]
 fn closed_pod_records_lower_to_products_with_direct_and_fault_writebacks() {
     let dump = complete_dump(
-        r"module product_records
-
-record Counter { total Int, calls Int }
+        r"record Counter { total Int, calls Int }
 record Holder { counter Counter, enabled Bool }
 
 impl Counter {
@@ -4885,9 +4762,7 @@ pub fn main() {
 #[test]
 fn structural_tuples_and_records_lower_through_one_direct_aggregate_plan() {
     let dump = complete_dump(
-        r"module tuple_products
-
-record Packet { pair (Int, Bool) }
+        r"record Packet { pair (Int, Bool) }
 
 fn rearrange(input (Packet, Float)) (Bool, Packet) {
     let packet, ignored = input
@@ -4921,9 +4796,7 @@ pub fn main() {
 )]
 fn structural_equality_lowers_products_refinements_and_active_sum_payloads() {
     let outcome = lower_run(
-        r"module structural_equality
-
-record Pair {
+        r"record Pair {
     number Int
     enabled Bool
 }
@@ -5050,7 +4923,7 @@ fn wide_sum_structural_equality_fails_closed_before_a_quadratic_helper_cfg() {
         writeln!(variants, "    V{index}").expect("variant declaration");
     }
     let source = format!(
-        "module wide_sum_equality\n\nenum Wide {{\n{variants}}}\n\npub fn main() {{\n    let left = Wide.V0\n    let right = Wide.V63\n    discard left == right\n}}\n"
+        "enum Wide {{\n{variants}}}\n\npub fn main() {{\n    let left = Wide.V0\n    let right = Wide.V63\n    discard left == right\n}}\n"
     );
     let outcome = lower_run(&source);
     let LoweringOutcome::Unsupported(report) = outcome else {
@@ -5066,9 +4939,7 @@ fn wide_sum_structural_equality_fails_closed_before_a_quadratic_helper_cfg() {
 #[test]
 fn text_map_contains_remove_and_nested_equality_lower_to_exact_typed_operations() {
     let dump = complete_dump(
-        r#"module typed_text_map_operations
-
-record Pair { label Text, count Int }
+        r#"record Pair { label Text, count Int }
 
 enum Choice {
     Number(Int)
@@ -5108,9 +4979,7 @@ pub fn main() {
 #[test]
 fn text_map_entry_at_lowers_to_the_generic_checked_entry_operation() {
     let dump = complete_dump(
-        r#"module typed_text_map_entry_at
-
-pub fn main() {
+        r#"pub fn main() {
     let values = TextMap[Int]().insert("z", 9).insert("a", 1)
     discard values.entry_at(0)
     discard values.entry_at(-1)
@@ -5126,9 +4995,7 @@ pub fn main() {
 #[test]
 fn recursive_list_backed_structural_equality_closes_one_finite_helper_cycle() {
     let outcome = lower_run(
-        r"module recursive_equality
-
-record Node {
+        r"record Node {
     children List[Node]
 }
 
@@ -5184,9 +5051,7 @@ pub fn main() {
 #[test]
 fn recursive_text_map_backed_structural_equality_closes_one_finite_helper_cycle() {
     let outcome = lower_run(
-        r"module recursive_text_map_equality
-
-record Node {
+        r"record Node {
     children TextMap[Node]
 }
 
@@ -5241,7 +5106,10 @@ pub fn main() {
 
 #[test]
 fn recursive_json_sum_registers_through_list_and_text_map_cycle_breakers() {
-    let dump = complete_dump(include_str!("../../../fixtures/lcir-typed-json/main.loom"));
+    let dump = complete_dump(concat!(
+        include_str!("../../../fixtures/lcir-typed-json/main.loom"),
+        include_str!("../../../fixtures/lcir-typed-json/main_test.loom")
+    ));
     for required in [
         "managed_text_map",
         "sum.construct variant 0",
@@ -5268,9 +5136,7 @@ fn recursive_json_sum_registers_through_list_and_text_map_cycle_breakers() {
 #[test]
 fn canonical_json_format_lowers_to_one_collecting_typed_instruction() {
     let outcome = lower_run(
-        r"module typed_json_format
-
-import std.json.format_json
+        r"import std.json.format_json
 
 pub fn main() {
     let valid = match format_json(Json.Null) {
@@ -5324,9 +5190,7 @@ pub fn main() {
 #[test]
 fn source_json_parser_lowers_completely_through_existing_typed_operations() {
     let outcome = lower_run_with_std_json(
-        r#"module typed_json_parse
-
-import std.json.parse_json
+        r#"import std.json.parse_json
 
 pub fn main() {
     let valid = match parse_json("null") {
@@ -5357,9 +5221,7 @@ pub fn main() {
 #[test]
 fn closed_sums_and_ordered_nested_matches_lower_to_exhaustive_sum_cfg() {
     let dump = complete_dump(
-        r"module closed_sums
-
-enum Inner {
+        r"enum Inner {
     Off
     On(Int)
 }
@@ -5404,9 +5266,7 @@ pub fn main() {
 #[test]
 fn refined_and_invariant_values_are_direct_sum_payloads() {
     let dump = complete_dump(
-        r"module mixed_proven_sums
-
-type Money = Float where self >= 0.0
+        r"type Money = Float where self >= 0.0
 
 record Range {
     low Money
@@ -5455,7 +5315,7 @@ fn wide_sum_match_shares_one_typed_capturing_arm_block() {
         writeln!(variants, "    V{index}").expect("variant declaration");
     }
     let source = format!(
-        "module wide_sum_dag\n\nenum Wide {{\n{variants}}}\n\nfn classify(input Wide) Int {{\n    match input {{\n        V0 => 0\n        other => 40 + 2\n    }}\n}}\n\npub fn main() {{\n    discard classify(Wide.V127)\n}}\n"
+        "enum Wide {{\n{variants}}}\n\nfn classify(input Wide) Int {{\n    match input {{\n        V0 => 0\n        other => 40 + 2\n    }}\n}}\n\npub fn main() {{\n    discard classify(Wide.V127)\n}}\n"
     );
     let mir = compile(&source);
     let LoweringOutcome::Complete(artifact) = lower_typed_artifact(
@@ -5515,9 +5375,7 @@ fn wide_sum_match_shares_one_typed_capturing_arm_block() {
 #[test]
 fn result_unit_tests_carry_explicit_outcome_plans_through_lowering() {
     let mir = compile(
-        r"module result_tests
-
-enum Problem { Failed }
+        r"enum Problem { Failed }
 
 test fn passes() Result[Unit, Problem] { Ok(Unit) }
 
@@ -5553,9 +5411,7 @@ test fn fails() Result[Unit, Problem] { Err(Problem.Failed) }
 
 #[test]
 fn managed_sums_lower_directly_while_unsupported_sum_graphs_fall_back_atomically() {
-    let managed = r#"module managed_sum
-
-record Label { value Text }
+    let managed = r#"record Label { value Text }
 
 enum Message { Textual(Label) }
 
@@ -5567,9 +5423,7 @@ pub fn main() {
         matches!(lower_run(managed), LoweringOutcome::Complete(_)),
         "a closed sum with exact managed leaves must lower as one LCIR artifact"
     );
-    let list_sum = r"module list_sum
-
-enum Values { Items(List[Int]) }
+    let list_sum = r"enum Values { Items(List[Int]) }
 
 pub fn main() {
     discard Values.Items(List[Int]())
@@ -5579,9 +5433,7 @@ pub fn main() {
         matches!(lower_run(list_sum), LoweringOutcome::Complete(_)),
         "a closed sum containing a concrete List must lower as one LCIR artifact"
     );
-    let dynamic_sum = r"module dynamic_sum
-
-dyn concept Numbered {
+    let dynamic_sum = r"dyn concept Numbered {
     method number(self) Int
 }
 
@@ -5605,9 +5457,7 @@ pub fn main() {
     assert!(!dump_program(dynamic_sum.program()).contains("View["));
 
     for source in [
-        r"module recursive_sum
-
-enum Chain {
+        r"enum Chain {
     End
     Next(Chain)
 }
@@ -5616,9 +5466,7 @@ pub fn main() {
     discard Chain.End
 }
 ",
-        r"module task_sum
-
-enum Work { Pending(Task[Int]) }
+        r"enum Work { Pending(Task[Int]) }
 
 async fn child() Int { 1 }
 
@@ -5892,7 +5740,7 @@ fn over_budget_match_plans_select_atomic_fallback() {
             writeln!(arms, "        {value} => {value}").expect("write match arm");
         }
         let source = format!(
-            "module match_budget_{constant_arms}\n\nfn classify(value Int) Int {{\n    match value {{\n{arms}        _ => 0\n    }}\n}}\n\npub fn main() {{\n    discard classify(42)\n}}\n"
+            "fn classify(value Int) Int {{\n    match value {{\n{arms}        _ => 0\n    }}\n}}\n\npub fn main() {{\n    discard classify(42)\n}}\n"
         );
         let LoweringOutcome::Unsupported(report) = lower_run(&source) else {
             panic!("over-budget match must select atomic fallback")
@@ -5907,9 +5755,7 @@ fn over_budget_match_plans_select_atomic_fallback() {
 #[test]
 fn managed_tuple_elements_lower_directly_and_over_budget_tuples_fallback() {
     let managed = lower_run(
-        r#"module managed_tuple
-
-fn make() (Int, Text) { (1, "checked_mir") }
+        r#"fn make() (Int, Text) { (1, "checked_mir") }
 
 pub fn main() {
     let number, label = make()
@@ -5948,7 +5794,7 @@ pub fn main() {
         .join(", ");
     let values = std::iter::repeat_n("0", 256).collect::<Vec<_>>().join(", ");
     let source = format!(
-        "module wide_tuple\n\nfn make() ({fields}) {{ ({values}) }}\n\npub fn main() {{\n    discard make()\n}}\n"
+        "fn make() ({fields}) {{ ({values}) }}\n\npub fn main() {{\n    discard make()\n}}\n"
     );
     let wide = lower_run(&source);
     let LoweringOutcome::Unsupported(wide) = wide else {
@@ -5963,9 +5809,7 @@ pub fn main() {
 #[test]
 fn runtime_constraints_build_exact_typed_results_and_structured_errors() {
     let outcome = lower_run(
-        r"module invariant_record
-
-record Positive {
+        r"record Positive {
     value Int
     invariant self.value + 1 > 0
 }
@@ -6043,9 +5887,7 @@ pub fn main() {
 #[test]
 fn projection_through_a_protected_product_is_atomic_unsupported() {
     let outcome = lower_run(
-        r"module protected_projection
-
-record Positive {
+        r"record Positive {
     value Int
     invariant self.value >= 0
 }
@@ -6073,9 +5915,7 @@ pub fn main() {
 #[test]
 fn projected_inout_uses_typed_extraction_and_functional_root_reconstruction() {
     let dump = complete_dump(
-        r"module projected_inout
-
-record Counter { value Int }
+        r"record Counter { value Int }
 record Holder { counter Counter }
 
 impl Counter {

@@ -1,11 +1,11 @@
 # Packages and registries
 
-Loom resolves one closed package graph before semantic analysis. Package
-identity includes the package name, resolved SemVer, and Loom language
-version. Dependencies are direct and explicitly aliased; resolution does not
-scan an ambient module search path.
+Loom resolves one closed module graph before semantic analysis. Module identity
+includes its name, resolved SemVer, and Loom language version. Dependencies are
+direct and explicitly aliased; resolution does not scan an ambient package
+search path.
 
-## Package sources
+## Module sources
 
 Loom supports three dependency sources:
 
@@ -14,8 +14,9 @@ Loom supports three dependency sources:
 3. a validated portable `.loomlib` artifact.
 
 The selected source and resolved checksum are recorded in `loom.lock`. A
-dependency cycle, duplicate package identity, manifest mismatch, source-root
-escape, or checksum mismatch stops compilation.
+dependency cycle, duplicate module identity, manifest mismatch, invalid
+directory package, nested-module boundary violation, or checksum mismatch
+stops compilation.
 
 ## Local registries
 
@@ -29,7 +30,7 @@ company = "../registry"
 utility = { registry = "company", version = "^1" }
 ```
 
-The registry directory contains `PACKAGE/VERSION/loom.toml` trees. The resolver
+The registry directory contains `MODULE/VERSION/loom.toml` trees. The resolver
 selects the highest SemVer that satisfies the requirement unless a valid
 lockfile pin is being reused.
 
@@ -54,7 +55,7 @@ The current protocol schema is `1`:
   package bundle;
 - `PUT /v1/packages/{package}/versions/{version}` publishes that bundle.
 
-`loomc publish --registry public` publishes the root package and refuses a
+`loomc publish --registry public` publishes the root module and refuses a
 bundle whose declared identity does not match the manifest. The registry
 protocol requires a server to reject replacement bytes for an existing package
 version; the current client does not perform a preflight existence check before
@@ -78,30 +79,30 @@ command lines, source files, and CI logs.
 Registry content is treated as untrusted input. Before a package is used, the
 resolver checks:
 
-- protocol version and package/version/language identity;
+- protocol version and module/version/language identity;
 - index digest and downloaded bundle digest;
-- the embedded manifest and its source roots;
+- the embedded manifest, directory packages, and nested-manifest boundaries;
 - bounded file counts and file sizes;
 - portable relative paths, with no symlinks or unexpected materialized files.
 
 The HTTP registry cache does not trust a sidecar metadata file by itself. Every
-cache hit re-hashes the raw bundle and verifies every materialized package
-file. Corrupt or incomplete cache entries are not used as packages.
+cache hit re-hashes the raw bundle and verifies every materialized module
+file. Corrupt or incomplete cache entries are not used as dependencies.
 
 `--offline` does not weaken those checks. It succeeds only when the locked
 version is already present as a fully validated cache entry.
 
 ## Portable library dependencies
 
-A version 2 `.loomlib` contains a resolved package graph, exact Loom source
+A version 2 `.loomlib` contains a resolved module graph, exact Loom source
 text, and canonical public-interface fingerprints. It deliberately contains no
 checked MIR, producer-local proof state, or compiler-owned standard-library
 implementation. The decoder rejects incompatible versions and languages,
 malformed or oversized graphs and sources, non-portable paths, reserved
-`std` package or dependency identities, and interfaces that do not match
+`std` module or dependency identities, and interfaces that do not match
 the embedded source. The loader bounds the artifact before reading it into
-memory. Per-package Merkle identities include dependency identities and their
-content, so two artifacts may share an identical transitive package while a
+memory. Per-module Merkle identities include dependency identities and their
+content, so two artifacts may share an identical transitive module while a
 lockfile still detects any transitive source change. The consumer then supplies its matching
 compiler-distributed standard library and runs the normal parse, type-check,
 proof, and lowering pipeline over the complete source graph.

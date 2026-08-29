@@ -12,7 +12,7 @@ mechanisms.
 
 The implemented core includes:
 
-- source modules, records, enums, generics, expressions, methods, and tests;
+- directory packages, records, enums, generics, expressions, methods, and tests;
 - checked integer arithmetic and explicit typed failure values;
 - refined values, record invariants, preconditions, postconditions, and
   proof-based check elimination;
@@ -22,7 +22,7 @@ The implemented core includes:
 - block-level `scoped` resources and block-level `defer` cleanup;
 - stackless async functions, postfix `.await`, structured `Task` ownership,
   terminal task outcomes, and standard-library task composition;
-- manifest packages, lockfiles, registries, portable artifacts, a persistent
+- manifest modules, lockfiles, registries, portable artifacts, a persistent
   cache, an interpreter backend, and an LLVM native backend.
 
 The Go-like `name Type` spelling is a surface choice. It does not imply

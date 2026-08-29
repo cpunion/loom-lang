@@ -48,6 +48,11 @@ fn write_fixture(root: &Path) {
         include_str!("../../../fixtures/lcir-typed-path/main.loom"),
     )
     .expect("write typed-Path fixture");
+    std::fs::write(
+        root.join("main_test.loom"),
+        include_str!("../../../fixtures/lcir-typed-path/main_test.loom"),
+    )
+    .expect("write typed-Path tests");
 }
 
 #[test]
@@ -108,7 +113,7 @@ fn typed_path_closes_native_check_build_test_and_run() {
         .expect("test typed-Path source through the production CLI");
     assert_success("test", &tests);
     assert!(
-        String::from_utf8_lossy(&tests.stdout).contains("passed lcir_typed_path.typedPath"),
+        String::from_utf8_lossy(&tests.stdout).contains("passed standalone.typedPath"),
         "unexpected test output:\n{}",
         String::from_utf8_lossy(&tests.stdout),
     );

@@ -1,0 +1,3 @@
+test async fn fixedSettledAndRaceUseTypedOutcomes() {
+    exerciseOutcomes().await
+}

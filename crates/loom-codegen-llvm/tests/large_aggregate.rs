@@ -2,7 +2,6 @@ use std::path::Path;
 use std::process::Command;
 
 use loom_codegen_llvm::EmitOptions;
-use loom_driver::AnalysisHost;
 
 mod support;
 use support::emit_native;
@@ -11,7 +10,7 @@ const CHILD_PROJECT_ENV: &str = "LOOM_LARGE_AGGREGATE_INTERPRETER_CHILD";
 const ELEMENT_COUNT: usize = 50_001;
 
 fn snapshot(project: &Path) -> loom_driver::AnalysisSnapshot {
-    AnalysisHost::new(project)
+    support::analysis_host(project)
         .expect("load large aggregate project")
         .snapshot()
         .expect("analyze large aggregate project")
@@ -39,9 +38,7 @@ fn copying_and_comparing_a_large_list_is_stack_bounded_on_both_backends() {
         .collect::<Vec<_>>()
         .join(",");
     let source = format!(
-        r"module large_aggregate
-
-fn verify(left List[Int], right List[Int]) {{
+        r"fn verify(left List[Int], right List[Int]) {{
     assert left == right
 }}
 
@@ -111,6 +108,6 @@ test fn copy_and_compare_large_list() {{
     );
     assert_eq!(
         String::from_utf8(native.stdout).expect("native stdout is UTF-8"),
-        "passed large_aggregate.copy_and_compare_large_list\n",
+        "passed standalone.copy_and_compare_large_list\n",
     );
 }

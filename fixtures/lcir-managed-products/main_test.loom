@@ -1,0 +1,1 @@
+test fn managedProducts() Result[Unit, Problem] { verify() }

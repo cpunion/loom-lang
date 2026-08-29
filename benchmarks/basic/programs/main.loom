@@ -1,5 +1,3 @@
-module benchmark.basic
-
 import std.int.ParseIntError
 import std.int.parse_int
 import std.process.arguments

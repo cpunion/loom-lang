@@ -1,12 +1,10 @@
-use loom_core::{FileId, LOOM_LANGUAGE_VERSION, Name, PackageId};
+use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId};
 use loom_hir::{PackageSourceUnit, lower_package_files};
 use loom_lowering::lower_to_mir;
 use loom_sema::analyze;
 use loom_syntax::parse_with_file;
 
 pub const STRUCTURED_BUILTIN_SOURCE: &str = r#"
-module fuzz.structured_builtin
-
 import std.file.try_open_read_path
 import std.file.try_create_path
 import std.net.try_connect
@@ -102,13 +100,13 @@ pub fn main() {
 
 pub fn compile(source: &str) -> Result<loom_mir::CheckedProgram, String> {
     let parsed = parse_with_file(FileId(0), source);
-    let std_int = parse_with_file(FileId(1), include_str!("../../library/std/src/int.loom"));
-    let std_log = parse_with_file(FileId(2), include_str!("../../library/std/src/log.loom"));
+    let std_int = parse_with_file(FileId(1), include_str!("../../library/std/int/int.loom"));
+    let std_log = parse_with_file(FileId(2), include_str!("../../library/std/log/log.loom"));
     let std_resource = parse_with_file(
         FileId(3),
-        include_str!("../../library/std/src/resource.loom"),
+        include_str!("../../library/std/resource/resource.loom"),
     );
-    let std_json = parse_with_file(FileId(4), include_str!("../../library/std/src/json.loom"));
+    let std_json = parse_with_file(FileId(4), include_str!("../../library/std/json/json.loom"));
     if !parsed.diagnostics().is_empty() {
         return Err(format!("syntax diagnostics: {:#?}", parsed.diagnostics()));
     }
@@ -131,26 +129,31 @@ pub fn compile(source: &str) -> Result<loom_mir::CheckedProgram, String> {
         PackageSourceUnit {
             file: FileId(0),
             package: root_package.clone(),
+            module: ModuleName::new("fuzz"),
             syntax: parsed.ast(),
         },
         PackageSourceUnit {
             file: FileId(1),
             package: std_package.clone(),
+            module: ModuleName::new("std.int"),
             syntax: std_int.ast(),
         },
         PackageSourceUnit {
             file: FileId(2),
             package: std_package.clone(),
+            module: ModuleName::new("std.log"),
             syntax: std_log.ast(),
         },
         PackageSourceUnit {
             file: FileId(3),
             package: std_package.clone(),
+            module: ModuleName::new("std.resource"),
             syntax: std_resource.ast(),
         },
         PackageSourceUnit {
             file: FileId(4),
             package: std_package.clone(),
+            module: ModuleName::new("std.json"),
             syntax: std_json.ast(),
         },
     ]);

@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256};
 use crate::incremental::ModuleQueryKey;
 use crate::{DiagnosticRecord, ModuleInterface, ProjectGraph, SourceMap};
 
-pub const CACHE_SCHEMA_VERSION: u32 = 5;
+pub const CACHE_SCHEMA_VERSION: u32 = 6;
 const MAX_REF_BYTES: u64 = 64 * 1024;
 const MAX_BLOB_BYTES: u64 = 1024 * 1024 * 1024;
 const CHECKED_MIR_NAMESPACE: &str = "checked-mir";
@@ -34,7 +34,7 @@ const MODULE_INTERFACE_NAMESPACE: &str = "module-interface";
 const TYPED_MODULE_STATE_NAMESPACE: &str = "typed-module-state";
 const TARGET_OBJECT_NAMESPACE: &str = "target-object";
 const ARTIFACT_NAMESPACE: &str = "artifact";
-const COMPILATION_CACHE_DOMAIN: &str = "loom-compilation-cache-v5";
+const COMPILATION_CACHE_DOMAIN: &str = "loom-compilation-cache-v6";
 
 /// Frontend facts which can change validated checked MIR.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -315,7 +315,7 @@ impl PersistentCache {
     /// Derives a child artifact identity without including an output path.
     #[must_use]
     pub fn derived_key(parent: &CacheKey, fields: &[(&str, &str)]) -> CacheKey {
-        let mut identity = Identity::new("loom-derived-cache-v2");
+        let mut identity = Identity::new("loom-derived-cache-v3");
         identity.field("parent", parent.as_str());
         for (label, value) in fields {
             identity.field(label, value);
@@ -337,7 +337,7 @@ impl PersistentCache {
     /// Computes a per-source lossless token/AST identity.
     #[must_use]
     pub fn source_parse_key(relative_path: &str, source: &str, compiler_version: &str) -> CacheKey {
-        let mut identity = Identity::new("loom-source-parse-v2");
+        let mut identity = Identity::new("loom-source-parse-v3");
         identity.field("compiler-version", compiler_version);
         identity.field(
             "syntax-nesting-version",
@@ -399,7 +399,7 @@ impl PersistentCache {
     #[must_use]
     pub fn module_interface_key(interface: &ModuleInterface, compiler_version: &str) -> CacheKey {
         Self::semantic_key(
-            "loom-module-interface-cache-v2",
+            "loom-module-interface-cache-v3",
             &[
                 ("compiler-version", compiler_version),
                 ("module", &interface.module),
@@ -454,7 +454,7 @@ impl PersistentCache {
         keys: &BTreeMap<String, ModuleQueryKey>,
         compiler_version: &str,
     ) -> CacheKey {
-        let mut identity = Identity::new("loom-typed-module-state-v1");
+        let mut identity = Identity::new("loom-typed-module-state-v2");
         identity.field("compiler-version", compiler_version);
         for (module, key) in keys {
             identity.field("module", module);

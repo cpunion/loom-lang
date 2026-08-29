@@ -4,7 +4,7 @@ Loom uses two separate caches:
 
 - a project-local compiler cache for parse, semantic, MIR, object, and portable
   artifact work;
-- an HTTP registry cache for downloaded package bundles.
+- an HTTP registry cache for downloaded module bundles.
 
 Neither cache is a source of authority. Cached bytes are untrusted and are
 validated before reuse.
@@ -20,7 +20,7 @@ reuse one in a more privileged build context.
 The default compiler cache is:
 
 ```text
-PROJECT/target/loom/cache/v4
+PROJECT/target/loom/cache/v6
 ```
 
 Use `--cache-dir DIR` to choose another root or `--no-cache` to disable
@@ -44,8 +44,8 @@ boundary and remains available.
 Current namespaces include:
 
 - source parse results;
-- module interfaces;
-- typed module semantic state;
+- package interfaces;
+- typed package semantic state;
 - complete checked MIR and stable diagnostics;
 - target-specific LLVM objects;
 - interpreted executable and portable-library artifacts.
@@ -82,15 +82,15 @@ reproducible compiler defect.
 Frontend keys include normalized project/source identities, Loom language
 version, compiler/frontend build identity, embedded standard-library identity,
 contract mode, stable source paths and bytes, selected features, and resolved
-package graph.
+module graph.
 
-Module caching separates:
+Package caching separates:
 
 - public interface fingerprints;
 - declaration/semantic shape fingerprints;
 - body fingerprints.
 
-That split permits unchanged module bodies to be reused when a body-only edit
+That split permits unchanged package bodies to be reused when a body-only edit
 leaves the declaration graph compatible. Any incompatible shape falls back to
 fresh semantic analysis.
 
@@ -110,13 +110,13 @@ authenticate a cache against an actor with the same filesystem permissions.
 ## Registry cache
 
 HTTP registry entries live under `target/loom/registry/http`, partitioned by
-registry identity, package, version, and digest. They are independent of
+registry identity, module, version, and digest. They are independent of
 `--cache-dir` and `--no-cache`.
 
 Every registry cache hit revalidates the raw downloaded bundle digest and all
 materialized files. A sidecar record alone is insufficient. `--offline` can
 use only such a validated entry and never converts a corrupt cache entry into
-trusted package content.
+trusted module content.
 
 See [Packages and registries](packages-and-registries.md) for transport and
 credential rules.

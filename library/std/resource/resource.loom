@@ -1,0 +1,10 @@
+/// Selects the synchronous operation used for lexical `scoped` cleanup.
+pub concept Dispose {
+    method dispose(mut self)
+}
+
+/// Requires a value to transfer directly into a lexical `scoped` binding.
+pub concept MustScope {}
+
+/// Prevents suspension while a conforming scoped value remains active.
+pub concept NoSuspend {}

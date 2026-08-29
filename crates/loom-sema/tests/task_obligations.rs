@@ -33,8 +33,6 @@ fn codes(diagnostics: &[loom_core::Diagnostic]) -> Vec<&str> {
 fn unused_direct_and_wrapped_task_locals_are_rejected() {
     let diagnostics = analyze_source(
         r"
-module task_locals
-
 record TaskBox {
     task Task[Int]
     label Int
@@ -71,8 +69,6 @@ fn ordinaryFieldReadDoesNotConsume() {
 fn task_obligations_are_recursive_for_parameters() {
     let diagnostics = analyze_source(
         r"
-module task_params
-
 enum Failure { Failed }
 
 record TaskBox {
@@ -104,8 +100,6 @@ fn ignored(
 fn await_tuple_join_and_sync_forward_consume_tasks() {
     let diagnostics = analyze_source(
         r"
-module task_consumption
-
 record TaskBox {
     task Task[Int]
 }
@@ -163,8 +157,6 @@ async fn consume() {
 fn repeated_and_conditional_consumption_are_tracked() {
     let diagnostics = analyze_source(
         r"
-module task_flow
-
 async fn work() Int { 42 }
 
 async fn repeated() {
@@ -253,8 +245,6 @@ async fn reusedList() {
 fn propagation_audits_tasks_on_its_implicit_error_exit() {
     let diagnostics = analyze_source(
         r"
-module task_propagation
-
 enum Failure { Failed }
 
 async fn work() Int { 42 }
@@ -279,8 +269,6 @@ async fn propagate() Result[Unit, Failure] {
 fn propagation_transfers_a_task_carrying_result_once() {
     let diagnostics = analyze_source(
         r"
-module task_propagation_transfer
-
 enum Failure { Failed }
 
 async fn consume(value Result[Task[Int], Failure]) Result[Unit, Failure] {
@@ -297,8 +285,6 @@ async fn consume(value Result[Task[Int], Failure]) Result[Unit, Failure] {
 fn early_return_audits_live_tasks_on_the_exiting_path() {
     let diagnostics = analyze_source(
         r"
-module task_return
-
 async fn work() Int { 42 }
 
 async fn early(flag Bool) {
@@ -317,8 +303,6 @@ async fn early(flag Bool) {
 fn generic_and_async_task_transfer_boundaries_fail_closed() {
     let diagnostics = analyze_source(
         r"
-module task_boundaries
-
 async fn work() Int { 42 }
 
 fn sink[T](value T) {}
@@ -356,8 +340,6 @@ async fn caller() {
 fn instantiated_generic_receivers_and_async_results_cannot_hide_tasks() {
     let diagnostics = analyze_source(
         r"
-module task_generic_boundaries
-
 record GenericBox[T] {
     value T
 }
@@ -421,8 +403,6 @@ async fn instantiatedAsyncResult() {
 fn concrete_conformance_may_explicitly_transfer_a_task_receiver() {
     let diagnostics = analyze_source(
         r"
-module task_concrete_receiver
-
 record TaskBox {
     value Task[Int]
 }
@@ -451,8 +431,6 @@ fn qualified(value TaskBox) TaskBox {
 fn match_transfers_whole_carrier_and_checks_payloads() {
     let diagnostics = analyze_source(
         r"
-module task_patterns
-
 async fn consume(value Option[Task[Int]]) {
     match value {
         Some(task) => {
@@ -500,8 +478,6 @@ fn unusedBinding(value Option[Task[Int]]) {
 fn partial_projection_assignment_and_container_extraction_fail_closed() {
     let diagnostics = analyze_source(
         r#"
-module task_partial
-
 record Pair {
     left Task[Int]
     right Task[Int]
@@ -558,8 +534,6 @@ fn mapEntryAt() {
 fn discard_accepts_compound_expression_operands() {
     let diagnostics = analyze_source(
         r"
-module discard_compound
-
 fn compound(flag Bool, value Option[Int]) {
     discard { 1 }
     discard if flag { 1 } else { 2 }
@@ -577,8 +551,6 @@ fn compound(flag Bool, value Option[Int]) {
 fn discarding_a_scoped_resource_has_one_primary_diagnostic() {
     let diagnostics = analyze_source(
         r"
-module scoped_discard
-
 fn invalid(file File) {
     scoped resource = file
     discard resource
@@ -592,8 +564,6 @@ fn invalid(file File) {
 fn raw_handle_wait_constructors_are_not_language_builtins() {
     let diagnostics = analyze_source(
         r"
-module raw_waits
-
 async fn invalid() {
     Task.waitReadable(1).await
     Task.waitWritable(1).await

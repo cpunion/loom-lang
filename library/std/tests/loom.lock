@@ -1,6 +1,6 @@
-schema = 1
+schema = 2
 
-[[package]]
+[[module]]
 name = "std_tests"
 version = "0.1.0"
 language = "0.3"

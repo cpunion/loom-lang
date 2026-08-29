@@ -14,6 +14,15 @@ use sha2::{Digest as _, Sha256};
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 static TEST_RUNTIME: OnceLock<PathBuf> = OnceLock::new();
 
+macro_rules! fixture_source {
+    ($name:literal) => {
+        concat!(
+            include_str!(concat!("../../../fixtures/", $name, "/main.loom")),
+            include_str!(concat!("../../../fixtures/", $name, "/main_test.loom"))
+        )
+    };
+}
+
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 const CROSS_TRIPLE: &str = "x86_64-unknown-linux-gnu";
 #[cfg(not(all(target_arch = "aarch64", target_os = "linux")))]
@@ -37,6 +46,33 @@ impl TestProject {
     }
 
     fn write(&self, relative: &str, text: &str) {
+        if std::path::Path::new(relative)
+            .extension()
+            .is_some_and(|extension| extension == "loom")
+            && !relative.ends_with("_test.loom")
+            && let Some(test_start) = test_source_start(text)
+        {
+            let test_file_start = test_import_block_start(text, test_start).unwrap_or(test_start);
+            let (ordinary, tests) = text.split_at(test_file_start);
+            self.write_exact(relative, ordinary.trim_end());
+            let test_path = format!("{}_test.loom", relative.trim_end_matches(".loom"));
+            let imports = ordinary
+                .lines()
+                .filter(|line| line.starts_with("import "))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let test_source = if imports.is_empty() {
+                tests.to_owned()
+            } else {
+                format!("{imports}\n\n{tests}")
+            };
+            self.write_exact(&test_path, &test_source);
+            return;
+        }
+        self.write_exact(relative, text);
+    }
+
+    fn write_exact(&self, relative: &str, text: &str) {
         let path = self.0.join(relative);
         fs::create_dir_all(path.parent().expect("test path has parent"))
             .expect("create source parent");
@@ -52,6 +88,34 @@ impl TestProject {
         permissions.set_mode(0o755);
         fs::set_permissions(path, permissions).expect("make script executable");
     }
+}
+
+fn test_source_start(source: &str) -> Option<usize> {
+    source
+        .match_indices("test ")
+        .find(|(offset, _)| {
+            (*offset == 0 || source.as_bytes().get(offset - 1) == Some(&b'\n'))
+                && (source[*offset..].starts_with("test fn ")
+                    || source[*offset..].starts_with("test async fn "))
+        })
+        .map(|(offset, _)| offset)
+}
+
+fn test_import_block_start(source: &str, test_start: usize) -> Option<usize> {
+    let mut offset = 0;
+    let mut saw_declaration = false;
+    for line in source[..test_start].split_inclusive('\n') {
+        let trimmed = line.trim();
+        if trimmed.starts_with("import ") {
+            if saw_declaration {
+                return Some(offset);
+            }
+        } else if !trimmed.is_empty() {
+            saw_declaration = true;
+        }
+        offset += line.len();
+    }
+    None
 }
 
 impl Drop for TestProject {
@@ -374,13 +438,13 @@ fn check_reports_source_errors_before_pipeline_incompleteness() {
         .expect("run loomc");
     assert_eq!(output.status.code(), Some(1));
     let stdout = String::from_utf8(output.stdout).expect("UTF-8 output");
-    assert!(stdout.contains("MissingModuleDeclaration"), "{stdout}");
+    assert!(stdout.contains("UnexpectedEndOfFile"), "{stdout}");
     assert!(!stdout.contains("CompilerPipelineIncomplete"), "{stdout}");
 }
 
 #[test]
 fn human_code_frames_do_not_change_the_json_diagnostic_contract() {
-    let project = TestProject::new("module demo\n\npub fn main() {\n    missing()\n}\n");
+    let project = TestProject::new("pub fn main() {\n    missing()\n}\n");
     let human = loomc()
         .arg("check")
         .arg(&project.0)
@@ -388,7 +452,7 @@ fn human_code_frames_do_not_change_the_json_diagnostic_contract() {
         .expect("run human check");
     assert_eq!(human.status.code(), Some(1));
     let stderr = String::from_utf8(human.stderr).expect("UTF-8 human diagnostics");
-    assert!(stderr.contains("4 |     missing()"), "{stderr}");
+    assert!(stderr.contains("2 |     missing()"), "{stderr}");
     assert!(stderr.contains('^'), "{stderr}");
 
     let machine = loomc()
@@ -425,7 +489,7 @@ fn human_code_frames_do_not_change_the_json_diagnostic_contract() {
 
 #[test]
 fn native_and_interpreter_failures_share_the_structured_json_schema() {
-    let project = TestProject::new("module fault_parity\n\npub fn main() {\n    assert false\n}\n");
+    let project = TestProject::new("pub fn main() {\n    assert false\n}\n");
     let failures = ["interpreter", "llvm"].map(|backend| {
         let output = loomc()
             .args(["--json", "--no-cache", "--backend", backend, "run"])
@@ -459,9 +523,9 @@ fn check_rejects_an_unknown_language_version() {
     let project = TestProject::empty();
     project.write(
         "loom.toml",
-        "schema = 1\nlanguage = \"0.4\"\n[package]\nname = \"future\"\nversion = \"1.0.0\"\n",
+        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"future\"\nversion = \"1.0.0\"\n",
     );
-    project.write("src/main.loom", "module future\n");
+    project.write("main.loom", "");
     let output = loomc()
         .args(["--json", "check"])
         .arg(&project.0)
@@ -474,7 +538,7 @@ fn check_rejects_an_unknown_language_version() {
 
 #[test]
 fn clean_check_uses_the_real_semantic_pipeline() {
-    let project = TestProject::new("module demo\n\nfn main() {\n}\n");
+    let project = TestProject::new("fn main() {\n}\n");
     let output = loomc()
         .args(["check", "--json"])
         .arg(&project.0)
@@ -489,9 +553,7 @@ fn clean_check_uses_the_real_semantic_pipeline() {
 #[test]
 fn embedded_loom_std_source_checks_builds_and_closes_only_reachable_definitions() {
     let project = TestProject::new(
-        r"module std_source_client
-
-import std.int.minimum
+        r"import std.int.minimum
 
 pub fn main() {
     let value = minimum(9, 4)
@@ -551,9 +613,7 @@ pub fn main() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn interpreted_executable_artifact_closes_to_one_entry_without_narrowing_driver_cache() {
-    const INITIAL_SOURCE: &str = r"module executable_closure
-
-fn mainHelper() Int { 1 }
+    const INITIAL_SOURCE: &str = r"fn mainHelper() Int { 1 }
 
 fn alternateHelper() Int { 2 }
 
@@ -575,9 +635,7 @@ fn dead() DeadRecord {
     DeadRecord { value = 10 }
 }
 ";
-    const CHANGED_DEAD_SOURCE: &str = r"module executable_closure
-
-fn mainHelper() Int { 1 }
+    const CHANGED_DEAD_SOURCE: &str = r"fn mainHelper() Int { 1 }
 
 fn alternateHelper() Int { 2 }
 
@@ -646,10 +704,7 @@ fn dead() DeadRecord {
         .map(|function| function.name.as_str())
         .collect::<Vec<_>>();
     main_functions.sort_unstable();
-    assert_eq!(
-        main_functions,
-        ["executable_closure.main", "executable_closure.mainHelper"]
-    );
+    assert_eq!(main_functions, ["standalone.main", "standalone.mainHelper"]);
     assert!(
         !main_program
             .types
@@ -693,10 +748,7 @@ fn dead() DeadRecord {
     alternate_functions.sort_unstable();
     assert_eq!(
         alternate_functions,
-        [
-            "executable_closure.alternate",
-            "executable_closure.alternateHelper"
-        ]
+        ["standalone.alternate", "standalone.alternateHelper"]
     );
 
     project.write("main.loom", CHANGED_DEAD_SOURCE);
@@ -726,7 +778,7 @@ fn dead() DeadRecord {
 
 #[test]
 fn persistent_cache_hits_content_keys_and_final_artifacts() {
-    let project = TestProject::new("module demo\n\npub fn main() {\n}\n");
+    let project = TestProject::new("pub fn main() {\n}\n");
 
     let check = |extra: &[&str]| {
         loomc()
@@ -750,10 +802,7 @@ fn persistent_cache_hits_content_keys_and_final_artifacts() {
         Some("hit")
     );
 
-    project.write(
-        "main.loom",
-        "module demo\n\npub fn main() {\n    assert true\n}\n",
-    );
+    project.write("main.loom", "pub fn main() {\n    assert true\n}\n");
     let changed = check(&["check"]);
     assert_eq!(changed.status.code(), Some(0));
     assert_eq!(
@@ -801,7 +850,7 @@ fn persistent_cache_hits_content_keys_and_final_artifacts() {
 
 #[test]
 fn backend_switch_reuses_the_same_checked_mir_identity() {
-    let project = TestProject::new("module demo\n\npub fn main() {\n}\n");
+    let project = TestProject::new("pub fn main() {\n}\n");
     let interpreter = loomc()
         .args(["--json", "--backend", "interpreter", "check"])
         .arg(&project.0)
@@ -831,7 +880,7 @@ fn backend_switch_reuses_the_same_checked_mir_identity() {
 
 #[test]
 fn target_and_optimization_split_object_cache_but_reuse_checked_mir() {
-    let project = TestProject::new("module demo\n\npub fn main() {\n}\n");
+    let project = TestProject::new("pub fn main() {\n}\n");
     let host_triple = loom_codegen_llvm::target_identity(
         None,
         loom_codegen_llvm::OptimizationProfile::Development,
@@ -935,7 +984,7 @@ fn target_and_optimization_split_object_cache_but_reuse_checked_mir() {
 #[test]
 fn ordinary_native_commands_use_the_atomic_automatic_route() {
     let scalar = TestProject::new(
-        "module automatic_scalar\n\nfn choose(flag Bool) Int { if flag { 1 } else { 2 } }\n\npub fn main() {\n    discard choose(true)\n}\n\ntest fn scalar() {\n    discard choose(false)\n}\n",
+        "fn choose(flag Bool) Int { if flag { 1 } else { 2 } }\n\npub fn main() {\n    discard choose(true)\n}\n\ntest fn scalar() {\n    discard choose(false)\n}\n",
     );
     let scalar_object = scalar.0.join("scalar.o");
     let build = loomc()
@@ -963,9 +1012,7 @@ fn ordinary_native_commands_use_the_atomic_automatic_route() {
         .expect("run scalar tests through the production CLI");
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
 
-    let managed = TestProject::new(
-        "module automatic_managed_text\n\npub fn main() {\n    discard \"left\".concat(\"right\")\n}\n",
-    );
+    let managed = TestProject::new("pub fn main() {\n    discard \"left\".concat(\"right\")\n}\n");
     let managed_object = managed.0.join("managed-text.o");
     let build = loomc()
         .args(["build", "--emit", "object", "--output"])
@@ -985,9 +1032,7 @@ fn ordinary_native_commands_use_the_atomic_automatic_route() {
 
 #[test]
 fn async_managed_collections_close_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(include_str!(
-        "../../../fixtures/lcir-async-managed-collections/main.loom"
-    ));
+    let project = TestProject::new(fixture_source!("lcir-async-managed-collections"));
 
     let check = loomc()
         .args(["--no-cache", "check"])
@@ -1042,7 +1087,7 @@ fn async_managed_collections_close_real_check_build_test_and_run_commands() {
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
     assert!(
         String::from_utf8_lossy(&tests.stdout)
-            .contains("passed lcir_async_managed_collections.managedCollectionsCrossAwait"),
+            .contains("passed standalone.managedCollectionsCrossAwait"),
         "{tests:?}"
     );
 
@@ -1057,7 +1102,7 @@ fn async_managed_collections_close_real_check_build_test_and_run_commands() {
 
 #[test]
 fn typed_sleep_closes_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(include_str!("../../../fixtures/lcir-typed-sleep/main.loom"));
+    let project = TestProject::new(fixture_source!("lcir-typed-sleep"));
 
     let check = loomc()
         .args(["--no-cache", "check"])
@@ -1107,7 +1152,7 @@ fn typed_sleep_closes_real_check_build_test_and_run_commands() {
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
     assert!(
         String::from_utf8_lossy(&tests.stdout)
-            .contains("passed lcir_typed_sleep.sleepsWithIntAndDuration"),
+            .contains("passed standalone.sleepsWithIntAndDuration"),
         "{tests:?}"
     );
 
@@ -1122,9 +1167,7 @@ fn typed_sleep_closes_real_check_build_test_and_run_commands() {
 
 #[test]
 fn synchronous_task_helpers_close_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(include_str!(
-        "../../../fixtures/lcir-sync-task-helpers/main.loom"
-    ));
+    let project = TestProject::new(fixture_source!("lcir-sync-task-helpers"));
 
     let check = loomc()
         .args(["--no-cache", "check"])
@@ -1169,9 +1212,8 @@ fn synchronous_task_helpers_close_real_check_build_test_and_run_commands() {
         .expect("test synchronous Task-helper source through the production CLI");
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
     assert!(
-        String::from_utf8_lossy(&tests.stdout).contains(
-            "passed lcir_sync_task_helpers.synchronousTaskHelpersBorrowTheCurrentExecutor"
-        ),
+        String::from_utf8_lossy(&tests.stdout)
+            .contains("passed standalone.synchronousTaskHelpersBorrowTheCurrentExecutor"),
         "{tests:?}"
     );
 
@@ -1186,9 +1228,7 @@ fn synchronous_task_helpers_close_real_check_build_test_and_run_commands() {
 
 #[test]
 fn typed_task_all_closes_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(include_str!(
-        "../../../fixtures/lcir-typed-task-all/main.loom"
-    ));
+    let project = TestProject::new(fixture_source!("lcir-typed-task-all"));
 
     let check = loomc()
         .args(["--no-cache", "check"])
@@ -1243,7 +1283,7 @@ fn typed_task_all_closes_real_check_build_test_and_run_commands() {
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
     assert!(
         String::from_utf8_lossy(&tests.stdout)
-            .contains("passed lcir_typed_task_all.staticTaskAllUsesDirectAndFirstClassPaths"),
+            .contains("passed standalone.staticTaskAllUsesDirectAndFirstClassPaths"),
         "{tests:?}"
     );
 
@@ -1258,9 +1298,7 @@ fn typed_task_all_closes_real_check_build_test_and_run_commands() {
 
 #[test]
 fn typed_task_any_closes_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(include_str!(
-        "../../../fixtures/lcir-typed-task-any/main.loom"
-    ));
+    let project = TestProject::new(fixture_source!("lcir-typed-task-any"));
 
     let check = loomc()
         .args(["--no-cache", "check"])
@@ -1317,9 +1355,8 @@ fn typed_task_any_closes_real_check_build_test_and_run_commands() {
         .expect("test typed Task.any source through the production CLI");
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
     assert!(
-        String::from_utf8_lossy(&tests.stdout).contains(
-            "passed lcir_typed_task_any.fixedTaskAnySelectsTheSecondManagedWinnerRepeatedly"
-        ),
+        String::from_utf8_lossy(&tests.stdout)
+            .contains("passed standalone.fixedTaskAnySelectsTheSecondManagedWinnerRepeatedly"),
         "{tests:?}"
     );
 
@@ -1334,9 +1371,7 @@ fn typed_task_any_closes_real_check_build_test_and_run_commands() {
 
 #[test]
 fn typed_task_outcomes_close_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(include_str!(
-        "../../../fixtures/lcir-typed-task-outcomes/main.loom"
-    ));
+    let project = TestProject::new(fixture_source!("lcir-typed-task-outcomes"));
 
     let check = loomc()
         .args(["--no-cache", "check"])
@@ -1393,7 +1428,7 @@ fn typed_task_outcomes_close_real_check_build_test_and_run_commands() {
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
     assert!(
         String::from_utf8_lossy(&tests.stdout)
-            .contains("passed lcir_typed_task_outcomes.fixedSettledAndRaceUseTypedOutcomes"),
+            .contains("passed standalone.fixedSettledAndRaceUseTypedOutcomes"),
         "{tests:?}"
     );
 
@@ -1408,9 +1443,7 @@ fn typed_task_outcomes_close_real_check_build_test_and_run_commands() {
 
 #[test]
 fn typed_async_cleanup_closes_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(include_str!(
-        "../../../fixtures/lcir-async-cleanup/main.loom"
-    ));
+    let project = TestProject::new(fixture_source!("lcir-async-cleanup"));
 
     let check = loomc()
         .args(["--no-cache", "check"])
@@ -1463,7 +1496,7 @@ fn typed_async_cleanup_closes_real_check_build_test_and_run_commands() {
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
     assert!(
         String::from_utf8_lossy(&tests.stdout)
-            .contains("passed lcir_async_cleanup.cleanupAcrossSuspension"),
+            .contains("passed standalone.cleanupAcrossSuspension"),
         "{tests:?}"
     );
 
@@ -1495,9 +1528,7 @@ fn typed_async_cleanup_closes_real_check_build_test_and_run_commands() {
 
 #[test]
 fn typed_async_writeback_closes_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(include_str!(
-        "../../../fixtures/lcir-async-writeback/main.loom"
-    ));
+    let project = TestProject::new(fixture_source!("lcir-async-writeback"));
 
     let check = loomc()
         .args(["--no-cache", "check"])
@@ -1551,7 +1582,7 @@ fn typed_async_writeback_closes_real_check_build_test_and_run_commands() {
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
     assert!(
         String::from_utf8_lossy(&tests.stdout)
-            .contains("passed lcir_async_writeback.synchronousWritebackInsideCoroutine"),
+            .contains("passed standalone.synchronousWritebackInsideCoroutine"),
         "{tests:?}"
     );
 
@@ -1566,7 +1597,7 @@ fn typed_async_writeback_closes_real_check_build_test_and_run_commands() {
 
 #[test]
 fn generic_native_commands_close_check_build_test_and_run() {
-    let project = TestProject::new(include_str!("../../../fixtures/lcir-generics/main.loom"));
+    let project = TestProject::new(fixture_source!("lcir-generics"));
 
     let check = loomc()
         .args(["--no-cache", "check"])
@@ -1609,9 +1640,7 @@ fn generic_native_commands_close_check_build_test_and_run() {
 
 #[test]
 fn generic_products_close_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(include_str!(
-        "../../../fixtures/lcir-generic-products/main.loom"
-    ));
+    let project = TestProject::new(fixture_source!("lcir-generic-products"));
 
     let check = loomc()
         .args(["--no-cache", "check"])
@@ -1663,8 +1692,7 @@ fn generic_products_close_real_check_build_test_and_run_commands() {
         .expect("test generic-product source through the production CLI");
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
     assert!(
-        String::from_utf8_lossy(&tests.stdout)
-            .contains("passed lcir_generic_products.genericProducts"),
+        String::from_utf8_lossy(&tests.stdout).contains("passed standalone.genericProducts"),
         "{tests:?}"
     );
 
@@ -1679,9 +1707,7 @@ fn generic_products_close_real_check_build_test_and_run_commands() {
 
 #[test]
 fn scalar_std_apis_close_both_backends_and_typed_object_surface() {
-    let project = TestProject::new(include_str!(
-        "../../../fixtures/lcir-scalar-builtins/main.loom"
-    ));
+    let project = TestProject::new(fixture_source!("lcir-scalar-builtins"));
 
     for backend in ["interpreter", "llvm"] {
         for command in ["check", "test", "run"] {
@@ -1700,7 +1726,7 @@ fn scalar_std_apis_close_both_backends_and_typed_object_surface() {
             if command == "test" {
                 assert!(
                     String::from_utf8_lossy(&output.stdout)
-                        .contains("passed lcir_scalar_builtins.typedScalarBuiltins"),
+                        .contains("passed standalone.typedScalarBuiltins"),
                     "{backend}: {output:?}"
                 );
             } else if command == "run" {
@@ -1776,9 +1802,7 @@ fn scalar_std_apis_close_both_backends_and_typed_object_surface() {
 
 #[test]
 fn structural_equality_closes_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(include_str!(
-        "../../../fixtures/lcir-structural-equality/main.loom"
-    ));
+    let project = TestProject::new(fixture_source!("lcir-structural-equality"));
 
     let check = loomc()
         .args(["--no-cache", "check"])
@@ -1830,8 +1854,7 @@ fn structural_equality_closes_real_check_build_test_and_run_commands() {
         .expect("test structural-equality source through the production CLI");
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
     assert!(
-        String::from_utf8_lossy(&tests.stdout)
-            .contains("passed lcir_structural_equality.structuralEquality"),
+        String::from_utf8_lossy(&tests.stdout).contains("passed standalone.structuralEquality"),
         "{tests:?}"
     );
 
@@ -1846,9 +1869,7 @@ fn structural_equality_closes_real_check_build_test_and_run_commands() {
 
 #[test]
 fn static_concepts_close_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(include_str!(
-        "../../../fixtures/lcir-static-concepts/main.loom"
-    ));
+    let project = TestProject::new(fixture_source!("lcir-static-concepts"));
 
     let check = loomc()
         .args(["--no-cache", "check"])
@@ -1889,8 +1910,7 @@ fn static_concepts_close_real_check_build_test_and_run_commands() {
         .expect("test static-concept source through the production CLI");
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
     assert!(
-        String::from_utf8_lossy(&tests.stdout)
-            .contains("passed lcir_static_concepts.staticConcepts"),
+        String::from_utf8_lossy(&tests.stdout).contains("passed standalone.staticConcepts"),
         "{tests:?}"
     );
 
@@ -1905,7 +1925,7 @@ fn static_concepts_close_real_check_build_test_and_run_commands() {
 
 #[test]
 fn unique_dynamic_concepts_close_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(include_str!("../../../fixtures/lcir-dyn-unique/main.loom"));
+    let project = TestProject::new(fixture_source!("lcir-dyn-unique"));
 
     let check = loomc()
         .args(["--no-cache", "check"])
@@ -1945,8 +1965,7 @@ fn unique_dynamic_concepts_close_real_check_build_test_and_run_commands() {
         .expect("test unique-dyn source through the production CLI");
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
     assert!(
-        String::from_utf8_lossy(&tests.stdout)
-            .contains("passed lcir_dyn_unique.uniqueDynamicWitness"),
+        String::from_utf8_lossy(&tests.stdout).contains("passed standalone.uniqueDynamicWitness"),
         "{tests:?}"
     );
 
@@ -1961,7 +1980,7 @@ fn unique_dynamic_concepts_close_real_check_build_test_and_run_commands() {
 
 #[test]
 fn finite_dynamic_concepts_close_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(include_str!("../../../fixtures/lcir-dyn-finite/main.loom"));
+    let project = TestProject::new(fixture_source!("lcir-dyn-finite"));
 
     let check = loomc()
         .args(["--no-cache", "check"])
@@ -2011,8 +2030,7 @@ fn finite_dynamic_concepts_close_real_check_build_test_and_run_commands() {
         .expect("test finite-dyn source through the production CLI");
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
     assert!(
-        String::from_utf8_lossy(&tests.stdout)
-            .contains("passed lcir_dyn_finite.finiteDynamicWitnesses"),
+        String::from_utf8_lossy(&tests.stdout).contains("passed standalone.finiteDynamicWitnesses"),
         "{tests:?}"
     );
 
@@ -2027,8 +2045,9 @@ fn finite_dynamic_concepts_close_real_check_build_test_and_run_commands() {
 
 #[test]
 fn concepts_polymorphism_uses_the_unique_witness_lcir_route() {
-    let project = TestProject::new(include_str!(
-        "../../../examples/concepts-polymorphism/concepts.loom"
+    let project = TestProject::new(concat!(
+        include_str!("../../../examples/concepts-polymorphism/concepts.loom"),
+        include_str!("../../../examples/concepts-polymorphism/concepts_test.loom")
     ));
     let object_path = project.0.join("concepts-polymorphism-unique-dyn.o");
     let build = loomc()
@@ -2080,9 +2099,7 @@ fn concepts_polymorphism_uses_the_unique_witness_lcir_route() {
 
 #[test]
 fn lexical_cleanup_and_source_contracts_close_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(include_str!(
-        "../../../fixtures/lcir-lexical-cleanup/main.loom"
-    ));
+    let project = TestProject::new(fixture_source!("lcir-lexical-cleanup"));
 
     let check = loomc()
         .args(["--no-cache", "check"])
@@ -2124,8 +2141,7 @@ fn lexical_cleanup_and_source_contracts_close_real_check_build_test_and_run_comm
         .expect("test lexical-cleanup source through the production CLI");
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
     assert!(
-        String::from_utf8_lossy(&tests.stdout)
-            .contains("passed lcir_lexical_cleanup.lexicalCleanup"),
+        String::from_utf8_lossy(&tests.stdout).contains("passed standalone.lexicalCleanup"),
         "{tests:?}"
     );
 
@@ -2140,9 +2156,7 @@ fn lexical_cleanup_and_source_contracts_close_real_check_build_test_and_run_comm
 
 #[test]
 fn projected_places_close_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(include_str!(
-        "../../../fixtures/lcir-projected-places/main.loom"
-    ));
+    let project = TestProject::new(fixture_source!("lcir-projected-places"));
 
     let check = loomc()
         .args(["--no-cache", "check"])
@@ -2170,8 +2184,7 @@ fn projected_places_close_real_check_build_test_and_run_commands() {
         .expect("test projected-place source through the CLI");
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
     assert!(
-        String::from_utf8_lossy(&tests.stdout)
-            .contains("passed lcir_projected_places.projectedPlaces"),
+        String::from_utf8_lossy(&tests.stdout).contains("passed standalone.projectedPlaces"),
         "{tests:?}"
     );
 
@@ -2186,7 +2199,7 @@ fn projected_places_close_real_check_build_test_and_run_commands() {
 
 #[test]
 fn immortal_text_closes_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(include_str!("../../../fixtures/lcir-text/main.loom"));
+    let project = TestProject::new(fixture_source!("lcir-text"));
 
     let check = loomc()
         .args(["--no-cache", "check"])
@@ -2220,7 +2233,7 @@ fn immortal_text_closes_real_check_build_test_and_run_commands() {
         .expect("test immortal-Text source through the CLI");
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
     assert!(
-        String::from_utf8_lossy(&tests.stdout).contains("passed lcir_text.immortalText"),
+        String::from_utf8_lossy(&tests.stdout).contains("passed standalone.immortalText"),
         "{tests:?}"
     );
 
@@ -2235,9 +2248,7 @@ fn immortal_text_closes_real_check_build_test_and_run_commands() {
 
 #[test]
 fn managed_text_concat_closes_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(include_str!(
-        "../../../fixtures/lcir-managed-text/main.loom"
-    ));
+    let project = TestProject::new(fixture_source!("lcir-managed-text"));
 
     let check = loomc()
         .args(["--no-cache", "check"])
@@ -2290,7 +2301,7 @@ fn managed_text_concat_closes_real_check_build_test_and_run_commands() {
         .expect("test managed-Text source through the CLI");
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
     assert!(
-        String::from_utf8_lossy(&tests.stdout).contains("passed lcir_managed_text.managedText"),
+        String::from_utf8_lossy(&tests.stdout).contains("passed standalone.managedText"),
         "{tests:?}"
     );
 
@@ -2305,9 +2316,7 @@ fn managed_text_concat_closes_real_check_build_test_and_run_commands() {
 
 #[test]
 fn managed_product_leaves_close_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(include_str!(
-        "../../../fixtures/lcir-managed-products/main.loom"
-    ));
+    let project = TestProject::new(fixture_source!("lcir-managed-products"));
 
     let check = loomc()
         .args(["--no-cache", "check"])
@@ -2359,8 +2368,7 @@ fn managed_product_leaves_close_real_check_build_test_and_run_commands() {
         .expect("test managed-product source through the CLI");
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
     assert!(
-        String::from_utf8_lossy(&tests.stdout)
-            .contains("passed lcir_managed_products.managedProducts"),
+        String::from_utf8_lossy(&tests.stdout).contains("passed standalone.managedProducts"),
         "{tests:?}"
     );
 
@@ -2375,9 +2383,7 @@ fn managed_product_leaves_close_real_check_build_test_and_run_commands() {
 
 #[test]
 fn managed_sum_leaves_close_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(include_str!(
-        "../../../fixtures/lcir-managed-sums/main.loom"
-    ));
+    let project = TestProject::new(fixture_source!("lcir-managed-sums"));
 
     let check = loomc()
         .args(["--no-cache", "check"])
@@ -2429,7 +2435,7 @@ fn managed_sum_leaves_close_real_check_build_test_and_run_commands() {
         .expect("test managed-sum source through the CLI");
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
     assert!(
-        String::from_utf8_lossy(&tests.stdout).contains("passed lcir_managed_sums.managedSums"),
+        String::from_utf8_lossy(&tests.stdout).contains("passed standalone.managedSums"),
         "{tests:?}"
     );
 
@@ -2444,9 +2450,7 @@ fn managed_sum_leaves_close_real_check_build_test_and_run_commands() {
 
 #[test]
 fn managed_lists_close_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(include_str!(
-        "../../../fixtures/lcir-managed-lists/main.loom"
-    ));
+    let project = TestProject::new(fixture_source!("lcir-managed-lists"));
 
     let check = loomc()
         .args(["--no-cache", "check"])
@@ -2500,7 +2504,7 @@ fn managed_lists_close_real_check_build_test_and_run_commands() {
         .expect("test managed-List source through the CLI");
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
     assert!(
-        String::from_utf8_lossy(&tests.stdout).contains("passed lcir_managed_lists.managedLists"),
+        String::from_utf8_lossy(&tests.stdout).contains("passed standalone.managedLists"),
         "{tests:?}"
     );
 
@@ -2515,9 +2519,7 @@ fn managed_lists_close_real_check_build_test_and_run_commands() {
 
 #[test]
 fn typed_text_maps_close_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(include_str!(
-        "../../../fixtures/lcir-typed-textmap/main.loom"
-    ));
+    let project = TestProject::new(fixture_source!("lcir-typed-textmap"));
 
     let check = loomc()
         .args(["--no-cache", "check"])
@@ -2573,7 +2575,7 @@ fn typed_text_maps_close_real_check_build_test_and_run_commands() {
         .expect("test typed TextMap source through the CLI");
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
     assert!(
-        String::from_utf8_lossy(&tests.stdout).contains("passed lcir_typed_textmap.typedTextMap"),
+        String::from_utf8_lossy(&tests.stdout).contains("passed standalone.typedTextMap"),
         "{tests:?}"
     );
 
@@ -2588,9 +2590,7 @@ fn typed_text_maps_close_real_check_build_test_and_run_commands() {
 
 #[test]
 fn typed_logging_closes_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(include_str!(
-        "../../../fixtures/lcir-typed-logging/main.loom"
-    ));
+    let project = TestProject::new(fixture_source!("lcir-typed-logging"));
     let expected = include_bytes!("../../../fixtures/lcir-typed-logging/expected.stderr");
 
     let check = loomc()
@@ -2644,7 +2644,7 @@ fn typed_logging_closes_real_check_build_test_and_run_commands() {
         .output()
         .expect("test typed logging source through the CLI");
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
-    assert_eq!(tests.stdout, b"passed lcir_typed_logging.typedLogging\n");
+    assert_eq!(tests.stdout, b"passed standalone.typedLogging\n");
     assert_eq!(tests.stderr, expected);
 
     let run = loomc()
@@ -2659,7 +2659,7 @@ fn typed_logging_closes_real_check_build_test_and_run_commands() {
 
 #[test]
 fn typed_json_format_closes_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(include_str!("../../../fixtures/lcir-json-format/main.loom"));
+    let project = TestProject::new(fixture_source!("lcir-json-format"));
 
     let check = loomc()
         .args(["--no-cache", "check"])
@@ -2714,7 +2714,7 @@ fn typed_json_format_closes_real_check_build_test_and_run_commands() {
         .output()
         .expect("test typed JSON formatting source through the CLI");
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
-    assert_eq!(tests.stdout, b"passed lcir_json_format.typedJsonFormat\n");
+    assert_eq!(tests.stdout, b"passed standalone.typedJsonFormat\n");
     assert!(tests.stderr.is_empty(), "{tests:?}");
 
     let run = loomc()
@@ -2729,7 +2729,7 @@ fn typed_json_format_closes_real_check_build_test_and_run_commands() {
 
 #[test]
 fn source_json_parse_closes_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(include_str!("../../../fixtures/lcir-json-parse/main.loom"));
+    let project = TestProject::new(fixture_source!("lcir-json-parse"));
 
     for backend in ["interpreter", "llvm"] {
         for command in ["check", "test", "run"] {
@@ -2747,7 +2747,7 @@ fn source_json_parse_closes_real_check_build_test_and_run_commands() {
             );
             if command == "test" {
                 assert_eq!(
-                    output.stdout, b"passed lcir_json_parse.source_json_parse\n",
+                    output.stdout, b"passed standalone.source_json_parse\n",
                     "{backend} test",
                 );
             } else if command == "run" {
@@ -2824,7 +2824,7 @@ fn source_json_parse_closes_real_check_build_test_and_run_commands() {
 
 #[test]
 fn cache_stat_and_prune_have_stable_json_reports() {
-    let project = TestProject::new("module demo\n\npub fn main() {}\n");
+    let project = TestProject::new("pub fn main() {}\n");
     let check = loomc()
         .args(["--json", "--backend", "interpreter", "check"])
         .arg(&project.0)
@@ -2840,7 +2840,7 @@ fn cache_stat_and_prune_have_stable_json_reports() {
     assert_eq!(stat.status.code(), Some(0));
     let stdout = String::from_utf8(stat.stdout).expect("UTF-8 stat output");
     assert!(stdout.contains("\"category\":\"cache_stat\""), "{stdout}");
-    assert!(stdout.contains("\"schema_version\":5"), "{stdout}");
+    assert!(stdout.contains("\"schema_version\":6"), "{stdout}");
 
     let prune = loomc()
         .args(["--json", "cache", "prune"])
@@ -2854,8 +2854,7 @@ fn cache_stat_and_prune_have_stable_json_reports() {
 
 #[test]
 fn unreachable_private_body_edits_reuse_native_object_and_relink() {
-    let project =
-        TestProject::new("module demo\n\npub fn main() {\n}\n\nfn dead() Int {\n    1\n}\n");
+    let project = TestProject::new("pub fn main() {\n}\n\nfn dead() Int {\n    1\n}\n");
     let first_artifact = project.0.join("first.native");
     let first = loomc()
         .args(["--json", "build", "--output"])
@@ -2875,7 +2874,7 @@ fn unreachable_private_body_edits_reuse_native_object_and_relink() {
 
     project.write(
         "main.loom",
-        "module demo\n\npub fn main() {\n}\n\nfn dead() Int {\n    2\n}\n",
+        "pub fn main() {\n}\n\nfn dead() Int {\n    2\n}\n",
     );
     let second_artifact = project.0.join("second.native");
     let second = loomc()
@@ -2918,30 +2917,33 @@ fn unreachable_private_body_edits_reuse_native_object_and_relink() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one CLI scenario verifies check, run, build, test, and both artifact backends"
+)]
 fn manifest_targets_and_path_dependencies_drive_cli_roots() {
     let project = TestProject::empty();
     project.write(
         "utility/loom.toml",
-        "schema = 1\n[package]\nname = \"utility\"\nversion = \"1.1.0\"\n",
+        "schema = 2\n[module]\nname = \"utility\"\nversion = \"1.1.0\"\n",
     );
     project.write(
-        "utility/src/lib.loom",
-        "module utility\n\npub fn increment(value Int) Int {\n    value + 1\n}\n",
+        "utility/math/increment.loom",
+        "pub fn increment(value Int) Int {\n    value + 1\n}\n",
     );
     project.write(
         "application/loom.toml",
-        "schema = 1\n[package]\nname = \"application\"\nversion = \"0.1.0\"\n[dependencies]\nutility = { path = \"../utility\", version = \"^1\" }\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"application.start\"\n[[target]]\nname = \"unit\"\nkind = \"test\"\n",
+        "schema = 2\n[module]\nname = \"application\"\nversion = \"0.1.0\"\n[dependencies]\nutility = { path = \"../utility\", version = \"^1\" }\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"application.start\"\n",
     );
     project.write(
-        "application/src/main.loom",
-        "module application\n\nimport utility.increment\n\npub fn start() {\n    let value = increment(1)\n    assert value == 2\n}\n\ntest fn dependency_works() {\n    let value = increment(2)\n    assert value == 3\n}\n",
+        "application/main.loom",
+        "import utility.math.increment\n\npub fn start() {\n    let value = increment(1)\n    assert value == 2\n}\n\ntest fn dependency_works() {\n    let value = increment(2)\n    assert value == 3\n}\n",
     );
     let root = project.0.join("application");
 
     for arguments in [
         vec!["check", "--target", "app"],
         vec!["run", "--target", "app"],
-        vec!["test", "--target", "unit"],
     ] {
         let output = loomc()
             .args(arguments)
@@ -2956,6 +2958,17 @@ fn manifest_targets_and_path_dependencies_drive_cli_roots() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+
+    let tests = loomc()
+        .arg("test")
+        .arg(&root)
+        .output()
+        .expect("run package tests without a target selector");
+    assert_eq!(tests.status.code(), Some(0), "{tests:?}");
+    assert!(
+        String::from_utf8_lossy(&tests.stdout).contains("passed application.dependency_works"),
+        "{tests:?}"
+    );
 
     let artifact = project.0.join("application.native");
     let build = loomc()
@@ -3013,13 +3026,17 @@ fn manifest_targets_and_path_dependencies_drive_cli_roots() {
     assert_eq!(interpreted_run.status.code(), Some(0));
     assert_eq!(interpreted_run.stdout, b"Unit\n");
 
-    let wrong_kind = loomc()
-        .args(["--json", "run", "--target", "unit"])
+    let test_target = loomc()
+        .args(["test", "--target", "app"])
         .arg(&root)
         .output()
-        .expect("reject test target for run");
-    assert_eq!(wrong_kind.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&wrong_kind.stdout).contains("TargetKindMismatch"));
+        .expect("reject target selection for package tests");
+    assert_eq!(test_target.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&test_target.stderr)
+            .contains("--target is only valid for source check/build/run/debug"),
+        "{test_target:?}"
+    );
 }
 
 #[test]
@@ -3028,12 +3045,9 @@ fn library_targets_build_portable_validated_artifacts() {
     let project = TestProject::empty();
     project.write(
         "loom.toml",
-        "schema = 1\n[package]\nname = \"sample\"\nversion = \"0.1.0\"\n[[target]]\nname = \"api\"\nkind = \"lib\"\n",
+        "schema = 2\n[module]\nname = \"sample\"\nversion = \"0.1.0\"\n[[target]]\nname = \"api\"\nkind = \"lib\"\n",
     );
-    project.write(
-        "src/lib.loom",
-        "module sample\n\npub fn answer() Int {\n    42\n}\n",
-    );
+    project.write("lib.loom", "pub fn answer() Int {\n    42\n}\n");
     let first_artifact = project.0.join("sample.loomlib");
     let first = loomc()
         .args(["--json", "build", "--target", "api", "--output"])
@@ -3076,25 +3090,35 @@ fn library_targets_build_portable_validated_artifacts() {
         fs::read(second_artifact).expect("read cached library")
     );
 
-    for command in ["run", "test"] {
-        let rejected = loomc()
-            .args(["--json", command, "--target", "api"])
-            .arg(&project.0)
-            .output()
-            .expect("reject library as executable target");
-        assert_eq!(rejected.status.code(), Some(2));
-        assert!(String::from_utf8_lossy(&rejected.stdout).contains("TargetKindMismatch"));
-    }
+    let rejected = loomc()
+        .args(["--json", "run", "--target", "api"])
+        .arg(&project.0)
+        .output()
+        .expect("reject library as an executable target");
+    assert_eq!(rejected.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&rejected.stdout).contains("TargetKindMismatch"));
+
+    let test_target = loomc()
+        .args(["test", "--target", "api"])
+        .arg(&project.0)
+        .output()
+        .expect("reject target selection for package tests");
+    assert_eq!(test_target.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&test_target.stderr)
+            .contains("--target is only valid for source check/build/run/debug"),
+        "{test_target:?}"
+    );
 
     project.write(
         "consumer/loom.toml",
-        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"consumer\"\nversion = \"0.1.0\"\n[dependencies]\nsample = { artifact = \"../sample.loomlib\", version = \"^0.1\" }\n[[target]]\nname = \"consumer\"\nkind = \"bin\"\nentry = \"consumer.main\"\n[[target]]\nname = \"consumer-tests\"\nkind = \"test\"\n",
+        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"consumer\"\nversion = \"0.1.0\"\n[dependencies]\nsample = { artifact = \"../sample.loomlib\", version = \"^0.1\" }\n[[target]]\nname = \"consumer\"\nkind = \"bin\"\nentry = \"consumer.main\"\n",
     );
     project.write(
-        "consumer/src/main.loom",
-        "module consumer\n\nimport sample.answer\n\npub fn main() {\n    let value = answer()\n    assert value == 42\n}\n\ntest fn artifact_dependency_works() {\n    main()\n}\n",
+        "consumer/main.loom",
+        "import sample.answer\n\npub fn main() {\n    let value = answer()\n    assert value == 42\n}\n\ntest fn artifact_dependency_works() {\n    main()\n}\n",
     );
-    fs::remove_dir_all(project.0.join("src")).expect("remove producer sources");
+    fs::remove_file(project.0.join("lib.loom")).expect("remove producer source");
     let consumed = loomc()
         .args(["--backend", "interpreter", "run"])
         .arg(project.0.join("consumer"))
@@ -3145,14 +3169,11 @@ fn loopback_http_registry_publish_fetch_lock_and_offline_cache_close_the_loop() 
     project.write(
         "plaintext-token/loom.toml",
         &format!(
-            "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"utility\"\nversion = \"1.2.0\"\n[registries]\nremote = {{ url = {:?}, token-env = \"LOOM_TEST_REGISTRY_TOKEN\" }}\n",
+            "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"utility\"\nversion = \"1.2.0\"\n[registries]\nremote = {{ url = {:?}, token-env = \"LOOM_TEST_REGISTRY_TOKEN\" }}\n",
             fixture.url
         ),
     );
-    project.write(
-        "plaintext-token/src/lib.loom",
-        "module utility\n\npub fn answer() Int { 42 }\n",
-    );
+    project.write("plaintext-token/lib.loom", "pub fn answer() Int { 42 }\n");
     let plaintext_token = loomc()
         .args(["--json", "publish", "--registry", "remote"])
         .arg(project.0.join("plaintext-token"))
@@ -3173,14 +3194,11 @@ fn loopback_http_registry_publish_fetch_lock_and_offline_cache_close_the_loop() 
     project.write(
         "producer/loom.toml",
         &format!(
-            "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"utility\"\nversion = \"1.2.0\"\n[registries]\nremote = {{ url = {:?} }}\n",
+            "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"utility\"\nversion = \"1.2.0\"\n[registries]\nremote = {{ url = {:?} }}\n",
             fixture.url
         ),
     );
-    project.write(
-        "producer/src/lib.loom",
-        "module utility\n\npub fn answer() Int { 42 }\n",
-    );
+    project.write("producer/lib.loom", "pub fn answer() Int { 42 }\n");
     let published = loomc()
         .args(["--json", "publish", "--registry", "remote"])
         .arg(project.0.join("producer"))
@@ -3214,12 +3232,12 @@ fn loopback_http_registry_publish_fetch_lock_and_offline_cache_close_the_loop() 
     assert!(!String::from_utf8_lossy(&published.stdout).contains("fixture-token"));
 
     let consumer_manifest = format!(
-        "schema = 1\nlanguage = \"0.3\"\n[package]\nname = \"consumer\"\nversion = \"1.0.0\"\n[registries]\nremote = {{ url = {:?} }}\n[dependencies]\nutility = {{ registry = \"remote\", version = \"^1\" }}\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"consumer.main\"\n",
+        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"consumer\"\nversion = \"1.0.0\"\n[registries]\nremote = {{ url = {:?} }}\n[dependencies]\nutility = {{ registry = \"remote\", version = \"^1\" }}\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"consumer.main\"\n",
         fixture.url
     );
-    let consumer_source = "module consumer\n\nimport utility.answer\n\npub fn main() {\n    let value = answer()\n    assert value == 42\n}\n";
+    let consumer_source = "import utility.answer\n\npub fn main() {\n    let value = answer()\n    assert value == 42\n}\n";
     project.write("consumer/loom.toml", &consumer_manifest);
-    project.write("consumer/src/main.loom", consumer_source);
+    project.write("consumer/main.loom", consumer_source);
     let resolved = loomc()
         .args(["--json", "resolve"])
         .arg(project.0.join("consumer"))
@@ -3234,7 +3252,7 @@ fn loopback_http_registry_publish_fetch_lock_and_offline_cache_close_the_loop() 
     );
 
     project.write("locked/loom.toml", &consumer_manifest);
-    project.write("locked/src/main.loom", consumer_source);
+    project.write("locked/main.loom", consumer_source);
     fs::copy(
         project.0.join("consumer/loom.lock"),
         project.0.join("locked/loom.lock"),
@@ -3272,7 +3290,7 @@ fn loopback_http_registry_publish_fetch_lock_and_offline_cache_close_the_loop() 
                 .expect("published file path")
         })
         .collect::<Vec<_>>();
-    assert_eq!(published_paths, ["loom.toml", "src/lib.loom"]);
+    assert_eq!(published_paths, ["lib.loom", "loom.toml"]);
 
     let offline = loomc()
         .args([
@@ -3298,9 +3316,9 @@ fn loopback_http_registry_publish_fetch_lock_and_offline_cache_close_the_loop() 
     let registry_cache_root = project.0.join("consumer/target/loom/registry/http");
     let cached_source = walk_regular_files(&registry_cache_root)
         .into_iter()
-        .find(|path| path.ends_with("src/lib.loom"))
+        .find(|path| path.ends_with("lib.loom"))
         .expect("materialized cached source");
-    fs::write(&cached_source, "module utility\n").expect("tamper registry cache source");
+    fs::write(&cached_source, "").expect("tamper registry cache source");
     let tampered = loomc()
         .args(["--json", "--offline", "check"])
         .arg(project.0.join("consumer"))
@@ -3314,7 +3332,7 @@ fn loopback_http_registry_publish_fetch_lock_and_offline_cache_close_the_loop() 
     );
 
     project.write("cold/loom.toml", &consumer_manifest);
-    project.write("cold/src/main.loom", consumer_source);
+    project.write("cold/main.loom", consumer_source);
     let cold = loomc()
         .args(["--json", "--offline", "check"])
         .arg(project.0.join("cold"))
@@ -3363,22 +3381,22 @@ fn cli_resolves_registry_features_and_enforces_lockfiles() {
     let write_registry = |version: &str, answer: i64| {
         project.write(
             &format!("registry/utility/{version}/loom.toml"),
-            &format!("schema = 1\n[package]\nname = \"utility\"\nversion = \"{version}\"\n"),
+            &format!("schema = 2\n[module]\nname = \"utility\"\nversion = \"{version}\"\n"),
         );
         project.write(
-            &format!("registry/utility/{version}/src/lib.loom"),
-            &format!("module utility\n\npub fn answer() Int {{\n    {answer}\n}}\n"),
+            &format!("registry/utility/{version}/lib.loom"),
+            &format!("pub fn answer() Int {{\n    {answer}\n}}\n"),
         );
     };
     write_registry("1.0.0", 10);
     write_registry("1.2.0", 12);
     project.write(
         "app/loom.toml",
-        "schema = 1\n[package]\nname = \"app\"\nversion = \"0.1.0\"\n[registries]\nlocal = \"../registry\"\n[dependencies]\nutility = { registry = \"local\", version = \"^1\", optional = true }\n[features]\ndefault = [\"utilities\"]\nutilities = [\"dep:utility\"]\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"app.main\"\n",
+        "schema = 2\n[module]\nname = \"app\"\nversion = \"0.1.0\"\n[registries]\nlocal = \"../registry\"\n[dependencies]\nutility = { registry = \"local\", version = \"^1\", optional = true }\n[features]\ndefault = [\"utilities\"]\nutilities = [\"dep:utility\"]\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"app.main\"\n",
     );
     project.write(
-        "app/src/main.loom",
-        "module app\n\nimport utility.answer\n\npub fn main() {\n    let value = answer()\n    assert value > 0\n}\n",
+        "app/main.loom",
+        "import utility.answer\n\npub fn main() {\n    let value = answer()\n    assert value > 0\n}\n",
     );
     let root = project.0.join("app");
 
@@ -3439,8 +3457,8 @@ fn cli_resolves_registry_features_and_enforces_lockfiles() {
     );
 
     project.write(
-        "registry/utility/1.3.0/src/lib.loom",
-        "module utility\n\npub fn answer() Int {\n    99\n}\n",
+        "registry/utility/1.3.0/lib.loom",
+        "pub fn answer() Int {\n    99\n}\n",
     );
     let tampered = loomc()
         .arg("check")
@@ -3453,7 +3471,7 @@ fn cli_resolves_registry_features_and_enforces_lockfiles() {
 
 #[test]
 fn fmt_check_and_write_form_an_idempotent_real_file_flow() {
-    let project = TestProject::new("module demo\r\n\r\nfn main() {\r\n}\r\n\r\n");
+    let project = TestProject::new("fn main() {\r\n}\r\n\r\n");
     let first = loomc()
         .args(["fmt", "--check"])
         .arg(&project.0)
@@ -3469,7 +3487,7 @@ fn fmt_check_and_write_form_an_idempotent_real_file_flow() {
     assert_eq!(write.status.code(), Some(0));
     assert_eq!(
         fs::read_to_string(project.0.join("main.loom")).expect("read formatted source"),
-        "module demo\n\nfn main() {\n}\n"
+        "fn main() {\n}\n"
     );
 
     let second = loomc()
@@ -3483,20 +3501,17 @@ fn fmt_check_and_write_form_an_idempotent_real_file_flow() {
 #[test]
 fn fmt_never_writes_dependency_sources() {
     let project = TestProject::empty();
-    let dependency_source = "module utility\n\npub fn value() Int {\n\t1   \n}\n";
+    let dependency_source = "pub fn value() Int {\n\t1   \n}\n";
     project.write(
         "utility/loom.toml",
-        "schema = 1\n[package]\nname = \"utility\"\nversion = \"1.0.0\"\n",
+        "schema = 2\n[module]\nname = \"utility\"\nversion = \"1.0.0\"\n",
     );
-    project.write("utility/src/lib.loom", dependency_source);
+    project.write("utility/lib.loom", dependency_source);
     project.write(
         "application/loom.toml",
-        "schema = 1\n[package]\nname = \"application\"\nversion = \"1.0.0\"\n[dependencies]\nutility = { path = \"../utility\" }\n",
+        "schema = 2\n[module]\nname = \"application\"\nversion = \"1.0.0\"\n[dependencies]\nutility = { path = \"../utility\" }\n",
     );
-    project.write(
-        "application/src/main.loom",
-        "module application\n\nfn local() {\n}\n",
-    );
+    project.write("application/main.loom", "fn local() {\n}\n");
 
     let output = loomc()
         .arg("fmt")
@@ -3505,12 +3520,12 @@ fn fmt_never_writes_dependency_sources() {
         .expect("format root package");
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert_eq!(
-        fs::read_to_string(project.0.join("utility/src/lib.loom")).expect("read dependency source"),
+        fs::read_to_string(project.0.join("utility/lib.loom")).expect("read dependency source"),
         dependency_source
     );
     assert_eq!(
-        fs::read_to_string(project.0.join("application/src/main.loom")).expect("read root source"),
-        "module application\n\nfn local() {\n}\n"
+        fs::read_to_string(project.0.join("application/main.loom")).expect("read root source"),
+        "fn local() {\n}\n"
     );
 }
 
@@ -3524,12 +3539,9 @@ fn configured_entries_use_one_strict_signature_check() {
         let project = TestProject::empty();
         project.write(
             "loom.toml",
-            "schema = 1\n[package]\nname = \"sample\"\nversion = \"1.0.0\"\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"sample.main\"\n",
+            "schema = 2\n[module]\nname = \"sample\"\nversion = \"1.0.0\"\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"sample.main\"\n",
         );
-        project.write(
-            "src/main.loom",
-            &format!("module sample\n\n{declaration}\n"),
-        );
+        project.write("main.loom", &format!("{declaration}\n"));
         let output = loomc()
             .args(["--json", "check"])
             .arg(&project.0)
@@ -3546,17 +3558,14 @@ fn dependency_public_functions_cannot_be_selected_as_root_entries() {
     let project = TestProject::empty();
     project.write(
         "dependency/loom.toml",
-        "schema = 1\n[package]\nname = \"dependency\"\nversion = \"1.0.0\"\n",
+        "schema = 2\n[module]\nname = \"dependency\"\nversion = \"1.0.0\"\n",
     );
-    project.write(
-        "dependency/src/lib.loom",
-        "module dependency\n\npub fn main() {}\n",
-    );
+    project.write("dependency/lib.loom", "pub fn main() {}\n");
     project.write(
         "application/loom.toml",
-        "schema = 1\n[package]\nname = \"application\"\nversion = \"1.0.0\"\n[dependencies]\ndependency = { path = \"../dependency\" }\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"dependency.main\"\n",
+        "schema = 2\n[module]\nname = \"application\"\nversion = \"1.0.0\"\n[dependencies]\ndependency = { path = \"../dependency\" }\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"dependency.main\"\n",
     );
-    project.write("application/src/main.loom", "module application\n");
+    project.write("application/main.loom", "");
     let output = loomc()
         .args(["--json", "check"])
         .arg(project.0.join("application"))
@@ -3569,9 +3578,8 @@ fn dependency_public_functions_cannot_be_selected_as_root_entries() {
 
 #[test]
 fn test_and_run_execute_native_code() {
-    let project = TestProject::new(
-        "module demo\n\npub fn main() {\n}\n\ntest fn passes() {\n    assert true\n}\n",
-    );
+    let project =
+        TestProject::new("pub fn main() {\n}\n\ntest fn passes() {\n    assert true\n}\n");
     let test = loomc()
         .arg("test")
         .arg(&project.0)
@@ -3579,7 +3587,7 @@ fn test_and_run_execute_native_code() {
         .expect("run loomc test");
     assert_eq!(test.status.code(), Some(0));
     let stdout = String::from_utf8(test.stdout).expect("UTF-8 stdout");
-    assert!(stdout.contains("passed demo.passes"), "{stdout}");
+    assert!(stdout.contains("passed standalone.passes"), "{stdout}");
 
     let run = loomc()
         .arg("run")
@@ -3593,9 +3601,7 @@ fn test_and_run_execute_native_code() {
 #[test]
 fn explicit_discard_closes_both_backend_cli_loops() {
     let project = TestProject::new(
-        r"module discard_cli
-
-fn answer() Int {
+        r"fn answer() Int {
     42
 }
 
@@ -3667,7 +3673,7 @@ test async fn discards_awaited_value() {
 #[test]
 fn range_and_growable_list_run_on_both_backends() {
     let project = TestProject::new(
-        "module dynamic\n\nimport std.int.ParseIntError\nimport std.int.parse_int\nimport std.process.arguments\nimport std.process.environment\n\nasync fn worker(value Int) Int {\n    value * 2\n}\n\npub async fn main() {\n    let processArguments = arguments()\n    let argumentCount = processArguments.length()\n    assert argumentCount == 5\n    let count = match environment(\"LOOM_WORKERS\") {\n        Some(text) => {\n            match parse_int(text) {\n                Ok(value) => value\n                Err(ParseIntError.InvalidSyntax) => 0\n                Err(ParseIntError.OutOfRange) => 0\n            }\n        }\n        None => 0\n    }\n    assert count == 5\n    match environment(\"LOOM_TEST_ENV\") {\n        Some(value) => {\n            assert value == \"visible\"\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    var tasks = List[Task[Int]]()\n    for i in 0..count {\n        tasks.add(worker(i))\n        Unit\n    }\n    let values = Task.all(tasks).await\n    let length = values.length()\n    assert length == count\n    let selected = values.get(3)\n    match selected {\n        Some(value) => {\n            assert value == 6\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    let missing = values.get(-1)\n    match missing {\n        Some(_) => {\n            assert false\n            Unit\n        }\n        None => Unit\n    }\n}\n",
+        "import std.int.ParseIntError\nimport std.int.parse_int\nimport std.process.arguments\nimport std.process.environment\n\nasync fn worker(value Int) Int {\n    value * 2\n}\n\npub async fn main() {\n    let processArguments = arguments()\n    let argumentCount = processArguments.length()\n    assert argumentCount == 5\n    let count = match environment(\"LOOM_WORKERS\") {\n        Some(text) => {\n            match parse_int(text) {\n                Ok(value) => value\n                Err(ParseIntError.InvalidSyntax) => 0\n                Err(ParseIntError.OutOfRange) => 0\n            }\n        }\n        None => 0\n    }\n    assert count == 5\n    match environment(\"LOOM_TEST_ENV\") {\n        Some(value) => {\n            assert value == \"visible\"\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    var tasks = List[Task[Int]]()\n    for i in 0..count {\n        tasks.add(worker(i))\n        Unit\n    }\n    let values = Task.all(tasks).await\n    let length = values.length()\n    assert length == count\n    let selected = values.get(3)\n    match selected {\n        Some(value) => {\n            assert value == 6\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    let missing = values.get(-1)\n    match missing {\n        Some(_) => {\n            assert false\n            Unit\n        }\n        None => Unit\n    }\n}\n",
     );
     for backend in ["interpreter", "llvm"] {
         let output = loomc()
@@ -3725,9 +3731,7 @@ fn range_and_growable_list_run_on_both_backends() {
 #[test]
 fn source_backed_process_closes_both_backend_cli_loops() {
     let project = TestProject::new(
-        r#"module source_process
-
-import std.process.arguments
+        r#"import std.process.arguments
 import std.process.environment
 
 fn assertEnvironment() {
@@ -3824,7 +3828,7 @@ test fn readsEnvironment() {
 
 #[test]
 fn build_writes_a_runnable_native_artifact() {
-    let project = TestProject::new("module demo\n\npub fn main() {\n}\n");
+    let project = TestProject::new("pub fn main() {\n}\n");
     let artifact = project.0.join("out.native");
     let mut build = loomc();
     build
@@ -3852,7 +3856,7 @@ fn build_writes_a_runnable_native_artifact() {
 #[cfg(unix)]
 #[test]
 fn debug_builds_source_mapped_native_code_and_launches_a_debugger() {
-    let project = TestProject::new("module demo\n\npub fn main() {\n}\n");
+    let project = TestProject::new("pub fn main() {\n}\n");
     project.write(
         "debug-wrapper",
         "#!/bin/sh\nexecutable=$1\nshift\ntest -x \"$executable\" || exit 91\ntest \"$1\" = \"--\" || exit 92\nshift\ntest \"$1\" = \"alpha\" || exit 93\ntest \"$2\" = \"beta gamma\" || exit 94\ncp \"$executable\" \"$LOOM_DEBUG_COPY\" || exit 95\nprintf 'debug-wrapper:%s:%s\\n' \"$1\" \"$2\"\n\"$executable\" \"$@\"\n",
@@ -3890,9 +3894,7 @@ fn debug_builds_source_mapped_native_code_and_launches_a_debugger() {
 #[cfg(unix)]
 #[test]
 fn debug_routes_text_selection_through_typed_lcir_codegen() {
-    let project = TestProject::new(
-        "module debug_text_get\n\npub fn main() {\n    discard \"value\".get(0)\n}\n",
-    );
+    let project = TestProject::new("pub fn main() {\n    discard \"value\".get(0)\n}\n");
     project.write(
         "debug-wrapper",
         "#!/bin/sh\nexecutable=$1\nshift\ntest -x \"$executable\" || exit 91\ntest \"$1\" = \"--\" || exit 92\nshift\ncp \"$executable\" \"$LOOM_DEBUG_COPY\" || exit 93\n\"$executable\" \"$@\"\n",
@@ -3931,7 +3933,7 @@ fn debug_routes_text_selection_through_typed_lcir_codegen() {
 
 #[test]
 fn debug_rejects_non_native_noninteractive_and_release_modes() {
-    let project = TestProject::new("module demo\n\npub fn main() {\n}\n");
+    let project = TestProject::new("pub fn main() {\n}\n");
     for (arguments, expected) in [
         (
             vec!["--backend", "interpreter", "debug"],
@@ -3956,7 +3958,7 @@ fn debug_rejects_non_native_noninteractive_and_release_modes() {
 
 #[test]
 fn release_and_cross_target_object_builds_are_distinct_and_cached() {
-    let project = TestProject::new("module demo\n\npub fn main() {\n}\n");
+    let project = TestProject::new("pub fn main() {\n}\n");
     let release_object = project.0.join("release-aarch64.o");
     let release = loomc()
         .args([
@@ -4059,7 +4061,7 @@ fn release_and_cross_target_object_builds_are_distinct_and_cached() {
 
 #[test]
 fn native_target_preparation_errors_are_usage_errors() {
-    let project = TestProject::new("module invalid_target\n\npub fn main() {}\n");
+    let project = TestProject::new("pub fn main() {}\n");
     let output = loomc()
         .args([
             "--json",
@@ -4085,8 +4087,7 @@ fn native_target_preparation_errors_are_usage_errors() {
 
 #[test]
 fn non_linking_commands_do_not_resolve_the_native_runtime_bundle() {
-    let project =
-        TestProject::new("module no_runtime\n\ntest fn passes() {}\n\npub fn main() {}\n");
+    let project = TestProject::new("pub fn main() {}\n\ntest fn passes() {}\n");
     let unavailable = project.0.join("unavailable-runtime-bundle");
 
     let checked = loomc_without_test_runtime()
@@ -4127,7 +4128,7 @@ fn non_linking_commands_do_not_resolve_the_native_runtime_bundle() {
 #[cfg(unix)]
 #[test]
 fn packed_host_runtime_bundle_builds_and_target_mismatch_fails_closed() {
-    let project = TestProject::new("module demo\n\npub fn main() {\n}\n");
+    let project = TestProject::new("pub fn main() {\n}\n");
     let bundle = project.0.join("host-runtime");
     let packed = loomc()
         .args(["--json", "runtime", "pack", "--archive"])
@@ -4216,7 +4217,7 @@ fn packed_host_runtime_bundle_builds_and_target_mismatch_fails_closed() {
 
 #[test]
 fn invalid_explicit_runtime_bundle_does_not_fall_back_to_the_environment() {
-    let project = TestProject::new("module no_fallback\n\npub fn main() {}\n");
+    let project = TestProject::new("pub fn main() {}\n");
     let invalid_explicit_bundle = project.0.join("invalid-explicit-runtime");
     fs::write(&invalid_explicit_bundle, b"not a runtime directory")
         .expect("write invalid explicit bundle");
@@ -4237,7 +4238,7 @@ fn invalid_explicit_runtime_bundle_does_not_fall_back_to_the_environment() {
 #[cfg(unix)]
 #[test]
 fn host_linker_resolution_uses_environment_and_prefers_explicit_cli() {
-    let project = TestProject::new("module demo\n\npub fn main() {}\n");
+    let project = TestProject::new("pub fn main() {}\n");
     project.write(
         "passthrough-linker",
         r#"#!/bin/sh
@@ -4288,7 +4289,7 @@ exec "${LOOM_REAL_LINKER:?}" "$@"
 #[test]
 #[allow(clippy::too_many_lines)]
 fn foreign_runtime_bundle_relinks_when_undeclared_tool_inputs_change() {
-    let project = TestProject::new("module demo\n\npub fn main() {\n}\n");
+    let project = TestProject::new("pub fn main() {\n}\n");
     let bundle_one = project.0.join("runtime-one");
     write_fake_runtime_bundle(&bundle_one, b"foreign runtime archive one");
     write_fake_linker(&project, "linker identity one");
@@ -4424,7 +4425,7 @@ fn foreign_runtime_bundle_relinks_when_undeclared_tool_inputs_change() {
 
 #[test]
 fn release_build_produces_a_runnable_native_executable() {
-    let project = TestProject::new("module demo\n\npub fn main() {\n}\n");
+    let project = TestProject::new("pub fn main() {\n}\n");
     let release_output = project.0.join("release-native");
     let native = loomc()
         .args(["--release", "build", "--output"])
@@ -4444,7 +4445,7 @@ fn release_build_produces_a_runnable_native_executable() {
 
 #[test]
 fn source_backed_std_closes_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(include_str!("../../../fixtures/std-source/main.loom"));
+    let project = TestProject::new(fixture_source!("std-source"));
 
     let check = loomc()
         .args(["--no-cache", "check"])
@@ -4472,7 +4473,7 @@ fn source_backed_std_closes_real_check_build_test_and_run_commands() {
         .expect("test source-backed std calls through the production CLI");
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
     assert!(
-        String::from_utf8_lossy(&tests.stdout).contains("passed std_source.sourceBackedAlgorithms"),
+        String::from_utf8_lossy(&tests.stdout).contains("passed standalone.sourceBackedAlgorithms"),
         "{tests:?}"
     );
 
@@ -4537,9 +4538,7 @@ fn core_examples_close_check_build_test_and_run() {
 #[test]
 fn must_scope_identity_closes_cached_check_build_test_run_and_artifact_decode() {
     let project = TestProject::new(
-        r"module resource_identity
-
-import std.resource.Dispose
+        r"import std.resource.Dispose
 import std.resource.MustScope
 
 record Resource {
@@ -4605,7 +4604,7 @@ test fn resource_identity() {
         serde_json::json!(marker_index)
     );
 
-    for command in ["test", "run"] {
+    for (command, expected_cache) in [("test", "miss"), ("run", "hit")] {
         let output = loomc_without_test_runtime()
             .args(["--json", "--backend", "interpreter", command])
             .arg(&project.0)
@@ -4614,7 +4613,7 @@ test fn resource_identity() {
         assert_eq!(output.status.code(), Some(0), "{command}: {output:?}");
         assert_eq!(
             cache_status(&output.stdout, "checked_mir").as_deref(),
-            Some("hit"),
+            Some(expected_cache),
             "{command}: {output:?}"
         );
     }
@@ -4629,7 +4628,7 @@ test fn resource_identity() {
 
 #[test]
 fn run_rejects_an_incompatible_artifact_format_version() {
-    let project = TestProject::new("module demo\n");
+    let project = TestProject::new("");
     let artifact = project.0.join("incompatible-version.loomi");
     let unsupported_version = loom_mir::INTERPRETED_ARTIFACT_VERSION
         .checked_sub(1)
@@ -4656,7 +4655,7 @@ fn run_rejects_an_incompatible_artifact_format_version() {
 
 #[test]
 fn run_rejects_an_incompatible_artifact_language_version() {
-    let project = TestProject::new("module demo\n\npub fn main() {}\n");
+    let project = TestProject::new("pub fn main() {}\n");
     let artifact = project.0.join("future.loomi");
     let build = loomc()
         .args(["--backend", "interpreter", "build", "--output"])

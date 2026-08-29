@@ -1,0 +1,10 @@
+import std.float.format_float
+import std.float.is_finite
+import std.float.parse_float
+import std.int.ParseIntError
+import std.int.parse_int
+import std.time.milliseconds
+
+test fn typedScalarBuiltins() {
+    scalarBuiltins()
+}

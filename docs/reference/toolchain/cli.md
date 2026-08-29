@@ -18,11 +18,11 @@ The commands are:
 | Command | Purpose |
 | --- | --- |
 | `resolve [--update]` | Resolve dependencies and materialize `loom.lock`. |
-| `publish --registry NAME` | Publish the root package to an HTTP registry configured in the manifest. |
+| `publish --registry NAME` | Publish the root module to an HTTP registry configured in the manifest. |
 | `runtime pack --archive FILE --output DIR` | Pack a separately built host runtime archive into a validated bundle. |
 | `check [--target NAME]` | Parse, resolve, lower, and type-check the project. |
 | `build [--target NAME \| --entry NAME]` | Build an executable, object, interpreted artifact, or portable library. |
-| `test [--target NAME]` | Compile and execute ordinary `test fn` declarations. |
+| `test` | Compile and execute `test fn` declarations from root-module `*_test.loom` files. |
 | `run [--target NAME \| --entry NAME]` | Compile and run a selected exported entry. |
 | `run --artifact FILE` | Run an existing native or interpreted executable artifact. |
 | `debug [--target NAME \| --entry NAME]` | Build native code with source information and launch a debugger. |
@@ -43,8 +43,8 @@ The interpreter does not support `runtime pack`, `debug`, `--release`,
 
 ### Dependency resolution
 
-- `--features A,B` enables root-package features.
-- `--no-default-features` disables the root package's `default` feature.
+- `--features A,B` enables root-module features.
+- `--no-default-features` disables the root module's `default` feature.
 - `--locked` requires the resolved graph to match `loom.lock` exactly.
 - `--offline` forbids network access and uses only locally available packages
   and validated registry cache entries.
@@ -73,10 +73,9 @@ and therefore rejects `--json`.
 
 ## Selecting a target or entry
 
-A manifest can declare `bin`, `test`, and `lib` targets.
+A manifest can declare `bin` and `lib` targets.
 
 - `build` accepts a binary or library target.
-- `test` accepts a test target.
 - `run` and `debug` accept a binary target.
 - `check --target NAME` checks that the named target exists, while the command
   still type-checks the resolved source graph.
@@ -85,9 +84,14 @@ If exactly one target of the required kind exists, it is selected
 automatically. When several are available, pass `--target NAME`. For a
 standalone source file or directory, the default binary entry is `main`.
 `--entry` selects an exported function directly and is mutually exclusive with
-`--target`.
+`--target`. Tests are selected by their file suffix, not a manifest target;
+`test --target` is an invalid invocation.
 
-An executable entry must be a public export in the root package, take no value,
+`check`, `build`, `run`, `debug`, library creation, and dependency compilation
+exclude `*_test.loom`. `test` adds test files from every package in the selected
+root module. It never loads or runs dependency test files.
+
+An executable entry must be a public export in the root module, take no value,
 receiver, type, or witness parameters, and return `Unit`. Synchronous and
 asynchronous entries use the same selection rules.
 
@@ -126,7 +130,7 @@ the completed staging directory, and publishes a new destination directory.
 It rejects symlinks, oversized inputs, unexpected bundle entries, and an
 existing output path.
 
-A `lib` target produces a portable source-and-interface package artifact. Use
+A `lib` target produces a portable source-and-interface module artifact. Use
 an explicit `--output NAME.loomlib`; `.loomlib` is the convention, not an
 automatically appended extension. Library targets reject `--release`,
 `--emit object`, `--target-triple`, and runtime-link options because they do not

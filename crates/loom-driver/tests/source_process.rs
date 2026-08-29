@@ -78,7 +78,7 @@ fn reachable_surface(
     reason = "one vertical process boundary test keeps source authority, call-graph reachability, and interpreter behavior together"
 )]
 fn source_process_wrappers_are_direct_authoritative_and_reachable_only_on_demand() {
-    let source = include_str!("../../../library/std/src/process.loom");
+    let source = include_str!("../../../library/std/process/process.loom");
     let formatted = format_source(FileId(0), source);
     assert!(
         formatted.diagnostics.is_empty(),
@@ -93,9 +93,7 @@ fn source_process_wrappers_are_direct_authoritative_and_reachable_only_on_demand
     let project = tempfile::tempdir().expect("temporary source process project");
     std::fs::write(
         project.path().join("main.loom"),
-        r"module source_process_test
-
-import std.process.arguments
+        r"import std.process.arguments
 import std.process.environment
 
 pub fn idle() {}
@@ -120,7 +118,7 @@ pub fn environment_value(name Text) Option[Text] {
         .sources()
         .documents()
         .iter()
-        .find(|source| source.relative_path().ends_with("src/process.loom"))
+        .find(|source| source.relative_path().ends_with("process/process.loom"))
         .expect("embedded std.process source");
     assert!(process_source.is_compiler_std());
     assert!(process_source.is_read_only());
@@ -134,8 +132,8 @@ pub fn environment_value(name Text) Option[Text] {
     let program = snapshot.executable().expect("lower source process MIR");
     let arguments = function_named(program, "std.process.arguments");
     let environment = function_named(program, "std.process.environment");
-    let argument_values = function_named(program, "source_process_test.argument_values");
-    let environment_value = function_named(program, "source_process_test.environment_value");
+    let argument_values = function_named(program, "standalone.argument_values");
+    let environment_value = function_named(program, "standalone.environment_value");
 
     assert_eq!(
         direct_targets(argument_values),
@@ -156,15 +154,12 @@ pub fn environment_value(name Text) Option[Text] {
     assert!(builtin_targets(argument_values).is_empty());
     assert!(builtin_targets(environment_value).is_empty());
 
-    let (idle_names, idle_builtins) = reachable_surface(program, "source_process_test.idle");
-    assert_eq!(
-        idle_names,
-        BTreeSet::from(["source_process_test.idle".to_owned()])
-    );
+    let (idle_names, idle_builtins) = reachable_surface(program, "standalone.idle");
+    assert_eq!(idle_names, BTreeSet::from(["standalone.idle".to_owned()]));
     assert!(idle_builtins.is_empty());
 
     let (environment_names, environment_builtins) =
-        reachable_surface(program, "source_process_test.environment_value");
+        reachable_surface(program, "standalone.environment_value");
     assert!(environment_names.contains("std.process.environment"));
     assert!(!environment_names.contains("std.process.arguments"));
     assert!(environment_builtins.contains(&Builtin::ProcessEnvironment));

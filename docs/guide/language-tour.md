@@ -1,23 +1,22 @@
 # Language tour
 
 This tour covers the implemented Core language. Loom is statically typed,
-uses ordinary text files and explicit modules, and compiles ahead of time by
+uses ordinary text files and directory packages, and compiles ahead of time by
 default. The language is experimental: examples are executable evidence, not a
 long-term compatibility guarantee.
 
-## Files, modules, and imports
+## Files, packages, and imports
 
-Every source file begins with a module declaration. Names from another module
-must be imported explicitly:
+The directory containing a `.loom` file defines its package. Source files do
+not declare a module. Names from another package must be imported explicitly:
 
 ```loom
-module shop.price
-
 import std.float.is_finite
 ```
 
-Declarations are private to their module unless marked `pub`. Source paths are
-project organization; the declared module is the language namespace.
+Declarations are private to their package unless marked `pub`. Files in the
+same directory share one declaration namespace; a source file's name does not
+change that namespace. `module` is an ordinary identifier, not a keyword.
 
 ## Types and declarations
 
@@ -229,7 +228,8 @@ pub fn main() {
 }
 ```
 
-Tests use the same language and runtime:
+Tests use the same language and runtime, but are declared only in files whose
+names end in `_test.loom`:
 
 ```loom
 test fn arithmetic_works() {
@@ -238,9 +238,9 @@ test fn arithmetic_works() {
 }
 ```
 
-Asynchronous tests are written `test async fn`. `loomc test` discovers ordinary
-test declarations selected by the project or test target; it does not use a
-separate test language.
+Asynchronous tests are written `test async fn`. Production commands exclude
+`*_test.loom`. `loomc test` adds the selected root module's test files, and
+never adds or runs dependency test files.
 
 ## Next topics
 

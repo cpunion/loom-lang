@@ -96,7 +96,7 @@ must not repeat them.
 Conformance is nominal, not structural. A matching method name is insufficient
 without the explicit `impl`.
 
-The conformance must be declared in the module that owns the concept or the
+The conformance must be declared in the package that owns the concept or the
 outer nominal target type. For a given target and concept, applicable
 conformances must not overlap. Import order and link order never select between
 implementations.

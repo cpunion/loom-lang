@@ -27,9 +27,7 @@ fn analyze_source(source: &str) -> (Program, Analysis) {
 #[test]
 fn every_omitted_callable_return_resolves_to_unit() {
     let (program, analysis) = analyze_source(
-        r"module returns
-
-record R {}
+        r"record R {}
 
 fn private() {}
 pub fn public() { return }
@@ -91,9 +89,7 @@ impl C for R {
 #[test]
 fn calling_an_omitted_async_function_produces_task_of_unit() {
     let (_, analysis) = analyze_source(
-        r"module returns
-
-async fn child() {}
+        r"async fn child() {}
 
 async fn parent() {
     child().await
@@ -118,18 +114,18 @@ async fn parent() {
 
 #[test]
 fn omitted_return_is_not_inferred_from_a_value() {
-    let (_, analysis) = analyze_source("module returns\nfn inferred() { 1 }\n");
+    let (_, analysis) = analyze_source("fn inferred() { 1 }\n");
     assert_eq!(analysis.diagnostics.len(), 1, "{:#?}", analysis.diagnostics);
     assert_eq!(analysis.diagnostics[0].code, "TypeMismatch");
 
-    let (_, analysis) = analyze_source("module returns\nfn returned() { return 1 }\n");
+    let (_, analysis) = analyze_source("fn returned() { return 1 }\n");
     assert_eq!(analysis.diagnostics.len(), 1, "{:#?}", analysis.diagnostics);
     assert_eq!(analysis.diagnostics[0].code, "TypeMismatch");
 }
 
 #[test]
 fn bare_return_requires_a_unit_signature() {
-    let (_, analysis) = analyze_source("module returns\nfn invalid() Int { return }\n");
+    let (_, analysis) = analyze_source("fn invalid() Int { return }\n");
     assert_eq!(analysis.diagnostics.len(), 1, "{:#?}", analysis.diagnostics);
     assert_eq!(analysis.diagnostics[0].code, "TypeMismatch");
     assert!(analysis.diagnostics[0].message.contains("bare return"));
@@ -138,9 +134,7 @@ fn bare_return_requires_a_unit_signature() {
 #[test]
 fn unit_must_remain_explicit_inside_result_and_task_types() {
     let (_, analysis) = analyze_source(
-        r"module returns
-
-enum E { Failed }
+        r"enum E { Failed }
 
 concept ExplicitCarriers {
     method outcome(self) Result[Unit, E]
@@ -155,9 +149,7 @@ concept ExplicitCarriers {
     );
 
     let (_, analysis) = analyze_source(
-        r"module returns
-
-concept MissingCarrierArguments {
+        r"concept MissingCarrierArguments {
     method outcome(self) Result
     method task(self) Task
 }

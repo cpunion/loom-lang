@@ -16,10 +16,10 @@ A MIR `Program` contains dense tables for:
 - exported names and test roots;
 - compiler-known prelude identities.
 
-Concept metadata retains its source module separately from its unqualified
+Concept metadata retains its source package separately from its unqualified
 name. Semantic analysis resolves `Dispose`, `MustScope`, and `NoSuspend` only
-from the exact current compiler-owned `std` package and its `std.resource`
-module. Lowering consumes those resolved `DefId` values
+from the exact current compiler-owned `std` module and its `std.resource`
+package. Lowering consumes those resolved `DefId` values
 without reconstructing names and assigns distinct compiler-known `Dispose`,
 `MustScope`, and `NoSuspend` identity tags only to those three definitions.
 
@@ -47,7 +47,7 @@ wrapper directly; driver snapshots and cache hits retain it; source
 reachability, both execution backends, native-object identity and emission, and
 interpreted-artifact encoding require it in their public APIs. Decoding remains
 an untrusted boundary and validates the embedded raw program before returning
-the wrapper. The current `.loomlib` decoder instead validates source-package
+the wrapper. The current `.loomlib` decoder instead validates source-and-interface
 structure and interfaces; its consumer creates fresh checked MIR through the
 normal frontend.
 
@@ -71,11 +71,11 @@ Validation covers:
   independent affine resource-flow and cleanup-stack validation.
 
 For resource concepts, only a compiler-known identity tag paired with its
-matching prelude id grants language semantics. Module and name metadata cannot
+matching prelude id grants language semantics. Package and name metadata cannot
 create an identity: even an untagged low-level concept spelled exactly
 `std.resource.MustScope` remains ordinary. Once an identity is asserted,
 the validator cross-checks that its tagged dense id is the unique declaration
-with the expected `std.resource` module and name. It also requires the
+with the expected `std.resource` package and name. It also requires the
 fixed non-dynamic shape, including the exact `Dispose.dispose(mut self)`
 requirement. A missing, redirected, duplicated, or cross-tagged identity is a
 fail-closed resource result for all loss, escape, receiver, and place-use
@@ -94,7 +94,7 @@ remain responsible for artifact provenance.
 Persistent typed-semantic cache entries intentionally do not carry
 `CanonicalConcepts` as proof authority. On a compatible cache hit,
 `analyze_reusing_bodies` resolves the identity again from the current
-module-qualified HIR before MIR lowering observes the analysis.
+package-qualified HIR before MIR lowering observes the analysis.
 
 The validator accumulates independently discoverable failures with stable
 structural paths. It does not guess intent or repair malformed values.
@@ -224,8 +224,8 @@ and crosses `check_program` again before artifact encoding. The original full
 checked program remains unchanged for incremental reuse and other entry
 selections.
 
-Portable library artifacts use a separate source-package envelope
-(`.loomlib` version `2`). It contains the resolved non-stdlib package graph,
+Portable library artifacts use a separate source-and-interface envelope
+(`.loomlib` version `2`). It contains the resolved non-stdlib module graph,
 exact Loom source text, and canonical public interfaces. It contains no checked
 MIR, producer-local construction dispositions, or compiler-owned
 standard-library implementation. Decoding enforces structural and byte/count

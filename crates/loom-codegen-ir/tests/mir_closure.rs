@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use loom_codegen_ir::{
     MirClosureError, SourceRoots, analyze_source_reachability, close_interpreted_executable,
 };
-use loom_core::{FileId, LOOM_LANGUAGE_VERSION, Name, PackageId, Span};
+use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId, Span};
 use loom_hir::{PackageSourceUnit, lower_package_files};
 use loom_lowering::lower_to_mir;
 use loom_mir::{
@@ -17,7 +17,7 @@ fn compile_with_std_resource(source: &str) -> CheckedProgram {
     let application = parse_with_file(FileId(0), source);
     let resource = parse_with_file(
         FileId(1),
-        include_str!("../../../library/std/src/resource.loom"),
+        include_str!("../../../library/std/resource/resource.loom"),
     );
     assert!(
         application.diagnostics().is_empty() && resource.diagnostics().is_empty(),
@@ -32,11 +32,13 @@ fn compile_with_std_resource(source: &str) -> CheckedProgram {
         PackageSourceUnit {
             file: FileId(0),
             package: root.clone(),
+            module: ModuleName::new("standalone"),
             syntax: application.ast(),
         },
         PackageSourceUnit {
             file: FileId(1),
             package: std_package.clone(),
+            module: ModuleName::new("std.resource"),
             syntax: resource.ast(),
         },
     ]);
@@ -113,8 +115,6 @@ fn assert_dense_global_ids(program: &CheckedProgram) {
 }
 
 const CLOSURE_SOURCE: &str = r"
-module executable_closure
-
 import std.resource.MustScope
 import std.resource.NoSuspend
 
@@ -353,8 +353,6 @@ fn closes_serialized_references_even_after_return() {
 fn preserves_scoped_resource_and_task_metadata() {
     let program = compile_with_std_resource(
         r"
-module resource_task_closure
-
 import std.resource.Dispose
 import std.resource.MustScope
 import std.resource.NoSuspend
@@ -444,7 +442,7 @@ pub async fn main() {
 
 #[test]
 fn rejects_an_unknown_entry_without_mutating_the_program() {
-    let program = compile_with_std_resource("module missing_entry\n\npub fn main() {}\n");
+    let program = compile_with_std_resource("pub fn main() {}\n");
     let before = serde_json::to_value(program.as_program()).expect("serialize fixture");
 
     let error = close_interpreted_executable(&program, "missing").expect_err("unknown entry");

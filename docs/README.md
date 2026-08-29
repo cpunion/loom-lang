@@ -12,7 +12,7 @@ and runtime interfaces may change while the project is under active research.
 - [Quick start](getting-started/quick-start.md) checks, builds, tests, and runs
   the executable Core fixtures with both backends.
 - [Project layout](getting-started/project-layout.md) introduces `loom.toml`,
-  modules, targets, source roots, and generated files.
+  directory packages, targets, dependencies, and generated files.
 
 ## Language guides
 

@@ -59,7 +59,7 @@ them.
 ## Controlled quality runner
 
 `loom-quality` runs the frozen Core fixtures, a required typed-LCIR fixture, the
-C3 multi-package project, standard-library behavior, parser throughput,
+C3 multi-module project, standard-library behavior, parser throughput,
 artifact decoding, and a 64-module incremental edit under generous upper
 bounds. It emits a versioned JSON evidence report.
 

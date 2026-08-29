@@ -1,8 +1,0 @@
-module application.request
-
-import foundation.quantity.Quantity
-
-pub record CheckoutRequest {
-    label Text
-    quantity Quantity
-}

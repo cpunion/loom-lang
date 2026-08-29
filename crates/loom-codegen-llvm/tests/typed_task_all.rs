@@ -2,11 +2,10 @@ use loom_codegen_ir::{
     InstructionKind, LoweringOutcome, SourceArtifactRequest, TargetLayout, TerminatorKind,
     dump_program, lower_typed_artifact,
 };
-use loom_driver::AnalysisHost;
 
-const SOURCE: &str = r"module typed_task_all_dump
+mod support;
 
-async fn flagChild() Bool { true }
+const SOURCE: &str = r"async fn flagChild() Bool { true }
 
 async fn numberChild() Int { 42 }
 
@@ -32,7 +31,7 @@ pub async fn main() {
 fn compile_source(source: &str) -> loom_mir::CheckedProgram {
     let project = tempfile::tempdir().expect("create Task.all source project");
     std::fs::write(project.path().join("main.loom"), source).expect("write Task.all source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load Task.all source project")
         .snapshot()
         .expect("analyze Task.all source");

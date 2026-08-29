@@ -1,0 +1,55 @@
+test async fn generic_async_contracts_and_cancellation() {
+    let success, precondition, postcondition = Task.settled(
+        measured(Boxed { value = Number { value = 2 } }, 3),
+        measured(Number { value = 2 }, -1),
+        violatesPostcondition(Number { value = 1 }, 1)
+    ).await
+
+    match success {
+        Completed(value) => {
+            assert value == 5
+            Unit
+        }
+        Faulted(_) => {
+            assert false
+            Unit
+        }
+        Cancelled => {
+            assert false
+            Unit
+        }
+    }
+    match precondition {
+        Completed(_) => {
+            assert false
+            Unit
+        }
+        Faulted(fault) => {
+            let code = fault.code()
+            assert code == "PreconditionFault"
+            Unit
+        }
+        Cancelled => {
+            assert false
+            Unit
+        }
+    }
+    match postcondition {
+        Completed(_) => {
+            assert false
+            Unit
+        }
+        Faulted(fault) => {
+            let code = fault.code()
+            assert code == "PostconditionFault"
+            Unit
+        }
+        Cancelled => {
+            assert false
+            Unit
+        }
+    }
+
+    let winner = Task.any(slow(Boxed { value = Number { value = 9 } }), fast()).await
+    assert winner == 2
+}

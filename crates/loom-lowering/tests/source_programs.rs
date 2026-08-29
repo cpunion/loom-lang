@@ -1,4 +1,4 @@
-use loom_core::{FileId, LOOM_LANGUAGE_VERSION, Name, PackageId};
+use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId};
 use loom_hir::{PackageSourceUnit, SourceUnit, lower_files, lower_package_files};
 use loom_lowering::lower_to_mir;
 use loom_sema::analyze;
@@ -38,7 +38,7 @@ fn lower_with_std_resource(source: &str) -> loom_hir::Program {
     let application = parse_with_file(FileId(0), source);
     let resource = parse_with_file(
         FileId(1),
-        include_str!("../../../library/std/src/resource.loom"),
+        include_str!("../../../library/std/resource/resource.loom"),
     );
     assert!(
         application.diagnostics().is_empty() && resource.diagnostics().is_empty(),
@@ -52,11 +52,13 @@ fn lower_with_std_resource(source: &str) -> loom_hir::Program {
         PackageSourceUnit {
             file: FileId(0),
             package: root.clone(),
+            module: ModuleName::new("lowering_test"),
             syntax: application.ast(),
         },
         PackageSourceUnit {
             file: FileId(1),
             package: std.clone(),
+            module: ModuleName::new("std.resource"),
             syntax: resource.ast(),
         },
     ]);
@@ -86,10 +88,10 @@ fn compile_with_std_resource(source: &str) -> loom_mir::CheckedProgram {
 
 fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
     let application = parse_with_file(FileId(0), source);
-    let log = parse_with_file(FileId(1), include_str!("../../../library/std/src/log.loom"));
+    let log = parse_with_file(FileId(1), include_str!("../../../library/std/log/log.loom"));
     let json = parse_with_file(
         FileId(2),
-        include_str!("../../../library/std/src/json.loom"),
+        include_str!("../../../library/std/json/json.loom"),
     );
     assert!(
         application.diagnostics().is_empty()
@@ -106,16 +108,19 @@ fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
         PackageSourceUnit {
             file: FileId(0),
             package: root.clone(),
+            module: ModuleName::new("lowering_test"),
             syntax: application.ast(),
         },
         PackageSourceUnit {
             file: FileId(1),
             package: std.clone(),
+            module: ModuleName::new("std.log"),
             syntax: log.ast(),
         },
         PackageSourceUnit {
             file: FileId(2),
             package: std.clone(),
+            module: ModuleName::new("std.json"),
             syntax: json.ast(),
         },
     ]);
@@ -140,7 +145,7 @@ fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
 
 fn compile_with_std_int(source: &str) -> loom_mir::CheckedProgram {
     let application = parse_with_file(FileId(0), source);
-    let int = parse_with_file(FileId(1), include_str!("../../../library/std/src/int.loom"));
+    let int = parse_with_file(FileId(1), include_str!("../../../library/std/int/int.loom"));
     assert!(
         application.diagnostics().is_empty() && int.diagnostics().is_empty(),
         "syntax diagnostics: application={:#?} std={:#?}",
@@ -153,11 +158,13 @@ fn compile_with_std_int(source: &str) -> loom_mir::CheckedProgram {
         PackageSourceUnit {
             file: FileId(0),
             package: root.clone(),
+            module: ModuleName::new("lowering_test"),
             syntax: application.ast(),
         },
         PackageSourceUnit {
             file: FileId(1),
             package: std.clone(),
+            module: ModuleName::new("std.int"),
             syntax: int.ast(),
         },
     ]);
@@ -184,7 +191,7 @@ fn compile_with_std_json(source: &str) -> loom_mir::CheckedProgram {
     let application = parse_with_file(FileId(0), source);
     let json = parse_with_file(
         FileId(1),
-        include_str!("../../../library/std/src/json.loom"),
+        include_str!("../../../library/std/json/json.loom"),
     );
     assert!(
         application.diagnostics().is_empty() && json.diagnostics().is_empty(),
@@ -198,11 +205,13 @@ fn compile_with_std_json(source: &str) -> loom_mir::CheckedProgram {
         PackageSourceUnit {
             file: FileId(0),
             package: root.clone(),
+            module: ModuleName::new("lowering_test"),
             syntax: application.ast(),
         },
         PackageSourceUnit {
             file: FileId(1),
             package: std.clone(),
+            module: ModuleName::new("std.json"),
             syntax: json.ast(),
         },
     ]);
@@ -327,7 +336,7 @@ fn logical_chains_lower_on_one_mib_stack_and_remain_balanced() {
         .collect::<Vec<_>>()
         .join(" && ");
     let source = format!(
-        "module low_stack\n\nfn all() Bool {{ {and_source} }}\n\nfn any() Bool {{ {or_source} }}\n\nfn guarded(flag Bool) Bool\n    requires {contract_source}\n{{\n    flag\n}}\n"
+        "fn all() Bool {{ {and_source} }}\n\nfn any() Bool {{ {or_source} }}\n\nfn guarded(flag Bool) Bool\n    requires {contract_source}\n{{\n    flag\n}}\n"
     );
 
     let program = std::thread::Builder::new()
@@ -405,8 +414,6 @@ fn logical_chains_lower_on_one_mib_stack_and_remain_balanced() {
 fn scoped_source_lowers_to_first_class_mir_without_a_synthetic_defer() {
     let program = compile_with_std_resource(
         r"
-module custom_resource
-
 import std.resource.Dispose
 import std.resource.MustScope
 
@@ -467,8 +474,6 @@ fn main() {
 fn source_and_portable_mir_independently_reject_unscoped_must_scope_state() {
     let diagnostics = analyze_with_std_resource(
         r"
-module unscoped_resource
-
 import std.resource.Dispose
 import std.resource.MustScope
 
@@ -500,7 +505,7 @@ fn invalid() {
 #[test]
 fn proof_dispositions_survive_lowering_as_checked_mir_modes() {
     let program = compile_and_validate(
-        "module sample\n\ntype Money = Float where self >= 0.0\n\nrecord Range {\n    low Money\n    high Money\n    invariant self.low <= self.high\n}\n\nfn direct_money() Money { Money(10.0) }\n\nfn checked_money(raw Float) Result[Money, ConstraintError] { Money(raw) }\n\nfn direct_range() Range {\n    Range { low = Money(1.0), high = Money(2.0) }\n}\n\nfn checked_range(low Money, high Money) Result[Range, ConstraintError] {\n    Range { low = low, high = high }\n}\n",
+        "type Money = Float where self >= 0.0\n\nrecord Range {\n    low Money\n    high Money\n    invariant self.low <= self.high\n}\n\nfn direct_money() Money { Money(10.0) }\n\nfn checked_money(raw Float) Result[Money, ConstraintError] { Money(raw) }\n\nfn direct_range() Range {\n    Range { low = Money(1.0), high = Money(2.0) }\n}\n\nfn checked_range(low Money, high Money) Result[Range, ConstraintError] {\n    Range { low = low, high = high }\n}\n",
     );
     let debug = format!("{program:#?}");
     assert_eq!(debug.matches("construction: Proven").count(), 4, "{debug}");
@@ -510,7 +515,7 @@ fn proof_dispositions_survive_lowering_as_checked_mir_modes() {
 #[test]
 fn contract_and_assert_proofs_remove_only_established_runtime_checks() {
     let program = compile_and_validate(
-        "module sample\n\ntype Money = Float where self >= 0.0\n\nfn established(value Money) Money\n    requires value >= 0.0\n    ensures result >= 0.0\n{\n    assert value >= 0.0\n    Money(value)\n}\n\nfn dynamic(raw Float) Float\n    requires raw >= 0.0\n    ensures result >= 0.0\n{\n    assert raw >= 0.0\n    raw\n}\n\nfn unchecked_assert(raw Float) {\n    assert raw >= 0.0\n}\n",
+        "type Money = Float where self >= 0.0\n\nfn established(value Money) Money\n    requires value >= 0.0\n    ensures result >= 0.0\n{\n    assert value >= 0.0\n    Money(value)\n}\n\nfn dynamic(raw Float) Float\n    requires raw >= 0.0\n    ensures result >= 0.0\n{\n    assert raw >= 0.0\n    raw\n}\n\nfn unchecked_assert(raw Float) {\n    assert raw >= 0.0\n}\n",
     );
     let established = program
         .functions
@@ -559,7 +564,7 @@ fn contract_and_assert_proofs_remove_only_established_runtime_checks() {
 #[test]
 fn checked_mir_accepts_the_total_unary_contract_matrix() {
     let program = compile_and_validate(
-        "module sample\n\nfn unaryContracts(required Int, returned Int, asserted Int, floating Float, flag Bool) Int\n    requires -required <= 0\n    requires -floating <= 0.0\n    requires !flag\n    ensures -result <= 0\n{\n    assert -asserted <= 0\n    returned\n}\n",
+        "fn unaryContracts(required Int, returned Int, asserted Int, floating Float, flag Bool) Int\n    requires -required <= 0\n    requires -floating <= 0.0\n    requires !flag\n    ensures -result <= 0\n{\n    assert -asserted <= 0\n    returned\n}\n",
     );
     let function = program
         .functions
@@ -617,7 +622,7 @@ fn checked_mir_accepts_the_total_unary_contract_matrix() {
 #[test]
 fn mutable_receiver_requires_only_proves_the_entry_snapshot() {
     let program = compile_and_validate(
-        "module sample\n\nrecord Boxed { value Float }\n\nimpl Boxed {\n    method change(mut self)\n        requires self.value >= 0.0\n        ensures old(self.value) >= 0.0\n        ensures self.value >= 0.0\n    {\n        self.value = -1.0\n    }\n}\n",
+        "record Boxed { value Float }\n\nimpl Boxed {\n    method change(mut self)\n        requires self.value >= 0.0\n        ensures old(self.value) >= 0.0\n        ensures self.value >= 0.0\n    {\n        self.value = -1.0\n    }\n}\n",
     );
     let change = program
         .functions
@@ -635,7 +640,7 @@ fn mutable_receiver_requires_only_proves_the_entry_snapshot() {
 #[test]
 fn earlier_contract_clauses_eliminate_weaker_later_clauses() {
     let program = compile_and_validate(
-        "module sample\n\nfn ordered(value Float) Float\n    requires value >= 0.0\n    requires value >= -1.0\n    ensures result >= 0.0\n    ensures result >= -1.0\n{\n    value\n}\n",
+        "fn ordered(value Float) Float\n    requires value >= 0.0\n    requires value >= -1.0\n    ensures result >= 0.0\n    ensures result >= -1.0\n{\n    value\n}\n",
     );
     let ordered = program
         .functions
@@ -670,7 +675,7 @@ fn lowering_and_artifact_are_deterministic() {
 #[test]
 fn generic_data_and_function_lower_without_monomorphizing() {
     let program = compile_and_validate(
-        "module sample\n\nrecord Boxed[T] { value T }\n\nfn wrap[T](value T) Boxed[T] { Boxed { value = value } }\n\ntest fn wraps_text() {\n    let boxed = wrap(\"loom\")\n    assert boxed.value == \"loom\"\n}\n",
+        "record Boxed[T] { value T }\n\nfn wrap[T](value T) Boxed[T] { Boxed { value = value } }\n\ntest fn wraps_text() {\n    let boxed = wrap(\"loom\")\n    assert boxed.value == \"loom\"\n}\n",
     );
     assert!(
         program
@@ -683,7 +688,7 @@ fn generic_data_and_function_lower_without_monomorphizing() {
 #[test]
 fn conditional_conformance_builds_recursive_proof_application() {
     let program = compile_and_validate(
-        "module sample\n\nconcept Equivalent {\n    method equivalent(self, other Self) Bool\n}\n\nrecord Atom { value Int }\n\nimpl Equivalent for Atom {\n    method equivalent(self, other Atom) Bool { self.value == other.value }\n}\n\nrecord Boxed[T] { value T }\n\nimpl[T: Equivalent] Equivalent for Boxed[T] {\n    method equivalent(self, other Boxed[T]) Bool {\n        self.value.equivalent(other.value)\n    }\n}\n\nfn same[T: Equivalent](left T, right T) Bool {\n    left.equivalent(right)\n}\n\ntest fn conditional_witness() {\n    let left = Boxed { value = Atom { value = 7 } }\n    let right = Boxed { value = Atom { value = 7 } }\n    let equal = same(left, right)\n    assert equal\n}\n",
+        "concept Equivalent {\n    method equivalent(self, other Self) Bool\n}\n\nrecord Atom { value Int }\n\nimpl Equivalent for Atom {\n    method equivalent(self, other Atom) Bool { self.value == other.value }\n}\n\nrecord Boxed[T] { value T }\n\nimpl[T: Equivalent] Equivalent for Boxed[T] {\n    method equivalent(self, other Boxed[T]) Bool {\n        self.value.equivalent(other.value)\n    }\n}\n\nfn same[T: Equivalent](left T, right T) Bool {\n    left.equivalent(right)\n}\n\ntest fn conditional_witness() {\n    let left = Boxed { value = Atom { value = 7 } }\n    let right = Boxed { value = Atom { value = 7 } }\n    let equal = same(left, right)\n    assert equal\n}\n",
     );
     assert!(
         program
@@ -714,7 +719,7 @@ fn conditional_conformance_builds_recursive_proof_application() {
 #[test]
 fn generic_associated_projection_is_preserved_in_function_mir() {
     let program = compile_and_validate(
-        "module sample\n\nconcept Source {\n    associated type Item\n    method first(self) Self.Item\n}\n\nrecord Number { value Int }\n\nimpl Source for Number {\n    associated type Item = Int\n    method first(self) Int { self.value }\n}\n\nfn read[T: Source](source T) T.Item { source.first() }\n\ntest fn reads_associated() {\n    let value = read(Number { value = 3 })\n    assert value == 3\n}\n",
+        "concept Source {\n    associated type Item\n    method first(self) Self.Item\n}\n\nrecord Number { value Int }\n\nimpl Source for Number {\n    associated type Item = Int\n    method first(self) Int { self.value }\n}\n\nfn read[T: Source](source T) T.Item { source.first() }\n\ntest fn reads_associated() {\n    let value = read(Number { value = 3 })\n    assert value == 3\n}\n",
     );
     assert!(program.functions.iter().any(|function| matches!(
         function.return_ty,
@@ -725,7 +730,7 @@ fn generic_associated_projection_is_preserved_in_function_mir() {
 #[test]
 fn nested_contract_match_bindings_use_lexical_slots() {
     let program = compile_and_validate(
-        "module sample\n\nenum Problem { Failed }\n\nfn keep(value Option[Int]) Result[Option[Int], Problem]\n    ensures match result {\n        Ok(option) => match option {\n            Some(number) => number >= 0\n            None => true\n        }\n        Err(_) => true\n    }\n{\n    Ok(value)\n}\n",
+        "enum Problem { Failed }\n\nfn keep(value Option[Int]) Result[Option[Int], Problem]\n    ensures match result {\n        Ok(option) => match option {\n            Some(number) => number >= 0\n            None => true\n        }\n        Err(_) => true\n    }\n{\n    Ok(value)\n}\n",
     );
     let function = program
         .functions
@@ -739,14 +744,14 @@ fn nested_contract_match_bindings_use_lexical_slots() {
 #[test]
 fn returning_branch_preserves_never_flow() {
     compile_and_validate(
-        "module sample\n\nfn choose(flag Bool) Int {\n    if flag {\n        return 0\n    } else {\n        1\n    }\n}\n",
+        "fn choose(flag Bool) Int {\n    if flag {\n        return 0\n    } else {\n        1\n    }\n}\n",
     );
 }
 
 #[test]
 fn generic_witness_and_method_generics_keep_separate_alpha_spaces() {
     let program = compile_and_validate(
-        "module sample\n\nrecord Boxed[T] { value T }\nrecord Holder[T] { value T }\n\nconcept Wrapper {\n    method wrap[U](self, value U) Boxed[U]\n}\n\nimpl[T] Wrapper for Holder[T] {\n    method wrap[U](self, value U) Boxed[U] { Boxed { value = value } }\n}\n\ntest fn generic_method() {\n    let holder = Holder { value = 1 }\n    let boxed = holder.wrap(\"loom\")\n    assert boxed.value == \"loom\"\n}\n",
+        "record Boxed[T] { value T }\nrecord Holder[T] { value T }\n\nconcept Wrapper {\n    method wrap[U](self, value U) Boxed[U]\n}\n\nimpl[T] Wrapper for Holder[T] {\n    method wrap[U](self, value U) Boxed[U] { Boxed { value = value } }\n}\n\ntest fn generic_method() {\n    let holder = Holder { value = 1 }\n    let boxed = holder.wrap(\"loom\")\n    assert boxed.value == \"loom\"\n}\n",
     );
     let witness = program.witnesses.first().expect("generic witness");
     assert_eq!(witness.type_parameters, 1);
@@ -763,9 +768,8 @@ fn generic_witness_and_method_generics_keep_separate_alpha_spaces() {
 
 #[test]
 fn phantom_generic_type_keeps_declared_arity() {
-    let program = compile_and_validate(
-        "module sample\n\nrecord Marker[T] {}\n\nfn marker[T]() Marker[T] { Marker {} }\n",
-    );
+    let program =
+        compile_and_validate("record Marker[T] {}\n\nfn marker[T]() Marker[T] { Marker {} }\n");
     let marker = program
         .types
         .iter()
@@ -777,7 +781,7 @@ fn phantom_generic_type_keeps_declared_arity() {
 #[test]
 fn generic_enum_construction_carries_its_instantiation() {
     let program = compile_and_validate(
-        "module sample\n\nenum Choice[T] {\n    Empty\n    Value(T)\n}\n\nfn choose[T](value T) Choice[T] { Choice.Value(value) }\n\ntest fn chooses_text() {\n    match choose(\"loom\") {\n        Value(text) => {\n            assert text == \"loom\"\n            Unit\n        }\n        Empty => {\n            assert false\n            Unit\n        }\n    }\n}\n",
+        "enum Choice[T] {\n    Empty\n    Value(T)\n}\n\nfn choose[T](value T) Choice[T] { Choice.Value(value) }\n\ntest fn chooses_text() {\n    match choose(\"loom\") {\n        Value(text) => {\n            assert text == \"loom\"\n            Unit\n        }\n        Empty => {\n            assert false\n            Unit\n        }\n    }\n}\n",
     );
     let choose = program
         .functions
@@ -790,16 +794,13 @@ fn generic_enum_construction_carries_its_instantiation() {
 #[test]
 fn compiler_builtins_lower_to_validated_calls() {
     compile_and_validate(
-        "module sample\n\nimport std.float.parse_float\nimport std.float.format_float\n\ntest fn float_text_boundary() {\n    let parsed = parse_float(\"1.25\")\n    let rendered = format_float(1.25)\n    assert rendered == \"1.25\"\n    match parsed {\n        Ok(value) => {\n            assert value == 1.25\n            Unit\n        }\n        Err(std.float.ParseFloatError.InvalidSyntax) => {\n            assert false\n            Unit\n        }\n        Err(std.float.ParseFloatError.OutOfRange) => {\n            assert false\n            Unit\n        }\n    }\n}\n",
+        "import std.float.parse_float\nimport std.float.format_float\n\ntest fn float_text_boundary() {\n    let parsed = parse_float(\"1.25\")\n    let rendered = format_float(1.25)\n    assert rendered == \"1.25\"\n    match parsed {\n        Ok(value) => {\n            assert value == 1.25\n            Unit\n        }\n        Err(std.float.ParseFloatError.InvalidSyntax) => {\n            assert false\n            Unit\n        }\n        Err(std.float.ParseFloatError.OutOfRange) => {\n            assert false\n            Unit\n        }\n    }\n}\n",
     );
 }
 
 #[test]
 fn errored_analysis_returns_only_structured_compiler_defects() {
-    let parsed = parse_with_file(
-        FileId(0),
-        "module sample\n\nfn invalid() Int { missing_name }\n",
-    );
+    let parsed = parse_with_file(FileId(0), "fn invalid() Int { missing_name }\n");
     assert!(parsed.diagnostics().is_empty());
     let lowered = lower_files([SourceUnit {
         file: FileId(0),
@@ -816,14 +817,14 @@ fn errored_analysis_returns_only_structured_compiler_defects() {
 #[test]
 fn concept_contracts_are_instantiated_for_conformance_methods() {
     compile_and_validate(
-        "module sample\n\nconcept Source {\n    associated type Item\n    method first(self) Option[Self.Item]\n        ensures match result {\n            Some(value) => value == value\n            None => true\n        }\n}\n\nrecord Number { value Int }\n\nimpl Source for Number {\n    associated type Item = Int\n    method first(self) Option[Int] { Some(self.value) }\n}\n",
+        "concept Source {\n    associated type Item\n    method first(self) Option[Self.Item]\n        ensures match result {\n            Some(value) => value == value\n            None => true\n        }\n}\n\nrecord Number { value Int }\n\nimpl Source for Number {\n    associated type Item = Int\n    method first(self) Option[Int] { Some(self.value) }\n}\n",
     );
 }
 
 #[test]
 fn generic_concept_contracts_use_the_implementation_alpha_space() {
     let program = compile_and_validate(
-        "module sample\n\nconcept Echo {\n    method echo[U](self, value U) Option[U]\n        ensures match result {\n            Some(output) => true\n            None => true\n        }\n}\n\nrecord Holder[T] { value T }\n\nimpl[T] Echo for Holder[T] {\n    method echo[U](self, value U) Option[U] { Some(value) }\n}\n",
+        "concept Echo {\n    method echo[U](self, value U) Option[U]\n        ensures match result {\n            Some(output) => true\n            None => true\n        }\n}\n\nrecord Holder[T] { value T }\n\nimpl[T] Echo for Holder[T] {\n    method echo[U](self, value U) Option[U] { Some(value) }\n}\n",
     );
     let method = program
         .functions
@@ -842,7 +843,7 @@ fn generic_concept_contracts_use_the_implementation_alpha_space() {
 #[test]
 fn generic_receiver_invariant_is_instantiated_from_the_impl_target() {
     let program = compile_and_validate(
-        "module sample\n\nrecord Pair[A, B] {\n    left Option[A]\n    right Option[B]\n\n    invariant match self.left {\n        Some(value) => true\n        None => true\n    }\n}\n\nimpl[X, Y] Pair[Y, X] {\n    method touch(self) {}\n}\n",
+        "record Pair[A, B] {\n    left Option[A]\n    right Option[B]\n\n    invariant match self.left {\n        Some(value) => true\n        None => true\n    }\n}\n\nimpl[X, Y] Pair[Y, X] {\n    method touch(self) {}\n}\n",
     );
     let method = program
         .functions
@@ -863,21 +864,21 @@ fn generic_receiver_invariant_is_instantiated_from_the_impl_target() {
 #[test]
 fn old_match_bindings_remain_lexical_snapshot_values() {
     compile_and_validate(
-        "module sample\n\nfn keep(value Option[Int]) Option[Int]\n    ensures old(match value {\n        Some(number) => number >= 0,\n        None => true,\n    })\n{\n    value\n}\n",
+        "fn keep(value Option[Int]) Option[Int]\n    ensures old(match value {\n        Some(number) => number >= 0,\n        None => true,\n    })\n{\n    value\n}\n",
     );
 }
 
 #[test]
 fn receiverless_static_requirement_carries_an_explicit_dispatch_type() {
     compile_and_validate(
-        "module sample\n\nconcept Zero {\n    static method zero() Self\n}\n\nimpl Zero for Int {\n    static method zero() Int { 0 }\n}\n\nfn make_zero[T: Zero]() T { <T as Zero>.zero() }\n\ntest fn makes_zero() {\n    let zero = make_zero[Int]()\n    assert zero == 0\n}\n",
+        "concept Zero {\n    static method zero() Self\n}\n\nimpl Zero for Int {\n    static method zero() Int { 0 }\n}\n\nfn make_zero[T: Zero]() T { <T as Zero>.zero() }\n\ntest fn makes_zero() {\n    let zero = make_zero[Int]()\n    assert zero == 0\n}\n",
     );
 }
 
 #[test]
 fn requirement_method_bound_associated_projection_is_preserved() {
     let program = compile_and_validate(
-        "module sample\n\nconcept Source {\n    associated type Item\n    method first(self) Self.Item\n}\n\nrecord Number { value Int }\n\nimpl Source for Number {\n    associated type Item = Int\n    method first(self) Int { self.value }\n}\n\nconcept Mapper {\n    method map[U: Source](self, source U) U.Item\n}\n\nrecord Identity {}\n\nimpl Mapper for Identity {\n    method map[U: Source](self, source U) U.Item { source.first() }\n}\n",
+        "concept Source {\n    associated type Item\n    method first(self) Self.Item\n}\n\nrecord Number { value Int }\n\nimpl Source for Number {\n    associated type Item = Int\n    method first(self) Int { self.value }\n}\n\nconcept Mapper {\n    method map[U: Source](self, source U) U.Item\n}\n\nrecord Identity {}\n\nimpl Mapper for Identity {\n    method map[U: Source](self, source U) U.Item { source.first() }\n}\n",
     );
     let mapper = program
         .concepts
@@ -907,8 +908,6 @@ fn requirement_method_bound_associated_projection_is_preserved() {
 fn generic_async_functions_with_witnesses_and_contracts_lower_to_checked_mir() {
     let program = compile_and_validate(
         r"
-module sample
-
 concept Measure {
     method measure(self) Int
 }
@@ -952,8 +951,6 @@ test async fn generic_async_contracts() {
 fn only_resolved_task_intrinsics_specialize_to_task_mir() {
     let canonical = compile_and_validate(
         r"
-module canonical_task_items
-
 async fn child() Int { 1 }
 
 pub async fn main() {
@@ -974,8 +971,6 @@ pub async fn main() {
 
     let shadowed = compile_and_validate(
         r"
-module shadowed_task_items
-
 record Scheduler {}
 
 impl Scheduler {
@@ -1006,8 +1001,6 @@ pub fn main() {
 fn async_exit_contracts_add_only_referenced_parameters_to_suspension_metadata() {
     let program = compile_and_validate(
         r"
-module exit_contract_liveness
-
 async fn constrained(ignored Int, required Int, oldRequired Int) Int
     ensures result >= required && old(oldRequired) == oldRequired
 {
@@ -1037,8 +1030,6 @@ test async fn callConstrained() {
 fn async_lowering_computes_path_and_cleanup_sensitive_suspension_liveness() {
     let program = compile_and_validate(
         r"
-module liveness
-
 enum Input {
     First(Int)
     Second(Int)
@@ -1146,8 +1137,6 @@ async fn returns(flag Bool, first Int, second Int) Int {
 fn text_bytes_path_and_path_file_calls_lower_to_checked_mir() {
     let program = compile_and_validate(
         r#"
-module builtin_value_lowering
-
 import std.file.open_read_path
 import std.file.create_path
 
@@ -1223,8 +1212,6 @@ async fn pathFiles(path Path) {
 fn structured_builtin_values_and_source_log_wrappers_lower_to_checked_mir() {
     let program = compile_with_std_log(
         r#"
-module structured_builtin_lowering
-
 import std.file.try_open_read_path
 import std.file.try_create_path
 import std.net.try_connect
@@ -1319,7 +1306,7 @@ async fn network(host Text, port Int) Result[Unit, IoError] {
     let values = program
         .functions
         .iter()
-        .find(|function| function.name == "structured_builtin_lowering.values")
+        .find(|function| function.name == "lowering_test.values")
         .expect("structured values caller");
     assert!(
         values.exprs_preorder().any(|expression| {
@@ -1376,8 +1363,6 @@ async fn network(host Text, port Int) Result[Unit, IoError] {
 fn std_parse_int_and_its_error_are_ordinary_source_definitions() {
     let program = compile_with_std_int(
         r"
-module std_int_lowering
-
 import std.int.parse_int
 
 fn parse(text Text) Result[Int, std.int.ParseIntError] {
@@ -1401,7 +1386,7 @@ fn classify(error std.int.ParseIntError) Int {
     let wrapper = program
         .functions
         .iter()
-        .find(|function| function.name == "std_int_lowering.parse")
+        .find(|function| function.name == "lowering_test.parse")
         .expect("source parse wrapper");
     assert!(
         wrapper.exprs_preorder().any(|expression| {
@@ -1445,8 +1430,6 @@ fn classify(error std.int.ParseIntError) Int {
 fn std_parse_json_is_an_ordinary_source_function_with_complete_parser_shapes() {
     let program = compile_with_std_json(
         r"
-module std_json_lowering
-
 fn idle() {
 }
 ",
