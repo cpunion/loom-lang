@@ -35,7 +35,7 @@ const C3_NATIVE_BUILD_BUDGET: Duration = Duration::from_secs(90);
 const C3_REPOSITORY: &str = "examples/c3/application";
 const C3_TARGET: &str = "app";
 const ASYNC_GENERIC_FIXTURE: &str = "fixtures/async-generic-contracts";
-const STANDARD_LIBRARY_FIXTURE: &str = "fixtures/standard-library/main.loom";
+const STD_FIXTURE: &str = "fixtures/std/main.loom";
 const TYPED_LCIR_FIXTURE: &str = "fixtures/typed-lcir";
 const TYPED_LOGGING_FIXTURE: &str = "fixtures/lcir-typed-logging";
 const TYPED_LOGGING_STDERR: &[u8] =
@@ -51,7 +51,7 @@ const TYPED_TASK_OUTCOMES_FIXTURE: &str = "fixtures/lcir-typed-task-outcomes";
 const TYPED_ASYNC_CLEANUP_FIXTURE: &str = "fixtures/lcir-async-cleanup";
 const TYPED_ASYNC_WRITEBACK_FIXTURE: &str = "fixtures/lcir-async-writeback";
 const FALLIBLE_TYPED_ASYNC_FIXTURE: &str = "fixtures/lcir-fallible-async";
-const QUALITY_EVIDENCE_SCHEMA_VERSION: u32 = 3;
+const QUALITY_EVIDENCE_SCHEMA_VERSION: u32 = 4;
 
 const TASKS: &[TaskSpec] = &[
     TaskSpec {
@@ -90,7 +90,7 @@ struct NativeBuild {
     functions: usize,
 }
 
-struct StandardLibraryFixture {
+struct StdFixture {
     round_trip: PathBuf,
     empty_write_listener: TcpListener,
     snapshot_listener: TcpListener,
@@ -475,13 +475,13 @@ fn main() {
             .failures
             .push(format!("async-generic-contracts: {error}"));
     }
-    if let Err(error) = standard_library_gate(
+    if let Err(error) = std_gate(
         &workspace,
         &runtime,
         &mut report.gates,
         &mut report.native_routes,
     ) {
-        report.failures.push(format!("standard-library: {error}"));
+        report.failures.push(format!("std: {error}"));
     }
     if let Err(error) = parser_throughput_gate(&workspace, &mut report.gates) {
         report.failures.push(error);
@@ -828,17 +828,16 @@ fn typed_async_gate(
     Ok(())
 }
 
-fn standard_library_gate(
+fn std_gate(
     workspace: &Path,
     runtime: &NativeRuntime,
     gates: &mut Vec<GateEvidence>,
     routes: &mut Vec<NativeRouteEvidence>,
 ) -> Result<(), String> {
     let interpreter_project = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let interpreter_fixture =
-        prepare_standard_library_fixture(workspace, interpreter_project.path())?;
+    let interpreter_fixture = prepare_std_fixture(workspace, interpreter_project.path())?;
     let native_project = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let native_fixture = prepare_standard_library_fixture(workspace, native_project.path())?;
+    let native_fixture = prepare_std_fixture(workspace, native_project.path())?;
 
     let analysis_started = Instant::now();
     let interpreter_snapshot = AnalysisHost::new(interpreter_project.path())
@@ -851,7 +850,7 @@ fn standard_library_gate(
         .map_err(|error| error.to_string())?;
     upper_gate(
         gates,
-        "standard-library.analysis",
+        "std.analysis",
         analysis_started.elapsed(),
         ANALYSIS_BUDGET,
     );
@@ -874,8 +873,8 @@ fn standard_library_gate(
         .executable()
         .map_err(|error| error.to_string())?;
 
-    run_standard_library_interpreter(interpreter_program, interpreter_fixture, gates)?;
-    run_standard_library_native(
+    run_std_interpreter(interpreter_program, interpreter_fixture, gates)?;
+    run_std_native(
         native_program,
         native_project.path(),
         native_fixture,
@@ -885,9 +884,9 @@ fn standard_library_gate(
     )
 }
 
-fn run_standard_library_interpreter(
+fn run_std_interpreter(
     program: &CheckedProgram,
-    fixture: StandardLibraryFixture,
+    fixture: StdFixture,
     gates: &mut Vec<GateEvidence>,
 ) -> Result<(), String> {
     let servers = FixtureServers::spawn([
@@ -920,17 +919,17 @@ fn run_standard_library_interpreter(
     }
     upper_gate(
         gates,
-        "standard-library.interpreter-execution",
+        "std.interpreter-execution",
         interpreter_started.elapsed(),
         EXECUTION_BUDGET,
     );
     Ok(())
 }
 
-fn run_standard_library_native(
+fn run_std_native(
     program: &CheckedProgram,
     project: &Path,
-    fixture: StandardLibraryFixture,
+    fixture: StdFixture,
     runtime: &NativeRuntime,
     gates: &mut Vec<GateEvidence>,
     routes: &mut Vec<NativeRouteEvidence>,
@@ -942,13 +941,13 @@ fn run_standard_library_native(
         &executable,
         EmitOptions::tests().with_optimization(OptimizationProfile::Release),
         runtime,
-        "standard-library.tests",
+        "std.tests",
         routes,
     )
     .map_err(|error| format!("native test build failed: {error}"))?;
     upper_gate(
         gates,
-        "standard-library.native-build",
+        "std.native-build",
         native_build_started.elapsed(),
         NATIVE_BUILD_BUDGET,
     );
@@ -991,17 +990,14 @@ fn run_standard_library_native(
     }
     upper_gate(
         gates,
-        "standard-library.native-execution",
+        "std.native-execution",
         native_run_started.elapsed(),
         EXECUTION_BUDGET,
     );
     Ok(())
 }
 
-fn prepare_standard_library_fixture(
-    workspace: &Path,
-    project: &Path,
-) -> Result<StandardLibraryFixture, String> {
+fn prepare_std_fixture(workspace: &Path, project: &Path) -> Result<StdFixture, String> {
     let round_trip = project.join("round-trip.txt");
     let reuse = project.join("reuse.txt");
     let missing = project.join("missing.txt");
@@ -1017,7 +1013,7 @@ fn prepare_standard_library_fixture(
         .local_addr()
         .map_err(|error| format!("read socket-snapshot fixture address: {error}"))?
         .port();
-    let source = std::fs::read_to_string(workspace.join(STANDARD_LIBRARY_FIXTURE))
+    let source = std::fs::read_to_string(workspace.join(STD_FIXTURE))
         .map_err(|error| error.to_string())?
         .replace("__ROUND_TRIP_PATH__", &loom_text_literal(&round_trip))
         .replace("__REUSE_PATH__", &loom_text_literal(&reuse))
@@ -1025,7 +1021,7 @@ fn prepare_standard_library_fixture(
         .replace("__LOOPBACK_PORT__", &empty_write_port.to_string())
         .replace("__READ_LOOPBACK_PORT__", &snapshot_port.to_string());
     std::fs::write(project.join("main.loom"), source).map_err(|error| error.to_string())?;
-    Ok(StandardLibraryFixture {
+    Ok(StdFixture {
         round_trip,
         empty_write_listener,
         snapshot_listener,

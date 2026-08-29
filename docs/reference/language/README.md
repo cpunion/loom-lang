@@ -32,7 +32,7 @@ For abstraction and correctness features, continue with:
 - [Diagnostics and failures](diagnostics.md)
 
 Library types and imported operations are cataloged in the
-[standard library reference](../standard-library/README.md).
+[standard library reference](../std/README.md).
 
 ## Reference conventions
 

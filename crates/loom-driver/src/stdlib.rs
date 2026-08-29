@@ -1,4 +1,4 @@
-//! Compiler-owned Loom source library embedded into every project graph.
+//! Compiler-owned Loom `std` sources embedded into every project graph.
 
 use std::path::{Path, PathBuf};
 
@@ -8,31 +8,31 @@ use sha2::{Digest, Sha256};
 use crate::project::ProjectSource;
 
 pub(crate) use loom_core::STD_PACKAGE_NAME;
-const STANDARD_LIBRARY_IDENTITY_DOMAIN: &str = "loom-source-stdlib-v1";
+const STDLIB_IDENTITY_DOMAIN: &str = "loom-source-stdlib-v1";
 
-struct StandardSource {
+struct StdSource {
     path: &'static str,
     module: &'static str,
     text: &'static str,
 }
 
-const STANDARD_SOURCES: &[StandardSource] = &[
-    StandardSource {
+const STD_SOURCES: &[StdSource] = &[
+    StdSource {
         path: "src/int.loom",
         module: "std.int",
         text: include_str!("../../../library/std/src/int.loom"),
     },
-    StandardSource {
+    StdSource {
         path: "src/json.loom",
         module: "std.json",
         text: include_str!("../../../library/std/src/json.loom"),
     },
-    StandardSource {
+    StdSource {
         path: "src/log.loom",
         module: "std.log",
         text: include_str!("../../../library/std/src/log.loom"),
     },
-    StandardSource {
+    StdSource {
         path: "src/resource.loom",
         module: "std.resource",
         text: include_str!("../../../library/std/src/resource.loom"),
@@ -48,7 +48,7 @@ pub(crate) fn package_id(language_version: &str) -> PackageId {
 pub(crate) fn project_sources(root: &Path, language_version: &str) -> Vec<ProjectSource> {
     let package = package_id(language_version);
     let synthetic_root = synthetic_root(root, language_version);
-    STANDARD_SOURCES
+    STD_SOURCES
         .iter()
         .map(|source| ProjectSource {
             absolute: synthetic_root.join(source.path),
@@ -56,12 +56,12 @@ pub(crate) fn project_sources(root: &Path, language_version: &str) -> Vec<Projec
             package: Some(package.clone()),
             is_root_package: false,
             embedded_text: Some(source.text.to_owned()),
-            origin: crate::SourceOrigin::CompilerOwnedStandardLibrary,
+            origin: crate::SourceOrigin::CompilerStd,
         })
         .collect()
 }
 
-/// Whether a module belongs to the compiler-reserved standard namespace.
+/// Whether a module belongs to the compiler-reserved `std` namespace.
 ///
 /// Reserving the complete namespace lets future source modules be added without
 /// colliding with a user module that happened to claim the same path first.
@@ -75,7 +75,7 @@ pub(crate) fn owns_module(module: &str) -> bool {
 
 #[must_use]
 pub fn identity(language_version: &str) -> String {
-    identity_for_sources(language_version, STANDARD_SOURCES)
+    identity_for_sources(language_version, STD_SOURCES)
 }
 
 fn synthetic_root(root: &Path, language_version: &str) -> PathBuf {
@@ -86,16 +86,16 @@ fn synthetic_root(root: &Path, language_version: &str) -> PathBuf {
         .join(language_version)
 }
 
-fn identity_for_sources(language_version: &str, sources: &[StandardSource]) -> String {
+fn identity_for_sources(language_version: &str, sources: &[StdSource]) -> String {
     let mut hasher = Sha256::new();
-    hash_field(&mut hasher, STANDARD_LIBRARY_IDENTITY_DOMAIN.as_bytes());
+    hash_field(&mut hasher, STDLIB_IDENTITY_DOMAIN.as_bytes());
     hash_field(&mut hasher, language_version.as_bytes());
     for source in sources {
         hash_field(&mut hasher, source.path.as_bytes());
         hash_field(&mut hasher, source.module.as_bytes());
         hash_field(&mut hasher, source.text.as_bytes());
     }
-    format!("{STANDARD_LIBRARY_IDENTITY_DOMAIN}/{:x}", hasher.finalize())
+    format!("{STDLIB_IDENTITY_DOMAIN}/{:x}", hasher.finalize())
 }
 
 fn hash_field(hasher: &mut Sha256, value: &[u8]) {
@@ -105,19 +105,17 @@ fn hash_field(hasher: &mut Sha256, value: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        STANDARD_LIBRARY_IDENTITY_DOMAIN, StandardSource, identity_for_sources, owns_module,
-    };
+    use super::{STDLIB_IDENTITY_DOMAIN, StdSource, identity_for_sources, owns_module};
 
-    fn source(path: &'static str, module: &'static str, text: &'static str) -> StandardSource {
-        StandardSource { path, module, text }
+    fn source(path: &'static str, module: &'static str, text: &'static str) -> StdSource {
+        StdSource { path, module, text }
     }
 
     #[test]
     fn identity_tracks_language_paths_and_contents() {
         let base = identity_for_sources("0.3", &[source("src/a.loom", "std.a", "module std.a\n")]);
-        assert!(base.starts_with(&format!("{STANDARD_LIBRARY_IDENTITY_DOMAIN}/")));
-        assert_eq!(base.len(), STANDARD_LIBRARY_IDENTITY_DOMAIN.len() + 1 + 64);
+        assert!(base.starts_with(&format!("{STDLIB_IDENTITY_DOMAIN}/")));
+        assert_eq!(base.len(), STDLIB_IDENTITY_DOMAIN.len() + 1 + 64);
         assert_ne!(
             base,
             identity_for_sources("0.4", &[source("src/a.loom", "std.a", "module std.a\n")],)

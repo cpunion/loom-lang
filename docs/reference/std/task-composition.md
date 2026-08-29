@@ -11,18 +11,26 @@ or a public coroutine protocol:
 - `Task.settled` observes every terminal state;
 - `Task.race` observes the first terminal state.
 
-The semantic boundary is a standard-library API item. HIR retains an ordinary
-method call. Version 0.3 resolves a canonical, unshadowed receiver namespace and
-member through an embedded compiler-owned catalog, and only that stable item may
-select a specialized fixed heterogeneous row. A local, parameter, generic,
-imported or user-defined type, or third-party method with the same spelling
-cannot be mistaken for that item. Source spelling is never inspected by MIR or
-code generation. Future source-compiled standard-library declarations will map
-their trusted definition identities to the same standard-item catalog; they do
-not require new source syntax. Evaluation order, types, cancellation, cleanup,
-and fault behavior
-remain the source API contract described here, and programs cannot name or
-depend on the private join substrate.
+The semantic boundary is a standard-library API declaration. HIR retains an
+ordinary method call. The current version 0.3 implementation temporarily
+resolves a canonical, unshadowed receiver namespace and member through an
+embedded compiler-owned catalog to `TaskIntrinsic`, and only that private
+identity may select a specialized fixed heterogeneous row. A local, parameter,
+generic, imported or user-defined type, or third-party method with the same
+spelling cannot be mistaken for it. Source spelling is never inspected by MIR
+or code generation.
+
+`TaskIntrinsic` is an implementation bridge, not part of the Task API or a
+standard-library ABI. The completed library boundary declares these public
+members in compiler-owned Loom source, resolves calls to their ordinary source
+`DefId` values, and follows their bodies through normal reachability. Those
+bodies may use inaccessible typed join/select, outcome extraction, timer, and
+structured cancellation primitives. They are never mapped back to
+`TaskIntrinsic`; the temporary catalog and enum are deleted when the general
+source-level associated-function and tuple/List mechanisms can express this
+surface. Evaluation order, types, cancellation, cleanup, and fault behavior
+remain the API contract described here, and programs cannot name or depend on
+the private substrate.
 
 ## Fixed task rows
 

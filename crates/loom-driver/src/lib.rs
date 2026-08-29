@@ -13,7 +13,7 @@ mod project;
 mod registry;
 mod report;
 mod source;
-mod standard_library;
+mod stdlib;
 mod symbols;
 
 pub use analysis::{
@@ -37,7 +37,7 @@ pub use project::{
 pub use registry::{RegistryPublish, publish_registry_package};
 pub use report::{DiagnosticRecord, Position, Range, RelatedDiagnostic, SpanRecord};
 pub use source::{DriverError, SourceDocument, SourceMap, SourceOrigin, discover_loom_files};
-pub use standard_library::identity as standard_library_identity;
+pub use stdlib::identity as stdlib_identity;
 pub use symbols::{SymbolId, SymbolInfo, SymbolReference, is_valid_identifier};
 
 /// Successful command completion.

@@ -10559,8 +10559,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 | Builtin::PathAsText
                 | Builtin::PathJoin
         ) {
-            let continues =
-                self.emit_standard_value_builtin(builtin, &prepared.values, destination)?;
+            let continues = self.emit_builtin_value(builtin, &prepared.values, destination)?;
             if continues {
                 self.emit_call_writebacks(&prepared.writebacks)?;
             }
@@ -10620,7 +10619,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 &[]
             };
             let continues =
-                self.emit_standard_io_builtin(builtin, &prepared.values, writebacks, destination)?;
+                self.emit_builtin_io(builtin, &prepared.values, writebacks, destination)?;
             if continues && !commits_before_status {
                 self.emit_call_writebacks(&prepared.writebacks)?;
             }
@@ -10752,7 +10751,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn emit_standard_value_builtin(
+    fn emit_builtin_value(
         &self,
         builtin: Builtin,
         values: &[PointerValue<'ctx>],
@@ -10813,7 +10812,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     ],
                     "text.concat.status",
                 )?;
-                self.fail_on_standard_status(status, "TextRuntimeFault")?;
+                self.fail_on_builtin_status(status, "TextRuntimeFault")?;
                 Ok(true)
             }
             (Builtin::TextContains, [text, needle]) => {
@@ -10914,7 +10913,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     ],
                     "bytes.append.status",
                 )?;
-                self.fail_on_standard_status(status, "BytesRuntimeFault")?;
+                self.fail_on_builtin_status(status, "BytesRuntimeFault")?;
                 let bytes = self
                     .backend
                     .program
@@ -11338,7 +11337,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         Ok(())
     }
 
-    fn fail_on_standard_status(
+    fn fail_on_builtin_status(
         &self,
         status: IntValue<'ctx>,
         fault: &str,
@@ -11350,7 +11349,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 IntPredicate::NE,
                 status,
                 self.backend.context.i32_type().const_zero(),
-                "standard.invalid",
+                "builtin.invalid",
             )
             .map_err(builder_error)?;
         self.fail_if(invalid, fault)
@@ -11486,7 +11485,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     ],
                     "text.map.insert.status",
                 )?;
-                self.fail_on_standard_status(status, "TextMapRuntimeFault")?;
+                self.fail_on_builtin_status(status, "TextMapRuntimeFault")?;
                 Ok(true)
             }
             (Builtin::TextMapRemove, [map, key]) => {
@@ -11503,7 +11502,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     ],
                     "text.map.remove.status",
                 )?;
-                self.fail_on_standard_status(status, "TextMapRuntimeFault")?;
+                self.fail_on_builtin_status(status, "TextMapRuntimeFault")?;
                 Ok(true)
             }
             (Builtin::JsonFormat, [json]) => {
@@ -11522,7 +11521,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     ],
                     "json.format.status",
                 )?;
-                self.fail_on_standard_status(status, "JsonRuntimeFault")?;
+                self.fail_on_builtin_status(status, "JsonRuntimeFault")?;
                 Ok(true)
             }
             (Builtin::IoErrorKind | Builtin::IoErrorMessage, [error]) => {
@@ -12514,7 +12513,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             ],
             "list.to_text_map.record_duplicate",
         )?;
-        self.fail_on_standard_status(status, "TextMapRuntimeFault")?;
+        self.fail_on_builtin_status(status, "TextMapRuntimeFault")?;
         self.shallow_copy_named(
             duplicates,
             next_duplicates,
@@ -12530,7 +12529,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             &[map.into(), key.into(), value.into(), next_map.into()],
             "list.to_text_map.insert",
         )?;
-        self.fail_on_standard_status(status, "TextMapRuntimeFault")?;
+        self.fail_on_builtin_status(status, "TextMapRuntimeFault")?;
         self.shallow_copy_named(map, next_map, "list.to_text_map.map.writeback")?;
         let next = self
             .backend
@@ -12698,7 +12697,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn emit_standard_io_builtin(
+    fn emit_builtin_io(
         &self,
         builtin: Builtin,
         values: &[PointerValue<'ctx>],

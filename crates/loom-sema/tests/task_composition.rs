@@ -1,6 +1,6 @@
 use loom_core::FileId;
 use loom_hir::{Program, SourceUnit, lower_files};
-use loom_sema::{Analysis, CallTarget, StandardLibraryItem, analyze};
+use loom_sema::{Analysis, CallTarget, TaskIntrinsic, analyze};
 use loom_syntax::parse_with_file;
 
 fn analyze_source(source: &str) -> (Program, Analysis) {
@@ -23,23 +23,23 @@ fn analyze_source(source: &str) -> (Program, Analysis) {
     (lowered.program, analysis)
 }
 
-fn standard_items(analysis: &Analysis) -> Vec<StandardLibraryItem> {
-    let mut items = analysis
+fn task_intrinsics(analysis: &Analysis) -> Vec<TaskIntrinsic> {
+    let mut intrinsics = analysis
         .typed
         .bodies
         .values()
         .flat_map(|body| body.calls.values())
         .filter_map(|call| match call.target {
-            CallTarget::StandardLibrary(item) => Some(item),
+            CallTarget::TaskIntrinsic(intrinsic) => Some(intrinsic),
             _ => None,
         })
         .collect::<Vec<_>>();
-    items.sort_unstable();
-    items
+    intrinsics.sort_unstable();
+    intrinsics
 }
 
 #[test]
-fn canonical_task_members_resolve_to_stable_standard_library_items() {
+fn canonical_task_members_resolve_to_task_intrinsics() {
     let (_, analysis) = analyze_source(
         r"
 module canonical_task
@@ -61,13 +61,13 @@ pub async fn main() {
         analysis.diagnostics
     );
     assert_eq!(
-        standard_items(&analysis),
+        task_intrinsics(&analysis),
         [
-            StandardLibraryItem::TaskSleep,
-            StandardLibraryItem::TaskAll,
-            StandardLibraryItem::TaskSettled,
-            StandardLibraryItem::TaskAny,
-            StandardLibraryItem::TaskRace,
+            TaskIntrinsic::Sleep,
+            TaskIntrinsic::All,
+            TaskIntrinsic::Settled,
+            TaskIntrinsic::Any,
+            TaskIntrinsic::Race,
         ]
     );
 }
@@ -111,7 +111,7 @@ fn parameterReceiver(Task Scheduler) {
         "{:#?}",
         analysis.diagnostics
     );
-    assert!(standard_items(&analysis).is_empty());
+    assert!(task_intrinsics(&analysis).is_empty());
     let inherent_calls = analysis
         .typed
         .bodies
@@ -123,7 +123,7 @@ fn parameterReceiver(Task Scheduler) {
 }
 
 #[test]
-fn ambiguous_value_named_task_never_falls_back_to_the_standard_catalog() {
+fn ambiguous_value_named_task_never_falls_back_to_task_intrinsics() {
     let (_, analysis) = analyze_source(
         r"
 module ambiguous_task
@@ -139,7 +139,7 @@ fn useTask() {
 ",
     );
     assert!(analysis.has_errors());
-    assert!(standard_items(&analysis).is_empty());
+    assert!(task_intrinsics(&analysis).is_empty());
     assert!(
         analysis
             .diagnostics
@@ -159,7 +159,7 @@ fn useTask() {
 }
 
 #[test]
-fn invalid_private_task_import_never_falls_back_to_the_standard_catalog() {
+fn invalid_private_task_import_never_falls_back_to_task_intrinsics() {
     let library = parse_with_file(
         FileId(0),
         r"
@@ -196,7 +196,7 @@ fn useTask() {
     assert!(lowered.diagnostics.is_empty(), "{:#?}", lowered.diagnostics);
     let analysis = analyze(&lowered.program);
     assert!(analysis.has_errors());
-    assert!(standard_items(&analysis).is_empty());
+    assert!(task_intrinsics(&analysis).is_empty());
     assert!(
         analysis
             .diagnostics
@@ -250,7 +250,7 @@ fn outOfStock() CheckoutError { CheckoutError.OutOfStock }
         "{:#?}",
         analysis.diagnostics
     );
-    assert!(standard_items(&analysis).is_empty());
+    assert!(task_intrinsics(&analysis).is_empty());
     let variant_calls = analysis
         .typed
         .bodies
@@ -262,7 +262,7 @@ fn outOfStock() CheckoutError { CheckoutError.OutOfStock }
 }
 
 #[test]
-fn user_type_named_task_cannot_forge_a_standard_item_identity() {
+fn user_type_named_task_cannot_forge_a_task_intrinsic() {
     let (_, analysis) = analyze_source(
         r"
 module forged_task_type
@@ -275,11 +275,11 @@ fn useTask() {
 ",
     );
     assert!(analysis.has_errors());
-    assert!(standard_items(&analysis).is_empty());
+    assert!(task_intrinsics(&analysis).is_empty());
 }
 
 #[test]
-fn generic_parameter_named_task_cannot_forge_a_standard_item_identity() {
+fn generic_parameter_named_task_cannot_forge_a_task_intrinsic() {
     let (_, analysis) = analyze_source(
         r"
 module forged_task_parameter
@@ -292,7 +292,7 @@ async fn useTask[Task]() {
 ",
     );
     assert!(analysis.has_errors());
-    assert!(standard_items(&analysis).is_empty());
+    assert!(task_intrinsics(&analysis).is_empty());
     assert!(
         analysis
             .diagnostics

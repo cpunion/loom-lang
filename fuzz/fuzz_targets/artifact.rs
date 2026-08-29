@@ -10,7 +10,7 @@ use loom_mir::{
     encode_interpreted_executable_artifact,
 };
 
-use support::{STRUCTURED_STANDARD_SOURCE, compile};
+use support::{STRUCTURED_BUILTIN_SOURCE, compile};
 
 fuzz_target!(|input: &[u8]| {
     // Raw bytes exercise envelope/nesting/header rejection. A mutation of a
@@ -32,7 +32,7 @@ fuzz_target!(|input: &[u8]| {
 fn valid_seed() -> &'static Vec<u8> {
     static SEED: OnceLock<Vec<u8>> = OnceLock::new();
     SEED.get_or_init(|| {
-        let program = compile(STRUCTURED_STANDARD_SOURCE)
+        let program = compile(STRUCTURED_BUILTIN_SOURCE)
             .unwrap_or_else(|error| panic!("structured fuzz seed must compile: {error}"));
         assert!(program.prelude.text_map.is_some());
         assert!(program.prelude.json.is_some());

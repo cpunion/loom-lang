@@ -124,8 +124,8 @@ fn source_position(source: &str, needle: &str) -> Value {
     clippy::too_many_lines,
     reason = "one editor contract keeps structured standard-library hover and completion evidence together"
 )]
-fn structured_standard_values_are_discoverable_through_completion_and_hover() {
-    let source = r#"module editor.standard
+fn structured_std_values_are_discoverable_through_completion_and_hover() {
+    let source = r#"module editor.builtin
 
 import std.json.parse_json
 import std.log.debug
@@ -308,7 +308,7 @@ fn parse(text Text) Result[Int, ParseIntError] {
         assert_eq!(
             matching[0].get("sortText"),
             Some(&json!(format!("0-{name}-std.int"))),
-            "{name} must come from the semantic source index, not STANDARD_SYMBOLS"
+            "{name} must come from the semantic source index, not STD_SYMBOLS"
         );
     }
 
@@ -346,11 +346,8 @@ fn parse(text Text) Result[Int, ParseIntError] {
             .sources()
             .document(symbol.definition.file)
             .expect("definition source");
-        assert_eq!(
-            definition_source.origin(),
-            SourceOrigin::CompilerOwnedStandardLibrary
-        );
-        assert!(definition_source.is_compiler_owned());
+        assert_eq!(definition_source.origin(), SourceOrigin::CompilerStd);
+        assert!(definition_source.is_compiler_std());
         assert!(definition_source.is_read_only());
         assert!(!definition_source.is_navigable());
         assert!(
@@ -362,7 +359,7 @@ fn parse(text Text) Result[Int, ParseIntError] {
 }
 
 #[test]
-fn compiler_owned_standard_sources_report_distinct_navigation_and_mutation_policy() {
+fn compiler_std_sources_report_distinct_navigation_and_mutation_policy() {
     let source = r"module editor.compiler_owned
 
 import std.int.minimum

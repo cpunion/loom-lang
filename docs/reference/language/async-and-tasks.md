@@ -7,7 +7,7 @@ postfix suspension, structured task obligations, and terminal task outcomes.
 `Task.all`, `Task.any`, `Task.settled`, and `Task.race` are standard-library
 policies rather than keywords, operators, or additional control-flow syntax.
 Their callable signatures are specified in
-[Task composition](../standard-library/task-composition.md).
+[Task composition](../std/task-composition.md).
 
 ## Async calls and `.await`
 
@@ -208,7 +208,7 @@ monotonic deadline raises `SleepDurationOverflow`. The standard function
 
 File and socket operations expose typed tasks. There is no Loom source
 constructor that converts an `Int` into a raw readiness wait. See
-[I/O and logging](../standard-library/io-and-logging.md).
+[I/O and logging](../std/io-and-logging.md).
 
 ## Result propagation and cleanup
 

@@ -13,26 +13,30 @@ the CLI, formatter, and LSP.
 
 ## Now
 
-### Unify concrete value lowering
+### Make `std` an ordinary source library
 
-Replace isolated scalar, record, list, text, coroutine, and dynamic-interface
-fast paths with one typed layout plan that drives storage, calls, clone, trace,
-and drop behavior.
+Move every public library policy and algorithm out of compiler name tables and
+into compiler-distributed Loom source. The compiler may retain only private,
+format-neutral primitives that ordinary source cannot implement, such as task
+suspension, timer and I/O task creation, GC allocation, and target-specific
+system boundaries.
 
 Acceptance requires:
 
-- one canonical machine-instance identity for each specialized layout;
-- checked and erased boundaries that fail closed when specialization is unsafe;
-- unchanged value equality, contracts, checked arithmetic, GC relocation, and
-  concept behavior;
-- IR and runtime tests that demonstrate the common hot paths do not allocate or
-  enter universal helpers unnecessarily.
+- public `std` calls resolve to ordinary source definitions and participate in
+  normal reachability, monomorphization, contracts, and diagnostics;
+- compiler primitives are unavailable to application and dependency source;
+- public function names are absent from compiler builtin dispatch tables;
+- unused library definitions, helpers, and data are absent from native objects;
+- each migrated API deletes its former builtin/catalog path in the same change,
+  without aliases, compatibility readers, or parallel implementations.
 
-### Close checked-entry and assumed-body boundaries
+### Finish typed LCIR and delete the checked-MIR LLVM route
 
-Contract and invariant checks should execute once at the checked entry, after
-which eligible private code may use a proved concrete ABI. Unknown or failing
-paths must preserve their original fault, blame, and source location.
+Close the remaining whole-artifact LCIR gaps using the canonical typed layout
+plan. Once every maintained language and `std` fixture lowers directly, delete
+the checked-MIR LLVM emitter, its universal value ABI, route selector, cache
+domain, and tests. It is an implementation gap, not a compatibility surface.
 
 ### Strengthen reproducible evidence
 
@@ -43,12 +47,13 @@ incremental builds, peak memory, and profiler data before making broader claims.
 
 ## Next
 
-### Broaden typed layouts
+### Grow the source library
 
-Apply the common layout plan to nested and managed records, known generic
-instances, generic containers, direct `Text` values, coroutine slots, and
-dynamic concept payloads. Optimize from profiles rather than adding
-source-shape special cases.
+Build collections, text, encoding, time, process, file, network, logging, and
+data-format modules in Loom after their narrow primitives are established.
+Task composition should use a general source-level associated-function and
+tuple/list abstraction; it must not become a permanent compiler catalog keyed
+by the public `Task.*` spelling.
 
 ### Improve incremental compilation
 

@@ -182,8 +182,8 @@ jobs:
         shell: bash
         run: |
           cargo test --locked --release -p loom-runtime-abi --lib
-          cargo test --locked --release -p loom-codegen-llvm --test standard_values
-          cargo test --locked --release -p loom-codegen-llvm --test structured_standard_values
+          cargo test --locked --release -p loom-codegen-llvm --test builtin_values
+          cargo test --locked --release -p loom-codegen-llvm --test std_integration
           cargo test --locked --release -p loom-codegen-llvm --test lcir_source \
             typed_logging_uses_one_direct_fallible_runtime_boundary -- --exact
           cargo test --locked --release -p loom-cli --test cli \

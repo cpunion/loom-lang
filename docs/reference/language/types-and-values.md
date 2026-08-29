@@ -24,7 +24,7 @@ The prelude also provides the generic type constructors `Option[T]`,
 `Result[T, E]`, `List[T]`, `TextMap[V]`, `Task[T]`, and `TaskOutcome[T]`.
 Standard-library operations introduce additional closed value types such as
 `Duration`, `Json`, and their error types. See the
-[standard library reference](../standard-library/README.md).
+[standard library reference](../std/README.md).
 
 `Text` is the language's text type. There are no `String`, `string`, or `str`
 aliases, and `Text` does not imply borrowing or a lifetime. Arbitrary binary

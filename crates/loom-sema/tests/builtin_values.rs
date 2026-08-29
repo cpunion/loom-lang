@@ -5,15 +5,15 @@ use loom_syntax::parse_with_file;
 
 fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
     let root_file = FileId(0);
-    let standard_log_file = FileId(1);
-    let standard_json_file = FileId(2);
+    let std_log_file = FileId(1);
+    let std_json_file = FileId(2);
     let parsed = parse_with_file(root_file, source);
-    let standard_log = parse_with_file(
-        standard_log_file,
+    let std_log = parse_with_file(
+        std_log_file,
         include_str!("../../../library/std/src/log.loom"),
     );
-    let standard_json = parse_with_file(
-        standard_json_file,
+    let std_json = parse_with_file(
+        std_json_file,
         include_str!("../../../library/std/src/json.loom"),
     );
     assert!(
@@ -22,13 +22,13 @@ fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
         parsed.diagnostics()
     );
     assert!(
-        standard_log.diagnostics().is_empty() && standard_json.diagnostics().is_empty(),
+        std_log.diagnostics().is_empty() && std_json.diagnostics().is_empty(),
         "standard syntax diagnostics: log={:#?} json={:#?}",
-        standard_log.diagnostics(),
-        standard_json.diagnostics()
+        std_log.diagnostics(),
+        std_json.diagnostics()
     );
     let root_package = PackageId::new("sema-test", "0");
-    let standard_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+    let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let mut lowered = lower_package_files([
         PackageSourceUnit {
             file: root_file,
@@ -36,14 +36,14 @@ fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
             syntax: parsed.ast(),
         },
         PackageSourceUnit {
-            file: standard_log_file,
-            package: standard_package.clone(),
-            syntax: standard_log.ast(),
+            file: std_log_file,
+            package: std_package.clone(),
+            syntax: std_log.ast(),
         },
         PackageSourceUnit {
-            file: standard_json_file,
-            package: standard_package.clone(),
-            syntax: standard_json.ast(),
+            file: std_json_file,
+            package: std_package.clone(),
+            syntax: std_json.ast(),
         },
     ]);
     assert!(
@@ -53,10 +53,10 @@ fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
     );
     lowered
         .program
-        .register_package(standard_package.clone(), [], false);
+        .register_package(std_package.clone(), [], false);
     lowered
         .program
-        .register_package(root_package, [(Name::new("std"), standard_package)], true);
+        .register_package(root_package, [(Name::new("std"), std_package)], true);
     analyze(&lowered.program).diagnostics
 }
 
@@ -64,7 +64,7 @@ fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
 fn text_bytes_path_and_path_file_calls_type_check() {
     let diagnostics = analyze_source(
         r#"
-module standard_values
+module builtin_values
 
 import std.file.open_read_path
 import std.file.create_path
@@ -155,7 +155,7 @@ fn wrong() {
 }
 
 #[test]
-fn standard_value_calls_reject_wrong_shapes_and_incomplete_error_matches() {
+fn builtin_value_calls_reject_wrong_shapes_and_incomplete_error_matches() {
     let diagnostics = analyze_source(
         r#"
 module sample
@@ -190,7 +190,7 @@ fn incomplete(error PathError) {
 fn text_map_json_typed_io_and_logging_type_check() {
     let diagnostics = analyze_source(
         r#"
-module standard_values_extended
+module builtin_values_extended
 
 import std.file.try_open_read
 import std.file.try_create
@@ -339,7 +339,7 @@ fn wrong(values List[Int], wrongKeys List[(Int, Int)], entries List[(Text, Int)]
 }
 
 #[test]
-fn structured_standard_values_reject_wrong_shapes_and_open_matches() {
+fn structured_builtin_values_reject_wrong_shapes_and_open_matches() {
     let diagnostics = analyze_source(
         r#"
 module sample

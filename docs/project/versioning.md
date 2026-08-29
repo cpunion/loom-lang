@@ -22,8 +22,8 @@ writers for unreleased formats. Development history belongs in
 | Registry protocol and bundle | `1` |
 | Interpreted MIR artifact | `loom.interpreted-mir`, version `29` |
 | Portable library artifact | `loom-library`, source-package version `2` |
-| Persistent compiler cache | schema `4` |
-| Compilation-cache domain | `loom-compilation-cache-v4` |
+| Persistent compiler cache | schema `5` |
+| Compilation-cache domain | `loom-compilation-cache-v5` |
 | Interpreted final-cache layer | `final-artifact-v3` |
 | Interpreted artifact writer | `loom-interpreted-artifact-writer-v3` |
 | Portable-library final-cache layer | `portable-library-artifact-v3` |
@@ -33,7 +33,7 @@ writers for unreleased formats. Development history belongs in
 | LCIR native-object domain | `loom-lcir-native-object-v38` |
 | Checked-MIR native-object domain | `loom-checked-mir-native-object-v1` |
 | LLVM object-cache domain | `loom-llvm-object-cache-v43` |
-| Controlled quality evidence | schema `3` |
+| Controlled quality evidence | schema `4` |
 | Runtime bundle manifest | schema `2` |
 | Native runtime ABI component | `31` |
 | Coroutine ABI component | `2` |

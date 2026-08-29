@@ -6,11 +6,11 @@ use libfuzzer_sys::fuzz_target;
 use loom_core::Span;
 use loom_interpreter::{Interpreter, Value};
 
-use support::{STRUCTURED_STANDARD_SOURCE, compile};
+use support::{STRUCTURED_BUILTIN_SOURCE, compile};
 
 fuzz_target!(|input: &[u8]| {
     if input.first().copied().unwrap_or_default() & 0x80 != 0 {
-        exercise_structured_standard_values(input);
+        exercise_structured_builtin_values(input);
         return;
     }
 
@@ -92,8 +92,8 @@ fuzz_target!(|input: &[u8]| {
     assert!(compile(&rejected_source).is_err());
 });
 
-fn exercise_structured_standard_values(input: &[u8]) {
-    let program = compile(STRUCTURED_STANDARD_SOURCE).unwrap_or_else(|error| {
+fn exercise_structured_builtin_values(input: &[u8]) {
+    let program = compile(STRUCTURED_BUILTIN_SOURCE).unwrap_or_else(|error| {
         panic!("generated structured standard-value program must compile: {error}")
     });
     assert!(program.prelude.text_map.is_some());

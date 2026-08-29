@@ -7,7 +7,7 @@ pointer-stability syntax.
 The cleanup examples in
 [`examples/async-resources/tasks.loom`](../../examples/async-resources/tasks.loom) and the typed
 I/O cases in
-[`fixtures/standard-library/main.loom`](../../fixtures/standard-library/main.loom)
+[`fixtures/std/main.loom`](../../fixtures/std/main.loom)
 are executable evidence for this guide.
 
 ## Memory and resources are different

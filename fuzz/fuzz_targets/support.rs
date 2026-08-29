@@ -4,8 +4,8 @@ use loom_lowering::lower_to_mir;
 use loom_sema::analyze;
 use loom_syntax::parse_with_file;
 
-pub const STRUCTURED_STANDARD_SOURCE: &str = r#"
-module fuzz.structured_standard
+pub const STRUCTURED_BUILTIN_SOURCE: &str = r#"
+module fuzz.structured_builtin
 
 import std.file.try_open_read_path
 import std.file.try_create_path
@@ -102,31 +102,31 @@ pub fn main() {
 
 pub fn compile(source: &str) -> Result<loom_mir::CheckedProgram, String> {
     let parsed = parse_with_file(FileId(0), source);
-    let standard_int = parse_with_file(FileId(1), include_str!("../../library/std/src/int.loom"));
-    let standard_log = parse_with_file(FileId(2), include_str!("../../library/std/src/log.loom"));
-    let standard_resource = parse_with_file(
+    let std_int = parse_with_file(FileId(1), include_str!("../../library/std/src/int.loom"));
+    let std_log = parse_with_file(FileId(2), include_str!("../../library/std/src/log.loom"));
+    let std_resource = parse_with_file(
         FileId(3),
         include_str!("../../library/std/src/resource.loom"),
     );
-    let standard_json = parse_with_file(FileId(4), include_str!("../../library/std/src/json.loom"));
+    let std_json = parse_with_file(FileId(4), include_str!("../../library/std/src/json.loom"));
     if !parsed.diagnostics().is_empty() {
         return Err(format!("syntax diagnostics: {:#?}", parsed.diagnostics()));
     }
-    if !standard_int.diagnostics().is_empty()
-        || !standard_log.diagnostics().is_empty()
-        || !standard_resource.diagnostics().is_empty()
-        || !standard_json.diagnostics().is_empty()
+    if !std_int.diagnostics().is_empty()
+        || !std_log.diagnostics().is_empty()
+        || !std_resource.diagnostics().is_empty()
+        || !std_json.diagnostics().is_empty()
     {
         return Err(format!(
-            "standard-library syntax diagnostics: int={:#?}, json={:#?}, log={:#?}, resource={:#?}",
-            standard_int.diagnostics(),
-            standard_json.diagnostics(),
-            standard_log.diagnostics(),
-            standard_resource.diagnostics()
+            "std source syntax diagnostics: int={:#?}, json={:#?}, log={:#?}, resource={:#?}",
+            std_int.diagnostics(),
+            std_json.diagnostics(),
+            std_log.diagnostics(),
+            std_resource.diagnostics()
         ));
     }
     let root_package = PackageId::new("fuzz", "0");
-    let standard_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+    let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let mut lowered = lower_package_files([
         PackageSourceUnit {
             file: FileId(0),
@@ -135,23 +135,23 @@ pub fn compile(source: &str) -> Result<loom_mir::CheckedProgram, String> {
         },
         PackageSourceUnit {
             file: FileId(1),
-            package: standard_package.clone(),
-            syntax: standard_int.ast(),
+            package: std_package.clone(),
+            syntax: std_int.ast(),
         },
         PackageSourceUnit {
             file: FileId(2),
-            package: standard_package.clone(),
-            syntax: standard_log.ast(),
+            package: std_package.clone(),
+            syntax: std_log.ast(),
         },
         PackageSourceUnit {
             file: FileId(3),
-            package: standard_package.clone(),
-            syntax: standard_resource.ast(),
+            package: std_package.clone(),
+            syntax: std_resource.ast(),
         },
         PackageSourceUnit {
             file: FileId(4),
-            package: standard_package.clone(),
-            syntax: standard_json.ast(),
+            package: std_package.clone(),
+            syntax: std_json.ast(),
         },
     ]);
     if !lowered.diagnostics.is_empty() {
@@ -159,10 +159,10 @@ pub fn compile(source: &str) -> Result<loom_mir::CheckedProgram, String> {
     }
     lowered
         .program
-        .register_package(standard_package.clone(), [], false);
+        .register_package(std_package.clone(), [], false);
     lowered
         .program
-        .register_package(root_package, [(Name::new("std"), standard_package)], true);
+        .register_package(root_package, [(Name::new("std"), std_package)], true);
     let analysis = analyze(&lowered.program);
     if !analysis.diagnostics.is_empty() {
         return Err(format!("semantic diagnostics: {:#?}", analysis.diagnostics));

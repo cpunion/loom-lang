@@ -31,7 +31,7 @@ compiler-private unless the page explicitly says otherwise.
 
 - The [language reference](reference/language/README.md) defines observable
   version 0.3 syntax, typing, contracts, resources, tasks, and failures.
-- The [standard library reference](reference/standard-library/README.md)
+- The [standard library reference](reference/std/README.md)
   catalogs implemented values and imported operations.
 - The [toolchain reference](reference/toolchain/README.md) defines CLI,
   manifest, registry, artifact, cross-compilation, and cache behavior.

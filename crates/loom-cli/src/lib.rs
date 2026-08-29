@@ -1896,7 +1896,7 @@ fn cache_context(language_version: &str) -> CacheContext {
     CacheContext {
         language_version: language_version.to_owned(),
         frontend_identity,
-        standard_library_identity: loom_driver::standard_library_identity(language_version),
+        stdlib_identity: loom_driver::stdlib_identity(language_version),
         contract_mode: "checked".to_owned(),
     }
 }
@@ -2941,22 +2941,18 @@ mod tests {
     }
 
     #[test]
-    fn semantic_cache_identity_pins_embedded_loom_standard_sources() {
+    fn semantic_cache_identity_pins_embedded_loom_std_sources() {
         let context = super::cache_context(loom_mir::LOOM_LANGUAGE_VERSION);
         let Some(digest) = context
-            .standard_library_identity
+            .stdlib_identity
             .strip_prefix("loom-source-stdlib-v1/")
         else {
-            panic!("{}", context.standard_library_identity);
+            panic!("{}", context.stdlib_identity);
         };
-        assert!(
-            valid_sha256(digest),
-            "{}",
-            context.standard_library_identity,
-        );
+        assert!(valid_sha256(digest), "{}", context.stdlib_identity,);
         assert_eq!(
-            context.standard_library_identity,
-            loom_driver::standard_library_identity(loom_mir::LOOM_LANGUAGE_VERSION)
+            context.stdlib_identity,
+            loom_driver::stdlib_identity(loom_mir::LOOM_LANGUAGE_VERSION)
         );
     }
 

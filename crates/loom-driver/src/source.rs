@@ -140,13 +140,12 @@ pub enum SourceOrigin {
     FileSystem,
     /// An implementation source decoded from a portable `.loomlib` artifact.
     PortableLibrary,
-    /// A standard-library source embedded in and owned by the compiler.
-    CompilerOwnedStandardLibrary,
+    /// A source in the compiler-owned `std` package.
+    CompilerStd,
 }
 
-fn is_authoritative_compiler_standard(origin: SourceOrigin, package: Option<&PackageId>) -> bool {
-    matches!(origin, SourceOrigin::CompilerOwnedStandardLibrary)
-        && package.is_some_and(PackageId::is_compiler_std)
+fn is_authoritative_compiler_std(origin: SourceOrigin, package: Option<&PackageId>) -> bool {
+    matches!(origin, SourceOrigin::CompilerStd) && package.is_some_and(PackageId::is_compiler_std)
 }
 
 /// One source document in a snapshot.
@@ -208,17 +207,17 @@ impl SourceDocument {
         matches!(self.origin, SourceOrigin::PortableLibrary)
     }
 
-    /// Whether this document is part of the compiler-owned standard library.
+    /// Whether this document is part of the compiler-owned `std` package.
     #[must_use]
-    pub const fn is_compiler_owned(&self) -> bool {
-        matches!(self.origin, SourceOrigin::CompilerOwnedStandardLibrary)
+    pub const fn is_compiler_std(&self) -> bool {
+        matches!(self.origin, SourceOrigin::CompilerStd)
     }
 
     /// Whether both source ownership and nominal package identity identify the
-    /// compiler-distributed standard library.
+    /// compiler-distributed `std` package.
     #[must_use]
-    pub(crate) fn is_authoritative_compiler_standard(&self) -> bool {
-        is_authoritative_compiler_standard(self.origin, self.package.as_ref())
+    pub(crate) fn is_authoritative_compiler_std(&self) -> bool {
+        is_authoritative_compiler_std(self.origin, self.package.as_ref())
     }
 
     /// Whether an editor can navigate to a real backing source file.
@@ -427,7 +426,7 @@ impl SourceMap {
             paths.into_iter().enumerate()
         {
             let id = FileId(u32::try_from(index).expect("file count was checked"));
-            // Compiler-owned standard sources and portable-library payloads
+            // Compiler-owned `std` sources and portable-library payloads
             // are immutable inputs. Their synthetic paths live below the
             // project root for stable diagnostics, but an editor overlay at
             // that path must never replace trusted embedded bytes.
@@ -636,37 +635,33 @@ fn floor_char_boundary(text: &str, mut offset: usize) -> usize {
 mod provenance_tests {
     use loom_core::{LOOM_LANGUAGE_VERSION, PackageId};
 
-    use super::{SourceOrigin, is_authoritative_compiler_standard};
+    use super::{SourceOrigin, is_authoritative_compiler_std};
 
     #[test]
-    fn compiler_standard_authority_requires_origin_and_exact_package_identity() {
-        let standard = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+    fn compiler_std_authority_requires_origin_and_exact_package_identity() {
+        let compiler_std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
         let application = PackageId::new("application", "1.0.0");
 
         for (origin, package, expected) in [
-            (SourceOrigin::CompilerOwnedStandardLibrary, &standard, true),
-            (
-                SourceOrigin::CompilerOwnedStandardLibrary,
-                &application,
-                false,
-            ),
-            (SourceOrigin::FileSystem, &standard, false),
+            (SourceOrigin::CompilerStd, &compiler_std, true),
+            (SourceOrigin::CompilerStd, &application, false),
+            (SourceOrigin::FileSystem, &compiler_std, false),
             (SourceOrigin::FileSystem, &application, false),
         ] {
             assert_eq!(
-                is_authoritative_compiler_standard(origin, Some(package)),
+                is_authoritative_compiler_std(origin, Some(package)),
                 expected,
                 "origin={origin:?}, package={package}"
             );
         }
 
-        assert!(!is_authoritative_compiler_standard(
+        assert!(!is_authoritative_compiler_std(
             SourceOrigin::PortableLibrary,
-            Some(&standard),
+            Some(&compiler_std),
         ));
-        assert!(!is_authoritative_compiler_standard(
-            SourceOrigin::CompilerOwnedStandardLibrary,
-            None,
+        assert!(!is_authoritative_compiler_std(
+            SourceOrigin::CompilerStd,
+            None
         ));
     }
 }

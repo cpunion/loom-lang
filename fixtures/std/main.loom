@@ -1,4 +1,4 @@
-module standard_library
+module std_fixture
 
 import std.file.try_open_read
 import std.file.try_create

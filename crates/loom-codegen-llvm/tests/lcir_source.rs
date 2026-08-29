@@ -1375,7 +1375,7 @@ pub fn main() {
     clippy::too_many_lines,
     reason = "one gate covers the source integer parser, scalar ABI status, managed Text input, target objects, and universal-surface exclusion"
 )]
-fn scalar_standard_apis_match_interpreter_and_close_typed_targets() {
+fn scalar_builtin_apis_match_interpreter_and_close_typed_targets() {
     let source = r#"module lcir_scalar_builtins
 
 import std.float.is_finite
@@ -3595,8 +3595,8 @@ fn typed_text_maps_are_direct_exact_and_survive_forced_relocation() {
 }
 
 #[test]
-fn standard_library_text_map_segment_classifies_through_direct_lcir() {
-    let source = include_str!("../../../fixtures/standard-library/main.loom")
+fn std_text_map_segment_classifies_through_direct_lcir() {
+    let source = include_str!("../../../fixtures/std/main.loom")
         .replace("__LOOPBACK_PORT__", "1")
         .replace("__READ_LOOPBACK_PORT__", "1");
     let program = compile_source(&source);
@@ -3619,8 +3619,8 @@ fn standard_library_text_map_segment_classifies_through_direct_lcir() {
 }
 
 #[test]
-fn complete_standard_library_tests_route_through_lcir() {
-    let source = include_str!("../../../fixtures/standard-library/main.loom")
+fn complete_std_tests_route_through_lcir() {
+    let source = include_str!("../../../fixtures/std/main.loom")
         .replace("__ROUND_TRIP_PATH__", "round-trip.txt")
         .replace("__MISSING_PATH__", "missing.txt")
         .replace("__REUSE_PATH__", "reuse.txt")

@@ -574,12 +574,18 @@ literal is flattened into the same child row without an input List allocation;
 `all` and `settled` build their List result after resume. Empty, stored,
 computed, or runtime-sized List joins and first-class `any`, `settled`, or
 `race` results remain reachable `Unsupported` input and select the complete
-checked-MIR object. The frontend maps canonical, unshadowed Task API members through
-its embedded catalog to a stable `StandardLibraryItem` before
-MIR construction; LLVM never inspects their source spelling. Future trusted
-source-library definitions map to the same items. The minimum private substrate
-provides typed join/select readiness, exact result or outcome extraction, and
-structured cancellation-and-drain; public policy names are not language
+checked-MIR object. The frontend currently maps canonical, unshadowed Task API
+members through its temporary catalog to a compiler-private `TaskIntrinsic`
+before MIR construction; LLVM never inspects their source spelling. This enum
+is a transitional frontend bridge, not a standard-library identity or ABI.
+
+The completed source boundary resolves every public Task member to an ordinary
+source `DefId` in `std`, and ordinary reachability retains its body and only the
+private primitives that body calls. LLVM continues to implement typed
+join/select readiness, exact result-or-outcome extraction, and structured
+cancellation-and-drain, but it never maps a public source definition back to a
+policy enum. Moving the policies to source therefore deletes both the temporary
+catalog and `TaskIntrinsic`; public policy names do not become language
 operators.
 
 ## Direct lexical cleanup
