@@ -3268,6 +3268,9 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         | mir::Builtin::BytesGet
                         | mir::Builtin::BytesAppend
                         | mir::Builtin::BytesDecodeUtf8
+                        | mir::Builtin::PathFromText
+                        | mir::Builtin::PathAsText
+                        | mir::Builtin::PathJoin
                         | mir::Builtin::ListAdd
                         | mir::Builtin::ListLength
                         | mir::Builtin::ListGet
@@ -4035,6 +4038,7 @@ fn scan_effect_expr(
                         | mir::Builtin::TextFromUtf8Units
                         | mir::Builtin::BytesAppend
                         | mir::Builtin::BytesDecodeUtf8
+                        | mir::Builtin::PathJoin
                         | mir::Builtin::ListAdd
                         | mir::Builtin::TextMapInsert
                         | mir::Builtin::TextMapRemove
@@ -11318,6 +11322,24 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 ok_variant: 0,
                 error_variant: 1,
                 invalid_utf8_variant: 0,
+            }
+            .into(),
+            (mir::Builtin::PathFromText, [text]) => InstructionKind::PathFromText {
+                text: *text,
+                ok_variant: 0,
+                error_variant: 1,
+                contains_nul_variant: 0,
+            }
+            .into(),
+            (mir::Builtin::PathAsText, [path]) => {
+                InstructionKind::PathAsText { path: *path }.into()
+            }
+            (mir::Builtin::PathJoin, [base, child]) => InstructionKind::PathJoin {
+                base: *base,
+                child: *child,
+                ok_variant: 0,
+                error_variant: 1,
+                absolute_join_variant: 1,
             }
             .into(),
             (mir::Builtin::BytesLength, [bytes]) => {

@@ -5192,6 +5192,14 @@ impl<'program> Validator<'program> {
             );
             return None;
         };
+        if self.program.prelude.path == Some(type_id) {
+            self.push(
+                MirValidationCode::RecordShape,
+                "prelude Path values may only be established by Path.from_text or Path.join",
+                expression.span,
+                path,
+            );
+        }
         self.validate_nominal_instantiation(
             function,
             type_id,
@@ -7974,6 +7982,15 @@ impl<'program> Validator<'program> {
                 );
                 return None;
             };
+            if self.program.prelude.path == Some(type_id) {
+                self.push(
+                    MirValidationCode::InvalidPlace,
+                    "prelude Path storage is opaque; use the Path APIs",
+                    span,
+                    path,
+                );
+                return None;
+            }
             let Some(definition) = self.program.type_def(type_id) else {
                 self.invalid_type(type_id, span, path);
                 return None;

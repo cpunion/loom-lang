@@ -6,7 +6,7 @@ use loom_mir::Type;
 
 use crate::ir::{
     BYTES_TYPE_ID, DECODE_TEXT_ERROR_TYPE_ID, JSON_ERROR_TYPE_ID, JSON_TYPE_ID, LOG_LEVEL_TYPE_ID,
-    OPTION_TYPE_ID, RESULT_TYPE_ID, TEXT_MAP_TYPE_ID,
+    OPTION_TYPE_ID, PATH_ERROR_TYPE_ID, PATH_TYPE_ID, RESULT_TYPE_ID, TEXT_MAP_TYPE_ID,
 };
 use crate::{
     AwaitMode, BlockId, Constant, Effects, Function, InstanceId, InstanceRole, Instruction,
@@ -2824,6 +2824,94 @@ impl<'a> Validator<'a> {
                 *invalid_utf8_variant,
                 &path,
             ),
+            InstructionKind::PathFromText {
+                text,
+                ok_variant,
+                error_variant,
+                contains_nul_variant,
+            } => {
+                let canonical = self.canonical_path_type();
+                if canonical.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.text"),
+                        "Path construction requires canonical Path#12 as one managed Text field",
+                    );
+                }
+                self.require_known_value_type(
+                    function,
+                    *text,
+                    canonical.map(|(_, text)| text),
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.text"),
+                );
+                self.validate_path_result(
+                    function,
+                    instruction,
+                    *ok_variant,
+                    *error_variant,
+                    *contains_nul_variant,
+                    0,
+                    &path,
+                );
+            }
+            InstructionKind::PathAsText { path: value } => {
+                let canonical = self.canonical_path_type();
+                if canonical.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.path"),
+                        "Path projection requires canonical Path#12 as one managed Text field",
+                    );
+                }
+                self.require_known_value_type(
+                    function,
+                    *value,
+                    canonical.map(|(path, _)| path),
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.path"),
+                );
+                self.require_results(
+                    function,
+                    instruction,
+                    &[canonical.map(|(_, text)| text)],
+                    &path,
+                );
+            }
+            InstructionKind::PathJoin {
+                base,
+                child,
+                ok_variant,
+                error_variant,
+                absolute_join_variant,
+            } => {
+                let canonical = self.canonical_path_type();
+                if canonical.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.base"),
+                        "Path join requires canonical Path#12 as one managed Text field",
+                    );
+                }
+                for (name, value) in [("base", base), ("child", child)] {
+                    self.require_known_value_type(
+                        function,
+                        *value,
+                        canonical.map(|(path, _)| path),
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.{name}"),
+                    );
+                }
+                self.validate_path_result(
+                    function,
+                    instruction,
+                    *ok_variant,
+                    *error_variant,
+                    *absolute_join_variant,
+                    1,
+                    &path,
+                );
+            }
             InstructionKind::BytesLength { bytes: value } => {
                 if bytes.is_none() {
                     self.error(
@@ -5543,6 +5631,22 @@ impl<'a> Validator<'a> {
             .then_some(bytes)
     }
 
+    fn canonical_path_type(&self) -> Option<(ValueTypeId, ValueTypeId)> {
+        let text = self.scalar_type(&Type::Text)?;
+        let text_type = self.program.representations.value_type(text)?;
+        if text_type.kind() != ValueTypeKind::Direct
+            || self.program.representations.repr(text_type.repr()) != Some(&Repr::ManagedPointer)
+        {
+            return None;
+        }
+        let semantic = Type::Nominal(PATH_TYPE_ID, Vec::new());
+        let path = self.scalar_type(&semantic)?;
+        let path_type = self.program.representations.value_type(path)?;
+        (path_type.kind() == ValueTypeKind::InvariantProduct
+            && self.product_fields(path) == Some(&[text]))
+        .then_some((path, text))
+    }
+
     fn product_fields(&self, ty: ValueTypeId) -> Option<&[ValueTypeId]> {
         let value_type = self.program.representations.value_type(ty)?;
         let Repr::Product(product) = self
@@ -5880,6 +5984,157 @@ impl<'a> Validator<'a> {
 
     #[expect(
         clippy::too_many_arguments,
+        reason = "the Path opcode carries its complete closed-result identity"
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "canonical Path, PathError, and nested Result shapes are checked atomically"
+    )]
+    fn validate_path_result(
+        &mut self,
+        function: &Function,
+        instruction: &Instruction,
+        ok_variant: u32,
+        error_variant: u32,
+        path_error_variant: u32,
+        expected_path_error_variant: u32,
+        path: &str,
+    ) {
+        self.require_results(function, instruction, &[None], path);
+
+        let canonical_path = self.canonical_path_type().map(|(path, _)| path);
+        if canonical_path.is_none() {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.result[0]"),
+                "Path operation requires canonical Path#12 as one managed Text field",
+            );
+        }
+        let path_semantic = Type::Nominal(PATH_TYPE_ID, Vec::new());
+        let error_semantic = Type::Nominal(PATH_ERROR_TYPE_ID, Vec::new());
+        let result_semantic =
+            Type::Nominal(RESULT_TYPE_ID, vec![path_semantic, error_semantic.clone()]);
+        let Some(result_ty) = instruction
+            .results
+            .first()
+            .and_then(|result| function.value(*result))
+            .map(Value::ty)
+        else {
+            return;
+        };
+        if self
+            .program
+            .representations
+            .value_type(result_ty)
+            .is_none_or(|value_type| value_type.semantic() != &result_semantic)
+            || self.scalar_type(&result_semantic) != Some(result_ty)
+        {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.result[0]"),
+                "Path operation result must be canonical prelude Result#1[Path#12, PathError#14]",
+            );
+        }
+
+        let Some(result_sum) = self.sum_repr(result_ty) else {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.result[0]"),
+                "Path operation result must use a closed sum representation",
+            );
+            return;
+        };
+        if (ok_variant, error_variant) != (0, 1) {
+            self.error(
+                ValidationCode::InstructionShape,
+                format!("{path}.variants"),
+                "Path operation requires canonical Ok=0 and Err=1 variants",
+            );
+        }
+        let variants = self
+            .program
+            .representations
+            .sum(result_sum)
+            .map(crate::SumRepr::variants)
+            .unwrap_or_default();
+        if variants.len() != 2 {
+            self.error(
+                ValidationCode::InstructionShape,
+                format!("{path}.result[0]"),
+                "Path Result must contain exactly two variants",
+            );
+            return;
+        }
+        if canonical_path.is_none_or(|path| variants[0].fields() != [path]) {
+            self.error(
+                ValidationCode::InstructionShape,
+                format!("{path}.ok_variant"),
+                "Path success variant must carry exactly canonical Path#12",
+            );
+        }
+
+        let error_ty = variants[1].fields().first().copied();
+        if variants[1].fields().len() != 1
+            || error_ty.is_none_or(|error_ty| {
+                self.program
+                    .representations
+                    .value_type(error_ty)
+                    .is_none_or(|value_type| {
+                        value_type.semantic() != &error_semantic
+                            || value_type.kind() != ValueTypeKind::Direct
+                    })
+                    || self.scalar_type(&error_semantic) != Some(error_ty)
+            })
+        {
+            self.error(
+                ValidationCode::InstructionShape,
+                format!("{path}.error_variant"),
+                "Path error variant must carry exactly canonical direct PathError#14",
+            );
+            return;
+        }
+        let Some(error_sum) = error_ty.and_then(|error_ty| self.sum_repr(error_ty)) else {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.error_variant"),
+                "PathError#14 must use a closed sum representation",
+            );
+            return;
+        };
+        let exact_error = self
+            .program
+            .representations
+            .sum(error_sum)
+            .is_some_and(|sum| {
+                sum.variants().len() == 2
+                    && sum
+                        .variants()
+                        .iter()
+                        .all(|variant| variant.fields().is_empty())
+            });
+        if !exact_error {
+            self.error(
+                ValidationCode::InstructionShape,
+                format!("{path}.error_variant"),
+                "PathError#14 must contain only ContainsNul=0 and AbsoluteJoin=1 without payload",
+            );
+        }
+        if path_error_variant != expected_path_error_variant {
+            let expected = if expected_path_error_variant == 0 {
+                "ContainsNul=0"
+            } else {
+                "AbsoluteJoin=1"
+            };
+            self.error(
+                ValidationCode::InstructionShape,
+                format!("{path}.path_error_variant"),
+                format!("Path operation requires canonical {expected}"),
+            );
+        }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
         reason = "the Bytes decode opcode carries its complete closed-result identity"
     )]
     fn validate_bytes_decode_utf8_instruction(
@@ -6017,14 +6272,17 @@ impl<'a> Validator<'a> {
                 self.program
                     .representations
                     .value_type(error_ty)
-                    .is_none_or(|value_type| value_type.semantic() != &error_semantic)
+                    .is_none_or(|value_type| {
+                        value_type.semantic() != &error_semantic
+                            || value_type.kind() != ValueTypeKind::Direct
+                    })
                     || self.scalar_type(&error_semantic) != Some(error_ty)
             })
         {
             self.error(
                 ValidationCode::InstructionShape,
                 format!("{path}.error_variant"),
-                "UTF-8 decoding error variant must carry exactly canonical DecodeTextError#13",
+                "UTF-8 decoding error variant must carry exactly canonical direct DecodeTextError#13",
             );
             return;
         }
@@ -6390,6 +6648,7 @@ fn instruction_direct_effects(kind: &InstructionKind) -> Effects {
         InstructionKind::TextConcat { .. }
             | InstructionKind::TextGet { .. }
             | InstructionKind::TextFromUtf8Units { .. }
+            | InstructionKind::PathJoin { .. }
             | InstructionKind::BytesAppend { .. }
             | InstructionKind::BytesDecodeUtf8 { .. }
             | InstructionKind::FormatFloat { .. }

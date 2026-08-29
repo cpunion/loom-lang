@@ -273,7 +273,8 @@ pub struct ValueType {
 /// `Transparent` values retain a distinct nominal [`ValueTypeId`] while
 /// sharing their established base value's physical [`ReprId`].
 /// `InvariantProduct` values use an ordinary product representation, but may
-/// only be created by the dedicated proven-construction instruction.
+/// only be created by a dedicated proof-establishing instruction. This also
+/// protects compiler-known semantic invariants such as canonical `Path`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ValueTypeKind {
     Direct,
@@ -1194,6 +1195,190 @@ mod tests {
             error.code() == ValidationCode::TypeMismatch
                 && error.message().contains("canonical List[Int]")
         }));
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one hostile artifact mutates both Path and nested Result representations atomically"
+    )]
+    fn path_opcodes_reject_noncanonical_path_and_result_alternatives() {
+        let origin = Origin::synthetic(MirFunctionId(99));
+        let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        let text = builder
+            .add_managed_text_type()
+            .expect("canonical managed Text");
+        let path_semantic = Type::Nominal(crate::PATH_TYPE_ID, Vec::new());
+        let path = builder
+            .add_invariant_record_type(path_semantic.clone(), &[Type::Text])
+            .expect("Path");
+        let error_semantic = Type::Nominal(TypeId(14), Vec::new());
+        builder
+            .add_sum_type(error_semantic.clone(), &[Box::new([]), Box::new([])])
+            .expect("PathError");
+        let result_semantic = Type::Nominal(
+            TypeId(1),
+            vec![path_semantic.clone(), error_semantic.clone()],
+        );
+        let result = builder
+            .add_sum_type(
+                result_semantic,
+                &[Box::from([path_semantic]), Box::from([error_semantic])],
+            )
+            .expect("Result[Path, PathError]");
+        let unit = builder.type_id(&Type::Unit).expect("Unit");
+        let root = builder
+            .declare_function(
+                origin,
+                "path.noncanonical",
+                Signature::new([path], unit),
+                Effects::MAY_COLLECT.with_implications(),
+            )
+            .expect("function");
+        let (path_value, from_value, join_value) = {
+            let mut function = builder.function(root).expect("function builder");
+            let entry = function.create_block().expect("entry");
+            function.set_entry(entry).expect("set entry");
+            let path_value = function
+                .append_block_parameter(entry, path)
+                .expect("Path parameter");
+            let rendered = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::PathAsText { path: path_value },
+                    &[text],
+                    origin,
+                )
+                .expect("Path.as_text")[0];
+            let from_value = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::PathFromText {
+                        text: rendered,
+                        ok_variant: 0,
+                        error_variant: 1,
+                        contains_nul_variant: 0,
+                    },
+                    &[result],
+                    origin,
+                )
+                .expect("Path.from_text")[0];
+            let join_value = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::PathJoin {
+                        base: path_value,
+                        child: path_value,
+                        ok_variant: 0,
+                        error_variant: 1,
+                        absolute_join_variant: 1,
+                    },
+                    &[result],
+                    origin,
+                )
+                .expect("Path.join")[0];
+            let returned = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::Constant(Constant::Unit),
+                    &[unit],
+                    origin,
+                )
+                .expect("Unit")[0];
+            function
+                .terminate(
+                    entry,
+                    Terminator::new(TerminatorKind::Return(returned), origin),
+                )
+                .expect("return");
+            (path_value, from_value, join_value)
+        };
+
+        let mut program = builder.finish();
+        validate_program(&program).expect("canonical Path operations");
+
+        let canonical_path = program.representations.types[path.index()].clone();
+        let Repr::Product(path_product) =
+            program.representations.reprs[canonical_path.repr.index()]
+        else {
+            panic!("Path must be a product")
+        };
+        let alternative_product =
+            ProductReprId::from_index(program.brand, program.representations.products.len())
+                .expect("alternative Path product identity");
+        program
+            .representations
+            .products
+            .push(program.representations.products[path_product.index()].clone());
+        let alternative_path_repr =
+            ReprId::from_index(program.brand, program.representations.reprs.len())
+                .expect("alternative Path repr identity");
+        program
+            .representations
+            .reprs
+            .push(Repr::Product(alternative_product));
+        let alternative_path =
+            ValueTypeId::from_index(program.brand, program.representations.types.len())
+                .expect("alternative Path type identity");
+        program.representations.types.push(ValueType {
+            semantic: canonical_path.semantic,
+            repr: alternative_path_repr,
+            kind: canonical_path.kind,
+        });
+
+        let canonical_result = program.representations.types[result.index()].clone();
+        let Repr::Sum(result_sum) = program.representations.reprs[canonical_result.repr.index()]
+        else {
+            panic!("Result must be a sum")
+        };
+        let alternative_sum =
+            SumReprId::from_index(program.brand, program.representations.sums.len())
+                .expect("alternative Result sum identity");
+        program
+            .representations
+            .sums
+            .push(program.representations.sums[result_sum.index()].clone());
+        let alternative_result_repr =
+            ReprId::from_index(program.brand, program.representations.reprs.len())
+                .expect("alternative Result repr identity");
+        program
+            .representations
+            .reprs
+            .push(Repr::Sum(alternative_sum));
+        let alternative_result =
+            ValueTypeId::from_index(program.brand, program.representations.types.len())
+                .expect("alternative Result type identity");
+        program.representations.types.push(ValueType {
+            semantic: canonical_result.semantic,
+            repr: alternative_result_repr,
+            kind: canonical_result.kind,
+        });
+
+        let function = &mut program.functions[root.index()];
+        function.signature = Signature::new([alternative_path], unit);
+        function.values[path_value.index()].ty = alternative_path;
+        function.values[from_value.index()].ty = alternative_result;
+        function.values[join_value.index()].ty = alternative_result;
+
+        let errors = validate_program(&program)
+            .expect_err("noncanonical Path and Result alternatives must fail closed");
+        assert!(
+            errors.as_slice().iter().any(|error| {
+                error.code() == ValidationCode::TypeMismatch
+                    && (error.path() == "function[0].instruction[0].path"
+                        || error.path() == "function[0].instruction[2].base")
+            }),
+            "{errors:#?}"
+        );
+        assert!(
+            errors.as_slice().iter().any(|error| {
+                error.code() == ValidationCode::TypeMismatch
+                    && error
+                        .message()
+                        .contains("canonical prelude Result#1[Path#12, PathError#14]")
+            }),
+            "{errors:#?}"
+        );
     }
 
     #[test]

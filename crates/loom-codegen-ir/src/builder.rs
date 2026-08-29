@@ -310,10 +310,11 @@ impl ProgramBuilder {
             })
     }
 
-    /// Adds a concrete record instantiation whose invariant has been proved by
-    /// semantic analysis. Its physical layout is an ordinary direct product,
-    /// but independent validation prevents the ordinary product-construction
-    /// instruction from creating values of this type.
+    /// Adds a concrete record instantiation whose invariant is established by
+    /// semantic analysis or a compiler-known dedicated constructor. Its
+    /// physical layout is an ordinary direct product, but independent
+    /// validation prevents ordinary product construction from creating values
+    /// of this type.
     ///
     /// # Errors
     ///
