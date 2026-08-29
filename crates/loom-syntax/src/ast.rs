@@ -9,15 +9,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SourceFile {
-    pub module: Option<ModuleDecl>,
     pub imports: Vec<ImportDecl>,
     pub declarations: Vec<Decl>,
-    pub range: TextRange,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ModuleDecl {
-    pub name: Path,
     pub range: TextRange,
 }
 

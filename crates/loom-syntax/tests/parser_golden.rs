@@ -23,9 +23,8 @@ fn assert_clean(source: &str) -> loom_syntax::Parse {
 
 #[test]
 fn parses_postfix_await_as_a_chainable_keyword() {
-    let parsed = assert_clean(
-        "module tasks\nasync fn child() Int { 1 }\nasync fn parent() Int { child().await }\n",
-    );
+    let parsed =
+        assert_clean("async fn child() Int { 1 }\nasync fn parent() Int { child().await }\n");
     let DeclKind::Function(parent) = &parsed.ast().declarations[1].kind else {
         panic!("expected parent function");
     };
@@ -34,18 +33,16 @@ fn parses_postfix_await_as_a_chainable_keyword() {
     };
     assert!(matches!(expression.kind, ExprKind::Await(_)));
 
-    let invalid_prefix = parse(
-        "module tasks\nasync fn child() Int { 1 }\nasync fn parent() Int { await child() }\n",
-    );
+    let invalid_prefix =
+        parse("async fn child() Int { 1 }\nasync fn parent() Int { await child() }\n");
     assert!(codes(&invalid_prefix).contains(&"UnexpectedToken"));
     assert_eq!(
         invalid_prefix.reconstructed(),
-        "module tasks\nasync fn child() Int { 1 }\nasync fn parent() Int { await child() }\n"
+        "async fn child() Int { 1 }\nasync fn parent() Int { await child() }\n"
     );
 
-    let propagated = assert_clean(
-        "module tasks\nasync fn child() Int { 1 }\nasync fn parent() Int { child().await? }\n",
-    );
+    let propagated =
+        assert_clean("async fn child() Int { 1 }\nasync fn parent() Int { child().await? }\n");
     let DeclKind::Function(parent) = &propagated.ast().declarations[1].kind else {
         panic!("expected parent function");
     };
@@ -57,18 +54,14 @@ fn parses_postfix_await_as_a_chainable_keyword() {
     };
     assert!(matches!(awaited.kind, ExprKind::Await(_)));
 
-    let forced = parse(
-        "module tasks\nasync fn child() Int { 1 }\nasync fn parent() Int { child().await! }\n",
-    );
+    let forced = parse("async fn child() Int { 1 }\nasync fn parent() Int { child().await! }\n");
     assert!(codes(&forced).contains(&"UnexpectedToken"));
 }
 
 #[test]
 fn parses_the_core_surface_end_to_end() {
     let parsed = assert_clean(
-        r"module shop.order
-
-import std.float.is_finite
+        r"import std.float.is_finite
 
 pub type Price = Float where self >= 0.0
 
@@ -118,8 +111,7 @@ test fn total_stays_positive() {
 #[test]
 fn supports_comma_or_newline_in_braced_lists() {
     let parsed = assert_clean(
-        r"module lists
-record Empty {}
+        r"record Empty {}
 record Pair { left Int, right Int }
 enum EmptyEnum {}
 enum Choice { One, Two(Text) }
@@ -137,8 +129,7 @@ fn choose(value Choice) Int {
 #[test]
 fn parses_generic_inherent_impl() {
     let parsed = assert_clean(
-        r"module generic
-record Pair[T] { value T }
+        r"record Pair[T] { value T }
 impl[T] Pair[T] {
     method get(self) T { self.value }
 }
@@ -154,9 +145,7 @@ impl[T] Pair[T] {
 #[test]
 fn parses_static_concepts_conformance_and_simple_dyn() {
     let parsed = assert_clean(
-        r"module concepts
-
-pub concept Zero {
+        r"pub concept Zero {
     static method zero() Self
 }
 
@@ -184,8 +173,7 @@ fn consume(source dyn Source[Item = Text]) {}
 #[test]
 fn concept_parameter_and_explicit_dyn_are_distinct_ast_nodes() {
     let parsed = assert_clean(
-        r"module views
-dyn concept Formatter {
+        r"dyn concept Formatter {
     associated type Error
     method format(self, text Text) Result[Text, Self.Error]
 }
@@ -210,7 +198,7 @@ fn use(
 
 #[test]
 fn imports_after_declarations_are_diagnosed_without_being_lost() {
-    let parsed = parse("module ordering\nrecord A {}\nimport other.B\nrecord C {}\n");
+    let parsed = parse("record A {}\nimport other.B\nrecord C {}\n");
     assert!(codes(&parsed).contains(&"UnexpectedToken"));
     assert_eq!(parsed.ast().imports.len(), 1);
     assert_eq!(parsed.ast().declarations.len(), 2);
@@ -218,15 +206,14 @@ fn imports_after_declarations_are_diagnosed_without_being_lost() {
 
 #[test]
 fn constrained_type_requires_where() {
-    let parsed = parse("module types\ntype Price = Float\nrecord StillHere {}\n");
+    let parsed = parse("type Price = Float\nrecord StillHere {}\n");
     assert!(codes(&parsed).contains(&"UnexpectedToken"));
     assert_eq!(parsed.ast().declarations.len(), 2);
 }
 
 #[test]
 fn invariant_is_unique_and_must_follow_fields() {
-    let parsed =
-        parse("module records\nrecord Bad {\n invariant true\n late Int\n invariant false\n}\n");
+    let parsed = parse("record Bad {\n invariant true\n late Int\n invariant false\n}\n");
     let found = codes(&parsed);
     assert!(
         found
@@ -239,7 +226,7 @@ fn invariant_is_unique_and_must_follow_fields() {
 
 #[test]
 fn requires_must_precede_ensures_but_both_are_retained() {
-    let parsed = parse("module contracts\nfn bad()\n ensures result == Unit\n requires true\n{}\n");
+    let parsed = parse("fn bad()\n ensures result == Unit\n requires true\n{}\n");
     assert!(codes(&parsed).contains(&"UnexpectedToken"));
     let DeclKind::Function(function) = &parsed.ast().declarations[0].kind else {
         panic!("expected function");
@@ -250,8 +237,7 @@ fn requires_must_precede_ensures_but_both_are_retained() {
 #[test]
 fn every_callable_uses_the_fixed_implicit_unit_return() {
     let parsed = assert_clean(
-        r"module returns
-record R {}
+        r"record R {}
 
 fn private() { return }
 pub fn public() {}
@@ -305,8 +291,7 @@ impl C for R {
 #[test]
 fn explicit_unit_return_annotations_are_rejected_for_every_callable_kind() {
     const MESSAGE: &str = "`Unit` return types are implicit; omit `Unit` after the parameter list";
-    let source = r"module rejected
-record R {}
+    let source = r"record R {}
 
 fn privateFunction() Unit {}
 pub fn publicFunction() (Unit) {}
@@ -365,8 +350,7 @@ impl C for R {
 #[test]
 fn direct_callable_tail_unit_is_rejected_for_functions_and_methods() {
     const MESSAGE: &str = "a Unit-returning callable must omit the final bare Unit expression";
-    let source = r"module rejected
-record R {}
+    let source = r"record R {}
 
 fn function() { Unit }
 async fn asynchronous() { (Unit) }
@@ -413,7 +397,7 @@ impl C for R {
 
 #[test]
 fn unit_callable_diagnostics_recover_losslessly() {
-    let source = "module recovery\nfn rejected() (Unit) { Unit }\nfn good() {}\n";
+    let source = "fn rejected() (Unit) { Unit }\nfn good() {}\n";
     let parsed = parse(source);
     assert_eq!(parsed.reconstructed(), source);
     assert!(parsed.is_valid_for_source(source));
@@ -437,8 +421,7 @@ fn unit_callable_diagnostics_recover_losslessly() {
 #[test]
 fn unit_remains_legal_outside_callable_return_sugar() {
     assert_clean(
-        r"module legal
-record Holder { value Unit }
+        r"record Holder { value Unit }
 enum MaybeUnit { Some(Unit), None }
 
 fn values(value Unit, task Task[Unit], outcome Result[Unit, Error]) Result[Unit, Error] {
@@ -465,8 +448,7 @@ concept C {
 
 #[test]
 fn if_without_else_does_not_consume_the_next_statement_boundary() {
-    let parsed =
-        assert_clean("module flow\nfn run(flag Bool) {\n if flag { Unit }\n assert true\n}\n");
+    let parsed = assert_clean("fn run(flag Bool) {\n if flag { Unit }\n assert true\n}\n");
     let DeclKind::Function(function) = &parsed.ast().declarations[0].kind else {
         panic!("expected function");
     };
@@ -476,23 +458,21 @@ fn if_without_else_does_not_consume_the_next_statement_boundary() {
 #[test]
 fn if_and_match_require_parentheses_around_record_literal_scrutinees() {
     assert_clean(
-        r"module control
-record Flag { enabled Bool }
+        r"record Flag { enabled Bool }
 fn check() {
     if (Flag { enabled = true }) { Unit }
     match (Flag { enabled = false }) { _ => Unit }
 }
 ",
     );
-    let bad = parse(
-        "module control\nrecord Flag { enabled Bool }\nfn check() { if Flag { enabled = true } { Unit } }\n",
-    );
+    let bad =
+        parse("record Flag { enabled Bool }\nfn check() { if Flag { enabled = true } { Unit } }\n");
     assert!(bad.has_errors());
 }
 
 #[test]
 fn comparison_precedence_is_stable() {
-    let parsed = assert_clean("module precedence\nfn value() Bool { 1 + 2 * 3 == 7 || false }\n");
+    let parsed = assert_clean("fn value() Bool { 1 + 2 * 3 == 7 || false }\n");
     let DeclKind::Function(function) = &parsed.ast().declarations[0].kind else {
         panic!("expected function");
     };
@@ -518,21 +498,20 @@ fn comparison_precedence_is_stable() {
 
 #[test]
 fn comparisons_are_non_associative() {
-    let parsed = parse("module compare\nfn bad(a Int, b Int, c Int) Bool { a < b < c }\n");
+    let parsed = parse("fn bad(a Int, b Int, c Int) Bool { a < b < c }\n");
     assert!(codes(&parsed).contains(&"ChainedComparison"));
 }
 
 #[test]
 fn negative_number_is_not_a_literal_pattern() {
-    let parsed = parse("module patterns\nfn f(x Int) Int { match x { -1 => 0, _ => 1 } }\n");
+    let parsed = parse("fn f(x Int) Int { match x { -1 => 0, _ => 1 } }\n");
     assert!(codes(&parsed).contains(&"UnexpectedToken"));
 }
 
 #[test]
 fn name_patterns_remain_unresolved_without_casing_heuristics() {
-    let parsed = assert_clean(
-        "module patterns\nfn f(x Option[Int]) Int { match x { Some(value) => value, none => 0 } }\n",
-    );
+    let parsed =
+        assert_clean("fn f(x Option[Int]) Int { match x { Some(value) => value, none => 0 } }\n");
     let DeclKind::Function(function) = &parsed.ast().declarations[0].kind else {
         panic!("expected function");
     };
@@ -548,14 +527,14 @@ fn name_patterns_remain_unresolved_without_casing_heuristics() {
 
 #[test]
 fn local_type_annotations_are_rejected_locally() {
-    let parsed = parse("module locals\nfn f() { let value: Int = 1 }\n");
+    let parsed = parse("fn f() { let value: Int = 1 }\n");
     assert!(codes(&parsed).contains(&"UnexpectedToken"));
     assert_eq!(parsed.ast().declarations.len(), 1);
 }
 
 #[test]
 fn malformed_top_level_declaration_recovers_at_full_start_sequence() {
-    let parsed = parse("module recovery\nnoise that is not a declaration\npub fn good() {}\n");
+    let parsed = parse("noise that is not a declaration\npub fn good() {}\n");
     assert!(codes(&parsed).contains(&"UnexpectedToken"));
     let good = parsed
         .ast()
@@ -572,7 +551,7 @@ fn malformed_top_level_declaration_recovers_at_full_start_sequence() {
 
 #[test]
 fn top_level_recovery_ignores_an_unclosed_parenthesis() {
-    let source = "module recovery\nfn broken(\npub fn good() {}\n";
+    let source = "fn broken(\npub fn good() {}\n";
     let parsed = parse(source);
     assert!(codes(&parsed).contains(&"UnexpectedToken"));
     assert!(parsed.ast().declarations.iter().any(|decl| {
@@ -583,8 +562,7 @@ fn top_level_recovery_ignores_an_unclosed_parenthesis() {
 
 #[test]
 fn impl_recovery_keeps_the_next_complete_method() {
-    let source = r"module recovery
-record R {}
+    let source = r"record R {}
 impl R {
     method broken(self) {
         return
@@ -608,8 +586,7 @@ impl R {
 
 #[test]
 fn impl_recovery_ignores_an_unclosed_method_parameter_list() {
-    let source = r"module recovery
-record R {}
+    let source = r"record R {}
 impl R {
     method broken(
     method good(self) {}
@@ -632,7 +609,7 @@ impl R {
 
 #[test]
 fn lexical_errors_are_local_and_later_declarations_survive() {
-    let source = "module strings\nfn broken() Text { \"oops\n}\nfn good() {}\n";
+    let source = "fn broken() Text { \"oops\n}\nfn good() {}\n";
     let parsed = parse(source);
     assert!(codes(&parsed).contains(&"NewlineInString"));
     assert!(parsed.ast().declarations.iter().any(|decl| {
@@ -642,15 +619,29 @@ fn lexical_errors_are_local_and_later_declarations_survive() {
 }
 
 #[test]
-fn missing_module_is_a_stable_diagnostic() {
-    let parsed = parse("record R {}\n");
-    assert!(codes(&parsed).contains(&"MissingModuleDeclaration"));
+fn source_file_needs_no_module_header() {
+    let parsed = assert_clean("record R {}\n");
     assert_eq!(parsed.ast().declarations.len(), 1);
 }
 
 #[test]
+fn obsolete_module_header_has_no_special_diagnostic() {
+    let parsed = parse("module old.name\nrecord R {}\n");
+    assert_eq!(codes(&parsed), vec!["UnexpectedToken"]);
+    assert_eq!(parsed.ast().declarations.len(), 2);
+    assert!(matches!(
+        parsed.ast().declarations[0].kind,
+        DeclKind::Error(_)
+    ));
+    assert!(matches!(
+        parsed.ast().declarations[1].kind,
+        DeclKind::Record(_)
+    ));
+}
+
+#[test]
 fn bare_return_is_syntactically_accepted() {
-    let parsed = assert_clean("module returns\nfn stop() { return }\n");
+    let parsed = assert_clean("fn stop() { return }\n");
     let DeclKind::Function(function) = &parsed.ast().declarations[0].kind else {
         panic!("expected function");
     };
@@ -663,7 +654,7 @@ fn bare_return_is_syntactically_accepted() {
 #[test]
 fn discard_is_a_statement_with_an_expression_operand() {
     let parsed = assert_clean(
-        "module discards\nfn value() Int { 1 }\nfn run() {\n    discard value()\n    discard 1 + 2\n}\n",
+        "fn value() Int { 1 }\nfn run() {\n    discard value()\n    discard 1 + 2\n}\n",
     );
     let DeclKind::Function(function) = &parsed.ast().declarations[1].kind else {
         panic!("expected function");
@@ -678,6 +669,6 @@ fn discard_is_a_statement_with_an_expression_operand() {
     };
     assert!(matches!(binary.kind, ExprKind::Binary { .. }));
 
-    let nested = parse("module discards\nfn run() { let value = discard 1 }\n");
+    let nested = parse("fn run() { let value = discard 1 }\n");
     assert!(codes(&nested).contains(&"UnexpectedToken"));
 }

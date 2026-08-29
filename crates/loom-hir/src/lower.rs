@@ -21,7 +21,7 @@ pub struct SourceUnit<'a> {
     pub syntax: &'a syntax::SourceFile,
 }
 
-/// A parsed file with a caller-validated resolved package identity.
+/// A parsed file with caller-validated resolved package and module identities.
 ///
 /// This is a trusted compiler-embedding boundary. [`PackageId`] is nominal
 /// identity rather than proof of source ownership, so callers accepting
@@ -31,6 +31,7 @@ pub struct SourceUnit<'a> {
 pub struct PackageSourceUnit<'a> {
     pub file: FileId,
     pub package: PackageId,
+    pub module: ModuleName,
     pub syntax: &'a syntax::SourceFile,
 }
 
@@ -48,6 +49,7 @@ pub fn lower_files<'a>(files: impl IntoIterator<Item = SourceUnit<'a>>) -> Lower
     lower_package_files(files.into_iter().map(|unit| PackageSourceUnit {
         file: unit.file,
         package: PackageId::standalone(),
+        module: ModuleName::new("standalone"),
         syntax: unit.syntax,
     }))
 }
@@ -80,19 +82,11 @@ pub fn lower_package_files<'a>(
             ));
             continue;
         }
-        let Some(declaration) = &unit.syntax.module else {
-            // The parser already emits ExpectedModule. Keeping the file out of
-            // HIR prevents a made-up module identity from leaking downstream.
-            continue;
-        };
-        if declaration.name.segments.is_empty() {
-            continue;
-        }
         let module = context.program.intern_package_module(
             unit.package.clone(),
-            ModuleName::new(declaration.name.as_string()),
+            unit.module.clone(),
             unit.file,
-            span(unit.file, declaration.range),
+            span(unit.file, unit.syntax.range),
         );
         modules.insert(unit.file, module);
     }
@@ -1058,21 +1052,18 @@ fn lower_binary(operator: syntax::BinaryOp) -> crate::BinaryOp {
 
 #[cfg(test)]
 mod tests {
-    use loom_core::FileId;
+    use loom_core::{FileId, ModuleName, PackageId};
     use loom_syntax::parse_with_file;
 
-    use super::{SourceUnit, lower_files};
+    use super::{PackageSourceUnit, SourceUnit, lower_files, lower_package_files};
     use crate::{DefinitionKind, Expr, Pattern, Statement};
 
     #[test]
     fn lowering_is_deterministic_and_keeps_pattern_name_unresolved() {
-        let first = parse_with_file(
-            FileId(4),
-            "module sample\n\nenum Maybe[T] {\n    None\n    Some(T)\n}\n",
-        );
+        let first = parse_with_file(FileId(4), "enum Maybe[T] {\n    None\n    Some(T)\n}\n");
         let second = parse_with_file(
             FileId(2),
-            "module sample\n\nfn unwrap[T](value Maybe[T], fallback T) T {\n    match value {\n        Some(item) => item\n        None => fallback\n    }\n}\n",
+            "fn unwrap[T](value Maybe[T], fallback T) T {\n    match value {\n        Some(item) => item\n        None => fallback\n    }\n}\n",
         );
         assert!(first.diagnostics().is_empty(), "{:?}", first.diagnostics());
         assert!(
@@ -1121,12 +1112,46 @@ mod tests {
     }
 
     #[test]
+    fn package_lowering_uses_the_callers_directory_module() {
+        let root = parse_with_file(FileId(1), "record Root {}\n");
+        let child = parse_with_file(FileId(2), "record Child {}\n");
+        assert!(root.diagnostics().is_empty(), "{:?}", root.diagnostics());
+        assert!(child.diagnostics().is_empty(), "{:?}", child.diagnostics());
+
+        let package = PackageId::new("shop", "1.0.0");
+        let lowered = lower_package_files([
+            PackageSourceUnit {
+                file: FileId(1),
+                package: package.clone(),
+                module: ModuleName::new("shop"),
+                syntax: root.ast(),
+            },
+            PackageSourceUnit {
+                file: FileId(2),
+                package,
+                module: ModuleName::new("shop.orders"),
+                syntax: child.ast(),
+            },
+        ]);
+
+        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+        let root = lowered
+            .program
+            .module_by_name(&ModuleName::new("shop"))
+            .expect("root directory module");
+        let child = lowered
+            .program
+            .module_by_name(&ModuleName::new("shop.orders"))
+            .expect("child directory module");
+        assert_eq!(lowered.program.modules[root].files, vec![FileId(1)]);
+        assert_eq!(lowered.program.modules[child].files, vec![FileId(2)]);
+    }
+
+    #[test]
     fn omitted_returns_remain_fixed_implicit_unit_markers() {
         let parsed = parse_with_file(
             FileId(0),
-            r"module returns
-
-record R {}
+            r"record R {}
 
 pub fn omitted() { return }
 async fn omittedAsync() {}
@@ -1185,7 +1210,7 @@ impl C for R {
     fn discard_lowers_to_a_distinct_statement() {
         let parsed = parse_with_file(
             FileId(0),
-            "module discards\nfn value() Int { 1 }\nfn run() { discard value() }\n",
+            "fn value() Int { 1 }\nfn run() { discard value() }\n",
         );
         assert!(
             parsed.diagnostics().is_empty(),
@@ -1226,9 +1251,7 @@ impl C for R {
     fn task_library_calls_remain_ordinary_method_calls_in_hir() {
         let parsed = parse_with_file(
             FileId(0),
-            r"module task_calls
-
-fn calls(task Task[Int]) {
+            r"fn calls(task Task[Int]) {
     discard Task.sleep(1)
     discard Task.all(task)
     discard Task.settled(task)

@@ -51,50 +51,50 @@ fn nesting_contract_is_versioned_and_has_an_exact_boundary() {
     assert_eq!(SYNTAX_NESTING_LIMIT_VERSION, 2);
 
     let at_limit = format!(
-        "module boundary\ntype Deep = Bool where {}true\nrecord Good {{}}\n",
+        "type Deep = Bool where {}true\nrecord Good {{}}\n",
         "-".repeat(MAX_SYNTAX_NESTING)
     );
     assert_at_limit_and_recovered(&at_limit);
 
     let beyond_limit = format!(
-        "module boundary\ntype Deep = Bool where {}true\nrecord Good {{}}\n",
+        "type Deep = Bool where {}true\nrecord Good {{}}\n",
         "-".repeat(MAX_SYNTAX_NESTING + 1)
     );
     assert_limited_and_recovered(&beyond_limit);
 
     let parentheses_at = format!(
-        "module boundary\ntype Deep = Bool where {}true{}\nrecord Good {{}}\n",
+        "type Deep = Bool where {}true{}\nrecord Good {{}}\n",
         "(".repeat(MAX_SYNTAX_NESTING),
         ")".repeat(MAX_SYNTAX_NESTING)
     );
     assert_at_limit_and_recovered(&parentheses_at);
     let parentheses_beyond = format!(
-        "module boundary\ntype Deep = Bool where {}true{}\nrecord Good {{}}\n",
+        "type Deep = Bool where {}true{}\nrecord Good {{}}\n",
         "(".repeat(MAX_SYNTAX_NESTING + 1),
         ")".repeat(MAX_SYNTAX_NESTING + 1)
     );
     assert_limited_and_recovered(&parentheses_beyond);
 
     let generic_at = format!(
-        "module boundary\nrecord Deep {{ value {}Int{} }}\nrecord Good {{}}\n",
+        "record Deep {{ value {}Int{} }}\nrecord Good {{}}\n",
         "Wrap[".repeat(MAX_SYNTAX_NESTING),
         "]".repeat(MAX_SYNTAX_NESTING)
     );
     assert_at_limit_and_recovered(&generic_at);
     let generic_beyond = format!(
-        "module boundary\nrecord Deep {{ value {}Int{} }}\nrecord Good {{}}\n",
+        "record Deep {{ value {}Int{} }}\nrecord Good {{}}\n",
         "Wrap[".repeat(MAX_SYNTAX_NESTING + 1),
         "]".repeat(MAX_SYNTAX_NESTING + 1)
     );
     assert_limited_and_recovered(&generic_beyond);
 
     let member_at = format!(
-        "module boundary\ntype Deep = Bool where root{}\nrecord Good {{}}\n",
+        "type Deep = Bool where root{}\nrecord Good {{}}\n",
         ".field".repeat(MAX_SYNTAX_NESTING)
     );
     assert_at_limit_and_recovered(&member_at);
     let member_beyond = format!(
-        "module boundary\ntype Deep = Bool where root{}\nrecord Good {{}}\n",
+        "type Deep = Bool where root{}\nrecord Good {{}}\n",
         ".field".repeat(MAX_SYNTAX_NESTING + 1)
     );
     assert_limited_and_recovered(&member_beyond);
@@ -102,13 +102,13 @@ fn nesting_contract_is_versioned_and_has_an_exact_boundary() {
     // The enclosing match consumes one level before its pattern is parsed.
     let pattern_limit = MAX_SYNTAX_NESTING - 1;
     let pattern_at = format!(
-        "module boundary\ntype Deep = Bool where match value {{ {}_{} => true }}\nrecord Good {{}}\n",
+        "type Deep = Bool where match value {{ {}_{} => true }}\nrecord Good {{}}\n",
         "Some(".repeat(pattern_limit),
         ")".repeat(pattern_limit)
     );
     assert_at_limit_and_recovered(&pattern_at);
     let pattern_beyond = format!(
-        "module boundary\ntype Deep = Bool where match value {{ {}_{} => true }}\nrecord Good {{}}\n",
+        "type Deep = Bool where match value {{ {}_{} => true }}\nrecord Good {{}}\n",
         "Some(".repeat(pattern_limit + 1),
         ")".repeat(pattern_limit + 1)
     );
@@ -144,46 +144,46 @@ fn deep_inputs_child() {
     }
 
     let unary = format!(
-        "module unary\ntype Deep = Bool where {}true\nrecord Good {{}}\n",
+        "type Deep = Bool where {}true\nrecord Good {{}}\n",
         "-".repeat(ADVERSARIAL_DEPTH)
     );
     assert_limited_and_recovered(&unary);
 
     let binary = format!(
-        "module binary\ntype Deep = Bool where true{}\nrecord Good {{}}\n",
+        "type Deep = Bool where true{}\nrecord Good {{}}\n",
         " || true".repeat(ADVERSARIAL_DEPTH)
     );
     assert_limited_and_recovered(&binary);
 
     let parentheses = format!(
-        "module parens\ntype Deep = Bool where {}true{}\nrecord Good {{}}\n",
+        "type Deep = Bool where {}true{}\nrecord Good {{}}\n",
         "(".repeat(ADVERSARIAL_DEPTH),
         ")".repeat(ADVERSARIAL_DEPTH)
     );
     assert_limited_and_recovered(&parentheses);
 
     let generic_type = format!(
-        "module generic\nrecord Deep {{ value {}Int{} }}\nrecord Good {{}}\n",
+        "record Deep {{ value {}Int{} }}\nrecord Good {{}}\n",
         "Wrap[".repeat(ADVERSARIAL_DEPTH),
         "]".repeat(ADVERSARIAL_DEPTH)
     );
     assert_limited_and_recovered(&generic_type);
 
     let qualified_projection = format!(
-        "module projection\nrecord Deep {{ value {}T{} }}\nrecord Good {{}}\n",
+        "record Deep {{ value {}T{} }}\nrecord Good {{}}\n",
         "<".repeat(ADVERSARIAL_DEPTH),
         " as C>.Item".repeat(ADVERSARIAL_DEPTH)
     );
     assert_limited_and_recovered(&qualified_projection);
 
     let member_projection = format!(
-        "module member\ntype Deep = Bool where root{}\nrecord Good {{}}\n",
+        "type Deep = Bool where root{}\nrecord Good {{}}\n",
         ".field".repeat(ADVERSARIAL_DEPTH)
     );
     assert_limited_and_recovered(&member_projection);
 
     let pattern = format!(
-        "module pattern\nfn deep(value T) {{ match value {{ {}_{} => Unit }} }}\nfn good() {{}}\n",
+        "fn deep(value T) {{ match value {{ {}_{} => Unit }} }}\nfn good() {{}}\n",
         "Some(".repeat(ADVERSARIAL_DEPTH),
         ")".repeat(ADVERSARIAL_DEPTH)
     );

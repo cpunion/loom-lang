@@ -651,9 +651,9 @@ impl Program {
         )
     }
 
-    /// Interns a module name, merging files that declare the same module.
-    pub fn intern_module(&mut self, name: ModuleName, file: FileId, declaration: Span) -> ModuleId {
-        self.intern_package_module(PackageId::standalone(), name, file, declaration)
+    /// Interns a module name, merging files assigned to the same module.
+    pub fn intern_module(&mut self, name: ModuleName, file: FileId, source: Span) -> ModuleId {
+        self.intern_package_module(PackageId::standalone(), name, file, source)
     }
 
     /// Interns a package-qualified module, never merging equal source module
@@ -663,7 +663,7 @@ impl Program {
         package: PackageId,
         name: ModuleName,
         file: FileId,
-        declaration: Span,
+        source: Span,
     ) -> ModuleId {
         let identity = (package.clone(), name.clone());
         if let Some(module) = self.module_by_identity.get(&identity).copied() {
@@ -671,7 +671,7 @@ impl Program {
                 self.modules[module].files.push(file);
                 self.modules[module].files.sort_unstable();
             }
-            self.source_map.add_module_declaration(module, declaration);
+            self.source_map.add_module_file(module, source);
             return module;
         }
 
@@ -683,7 +683,7 @@ impl Program {
             items: Vec::new(),
         });
         self.module_by_identity.insert(identity, module);
-        self.source_map.add_module_declaration(module, declaration);
+        self.source_map.add_module_file(module, source);
         module
     }
 
@@ -785,6 +785,6 @@ mod tests {
 
         assert_eq!(first, second);
         assert_eq!(program.modules[first].files, vec![FileId(2), FileId(7)]);
-        assert_eq!(program.source_map.module_declarations(first).len(), 2);
+        assert_eq!(program.source_map.module_files(first).len(), 2);
     }
 }
