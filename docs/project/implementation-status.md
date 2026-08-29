@@ -178,7 +178,9 @@ the exact JSONL standard-error bytes for both run and test artifacts; the typed
 JSON gate executes all canonical formatting and error cases through each
 artifact.
 The remaining reviewed legacy allowance covers the broader standard-library
-fixture's JSON parsing and typed external I/O operations.
+fixture's JSON parsing and typed external I/O operations. `IoError.kind()` and
+`IoError.message()` are already ordinary direct product projections in LCIR and
+do not contribute to that allowance.
 The format-neutral `Text.from_utf8_units(List[Int])` source API, interpreter
 semantics, typed LCIR instruction, direct LLVM lowering, and typed runtime ABI
 are complete; this is the construction foundation for moving JSON parsing into
