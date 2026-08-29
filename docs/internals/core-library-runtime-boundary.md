@@ -93,6 +93,17 @@ The library owns reusable policy and algorithms, including:
   operations;
 - protocol, encoding, and data-format modules.
 
+`std.process.arguments` and `std.process.environment` demonstrate the intended
+vertical boundary. Both are ordinary source functions with normal `DefId`
+calls. Only their bodies may import the exact private argument/environment
+primitives. The driver authenticates compiler-owned source origin together with
+the exact `std` package identity; semantic analysis then rechecks that nominal
+identity and the owning `std.process` module before accepting either import.
+Application imports of the private spelling follow ordinary resolution and
+fail; there is no public-name fallback to a builtin. The existing interpreter
+and native runtime operations remain the irreducible host boundary beneath
+those wrappers.
+
 The embedded source content is part of compiler-cache identity. Editing an
 unused private library body may leave a native object reusable when ordinary
 reachability proves that body dead; changing an imported public interface or a

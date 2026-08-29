@@ -1,0 +1,14 @@
+module std.process
+
+import std.process.__arguments
+import std.process.__environment
+
+/// Returns the arguments passed after the executable name in their original order.
+pub fn arguments() List[Text] {
+    __arguments()
+}
+
+/// Returns a Unicode environment value when it is present.
+pub fn environment(name Text) Option[Text] {
+    __environment(name)
+}

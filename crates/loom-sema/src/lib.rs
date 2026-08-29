@@ -12,6 +12,7 @@ mod module_graph;
 mod proof;
 mod resolver;
 mod side_tables;
+mod std_primitives;
 mod task_intrinsics;
 mod ty;
 

@@ -212,7 +212,9 @@ impl DefMapBuild {
 
         for module in modules {
             for import in &program.modules[module].imports {
-                if is_compiler_known_import(&import.path) {
+                if crate::std_primitives::resolve_import(program, module, &import.path).is_some()
+                    || is_compiler_known_import(&import.path)
+                {
                     continue;
                 }
                 let Some(imported_name) = imported_name(import) else {
@@ -315,12 +317,50 @@ fn definition_span(program: &Program, definition: DefId) -> Span {
 
 #[cfg(test)]
 mod tests {
-    use loom_core::{FileId, ModuleName, Name, Span};
+    use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId, Span};
     use loom_hir::{
-        CallableSignature, Definition, DefinitionKind, FunctionDef, Program, Visibility,
+        CallableSignature, Definition, DefinitionKind, FunctionDef, Import, Path, PathSegment,
+        Program, Visibility,
     };
 
     use super::{Binding, DefMapBuild, Namespace};
+
+    fn import(file: FileId, module: &str, item: &str) -> Import {
+        let span = Span::new(file, 0, 10);
+        Import {
+            path: Path {
+                segments: module
+                    .split('.')
+                    .chain(std::iter::once(item))
+                    .map(|name| PathSegment {
+                        name: Name::new(name),
+                        span,
+                    })
+                    .collect(),
+            },
+            span,
+        }
+    }
+
+    fn public_function(
+        program: &mut Program,
+        module: loom_hir::ModuleId,
+        name: &str,
+    ) -> loom_hir::DefId {
+        program.alloc_definition(
+            Definition {
+                module,
+                name: Some(Name::new(name)),
+                visibility: Visibility::Public,
+                kind: DefinitionKind::Function(FunctionDef {
+                    signature: CallableSignature::default(),
+                    is_async: false,
+                    body: loom_hir::BodyId::from_raw(0),
+                }),
+            },
+            Span::new(FileId(0), 0, 1),
+        )
+    }
 
     #[test]
     fn duplicate_definitions_never_choose_a_winner() {
@@ -370,5 +410,87 @@ mod tests {
             .resolve(Namespace::Value, &Name::new("same"))
             .unwrap();
         assert!(matches!(binding, Binding::Duplicate(candidates) if candidates.len() == 2));
+    }
+
+    #[test]
+    fn process_primitive_import_authority_does_not_create_public_bindings() {
+        let mut program = Program::default();
+        let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+        let hostile_package = PackageId::new("hostile-std", "0");
+        let application_package = PackageId::new("application", "0");
+        let process = program.intern_package_module(
+            std_package.clone(),
+            ModuleName::new("std.process"),
+            FileId(1),
+            Span::new(FileId(1), 0, 10),
+        );
+        let wrong_owner = program.intern_package_module(
+            std_package.clone(),
+            ModuleName::new("std.other"),
+            FileId(2),
+            Span::new(FileId(2), 0, 10),
+        );
+        let wrong_package = program.intern_package_module(
+            hostile_package.clone(),
+            ModuleName::new("std.process"),
+            FileId(3),
+            Span::new(FileId(3), 0, 10),
+        );
+        let application = program.intern_package_module(
+            application_package.clone(),
+            ModuleName::new("application"),
+            FileId(4),
+            Span::new(FileId(4), 0, 10),
+        );
+        let arguments = public_function(&mut program, process, "arguments");
+        program.modules[process]
+            .imports
+            .push(import(FileId(1), "std.process", "__arguments"));
+        program.modules[wrong_owner].imports.push(import(
+            FileId(2),
+            "std.process",
+            "__environment",
+        ));
+        program.modules[wrong_package].imports.push(import(
+            FileId(3),
+            "std.process",
+            "__arguments",
+        ));
+        program.modules[application]
+            .imports
+            .push(import(FileId(4), "std.process", "__arguments"));
+        program.modules[application]
+            .imports
+            .push(import(FileId(4), "std.process", "arguments"));
+        program.register_package(std_package.clone(), [], false);
+        program.register_package(hostile_package, [], false);
+        program.register_package(application_package, [(Name::new("std"), std_package)], true);
+
+        let build = DefMapBuild::build(&program);
+        assert_eq!(
+            build
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.code == "UnknownName")
+                .count(),
+            3,
+            "{:#?}",
+            build.diagnostics
+        );
+        assert!(
+            build
+                .map(process)
+                .unwrap()
+                .resolve(Namespace::Value, &Name::new("__arguments"))
+                .is_none()
+        );
+        assert_eq!(
+            build
+                .map(application)
+                .unwrap()
+                .resolve(Namespace::Value, &Name::new("arguments"))
+                .and_then(Binding::unique),
+            Some(arguments)
+        );
     }
 }

@@ -106,6 +106,7 @@ fn assert_compiler_owned_overlays_are_ignored(
     int_path: &Path,
     json_path: &Path,
     log_path: &Path,
+    process_path: &Path,
     resource_path: &Path,
 ) {
     host.set_overlay(
@@ -124,6 +125,11 @@ fn assert_compiler_owned_overlays_are_ignored(
     )
     .expect("install hostile std.log overlay");
     host.set_overlay(
+        process_path,
+        "module std.process\n\npub fn arguments() List[Text] { [\"forged\"] }\n",
+    )
+    .expect("install hostile std.process overlay");
+    host.set_overlay(
         resource_path,
         "module std.resource\n\npub concept ForgedResourceProtocol {}\n",
     )
@@ -134,6 +140,11 @@ fn assert_compiler_owned_overlays_are_ignored(
         (int_path, "Returns the smaller", "std.int source"),
         (json_path, "fn finish_utf8", "std.json source"),
         (log_path, "Writes one debug-level", "std.log source"),
+        (
+            process_path,
+            "Returns the arguments passed",
+            "std.process source",
+        ),
         (
             resource_path,
             "Requires a value to transfer directly",
@@ -223,6 +234,12 @@ fn compiler_std_sources_have_protected_authority() {
     assert!(
         std_sources
             .iter()
+            .any(|source| source.relative_path().ends_with("src/process.loom")),
+        "{std_sources:#?}"
+    );
+    assert!(
+        std_sources
+            .iter()
             .any(|source| source.relative_path().ends_with("src/resource.loom")),
         "{std_sources:#?}"
     );
@@ -247,6 +264,12 @@ fn compiler_std_sources_have_protected_authority() {
         .expect("compiler-owned std.log source")
         .absolute_path()
         .to_path_buf();
+    let process_path = std_sources
+        .iter()
+        .find(|source| source.relative_path().ends_with("src/process.loom"))
+        .expect("compiler-owned std.process source")
+        .absolute_path()
+        .to_path_buf();
     let std_source = std_sources
         .iter()
         .copied()
@@ -266,6 +289,7 @@ fn compiler_std_sources_have_protected_authority() {
         &std_path,
         &json_path,
         &log_path,
+        &process_path,
         &resource_path,
     );
 }
@@ -354,6 +378,7 @@ fn std_package_name_alias_and_complete_namespace_are_reserved() {
         "std",
         "std.int",
         "std.json",
+        "std.process",
         "std.resource",
         "std.future.nested",
     ] {
@@ -600,6 +625,7 @@ fn manifest_resolves_path_dependencies_sources_and_targets() {
         "deps/std@0.3/src/int.loom",
         "deps/std@0.3/src/json.loom",
         "deps/std@0.3/src/log.loom",
+        "deps/std@0.3/src/process.loom",
         "deps/std@0.3/src/resource.loom",
     ] {
         assert!(std_paths.contains(&expected), "{std_paths:?}");
@@ -914,6 +940,12 @@ fn portable_library_is_a_consumable_versioned_dependency() {
         std_sources
             .iter()
             .any(|source| source.relative_path().ends_with("src/log.loom")),
+        "{std_sources:#?}"
+    );
+    assert!(
+        std_sources
+            .iter()
+            .any(|source| source.relative_path().ends_with("src/process.loom")),
         "{std_sources:#?}"
     );
     assert!(
@@ -2117,6 +2149,7 @@ fn snapshot_assigns_file_ids_by_stable_relative_path_and_builds_executable_mir()
         "deps/std@0.3/src/int.loom",
         "deps/std@0.3/src/json.loom",
         "deps/std@0.3/src/log.loom",
+        "deps/std@0.3/src/process.loom",
         "deps/std@0.3/src/resource.loom",
     ] {
         assert!(paths.iter().any(|(_, path)| *path == expected), "{paths:?}");

@@ -7,10 +7,11 @@ long-term compatibility guarantee.
 
 ## Source `std` completion
 
-The compiler currently embeds four Loom source modules: `std.int`, `std.json`,
-`std.log`, and `std.resource`. Passing interpreter or native tests does not by
-itself make an API source-backed; the table distinguishes ordinary source
-definitions from public names still recognized by semantic builtin tables.
+The compiler currently embeds five Loom source modules: `std.int`, `std.json`,
+`std.log`, `std.process`, and `std.resource`. Passing interpreter or native
+tests does not by itself make an API source-backed; the table distinguishes
+ordinary source definitions from public names still recognized by semantic
+builtin tables.
 
 | Surface | Ordinary `library/std` source today | Remaining compiler-owned public surface | Status |
 | --- | --- | --- | --- |
@@ -19,7 +20,7 @@ definitions from public names still recognized by semantic builtin tables.
 | `std.log` | `debug`, `info`, `warn`, `error`, and their no-fields helper | `LogLevel` and `write` | partial |
 | `std.resource` | `Dispose`, `MustScope`, and `NoSuspend` declarations | their fixed language-item meaning and static enforcement intentionally remain language core | source declarations complete |
 | `std.float` | none | parsing, formatting, finiteness, and `ParseFloatError` | not source-backed |
-| `std.process` | none | arguments and environment access | not source-backed |
+| `std.process` | public `arguments` and `environment` wrappers | compiler-private process snapshot primitives and their runtime OS boundary | source-backed |
 | `std.time` | none | `Duration`, construction, and conversion | not source-backed |
 | `std.file` / `std.net` | none | public functions, resource values, I/O errors, and methods | not source-backed |
 | `Task.sleep/all/settled/any/race` | none | temporary public-name resolution through `TaskIntrinsic` plus the private scheduler substrate | transitional |

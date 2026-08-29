@@ -3583,13 +3583,15 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         self.builder.position_at_end(entry);
         let argument_count = parameter_int(main, 0)?;
         let argument_vector = parameter_pointer(main, 1)?;
-        self.builder
-            .build_call(
-                self.native_set_arguments(),
-                &[argument_count.into(), argument_vector.into()],
-                "process.arguments.initialize",
-            )
-            .map_err(builder_error)?;
+        if self.reachable.builtins.contains(&Builtin::ProcessArguments) {
+            self.builder
+                .build_call(
+                    self.native_set_arguments(),
+                    &[argument_count.into(), argument_vector.into()],
+                    "process.arguments.initialize",
+                )
+                .map_err(builder_error)?;
+        }
         let result = self
             .builder
             .build_alloca(self.value_type, "result")
