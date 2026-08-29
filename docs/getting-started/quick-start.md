@@ -11,9 +11,9 @@ debug profile.
 
 ## Check a constrained-value program
 
-[`examples/constraints-contracts/shop.loom`](../../examples/constraints-contracts/shop.loom) defines a
-constrained `Price`, a record invariant, a method postcondition, and ordinary
-tests:
+[`examples/constraints-contracts/shop.loom`](../../examples/constraints-contracts/shop.loom)
+defines a constrained `Price`, a record invariant, a method postcondition, and
+ordinary tests:
 
 ```sh
 target/release/loomc check examples/constraints-contracts
@@ -46,9 +46,9 @@ Backend selection is a global option and therefore appears before the command.
 
 ## Exercise concepts and dynamic dispatch
 
-[`examples/concepts-polymorphism/concepts.loom`](../../examples/concepts-polymorphism/concepts.loom) covers
-explicit concept conformance, associated types, static dispatch, and stored
-`dyn` values:
+[`examples/concepts-polymorphism/concepts.loom`](../../examples/concepts-polymorphism/concepts.loom)
+covers explicit concept conformance, associated types, static dispatch, and
+stored `dyn` values:
 
 ```sh
 target/release/loomc check examples/concepts-polymorphism

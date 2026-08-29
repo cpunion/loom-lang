@@ -79,9 +79,10 @@ request.
 ## Reading experimental documentation
 
 The compiler and tests are the final evidence for the current implementation.
-Examples under `examples/constraints-contracts`, `examples/concepts-polymorphism`, `examples/async-resources`, and
-`examples/packages` are kept in the repository's check/build/test/run closure
-and are the best executable companions to these pages.
+Examples under `examples/constraints-contracts`, `examples/concepts-polymorphism`,
+`examples/async-resources`, and `examples/packages` are kept in the repository's
+check/build/test/run closure and are the best executable companions to these
+pages.
 
 The [roadmap](../ROADMAP.md) contains proposals and incomplete work. A roadmap
 item must not be read as an available feature. If a guide and the current
