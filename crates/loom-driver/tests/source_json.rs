@@ -54,21 +54,11 @@ fn expect_error(value: Value, expected_variant: u32, expected_offset: Option<i64
 }
 
 #[test]
-fn source_json_parser_handles_syntax_offsets_surrogates_numbers_and_depth() {
-    std::thread::Builder::new()
-        .name("source-json-parser-contract".to_owned())
-        .stack_size(64 * 1024 * 1024)
-        .spawn(run_source_json_parser_contract)
-        .expect("source JSON parser test thread")
-        .join()
-        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-}
-
 #[expect(
     clippy::too_many_lines,
     reason = "one parser contract keeps direct source binding and the complete JSON edge corpus together"
 )]
-fn run_source_json_parser_contract() {
+fn source_json_parser_handles_syntax_offsets_surrogates_numbers_and_depth() {
     let source = include_str!("../../../library/std/src/json.loom");
     let formatted = format_source(FileId(0), source);
     assert!(

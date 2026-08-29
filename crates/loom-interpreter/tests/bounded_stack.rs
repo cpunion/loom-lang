@@ -2,7 +2,7 @@ use loom_core::Span;
 use loom_interpreter::{ExecutionFailure, ExecutionLimits, Interpreter};
 use loom_mir::{
     Block, CallPlan, CallTarget, Constant, Expr, ExprKind, Function, FunctionId, MirValidationCode,
-    Program, Type,
+    Program, Statement, StatementKind, Type,
 };
 
 const ONE_MIB: usize = 1024 * 1024;
@@ -78,8 +78,8 @@ fn synchronous_call_chain(function_count: u32) -> loom_mir::CheckedProgram {
 fn synchronous_calls_hit_the_language_limit_on_a_one_mib_stack() {
     // The root occupies one logical call level. Function 255 therefore runs
     // at the configured limit and its call to function 256 must be rejected
-    // through Loom's normal runtime-failure channel. Host-stack exhaustion is
-    // never an acceptable implementation of this language limit.
+    // through Loom's structured ExecutionFailure defect channel. Host-stack
+    // exhaustion is never an acceptable implementation of this language limit.
     let program = synchronous_call_chain(LANGUAGE_CALL_DEPTH + 1);
     let outcome = std::thread::Builder::new()
         .name("loom-one-mib-call-depth".into())
@@ -102,11 +102,39 @@ fn synchronous_calls_hit_the_language_limit_on_a_one_mib_stack() {
     assert!(
         matches!(
             &failure,
-            ExecutionFailure::Runtime { fault }
-                if fault.code == "LOOM_RUNTIME_CALL_DEPTH"
-                    && fault.message == "call depth limit exceeded"
+            ExecutionFailure::Defect { defect }
+                if defect.code == "InterpreterDefect"
+                    && defect.message == "call depth limit exceeded"
         ),
         "unexpected depth failure: {failure:?}"
+    );
+}
+
+#[test]
+fn flat_statement_sequences_do_not_rebuild_the_host_stack() {
+    let mut entry = function(0, unit());
+    entry.body.statements = (0..4096)
+        .map(|_| Statement {
+            kind: StatementKind::Evaluate(unit()),
+            span: span(),
+        })
+        .collect();
+    let program = checked(Program {
+        functions: vec![entry],
+        ..Program::default()
+    });
+
+    let outcome = std::thread::Builder::new()
+        .name("loom-one-mib-flat-statements".into())
+        .stack_size(ONE_MIB)
+        .spawn(move || Interpreter::new(&program).invoke(FunctionId(0), Vec::new(), span()))
+        .expect("spawn flat-statement interpreter on a Windows-sized stack")
+        .join()
+        .expect("flat statement execution must not overflow the host stack");
+
+    assert!(
+        outcome.is_ok(),
+        "flat statement execution failed: {outcome:?}"
     );
 }
 
