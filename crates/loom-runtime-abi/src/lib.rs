@@ -4,7 +4,7 @@
 //! values crossing the runtime boundary are defined here once and consumed by
 //! both generated-code declarations and the Rust runtime implementation.
 
-pub const RUNTIME_ABI_VERSION: u32 = 27;
+pub const RUNTIME_ABI_VERSION: u32 = 29;
 pub const COROUTINE_ABI_VERSION: u32 = 2;
 pub const TYPED_TASK_ABI_VERSION: u32 = 1;
 pub const WAIT_ABI_VERSION: u32 = 1;
@@ -16,7 +16,8 @@ pub const TYPED_GC_REPEATED_ABI_VERSION: u32 = 1;
 pub const TYPED_SHADOW_STACK_ABI_VERSION: u32 = 1;
 pub const WITNESS_ABI_VERSION: u32 = 1;
 pub const TYPED_JSON_ABI_VERSION: u32 = 1;
-pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v21/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v5";
+pub const TYPED_IO_ABI_VERSION: u32 = 1;
+pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v23/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v5";
 
 /// Writes exactly `length` bytes to the process standard-output stream.
 ///
@@ -120,6 +121,44 @@ pub const TYPED_TASK_PUBLISH_ADOPTING_SYMBOL: &str = "loom_typed_task_publish_ad
 /// `TASK_CANCELLED`. `TYPED_TASK_STATUS_INVALID` reports every invalid call.
 pub const TYPED_TASK_TAKE_OUTCOME_SYMBOL: &str = "loom_typed_task_take_outcome_v1";
 
+/// Creates one typed recoverable-I/O leaf Task from a fully staged request.
+///
+/// The boundary takes `(executor, typed_task_descriptor, request)`. The
+/// runtime copies every borrowed byte before retaining the operation and
+/// duplicates every source File/Socket before returning. A null Task reports
+/// an invalid compiler/runtime call or Task allocation failure; ordinary host
+/// I/O failures are retained by the Task and later published as
+/// [`TYPED_IO_OUTCOME_ERROR`].
+pub const TYPED_IO_TASK_CREATE_SYMBOL: &str = "loom_typed_io_task_create_v1";
+/// Advances the active typed I/O leaf from its generated resume callback.
+///
+/// The boundary takes `(task, executor, scratch_text_cell, outcome)`. The Text
+/// cell must be an exact, currently-live non-result root in the Task frame and
+/// must initially contain null. `outcome` must not overlap that frame. Pending
+/// and faulted steps publish no source value. A completed Text or Error writes
+/// one managed Text into the scratch cell; generated code then constructs its
+/// exact target-layout Result without a safepoint and publishes the result.
+pub const TYPED_IO_POLL_SYMBOL: &str = "loom_typed_io_poll_v1";
+/// Non-suspending cancellation callback for typed I/O leaf descriptors.
+pub const TYPED_IO_CANCEL_SYMBOL: &str = "loom_typed_io_cancel_v1";
+
+pub const TYPED_IO_OPERATION_FILE_OPEN_READ: u32 = 1;
+pub const TYPED_IO_OPERATION_FILE_CREATE: u32 = 2;
+pub const TYPED_IO_OPERATION_FILE_READ_TEXT: u32 = 3;
+pub const TYPED_IO_OPERATION_FILE_WRITE_TEXT: u32 = 4;
+pub const TYPED_IO_OPERATION_SOCKET_CONNECT: u32 = 5;
+pub const TYPED_IO_OPERATION_SOCKET_READ_TEXT: u32 = 6;
+pub const TYPED_IO_OPERATION_SOCKET_WRITE_TEXT: u32 = 7;
+
+/// Canonical all-ones value for an operation with no source resource and for
+/// the closed state of a direct File/Socket record.
+pub const TYPED_IO_INVALID_RESOURCE_TOKEN: u64 = u64::MAX;
+
+pub const TYPED_IO_OUTCOME_UNIT: u32 = 1;
+pub const TYPED_IO_OUTCOME_TEXT: u32 = 2;
+pub const TYPED_IO_OUTCOME_RESOURCE: u32 = 3;
+pub const TYPED_IO_OUTCOME_ERROR: u32 = 4;
+
 /// Zeroed typed allocator taking `(descriptor, allocation_size, output)`.
 ///
 /// `output` must name writable pointer-sized storage whose address remains
@@ -174,21 +213,19 @@ pub const PARSE_FLOAT_SYMBOL: &str = "loom_runtime_parse_float";
 pub const PARSE_FLOAT_STATUS_OK: i32 = 0;
 pub const PARSE_FLOAT_STATUS_INVALID_SYNTAX: i32 = 1;
 pub const PARSE_FLOAT_STATUS_OUT_OF_RANGE: i32 = 2;
-/// Direct File/Socket cleanup taking `(runtime, kind, inout handle)`.
+/// Direct File/Socket cleanup taking `(executor, kind, inout token)`.
 ///
 /// This compiler-private boundary never constructs a universal `Value`,
 /// schedules a Task, or enters the executor loop. Status zero writes the
-/// closed-handle sentinel back to the exact source record field. Status two is
-/// a pre-consumption host-handle rejection which leaves the cell unchanged;
-/// once platform ownership is accepted, RAII close is final and its underlying
-/// completion status is not retryable. Every other status is an ABI or runtime
-/// defect.
-pub const TYPED_RESOURCE_CLOSE_SYMBOL: &str = "loom_runtime_resource_close_typed_v1";
+/// closed-token sentinel back to the exact source record field. Close is a
+/// final RAII release and has no ordinary failure status. The token must have
+/// one exact owner in the executor resource ledger. Every nonzero status is an
+/// ABI or runtime defect.
+pub const TYPED_RESOURCE_CLOSE_SYMBOL: &str = "loom_typed_resource_close_v1";
 pub const TYPED_RESOURCE_KIND_FILE: u32 = 1;
 pub const TYPED_RESOURCE_KIND_SOCKET: u32 = 2;
 pub const TYPED_RESOURCE_CLOSE_OK: i32 = 0;
 pub const TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT: i32 = 1;
-pub const TYPED_RESOURCE_CLOSE_FAILED: i32 = 2;
 
 /// Runtime-owned state bit in [`LoomGcRootFrame::flags`].
 ///
@@ -428,6 +465,41 @@ pub struct LoomByteView {
     pub length: u64,
 }
 
+/// One copied request for a typed recoverable-I/O leaf Task.
+///
+/// `resource_token` is [`TYPED_IO_INVALID_RESOURCE_TOKEN`] for File open/create
+/// and Socket connect. File/Socket read and write carry the exact direct
+/// capability token previously published by this executor. The token is never
+/// an OS descriptor or handle and is valid only while the current running Task
+/// owns its unique runtime ledger entry. `argument` is path, contents, or host
+/// according to `operation`; operations without Text require the canonical
+/// null/zero view. `auxiliary` is the Socket connect port and is zero for every
+/// other operation. The runtime copies this structure and every argument byte
+/// during Task creation and retains no caller pointer.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct LoomTypedIoRequest {
+    pub abi_version: u32,
+    pub operation: u32,
+    pub resource_token: u64,
+    pub argument: LoomByteView,
+    pub auxiliary: i64,
+}
+
+/// Primitive completion wire written by [`TYPED_IO_POLL_SYMBOL`].
+///
+/// This is deliberately not the physical layout of `Result[T, IoError]`.
+/// `detail` is the closed `IoErrorKind` index only for Error; `resource_token`
+/// is live only for Resource. Text and Error publish their sole managed Text
+/// through the separate rooted scratch cell.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LoomTypedIoOutcome {
+    pub kind: u32,
+    pub detail: u32,
+    pub resource_token: u64,
+}
+
 /// One borrowed canonical `TextMap[Text]` entry for typed structured logging.
 ///
 /// Both pointers name complete direct Text objects. Generated code passes a
@@ -601,12 +673,13 @@ mod tests {
         GC_RESOURCE_LIMIT, LAYOUT_ABI_VERSION, LoomByteView, LoomGcObjectDescriptor,
         LoomGcRepeatedObjectDescriptor, LoomGcRootDescriptor, LoomGcRootFrame,
         LoomGcTypedRootDescriptor, LoomGcTypedRootFrame, LoomTypedCoroutineDescriptor,
-        LoomTypedJsonLayout, LoomTypedLogField, LoomTypedTaskFaultView, LoomWitnessDescriptor,
-        LoomWitnessInstance, NATIVE_RUNTIME_ABI_IDENTITY, PARSE_FLOAT_STATUS_INVALID_SYNTAX,
-        PARSE_FLOAT_STATUS_OK, PARSE_FLOAT_STATUS_OUT_OF_RANGE, PARSE_FLOAT_SYMBOL,
-        PATH_JOIN_TYPED_ABSOLUTE, PATH_JOIN_TYPED_SYMBOL, RUNTIME_ABI_VERSION,
-        SHADOW_STACK_ABI_VERSION, STANDARD_LIBRARY_ABI_VERSION, STDOUT_WRITE_FAILED,
-        STDOUT_WRITE_INVALID_ARGUMENT, STDOUT_WRITE_OK, STDOUT_WRITE_SYMBOL, TEXT_CONTAINS_SYMBOL,
+        LoomTypedIoOutcome, LoomTypedIoRequest, LoomTypedJsonLayout, LoomTypedLogField,
+        LoomTypedTaskFaultView, LoomWitnessDescriptor, LoomWitnessInstance,
+        NATIVE_RUNTIME_ABI_IDENTITY, PARSE_FLOAT_STATUS_INVALID_SYNTAX, PARSE_FLOAT_STATUS_OK,
+        PARSE_FLOAT_STATUS_OUT_OF_RANGE, PARSE_FLOAT_SYMBOL, PATH_JOIN_TYPED_ABSOLUTE,
+        PATH_JOIN_TYPED_SYMBOL, RUNTIME_ABI_VERSION, SHADOW_STACK_ABI_VERSION,
+        STANDARD_LIBRARY_ABI_VERSION, STDOUT_WRITE_FAILED, STDOUT_WRITE_INVALID_ARGUMENT,
+        STDOUT_WRITE_OK, STDOUT_WRITE_SYMBOL, TEXT_CONTAINS_SYMBOL,
         TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8, TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL,
         TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_INVALID, TEXT_GET_TYPED_MISSING,
         TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT,
@@ -614,13 +687,19 @@ mod tests {
         TEXT_OBJECT_FIELD_LAYOUT, TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE,
         TYPED_GC_ABI_VERSION, TYPED_GC_ALLOC_SYMBOL, TYPED_GC_REPEATED_ABI_VERSION,
         TYPED_GC_REPEATED_ALLOC_SYMBOL, TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL,
-        TYPED_JSON_ABI_VERSION, TYPED_JSON_FORMAT_ABI_MISMATCH, TYPED_JSON_FORMAT_DEPTH_LIMIT,
-        TYPED_JSON_FORMAT_DESCRIPTOR_INVALID, TYPED_JSON_FORMAT_INVALID_ARGUMENT,
-        TYPED_JSON_FORMAT_NON_FINITE_NUMBER, TYPED_JSON_FORMAT_OK,
-        TYPED_JSON_FORMAT_RESOURCE_LIMIT, TYPED_JSON_FORMAT_SYMBOL, TYPED_LOG_FIELD_ALIGNMENT,
-        TYPED_LOG_FIELD_KEY_OFFSET, TYPED_LOG_FIELD_SIZE, TYPED_LOG_FIELD_VALUE_OFFSET,
-        TYPED_LOG_INVALID_ARGUMENT, TYPED_LOG_OK, TYPED_LOG_WRITE_FAILED, TYPED_LOG_WRITE_SYMBOL,
-        TYPED_RESOURCE_CLOSE_FAILED, TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT,
+        TYPED_IO_ABI_VERSION, TYPED_IO_CANCEL_SYMBOL, TYPED_IO_INVALID_RESOURCE_TOKEN,
+        TYPED_IO_OPERATION_FILE_CREATE, TYPED_IO_OPERATION_FILE_OPEN_READ,
+        TYPED_IO_OPERATION_FILE_READ_TEXT, TYPED_IO_OPERATION_FILE_WRITE_TEXT,
+        TYPED_IO_OPERATION_SOCKET_CONNECT, TYPED_IO_OPERATION_SOCKET_READ_TEXT,
+        TYPED_IO_OPERATION_SOCKET_WRITE_TEXT, TYPED_IO_OUTCOME_ERROR, TYPED_IO_OUTCOME_RESOURCE,
+        TYPED_IO_OUTCOME_TEXT, TYPED_IO_OUTCOME_UNIT, TYPED_IO_POLL_SYMBOL,
+        TYPED_IO_TASK_CREATE_SYMBOL, TYPED_JSON_ABI_VERSION, TYPED_JSON_FORMAT_ABI_MISMATCH,
+        TYPED_JSON_FORMAT_DEPTH_LIMIT, TYPED_JSON_FORMAT_DESCRIPTOR_INVALID,
+        TYPED_JSON_FORMAT_INVALID_ARGUMENT, TYPED_JSON_FORMAT_NON_FINITE_NUMBER,
+        TYPED_JSON_FORMAT_OK, TYPED_JSON_FORMAT_RESOURCE_LIMIT, TYPED_JSON_FORMAT_SYMBOL,
+        TYPED_LOG_FIELD_ALIGNMENT, TYPED_LOG_FIELD_KEY_OFFSET, TYPED_LOG_FIELD_SIZE,
+        TYPED_LOG_FIELD_VALUE_OFFSET, TYPED_LOG_INVALID_ARGUMENT, TYPED_LOG_OK,
+        TYPED_LOG_WRITE_FAILED, TYPED_LOG_WRITE_SYMBOL, TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT,
         TYPED_RESOURCE_CLOSE_OK, TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE,
         TYPED_RESOURCE_KIND_SOCKET, TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION,
         TYPED_TASK_CLEANUP_FAULTED, TYPED_TASK_INVALID_ARGUMENT, TYPED_TASK_MAX_FAULT_TEXT_BYTES,
@@ -631,7 +710,7 @@ mod tests {
 
     #[test]
     fn native_runtime_identity_is_pinned() {
-        assert_eq!(RUNTIME_ABI_VERSION, 27);
+        assert_eq!(RUNTIME_ABI_VERSION, 29);
         assert_eq!(COROUTINE_ABI_VERSION, 2);
         assert_eq!(TYPED_TASK_ABI_VERSION, 1);
         assert_eq!(LAYOUT_ABI_VERSION, 1);
@@ -706,15 +785,11 @@ mod tests {
         assert_eq!(TYPED_JSON_FORMAT_DEPTH_LIMIT, 4);
         assert_eq!(TYPED_JSON_FORMAT_NON_FINITE_NUMBER, 5);
         assert_eq!(TYPED_JSON_FORMAT_RESOURCE_LIMIT, 6);
-        assert_eq!(
-            TYPED_RESOURCE_CLOSE_SYMBOL,
-            "loom_runtime_resource_close_typed_v1"
-        );
+        assert_eq!(TYPED_RESOURCE_CLOSE_SYMBOL, "loom_typed_resource_close_v1");
         assert_eq!(TYPED_RESOURCE_KIND_FILE, 1);
         assert_eq!(TYPED_RESOURCE_KIND_SOCKET, 2);
         assert_eq!(TYPED_RESOURCE_CLOSE_OK, 0);
         assert_eq!(TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT, 1);
-        assert_eq!(TYPED_RESOURCE_CLOSE_FAILED, 2);
         assert_eq!(
             TYPED_TIMER_TASK_CREATE_SYMBOL,
             "loom_typed_timer_task_create_v1"
@@ -723,8 +798,41 @@ mod tests {
         assert_eq!(STANDARD_LIBRARY_ABI_VERSION, 5);
         assert_eq!(
             NATIVE_RUNTIME_ABI_IDENTITY,
-            "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v21/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v5",
+            "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v23/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v5",
         );
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn typed_io_abi_is_pinned() {
+        assert_eq!(TYPED_IO_ABI_VERSION, 1);
+        assert_eq!(TYPED_IO_TASK_CREATE_SYMBOL, "loom_typed_io_task_create_v1");
+        assert_eq!(TYPED_IO_POLL_SYMBOL, "loom_typed_io_poll_v1");
+        assert_eq!(TYPED_IO_CANCEL_SYMBOL, "loom_typed_io_cancel_v1");
+        assert_eq!(TYPED_IO_OPERATION_FILE_OPEN_READ, 1);
+        assert_eq!(TYPED_IO_OPERATION_FILE_CREATE, 2);
+        assert_eq!(TYPED_IO_OPERATION_FILE_READ_TEXT, 3);
+        assert_eq!(TYPED_IO_OPERATION_FILE_WRITE_TEXT, 4);
+        assert_eq!(TYPED_IO_OPERATION_SOCKET_CONNECT, 5);
+        assert_eq!(TYPED_IO_OPERATION_SOCKET_READ_TEXT, 6);
+        assert_eq!(TYPED_IO_OPERATION_SOCKET_WRITE_TEXT, 7);
+        assert_eq!(TYPED_IO_INVALID_RESOURCE_TOKEN, u64::MAX);
+        assert_eq!(TYPED_IO_OUTCOME_UNIT, 1);
+        assert_eq!(TYPED_IO_OUTCOME_TEXT, 2);
+        assert_eq!(TYPED_IO_OUTCOME_RESOURCE, 3);
+        assert_eq!(TYPED_IO_OUTCOME_ERROR, 4);
+        assert_eq!(size_of::<LoomTypedIoRequest>(), 40);
+        assert_eq!(align_of::<LoomTypedIoRequest>(), 8);
+        assert_eq!(offset_of!(LoomTypedIoRequest, abi_version), 0);
+        assert_eq!(offset_of!(LoomTypedIoRequest, operation), 4);
+        assert_eq!(offset_of!(LoomTypedIoRequest, resource_token), 8);
+        assert_eq!(offset_of!(LoomTypedIoRequest, argument), 16);
+        assert_eq!(offset_of!(LoomTypedIoRequest, auxiliary), 32);
+        assert_eq!(size_of::<LoomTypedIoOutcome>(), 16);
+        assert_eq!(align_of::<LoomTypedIoOutcome>(), 8);
+        assert_eq!(offset_of!(LoomTypedIoOutcome, kind), 0);
+        assert_eq!(offset_of!(LoomTypedIoOutcome, detail), 4);
+        assert_eq!(offset_of!(LoomTypedIoOutcome, resource_token), 8);
     }
 
     #[test]

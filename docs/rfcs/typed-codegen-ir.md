@@ -15,6 +15,10 @@ LCIR is compiler-private. Its Rust API, textual dump, physical ABI, and object
 symbols may change with the compiler build. It is not a source IR, a stable
 artifact format, an ownership system, or a public FFI ABI.
 
+The authoritative current LCIR dump, checked-artifact, native-object,
+object-cache, checked-MIR, and runtime ABI identities are maintained in
+[Versioning and compatibility](../project/versioning.md).
+
 The direct foundation and its first production route are described in the
 current [Code generation IR internals](../internals/codegen-ir.md). Ordinary
 native build, run, and test preparation now selects complete supported
@@ -128,6 +132,9 @@ vocabulary is:
 - an invariant-protected `Product(Text)` for canonical `Path`, retaining
   exactly one field in the artifact's canonical Text representation and no
   runtime tag;
+- an opaque one-field `Product(Int)` for canonical `File` and `Socket`; the
+  field is a process-monotonic runtime capability token whose authority is
+  limited to the active Task ledger, never a raw OS descriptor or handle;
 - `Product(element value types...)` for a structural tuple whose transitive
   elements are direct values;
 - `Product(field value types...)` for a closed, invariant-free record whose
@@ -195,7 +202,7 @@ the exact Result success variant, `-1` selects `PathError.AbsoluteJoin`, and
 every other returned status is an ABI defect. The helper implements only the
 portable lexical `/` rule. It adds no runtime Path object, filesystem query,
 normalization, JSON behavior, executor, or source ownership syntax.
-The older untyped `loom_runtime_path_contains_nul` and
+The untyped `loom_runtime_path_contains_nul` and
 `loom_runtime_path_join` symbols remain exclusive to the complete legacy
 emitter.
 
@@ -254,11 +261,11 @@ identity. The backend build fingerprint includes the LCIR implementation.
 ## Edge-result control flow
 
 A fallible or suspending operation is a terminator, not an ordinary instruction
-that returns a value beside an ignorable status. Its source result, or its
-ordered child results for a multi-child suspension, exists only on the normal or
-resume edge. Ordered functional inout writebacks follow a fallible result on the
-normal edge and are also injected on the fault edge. Forwarded edge arguments
-are modeled separately from implicit results.
+that returns a value beside an ignorable status. A source result, or the ordered
+child results for a multi-child suspension, exists only on the normal or resume
+edge. Ordered functional inout writebacks follow a fallible result on the normal
+edge and are also injected on the fault edge. Forwarded edge arguments are
+modeled separately from implicit results.
 
 That rule also applies when the caller is a coroutine. A synchronous callee's
 normal or fault writebacks replace the corresponding values in the current
@@ -282,9 +289,7 @@ assert condition, contract metadata
     success target(forwarded...)
     fault target(forwarded...)
 
-resource_close kind, resource
-    normal target(Unit, resource_writeback; forwarded...)
-    fault target(resource_writeback; forwarded...)
+resource_close kind, resource -> (Unit, resource_writeback)
 
 task.create coroutine(arguments...) -> Task[T]
 
@@ -338,9 +343,10 @@ lexical block expands its suffix newest-first on normal completion, return, and
 fault. A first fault remains primary; faults raised by cleanup are suppressed
 while every older cleanup still runs. Static-concept disposal uses a closed
 typed call with receiver writeback. File and Socket use the typed
-`resource_close` edge form. Each `AwaitTasks` terminator has explicit normal,
-fault, and cancellation targets that carry one identical exact live row; only
-normal receives leading child results. The lowerer expands the active suffix
+`resource_close` instruction.
+Each `AwaitTasks` terminator has explicit
+normal, fault, and cancellation targets that carry one identical exact live
+row; only normal receives leading child results. The lowerer expands the active suffix
 statically on the other two edges. Child fault activates source fault and ends
 in `ResumeFault`. Cancellation preserves inactive source fault and ends in the
 coroutine-only `TaskCancelled` terminal. Validation rejects a cleanup call graph
@@ -408,6 +414,11 @@ explicit fallible `TaskSleep` terminator requires `MAY_FAULT` and
 The exact effect-derived synchronous ABI forwards the current executor through
 direct calls and invokes. Such helpers may construct Tasks but cannot await or
 drive the executor.
+`ResourceClose` requires the current executor but does not contribute
+`MAY_FAULT`; invalid tokens or ownership are compiler/runtime ABI defects. The
+runtime permits a cancelled Task to close only while its compiler-generated
+callback is inside the executor's guarded cleanup phase; ordinary I/O remains
+forbidden in that phase.
 
 All functions are declared before bodies are emitted, so direct and mutually
 recursive calls use the same typed ABI. Entry block parameters map to function
@@ -517,16 +528,16 @@ static child row without constructing the input List; `all` and `settled`
 construct their List result after resume. These are compiler specializations of
 standard-library APIs, not additional language syntax.
 
-Successful exact result consumption transfers built-in File and Socket handles
-owned by a completed child's published result to the child's non-null owner
-Task, which may itself be the root Task, before child retirement. When
-result-take is applied directly to the ownerless root Task, the handles remain
-attached to that Task in the executor-owned task registry. Faulted, cancelled,
-losing, and unconsumed tasks transfer nothing. Terminal cleanup or typed result
-disposal closes their remaining built-in handles before retired-task memory
-reclamation, even if a disposer reports a fault or protocol defect. The
-transfer is committed only after take validation succeeds and is not an LCIR
-value field or source ownership token.
+Successful exact result consumption transfers the completed child's
+resource-ledger entries, which back any published File or Socket capability
+tokens, to the active owner Task before child retirement. A direct take from the
+ownerless root leaves those entries in that root's ledger until explicit close
+or executor teardown. Faulted, cancelled, losing, and unconsumed tasks transfer
+nothing. Terminal cleanup or typed result disposal closes every concrete
+resource left in their ledgers before retired-task memory reclamation, even if a
+disposer reports a fault or protocol defect. The transfer is committed only
+after take validation succeeds and is not an LCIR value field or source
+ownership token.
 
 Runtime preflight does not assume generated ordering: it requires one exact
 owned/join membership, a settled successful join, result take only for ALL/ANY,
@@ -534,8 +545,8 @@ outcome take only for SETTLED/RACE, and completed ANY/RACE winner finalization.
 An invalid call is transactional, so it cannot remove the winner before loser
 disposal or reinterpret terminal fault/cancellation as an ordinary result.
 
-The frontend keeps an ordinary method call through HIR. Version 0.3 maps a
-canonical, unshadowed standard Task API member through its embedded catalog to
+The frontend keeps an ordinary method call through HIR. It maps a canonical,
+unshadowed standard Task API member through its embedded catalog to
 stable `StandardLibraryItem` identity, and only then constructs specialized
 MIR. Future source-library definitions map their trusted identity to the same
 item. LCIR therefore receives policy mode, exact child types, and control flow
@@ -555,204 +566,118 @@ literal is consumed immediately by `.await`; `any` and `race` require one exact
 output type.
 
 Managed Text concat calls
-`loom_runtime_text_concat_typed_v1(left, right, output)`. The helper must stage
-and validate both full UTF-8 inputs before any allocation can collect, then
-allocate a 32-byte, 8-aligned, pointer-free typed prefix with trailing bytes,
-initialize it without a safepoint, and publish the result last. OOM is an
-uncatchable process-level fault; every other nonzero status fails closed. LLVM
-publishes exact typed-root states before concat and transitively collecting
-calls. A direct managed Text or Bytes value has one stable cell; a live unboxed
-product has one cell per deterministic managed-pointer projection. A closed sum
-catalogs candidate
-cells for every variant, conjoins nested tag predicates, publishes only the
-active variant, and clears all inactive candidates. Definitions and phis
-publish the leaves, aggregate uses are reconstructed progressively from
-post-safepoint reloads, and every nonempty frame is popped on all source exits.
-Root-map ABI-limit excess is `ProgramTooLarge`, not fallback. No universal root
-chain or executor participates in this path. Product and sum leaf rooting reuse
-typed-shadow-stack v1; sum support itself does not advance runtime component 13
-or `runtime-v7`.
+`loom_runtime_text_concat_typed_v1(left, right, output)`. The helper stages and
+validates both complete UTF-8 inputs before allocation can collect, allocates a
+pointer-free typed prefix with trailing bytes, initializes it without another
+safepoint, and publishes the result last. OOM is an uncatchable process-level
+fault; every other nonzero status fails closed. LLVM publishes exact typed-root
+states before concat and transitively collecting calls. A direct managed Text
+or Bytes value has one stable cell; a live unboxed product has one cell per
+deterministic managed-pointer projection. A closed sum catalogs candidate cells
+for every variant, conjoins nested tag predicates, publishes only the active
+variant, and clears all inactive candidates. Definitions and phis publish the
+leaves, aggregate uses are reconstructed from post-safepoint reloads, and every
+nonempty frame is popped on all source exits. Root-map ABI-limit excess is
+`ProgramTooLarge`, not fallback. No universal root chain or executor
+participates in this path.
 
 Typed File and Socket cleanup calls
-`loom_runtime_resource_close_typed_v1(runtime, kind, handle_cell)` directly.
-It adds `typed-resource-v1` and advances the runtime ABI component to 12 with
-`runtime-v6`. The handle cell is a fixed LLVM entry allocation, not a runtime
-cleanup node, and the helper neither constructs a universal value nor enters
-the executor. Independent validation rederives canonical direct one-`Int`
-`File#8` and `Socket#9` products and requires the close kind to agree exactly.
-Status `0` follows the normal edge, status `2` records
-`ResourceCloseFault`, and invalid argument status `1` or any unknown status
-traps as an ABI defect. Static-concept and deferred cleanup require no new
-runtime ABI.
+`loom_typed_resource_close_v1(executor, kind, token_cell)` directly. The token
+cell is a fixed LLVM entry allocation, not a runtime cleanup node. The helper
+accepts a live token only when the active Task owns its unique, kind-matching
+resource-ledger entry, closes that concrete RAII owner, and writes the
+invalid-token sentinel; an invalid or already-closed sentinel is rejected. It
+neither constructs a universal value nor enters the executor loop. Independent
+validation rederives canonical one-`Int` `File#8`
+and `Socket#9` products and requires the close kind to agree exactly. Status
+`0` produces `Unit` and the closed resource; every other status traps as an ABI
+defect.
+Static-concept disposal remains an ordinary selected-witness call, and deferred
+cleanup remains statically expanded CFG; neither introduces another runtime ABI
+boundary.
 
-The runtime subsequently adds a bounded repeated-element descriptor. This
-additive `typed-repeated-v1` symbol advances the
-native component to 13 with `runtime-v7` and the collector identity to
-`gc-v9`. Monomorphized List lowering consumes it directly while fixed typed
-objects retain the existing v1 allocator wire; no later List-specific runtime
-ABI change is needed.
+The runtime's bounded repeated-element descriptor drives monomorphized List
+allocation, while fixed typed objects use the fixed-object allocator. The
+direct scalar-selection helper stages one Unicode scalar before allocating its
+Text result; missing selection constructs a zero `Option[Text]` carrier, found
+selection uses the staged direct pointer, and an invalid status traps.
+`loom_runtime_format_float_typed_v1(value, out_cell)` likewise publishes a
+canonical direct Text pointer only after initialization.
 
-A following additive Text helper stages one selected scalar before allocating
-its direct result. `loom_runtime_text_get_typed_v1` advances Text identity to
-`text-v3` and native component 14 (`runtime-v8`) while retaining `gc-v9`.
-Managed `Option[Text]` lowering consumes its found/missing status without a
-universal envelope. Missing selection constructs a zero carrier and performs
-no allocation; found selection uses the staged direct Text pointer, and an
-invalid status traps as an ABI defect.
+`loom_typed_timer_task_create_v1(executor, deadline_ns)` creates a zero-root
+typed `Task[Unit]`. The compiler checks millisecond-to-nanosecond multiplication
+and monotonic deadline addition before the call. The runtime registers the
+existing one-shot timer source, publishes Unit after readiness, and removes the
+registration on cancellation.
 
-Typed Float formatting adds
-`loom_runtime_format_float_typed_v1(value, out_cell)`. The helper publishes a
-canonical direct Text pointer only after initialization and uses one closed
-status domain. It advances native component 15 with `format-float-v1` and
-`runtime-v9` while retaining `text-v3`, `gc-v9`, and both typed allocation
-wires.
+`loom_typed_task_publish_adopting_v1(executor, composite, children, count)`
+publishes a stored fixed `Task.all`. Generated code initializes an unpublished
+exact composite and supplies an ordered child-pointer array. The runtime
+validates every ownership edge and completes every fallible reservation before
+one allocation-free commit transfers the children from the active parent,
+publishes the composite, and queues it. Failure leaves ownership and queue
+topology unchanged. Direct fixed `Task.any` finalizes typed losers before
+exposing the completed join step. `Task.settled` and `Task.race` use the exact
+outcome-take boundary and complete winner finalization before generated code
+observes a terminal handle.
 
-Typed sleep adds the narrow
-`loom_typed_timer_task_create_v1(executor, deadline_ns)` factory. The compiler
-checks millisecond-to-nanosecond multiplication and monotonic deadline addition
-before calling it. The runtime creates a zero-root typed `Task[Unit]`, registers
-the existing one-shot timer `WaitSource`, publishes Unit after readiness, and
-removes the registration on cancellation. This advances native component 16
-with `typed-timer-v1` and `runtime-v10`; typed-task v1 and wait v1 remain
-unchanged.
+Async state-zero preconditions carry optional caller-span fields in generated
+coroutine frames. Their contract metadata distinguishes carried creation-site
+blame from a static root declaration span and reuses the established fault
+context and diagnostic wire.
 
-Stored fixed `Task.all` adds
-`loom_typed_task_publish_adopting_v1(executor, composite, children, count)`.
-Generated code first initializes an unpublished exact composite and supplies a
-temporary ordered child-pointer array. The runtime validates every ownership
-edge and completes all fallible reservations before one allocation-free commit
-transfers the children from the active parent, publishes the composite, and
-queues it. Failure leaves ownership and queue topology unchanged; generated
-code aborts the unpublished composite and fails closed. This advances native
-component 17 with `typed-task-adopt-v1` and `runtime-v11`, while
-`typed-task-v1`, `typed-timer-v1`, `wait-v1`, and `gc-v9` remain unchanged.
+`loom_runtime_stdout_write_v1(data, length)` is an output-only native harness
+boundary. It does not add an execution-runtime, collection, or executor
+requirement, and its exact runtime identity already participates in native
+fingerprints and runtime-bundle validation.
 
-Static heterogeneous joins first advanced the canonical dump to `lcir 26`, the
-artifact identity to schema 27, the LCIR native-object domain to
-`loom-lcir-native-object-v23`, and the CLI object-cache domain to
-`loom-llvm-object-cache-v28`. Explicit async cleanup and cancellation exits then
-advance those compiler-private boundaries to `lcir 27`, schema 28,
-`loom-lcir-native-object-v24`, and `loom-llvm-object-cache-v29`. That slice
-leaves the runtime at native component 17 with `runtime-v11`.
+Typed structured logging uses the fallible, non-collecting
+`loom_runtime_log_typed_v1` boundary over direct Text and canonical
+`TextMap[Text]` entries. It receives the canonical `LogLevel`, complete message,
+and a null/zero empty view or contiguous entry view. It introduces no executor,
+universal value, or moving-GC safepoint. Status `0` follows the normal edge,
+status `2` records `LogWriteFault`, and invalid statuses trap.
 
-Direct fixed `Task.any` advances the canonical dump to `lcir 28`, the artifact
-identity to schema 29, the LCIR native-object domain to
-`loom-lcir-native-object-v25`, and the CLI object-cache domain to
-`loom-llvm-object-cache-v30`. It adds no symbol and does not revise the typed-task
-or coroutine wire, but consuming `loom_task_join_step` now finalizes typed losers
-before exposing the step. The exact native runtime identity therefore advances
-to component 18 with `typed-task-any-finalize-v1` and `runtime-v12`.
+`JsonFormat` calls `loom_runtime_json_format_typed_v1` with the direct recursive
+Json carrier and one compiler-supplied target-layout descriptor. The runtime
+stages the complete canonical byte sequence before its sole Text allocation;
+depth exhaustion and non-finite numbers remain ordinary `JsonError` values.
 
-Static `settled`/`race`, literal-List specialization, and explicit outcome
-transfer advance the canonical dump to `lcir 29`, artifact identity to schema
-30, LCIR native-object domain to `loom-lcir-native-object-v26`, and CLI
-object-cache domain to `loom-llvm-object-cache-v31`. The additive
-`loom_typed_task_take_outcome_v1` boundary and generalized `any`/`race` winner
-finalization advance the exact native runtime identity to component 19 with
-`typed-task-winner-finalize-v1`, `typed-task-outcome-v1`, and `runtime-v13`.
-Typed-task v1, coroutine v2, wait v1, and GC v9 remain unchanged.
+Compiler-generated `StructuralEquality` instances are exact effect-free
+`(T, T) -> Bool` helpers. Each expands one representation layer and reaches
+nested aggregate helpers through ordinary direct calls, so List/TextMap-backed
+nominal cycles close without a runtime type switch.
 
-Async state-zero preconditions and coroutine-carried creation-site blame advance
-the canonical dump to `lcir 30`, artifact identity to schema 31, LCIR
-native-object domain to `loom-lcir-native-object-v27`, and CLI object-cache
-domain to `loom-llvm-object-cache-v32`. The checked plan and contract metadata
-encode the optional caller span; the root harness supplies the declaration span
-when no creating call exists. Existing fault-context entry points and the JSON
-wire schema are reused, so native runtime component 19 and `runtime-v13` do not
-change.
+Typed Bytes uses `TextEncodeUtf8`, `BytesLength`, `BytesGet`, `BytesAppend`,
+`BytesDecodeUtf8`, and `BytesCompare`. Generated objects call the typed append
+and decode helpers; the ByteObject descriptor and typed allocator remain
+runtime-internal. The format-neutral `TextFromUtf8Units` boundary borrows the
+direct contiguous `i64` List payload, validates byte range and complete UTF-8,
+stages the bytes before allocation, and publishes canonical Text last. Neither
+boundary introduces JSON policy or a source ownership model.
 
-Exact native harness stdout subsequently adds
-`loom_runtime_stdout_write_v1(data, length)` and advances the native runtime
-identity to component 20 with `stdout-v1` and `runtime-v14`. This is an
-output-only symbol, not an execution-runtime requirement. LCIR serialization
-and artifact schema do not change because harness output is not part of LCIR.
-Native-object and object-cache domains do not advance because the exact runtime
-identity already participates in object fingerprints and runtime-bundle
-validation.
+Typed Path uses `PathFromText`, `PathAsText`, and `PathJoin` plus
+`loom_runtime_path_join_typed_v1`. Construction and extraction are
+non-collecting; join stages both complete Text fields before its allocation.
+Status `0` is success, `-1` selects `AbsoluteJoin`, and every other status is an
+ABI defect. Checked MIR and LCIR reject generic construction or field mutation
+that could bypass U+0000 validation.
 
-Typed structured logging later adds the fallible `LogWrite` terminator and the
-non-collecting `loom_runtime_log_typed_v1` boundary over direct Text and
-canonical `TextMap[Text]` entries. This advances the canonical dump to
-`lcir 31`, artifact identity to schema 32, LCIR native-object domain to
-`loom-lcir-native-object-v28`, CLI object-cache domain to
-`loom-llvm-object-cache-v33`, and native runtime identity to component 21 with
-`typed-log-v1` and `runtime-v15`. It does not add an executor, Loom GC
-safepoint, universal value, or public standard-library ABI revision.
+Integer parsing is ordinary standard-library Loom source. There is no checked
+MIR builtin, fixed error nominal, LCIR opcode, LLVM special case, runtime
+export, tombstone, alias, or compatibility decoder.
 
-Typed JSON formatting subsequently adds the collecting `JsonFormat`
-instruction and `loom_runtime_json_format_typed_v1` boundary over the direct
-recursive Json carrier plus one compiler-supplied target-layout descriptor.
-The runtime stages the complete canonical byte sequence before its sole managed
-Text allocation; depth exhaustion and non-finite numbers remain ordinary
-`JsonError` values. This advances the canonical dump to `lcir 32`, artifact
-identity to schema 33, LCIR native-object domain to
-`loom-lcir-native-object-v29`, CLI object-cache domain to
-`loom-llvm-object-cache-v34`, and native runtime identity to component 22 with
-`typed-json-v1` and `runtime-v16`. It adds no executor, universal value, or
-public standard-library ABI revision.
-
-Recursive structural equality subsequently adds compiler-generated
-`StructuralEquality` callable instances. Each exact `(T, T) -> Bool` helper is
-effect-free, expands one representation layer, and reaches nested aggregate
-helpers through ordinary direct calls, so List/TextMap-backed nominal cycles
-close without a runtime type switch. This advances the canonical dump to
-`lcir 33`, artifact identity to schema 34, LCIR native-object domain to
-`loom-lcir-native-object-v30`, and CLI object-cache domain to
-`loom-llvm-object-cache-v35`. It adds no runtime ABI or new LCIR instruction.
-
-Typed Bytes subsequently adds the `TextEncodeUtf8`, `BytesLength`, `BytesGet`,
-`BytesAppend`, `BytesDecodeUtf8`, and `BytesCompare` instructions. Generated
-objects call `loom_runtime_bytes_append_typed_v1` and
-`loom_runtime_bytes_decode_utf8_typed_v1`; the ByteObject descriptor and typed
-allocator remain internal to the runtime object. This advances the canonical
-dump to `lcir 34`, artifact identity to schema 35, LCIR native-object domain to
-`loom-lcir-native-object-v31`, CLI object-cache domain to
-`loom-llvm-object-cache-v36`, and native runtime identity to component 23 with
-`typed-bytes-v1` and `runtime-v17`. It leaves `text-v3`, `gc-v9`, and public
-standard-library ABI v4 unchanged and introduces no JSON-specific policy or
-source ownership model.
-
-The format-neutral `Text.from_utf8_units(List[Int])` foundation subsequently
-adds `TextFromUtf8Units` and
-`loom_runtime_text_from_utf8_units_typed_v1`. Generated code borrows the direct
-contiguous `i64` List payload; the runtime validates byte range and complete
-UTF-8, stages before allocation, and publishes canonical Text last. It has no
-JSON-specific input, output, or policy. This advances the canonical dump to
-`lcir 35`, artifact identity to schema 36, LCIR native-object domain to
-`loom-lcir-native-object-v32`, CLI object-cache domain to
-`loom-llvm-object-cache-v37`, native runtime identity to component 24 with
-`typed-text-units-v1` and `runtime-v18`, public standard-library ABI to v5, and
-checked-MIR artifacts to version 27.
-
-Typed Path subsequently adds `PathFromText`, `PathAsText`, and `PathJoin` plus
-the narrow `loom_runtime_path_join_typed_v1` boundary. Construction and
-extraction are non-collecting; join stages both complete Text fields before its
-moving-GC allocation. Status `0` is success, `-1` selects `AbsoluteJoin`, and
-all other statuses are ABI defects. Path uses the protected product kind, and
-checked MIR/LCIR reject generic construction or field mutation that could
-bypass U+0000 validation. This advances the canonical dump to
-`lcir 36`, artifact identity to schema 37, LCIR native-object domain to
-`loom-lcir-native-object-v33`, CLI object-cache domain to
-`loom-llvm-object-cache-v38`, and native runtime identity to component 25 with
-`typed-path-v1` and `runtime-v19`. Existing Path MIR keeps checked-MIR artifacts
-at version 27, and the public standard-library ABI remains v5.
-
-Resource-close validation and completed-result ownership ordering later change
-semantic validity without changing an LCIR field, textual grammar, runtime
-symbol, signature, status-code shape, typed-task layout, or source API. The
-canonical dump remains `lcir 36`; artifact identity advances to schema 38,
-typed LCIR native-object domain to `loom-lcir-native-object-v34`, and CLI
-object-cache domain to `loom-llvm-object-cache-v39`. The native runtime
-identity advances to component 26 with
-`typed-resource-ownership-v1` and `runtime-v20`. Checked MIR remains 27,
-typed-task ABI remains v1, and standard-library ABI remains v5.
-
-The source-backed integer parser removes its checked-MIR builtin, fixed error
-nominal, LCIR opcode, LLVM special case, and runtime export. The resulting
-current boundaries are checked MIR 28, `lcir 37`, artifact schema 39,
-`loom-lcir-native-object-v35`, `loom-llvm-object-cache-v40`, and native runtime
-component 27 with `runtime-v21`. No tombstone, alias, or compatibility decoder
-is retained.
+Direct typed File and Socket operations use `IoTaskCreate` with seven closed
+operation shapes and exact target-native `Task[Result[T, IoError]]` frames.
+Generated requests carry an operation, a capability token or invalid-token
+sentinel, a borrowed byte view, and the optional port. Before retaining the
+request, the runtime copies every borrowed Text and resolves a source File or
+Socket token only through the active Task ledger, then duplicates the concrete
+resource. Open, create, and connect completion install the concrete RAII owner
+in the child Task's result ledger before publishing its monotonic capability
+token. The polling boundary publishes managed Text through an exact rooted
+scratch cell, and a compiler-generated callback constructs the direct Result
+without an intervening safepoint or universal value fallback.
 
 Calls to the C process entry, libc, and versioned Loom runtime functions are
 explicit external boundaries. They do not permit two source-function ABIs in

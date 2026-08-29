@@ -1,7 +1,7 @@
 use loom_codegen_ir::{
     BlockTarget, Constant, ContractFaultMetadata, Effects, FaultMetadata, InstructionKind, Origin,
-    Program, ProgramBuilder, ResourceKind, ResultTarget, Signature, TargetLayout, Terminator,
-    TerminatorKind, UnwindTarget, ValidationCode, dump_program,
+    Program, ProgramBuilder, ResourceKind, Signature, TargetLayout, Terminator, TerminatorKind,
+    UnwindTarget, ValidationCode, dump_program,
 };
 use loom_mir::{FunctionId, Type, TypeId};
 
@@ -11,6 +11,10 @@ fn origin(function: u32) -> Origin {
 
 fn assertion_metadata(function: u32) -> FaultMetadata {
     FaultMetadata::contract(ContractFaultMetadata::assertion(origin(function).span))
+}
+
+fn resource_effects() -> Effects {
+    Effects::NEEDS_EXECUTOR.with_implications()
 }
 
 fn resource_program(
@@ -57,47 +61,27 @@ fn resource_program_with_representation(
     {
         let mut function = program.function(function).expect("function builder");
         let entry = function.create_block().expect("entry");
-        let normal = function.create_block().expect("normal");
-        let fault = function.create_block().expect("fault");
         function.set_entry(entry).expect("set entry");
         let value = function
             .append_block_parameter(entry, resource)
             .expect("resource");
-        let returned = function
-            .append_block_parameter(normal, unit)
-            .expect("Unit result");
-        function
-            .append_block_parameter(normal, resource)
-            .expect("normal writeback");
-        function
-            .append_block_parameter(fault, resource)
-            .expect("fault writeback");
-        function
-            .terminate(
+        let results = function
+            .append_instruction(
                 entry,
-                Terminator::new(
-                    TerminatorKind::ResourceClose {
-                        kind,
-                        resource: value,
-                        normal: ResultTarget::new(normal, []),
-                        fault: UnwindTarget::new(fault, []),
-                    },
-                    origin(0),
-                ),
+                InstructionKind::ResourceClose {
+                    kind,
+                    resource: value,
+                },
+                &[unit, resource],
+                origin(0),
             )
             .expect("resource close");
         function
             .terminate(
-                normal,
-                Terminator::new(TerminatorKind::Return(returned), origin(0)),
+                entry,
+                Terminator::new(TerminatorKind::Return(results[0]), origin(0)),
             )
             .expect("return");
-        function
-            .terminate(
-                fault,
-                Terminator::new(TerminatorKind::ResumeFault, origin(0)),
-            )
-            .expect("resume fault");
     }
     program.finish()
 }
@@ -117,37 +101,31 @@ fn assert_has_code(program: Program, expected: ValidationCode) {
 }
 
 #[test]
-fn typed_resource_cleanup_has_exact_runtime_and_fault_edges() {
-    let checked = file_resource_program(
-        &[Type::Int],
-        Effects::MAY_FAULT.union(Effects::NEEDS_RUNTIME),
-    )
-    .into_checked()
-    .expect("one-Int typed resource cleanup is valid");
+fn typed_resource_cleanup_has_one_infallible_executor_edge() {
+    let checked = file_resource_program(&[Type::Int], resource_effects())
+        .into_checked()
+        .expect("one-Int typed resource cleanup is valid");
     let dump = dump_program(&checked);
     assert!(
-        dump.contains(
-            "resource.close.file %v0, normal b1(result, writeback0), fault b2(writeback0)"
-        ),
+        dump.lines()
+            .any(|line| { line.contains(", %") && line.contains(" = resource.close.file %v0") }),
         "{dump}"
     );
-    assert!(dump.contains("effects=may_fault+needs_runtime"), "{dump}");
+    assert!(
+        dump.contains("effects=needs_runtime+needs_executor"),
+        "{dump}"
+    );
 }
 
 #[test]
-fn typed_resource_cleanup_rejects_noncanonical_shape_and_missing_runtime_effect() {
+fn typed_resource_cleanup_rejects_noncanonical_shape_and_missing_executor_effect() {
+    let effects = resource_effects();
     assert_has_code(
-        file_resource_program(
-            &[Type::Int, Type::Int],
-            Effects::MAY_FAULT.union(Effects::NEEDS_RUNTIME),
-        ),
+        file_resource_program(&[Type::Int, Type::Int], effects),
         ValidationCode::TypeMismatch,
     );
     assert_has_code(
-        file_resource_program(
-            &[Type::Float],
-            Effects::MAY_FAULT.union(Effects::NEEDS_RUNTIME),
-        ),
+        file_resource_program(&[Type::Float], effects),
         ValidationCode::TypeMismatch,
     );
     assert_has_code(
@@ -155,20 +133,20 @@ fn typed_resource_cleanup_rejects_noncanonical_shape_and_missing_runtime_effect(
             ResourceKind::File,
             Type::Nominal(TypeId(8), Vec::new()),
             &[Type::Int],
-            Effects::MAY_FAULT.union(Effects::NEEDS_RUNTIME),
+            effects,
             true,
         ),
         ValidationCode::TypeMismatch,
     );
     assert_has_code(
-        file_resource_program(&[Type::Int], Effects::MAY_FAULT),
+        file_resource_program(&[Type::Int], Effects::NEEDS_RUNTIME),
         ValidationCode::EffectMismatch,
     );
 }
 
 #[test]
 fn typed_resource_cleanup_requires_the_exact_canonical_nominal_for_each_kind() {
-    let effects = Effects::MAY_FAULT.union(Effects::NEEDS_RUNTIME);
+    let effects = resource_effects();
     resource_program(
         ResourceKind::Socket,
         Type::Nominal(TypeId(9), Vec::new()),
@@ -195,7 +173,7 @@ fn typed_resource_cleanup_requires_the_exact_canonical_nominal_for_each_kind() {
 }
 
 #[test]
-fn active_resource_cleanup_preserves_the_primary_on_both_close_outcomes() {
+fn active_resource_cleanup_preserves_the_primary_after_close() {
     let mut program = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
     let boolean = program.type_id(&Type::Bool).expect("Bool");
     let unit = program.type_id(&Type::Unit).expect("Unit");
@@ -207,7 +185,7 @@ fn active_resource_cleanup_preserves_the_primary_on_both_close_outcomes() {
             origin(1),
             "cleanup.resource.primary",
             Signature::new([boolean, resource], unit),
-            Effects::MAY_FAULT.union(Effects::NEEDS_RUNTIME),
+            resource_effects().union(Effects::MAY_FAULT),
         )
         .expect("declare active cleanup");
     {
@@ -215,8 +193,6 @@ fn active_resource_cleanup_preserves_the_primary_on_both_close_outcomes() {
         let entry = function.create_block().expect("entry");
         let normal = function.create_block().expect("normal");
         let cleanup = function.create_block().expect("cleanup");
-        let close_normal = function.create_block().expect("close normal");
-        let close_fault = function.create_block().expect("close fault");
         function.set_entry(entry).expect("set entry");
         let condition = function
             .append_block_parameter(entry, boolean)
@@ -224,15 +200,6 @@ fn active_resource_cleanup_preserves_the_primary_on_both_close_outcomes() {
         let value = function
             .append_block_parameter(entry, resource)
             .expect("resource");
-        function
-            .append_block_parameter(close_normal, unit)
-            .expect("close result");
-        function
-            .append_block_parameter(close_normal, resource)
-            .expect("normal writeback");
-        function
-            .append_block_parameter(close_fault, resource)
-            .expect("fault writeback");
         function
             .terminate(
                 entry,
@@ -262,31 +229,26 @@ fn active_resource_cleanup_preserves_the_primary_on_both_close_outcomes() {
             )
             .expect("return");
         function
-            .terminate(
+            .append_instruction(
                 cleanup,
-                Terminator::new(
-                    TerminatorKind::ResourceClose {
-                        kind: ResourceKind::Socket,
-                        resource: value,
-                        normal: ResultTarget::new(close_normal, []),
-                        fault: UnwindTarget::new(close_fault, []),
-                    },
-                    origin(1),
-                ),
+                InstructionKind::ResourceClose {
+                    kind: ResourceKind::Socket,
+                    resource: value,
+                },
+                &[unit, resource],
+                origin(1),
             )
             .expect("active resource close");
-        for block in [close_normal, close_fault] {
-            function
-                .terminate(
-                    block,
-                    Terminator::new(TerminatorKind::ResumeFault, origin(1)),
-                )
-                .expect("resume primary");
-        }
+        function
+            .terminate(
+                cleanup,
+                Terminator::new(TerminatorKind::ResumeFault, origin(1)),
+            )
+            .expect("resume primary");
     }
     program
         .finish_checked()
-        .expect("active close success and secondary fault both preserve the primary");
+        .expect("active infallible close preserves the primary fault");
     // LCIR has no suspension operation. Advertising suspension on this same
     // cleanup graph cannot smuggle it through validation as an unused effect.
     let suspending = Effects::MAY_FAULT

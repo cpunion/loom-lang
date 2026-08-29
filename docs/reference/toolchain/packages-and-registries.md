@@ -106,10 +106,9 @@ lockfile still detects any transitive source change. The consumer then supplies 
 compiler-distributed standard library and runs the normal parse, type-check,
 proof, and lowering pipeline over the complete source graph.
 
-Version 1 artifacts are not upgraded in place and must be rebuilt with the
-current compiler. A `.loomlib` is portable across hosts at the language-artifact
-level, but it is not a native archive, dynamic library, stable FFI boundary, or
-plugin format.
+Only the current `.loomlib` format is accepted. A `.loomlib` is portable across
+hosts at the language-artifact level, but it is not a native archive, dynamic
+library, stable FFI boundary, or plugin format.
 
 See [Manifest and lockfile](manifest-and-lockfile.md) for dependency syntax and
 [Artifacts and cross-compilation](artifacts-and-cross-compilation.md) for the

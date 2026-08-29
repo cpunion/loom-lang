@@ -11,7 +11,8 @@ use polling::{Event, Events, Poller};
 use crate::platform::{OwnedWaitHandle, raw_poll_source, wait_handle_bits};
 use crate::runtime::LoomRuntime;
 use crate::scheduler::{
-    LoomJoinSpec, LoomTask, WorkerCompletion, retire_typed_frames_before_executor_drop,
+    LoomJoinSpec, LoomTask, WorkerCompletion, drain_blocking_work_before_executor_drop,
+    retire_typed_frames_before_executor_drop,
 };
 use crate::{
     READY_COMPLETED, READY_READABLE, READY_TIMER, READY_WRITABLE, WAIT_ABI_VERSION,
@@ -263,8 +264,13 @@ impl Drop for LoomExecutor {
             return;
         }
         // SAFETY: executor destruction owns every remaining Task and runs
-        // before detaching the Runtime required by typed result cleanup.
-        unsafe { retire_typed_frames_before_executor_drop(self) };
+        // before detaching the Runtime required by typed result cleanup. Any
+        // submitted blocking work is first cancelled and drained so teardown
+        // cannot return while an I/O side effect is still running.
+        unsafe {
+            drain_blocking_work_before_executor_drop(self);
+            retire_typed_frames_before_executor_drop(self);
+        }
         let executor = (&raw mut *self).cast::<c_void>();
         // SAFETY: the ABI requires the explicitly managed runtime to outlive
         // its borrowed executor.

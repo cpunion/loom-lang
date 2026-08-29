@@ -177,10 +177,10 @@ registration failure records `TimerRegistrationFault` as the Task's primary
 fault. Cancellation removes an outstanding registration, and its generation
 prevents a stale ready notification from re-enqueuing the cancelled Task.
 
-The additive factory advances the native runtime ABI to component 16 and adds
-`typed-timer-v1` plus `runtime-v10` to the exact identity. The typed-task and
-wait wires remain version 1; the timer carries no universal value, moving-GC
-root, or new scheduler protocol.
+The factory is the current `typed-timer-v1` boundary. The timer carries no
+universal value or moving-GC root and reuses the typed-task and wait protocols.
+The complete current identity is defined in
+[Versioning and compatibility](../project/versioning.md).
 
 Synchronous Task-producing helpers receive the active executor through one
 effect-derived compiler-private parameter. The parameter follows any hidden
@@ -230,9 +230,8 @@ the selected children from the active parent under the composite and publishes
 the composite atomically; failure leaves the original topology unchanged, so
 generated code can abort the unpublished frame and fail closed.
 
-This additive adoption boundary advances the native runtime ABI to component
-17 and adds `typed-task-adopt-v1` plus `runtime-v11` to the exact identity.
-`typed-task-v1`, `typed-timer-v1`, `wait-v1`, and `gc-v9` remain unchanged.
+This is the current `typed-task-adopt-v1` boundary and composes with the
+typed-task, timer, wait, and GC protocols without a second Task representation.
 
 A nonempty, immediately awaited, fixed-arity `Task.any` is also direct when
 every child has the same exact output type `T`. Its `AwaitTasks` plan retains one
@@ -271,16 +270,16 @@ safepoint, so outcomes already constructed remain in the ordinary exact root
 plan while a later fault is captured.
 
 Successful completion consumption preserves built-in File/Socket ownership
-before that retirement. `loom_typed_task_take_result_v1` moves those handles to
+before that retirement. `loom_typed_task_take_result_v1` moves those concrete owners to
 the task's non-null owner Task before detaching and retiring the child. When it
-is applied directly to the ownerless root Task, the handles remain on that
+is applied directly to the ownerless root Task, the owners remain on that
 Task's `owned_result_resources` ledger in the executor-owned task registry.
 The Completed branch of `loom_typed_task_take_outcome_v1` always consumes a
-child and moves its handles to that child's owner Task, which may itself be the
+child and moves its resources to that child's owner Task, which may itself be the
 root Task. The transfer is part of the successful commit: validation failure
 leaves both task topology and ownership unchanged, and a repeated take cannot
 duplicate ownership. Faulted and cancelled outcomes transfer no completed-
-result handles. Fault/cancellation cleanup and completed loser or unconsumed
+result resources. Fault/cancellation cleanup and completed loser or unconsumed
 result disposal release all remaining built-in File/Socket ledger entries at
 that deterministic cleanup boundary, even if a result disposer reports a fault
 or protocol defect. Retired-task reaping then reclaims memory only.
@@ -293,19 +292,15 @@ finalization to have completed before the winner can be removed. This prevents
 an early or wrong-shaped take from changing winner ordinals, retaining stale
 Task pointers, or bypassing loser disposal.
 
-Both `any` and `race` use generalized winner finalization when the source
+Both `any` and `race` use winner finalization when the source
 callback consumes `loom_task_join_step`. It retains the original winner,
 disposes completed loser results, and retires losers in static reverse-input
-order. A loser-disposal fault becomes primary before source cleanup. That
-revision advanced the exact native runtime identity to component 19 with
-`typed-task-winner-finalize-v1`, `typed-task-outcome-v1`, and `runtime-v13`.
-Typed-task v1, coroutine v2, wait v1, and GC v9 remain unchanged.
-
-The ownership-order correction uses those same take symbols, arguments,
-terminal statuses, task layout, and typed-task v1 wire. It advances the exact
-native runtime identity to component 26 with
-`typed-resource-ownership-v1` and `runtime-v20`, so a runtime bundle with
-the prior semantics is rejected even though its exported ABI shape matches.
+order. A loser-disposal fault becomes primary before source cleanup. The
+current private identity names `typed-task-winner-finalize-v1`,
+`typed-task-outcome-v1`, and `typed-resource-ownership-v1`. Completed-result
+take transfers resource-ledger ownership before retiring the child; all other
+terminal outcomes retain no deliverable resource. Runtime bundles must match
+the complete current identity even when exported function shapes agree.
 
 A sole nonempty List literal is also a closed static row. Lowering consumes its
 elements directly without allocating the input List. `all` and `settled`
@@ -323,9 +318,15 @@ bounded blocking pool:
 - per-executor completion delivery through the lazy worker mailbox and reactor
   completion source.
 
-Task cancellation invalidates or cancels its outstanding registrations.
-Generation checks prevent a late notification or worker completion from waking
-a reused Task registration.
+Task cancellation invalidates readiness registrations immediately. It
+atomically claims a queued blocking job, drops the still-unstarted host closure
+and its captured resources, and makes the Task runnable without waiting for a
+worker. The eventual empty queue entry performs no work and emits no
+completion. A job which already started must finish and publish its private
+completion; the runtime discards the result and only then schedules the Task's
+cancellation callback. Executor teardown applies the same distinction before
+releasing Task or reactor state. Generation checks prevent a late notification
+or worker completion from waking a reused Task registration.
 
 ## Scheduling, completion, and faults
 
@@ -357,11 +358,11 @@ of:
 
 Tuple inputs preserve heterogeneous result types. List inputs support a dynamic
 number of homogeneous tasks. A successfully consumed completed result transfers
-its built-in File/Socket handles to the child's owner Task, which may itself be
-the root Task, before the child is retired or reclaimed. Faulted, cancelled,
-losing, and unconsumed tasks do not transfer completed-result handles. Their
-terminal cleanup or typed result disposal releases remaining built-in handles
-before retired-task memory reclamation.
+its concrete built-in File/Socket owners to the child's owner Task, which may
+itself be the root Task, before the child is retired or reclaimed. Faulted,
+cancelled, losing, and unconsumed tasks do not transfer completed-result
+resources. Their terminal cleanup or typed result disposal releases remaining
+built-in owners before retired-task memory reclamation.
 
 The complete runtime and legacy compiler route implement all of those source
 forms. The typed-LCIR route admits nonempty immediately awaited fixed-argument

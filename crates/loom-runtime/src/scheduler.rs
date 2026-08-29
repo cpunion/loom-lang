@@ -4,31 +4,40 @@ use std::fmt::Write as _;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::mem::{align_of, size_of};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::ptr::{self, NonNull};
 use std::slice;
-use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::sync::{
+    Arc, Mutex, OnceLock,
+    atomic::{AtomicU8, Ordering},
+    mpsc,
+};
+
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
 
 use loom_runtime_abi::{
     FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX, GC_MAX_OBJECT_ALIGNMENT,
     GC_MAX_OBJECT_BYTES, GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, GC_OK,
-    LoomByteView, LoomTypedCoroutineDescriptor, LoomTypedTaskCallback, LoomTypedTaskFaultView,
-    LoomWitnessInstance, TYPED_RESOURCE_CLOSE_FAILED, TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT,
-    TYPED_RESOURCE_CLOSE_OK, TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET,
-    TYPED_TASK_ABI_VERSION, TYPED_TASK_CLEANUP_FAULTED, TYPED_TASK_INVALID_ARGUMENT,
-    TYPED_TASK_MAX_FAULT_TEXT_BYTES, TYPED_TASK_NO_MEMORY, TYPED_TASK_OK,
-    TYPED_TASK_STATUS_INVALID, VALUE_SLOT_WORDS, VALUE_TAG_ENUM, VALUE_TAG_LIST, VALUE_TAG_RECORD,
-    VALUE_TAG_TASK, VALUE_TAG_TUPLE,
+    LoomByteView, LoomTypedCoroutineDescriptor, LoomTypedIoOutcome, LoomTypedIoRequest,
+    LoomTypedTaskCallback, LoomTypedTaskFaultView, LoomWitnessInstance, TYPED_IO_ABI_VERSION,
+    TYPED_IO_INVALID_RESOURCE_TOKEN, TYPED_IO_OPERATION_FILE_CREATE,
+    TYPED_IO_OPERATION_FILE_OPEN_READ, TYPED_IO_OPERATION_FILE_READ_TEXT,
+    TYPED_IO_OPERATION_FILE_WRITE_TEXT, TYPED_IO_OPERATION_SOCKET_CONNECT,
+    TYPED_IO_OPERATION_SOCKET_READ_TEXT, TYPED_IO_OPERATION_SOCKET_WRITE_TEXT,
+    TYPED_IO_OUTCOME_ERROR, TYPED_IO_OUTCOME_RESOURCE, TYPED_IO_OUTCOME_TEXT,
+    TYPED_IO_OUTCOME_UNIT, TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT, TYPED_RESOURCE_CLOSE_OK,
+    TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET, TYPED_TASK_ABI_VERSION,
+    TYPED_TASK_CLEANUP_FAULTED, TYPED_TASK_INVALID_ARGUMENT, TYPED_TASK_MAX_FAULT_TEXT_BYTES,
+    TYPED_TASK_NO_MEMORY, TYPED_TASK_OK, TYPED_TASK_STATUS_INVALID, VALUE_SLOT_WORDS,
+    VALUE_TAG_ENUM, VALUE_TAG_LIST, VALUE_TAG_RECORD, VALUE_TAG_TASK, VALUE_TAG_TUPLE,
 };
 
 use crate::gc::{
     NodeStream, RecoverableExecutorActivation, RuntimeRootScope, active_runtime_pointer,
     enter_executor, leave_executor, poll,
 };
-use crate::platform::{
-    INVALID_HANDLE, OwnedResource, close_untracked, duplicate_file, duplicate_socket,
-    socket_handle_bits,
-};
+use crate::platform::{INVALID_RESOURCE_TOKEN, OwnedResource, socket_handle_bits};
 use crate::reactor::{
     LoomExecutor, LoomReadyNotification, LoomRegistration, LoomWaitSource, cancel_for_task,
     has_registrations, pop_for_scheduler, register_for_task, wait_for_scheduler,
@@ -237,6 +246,71 @@ impl TypedTaskStorage {
         // and every copied root offset before this storage was constructed.
         unsafe { self.frame.as_ptr().add(offset).cast() }
     }
+
+    fn live_non_result_root_offset(&self, cell: *mut *mut c_void) -> Option<usize> {
+        let address = cell as usize;
+        let frame_start = self.frame.as_ptr() as usize;
+        let frame_end = frame_start.checked_add(self.frame_layout.size())?;
+        let cell_end = address.checked_add(size_of::<*mut c_void>())?;
+        if address < frame_start
+            || cell_end > frame_end
+            || !address.is_multiple_of(align_of::<*mut c_void>())
+        {
+            return None;
+        }
+        let offset = address.checked_sub(frame_start)?;
+        let result_end = self.result_offset.checked_add(self.result_size)?;
+        if offset < result_end && offset.checked_add(size_of::<*mut c_void>())? > self.result_offset
+        {
+            return None;
+        }
+        self.root_offsets
+            .iter()
+            .position(|candidate| *candidate == offset)
+            .filter(|index| self.root_is_live(self.root_state, *index))
+            .map(|_| offset)
+    }
+
+    fn has_typed_io_root_shape(&self) -> bool {
+        if self.root_offsets.len() < 2
+            || self.root_state_count != 2
+            || self.completed_root_state != 1
+            || self.root_bitmap_words != 1
+        {
+            return false;
+        }
+        let pointer_size = size_of::<*mut c_void>();
+        let Some(result_end) = self.result_offset.checked_add(self.result_size) else {
+            return false;
+        };
+        let inside_result = |offset: usize| {
+            offset >= self.result_offset
+                && offset
+                    .checked_add(pointer_size)
+                    .is_some_and(|end| end <= result_end)
+        };
+        let mut running_roots = 0;
+        let mut completed_roots = 0;
+        for (index, offset) in self.root_offsets.iter().copied().enumerate() {
+            let running = self.root_is_live(0, index);
+            let completed = self.root_is_live(1, index);
+            if running == completed {
+                return false;
+            }
+            if running {
+                if inside_result(offset) {
+                    return false;
+                }
+                running_roots += 1;
+            } else {
+                if !inside_result(offset) {
+                    return false;
+                }
+                completed_roots += 1;
+            }
+        }
+        running_roots == 1 && completed_roots != 0
+    }
 }
 
 impl Drop for TypedTaskStorage {
@@ -286,6 +360,51 @@ enum IoOperation {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TypedIoOperation {
+    FileOpenRead,
+    FileCreate,
+    FileReadText,
+    FileWriteText,
+    SocketConnect,
+    SocketReadText,
+    SocketWriteText,
+}
+
+impl TypedIoOperation {
+    const fn from_abi(operation: u32) -> Option<Self> {
+        match operation {
+            TYPED_IO_OPERATION_FILE_OPEN_READ => Some(Self::FileOpenRead),
+            TYPED_IO_OPERATION_FILE_CREATE => Some(Self::FileCreate),
+            TYPED_IO_OPERATION_FILE_READ_TEXT => Some(Self::FileReadText),
+            TYPED_IO_OPERATION_FILE_WRITE_TEXT => Some(Self::FileWriteText),
+            TYPED_IO_OPERATION_SOCKET_CONNECT => Some(Self::SocketConnect),
+            TYPED_IO_OPERATION_SOCKET_READ_TEXT => Some(Self::SocketReadText),
+            TYPED_IO_OPERATION_SOCKET_WRITE_TEXT => Some(Self::SocketWriteText),
+            _ => None,
+        }
+    }
+
+    const fn resource_kind(self) -> Option<IoResourceKind> {
+        match self {
+            Self::FileOpenRead | Self::FileCreate => Some(IoResourceKind::File),
+            Self::SocketConnect => Some(IoResourceKind::Socket),
+            Self::FileReadText
+            | Self::FileWriteText
+            | Self::SocketReadText
+            | Self::SocketWriteText => None,
+        }
+    }
+
+    const fn expects_text(self) -> bool {
+        matches!(self, Self::FileReadText | Self::SocketReadText)
+    }
+
+    const fn expects_unit(self) -> bool {
+        matches!(self, Self::FileWriteText | Self::SocketWriteText)
+    }
+}
+
 pub(crate) enum BlockingResult {
     Resource {
         nominal: u64,
@@ -303,13 +422,108 @@ pub(crate) enum BlockingResult {
     },
 }
 
+enum IoProgress {
+    Ready(BlockingResult),
+    Suspend {
+        operation: IoOperation,
+        handle: i64,
+        interests: u32,
+    },
+}
+
 pub(crate) struct WorkerCompletion {
     pub(crate) task: usize,
     pub(crate) registration: LoomRegistration,
-    pub(crate) result: BlockingResult,
+    pub(crate) result: Option<BlockingResult>,
+}
+
+struct BlockingWait {
+    registration: LoomRegistration,
+    state: Arc<AtomicU8>,
+    submission: Arc<Mutex<Option<BlockingJob>>>,
 }
 
 type BlockingJob = Box<dyn FnOnce() + Send + 'static>;
+
+const BLOCKING_QUEUED: u8 = 0;
+const BLOCKING_STARTED: u8 = 1;
+const BLOCKING_CANCELLED_QUEUED: u8 = 2;
+const BLOCKING_CANCELLED_STARTED: u8 = 3;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BlockingCancellation {
+    Queued,
+    Started,
+}
+
+fn take_blocking_submission(submission: &Mutex<Option<BlockingJob>>) -> Option<BlockingJob> {
+    let Ok(mut submission) = submission.lock() else {
+        std::process::abort();
+    };
+    submission.take()
+}
+
+fn cancel_blocking_work(
+    state: &AtomicU8,
+    submission: &Mutex<Option<BlockingJob>>,
+) -> BlockingCancellation {
+    loop {
+        match state.load(Ordering::Acquire) {
+            BLOCKING_QUEUED => {
+                if state
+                    .compare_exchange(
+                        BLOCKING_QUEUED,
+                        BLOCKING_CANCELLED_QUEUED,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    drop(take_blocking_submission(submission));
+                    return BlockingCancellation::Queued;
+                }
+            }
+            BLOCKING_STARTED => {
+                if state
+                    .compare_exchange(
+                        BLOCKING_STARTED,
+                        BLOCKING_CANCELLED_STARTED,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    return BlockingCancellation::Started;
+                }
+            }
+            BLOCKING_CANCELLED_QUEUED => {
+                drop(take_blocking_submission(submission));
+                return BlockingCancellation::Queued;
+            }
+            BLOCKING_CANCELLED_STARTED => return BlockingCancellation::Started,
+            _ => std::process::abort(),
+        }
+    }
+}
+
+fn run_blocking_submission(state: &AtomicU8, submission: &Mutex<Option<BlockingJob>>) -> bool {
+    if state
+        .compare_exchange(
+            BLOCKING_QUEUED,
+            BLOCKING_STARTED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return false;
+    }
+    let Some(submission) = take_blocking_submission(submission) else {
+        std::process::abort();
+    };
+    submission();
+    true
+}
 
 fn blocking_pool() -> &'static mpsc::SyncSender<BlockingJob> {
     static POOL: OnceLock<mpsc::SyncSender<BlockingJob>> = OnceLock::new();
@@ -363,7 +577,9 @@ pub struct LoomTask {
     composite_spec: *mut LoomJoinSpec,
     io_operation: Option<IoOperation>,
     blocking_result: Option<BlockingResult>,
+    blocking_wait: Option<BlockingWait>,
     io_fallible: bool,
+    typed_io_operation: Option<TypedIoOperation>,
     owned_result_resources: Vec<OwnedResource>,
     primary_fault_recorded: bool,
     fault_code: String,
@@ -564,15 +780,37 @@ unsafe fn request_cancel(executor: &mut LoomExecutor, task: *mut LoomTask) {
         return;
     }
     unsafe { (*task).cancel_requested = true };
+    let blocking = unsafe {
+        (*task).blocking_wait.as_ref().map(|wait| {
+            (
+                wait.registration,
+                cancel_blocking_work(&wait.state, &wait.submission)
+                    == BlockingCancellation::Started,
+            )
+        })
+    };
     let registrations = unsafe { std::mem::take(&mut (*task).waits) };
+    let mut retained_blocking_wait = Vec::new();
     for registration in registrations {
+        if blocking == Some((registration, true)) {
+            retained_blocking_wait.push(registration);
+            continue;
+        }
         // SAFETY: each registration was created by this executor for task.
         let _ = unsafe { cancel_for_task(executor, &raw const registration) };
     }
-    if unsafe { (*task).status } != TaskStatus::Running {
-        // Cancellation is strict reverse creation order. Reinsert the owner at
-        // the front first, then visit children oldest-to-newest; every newer
-        // child (and its descendants) is placed ahead of older work.
+    let blocking_pending = !retained_blocking_wait.is_empty();
+    unsafe {
+        (*task).waits = retained_blocking_wait;
+        if !blocking_pending {
+            (*task).blocking_wait = None;
+        }
+    }
+    if unsafe { (*task).status } != TaskStatus::Running && !blocking_pending {
+        // Among children which can run their cancellation callback now, queue
+        // order favors newer children. A child draining started I/O becomes
+        // runnable only at completion, so no cross-sibling cleanup completion
+        // order is promised.
         executor.runnable.retain(|candidate| *candidate != task);
         unsafe {
             (*task).queued = false;
@@ -1346,6 +1584,80 @@ pub(crate) unsafe fn retire_typed_frames_before_executor_drop(executor: &mut Loo
     }
 }
 
+/// Cancels and drains every submitted blocking job before executor-owned Task
+/// storage or reactor state can be released.
+///
+/// Queued jobs are atomically claimed by cancellation and need no worker
+/// completion before the Task or executor may retire. Jobs which already
+/// started are not asynchronously interrupted; executor teardown waits only
+/// for those completions and discards their results. A worker never retains a
+/// live Task reference, but draining started work here also guarantees that
+/// teardown itself is a structured side-effect boundary.
+pub(crate) unsafe fn drain_blocking_work_before_executor_drop(executor: &mut LoomExecutor) {
+    let waits = executor
+        .tasks
+        .iter_mut()
+        .filter_map(|task| {
+            let pointer = (&raw mut **task).cast::<LoomTask>();
+            let wait = task.blocking_wait.as_ref()?;
+            Some((
+                pointer,
+                wait.registration,
+                Arc::clone(&wait.state),
+                Arc::clone(&wait.submission),
+            ))
+        })
+        .collect::<Vec<_>>();
+    if waits.is_empty() {
+        return;
+    }
+
+    let mut pending = Vec::new();
+    for (task, registration, state, submission) in waits {
+        let _ = unsafe { cancel_for_task(executor, ptr::from_ref(&registration)) };
+        unsafe { (*task).waits.retain(|candidate| *candidate != registration) };
+        if cancel_blocking_work(&state, &submission) == BlockingCancellation::Started {
+            pending.push((task, registration));
+        } else {
+            unsafe { (*task).blocking_wait = None };
+        }
+    }
+    if pending.is_empty() {
+        return;
+    }
+
+    let mut remaining = pending;
+    while !remaining.is_empty() {
+        let completion = {
+            let Some(worker) = executor.worker.as_ref() else {
+                std::process::abort();
+            };
+            let Ok(completion) = worker.receiver.recv() else {
+                std::process::abort();
+            };
+            completion
+        };
+        let task = completion.task as *mut LoomTask;
+        let Some(index) = remaining.iter().position(|(candidate, registration)| {
+            *candidate == task && *registration == completion.registration
+        }) else {
+            continue;
+        };
+        remaining.swap_remove(index);
+        if executor_owns(executor, task)
+            && unsafe {
+                (*task)
+                    .blocking_wait
+                    .as_ref()
+                    .is_some_and(|wait| wait.registration == completion.registration)
+            }
+        {
+            unsafe { (*task).blocking_wait = None };
+        }
+        drop(completion.result);
+    }
+}
+
 unsafe fn complete_terminal(executor: &mut LoomExecutor, task: *mut LoomTask, step: i32) {
     if !executor_owns(executor, task) || terminal(unsafe { (*task).status }) {
         return;
@@ -1462,7 +1774,7 @@ unsafe fn consume_notifications(executor: *mut LoomExecutor) {
             continue;
         };
         unsafe { (*task).waits.remove(index) };
-        if unsafe { (*task).waits.is_empty() } && !unsafe { (*task).cancel_requested } {
+        if unsafe { (*task).waits.is_empty() } {
             unsafe {
                 (*task).status = TaskStatus::Runnable;
                 enqueue_task(executor_ref, task);
@@ -1488,7 +1800,21 @@ unsafe fn drain_worker_completions(executor: *mut LoomExecutor) {
         {
             continue;
         }
-        unsafe { (*task).blocking_result = Some(completion.result) };
+        let blocking_matches = unsafe {
+            (*task)
+                .blocking_wait
+                .as_ref()
+                .is_some_and(|wait| wait.registration == completion.registration)
+        };
+        if !blocking_matches {
+            continue;
+        }
+        unsafe {
+            (*task).blocking_wait = None;
+            if !(*task).cancel_requested {
+                (*task).blocking_result = completion.result;
+            }
+        }
         let _ = unsafe {
             crate::reactor::executor_notify_completion(
                 executor,
@@ -1709,10 +2035,404 @@ unsafe extern "C" fn resume_io(task: *mut LoomTask, executor: *mut LoomExecutor)
     }
 }
 
+fn typed_io_operation_matches(expected: TypedIoOperation, operation: &IoOperation) -> bool {
+    matches!(
+        (expected, operation),
+        (
+            TypedIoOperation::FileOpenRead,
+            IoOperation::FileOpen { create: false, .. }
+        ) | (
+            TypedIoOperation::FileCreate,
+            IoOperation::FileOpen { create: true, .. }
+        ) | (TypedIoOperation::FileReadText, IoOperation::FileRead { .. })
+            | (
+                TypedIoOperation::FileWriteText,
+                IoOperation::FileWrite { .. }
+            )
+            | (
+                TypedIoOperation::SocketConnect,
+                IoOperation::SocketConnect { .. }
+            )
+            | (
+                TypedIoOperation::SocketReadText,
+                IoOperation::SocketRead { .. }
+            )
+            | (
+                TypedIoOperation::SocketWriteText,
+                IoOperation::SocketWrite { .. }
+            )
+    )
+}
+
+unsafe fn validate_typed_io_poll(
+    task: *mut LoomTask,
+    executor: *mut LoomExecutor,
+    scratch_text: *mut *mut c_void,
+    outcome: *mut LoomTypedIoOutcome,
+) -> Option<TypedIoOperation> {
+    if task.is_null()
+        || executor.is_null()
+        || scratch_text.is_null()
+        || outcome.is_null()
+        || !(outcome as usize).is_multiple_of(align_of::<LoomTypedIoOutcome>())
+        || unsafe { (*executor).cleanup_active() }
+        || !executor_owns(unsafe { &*executor }, task)
+        || unsafe { (*executor).active_task } != task
+        || unsafe { (*task).executor } != executor
+        || unsafe { (*task).status } != TaskStatus::Running
+        || unsafe { (*task).cancel_requested }
+        || !unsafe { (*task).waits.is_empty() }
+        || !unsafe { (*task).io_fallible }
+        || !unsafe { (*task).wait_leaf }
+        || crate::gc::active_runtime_pointer() != unsafe { (*executor).runtime_pointer() }
+    {
+        return None;
+    }
+    let typed = unsafe { (*task).typed.as_ref() }?;
+    if !typed.initialized
+        || !typed.published
+        || typed.result_initialized
+        || typed.result_taken
+        || typed.result_disposed
+        || typed.root_state != 0
+        || typed.live_non_result_root_offset(scratch_text).is_none()
+        || unsafe { !(*scratch_text).is_null() }
+    {
+        return None;
+    }
+    let frame_start = typed.frame.as_ptr() as usize;
+    let frame_end = frame_start.checked_add(typed.frame_layout.size())?;
+    let outcome_start = outcome as usize;
+    let outcome_end = outcome_start.checked_add(size_of::<LoomTypedIoOutcome>())?;
+    if outcome_start < frame_end && frame_start < outcome_end {
+        return None;
+    }
+    unsafe { (*task).typed_io_operation }
+}
+
+unsafe fn typed_io_publish_text(
+    task: *mut LoomTask,
+    bytes: &[u8],
+    scratch_text: *mut *mut c_void,
+) -> Result<(), i32> {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return Err(unsafe {
+            fail_message(
+                task,
+                "LOOM_RUNTIME_TYPED_IO_UTF8",
+                "typed I/O attempted to publish invalid UTF-8 Text",
+            )
+        });
+    };
+    let Ok(scalar_length) = u64::try_from(text.chars().count()) else {
+        return Err(unsafe {
+            fail_message(
+                task,
+                "LOOM_RUNTIME_TYPED_IO_TEXT_SIZE",
+                "typed I/O Text scalar length overflowed",
+            )
+        });
+    };
+    let status = unsafe { crate::text::allocate_typed_text(bytes, scalar_length, scratch_text) };
+    if status == crate::GC_OK {
+        Ok(())
+    } else {
+        Err(unsafe {
+            fail_message(
+                task,
+                "LOOM_RUNTIME_TYPED_IO_TEXT",
+                "typed I/O could not publish managed Text",
+            )
+        })
+    }
+}
+
+unsafe fn finish_typed_io_resource(
+    task: *mut LoomTask,
+    expected: TypedIoOperation,
+    outcome: *mut LoomTypedIoOutcome,
+    nominal: u64,
+    resource: OwnedResource,
+) -> i32 {
+    let Some(expected_kind) = expected.resource_kind() else {
+        return unsafe {
+            fail_message(
+                task,
+                "LOOM_RUNTIME_TYPED_IO_RESULT",
+                "typed I/O operation produced an unexpected resource",
+            )
+        };
+    };
+    let nominal_matches = match expected_kind {
+        IoResourceKind::File => nominal == FILE_TYPE && resource.is_file(),
+        IoResourceKind::Socket => nominal == SOCKET_TYPE && !resource.is_file(),
+    };
+    let token = resource.token().cast_unsigned();
+    if !nominal_matches || token == TYPED_IO_INVALID_RESOURCE_TOKEN {
+        return unsafe {
+            fail_message(
+                task,
+                "LOOM_RUNTIME_TYPED_IO_RESOURCE",
+                "typed I/O operation produced an invalid resource",
+            )
+        };
+    }
+    // The concrete RAII owner enters the Task ledger before generated code can
+    // observe its capability token. Every non-completed terminal path clears
+    // this ledger before the Task can be reaped.
+    unsafe { (*task).owned_result_resources.push(resource) };
+    unsafe {
+        outcome.write(LoomTypedIoOutcome {
+            kind: TYPED_IO_OUTCOME_RESOURCE,
+            detail: 0,
+            resource_token: token,
+        });
+    }
+    TASK_COMPLETED
+}
+
+unsafe fn finish_typed_io_error(
+    task: *mut LoomTask,
+    scratch_text: *mut *mut c_void,
+    outcome: *mut LoomTypedIoOutcome,
+    kind: u32,
+    message: &str,
+) -> i32 {
+    if kind > 9 {
+        return unsafe {
+            fail_message(
+                task,
+                "LOOM_RUNTIME_TYPED_IO_ERROR_KIND",
+                "typed I/O produced an invalid IoErrorKind",
+            )
+        };
+    }
+    if let Err(step) = unsafe { typed_io_publish_text(task, message.as_bytes(), scratch_text) } {
+        return step;
+    }
+    unsafe {
+        outcome.write(LoomTypedIoOutcome {
+            kind: TYPED_IO_OUTCOME_ERROR,
+            detail: kind,
+            resource_token: 0,
+        });
+    }
+    TASK_COMPLETED
+}
+
+unsafe fn finish_typed_io_result(
+    task: *mut LoomTask,
+    expected: TypedIoOperation,
+    scratch_text: *mut *mut c_void,
+    outcome: *mut LoomTypedIoOutcome,
+    result: BlockingResult,
+) -> i32 {
+    match result {
+        BlockingResult::Resource { nominal, resource } => unsafe {
+            finish_typed_io_resource(task, expected, outcome, nominal, resource)
+        },
+        BlockingResult::Text { bytes, code: _ } => {
+            if !expected.expects_text() {
+                return unsafe {
+                    fail_message(
+                        task,
+                        "LOOM_RUNTIME_TYPED_IO_RESULT",
+                        "typed I/O operation produced unexpected Text",
+                    )
+                };
+            }
+            if std::str::from_utf8(&bytes).is_err() {
+                return unsafe {
+                    finish_typed_io_error(
+                        task,
+                        scratch_text,
+                        outcome,
+                        3,
+                        "I/O bytes are not valid UTF-8 Text",
+                    )
+                };
+            }
+            if let Err(step) = unsafe { typed_io_publish_text(task, &bytes, scratch_text) } {
+                return step;
+            }
+            unsafe {
+                outcome.write(LoomTypedIoOutcome {
+                    kind: TYPED_IO_OUTCOME_TEXT,
+                    detail: 0,
+                    resource_token: 0,
+                });
+            }
+            TASK_COMPLETED
+        }
+        BlockingResult::Unit => {
+            if !expected.expects_unit() {
+                return unsafe {
+                    fail_message(
+                        task,
+                        "LOOM_RUNTIME_TYPED_IO_RESULT",
+                        "typed I/O operation produced unexpected Unit",
+                    )
+                };
+            }
+            unsafe {
+                outcome.write(LoomTypedIoOutcome {
+                    kind: TYPED_IO_OUTCOME_UNIT,
+                    detail: 0,
+                    resource_token: 0,
+                });
+            }
+            TASK_COMPLETED
+        }
+        BlockingResult::Fault {
+            code: _,
+            kind,
+            message,
+        } => unsafe { finish_typed_io_error(task, scratch_text, outcome, kind, &message) },
+    }
+}
+
+unsafe fn finish_typed_io_progress(
+    task: *mut LoomTask,
+    executor: *mut LoomExecutor,
+    expected: TypedIoOperation,
+    scratch_text: *mut *mut c_void,
+    outcome: *mut LoomTypedIoOutcome,
+    progress: IoProgress,
+) -> i32 {
+    match progress {
+        IoProgress::Ready(result) => unsafe {
+            finish_typed_io_result(task, expected, scratch_text, outcome, result)
+        },
+        IoProgress::Suspend {
+            operation,
+            handle,
+            interests,
+        } => unsafe { suspend_io(task, executor, operation, handle, interests) },
+    }
+}
+
+/// Advances the active typed I/O Task without knowing the target-layout
+/// `Result`. Managed Text is published only into the compiler-declared scratch
+/// root; all remaining completion data is pointer-free.
+#[unsafe(export_name = "loom_typed_io_poll_v1")]
+pub unsafe extern "C" fn typed_io_poll_v1(
+    task: *mut c_void,
+    executor: *mut c_void,
+    scratch_text: *mut *mut c_void,
+    outcome: *mut LoomTypedIoOutcome,
+) -> i32 {
+    let task = task.cast::<LoomTask>();
+    let executor = executor.cast::<LoomExecutor>();
+    let Some(expected) = (unsafe { validate_typed_io_poll(task, executor, scratch_text, outcome) })
+    else {
+        return TASK_FAULTED;
+    };
+    unsafe { outcome.write(LoomTypedIoOutcome::default()) };
+    if let Some(result) = unsafe { (*task).blocking_result.take() } {
+        return unsafe { finish_typed_io_result(task, expected, scratch_text, outcome, result) };
+    }
+    let Some(operation) = (unsafe { (*task).io_operation.take() }) else {
+        return unsafe {
+            fail_message(
+                task,
+                "LOOM_RUNTIME_TYPED_IO_COMPLETION",
+                "typed I/O Task resumed without an operation or completion",
+            )
+        };
+    };
+    if !typed_io_operation_matches(expected, &operation) {
+        return unsafe {
+            fail_message(
+                task,
+                "LOOM_RUNTIME_TYPED_IO_OPERATION",
+                "typed I/O Task operation does not match its request",
+            )
+        };
+    }
+    match operation {
+        IoOperation::FileOpen { path, create } => unsafe {
+            suspend_blocking(task, executor, move || blocking_file_open(path, create))
+        },
+        IoOperation::FileRead { file } => unsafe {
+            suspend_blocking(task, executor, move || blocking_file_read(file))
+        },
+        IoOperation::FileWrite { file, bytes } => unsafe {
+            suspend_blocking(task, executor, move || blocking_file_write(file, &bytes))
+        },
+        IoOperation::SocketConnect { host, port } => unsafe {
+            suspend_blocking(task, executor, move || blocking_socket_connect(&host, port))
+        },
+        IoOperation::SocketRead { socket, bytes } => unsafe {
+            finish_typed_io_progress(
+                task,
+                executor,
+                expected,
+                scratch_text,
+                outcome,
+                advance_socket_read(socket, bytes),
+            )
+        },
+        IoOperation::SocketWrite {
+            socket,
+            bytes,
+            offset,
+        } => unsafe {
+            finish_typed_io_progress(
+                task,
+                executor,
+                expected,
+                scratch_text,
+                outcome,
+                advance_socket_write(socket, bytes, offset),
+            )
+        },
+    }
+}
+
+/// Exact non-suspending cleanup callback for typed I/O leaf descriptors.
+#[unsafe(export_name = "loom_typed_io_cancel_v1")]
+pub unsafe extern "C" fn typed_io_cancel_v1(
+    task: *mut c_void,
+    executor: *mut c_void,
+    frame: *mut c_void,
+) -> i32 {
+    let task = task.cast::<LoomTask>();
+    let executor = executor.cast::<LoomExecutor>();
+    if task.is_null()
+        || executor.is_null()
+        || frame.is_null()
+        || !executor_owns(unsafe { &*executor }, task)
+        || unsafe { (*task).executor } != executor
+        || unsafe { (*executor).active_task } != task
+        || unsafe { (*task).status } != TaskStatus::Running
+        || !unsafe { (*task).cancel_requested }
+        || !unsafe { (*task).io_fallible }
+        || unsafe { (*task).typed_io_operation.is_none() }
+        || unsafe {
+            (*task)
+                .typed
+                .as_ref()
+                .is_none_or(|typed| !typed.initialized || typed.frame_pointer() != frame)
+        }
+    {
+        return TASK_FAULTED;
+    }
+    TASK_CANCELLED
+}
+
 unsafe fn suspend_blocking<F>(task: *mut LoomTask, executor: *mut LoomExecutor, work: F) -> i32
 where
     F: FnOnce() -> BlockingResult + Send + 'static,
 {
+    if unsafe { (*task).blocking_wait.is_some() } {
+        return unsafe {
+            fail_message(
+                task,
+                "IoWaitFault",
+                "I/O task already owns a blocking completion",
+            )
+        };
+    }
     let source = LoomWaitSource {
         abi_version: WAIT_ABI_VERSION,
         kind: crate::WAIT_SOURCE_COMPLETION,
@@ -1737,8 +2457,12 @@ where
             .poller,
     );
     let task_address = task as usize;
-    let job: BlockingJob = Box::new(move || {
+    let state = Arc::new(AtomicU8::new(BLOCKING_QUEUED));
+    let submission_state = Arc::clone(&state);
+    let submission: BlockingJob = Box::new(move || {
         let result = work();
+        let result = (submission_state.load(Ordering::Acquire) != BLOCKING_CANCELLED_STARTED)
+            .then_some(result);
         let _ = sender.send(WorkerCompletion {
             task: task_address,
             registration,
@@ -1746,12 +2470,24 @@ where
         });
         let _ = poller.notify();
     });
+    let submission = Arc::new(Mutex::new(Some(submission)));
+    unsafe {
+        (*task).blocking_wait = Some(BlockingWait {
+            registration,
+            state: Arc::clone(&state),
+            submission: Arc::clone(&submission),
+        });
+    }
+    let job: BlockingJob = Box::new(move || {
+        let _ = run_blocking_submission(&state, &submission);
+    });
     match blocking_pool().try_send(job) {
         Ok(()) => TASK_PENDING,
         Err(mpsc::TrySendError::Full(_) | mpsc::TrySendError::Disconnected(_)) => {
             let _ = unsafe { cancel_for_task(&raw mut *executor, &raw const registration) };
             unsafe {
                 (*task).waits.retain(|candidate| *candidate != registration);
+                (*task).blocking_wait = None;
                 (*task).status = TaskStatus::Running;
             }
             unsafe {
@@ -1819,7 +2555,7 @@ fn blocking_file_write(mut file: File, bytes: &[u8]) -> BlockingResult {
 }
 
 fn blocking_socket_connect(host: &str, port: u16) -> BlockingResult {
-    let mut addresses = match (host, port).to_socket_addrs() {
+    let addresses = match (host, port).to_socket_addrs() {
         Ok(addresses) => addresses,
         Err(error) => {
             return BlockingResult::Fault {
@@ -1829,33 +2565,38 @@ fn blocking_socket_connect(host: &str, port: u16) -> BlockingResult {
             };
         }
     };
-    let address = addresses.next();
-    let Some(address) = address else {
+    blocking_socket_connect_addresses(addresses)
+}
+
+fn blocking_socket_connect_addresses(
+    addresses: impl IntoIterator<Item = SocketAddr>,
+) -> BlockingResult {
+    let mut last_error = None;
+    for address in addresses {
+        match TcpStream::connect(address) {
+            Ok(socket) => match socket.set_nonblocking(true) {
+                Ok(()) => {
+                    return BlockingResult::Resource {
+                        nominal: SOCKET_TYPE,
+                        resource: socket.into(),
+                    };
+                }
+                Err(error) => last_error = Some(error),
+            },
+            Err(error) => last_error = Some(error),
+        }
+    }
+    let Some(error) = last_error else {
         return BlockingResult::Fault {
             code: "SocketResolveFault",
             kind: 9,
             message: "host resolved to no addresses".into(),
         };
     };
-    match TcpStream::connect(address) {
-        Ok(socket) => {
-            if let Err(error) = socket.set_nonblocking(true) {
-                return BlockingResult::Fault {
-                    code: "SocketConnectFault",
-                    kind: io_error_kind(&error),
-                    message: error.to_string(),
-                };
-            }
-            BlockingResult::Resource {
-                nominal: SOCKET_TYPE,
-                resource: socket.into(),
-            }
-        }
-        Err(error) => BlockingResult::Fault {
-            code: "SocketConnectFault",
-            kind: io_error_kind(&error),
-            message: error.to_string(),
-        },
+    BlockingResult::Fault {
+        code: "SocketConnectFault",
+        kind: io_error_kind(&error),
+        message: error.to_string(),
     }
 }
 
@@ -1883,28 +2624,39 @@ unsafe fn finish_blocking_result(
 unsafe fn resume_socket_read(
     task: *mut LoomTask,
     executor: *mut LoomExecutor,
-    mut socket: TcpStream,
-    mut bytes: Vec<u8>,
+    socket: TcpStream,
+    bytes: Vec<u8>,
 ) -> i32 {
+    unsafe { finish_legacy_io_progress(task, executor, advance_socket_read(socket, bytes)) }
+}
+
+fn advance_socket_read(mut socket: TcpStream, mut bytes: Vec<u8>) -> IoProgress {
     let handle = socket_handle_bits(&socket);
     let mut chunk = vec![0_u8; 64 * 1024].into_boxed_slice();
     loop {
         match socket.read(&mut chunk) {
             Ok(0) => {
-                return unsafe { store_text_result(task, executor, &bytes, "SocketReadFault") };
+                return IoProgress::Ready(BlockingResult::Text {
+                    bytes,
+                    code: "SocketReadFault",
+                });
             }
             Ok(length) => bytes.extend_from_slice(&chunk[..length]),
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => unsafe {
-                return suspend_io(
-                    task,
-                    executor,
-                    IoOperation::SocketRead { socket, bytes },
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                return IoProgress::Suspend {
+                    operation: IoOperation::SocketRead { socket, bytes },
                     handle,
-                    crate::WAIT_READABLE,
-                );
-            },
+                    interests: crate::WAIT_READABLE,
+                };
+            }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) => unsafe { return fail_io(task, "SocketReadFault", &error) },
+            Err(error) => {
+                return IoProgress::Ready(BlockingResult::Fault {
+                    code: "SocketReadFault",
+                    kind: io_error_kind(&error),
+                    message: error.to_string(),
+                });
+            }
         }
     }
 }
@@ -1912,49 +2664,73 @@ unsafe fn resume_socket_read(
 unsafe fn resume_socket_write(
     task: *mut LoomTask,
     executor: *mut LoomExecutor,
-    mut socket: TcpStream,
+    socket: TcpStream,
     bytes: Vec<u8>,
-    mut offset: usize,
+    offset: usize,
 ) -> i32 {
+    unsafe {
+        finish_legacy_io_progress(task, executor, advance_socket_write(socket, bytes, offset))
+    }
+}
+
+fn advance_socket_write(mut socket: TcpStream, bytes: Vec<u8>, mut offset: usize) -> IoProgress {
     if offset == bytes.len() {
-        return unsafe { store_unit_result(task) };
+        return IoProgress::Ready(BlockingResult::Unit);
     }
     let handle = socket_handle_bits(&socket);
     loop {
         if offset == bytes.len() {
-            return unsafe { store_unit_result(task) };
+            return IoProgress::Ready(BlockingResult::Unit);
         }
         match socket.write(&bytes[offset..]) {
-            Ok(0) => unsafe {
-                return complete_io_error(
-                    task,
-                    9,
-                    "SocketWriteFault",
-                    "socket accepted zero bytes",
-                );
-            },
+            Ok(0) => {
+                return IoProgress::Ready(BlockingResult::Fault {
+                    code: "SocketWriteFault",
+                    kind: 9,
+                    message: "socket accepted zero bytes".into(),
+                });
+            }
             Ok(written) => {
                 offset += written;
                 if offset == bytes.len() {
-                    return unsafe { store_unit_result(task) };
+                    return IoProgress::Ready(BlockingResult::Unit);
                 }
             }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => unsafe {
-                return suspend_io(
-                    task,
-                    executor,
-                    IoOperation::SocketWrite {
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                return IoProgress::Suspend {
+                    operation: IoOperation::SocketWrite {
                         socket,
                         bytes,
                         offset,
                     },
                     handle,
-                    crate::WAIT_WRITABLE,
-                );
-            },
+                    interests: crate::WAIT_WRITABLE,
+                };
+            }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) => unsafe { return fail_io(task, "SocketWriteFault", &error) },
+            Err(error) => {
+                return IoProgress::Ready(BlockingResult::Fault {
+                    code: "SocketWriteFault",
+                    kind: io_error_kind(&error),
+                    message: error.to_string(),
+                });
+            }
         }
+    }
+}
+
+unsafe fn finish_legacy_io_progress(
+    task: *mut LoomTask,
+    executor: *mut LoomExecutor,
+    progress: IoProgress,
+) -> i32 {
+    match progress {
+        IoProgress::Ready(result) => unsafe { finish_blocking_result(task, executor, result) },
+        IoProgress::Suspend {
+            operation,
+            handle,
+            interests,
+        } => unsafe { suspend_io(task, executor, operation, handle, interests) },
     }
 }
 
@@ -2001,7 +2777,7 @@ unsafe fn store_resource_result(task: *mut LoomTask, nominal: u64, resource: Own
     debug_assert_eq!(resource.is_file(), nominal == FILE_TYPE);
     let mut raw = ValueSlot::default();
     raw.words[0] = 2;
-    raw.words[3] = resource.handle_bits().cast_unsigned();
+    raw.words[3] = resource.token().cast_unsigned();
     let Some(result) = record_value(nominal, vec![raw]) else {
         return unsafe { fail_message(task, "OutOfMemory", "resource result allocation failed") };
     };
@@ -2063,10 +2839,6 @@ unsafe fn suspend_io(
     } else {
         unsafe { fail_message(task, "IoWaitFault", "could not register I/O readiness") }
     }
-}
-
-unsafe fn fail_io(task: *mut LoomTask, code: &str, error: &io::Error) -> i32 {
-    unsafe { complete_io_error(task, io_error_kind(error), code, &error.to_string()) }
 }
 
 fn io_error_kind(error: &io::Error) -> u32 {
@@ -2368,7 +3140,9 @@ pub unsafe extern "C" fn typed_task_create_v1(
         composite_spec: ptr::null_mut(),
         io_operation: None,
         blocking_result: None,
+        blocking_wait: None,
         io_fallible: false,
+        typed_io_operation: None,
         owned_result_resources: Vec::new(),
         primary_fault_recorded: false,
         fault_code: String::new(),
@@ -3415,7 +4189,9 @@ pub unsafe extern "C" fn task_spawn_descriptor(
         composite_spec: ptr::null_mut(),
         io_operation: None,
         blocking_result: None,
+        blocking_wait: None,
         io_fallible: false,
+        typed_io_operation: None,
         owned_result_resources: Vec::new(),
         primary_fault_recorded: false,
         fault_code: "TaskFault".into(),
@@ -3564,20 +4340,85 @@ unsafe extern "C" fn resume_slow_blocking_fixture(
     }
     unsafe {
         suspend_blocking(task, executor, || {
+            SLOW_BLOCKING_STARTED.store(true, Ordering::SeqCst);
             std::thread::sleep(std::time::Duration::from_millis(200));
+            SLOW_BLOCKING_FINISHED.store(true, Ordering::SeqCst);
             BlockingResult::Unit
         })
     }
 }
 
 #[cfg(test)]
+static SLOW_BLOCKING_STARTED: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static SLOW_BLOCKING_FINISHED: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static SLOW_BLOCKING_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
 pub(crate) unsafe fn spawn_slow_blocking_fixture(executor: *mut LoomExecutor) -> *mut LoomTask {
     unsafe { task_spawn(executor, Some(resume_slow_blocking_fixture), 1, 0) }
 }
 
+#[cfg(test)]
+pub(crate) fn reset_slow_blocking_fixture() {
+    SLOW_BLOCKING_STARTED.store(false, Ordering::SeqCst);
+    SLOW_BLOCKING_FINISHED.store(false, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn slow_blocking_fixture_state() -> (bool, bool) {
+    (
+        SLOW_BLOCKING_STARTED.load(Ordering::SeqCst),
+        SLOW_BLOCKING_FINISHED.load(Ordering::SeqCst),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn lock_slow_blocking_fixture() -> std::sync::MutexGuard<'static, ()> {
+    SLOW_BLOCKING_TEST_LOCK.lock().unwrap()
+}
+
+#[cfg(test)]
+unsafe extern "C" fn resume_controlled_blocking_fixture(
+    task: *mut LoomTask,
+    executor: *mut LoomExecutor,
+) -> i32 {
+    if unsafe { (*task).cancel_requested } {
+        return TASK_CANCELLED;
+    }
+    if unsafe { (*task).blocking_result.take().is_some() } {
+        return unsafe { store_unit_result(task) };
+    }
+    unsafe {
+        suspend_blocking(task, executor, || {
+            CONTROLLED_BLOCKING_STARTED.store(true, Ordering::Release);
+            while !CONTROLLED_BLOCKING_RELEASED.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            CONTROLLED_BLOCKING_FINISHED.store(true, Ordering::Release);
+            BlockingResult::Unit
+        })
+    }
+}
+
+#[cfg(test)]
+static CONTROLLED_BLOCKING_STARTED: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static CONTROLLED_BLOCKING_RELEASED: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static CONTROLLED_BLOCKING_FINISHED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+fn reset_controlled_blocking_fixture() {
+    CONTROLLED_BLOCKING_STARTED.store(false, Ordering::Release);
+    CONTROLLED_BLOCKING_RELEASED.store(false, Ordering::Release);
+    CONTROLLED_BLOCKING_FINISHED.store(false, Ordering::Release);
+}
+
 unsafe fn copy_text(data: *const u8, length: u64) -> Option<String> {
     let length = usize::try_from(length).ok()?;
-    if data.is_null() && length != 0 {
+    if length > isize::MAX as usize || data.is_null() && length != 0 {
         return None;
     }
     let bytes = if length == 0 {
@@ -3589,8 +4430,236 @@ unsafe fn copy_text(data: *const u8, length: u64) -> Option<String> {
     std::str::from_utf8(bytes).ok().map(str::to_owned)
 }
 
-fn checked_resource_handle(handle: i64) -> Option<i64> {
-    (handle != INVALID_HANDLE).then_some(handle)
+fn checked_resource_token(token: i64) -> Option<i64> {
+    (token != INVALID_RESOURCE_TOKEN).then_some(token)
+}
+
+enum PreparedTypedIo {
+    Operation(IoOperation),
+    Immediate(BlockingResult),
+}
+
+fn typed_io_failure(code: &'static str, kind: u32, message: impl Into<String>) -> PreparedTypedIo {
+    PreparedTypedIo::Immediate(BlockingResult::Fault {
+        code,
+        kind,
+        message: message.into(),
+    })
+}
+
+fn canonical_empty_view(view: LoomByteView) -> bool {
+    view.data.is_null() && view.length == 0
+}
+
+unsafe fn prepare_typed_io_request(
+    executor: *mut LoomExecutor,
+    request: LoomTypedIoRequest,
+) -> Option<(TypedIoOperation, PreparedTypedIo)> {
+    if request.abi_version != TYPED_IO_ABI_VERSION {
+        return None;
+    }
+    let operation = TypedIoOperation::from_abi(request.operation)?;
+    let prepared = match operation {
+        TypedIoOperation::FileOpenRead
+        | TypedIoOperation::FileCreate
+        | TypedIoOperation::FileReadText
+        | TypedIoOperation::FileWriteText => {
+            unsafe { prepare_typed_file_request(executor, operation, request) }?
+        }
+        TypedIoOperation::SocketConnect
+        | TypedIoOperation::SocketReadText
+        | TypedIoOperation::SocketWriteText => {
+            unsafe { prepare_typed_socket_request(executor, operation, request) }?
+        }
+    };
+    Some((operation, prepared))
+}
+
+unsafe fn prepare_typed_file_request(
+    executor: *mut LoomExecutor,
+    operation: TypedIoOperation,
+    request: LoomTypedIoRequest,
+) -> Option<PreparedTypedIo> {
+    let no_resource = request.resource_token == TYPED_IO_INVALID_RESOURCE_TOKEN;
+    let token = request.resource_token.cast_signed();
+    Some(match operation {
+        TypedIoOperation::FileOpenRead | TypedIoOperation::FileCreate => {
+            if !no_resource || request.auxiliary != 0 {
+                return None;
+            }
+            let path = unsafe { copy_text(request.argument.data, request.argument.length) }?;
+            PreparedTypedIo::Operation(IoOperation::FileOpen {
+                path,
+                create: operation == TypedIoOperation::FileCreate,
+            })
+        }
+        TypedIoOperation::FileReadText => {
+            if !canonical_empty_view(request.argument) || request.auxiliary != 0 {
+                return None;
+            }
+            if no_resource {
+                typed_io_failure("FileReadFault", 8, "file resource is closed")
+            } else {
+                match unsafe { clone_active_file(executor, token) } {
+                    Ok(file) => PreparedTypedIo::Operation(IoOperation::FileRead { file }),
+                    Err(ResourceAccessError::Host(error)) => {
+                        typed_io_failure("FileReadFault", io_error_kind(&error), error.to_string())
+                    }
+                    Err(ResourceAccessError::InvalidOwnership) => return None,
+                }
+            }
+        }
+        TypedIoOperation::FileWriteText => {
+            if request.auxiliary != 0 {
+                return None;
+            }
+            let text = unsafe { copy_text(request.argument.data, request.argument.length) }?;
+            if no_resource {
+                typed_io_failure("FileWriteFault", 8, "file resource is closed")
+            } else {
+                match unsafe { clone_active_file(executor, token) } {
+                    Ok(file) => PreparedTypedIo::Operation(IoOperation::FileWrite {
+                        file,
+                        bytes: text.into_bytes(),
+                    }),
+                    Err(ResourceAccessError::Host(error)) => {
+                        typed_io_failure("FileWriteFault", io_error_kind(&error), error.to_string())
+                    }
+                    Err(ResourceAccessError::InvalidOwnership) => return None,
+                }
+            }
+        }
+        TypedIoOperation::SocketConnect
+        | TypedIoOperation::SocketReadText
+        | TypedIoOperation::SocketWriteText => return None,
+    })
+}
+
+unsafe fn prepare_typed_socket_request(
+    executor: *mut LoomExecutor,
+    operation: TypedIoOperation,
+    request: LoomTypedIoRequest,
+) -> Option<PreparedTypedIo> {
+    let no_resource = request.resource_token == TYPED_IO_INVALID_RESOURCE_TOKEN;
+    let token = request.resource_token.cast_signed();
+    Some(match operation {
+        TypedIoOperation::SocketConnect => {
+            if !no_resource {
+                return None;
+            }
+            let host = unsafe { copy_text(request.argument.data, request.argument.length) }?;
+            match u16::try_from(request.auxiliary) {
+                Ok(port) => PreparedTypedIo::Operation(IoOperation::SocketConnect { host, port }),
+                Err(_) => {
+                    typed_io_failure("SocketConnectFault", 3, "socket port must be in 0..=65535")
+                }
+            }
+        }
+        TypedIoOperation::SocketReadText => {
+            if !canonical_empty_view(request.argument) || request.auxiliary != 0 {
+                return None;
+            }
+            if no_resource {
+                typed_io_failure("SocketReadFault", 8, "socket resource is closed")
+            } else {
+                match unsafe { clone_active_socket(executor, token) } {
+                    Ok(socket) => PreparedTypedIo::Operation(IoOperation::SocketRead {
+                        socket,
+                        bytes: Vec::new(),
+                    }),
+                    Err(ResourceAccessError::Host(error)) => typed_io_failure(
+                        "SocketReadFault",
+                        io_error_kind(&error),
+                        error.to_string(),
+                    ),
+                    Err(ResourceAccessError::InvalidOwnership) => return None,
+                }
+            }
+        }
+        TypedIoOperation::SocketWriteText => {
+            if request.auxiliary != 0 {
+                return None;
+            }
+            let text = unsafe { copy_text(request.argument.data, request.argument.length) }?;
+            if no_resource {
+                typed_io_failure("SocketWriteFault", 8, "socket resource is closed")
+            } else {
+                match unsafe { clone_active_socket(executor, token) } {
+                    Ok(socket) => PreparedTypedIo::Operation(IoOperation::SocketWrite {
+                        socket,
+                        bytes: text.into_bytes(),
+                        offset: 0,
+                    }),
+                    Err(ResourceAccessError::Host(error)) => typed_io_failure(
+                        "SocketWriteFault",
+                        io_error_kind(&error),
+                        error.to_string(),
+                    ),
+                    Err(ResourceAccessError::InvalidOwnership) => return None,
+                }
+            }
+        }
+        TypedIoOperation::FileOpenRead
+        | TypedIoOperation::FileCreate
+        | TypedIoOperation::FileReadText
+        | TypedIoOperation::FileWriteText => return None,
+    })
+}
+
+/// Creates and publishes one typed recoverable-I/O leaf Task.
+///
+/// Every borrowed Text is copied and every input resource is duplicated before
+/// this call returns. Ordinary host and closed-resource failures are stored as
+/// immediate I/O outcomes; null is reserved for an invalid ABI call or typed
+/// Task allocation/publication failure.
+#[unsafe(export_name = "loom_typed_io_task_create_v1")]
+pub unsafe extern "C" fn typed_io_task_create_v1(
+    executor: *mut LoomExecutor,
+    descriptor: *const LoomTypedCoroutineDescriptor,
+    request: *const LoomTypedIoRequest,
+) -> *mut LoomTask {
+    if executor.is_null() || unsafe { (*executor).cleanup_active() } || !is_aligned_for(request) {
+        return ptr::null_mut();
+    }
+    // SAFETY: the ABI requires one aligned readable request for this call. It
+    // is copied before any Task or operation storage can retain state.
+    let request = unsafe { *request };
+    let Some((operation, prepared)) = (unsafe { prepare_typed_io_request(executor, request) })
+    else {
+        return ptr::null_mut();
+    };
+    let task = unsafe { typed_task_create_v1(executor, descriptor) };
+    if task.is_null() {
+        return ptr::null_mut();
+    }
+    let root_shape_valid = unsafe {
+        (*task)
+            .typed
+            .as_ref()
+            .is_some_and(TypedTaskStorage::has_typed_io_root_shape)
+    };
+    if !root_shape_valid {
+        let _ = unsafe { typed_task_abort_unpublished_v1(executor, task) };
+        return ptr::null_mut();
+    }
+    unsafe {
+        (*task).typed_io_operation = Some(operation);
+        (*task).io_fallible = true;
+        (*task).wait_leaf = true;
+        match prepared {
+            PreparedTypedIo::Operation(io) => (*task).io_operation = Some(io),
+            PreparedTypedIo::Immediate(result) => (*task).blocking_result = Some(result),
+        }
+    }
+    if unsafe { typed_task_initialize_v1(task, 0) } != TYPED_TASK_OK {
+        let _ = unsafe { typed_task_abort_unpublished_v1(executor, task) };
+        return ptr::null_mut();
+    }
+    if unsafe { typed_task_publish_v1(executor, task) } != TYPED_TASK_OK {
+        let _ = unsafe { typed_task_abort_unpublished_v1(executor, task) };
+        return ptr::null_mut();
+    }
+    task
 }
 
 #[unsafe(export_name = "loom_file_open_read")]
@@ -3673,7 +4742,7 @@ pub unsafe extern "C" fn file_try_create(
 
 #[unsafe(export_name = "loom_file_read_text")]
 pub unsafe extern "C" fn file_read_text(executor: *mut LoomExecutor, handle: i64) -> *mut LoomTask {
-    let Some(handle) = checked_resource_handle(handle) else {
+    let Some(handle) = checked_resource_token(handle) else {
         return unsafe {
             spawn_io_failure_task(
                 executor,
@@ -3684,9 +4753,9 @@ pub unsafe extern "C" fn file_read_text(executor: *mut LoomExecutor, handle: i64
             )
         };
     };
-    let file = match duplicate_file(handle) {
+    let file = match unsafe { clone_active_file(executor, handle) } {
         Ok(file) => file,
-        Err(error) => unsafe {
+        Err(ResourceAccessError::Host(error)) => unsafe {
             return spawn_io_failure_task(
                 executor,
                 false,
@@ -3695,6 +4764,7 @@ pub unsafe extern "C" fn file_read_text(executor: *mut LoomExecutor, handle: i64
                 error.to_string(),
             );
         },
+        Err(ResourceAccessError::InvalidOwnership) => return ptr::null_mut(),
     };
     unsafe { spawn_io_task(executor, IoOperation::FileRead { file }) }
 }
@@ -3704,14 +4774,14 @@ pub unsafe extern "C" fn file_try_read_text(
     executor: *mut LoomExecutor,
     handle: i64,
 ) -> *mut LoomTask {
-    let Some(handle) = checked_resource_handle(handle) else {
+    let Some(handle) = checked_resource_token(handle) else {
         return unsafe {
             spawn_io_error_task(executor, 8, "FileReadFault", "file resource is closed")
         };
     };
-    let file = match duplicate_file(handle) {
+    let file = match unsafe { clone_active_file(executor, handle) } {
         Ok(file) => file,
-        Err(error) => unsafe {
+        Err(ResourceAccessError::Host(error)) => unsafe {
             return spawn_io_error_task(
                 executor,
                 io_error_kind(&error),
@@ -3719,6 +4789,7 @@ pub unsafe extern "C" fn file_try_read_text(
                 error.to_string(),
             );
         },
+        Err(ResourceAccessError::InvalidOwnership) => return ptr::null_mut(),
     };
     unsafe { spawn_try_io_task(executor, IoOperation::FileRead { file }) }
 }
@@ -3730,14 +4801,14 @@ pub unsafe extern "C" fn file_write_text(
     data: *const u8,
     length: u64,
 ) -> *mut LoomTask {
-    let (Some(handle), Some(text)) = (checked_resource_handle(handle), unsafe {
+    let (Some(handle), Some(text)) = (checked_resource_token(handle), unsafe {
         copy_text(data, length)
     }) else {
         return ptr::null_mut();
     };
-    let file = match duplicate_file(handle) {
+    let file = match unsafe { clone_active_file(executor, handle) } {
         Ok(file) => file,
-        Err(error) => unsafe {
+        Err(ResourceAccessError::Host(error)) => unsafe {
             return spawn_io_failure_task(
                 executor,
                 false,
@@ -3746,6 +4817,7 @@ pub unsafe extern "C" fn file_write_text(
                 error.to_string(),
             );
         },
+        Err(ResourceAccessError::InvalidOwnership) => return ptr::null_mut(),
     };
     unsafe {
         spawn_io_task(
@@ -3765,7 +4837,7 @@ pub unsafe extern "C" fn file_try_write_text(
     data: *const u8,
     length: u64,
 ) -> *mut LoomTask {
-    let Some(handle) = checked_resource_handle(handle) else {
+    let Some(handle) = checked_resource_token(handle) else {
         return unsafe {
             spawn_io_error_task(executor, 8, "FileWriteFault", "file resource is closed")
         };
@@ -3780,9 +4852,9 @@ pub unsafe extern "C" fn file_try_write_text(
             )
         };
     };
-    let file = match duplicate_file(handle) {
+    let file = match unsafe { clone_active_file(executor, handle) } {
         Ok(file) => file,
-        Err(error) => unsafe {
+        Err(ResourceAccessError::Host(error)) => unsafe {
             return spawn_io_error_task(
                 executor,
                 io_error_kind(&error),
@@ -3790,6 +4862,7 @@ pub unsafe extern "C" fn file_try_write_text(
                 error.to_string(),
             );
         },
+        Err(ResourceAccessError::InvalidOwnership) => return ptr::null_mut(),
     };
     unsafe {
         spawn_try_io_task(
@@ -3851,7 +4924,7 @@ pub unsafe extern "C" fn socket_read_text(
     executor: *mut LoomExecutor,
     handle: i64,
 ) -> *mut LoomTask {
-    let Some(handle) = checked_resource_handle(handle) else {
+    let Some(handle) = checked_resource_token(handle) else {
         return unsafe {
             spawn_io_failure_task(
                 executor,
@@ -3862,9 +4935,9 @@ pub unsafe extern "C" fn socket_read_text(
             )
         };
     };
-    let socket = match duplicate_socket(handle) {
+    let socket = match unsafe { clone_active_socket(executor, handle) } {
         Ok(socket) => socket,
-        Err(error) => unsafe {
+        Err(ResourceAccessError::Host(error)) => unsafe {
             return spawn_io_failure_task(
                 executor,
                 false,
@@ -3873,6 +4946,7 @@ pub unsafe extern "C" fn socket_read_text(
                 error.to_string(),
             );
         },
+        Err(ResourceAccessError::InvalidOwnership) => return ptr::null_mut(),
     };
     unsafe {
         spawn_io_task(
@@ -3890,14 +4964,14 @@ pub unsafe extern "C" fn socket_try_read_text(
     executor: *mut LoomExecutor,
     handle: i64,
 ) -> *mut LoomTask {
-    let Some(handle) = checked_resource_handle(handle) else {
+    let Some(handle) = checked_resource_token(handle) else {
         return unsafe {
             spawn_io_error_task(executor, 8, "SocketReadFault", "socket resource is closed")
         };
     };
-    let socket = match duplicate_socket(handle) {
+    let socket = match unsafe { clone_active_socket(executor, handle) } {
         Ok(socket) => socket,
-        Err(error) => unsafe {
+        Err(ResourceAccessError::Host(error)) => unsafe {
             return spawn_io_error_task(
                 executor,
                 io_error_kind(&error),
@@ -3905,6 +4979,7 @@ pub unsafe extern "C" fn socket_try_read_text(
                 error.to_string(),
             );
         },
+        Err(ResourceAccessError::InvalidOwnership) => return ptr::null_mut(),
     };
     unsafe {
         spawn_try_io_task(
@@ -3924,14 +4999,14 @@ pub unsafe extern "C" fn socket_write_text(
     data: *const u8,
     length: u64,
 ) -> *mut LoomTask {
-    let (Some(handle), Some(text)) = (checked_resource_handle(handle), unsafe {
+    let (Some(handle), Some(text)) = (checked_resource_token(handle), unsafe {
         copy_text(data, length)
     }) else {
         return ptr::null_mut();
     };
-    let socket = match duplicate_socket(handle) {
+    let socket = match unsafe { clone_active_socket(executor, handle) } {
         Ok(socket) => socket,
-        Err(error) => unsafe {
+        Err(ResourceAccessError::Host(error)) => unsafe {
             return spawn_io_failure_task(
                 executor,
                 false,
@@ -3940,6 +5015,7 @@ pub unsafe extern "C" fn socket_write_text(
                 error.to_string(),
             );
         },
+        Err(ResourceAccessError::InvalidOwnership) => return ptr::null_mut(),
     };
     unsafe {
         spawn_io_task(
@@ -3960,7 +5036,7 @@ pub unsafe extern "C" fn socket_try_write_text(
     data: *const u8,
     length: u64,
 ) -> *mut LoomTask {
-    let Some(handle) = checked_resource_handle(handle) else {
+    let Some(handle) = checked_resource_token(handle) else {
         return unsafe {
             spawn_io_error_task(executor, 8, "SocketWriteFault", "socket resource is closed")
         };
@@ -3975,9 +5051,9 @@ pub unsafe extern "C" fn socket_try_write_text(
             )
         };
     };
-    let socket = match duplicate_socket(handle) {
+    let socket = match unsafe { clone_active_socket(executor, handle) } {
         Ok(socket) => socket,
-        Err(error) => unsafe {
+        Err(ResourceAccessError::Host(error)) => unsafe {
             return spawn_io_error_task(
                 executor,
                 io_error_kind(&error),
@@ -3985,6 +5061,7 @@ pub unsafe extern "C" fn socket_try_write_text(
                 error.to_string(),
             );
         },
+        Err(ResourceAccessError::InvalidOwnership) => return ptr::null_mut(),
     };
     unsafe {
         spawn_try_io_task(
@@ -4017,133 +5094,194 @@ pub unsafe extern "C" fn io_close(executor: *mut LoomExecutor, value: *mut c_voi
         return WAIT_INVALID_ARGUMENT;
     }
     let handle = unsafe { (*node).value.words[3].cast_signed() };
-    if handle == INVALID_HANDLE {
-        return WAIT_OK;
-    }
-    let executor = unsafe { &mut *executor };
-    if close_resource_handle(Some(executor), handle, kind).is_err() {
+    if handle == INVALID_RESOURCE_TOKEN {
         return WAIT_INVALID_ARGUMENT;
     }
-    unsafe { (*node).value.words[3] = INVALID_HANDLE.cast_unsigned() };
+    let executor = unsafe { &mut *executor };
+    if close_resource_token(executor, handle, kind).is_err() {
+        return WAIT_INVALID_ARGUMENT;
+    }
+    unsafe { (*node).value.words[3] = INVALID_RESOURCE_TOKEN.cast_unsigned() };
     WAIT_OK
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CloseResourceError {
     InvalidOwnership,
-    CloseFailed,
+}
+
+enum ResourceAccessError {
+    InvalidOwnership,
+    Host(io::Error),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResourceAccess {
+    Operation,
+    Close,
 }
 
 fn select_tracked_resource(
     candidates: impl IntoIterator<Item = (usize, usize, bool)>,
 ) -> Result<Option<(usize, usize)>, CloseResourceError> {
-    let mut exact = None;
-    let mut opposite_seen = false;
+    let mut selected = None;
     for (task_index, resource_index, kind_matches) in candidates {
-        if kind_matches {
-            if exact.replace((task_index, resource_index)).is_some() {
-                return Err(CloseResourceError::InvalidOwnership);
-            }
-        } else {
-            opposite_seen = true;
+        if selected
+            .replace((task_index, resource_index, kind_matches))
+            .is_some()
+        {
+            return Err(CloseResourceError::InvalidOwnership);
         }
     }
-    match (exact, opposite_seen) {
-        (Some(location), _) => Ok(Some(location)),
-        (None, true) => Err(CloseResourceError::InvalidOwnership),
-        (None, false) => Ok(None),
+    match selected {
+        Some((task_index, resource_index, true)) => Ok(Some((task_index, resource_index))),
+        Some((_, _, false)) => Err(CloseResourceError::InvalidOwnership),
+        None => Ok(None),
     }
 }
 
-fn close_resource_handle(
-    executor: Option<&mut LoomExecutor>,
-    handle: i64,
+fn active_resource_location(
+    executor: &LoomExecutor,
+    token: i64,
+    kind: IoResourceKind,
+    access: ResourceAccess,
+) -> Result<(usize, usize), CloseResourceError> {
+    let active = executor.active_task;
+    if active.is_null() || !executor_owns(executor, active) {
+        return Err(CloseResourceError::InvalidOwnership);
+    }
+    let task = unsafe { &*active };
+    let authorized = match access {
+        ResourceAccess::Operation => {
+            task.status == TaskStatus::Running
+                && !task.cancel_requested
+                && !executor.cleanup_active()
+        }
+        ResourceAccess::Close => {
+            executor.cleanup_active()
+                || (task.status == TaskStatus::Running && !task.cancel_requested)
+        }
+    };
+    if !authorized {
+        return Err(CloseResourceError::InvalidOwnership);
+    }
+    let candidates = executor
+        .tasks
+        .iter()
+        .enumerate()
+        .flat_map(|(task_index, task)| {
+            task.owned_result_resources.iter().enumerate().filter_map(
+                move |(resource_index, candidate)| {
+                    (candidate.token() == token).then_some((
+                        task_index,
+                        resource_index,
+                        candidate.is_file() == kind.is_file(),
+                    ))
+                },
+            )
+        });
+    let location =
+        select_tracked_resource(candidates)?.ok_or(CloseResourceError::InvalidOwnership)?;
+    if !ptr::eq::<LoomTask>(&raw const *executor.tasks[location.0], active) {
+        return Err(CloseResourceError::InvalidOwnership);
+    }
+    Ok(location)
+}
+
+unsafe fn clone_active_file(
+    executor: *mut LoomExecutor,
+    token: i64,
+) -> Result<File, ResourceAccessError> {
+    let Some(executor) = (unsafe { executor.as_ref() }) else {
+        return Err(ResourceAccessError::InvalidOwnership);
+    };
+    let (task_index, resource_index) = active_resource_location(
+        executor,
+        token,
+        IoResourceKind::File,
+        ResourceAccess::Operation,
+    )
+    .map_err(|_| ResourceAccessError::InvalidOwnership)?;
+    executor.tasks[task_index].owned_result_resources[resource_index]
+        .try_clone_file()
+        .map_err(ResourceAccessError::Host)
+}
+
+unsafe fn clone_active_socket(
+    executor: *mut LoomExecutor,
+    token: i64,
+) -> Result<TcpStream, ResourceAccessError> {
+    let Some(executor) = (unsafe { executor.as_ref() }) else {
+        return Err(ResourceAccessError::InvalidOwnership);
+    };
+    let (task_index, resource_index) = active_resource_location(
+        executor,
+        token,
+        IoResourceKind::Socket,
+        ResourceAccess::Operation,
+    )
+    .map_err(|_| ResourceAccessError::InvalidOwnership)?;
+    executor.tasks[task_index].owned_result_resources[resource_index]
+        .try_clone_socket()
+        .map_err(ResourceAccessError::Host)
+}
+
+fn close_resource_token(
+    executor: &mut LoomExecutor,
+    token: i64,
     kind: IoResourceKind,
 ) -> Result<(), CloseResourceError> {
-    if let Some(executor) = executor {
-        let candidates = executor
-            .tasks
-            .iter()
-            .enumerate()
-            .flat_map(|(task_index, task)| {
-                task.owned_result_resources.iter().enumerate().filter_map(
-                    move |(resource_index, candidate)| {
-                        (candidate.handle_bits() == handle).then_some((
-                            task_index,
-                            resource_index,
-                            candidate.is_file() == kind.is_file(),
-                        ))
-                    },
-                )
-            });
-        if let Some((task_index, resource_index)) = select_tracked_resource(candidates)? {
-            drop(
-                executor.tasks[task_index]
-                    .owned_result_resources
-                    .swap_remove(resource_index),
-            );
-            return Ok(());
-        }
-    }
-    // SAFETY: a well-formed externally transferred File/Socket value owns its
-    // raw handle when it is no longer tracked by a runtime task. A handle still
-    // present in any task ledger without a unique exact match was rejected
-    // above, so this path cannot leave a second runtime owner behind. A unique
-    // exact match is handled earlier even when an unrelated opposite-kind
-    // Windows handle has the same numeric bits.
-    unsafe { close_untracked(handle, kind.is_file()) }.map_err(|_| CloseResourceError::CloseFailed)
+    let (task_index, resource_index) =
+        active_resource_location(executor, token, kind, ResourceAccess::Close)?;
+    drop(
+        executor.tasks[task_index]
+            .owned_result_resources
+            .swap_remove(resource_index),
+    );
+    Ok(())
 }
 
 /// Closes one exact typed File/Socket record in place.
 ///
-/// The current generated-code interval must already own `runtime`. This call
-/// performs no scheduling and never constructs the legacy universal value
-/// envelope. An attached executor is consulted only as an ownership registry
-/// for a handle returned by an async IO task. An opposite-only match or
-/// duplicate exact ledger entries fail before any close or ownership mutation;
-/// a unique exact match wins across distinct Windows handle domains.
-#[unsafe(export_name = "loom_runtime_resource_close_typed_v1")]
-pub unsafe extern "C" fn resource_close_typed_v1(
-    runtime: *mut LoomRuntime,
+/// The current generated-code interval must already own `executor`. This call
+/// performs no scheduling and never constructs a universal value envelope. The
+/// capability token must have one exact owner in the active Task. Normal code
+/// may close only from a running, non-cancelled Task; compiler-generated
+/// cancellation and result-disposal callbacks may close during the executor's
+/// guarded cleanup phase. Untracked, stale, sibling-owned, opposite-kind, and
+/// duplicate entries fail before any close or ownership mutation.
+#[unsafe(export_name = "loom_typed_resource_close_v1")]
+pub unsafe extern "C" fn typed_resource_close_v1(
+    executor: *mut LoomExecutor,
     kind: u32,
-    handle: *mut i64,
+    token: *mut i64,
 ) -> i32 {
-    if runtime.is_null()
-        || handle.is_null()
-        || !(handle as usize).is_multiple_of(align_of::<i64>())
-        || crate::gc::active_runtime_pointer() != runtime
+    if executor.is_null() || token.is_null() || !(token as usize).is_multiple_of(align_of::<i64>())
     {
         return TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT;
     }
     let Some(kind) = IoResourceKind::from_typed_kind(kind) else {
         return TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT;
     };
-    let current = unsafe { *handle };
-    if current == INVALID_HANDLE {
-        return TYPED_RESOURCE_CLOSE_OK;
+    // SAFETY: the executor pointer is borrowed for this call. The active
+    // runtime and attachment checks prove this is the live generated-code
+    // interval and serialize ledger mutation.
+    let executor = unsafe { &mut *executor };
+    let runtime = executor.runtime_pointer();
+    if runtime.is_null()
+        || crate::gc::active_runtime_pointer() != runtime
+        || !unsafe { (*runtime).is_attached_executor(ptr::from_mut(executor).cast::<c_void>()) }
+    {
+        return TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT;
     }
-    // SAFETY: equality with the thread-local active runtime proves this is the
-    // live runtime installed for the complete generated-code interval.
-    let executor = unsafe { (*runtime).attached_executor_pointer() }.cast::<LoomExecutor>();
-    let executor = if executor.is_null() {
-        None
-    } else {
-        // SAFETY: runtime attachment owns this stable executor pointer and the
-        // generated-code interval serializes runtime/executor mutation.
-        let executor = unsafe { &mut *executor };
-        if executor.runtime_pointer() != runtime {
-            return TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT;
-        }
-        Some(executor)
-    };
-    match close_resource_handle(executor, current, kind) {
-        Ok(()) => {}
-        Err(CloseResourceError::InvalidOwnership) => {
-            return TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT;
-        }
-        Err(CloseResourceError::CloseFailed) => return TYPED_RESOURCE_CLOSE_FAILED,
+    let current = unsafe { *token };
+    if current == INVALID_RESOURCE_TOKEN {
+        return TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT;
     }
-    unsafe { *handle = INVALID_HANDLE };
+    if close_resource_token(executor, current, kind).is_err() {
+        return TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT;
+    }
+    unsafe { *token = INVALID_RESOURCE_TOKEN };
     TYPED_RESOURCE_CLOSE_OK
 }
 
@@ -5740,7 +6878,8 @@ pub unsafe extern "C" fn executor_run(executor: *mut LoomExecutor, root: *mut Lo
             unsafe { run_typed_task_step(executor, task) }
         } else {
             let descriptor = unsafe { (*task).descriptor };
-            let resume = if unsafe { (*task).cancel_requested } {
+            let cancelling = unsafe { (*task).cancel_requested };
+            let resume = if cancelling {
                 descriptor.cancel.or(descriptor.resume)
             } else {
                 descriptor.resume
@@ -5752,10 +6891,28 @@ pub unsafe extern "C" fn executor_run(executor: *mut LoomExecutor, root: *mut Lo
                 }
                 continue;
             };
-            enter_executor(executor);
-            let step = unsafe { resume(task, executor) };
-            leave_executor();
-            step
+            let cleanup = if cancelling {
+                CleanupPhaseGuard::enter(unsafe { &mut *executor })
+            } else {
+                None
+            };
+            if cancelling && cleanup.is_none() {
+                unsafe {
+                    record_primary_task_fault(
+                        &mut *task,
+                        "LOOM_RUNTIME_CLEANUP_DEPTH".into(),
+                        "coroutine cancellation exceeded the cleanup nesting limit".into(),
+                        String::new(),
+                    );
+                }
+                TASK_FAULTED
+            } else {
+                enter_executor(executor);
+                let step = unsafe { resume(task, executor) };
+                leave_executor();
+                drop(cleanup);
+                step
+            }
         };
         unsafe { (*executor).active_task = ptr::null_mut() };
         if step == TASK_PENDING {
@@ -5837,6 +6994,809 @@ pub unsafe extern "C" fn executor_tasks_reclaimed(executor: *const LoomExecutor)
 }
 
 #[cfg(test)]
+mod typed_io_tests {
+    use std::ffi::c_void;
+    use std::fs::{self, File};
+    use std::io::{Read, Write};
+    use std::mem::{MaybeUninit, align_of, offset_of, size_of};
+    use std::net::{Shutdown, TcpListener, TcpStream};
+    use std::ptr;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use super::*;
+    use crate::reactor::{executor_create_for_runtime_v1, executor_destroy};
+    use crate::runtime::{runtime_create_v1, runtime_destroy_v1};
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct TestIoResult {
+        outcome: LoomTypedIoOutcome,
+        text: *mut c_void,
+    }
+
+    impl Default for TestIoResult {
+        fn default() -> Self {
+            Self {
+                outcome: LoomTypedIoOutcome::default(),
+                text: ptr::null_mut(),
+            }
+        }
+    }
+
+    #[repr(C)]
+    struct TestIoFrame {
+        result: TestIoResult,
+        scratch_text: *mut c_void,
+    }
+
+    unsafe extern "C" fn resume_typed_io_fixture(
+        task: *mut c_void,
+        executor: *mut c_void,
+        frame: *mut c_void,
+    ) -> i32 {
+        let frame = frame.cast::<TestIoFrame>();
+        let mut outcome = LoomTypedIoOutcome::default();
+        let step = unsafe {
+            typed_io_poll_v1(
+                task,
+                executor,
+                &raw mut (*frame).scratch_text,
+                &raw mut outcome,
+            )
+        };
+        if step != TASK_COMPLETED {
+            return step;
+        }
+        unsafe {
+            (*frame).result = TestIoResult {
+                outcome,
+                text: (*frame).scratch_text,
+            };
+            (*frame).scratch_text = ptr::null_mut();
+        }
+        if unsafe { typed_task_publish_result_v1(task.cast()) } == TYPED_TASK_OK {
+            TASK_COMPLETED
+        } else {
+            TASK_FAULTED
+        }
+    }
+
+    unsafe fn create_typed_io_task(
+        executor: *mut LoomExecutor,
+        request: &LoomTypedIoRequest,
+    ) -> *mut LoomTask {
+        let roots = [
+            (offset_of!(TestIoFrame, result) + offset_of!(TestIoResult, text)) as u64,
+            offset_of!(TestIoFrame, scratch_text) as u64,
+        ];
+        // State zero keeps only the out-of-result scratch Text alive. State
+        // one is the exact completed result row and keeps only result.text.
+        let live_bitmaps = [2_u64, 1_u64];
+        let descriptor = typed_io_descriptor(&roots, &live_bitmaps, 2, 1);
+        unsafe { typed_io_task_create_v1(executor, &raw const descriptor, ptr::from_ref(request)) }
+    }
+
+    unsafe extern "C" fn complete_resource_owner_fixture(
+        _task: *mut LoomTask,
+        _executor: *mut LoomExecutor,
+    ) -> i32 {
+        TASK_COMPLETED
+    }
+
+    unsafe fn activate_resource_owner(executor: *mut LoomExecutor) -> *mut LoomTask {
+        assert!(unsafe { (*executor).active_task.is_null() });
+        let owner = unsafe { task_spawn(executor, Some(complete_resource_owner_fixture), 1, 0) };
+        assert!(!owner.is_null());
+        let index = unsafe {
+            (*executor)
+                .runnable
+                .iter()
+                .position(|candidate| *candidate == owner)
+                .expect("resource owner must be runnable")
+        };
+        assert_eq!(unsafe { (*executor).runnable.remove(index) }, Some(owner));
+        unsafe {
+            (*owner).queued = false;
+            (*owner).status = TaskStatus::Running;
+            (*executor).active_task = owner;
+        }
+        owner
+    }
+
+    unsafe fn finish_resource_owner(executor: *mut LoomExecutor, owner: *mut LoomTask) {
+        assert_eq!(unsafe { (*executor).active_task }, owner);
+        let children = unsafe { std::mem::take(&mut (*owner).owned_children) };
+        for child in children {
+            assert_eq!(unsafe { (*child).owner }, owner);
+            unsafe { (*child).owner = ptr::null_mut() };
+        }
+        unsafe {
+            (*executor).active_task = ptr::null_mut();
+            complete_terminal(&mut *executor, owner, TASK_CANCELLED);
+        }
+    }
+
+    unsafe fn with_active_resource<T>(
+        executor: *mut LoomExecutor,
+        resource: OwnedResource,
+        action: impl FnOnce(i64) -> T,
+    ) -> T {
+        let token = resource.token();
+        let owner = unsafe { activate_resource_owner(executor) };
+        unsafe { (*owner).owned_result_resources.push(resource) };
+        enter_executor(executor);
+        let result = action(token);
+        leave_executor();
+        unsafe { finish_resource_owner(executor, owner) };
+        result
+    }
+
+    fn typed_io_descriptor(
+        roots: &[u64],
+        live_bitmaps: &[u64],
+        root_state_count: u64,
+        completed_root_state: u64,
+    ) -> LoomTypedCoroutineDescriptor {
+        LoomTypedCoroutineDescriptor {
+            abi_version: TYPED_TASK_ABI_VERSION,
+            flags: 0,
+            resume: Some(resume_typed_io_fixture),
+            cancel: Some(typed_io_cancel_v1),
+            dispose_result: None,
+            frame_size: size_of::<TestIoFrame>() as u64,
+            frame_align: align_of::<TestIoFrame>() as u64,
+            result_offset: offset_of!(TestIoFrame, result) as u64,
+            result_size: size_of::<TestIoResult>() as u64,
+            result_align: align_of::<TestIoResult>() as u64,
+            root_slot_count: roots.len() as u64,
+            root_state_count,
+            root_bitmap_words: u64::from(!roots.is_empty()),
+            root_offsets: if roots.is_empty() {
+                ptr::null()
+            } else {
+                roots.as_ptr()
+            },
+            live_bitmaps: if live_bitmaps.is_empty() {
+                ptr::null()
+            } else {
+                live_bitmaps.as_ptr()
+            },
+            completed_root_state,
+        }
+    }
+
+    unsafe fn assert_typed_io_descriptor_rejected(
+        executor: *mut LoomExecutor,
+        descriptor: &LoomTypedCoroutineDescriptor,
+        request: &LoomTypedIoRequest,
+    ) {
+        assert!(
+            unsafe {
+                typed_io_task_create_v1(executor, ptr::from_ref(descriptor), ptr::from_ref(request))
+            }
+            .is_null()
+        );
+        assert_eq!(unsafe { executor_live_tasks(executor) }, 0);
+    }
+
+    fn request(
+        operation: u32,
+        resource_token: u64,
+        argument: &[u8],
+        auxiliary: i64,
+    ) -> LoomTypedIoRequest {
+        LoomTypedIoRequest {
+            abi_version: TYPED_IO_ABI_VERSION,
+            operation,
+            resource_token,
+            argument: LoomByteView {
+                data: if argument.is_empty() {
+                    ptr::null()
+                } else {
+                    argument.as_ptr()
+                },
+                length: argument.len() as u64,
+            },
+            auxiliary,
+        }
+    }
+
+    fn no_argument_request(
+        operation: u32,
+        resource_token: u64,
+        auxiliary: i64,
+    ) -> LoomTypedIoRequest {
+        request(operation, resource_token, &[], auxiliary)
+    }
+
+    fn runtime_and_executor() -> (*mut LoomRuntime, *mut LoomExecutor) {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        (runtime, executor)
+    }
+
+    unsafe fn destroy(runtime: *mut LoomRuntime, executor: *mut LoomExecutor) {
+        unsafe {
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    unsafe fn run_and_take(executor: *mut LoomExecutor, task: *mut LoomTask) -> TestIoResult {
+        assert!(!task.is_null());
+        assert_eq!(unsafe { executor_run(executor, task) }, TASK_COMPLETED);
+        let mut result = MaybeUninit::<TestIoResult>::uninit();
+        assert_eq!(
+            unsafe {
+                typed_task_take_result_v1(
+                    task,
+                    result.as_mut_ptr().cast(),
+                    size_of::<TestIoResult>() as u64,
+                    align_of::<TestIoResult>() as u64,
+                )
+            },
+            TYPED_TASK_OK
+        );
+        unsafe { result.assume_init() }
+    }
+
+    fn unique_path(stem: &str) -> std::path::PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        std::env::temp_dir().join(format!(
+            "loom-{stem}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    #[test]
+    fn typed_file_try_operations_publish_exact_outcomes_and_snapshot_inputs() {
+        let (runtime, executor) = runtime_and_executor();
+        let path = unique_path("typed-io-file");
+        let path_text = path.to_string_lossy().into_owned();
+        unsafe {
+            let create_request = request(
+                TYPED_IO_OPERATION_FILE_CREATE,
+                TYPED_IO_INVALID_RESOURCE_TOKEN,
+                path_text.as_bytes(),
+                0,
+            );
+            let create = create_typed_io_task(executor, &create_request);
+            let created = run_and_take(executor, create);
+            assert_eq!(created.outcome.kind, TYPED_IO_OUTCOME_RESOURCE);
+            assert_ne!(
+                created.outcome.resource_token,
+                TYPED_IO_INVALID_RESOURCE_TOKEN
+            );
+            assert_eq!((*create).owned_result_resources.len(), 1);
+            destroy(runtime, executor);
+        }
+
+        let (runtime, executor) = runtime_and_executor();
+        let file = File::options().read(true).write(true).open(&path).unwrap();
+        let resource = OwnedResource::from(file);
+        let mut source = b"snapshotted text".to_vec();
+        unsafe {
+            let write = with_active_resource(executor, resource, |token| {
+                let write_request = request(
+                    TYPED_IO_OPERATION_FILE_WRITE_TEXT,
+                    token.cast_unsigned(),
+                    &source,
+                    0,
+                );
+                create_typed_io_task(executor, &write_request)
+            });
+            source.fill(b'x');
+            let written = run_and_take(executor, write);
+            assert_eq!(written.outcome.kind, TYPED_IO_OUTCOME_UNIT);
+            assert!(written.text.is_null());
+
+            let file = File::open(&path).unwrap();
+            let resource = OwnedResource::from(file);
+            let read = with_active_resource(executor, resource, |token| {
+                let read_request = no_argument_request(
+                    TYPED_IO_OPERATION_FILE_READ_TEXT,
+                    token.cast_unsigned(),
+                    0,
+                );
+                create_typed_io_task(executor, &read_request)
+            });
+            let read = run_and_take(executor, read);
+            assert_eq!(read.outcome.kind, TYPED_IO_OUTCOME_TEXT);
+            assert_eq!(
+                crate::text::text_bytes(read.text).unwrap(),
+                b"snapshotted text"
+            );
+
+            let open_request = request(
+                TYPED_IO_OPERATION_FILE_OPEN_READ,
+                TYPED_IO_INVALID_RESOURCE_TOKEN,
+                path_text.as_bytes(),
+                0,
+            );
+            let opened_task = create_typed_io_task(executor, &open_request);
+            let opened = run_and_take(executor, opened_task);
+            assert_eq!(opened.outcome.kind, TYPED_IO_OUTCOME_RESOURCE);
+            assert_eq!((*opened_task).owned_result_resources.len(), 1);
+            destroy(runtime, executor);
+        }
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn typed_file_try_open_failure_and_closed_resource_are_error_outcomes() {
+        let (runtime, executor) = runtime_and_executor();
+        let missing = unique_path("typed-io-missing");
+        let missing = missing.to_string_lossy().into_owned();
+        unsafe {
+            let open_request = request(
+                TYPED_IO_OPERATION_FILE_OPEN_READ,
+                TYPED_IO_INVALID_RESOURCE_TOKEN,
+                missing.as_bytes(),
+                0,
+            );
+            let open = create_typed_io_task(executor, &open_request);
+            assert!(!open.is_null());
+            let failed = run_and_take(executor, open);
+            assert_eq!(failed.outcome.kind, TYPED_IO_OUTCOME_ERROR);
+            assert_eq!(failed.outcome.detail, 0);
+            assert!(!crate::text::text_bytes(failed.text).unwrap().is_empty());
+
+            let closed_request = no_argument_request(
+                TYPED_IO_OPERATION_FILE_READ_TEXT,
+                TYPED_IO_INVALID_RESOURCE_TOKEN,
+                0,
+            );
+            let closed = create_typed_io_task(executor, &closed_request);
+            assert!(!closed.is_null());
+            let closed = run_and_take(executor, closed);
+            assert_eq!(closed.outcome.kind, TYPED_IO_OUTCOME_ERROR);
+            assert_eq!(closed.outcome.detail, 8);
+            assert_eq!(
+                crate::text::text_bytes(closed.text).unwrap(),
+                b"file resource is closed"
+            );
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn typed_io_completed_text_remains_an_exact_root_across_moving_collection() {
+        let (runtime, executor) = runtime_and_executor();
+        let closed_request = no_argument_request(
+            TYPED_IO_OPERATION_FILE_READ_TEXT,
+            TYPED_IO_INVALID_RESOURCE_TOKEN,
+            0,
+        );
+        unsafe {
+            let task = create_typed_io_task(executor, &closed_request);
+            assert_eq!(executor_run(executor, task), TASK_COMPLETED);
+            let frame = (*task)
+                .typed
+                .as_ref()
+                .unwrap()
+                .frame_pointer()
+                .cast::<TestIoFrame>();
+            assert_eq!(
+                crate::text::text_bytes((*frame).result.text).unwrap(),
+                b"file resource is closed"
+            );
+            crate::gc::enter_executor(executor);
+            crate::gc::collect(&mut *executor);
+            crate::gc::leave_executor();
+            assert_eq!(
+                crate::text::text_bytes((*frame).result.text).unwrap(),
+                b"file resource is closed"
+            );
+            let taken = run_and_take(executor, task);
+            assert_eq!(taken.outcome.kind, TYPED_IO_OUTCOME_ERROR);
+            destroy(runtime, executor);
+        }
+    }
+
+    fn connected_pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = TcpStream::connect(address).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        client.set_nonblocking(true).unwrap();
+        (client, server)
+    }
+
+    #[test]
+    fn typed_socket_try_connect_read_and_write_use_the_shared_reactor_path() {
+        let (runtime, executor) = runtime_and_executor();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = i64::from(listener.local_addr().unwrap().port());
+        let accept = std::thread::spawn(move || listener.accept().unwrap().0);
+        unsafe {
+            let connect_request = request(
+                TYPED_IO_OPERATION_SOCKET_CONNECT,
+                TYPED_IO_INVALID_RESOURCE_TOKEN,
+                b"127.0.0.1",
+                port,
+            );
+            let connect = create_typed_io_task(executor, &connect_request);
+            let connected = run_and_take(executor, connect);
+            assert_eq!(connected.outcome.kind, TYPED_IO_OUTCOME_RESOURCE);
+            assert_eq!((*connect).owned_result_resources.len(), 1);
+            drop(accept.join().unwrap());
+
+            let (client, mut server) = connected_pair();
+            let mut source = b"socket snapshot".to_vec();
+            let write = with_active_resource(executor, client.into(), |token| {
+                let write_request = request(
+                    TYPED_IO_OPERATION_SOCKET_WRITE_TEXT,
+                    token.cast_unsigned(),
+                    &source,
+                    0,
+                );
+                create_typed_io_task(executor, &write_request)
+            });
+            source.fill(b'x');
+            let written = run_and_take(executor, write);
+            assert_eq!(written.outcome.kind, TYPED_IO_OUTCOME_UNIT);
+            let mut received = vec![0_u8; b"socket snapshot".len()];
+            server.read_exact(&mut received).unwrap();
+            assert_eq!(received, b"socket snapshot");
+
+            let (client, mut server) = connected_pair();
+            server.write_all(b"socket read").unwrap();
+            server.shutdown(Shutdown::Write).unwrap();
+            let read = with_active_resource(executor, client.into(), |token| {
+                let read_request = no_argument_request(
+                    TYPED_IO_OPERATION_SOCKET_READ_TEXT,
+                    token.cast_unsigned(),
+                    0,
+                );
+                create_typed_io_task(executor, &read_request)
+            });
+            let read = run_and_take(executor, read);
+            assert_eq!(read.outcome.kind, TYPED_IO_OUTCOME_TEXT);
+            assert_eq!(crate::text::text_bytes(read.text).unwrap(), b"socket read");
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn typed_socket_read_cancellation_releases_registration_and_private_clone() {
+        let (runtime, executor) = runtime_and_executor();
+        let (client, _server) = connected_pair();
+        unsafe {
+            let task = with_active_resource(executor, client.into(), |token| {
+                let read_request = no_argument_request(
+                    TYPED_IO_OPERATION_SOCKET_READ_TEXT,
+                    token.cast_unsigned(),
+                    0,
+                );
+                create_typed_io_task(executor, &read_request)
+            });
+            assert!(!task.is_null());
+            (*executor).runnable.clear();
+            (*task).queued = false;
+            (*task).status = TaskStatus::Running;
+            (*executor).active_task = task;
+            assert_eq!(run_typed_task_step(executor, task), TASK_PENDING);
+            (*executor).active_task = ptr::null_mut();
+            assert!((*task).status == TaskStatus::Waiting);
+            assert_eq!((*task).waits.len(), 1);
+            assert_eq!(typed_task_request_cancel_v1(executor, task), TYPED_TASK_OK);
+            assert_eq!(executor_run(executor, task), TASK_CANCELLED);
+            assert!((*task).waits.is_empty());
+            assert!((*task).io_operation.is_none());
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn typed_io_factory_rejects_a_sibling_resource_token() {
+        let (runtime, executor) = runtime_and_executor();
+        let (socket, _peer) = connected_pair();
+        unsafe {
+            let sibling = task_spawn(executor, Some(complete_resource_owner_fixture), 1, 0);
+            assert!(!sibling.is_null());
+            let resource = OwnedResource::from(socket);
+            let token = resource.token();
+            (*sibling).owned_result_resources.push(resource);
+
+            let owner = activate_resource_owner(executor);
+            let request = no_argument_request(
+                TYPED_IO_OPERATION_SOCKET_READ_TEXT,
+                token.cast_unsigned(),
+                0,
+            );
+            enter_executor(executor);
+            assert!(create_typed_io_task(executor, &request).is_null());
+            leave_executor();
+            assert!((*owner).owned_result_resources.is_empty());
+            assert_eq!((*sibling).owned_result_resources.len(), 1);
+
+            finish_resource_owner(executor, owner);
+            complete_terminal(&mut *executor, sibling, TASK_CANCELLED);
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn typed_io_factory_rejects_an_untracked_resource_token() {
+        let (runtime, executor) = runtime_and_executor();
+        let (socket, _peer) = connected_pair();
+        let resource = OwnedResource::from(socket);
+        let token = resource.token();
+        unsafe {
+            let owner = activate_resource_owner(executor);
+            let request = no_argument_request(
+                TYPED_IO_OPERATION_SOCKET_READ_TEXT,
+                token.cast_unsigned(),
+                0,
+            );
+            enter_executor(executor);
+            assert!(create_typed_io_task(executor, &request).is_null());
+            leave_executor();
+            assert!((*owner).owned_result_resources.is_empty());
+
+            finish_resource_owner(executor, owner);
+            drop(resource);
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn typed_io_factory_rejects_a_stale_resource_token() {
+        let (runtime, executor) = runtime_and_executor();
+        let (socket, _peer) = connected_pair();
+        unsafe {
+            let owner = activate_resource_owner(executor);
+            let resource = OwnedResource::from(socket);
+            let token = resource.token();
+            (*owner).owned_result_resources.push(resource);
+            (*owner).owned_result_resources.clear();
+
+            let request = no_argument_request(
+                TYPED_IO_OPERATION_SOCKET_READ_TEXT,
+                token.cast_unsigned(),
+                0,
+            );
+            enter_executor(executor);
+            assert!(create_typed_io_task(executor, &request).is_null());
+            leave_executor();
+            assert!((*owner).owned_result_resources.is_empty());
+
+            finish_resource_owner(executor, owner);
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn typed_io_factory_rejects_a_wrong_kind_resource_token() {
+        let (runtime, executor) = runtime_and_executor();
+        let (socket, _peer) = connected_pair();
+        unsafe {
+            let owner = activate_resource_owner(executor);
+            let resource = OwnedResource::from(socket);
+            let token = resource.token();
+            (*owner).owned_result_resources.push(resource);
+
+            let request =
+                no_argument_request(TYPED_IO_OPERATION_FILE_READ_TEXT, token.cast_unsigned(), 0);
+            enter_executor(executor);
+            assert!(create_typed_io_task(executor, &request).is_null());
+            leave_executor();
+            assert_eq!((*owner).owned_result_resources.len(), 1);
+
+            finish_resource_owner(executor, owner);
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn typed_io_factory_rejects_noncanonical_requests() {
+        let (runtime, executor) = runtime_and_executor();
+        let bad_version = LoomTypedIoRequest {
+            abi_version: TYPED_IO_ABI_VERSION + 1,
+            ..no_argument_request(
+                TYPED_IO_OPERATION_FILE_READ_TEXT,
+                TYPED_IO_INVALID_RESOURCE_TOKEN,
+                0,
+            )
+        };
+        unsafe {
+            assert!(create_typed_io_task(executor, &bad_version).is_null());
+            let malformed = [
+                no_argument_request(u32::MAX, TYPED_IO_INVALID_RESOURCE_TOKEN, 0),
+                request(TYPED_IO_OPERATION_FILE_OPEN_READ, 0, b"path", 0),
+                request(
+                    TYPED_IO_OPERATION_FILE_READ_TEXT,
+                    TYPED_IO_INVALID_RESOURCE_TOKEN,
+                    b"unexpected",
+                    0,
+                ),
+                request(
+                    TYPED_IO_OPERATION_FILE_WRITE_TEXT,
+                    TYPED_IO_INVALID_RESOURCE_TOKEN,
+                    b"text",
+                    1,
+                ),
+                request(TYPED_IO_OPERATION_SOCKET_CONNECT, 0, b"localhost", 80),
+                no_argument_request(
+                    TYPED_IO_OPERATION_SOCKET_READ_TEXT,
+                    TYPED_IO_INVALID_RESOURCE_TOKEN,
+                    1,
+                ),
+            ];
+            for malformed in &malformed {
+                assert!(create_typed_io_task(executor, malformed).is_null());
+            }
+            assert_eq!(executor_live_tasks(executor), 0);
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn typed_io_factory_rejects_noncanonical_root_shapes() {
+        let (runtime, executor) = runtime_and_executor();
+        let request = no_argument_request(
+            TYPED_IO_OPERATION_FILE_READ_TEXT,
+            TYPED_IO_INVALID_RESOURCE_TOKEN,
+            0,
+        );
+        unsafe {
+            let no_roots = typed_io_descriptor(&[], &[], 1, 0);
+            assert_typed_io_descriptor_rejected(executor, &no_roots, &request);
+
+            let roots = [
+                (offset_of!(TestIoFrame, result) + offset_of!(TestIoResult, text)) as u64,
+                offset_of!(TestIoFrame, scratch_text) as u64,
+            ];
+            let canonical_bitmaps = [2_u64, 1_u64];
+            let canonical = typed_io_descriptor(&roots, &canonical_bitmaps, 2, 1);
+
+            let no_completed_root = [2_u64, 0_u64];
+            assert_typed_io_descriptor_rejected(
+                executor,
+                &LoomTypedCoroutineDescriptor {
+                    live_bitmaps: no_completed_root.as_ptr(),
+                    ..canonical
+                },
+                &request,
+            );
+
+            let extra_completed_root = [2_u64, 3_u64];
+            assert_typed_io_descriptor_rejected(
+                executor,
+                &LoomTypedCoroutineDescriptor {
+                    live_bitmaps: extra_completed_root.as_ptr(),
+                    ..canonical
+                },
+                &request,
+            );
+
+            let scratch_as_completed_root = [2_u64, 2_u64];
+            assert_typed_io_descriptor_rejected(
+                executor,
+                &LoomTypedCoroutineDescriptor {
+                    live_bitmaps: scratch_as_completed_root.as_ptr(),
+                    ..canonical
+                },
+                &request,
+            );
+
+            let extra_state = [2_u64, 1_u64, 0_u64];
+            assert_typed_io_descriptor_rejected(
+                executor,
+                &LoomTypedCoroutineDescriptor {
+                    root_state_count: 3,
+                    live_bitmaps: extra_state.as_ptr(),
+                    ..canonical
+                },
+                &request,
+            );
+
+            let extra_roots = [0_u64, roots[0], roots[1]];
+            let extra_root_bitmaps = [4_u64, 2_u64];
+            assert_typed_io_descriptor_rejected(
+                executor,
+                &LoomTypedCoroutineDescriptor {
+                    root_slot_count: extra_roots.len() as u64,
+                    root_offsets: extra_roots.as_ptr(),
+                    live_bitmaps: extra_root_bitmaps.as_ptr(),
+                    ..canonical
+                },
+                &request,
+            );
+
+            let wrong_completed_state = [1_u64, 2_u64];
+            assert_typed_io_descriptor_rejected(
+                executor,
+                &LoomTypedCoroutineDescriptor {
+                    live_bitmaps: wrong_completed_state.as_ptr(),
+                    completed_root_state: 0,
+                    ..canonical
+                },
+                &request,
+            );
+
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn typed_io_factory_accepts_multiple_completed_result_roots() {
+        let (runtime, executor) = runtime_and_executor();
+        let request = no_argument_request(
+            TYPED_IO_OPERATION_FILE_READ_TEXT,
+            TYPED_IO_INVALID_RESOURCE_TOKEN,
+            0,
+        );
+        let roots = [
+            (offset_of!(TestIoFrame, result)
+                + offset_of!(TestIoResult, outcome)
+                + offset_of!(LoomTypedIoOutcome, resource_token)) as u64,
+            (offset_of!(TestIoFrame, result) + offset_of!(TestIoResult, text)) as u64,
+            offset_of!(TestIoFrame, scratch_text) as u64,
+        ];
+        // Result[Text, IoError] may use distinct managed cells for its success
+        // Text and error message. The running state keeps only scratch Text;
+        // the completed state keeps both cells inside the exact result.
+        let live_bitmaps = [4_u64, 3_u64];
+        let descriptor = typed_io_descriptor(&roots, &live_bitmaps, 2, 1);
+        unsafe {
+            let task = typed_io_task_create_v1(
+                executor,
+                ptr::from_ref(&descriptor),
+                ptr::from_ref(&request),
+            );
+            assert!(!task.is_null());
+            assert_eq!(typed_task_request_cancel_v1(executor, task), TYPED_TASK_OK);
+            assert_eq!(executor_run(executor, task), TASK_CANCELLED);
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn typed_io_poll_rejects_an_outcome_overlapping_the_task_frame() {
+        let (runtime, executor) = runtime_and_executor();
+        let request = no_argument_request(
+            TYPED_IO_OPERATION_FILE_READ_TEXT,
+            TYPED_IO_INVALID_RESOURCE_TOKEN,
+            0,
+        );
+        unsafe {
+            let task = create_typed_io_task(executor, &request);
+            assert!(!task.is_null());
+            (*executor).runnable.clear();
+            (*task).queued = false;
+            (*task).status = TaskStatus::Running;
+            (*executor).active_task = task;
+            let frame = (*task)
+                .typed
+                .as_ref()
+                .unwrap()
+                .frame_pointer()
+                .cast::<TestIoFrame>();
+            (*frame).result.outcome.kind = u32::MAX;
+            crate::gc::enter_executor(executor);
+            assert_eq!(
+                typed_io_poll_v1(
+                    task.cast(),
+                    executor.cast(),
+                    &raw mut (*frame).scratch_text,
+                    &raw mut (*frame).result.outcome,
+                ),
+                TASK_FAULTED
+            );
+            crate::gc::leave_executor();
+            assert_eq!((*frame).result.outcome.kind, u32::MAX);
+            assert!((*frame).scratch_text.is_null());
+            (*executor).active_task = ptr::null_mut();
+            destroy(runtime, executor);
+        }
+    }
+}
+
+#[cfg(test)]
 mod resource_ownership_tests {
     use std::ffi::c_void;
     use std::io::{self, Read};
@@ -5854,6 +7814,24 @@ mod resource_ownership_tests {
         TASK_COMPLETED
     }
 
+    unsafe extern "C" fn pending_fixture(
+        _task: *mut LoomTask,
+        _executor: *mut LoomExecutor,
+    ) -> i32 {
+        TASK_PENDING
+    }
+
+    unsafe extern "C" fn close_socket_on_cancel_fixture(
+        task: *mut LoomTask,
+        executor: *mut LoomExecutor,
+    ) -> i32 {
+        if unsafe { io_close(executor, task_slot(task, 0)) } == WAIT_OK {
+            TASK_CANCELLED
+        } else {
+            TASK_FAULTED
+        }
+    }
+
     unsafe extern "C" fn typed_pending_fixture(
         _task: *mut c_void,
         _executor: *mut c_void,
@@ -5868,6 +7846,21 @@ mod resource_ownership_tests {
         _frame: *mut c_void,
     ) -> i32 {
         TASK_CANCELLED
+    }
+
+    unsafe extern "C" fn typed_close_socket_on_cancel_fixture(
+        _task: *mut c_void,
+        executor: *mut c_void,
+        frame: *mut c_void,
+    ) -> i32 {
+        let status = unsafe {
+            typed_resource_close_v1(executor.cast(), TYPED_RESOURCE_KIND_SOCKET, frame.cast())
+        };
+        if status == TYPED_RESOURCE_CLOSE_OK {
+            TASK_CANCELLED
+        } else {
+            TASK_FAULTED
+        }
     }
 
     unsafe extern "C" fn typed_invalid_dispose_fixture(
@@ -5911,13 +7904,13 @@ mod resource_ownership_tests {
         task
     }
 
-    unsafe fn activate_typed_task(executor: *mut LoomExecutor, task: *mut LoomTask) {
+    unsafe fn activate_test_task(executor: *mut LoomExecutor, task: *mut LoomTask) {
         let index = unsafe {
             (*executor)
                 .runnable
                 .iter()
                 .position(|candidate| *candidate == task)
-                .expect("typed fixture must be runnable")
+                .expect("test fixture must be runnable")
         };
         assert_eq!(unsafe { (*executor).runnable.remove(index) }, Some(task));
         unsafe {
@@ -5925,6 +7918,37 @@ mod resource_ownership_tests {
             (*task).status = TaskStatus::Running;
             (*executor).active_task = task;
         }
+    }
+
+    unsafe fn finish_resource_owner(executor: *mut LoomExecutor, owner: *mut LoomTask) {
+        assert_eq!(unsafe { (*executor).active_task }, owner);
+        let children = unsafe { std::mem::take(&mut (*owner).owned_children) };
+        for child in children {
+            assert_eq!(unsafe { (*child).owner }, owner);
+            unsafe { (*child).owner = ptr::null_mut() };
+        }
+        unsafe {
+            (*executor).active_task = ptr::null_mut();
+            complete_terminal(&mut *executor, owner, TASK_CANCELLED);
+        }
+    }
+
+    unsafe fn with_active_resource<T>(
+        executor: *mut LoomExecutor,
+        resource: OwnedResource,
+        action: impl FnOnce(*mut LoomTask, i64) -> T,
+    ) -> T {
+        assert!(unsafe { (*executor).active_task.is_null() });
+        let owner = unsafe { task_spawn(executor, Some(complete_fixture), 1, 0) };
+        assert!(!owner.is_null());
+        unsafe { activate_test_task(executor, owner) };
+        let token = resource.token();
+        unsafe { (*owner).owned_result_resources.push(resource) };
+        enter_executor(executor);
+        let result = action(owner, token);
+        leave_executor();
+        unsafe { finish_resource_owner(executor, owner) };
+        result
     }
 
     unsafe fn detach_from_ready_queue(executor: *mut LoomExecutor, task: *mut LoomTask) {
@@ -5939,7 +7963,7 @@ mod resource_ownership_tests {
         task: *mut LoomTask,
         resource: OwnedResource,
     ) -> i64 {
-        let handle = resource.handle_bits();
+        let handle = resource.token();
         unsafe { detach_from_ready_queue(executor, task) };
         unsafe {
             let typed = (*task).typed.as_mut().expect("typed resource fixture");
@@ -5962,7 +7986,7 @@ mod resource_ownership_tests {
             status,
             TaskStatus::Faulted | TaskStatus::Cancelled
         ));
-        let handle = resource.handle_bits();
+        let handle = resource.token();
         unsafe { detach_from_ready_queue(executor, task) };
         unsafe {
             (*task).owned_result_resources.push(resource);
@@ -5997,7 +8021,7 @@ mod resource_ownership_tests {
     }
 
     #[test]
-    fn tracked_resource_selection_keeps_windows_handle_domains_distinct() {
+    fn tracked_resource_selection_rejects_duplicate_tokens_across_kinds() {
         assert_eq!(select_tracked_resource([]), Ok(None));
         assert_eq!(
             select_tracked_resource([(0, 0, false)]),
@@ -6005,7 +8029,7 @@ mod resource_ownership_tests {
         );
         assert_eq!(
             select_tracked_resource([(0, 0, false), (1, 2, true)]),
-            Ok(Some((1, 2)))
+            Err(CloseResourceError::InvalidOwnership)
         );
         assert_eq!(
             select_tracked_resource([(0, 0, true), (1, 2, true)]),
@@ -6021,7 +8045,7 @@ mod resource_ownership_tests {
         assert!(!executor.is_null());
         let mut payload = ValueNode {
             value: ValueSlot {
-                words: [2, 0, 0, INVALID_HANDLE.cast_unsigned(), 0, 0],
+                words: [2, 0, 0, INVALID_RESOURCE_TOKEN.cast_unsigned(), 0, 0],
             },
             next: ptr::null_mut(),
         };
@@ -6050,29 +8074,32 @@ mod resource_ownership_tests {
     fn typed_resource_close_rejects_invalid_or_inactive_boundaries() {
         let runtime = runtime_create_v1();
         assert!(!runtime.is_null());
-        let mut handle = INVALID_HANDLE;
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        let mut handle = INVALID_RESOURCE_TOKEN;
         unsafe {
             assert_eq!(
-                resource_close_typed_v1(ptr::null_mut(), TYPED_RESOURCE_KIND_FILE, &raw mut handle),
+                typed_resource_close_v1(ptr::null_mut(), TYPED_RESOURCE_KIND_FILE, &raw mut handle,),
                 TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT
             );
             assert_eq!(
-                resource_close_typed_v1(runtime, TYPED_RESOURCE_KIND_FILE, ptr::null_mut()),
+                typed_resource_close_v1(executor, TYPED_RESOURCE_KIND_FILE, ptr::null_mut()),
                 TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT
             );
             assert_eq!(
-                resource_close_typed_v1(runtime, 0, &raw mut handle),
+                typed_resource_close_v1(executor, 0, &raw mut handle),
                 TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT
             );
             assert_eq!(
-                resource_close_typed_v1(runtime, TYPED_RESOURCE_KIND_FILE, &raw mut handle),
+                typed_resource_close_v1(executor, TYPED_RESOURCE_KIND_FILE, &raw mut handle),
                 TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT
             );
+            executor_destroy(executor);
             assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }
     }
 
-    fn socket_pair() -> io::Result<(TcpStream, TcpStream)> {
+    pub(super) fn socket_pair() -> io::Result<(TcpStream, TcpStream)> {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
         let address = listener.local_addr()?;
         let client = TcpStream::connect(address)?;
@@ -6081,27 +8108,161 @@ mod resource_ownership_tests {
     }
 
     #[test]
-    fn typed_resource_close_directly_closes_and_writes_back_an_untracked_socket() {
+    fn blocking_socket_connect_tries_every_resolved_address() {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .expect("bind fallback connection address");
+        let live = listener.local_addr().expect("read fallback address");
+        let refused = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0));
+
+        match blocking_socket_connect_addresses([refused, live]) {
+            BlockingResult::Resource { nominal, resource } => {
+                assert_eq!(nominal, SOCKET_TYPE);
+                assert!(!resource.is_file());
+            }
+            _ => panic!("later resolved address was not attempted"),
+        }
+        match blocking_socket_connect_addresses([]) {
+            BlockingResult::Fault { code, .. } => assert_eq!(code, "SocketResolveFault"),
+            _ => panic!("empty address set did not report resolution failure"),
+        }
+        match blocking_socket_connect_addresses([refused]) {
+            BlockingResult::Fault { code, .. } => assert_eq!(code, "SocketConnectFault"),
+            _ => panic!("failed address did not report connection failure"),
+        }
+    }
+
+    #[test]
+    fn typed_resource_close_rejects_an_untracked_socket() {
         let runtime = runtime_create_v1();
         assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
         let (socket, mut peer) = socket_pair().expect("create socket pair");
         peer.set_nonblocking(true).expect("make peer nonblocking");
-        let mut handle = crate::platform::socket_handle_bits(&socket);
-        std::mem::forget(socket);
+        let resource = OwnedResource::from(socket);
+        let mut handle = resource.token();
+        let original = handle;
 
         unsafe {
-            assert_eq!(crate::gc::activate_runtime_v1(runtime), WAIT_OK);
+            let owner = task_spawn(executor, Some(complete_fixture), 1, 0);
+            assert!(!owner.is_null());
+            activate_test_task(executor, owner);
+            enter_executor(executor);
             assert_eq!(
-                resource_close_typed_v1(runtime, TYPED_RESOURCE_KIND_SOCKET, &raw mut handle,),
-                TYPED_RESOURCE_CLOSE_OK
+                typed_resource_close_v1(executor, TYPED_RESOURCE_KIND_SOCKET, &raw mut handle),
+                TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT
             );
-            assert_eq!(handle, INVALID_HANDLE);
+            assert_eq!(handle, original);
+            assert!((*owner).owned_result_resources.is_empty());
+            assert_peer_still_connected(&mut peer);
+            leave_executor();
+            finish_resource_owner(executor, owner);
+            drop(resource);
             assert_peer_closed(&mut peer);
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn typed_resource_close_rejects_a_live_raw_socket_handle_as_a_token() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        let (socket, mut peer) = socket_pair().expect("create raw-handle socket pair");
+        peer.set_nonblocking(true).expect("make peer nonblocking");
+        let mut raw_handle = crate::platform::socket_handle_bits(&socket);
+        let original = raw_handle;
+
+        unsafe {
+            let owner = task_spawn(executor, Some(complete_fixture), 1, 0);
+            assert!(!owner.is_null());
+            activate_test_task(executor, owner);
+            enter_executor(executor);
             assert_eq!(
-                resource_close_typed_v1(runtime, TYPED_RESOURCE_KIND_SOCKET, &raw mut handle,),
-                TYPED_RESOURCE_CLOSE_OK
+                typed_resource_close_v1(executor, TYPED_RESOURCE_KIND_SOCKET, &raw mut raw_handle,),
+                TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT
             );
-            assert_eq!(crate::gc::deactivate_runtime_v1(runtime), WAIT_OK);
+            leave_executor();
+            assert_eq!(raw_handle, original);
+            assert!((*owner).owned_result_resources.is_empty());
+            assert_peer_still_connected(&mut peer);
+
+            finish_resource_owner(executor, owner);
+            drop(socket);
+            assert_peer_closed(&mut peer);
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn typed_resource_close_rejects_a_sibling_token() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        let (socket, mut peer) = socket_pair().expect("create sibling socket pair");
+        peer.set_nonblocking(true).expect("make peer nonblocking");
+
+        unsafe {
+            let sibling = task_spawn(executor, Some(complete_fixture), 1, 0);
+            let owner = task_spawn(executor, Some(complete_fixture), 1, 0);
+            assert!(!sibling.is_null() && !owner.is_null());
+            let resource = OwnedResource::from(socket);
+            let mut token = resource.token();
+            (*sibling).owned_result_resources.push(resource);
+            activate_test_task(executor, owner);
+
+            enter_executor(executor);
+            assert_eq!(
+                typed_resource_close_v1(executor, TYPED_RESOURCE_KIND_SOCKET, &raw mut token),
+                TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT
+            );
+            leave_executor();
+            assert_eq!((*sibling).owned_result_resources.len(), 1);
+            assert_peer_still_connected(&mut peer);
+
+            finish_resource_owner(executor, owner);
+            complete_terminal(&mut *executor, sibling, TASK_CANCELLED);
+            assert_peer_closed(&mut peer);
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn typed_resource_close_rejects_a_stale_token() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        let (socket, mut peer) = socket_pair().expect("create stale socket pair");
+        peer.set_nonblocking(true).expect("make peer nonblocking");
+
+        unsafe {
+            let owner = task_spawn(executor, Some(complete_fixture), 1, 0);
+            assert!(!owner.is_null());
+            activate_test_task(executor, owner);
+            let resource = OwnedResource::from(socket);
+            let mut token = resource.token();
+            let original = token;
+            (*owner).owned_result_resources.push(resource);
+            (*owner).owned_result_resources.clear();
+            assert_peer_closed(&mut peer);
+
+            enter_executor(executor);
+            assert_eq!(
+                typed_resource_close_v1(executor, TYPED_RESOURCE_KIND_SOCKET, &raw mut token),
+                TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT
+            );
+            leave_executor();
+            assert_eq!(token, original);
+            assert!((*owner).owned_result_resources.is_empty());
+
+            finish_resource_owner(executor, owner);
+            executor_destroy(executor);
             assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }
     }
@@ -6114,25 +8275,129 @@ mod resource_ownership_tests {
         assert!(!executor.is_null());
         let (socket, mut peer) = socket_pair().expect("create socket pair");
         peer.set_nonblocking(true).expect("make peer nonblocking");
-        let mut handle = crate::platform::socket_handle_bits(&socket);
+        let mut handle = INVALID_RESOURCE_TOKEN;
 
         unsafe {
-            let task = task_spawn(executor, Some(complete_fixture), 1, 0);
+            with_active_resource(executor, socket.into(), |task, token| {
+                handle = token;
+                assert_eq!((*task).owned_result_resources.len(), 1);
+                assert_eq!(
+                    typed_resource_close_v1(executor, TYPED_RESOURCE_KIND_SOCKET, &raw mut handle,),
+                    TYPED_RESOURCE_CLOSE_OK
+                );
+                assert_eq!(handle, INVALID_RESOURCE_TOKEN);
+                assert!((*task).owned_result_resources.is_empty());
+                assert_peer_closed(&mut peer);
+                assert_eq!(
+                    typed_resource_close_v1(executor, TYPED_RESOURCE_KIND_SOCKET, &raw mut handle,),
+                    TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT
+                );
+            });
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn typed_resource_close_is_authorized_only_inside_cancellation_cleanup() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        let (socket, mut peer) = socket_pair().expect("create cancellation cleanup socket pair");
+        peer.set_nonblocking(true).expect("make peer nonblocking");
+
+        unsafe {
+            let mut descriptor = typed_resource_descriptor();
+            descriptor.cancel = Some(typed_close_socket_on_cancel_fixture);
+            let task = typed_task_create_v1(executor, &raw const descriptor);
             assert!(!task.is_null());
-            crate::gc::enter_executor(executor);
+            assert_eq!(typed_task_initialize_v1(task, 0), TYPED_TASK_OK);
+
+            let resource = OwnedResource::from(socket);
+            let token = resource.token();
+            (*task)
+                .typed
+                .as_mut()
+                .expect("typed cancellation fixture")
+                .frame_pointer()
+                .cast::<i64>()
+                .write(token);
+            (*task).owned_result_resources.push(resource);
+            assert_eq!(typed_task_publish_v1(executor, task), TYPED_TASK_OK);
+
+            activate_test_task(executor, task);
+            (*task).cancel_requested = true;
+            enter_executor(executor);
+            assert_eq!(
+                typed_resource_close_v1(
+                    executor,
+                    TYPED_RESOURCE_KIND_SOCKET,
+                    (*task)
+                        .typed
+                        .as_mut()
+                        .expect("typed cancellation fixture")
+                        .frame_pointer()
+                        .cast(),
+                ),
+                TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT
+            );
+            leave_executor();
+            assert_eq!((*task).owned_result_resources.len(), 1);
+            assert_peer_still_connected(&mut peer);
+
+            (*executor).active_task = ptr::null_mut();
+            (*task).status = TaskStatus::Runnable;
+            (*task).queued = true;
+            (*executor).runnable.push_front(task);
+            assert_eq!(executor_run(executor, task), TASK_CANCELLED);
+            assert!((*task).owned_result_resources.is_empty());
+            assert_peer_closed(&mut peer);
+
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn whole_artifact_resource_close_runs_inside_cancellation_cleanup() {
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        let (socket, mut peer) = socket_pair().expect("create fallback cancellation socket pair");
+        peer.set_nonblocking(true).expect("make peer nonblocking");
+
+        unsafe {
+            let descriptor = LoomCoroutineDescriptor {
+                abi_version: COROUTINE_ABI_VERSION,
+                flags: 0,
+                resume: Some(pending_fixture),
+                cancel: Some(close_socket_on_cancel_fixture),
+                trace: None,
+                slot_count: 1,
+                witness_count: 0,
+                result_slot: 0,
+                state_count: 0,
+                live_bitmap_words: 0,
+                live_bitmaps: ptr::null(),
+            };
+            let task = task_spawn_descriptor(executor, &raw const descriptor);
+            assert!(!task.is_null());
+            enter_executor(executor);
             assert_eq!(
                 store_resource_result(task, SOCKET_TYPE, socket.into()),
                 TASK_COMPLETED
             );
+            leave_executor();
             assert_eq!((*task).owned_result_resources.len(), 1);
-            assert_eq!(
-                resource_close_typed_v1(runtime, TYPED_RESOURCE_KIND_SOCKET, &raw mut handle,),
-                TYPED_RESOURCE_CLOSE_OK
-            );
-            assert_eq!(handle, INVALID_HANDLE);
+            assert_peer_still_connected(&mut peer);
+
+            assert_eq!(task_cancel(executor, task), WAIT_OK);
+            assert_eq!(executor_run(executor, task), TASK_CANCELLED);
             assert!((*task).owned_result_resources.is_empty());
             assert_peer_closed(&mut peer);
-            crate::gc::leave_executor();
+
             executor_destroy(executor);
             assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }
@@ -6146,31 +8411,27 @@ mod resource_ownership_tests {
         assert!(!executor.is_null());
         let (socket, mut peer) = socket_pair().expect("create socket pair");
         peer.set_nonblocking(true).expect("make peer nonblocking");
-        let mut handle = crate::platform::socket_handle_bits(&socket);
+        let mut handle = INVALID_RESOURCE_TOKEN;
 
         unsafe {
-            let task = task_spawn(executor, Some(complete_fixture), 1, 0);
-            assert!(!task.is_null());
-            crate::gc::enter_executor(executor);
-            assert_eq!(
-                store_resource_result(task, SOCKET_TYPE, socket.into()),
-                TASK_COMPLETED
-            );
-            assert_eq!(
-                resource_close_typed_v1(runtime, TYPED_RESOURCE_KIND_FILE, &raw mut handle),
-                TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT
-            );
-            assert_eq!((*task).owned_result_resources.len(), 1);
-            assert_peer_still_connected(&mut peer);
+            with_active_resource(executor, socket.into(), |task, token| {
+                handle = token;
+                assert_eq!(
+                    typed_resource_close_v1(executor, TYPED_RESOURCE_KIND_FILE, &raw mut handle),
+                    TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT
+                );
+                assert_eq!(handle, token);
+                assert_eq!((*task).owned_result_resources.len(), 1);
+                assert_peer_still_connected(&mut peer);
 
-            assert_eq!(
-                resource_close_typed_v1(runtime, TYPED_RESOURCE_KIND_SOCKET, &raw mut handle),
-                TYPED_RESOURCE_CLOSE_OK
-            );
-            assert_eq!(handle, INVALID_HANDLE);
-            assert!((*task).owned_result_resources.is_empty());
-            assert_peer_closed(&mut peer);
-            crate::gc::leave_executor();
+                assert_eq!(
+                    typed_resource_close_v1(executor, TYPED_RESOURCE_KIND_SOCKET, &raw mut handle,),
+                    TYPED_RESOURCE_CLOSE_OK
+                );
+                assert_eq!(handle, INVALID_RESOURCE_TOKEN);
+                assert!((*task).owned_result_resources.is_empty());
+                assert_peer_closed(&mut peer);
+            });
             executor_destroy(executor);
             assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }
@@ -6188,7 +8449,7 @@ mod resource_ownership_tests {
         unsafe {
             let root = create_typed_resource_task(executor);
             let expected = complete_typed_resource(executor, root, socket.into());
-            let mut handle = INVALID_HANDLE;
+            let mut handle = INVALID_RESOURCE_TOKEN;
 
             assert_eq!(
                 typed_task_take_result_v1(
@@ -6199,7 +8460,7 @@ mod resource_ownership_tests {
                 ),
                 TYPED_TASK_INVALID_ARGUMENT
             );
-            assert_eq!(handle, INVALID_HANDLE);
+            assert_eq!(handle, INVALID_RESOURCE_TOKEN);
             assert_eq!((*root).owned_result_resources.len(), 1);
             assert!(!(*executor).retired_tasks.contains(&root));
             assert_peer_still_connected(&mut peer);
@@ -6221,16 +8482,17 @@ mod resource_ownership_tests {
 
             enter_executor(executor);
             assert_eq!(
-                resource_close_typed_v1(runtime, TYPED_RESOURCE_KIND_SOCKET, &raw mut handle),
-                TYPED_RESOURCE_CLOSE_OK
+                typed_resource_close_v1(executor, TYPED_RESOURCE_KIND_SOCKET, &raw mut handle),
+                TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT
             );
             leave_executor();
-            assert_eq!(handle, INVALID_HANDLE);
-            assert!((*root).owned_result_resources.is_empty());
-            assert_peer_closed(&mut peer);
+            assert_eq!(handle, expected);
+            assert_eq!((*root).owned_result_resources.len(), 1);
+            assert_peer_still_connected(&mut peer);
 
             executor_destroy(executor);
             assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+            assert_peer_closed(&mut peer);
         }
     }
 
@@ -6246,7 +8508,7 @@ mod resource_ownership_tests {
         unsafe {
             let root = create_typed_resource_task(executor);
             let expected = complete_typed_resource(executor, root, socket.into());
-            let mut handle = INVALID_HANDLE;
+            let mut handle = INVALID_RESOURCE_TOKEN;
             assert_eq!(
                 typed_task_take_result_v1(
                     root,
@@ -6277,7 +8539,7 @@ mod resource_ownership_tests {
 
         unsafe {
             let parent = create_typed_resource_task(executor);
-            activate_typed_task(executor, parent);
+            activate_test_task(executor, parent);
             let sibling = create_typed_resource_task(executor);
             let expected = complete_typed_resource(executor, sibling, socket.into());
             assert_eq!(
@@ -6290,7 +8552,7 @@ mod resource_ownership_tests {
             );
             assert!(!(*parent).join_children.contains(&sibling));
 
-            let mut handle = INVALID_HANDLE;
+            let mut handle = INVALID_RESOURCE_TOKEN;
             assert_eq!(
                 typed_task_take_result_v1(
                     sibling,
@@ -6300,7 +8562,7 @@ mod resource_ownership_tests {
                 ),
                 TYPED_TASK_INVALID_ARGUMENT
             );
-            assert_eq!(handle, INVALID_HANDLE);
+            assert_eq!(handle, INVALID_RESOURCE_TOKEN);
             assert_eq!((*sibling).owned_result_resources.len(), 1);
             assert_eq!(
                 (*sibling)
@@ -6332,13 +8594,13 @@ mod resource_ownership_tests {
 
         unsafe {
             let parent = create_typed_resource_task(executor);
-            activate_typed_task(executor, parent);
+            activate_test_task(executor, parent);
             assert_eq!(task_prepare_join(executor, parent, TASK_JOIN_ALL), WAIT_OK);
             let child = create_typed_resource_task(executor);
             assert_eq!(task_add_join_child(executor, parent, child), WAIT_OK);
             let expected = complete_typed_resource(executor, child, socket.into());
 
-            let mut handle = INVALID_HANDLE;
+            let mut handle = INVALID_RESOURCE_TOKEN;
             assert_eq!(
                 typed_task_take_result_v1(
                     child,
@@ -6348,7 +8610,7 @@ mod resource_ownership_tests {
                 ),
                 TYPED_TASK_INVALID_ARGUMENT
             );
-            assert_eq!(handle, INVALID_HANDLE);
+            assert_eq!(handle, INVALID_RESOURCE_TOKEN);
             assert_eq!((*parent).owned_children, vec![child]);
             assert_eq!((*parent).join_children, vec![child]);
             assert_eq!((*child).owned_result_resources.len(), 1);
@@ -6369,7 +8631,7 @@ mod resource_ownership_tests {
                 ),
                 TYPED_TASK_STATUS_INVALID
             );
-            assert_eq!(handle, INVALID_HANDLE);
+            assert_eq!(handle, INVALID_RESOURCE_TOKEN);
             assert_eq!(code, sentinel);
             assert_eq!(message, sentinel);
             assert_eq!(
@@ -6386,7 +8648,7 @@ mod resource_ownership_tests {
 
             enter_executor(executor);
             assert_eq!(
-                resource_close_typed_v1(runtime, TYPED_RESOURCE_KIND_SOCKET, &raw mut handle),
+                typed_resource_close_v1(executor, TYPED_RESOURCE_KIND_SOCKET, &raw mut handle),
                 TYPED_RESOURCE_CLOSE_OK
             );
             leave_executor();
@@ -6446,28 +8708,6 @@ mod resource_ownership_tests {
     }
 
     #[test]
-    fn typed_resource_close_failure_preserves_an_untracked_handle() {
-        let runtime = runtime_create_v1();
-        assert!(!runtime.is_null());
-        #[cfg(unix)]
-        let mut handle = -2_i64;
-        #[cfg(windows)]
-        let mut handle = 0_i64;
-        let original = handle;
-
-        unsafe {
-            assert_eq!(crate::gc::activate_runtime_v1(runtime), WAIT_OK);
-            assert_eq!(
-                resource_close_typed_v1(runtime, TYPED_RESOURCE_KIND_FILE, &raw mut handle),
-                TYPED_RESOURCE_CLOSE_FAILED
-            );
-            assert_eq!(handle, original);
-            assert_eq!(crate::gc::deactivate_runtime_v1(runtime), WAIT_OK);
-            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
-        }
-    }
-
-    #[test]
     fn typed_all_take_transfers_every_real_resource_before_child_reaping() {
         let runtime = runtime_create_v1();
         assert!(!runtime.is_null());
@@ -6484,7 +8724,7 @@ mod resource_ownership_tests {
 
         unsafe {
             let parent = create_typed_resource_task(executor);
-            activate_typed_task(executor, parent);
+            activate_test_task(executor, parent);
             assert_eq!(task_prepare_join(executor, parent, TASK_JOIN_ALL), WAIT_OK);
             let left = create_typed_resource_task(executor);
             let right = create_typed_resource_task(executor);
@@ -6495,8 +8735,8 @@ mod resource_ownership_tests {
 
             assert_eq!(task_suspend_join(executor, parent), 0);
             assert_eq!(task_join_step(parent), TASK_COMPLETED);
-            let mut left_handle = INVALID_HANDLE;
-            let mut right_handle = INVALID_HANDLE;
+            let mut left_handle = INVALID_RESOURCE_TOKEN;
+            let mut right_handle = INVALID_RESOURCE_TOKEN;
             for (child, output) in [(left, &raw mut left_handle), (right, &raw mut right_handle)] {
                 assert_eq!(
                     typed_task_take_result_v1(
@@ -6523,7 +8763,7 @@ mod resource_ownership_tests {
             enter_executor(executor);
             for handle in [&raw mut left_handle, &raw mut right_handle] {
                 assert_eq!(
-                    resource_close_typed_v1(runtime, TYPED_RESOURCE_KIND_SOCKET, handle),
+                    typed_resource_close_v1(executor, TYPED_RESOURCE_KIND_SOCKET, handle),
                     TYPED_RESOURCE_CLOSE_OK
                 );
             }
@@ -6547,7 +8787,7 @@ mod resource_ownership_tests {
 
         unsafe {
             let parent = create_typed_resource_task(executor);
-            activate_typed_task(executor, parent);
+            activate_test_task(executor, parent);
             assert_eq!(task_prepare_join(executor, parent, TASK_JOIN_ALL), WAIT_OK);
             let child = create_typed_resource_task(executor);
             assert_eq!(task_add_join_child(executor, parent, child), WAIT_OK);
@@ -6555,7 +8795,7 @@ mod resource_ownership_tests {
             assert_eq!(task_suspend_join(executor, parent), 0);
             assert_eq!(task_join_step(parent), TASK_COMPLETED);
 
-            let mut handle = INVALID_HANDLE;
+            let mut handle = INVALID_RESOURCE_TOKEN;
             assert_eq!(
                 typed_task_take_result_v1(
                     child,
@@ -6604,7 +8844,7 @@ mod resource_ownership_tests {
 
         unsafe {
             let parent = create_typed_resource_task(executor);
-            activate_typed_task(executor, parent);
+            activate_test_task(executor, parent);
             assert_eq!(
                 task_prepare_join(executor, parent, TASK_JOIN_SETTLED),
                 WAIT_OK
@@ -6638,7 +8878,7 @@ mod resource_ownership_tests {
             assert_eq!(task_join_step(parent), TASK_COMPLETED);
 
             let sentinel = ptr::dangling_mut::<c_void>();
-            let mut handle = INVALID_HANDLE;
+            let mut handle = INVALID_RESOURCE_TOKEN;
             assert_eq!(
                 typed_task_take_result_v1(
                     completed,
@@ -6648,7 +8888,7 @@ mod resource_ownership_tests {
                 ),
                 TYPED_TASK_INVALID_ARGUMENT
             );
-            assert_eq!(handle, INVALID_HANDLE);
+            assert_eq!(handle, INVALID_RESOURCE_TOKEN);
             assert_eq!((*completed).owned_result_resources.len(), 1);
             let mut aliased_text = sentinel;
             assert_eq!(
@@ -6662,7 +8902,7 @@ mod resource_ownership_tests {
                 ),
                 TYPED_TASK_STATUS_INVALID
             );
-            assert_eq!(handle, INVALID_HANDLE);
+            assert_eq!(handle, INVALID_RESOURCE_TOKEN);
             assert_eq!(aliased_text, sentinel);
             assert_eq!((*completed).owned_result_resources.len(), 1);
             assert!(!(*executor).retired_tasks.contains(&completed));
@@ -6741,7 +8981,7 @@ mod resource_ownership_tests {
 
             enter_executor(executor);
             assert_eq!(
-                resource_close_typed_v1(runtime, TYPED_RESOURCE_KIND_SOCKET, &raw mut handle),
+                typed_resource_close_v1(executor, TYPED_RESOURCE_KIND_SOCKET, &raw mut handle),
                 TYPED_RESOURCE_CLOSE_OK
             );
             leave_executor();
@@ -6769,7 +9009,7 @@ mod resource_ownership_tests {
 
         unsafe {
             let parent = create_typed_resource_task(executor);
-            activate_typed_task(executor, parent);
+            activate_test_task(executor, parent);
             assert_eq!(task_prepare_join(executor, parent, TASK_JOIN_ANY), WAIT_OK);
             let winner = create_typed_resource_task(executor);
             let loser = create_typed_resource_task(executor);
@@ -6779,7 +9019,7 @@ mod resource_ownership_tests {
             complete_typed_resource(executor, loser, loser_socket.into());
 
             assert_eq!(task_suspend_join(executor, parent), 0);
-            let mut handle = INVALID_HANDLE;
+            let mut handle = INVALID_RESOURCE_TOKEN;
             assert!(
                 !(*parent)
                     .typed
@@ -6796,7 +9036,7 @@ mod resource_ownership_tests {
                 ),
                 TYPED_TASK_INVALID_ARGUMENT
             );
-            assert_eq!(handle, INVALID_HANDLE);
+            assert_eq!(handle, INVALID_RESOURCE_TOKEN);
             assert_eq!((*parent).owned_children, vec![winner, loser]);
             assert_eq!((*parent).join_children, vec![winner, loser]);
             assert_eq!((*winner).owned_result_resources.len(), 1);
@@ -6833,7 +9073,7 @@ mod resource_ownership_tests {
 
             enter_executor(executor);
             assert_eq!(
-                resource_close_typed_v1(runtime, TYPED_RESOURCE_KIND_SOCKET, &raw mut handle),
+                typed_resource_close_v1(executor, TYPED_RESOURCE_KIND_SOCKET, &raw mut handle),
                 TYPED_RESOURCE_CLOSE_OK
             );
             leave_executor();
@@ -6855,7 +9095,7 @@ mod resource_ownership_tests {
 
         unsafe {
             let parent = create_typed_resource_task(executor);
-            activate_typed_task(executor, parent);
+            activate_test_task(executor, parent);
             let child = create_typed_resource_task(executor);
             complete_typed_resource(executor, child, socket.into());
             {
@@ -6928,7 +9168,7 @@ mod resource_ownership_tests {
         assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::WouldBlock));
     }
 
-    fn assert_peer_closed(peer: &mut TcpStream) {
+    pub(super) fn assert_peer_closed(peer: &mut TcpStream) {
         let mut byte = [0_u8; 1];
         for _ in 0..100 {
             match peer.read(&mut byte) {
@@ -6964,14 +9204,10 @@ mod resource_ownership_tests {
         let text = b"not written";
 
         unsafe {
-            let task = socket_write_text(
-                executor,
-                crate::platform::socket_handle_bits(&socket),
-                text.as_ptr(),
-                text.len() as u64,
-            );
+            let task = with_active_resource(executor, socket.into(), |_owner, token| {
+                socket_write_text(executor, token, text.as_ptr(), text.len() as u64)
+            });
             assert!(!task.is_null());
-            drop(socket);
             assert_peer_still_connected(&mut peer);
 
             assert_eq!(task_cancel(executor, task), WAIT_OK);
@@ -7033,11 +9269,15 @@ mod resource_ownership_tests {
             assert_peer_still_connected(&mut winner_peer);
             assert_peer_still_connected(&mut loser_peer);
 
+            activate_test_task(executor, parent);
+            enter_executor(executor);
             assert_eq!(io_close(executor, destination.cast()), WAIT_OK);
+            leave_executor();
             assert_peer_closed(&mut winner_peer);
 
             reap_retired_tasks(&mut *executor, parent);
             assert_peer_closed(&mut loser_peer);
+            cancel_test_parent(executor, parent);
             executor_destroy(executor);
             assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }
@@ -7097,6 +9337,8 @@ mod resource_ownership_tests {
             assert!(!first.is_null());
             let second = (*first).next;
             assert!(!second.is_null());
+            activate_test_task(executor, parent);
+            enter_executor(executor);
             assert_eq!(
                 io_close(executor, (&raw mut (*first).value).cast()),
                 WAIT_OK
@@ -7105,8 +9347,10 @@ mod resource_ownership_tests {
                 io_close(executor, (&raw mut (*second).value).cast()),
                 WAIT_OK
             );
+            leave_executor();
             assert_peer_closed(&mut left_peer);
             assert_peer_closed(&mut right_peer);
+            cancel_test_parent(executor, parent);
             executor_destroy(executor);
             assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }
@@ -7210,6 +9454,168 @@ mod typed_task_tests {
     };
     use crate::reactor::{executor_create_for_runtime_v1, executor_destroy, executor_register};
     use crate::runtime::{runtime_create_v1, runtime_destroy_v1};
+
+    #[test]
+    fn cancelled_queued_blocking_work_is_not_invoked() {
+        struct DropMarker(Arc<AtomicBool>);
+
+        impl Drop for DropMarker {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+
+        let state = AtomicU8::new(BLOCKING_QUEUED);
+        let invoked = Arc::new(AtomicBool::new(false));
+        let released = Arc::new(AtomicBool::new(false));
+        let submission: Mutex<Option<BlockingJob>> = Mutex::new(Some(Box::new({
+            let invoked = Arc::clone(&invoked);
+            let marker = DropMarker(Arc::clone(&released));
+            move || {
+                drop(marker);
+                invoked.store(true, Ordering::SeqCst);
+            }
+        })));
+        assert_eq!(
+            cancel_blocking_work(&state, &submission),
+            BlockingCancellation::Queued
+        );
+        assert!(submission.lock().unwrap().is_none());
+        assert!(released.load(Ordering::Acquire));
+        assert!(!run_blocking_submission(&state, &submission));
+        assert!(!invoked.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn queued_blocking_task_cancellation_skips_the_host_operation() {
+        let _serial = lock_slow_blocking_fixture();
+        reset_controlled_blocking_fixture();
+        let blockers_started = Arc::new(AtomicUsize::new(0));
+        let release_blockers = Arc::new(AtomicBool::new(false));
+        for _ in 0..4 {
+            let blockers_started = Arc::clone(&blockers_started);
+            let release_blockers = Arc::clone(&release_blockers);
+            blocking_pool()
+                .send(Box::new(move || {
+                    blockers_started.fetch_add(1, Ordering::Release);
+                    while !release_blockers.load(Ordering::Acquire) {
+                        std::thread::yield_now();
+                    }
+                }))
+                .unwrap();
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while blockers_started.load(Ordering::Acquire) != 4 && std::time::Instant::now() < deadline
+        {
+            std::thread::yield_now();
+        }
+        assert_eq!(blockers_started.load(Ordering::Acquire), 4);
+        let (socket, mut peer) = super::resource_ownership_tests::socket_pair()
+            .expect("create queued cancellation socket pair");
+        peer.set_nonblocking(true).expect("make peer nonblocking");
+
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+        unsafe {
+            let task = task_spawn(executor, Some(resume_controlled_blocking_fixture), 1, 0);
+            assert!(!task.is_null());
+            (*executor).runnable.clear();
+            (*task).queued = false;
+            (*task).status = TaskStatus::Running;
+            (*executor).active_task = task;
+            enter_executor(executor);
+            assert_eq!(
+                suspend_blocking(task, executor, move || {
+                    CONTROLLED_BLOCKING_STARTED.store(true, Ordering::Release);
+                    drop(socket);
+                    CONTROLLED_BLOCKING_FINISHED.store(true, Ordering::Release);
+                    BlockingResult::Unit
+                }),
+                TASK_PENDING
+            );
+            leave_executor();
+            (*executor).active_task = ptr::null_mut();
+            assert!((*task).status == TaskStatus::Waiting);
+            assert_eq!(task_cancel(executor, task), WAIT_OK);
+            super::resource_ownership_tests::assert_peer_closed(&mut peer);
+
+            let timed_out = Arc::new(AtomicBool::new(false));
+            let watchdog_timed_out = Arc::clone(&timed_out);
+            let watchdog_release = Arc::clone(&release_blockers);
+            let (finished_sender, finished_receiver) = mpsc::channel();
+            let watchdog = std::thread::spawn(move || {
+                if finished_receiver
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .is_err()
+                {
+                    watchdog_timed_out.store(true, Ordering::Release);
+                    watchdog_release.store(true, Ordering::Release);
+                }
+            });
+            assert_eq!(executor_run(executor, task), TASK_CANCELLED);
+            let _ = finished_sender.send(());
+            release_blockers.store(true, Ordering::Release);
+            watchdog.join().unwrap();
+            assert!(
+                !timed_out.load(Ordering::Acquire),
+                "queued cancellation waited for unrelated blocking workers"
+            );
+            assert!(!CONTROLLED_BLOCKING_STARTED.load(Ordering::Acquire));
+            assert!(!CONTROLLED_BLOCKING_FINISHED.load(Ordering::Acquire));
+            executor_destroy(executor);
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
+
+    #[test]
+    fn executor_shutdown_drains_started_blocking_work() {
+        let _serial = lock_slow_blocking_fixture();
+        reset_controlled_blocking_fixture();
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
+        assert!(!executor.is_null());
+
+        unsafe {
+            let task = task_spawn(executor, Some(resume_controlled_blocking_fixture), 1, 0);
+            assert!(!task.is_null());
+            (*executor).runnable.clear();
+            (*task).queued = false;
+            (*task).status = TaskStatus::Running;
+            (*executor).active_task = task;
+            enter_executor(executor);
+            assert_eq!(
+                resume_controlled_blocking_fixture(task, executor),
+                TASK_PENDING
+            );
+            leave_executor();
+            (*executor).active_task = ptr::null_mut();
+            assert!((*task).status == TaskStatus::Waiting);
+
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !CONTROLLED_BLOCKING_STARTED.load(Ordering::Acquire)
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::yield_now();
+            }
+            assert!(CONTROLLED_BLOCKING_STARTED.load(Ordering::Acquire));
+            assert!(!CONTROLLED_BLOCKING_FINISHED.load(Ordering::Acquire));
+
+            let releaser = std::thread::spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                CONTROLLED_BLOCKING_RELEASED.store(true, Ordering::Release);
+            });
+            let shutdown_started = std::time::Instant::now();
+            executor_destroy(executor);
+            let shutdown_elapsed = shutdown_started.elapsed();
+            releaser.join().unwrap();
+            assert!(shutdown_elapsed >= std::time::Duration::from_millis(25));
+            assert!(CONTROLLED_BLOCKING_FINISHED.load(Ordering::Acquire));
+            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
+        }
+    }
 
     unsafe extern "C" fn complete_u64(
         task: *mut c_void,
@@ -10076,7 +12482,7 @@ mod typed_task_tests {
     }
 
     #[test]
-    fn structured_cancellation_runs_children_in_reverse_creation_order() {
+    fn immediately_runnable_child_cancellation_uses_reverse_creation_order() {
         let _serial = RETIRE_TEST_LOCK.lock().unwrap();
         RETIRE_ORDER.lock().unwrap().clear();
         let (runtime, executor) = runtime_and_executor();

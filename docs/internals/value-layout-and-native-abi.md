@@ -169,41 +169,32 @@ path helper symbols belong only to complete legacy objects.
 
 ## Typed external resources
 
-Canonical `File#8` and `Socket#9` are direct one-field products containing an
-`Int` platform-handle value. The type identity, monomorphic registration,
-direct representation, product shape, and canonical `Int` field must all
-agree; a merely layout-compatible nominal is not an ABI substitute.
-`loom_runtime_resource_close_typed_v1(runtime, kind, handle_cell)` borrows a
-stable handle cell for one synchronous call. Status `0` closes the resource and
-writes the invalid-handle sentinel, status `2` is the ordinary
-`ResourceCloseFault`, and invalid argument status `1` or any unknown status is
-a compiler/runtime defect. No task is scheduled and no managed allocation can
-occur at this boundary.
+Canonical `File#8` and `Socket#9` are protected direct one-field products
+containing an `Int` runtime capability token. The token is not an OS
+descriptor or handle. The concrete RAII owner remains in the runtime Task
+ledger, and every operation resolves the token against the current active,
+running owner before it clones or closes the resource. Generic product
+construction, extraction, and insertion cannot forge or expose these
+capabilities.
 
-Status `2` is limited to rejecting a host handle before runtime ownership is
-consumed, so the source cell can safely remain unchanged. After a handle has
-been accepted, File/Socket cleanup is a final RAII close: a platform close
-completion error is not exposed or retried because the numeric handle may
-already have been released and reused. A future durability guarantee must come
-from an explicit flush/sync operation rather than from destructor status.
+`loom_typed_resource_close_v1(executor, kind, token_cell)` borrows a stable
+token cell for one synchronous call. Status `0` closes the resource and writes
+the invalid-token sentinel. Every nonzero status is a compiler/runtime ABI
+defect; final RAII release has no ordinary failure result. No task is scheduled
+and no managed allocation can occur at this boundary.
 
-If the active executor already tracks the handle, lookup is exact in both
-handle bits and File/Socket kind. An opposite-only match or duplicate exact
-entries return invalid status without closing or removing anything. On
-Windows, a unique exact File HANDLE remains selectable even when an unrelated
-Socket SOCKET has the same numeric bits; the two host handle domains are not
-collapsed into one uniqueness namespace.
+The active Task must own the token exactly once with the requested File/Socket
+kind. An untracked, stale, sibling-owned, opposite-kind, or duplicate token is
+an invalid ABI call and cannot reach any unsafe host-handle operation. Tokens
+are monotonically allocated for the process lifetime and never reused, so a
+closed capability cannot accidentally name a later resource even when the OS
+reuses its own descriptor value. File/Socket cleanup is final RAII release; a
+future durability guarantee must come from an explicit flush/sync operation.
 
-The close wire and the typed-task result-take wires keep their existing symbol
-names, arguments, status-code shapes, and layouts. The corrected completed-
-result ownership order nevertheless advances the exact native runtime identity
-to component 26 with `typed-resource-ownership-v1` and `runtime-v20`.
-Typed-task ABI v1, coroutine v2, wait v1, standard-library ABI v5, Text v3, and
-GC v9 remain unchanged.
-
-The current exact runtime identity is component 27 with `runtime-v21`.
-Integer parsing has no runtime export and changes none of these resource,
-typed-task, layout, Text, or GC wires.
+The current exact runtime identity is defined in
+[Versioning and compatibility](../project/versioning.md). Typed-task ABI v1,
+coroutine v2, wait v1, standard-library ABI v5, Text v3, and GC v9 remain
+unchanged.
 
 ## Legacy primitive and aggregate specialization
 
@@ -334,15 +325,16 @@ leaves for `TaskFault`. A sole nonempty List literal is flattened to the same
 static row; empty, stored, computed, and runtime-sized List joins and
 first-class `any`, `settled`, or `race` results remain complete fallback.
 
-The runtime separately tracks built-in File and Socket handles owned by a
+The runtime separately tracks concrete built-in File and Socket owners held by a
 published typed result; that ledger is not a field in `Task[T]` or in the
-source value. A successful exact child-result take, including the Completed
+source value. Source records carry only their monotonic capability token. A
+successful exact child-result take, including the Completed
 branch of outcome take, moves the child's ledger entries to its owner Task,
 which may itself be the root Task, before retiring the child. If result-take is
 applied directly to the ownerless root Task, its entries remain attached to
 that Task in the executor-owned task registry. Faulted, cancelled, losing, and
 unconsumed tasks do not transfer entries. Terminal cleanup and typed result
-disposal release their remaining built-in handles at the deterministic cleanup
+disposal release their remaining built-in owners at the deterministic cleanup
 boundary, even if a disposer reports a fault or protocol defect; retired-task
 reaping only reclaims memory. Validation failure commits neither a topology
 change nor an ownership move.

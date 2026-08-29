@@ -71,10 +71,33 @@ artifact, or runtime compatibility.
 
 ### Changed
 
+- All seven fallible File and Socket operations now lower to direct typed LCIR
+  task creation. Compiler-generated coroutine callbacks translate the closed
+  runtime outcome into the exact target-native `Result` frame, publish precise
+  managed roots, and enqueue completion through the real scheduler without a
+  universal `Value` bridge. Native run coverage exercises file
+  create/write/close/open/read and ordinary File/Socket failures; Linux and
+  Windows object emission use the same target-derived request and outcome ABI.
+  Typed resource cleanup is now the single
+  `loom_typed_resource_close_v1(executor, kind, token_cell)` boundary. Source
+  values carry a process-monotonic runtime capability token rather than an OS
+  descriptor or handle, and read, write, and close accept it only from the
+  current active Task's unique matching resource owner. Untracked, stale,
+  sibling-owned, wrong-kind, and duplicate tokens fail before any unsafe host
+  operation. Blocking I/O cancellation atomically removes and drops the host
+  closure for queued work, while started work is drained before a Task becomes
+  terminal, so a completed structured join cannot
+  leave cancelled side effects running in the background. `ResourceClose` is
+  an ordinary dual-result LCIR instruction with no recoverable fault edge;
+  status `0` succeeds and every nonzero runtime status is an ABI defect. This
+  advances the LCIR dump to 39, artifact schema to 41, LCIR native-object
+  domain to v37, LLVM object-cache domain to v42, and native runtime ABI to
+  component 29 with `typed-io-v1` and `runtime-v23`. Checked MIR remains 28,
+  and the public standard-library ABI remains v5.
+
 - `IoError.kind()` and `IoError.message()` now lower to direct LCIR product
   projections. They no longer count as unsupported native operations; the
-  standard-library fallback gate now names only JSON parsing and typed external
-  I/O task creation.
+  standard-library fallback gate now names only JSON parsing.
 
 - Source files and directories compiled without `loom.toml` now use the exact
   `Standalone` project mode and synthetic `<standalone>@0` package identity.
@@ -95,37 +118,6 @@ artifact, or runtime compatibility.
   to 39, the native-object domain to v35, the LLVM object-cache domain to v40,
   and native runtime ABI to component 27 with `runtime-v21`; the public
   standard-library ABI remains v5.
-
-- Typed resource cleanup and completed-task resource ownership now fail closed
-  at their existing boundaries. LCIR accepts `ResourceClose` only for the exact
-  canonical one-handle `File#8` or `Socket#9` representation selected by the
-  resource kind. LLVM treats close status `0` as success, status `2` as the
-  ordinary `ResourceCloseFault`, and every other status as a compiler/runtime
-  ABI defect. Successful `loom_typed_task_take_result_v1` and completed
-  `loom_typed_task_take_outcome_v1` calls transfer a child's owned result
-  resources to the child's non-null owner Task, which may itself be the root
-  Task, before retiring the child. When result-take is applied directly to the
-  ownerless root Task, ownership remains attached to that Task in the
-  executor-owned task registry. Child take now also requires one exact
-  owned/join membership, a successfully settled join, the matching
-  result-versus-outcome policy, and completed ANY/RACE winner finalization;
-  invalid calls change neither output, topology, nor ownership. Tracked close
-  rejects an opposite-only match or duplicate exact ledger entries without
-  closing them; a unique exact match remains valid across the distinct Windows
-  HANDLE and SOCKET numeric domains;
-  faulted, cancelled, losing, and unconsumed tasks do not transfer resources.
-  Typed result disposal now releases every remaining built-in File/Socket
-  ledger entry at the deterministic disposal boundary, even if a disposer
-  reports a fault or protocol defect; retired-task reaping is only memory
-  reclamation. No LCIR field, textual
-  grammar, runtime symbol, function signature, status-code shape, typed-task
-  layout, or public source API changes. The LCIR dump therefore remains
-  `lcir 36`, checked MIR remains 27, typed-task ABI remains v1, and the
-  standard-library ABI remains v5. The stricter checked meaning advances
-  artifact identity to schema 38, the typed LCIR native-object domain to v34,
-  the LLVM object-cache domain to v39, and the native runtime identity to
-  component 26 with
-  `typed-resource-ownership-v1` and `runtime-v20`.
 
 - Typed LCIR now covers the existing `Path.from_text`, `Path.as_text`, and
   `Path.join` APIs. `Path` remains an exact one-field Text product rather than

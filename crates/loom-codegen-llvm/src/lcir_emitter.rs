@@ -36,12 +36,12 @@ use loom_codegen_ir::{
     CheckedIntBinaryOp, Constant, ContractFaultBlame, ContractFaultMetadata, CoroutinePlan,
     CoroutineSuspension, Effects, FaultCode, FaultMetadata, FloatBinaryOp,
     FloatPredicate as LcirFloatPredicate, Function, InstanceId, Instruction, InstructionId,
-    InstructionKind, IntPredicate as LcirIntPredicate, MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE,
-    ManagedRootPlan, ManagedRootProjection, ManagedRootSlot, ManagedSafepoint, Origin, Repr,
-    ResourceKind, ResultTarget, ScalarRepr, SumRepr, SumTagRepr, TASK_OUTCOME_CANCELLED_VARIANT,
-    TASK_OUTCOME_COMPLETED_VARIANT, TASK_OUTCOME_FAULTED_VARIANT, Terminator, TerminatorKind,
-    TestOutcomePlan, UnwindTarget, ValueDefinition, ValueId, ValueTypeId, ValueTypeKind,
-    plan_managed_roots,
+    InstructionKind, IntPredicate as LcirIntPredicate, IoTaskOperation,
+    MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE, ManagedRootPlan, ManagedRootProjection,
+    ManagedRootSlot, ManagedSafepoint, Origin, Repr, ResourceKind, ResultTarget, ScalarRepr,
+    SumRepr, SumTagRepr, TASK_OUTCOME_CANCELLED_VARIANT, TASK_OUTCOME_COMPLETED_VARIANT,
+    TASK_OUTCOME_FAULTED_VARIANT, Terminator, TerminatorKind, TestOutcomePlan, UnwindTarget,
+    ValueDefinition, ValueId, ValueTypeId, ValueTypeKind, plan_managed_roots,
 };
 use loom_core::runtime_fault::{
     ARTIFACT_PROOF_REJECTED_FAULT_CODE, ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
@@ -69,11 +69,17 @@ use loom_runtime_abi::{
     TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES,
     TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION,
     TYPED_GC_ALLOC_SYMBOL, TYPED_GC_REPEATED_ABI_VERSION, TYPED_GC_REPEATED_ALLOC_SYMBOL,
-    TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_JSON_ABI_VERSION,
-    TYPED_JSON_FORMAT_DEPTH_LIMIT, TYPED_JSON_FORMAT_NON_FINITE_NUMBER, TYPED_JSON_FORMAT_OK,
-    TYPED_JSON_FORMAT_SYMBOL, TYPED_LOG_FIELD_ALIGNMENT, TYPED_LOG_FIELD_KEY_OFFSET,
-    TYPED_LOG_FIELD_SIZE, TYPED_LOG_FIELD_VALUE_OFFSET, TYPED_LOG_OK, TYPED_LOG_WRITE_FAILED,
-    TYPED_LOG_WRITE_SYMBOL, TYPED_RESOURCE_CLOSE_FAILED, TYPED_RESOURCE_CLOSE_OK,
+    TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_IO_ABI_VERSION,
+    TYPED_IO_CANCEL_SYMBOL, TYPED_IO_INVALID_RESOURCE_TOKEN, TYPED_IO_OPERATION_FILE_CREATE,
+    TYPED_IO_OPERATION_FILE_OPEN_READ, TYPED_IO_OPERATION_FILE_READ_TEXT,
+    TYPED_IO_OPERATION_FILE_WRITE_TEXT, TYPED_IO_OPERATION_SOCKET_CONNECT,
+    TYPED_IO_OPERATION_SOCKET_READ_TEXT, TYPED_IO_OPERATION_SOCKET_WRITE_TEXT,
+    TYPED_IO_OUTCOME_ERROR, TYPED_IO_OUTCOME_RESOURCE, TYPED_IO_OUTCOME_TEXT,
+    TYPED_IO_OUTCOME_UNIT, TYPED_IO_POLL_SYMBOL, TYPED_IO_TASK_CREATE_SYMBOL,
+    TYPED_JSON_ABI_VERSION, TYPED_JSON_FORMAT_DEPTH_LIMIT, TYPED_JSON_FORMAT_NON_FINITE_NUMBER,
+    TYPED_JSON_FORMAT_OK, TYPED_JSON_FORMAT_SYMBOL, TYPED_LOG_FIELD_ALIGNMENT,
+    TYPED_LOG_FIELD_KEY_OFFSET, TYPED_LOG_FIELD_SIZE, TYPED_LOG_FIELD_VALUE_OFFSET, TYPED_LOG_OK,
+    TYPED_LOG_WRITE_FAILED, TYPED_LOG_WRITE_SYMBOL, TYPED_RESOURCE_CLOSE_OK,
     TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET,
     TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION, TYPED_TASK_PUBLISH_ADOPTING_SYMBOL,
     TYPED_TASK_TAKE_OUTCOME_SYMBOL, TYPED_TIMER_TASK_CREATE_SYMBOL,
@@ -1813,6 +1819,26 @@ struct TaskJoinAllShape {
 }
 
 #[derive(Clone)]
+struct IoTaskLayout<'ctx> {
+    operation: IoTaskOperation,
+    frame: StructType<'ctx>,
+    result_type: ValueTypeId,
+    success_type: ValueTypeId,
+    error_type: ValueTypeId,
+    error_kind_type: ValueTypeId,
+    result_field: u32,
+    scratch_field: u32,
+    callback: FunctionValue<'ctx>,
+    descriptor: PointerValue<'ctx>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct IoTaskShape {
+    operation: IoTaskOperation,
+    result_type: ValueTypeId,
+}
+
+#[derive(Clone)]
 struct DynamicCandidateLayout<'ctx> {
     object: StructType<'ctx>,
     payload: BasicTypeEnum<'ctx>,
@@ -1837,6 +1863,8 @@ struct Backend<'ctx, 'artifact> {
     coroutine_cancel: Option<FunctionValue<'ctx>>,
     task_join_all_layouts: BTreeMap<TaskJoinAllShape, TaskJoinAllLayout<'ctx>>,
     task_join_all_shapes: BTreeMap<InstructionId, TaskJoinAllShape>,
+    io_task_layouts: BTreeMap<IoTaskShape, IoTaskLayout<'ctx>>,
+    io_task_shapes: BTreeMap<InstructionId, IoTaskShape>,
     debug: Option<DebugState<'ctx>>,
     names: Cell<u64>,
     sum_layout_cache: RefCell<BTreeMap<u32, SumLayout<'ctx>>>,
@@ -1942,6 +1970,54 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                 ));
             }
         }
+        let has_typed_io = artifact.functions().iter().any(|function| {
+            function.instructions().iter().any(|instruction| {
+                matches!(instruction.kind(), InstructionKind::IoTaskCreate { .. })
+            })
+        });
+        if has_typed_io {
+            let byte_view =
+                context.struct_type(&[ptr_type.into(), context.i64_type().into()], false);
+            let request = context.struct_type(
+                &[
+                    context.i32_type().into(),
+                    context.i32_type().into(),
+                    context.i64_type().into(),
+                    byte_view.into(),
+                    context.i64_type().into(),
+                ],
+                false,
+            );
+            let outcome = context.struct_type(
+                &[
+                    context.i32_type().into(),
+                    context.i32_type().into(),
+                    context.i64_type().into(),
+                ],
+                false,
+            );
+            let pointer_size = target_data.get_abi_size(&ptr_type);
+            let pointer_align = target_data.get_abi_alignment(&ptr_type);
+            let request_size = target_data.get_abi_size(&request);
+            let request_align = target_data.get_abi_alignment(&request);
+            let outcome_size = target_data.get_abi_size(&outcome);
+            let outcome_align = target_data.get_abi_alignment(&outcome);
+            if pointer_size != 8
+                || pointer_align != 8
+                || request_size != 40
+                || request_align != 8
+                || outcome_size != 16
+                || outcome_align != 8
+            {
+                return Err(CodegenError::new(
+                    "LcirTypedIoAbiMismatch",
+                    format!(
+                        "LLVM target {} gives pointer {pointer_size}/{pointer_align}, typed I/O request {request_size}/{request_align}, and outcome {outcome_size}/{outcome_align}; required 8/8, 40/8, and 16/8",
+                        target.triple
+                    ),
+                ));
+            }
+        }
         let debug = (!options.debug_sources.is_empty())
             .then(|| {
                 DebugState::new(
@@ -1971,6 +2047,8 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             coroutine_cancel: None,
             task_join_all_layouts: BTreeMap::new(),
             task_join_all_shapes: BTreeMap::new(),
+            io_task_layouts: BTreeMap::new(),
+            io_task_shapes: BTreeMap::new(),
             debug,
             names: Cell::new(0),
             sum_layout_cache: RefCell::new(BTreeMap::new()),
@@ -2057,7 +2135,8 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             self.coroutine_callbacks.push(None);
             self.coroutine_layouts.push(None);
         }
-        self.declare_task_join_all_layouts()
+        self.declare_task_join_all_layouts()?;
+        self.declare_io_task_layouts()
     }
 
     fn declare_synchronous_function(
@@ -2150,6 +2229,314 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             self.task_join_all_shapes.insert(instruction.id(), shape);
         }
         Ok(())
+    }
+
+    fn declare_io_task_layouts(&mut self) -> Result<(), CodegenError> {
+        let tasks = self
+            .artifact
+            .functions()
+            .iter()
+            .flat_map(|source| {
+                source.instructions().iter().filter_map(move |instruction| {
+                    matches!(instruction.kind(), InstructionKind::IoTaskCreate { .. })
+                        .then_some((source, instruction))
+                })
+            })
+            .collect::<Vec<_>>();
+        for (source, instruction) in tasks {
+            let shape = self.io_task_shape(source, instruction)?;
+            if self.io_task_shapes.contains_key(&instruction.id()) {
+                return Err(CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("duplicate typed I/O instruction {}", instruction.id()),
+                ));
+            }
+            if !self.io_task_layouts.contains_key(&shape) {
+                let shape_index = self.io_task_layouts.len();
+                let callback = self.module.add_function(
+                    &format!("loom.lcir.io.resume.{shape_index}"),
+                    self.context.i32_type().fn_type(
+                        &[
+                            self.ptr_type.into(),
+                            self.ptr_type.into(),
+                            self.ptr_type.into(),
+                        ],
+                        false,
+                    ),
+                    Some(Linkage::Internal),
+                );
+                let layout = self.build_io_task_layout(shape, shape_index, callback)?;
+                self.io_task_layouts.insert(shape, layout);
+            }
+            self.io_task_shapes.insert(instruction.id(), shape);
+        }
+        Ok(())
+    }
+
+    fn io_task_shape(
+        &self,
+        source: &Function,
+        instruction: &Instruction,
+    ) -> Result<IoTaskShape, CodegenError> {
+        let InstructionKind::IoTaskCreate { operation, .. } = instruction.kind() else {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!("{} is not a typed I/O instruction", instruction.id()),
+            ));
+        };
+        let result = instruction
+            .results()
+            .first()
+            .and_then(|result| source.value(*result))
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "typed I/O has no Task result"))?;
+        let semantic = self
+            .artifact
+            .representations()
+            .value_type(result.ty())
+            .map(loom_codegen_ir::ValueType::semantic)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "typed I/O Task type is missing"))?;
+        let Type::Task(output) = semantic else {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "typed I/O result is not a Task handle",
+            ));
+        };
+        let result_type = self
+            .artifact
+            .representations()
+            .type_id(output)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "typed I/O Result type is missing")
+            })?;
+        Ok(IoTaskShape {
+            operation: *operation,
+            result_type,
+        })
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one target-layout boundary proves the exact typed I/O frame, roots, closed result shape, and immutable descriptor"
+    )]
+    fn build_io_task_layout(
+        &self,
+        shape: IoTaskShape,
+        shape_index: usize,
+        callback: FunctionValue<'ctx>,
+    ) -> Result<IoTaskLayout<'ctx>, CodegenError> {
+        let result_sum = self.sum_repr(shape.result_type)?;
+        let variants = result_sum.variants();
+        let [success_variant, error_variant] = variants else {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "typed I/O Result must have exact one-field success and error variants",
+            ));
+        };
+        let ([success_field], [error_field]) = (success_variant.fields(), error_variant.fields())
+        else {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "typed I/O Result must have exact one-field success and error variants",
+            ));
+        };
+        let success_type = *success_field;
+        let error_type = *error_field;
+        let error_fields = self.product_repr(error_type)?.fields();
+        let [error_kind_type, error_message_type] = error_fields else {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "typed I/O error must have exact kind and message fields",
+            ));
+        };
+        let error_kind_type = *error_kind_type;
+        let error_kind = self.sum_repr(error_kind_type)?;
+        if error_kind.tag() != SumTagRepr::I8
+            || error_kind.variants().len() != 10
+            || error_kind
+                .variants()
+                .iter()
+                .any(|variant| !variant.fields().is_empty())
+            || self
+                .artifact
+                .representations()
+                .value_type(*error_message_type)
+                .is_none_or(|value| value.semantic() != &Type::Text)
+            || self.repr_of(*error_message_type)? != Repr::ManagedPointer
+        {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "typed I/O error does not use canonical IoErrorKind and managed Text",
+            ));
+        }
+        let success_repr = self.repr_of(success_type)?;
+        let success_valid = match shape.operation {
+            IoTaskOperation::FileOpenRead
+            | IoTaskOperation::FileCreate
+            | IoTaskOperation::SocketConnect => {
+                let integer = self
+                    .artifact
+                    .representations()
+                    .type_id(&Type::Int)
+                    .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "Int type is missing"))?;
+                matches!(success_repr, Repr::Product(_))
+                    && self.product_repr(success_type)?.fields() == [integer]
+            }
+            IoTaskOperation::FileReadText | IoTaskOperation::SocketReadText => {
+                success_repr == Repr::ManagedPointer
+                    && self
+                        .artifact
+                        .representations()
+                        .value_type(success_type)
+                        .is_some_and(|value| value.semantic() == &Type::Text)
+            }
+            IoTaskOperation::FileWriteText | IoTaskOperation::SocketWriteText => {
+                success_repr == Repr::Zst
+                    && self
+                        .artifact
+                        .representations()
+                        .value_type(success_type)
+                        .is_some_and(|value| value.semantic() == &Type::Unit)
+            }
+        };
+        if !success_valid {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "typed I/O operation does not match its direct success representation",
+            ));
+        }
+
+        let result_physical = self.llvm_type(shape.result_type)?;
+        let frame = self
+            .context
+            .struct_type(&[result_physical, self.ptr_type.into()], false);
+        let result_field = 0_u32;
+        let scratch_field = 1_u32;
+        let frame_size = self.target_data.get_abi_size(&frame);
+        let frame_align = u64::from(self.target_data.get_abi_alignment(&frame));
+        let result_offset = self.coroutine_field_offset(frame, result_field)?;
+        let scratch_offset = self.coroutine_field_offset(frame, scratch_field)?;
+        let result_size = self.target_data.get_abi_size(&result_physical);
+        let result_align = u64::from(self.target_data.get_abi_alignment(&result_physical));
+        if frame_size == 0
+            || frame_size > GC_MAX_OBJECT_BYTES
+            || frame_align == 0
+            || !frame_align.is_power_of_two()
+            || frame_align > GC_MAX_OBJECT_ALIGNMENT
+        {
+            return Err(CodegenError::new(
+                "ProgramTooLarge",
+                format!(
+                    "typed I/O frame has unsupported size/alignment {frame_size}/{frame_align}"
+                ),
+            ));
+        }
+
+        let completed_roots = self
+            .managed_element_offsets(shape.result_type)?
+            .into_iter()
+            .map(|offset| {
+                result_offset.checked_add(offset).ok_or_else(|| {
+                    CodegenError::new("ProgramTooLarge", "typed I/O result root offset overflowed")
+                })
+            })
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        let mut all_offsets = completed_roots.clone();
+        all_offsets.insert(scratch_offset);
+        let offsets = all_offsets.into_iter().collect::<Vec<_>>();
+        let indexes = offsets
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, offset)| (offset, index))
+            .collect::<BTreeMap<_, _>>();
+        let bitmap_words = offsets.len().div_ceil(64);
+        let mut bitmaps = vec![0_u64; 2 * bitmap_words];
+        let scratch_index = indexes[&scratch_offset];
+        bitmaps[scratch_index / 64] |= 1_u64 << (scratch_index % 64);
+        for root in completed_roots {
+            let index = indexes[&root];
+            bitmaps[bitmap_words + index / 64] |= 1_u64 << (index % 64);
+        }
+        let stem = format!("loom.lcir.io.{shape_index}");
+        let offsets_pointer = self.emit_i64_array(&format!("{stem}.root_offsets"), &offsets)?;
+        let bitmaps_pointer = self.emit_i64_array(&format!("{stem}.live_bitmaps"), &bitmaps)?;
+        let descriptor_type = self.context.struct_type(
+            &[
+                self.context.i32_type().into(),
+                self.context.i32_type().into(),
+                self.ptr_type.into(),
+                self.ptr_type.into(),
+                self.ptr_type.into(),
+                self.context.i64_type().into(),
+                self.context.i64_type().into(),
+                self.context.i64_type().into(),
+                self.context.i64_type().into(),
+                self.context.i64_type().into(),
+                self.context.i64_type().into(),
+                self.context.i64_type().into(),
+                self.context.i64_type().into(),
+                self.ptr_type.into(),
+                self.ptr_type.into(),
+                self.context.i64_type().into(),
+            ],
+            false,
+        );
+        let descriptor =
+            self.module
+                .add_global(descriptor_type, None, &format!("{stem}.descriptor"));
+        descriptor.set_initializer(
+            &descriptor_type.const_named_struct(&[
+                self.context
+                    .i32_type()
+                    .const_int(u64::from(TYPED_TASK_ABI_VERSION), false)
+                    .into(),
+                self.context.i32_type().const_zero().into(),
+                callback.as_global_value().as_pointer_value().into(),
+                self.typed_io_cancel()
+                    .as_global_value()
+                    .as_pointer_value()
+                    .into(),
+                self.ptr_type.const_null().into(),
+                self.context.i64_type().const_int(frame_size, false).into(),
+                self.context.i64_type().const_int(frame_align, false).into(),
+                self.context
+                    .i64_type()
+                    .const_int(result_offset, false)
+                    .into(),
+                self.context.i64_type().const_int(result_size, false).into(),
+                self.context
+                    .i64_type()
+                    .const_int(result_align, false)
+                    .into(),
+                self.context
+                    .i64_type()
+                    .const_int(offsets.len() as u64, false)
+                    .into(),
+                self.context.i64_type().const_int(2, false).into(),
+                self.context
+                    .i64_type()
+                    .const_int(bitmap_words as u64, false)
+                    .into(),
+                offsets_pointer.into(),
+                bitmaps_pointer.into(),
+                self.context.i64_type().const_int(1, false).into(),
+            ]),
+        );
+        descriptor.set_constant(true);
+        descriptor.set_linkage(Linkage::Private);
+        descriptor.set_unnamed_address(UnnamedAddress::Global);
+        Ok(IoTaskLayout {
+            operation: shape.operation,
+            frame,
+            result_type: shape.result_type,
+            success_type,
+            error_type,
+            error_kind_type,
+            result_field,
+            scratch_field,
+            callback,
+            descriptor: descriptor.as_pointer_value(),
+        })
     }
 
     #[expect(
@@ -2739,7 +3126,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                     "typed coroutine root projection exceeds its structural budget",
                 ));
             }
-            match self.coroutine_frame_repr(ty)? {
+            match self.repr_of(ty)? {
                 Repr::ManagedPointer => return Ok(true),
                 Repr::Product(product) => {
                     let fields = self
@@ -2787,7 +3174,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         Ok(false)
     }
 
-    fn coroutine_frame_repr(&self, ty: ValueTypeId) -> Result<Repr, CodegenError> {
+    fn repr_of(&self, ty: ValueTypeId) -> Result<Repr, CodegenError> {
         let value_type = self
             .artifact
             .representations()
@@ -2829,6 +3216,9 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         self.emit_coroutine_cancel()?;
         for layout in self.task_join_all_layouts.values() {
             self.emit_task_join_all_callback(layout)?;
+        }
+        for layout in self.io_task_layouts.values() {
+            self.emit_io_task_callback(layout)?;
         }
         for source in self
             .artifact
@@ -3093,6 +3483,402 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         self.emit_task_step_return(TASK_FAULTED)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one generated leaf callback validates the primitive runtime outcome and writes the exact target-native Result frame without an intermediate value ABI"
+    )]
+    fn emit_io_task_callback(&self, layout: &IoTaskLayout<'ctx>) -> Result<(), CodegenError> {
+        let task = layout
+            .callback
+            .get_nth_param(0)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "typed I/O callback has no task"))?
+            .into_pointer_value();
+        let executor = layout
+            .callback
+            .get_nth_param(1)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "typed I/O callback has no executor")
+            })?
+            .into_pointer_value();
+        let frame = layout
+            .callback
+            .get_nth_param(2)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "typed I/O callback has no frame"))?
+            .into_pointer_value();
+        let entry = self.context.append_basic_block(layout.callback, "io.entry");
+        let completed = self
+            .context
+            .append_basic_block(layout.callback, "io.completed");
+        let pending = self
+            .context
+            .append_basic_block(layout.callback, "io.pending");
+        let faulted = self
+            .context
+            .append_basic_block(layout.callback, "io.faulted");
+        let cancelled = self
+            .context
+            .append_basic_block(layout.callback, "io.cancelled");
+        let success = self
+            .context
+            .append_basic_block(layout.callback, "io.success");
+        let success_write = self
+            .context
+            .append_basic_block(layout.callback, "io.success.write");
+        let error = self.context.append_basic_block(layout.callback, "io.error");
+        let error_write = self
+            .context
+            .append_basic_block(layout.callback, "io.error.write");
+        let publish = self
+            .context
+            .append_basic_block(layout.callback, "io.publish");
+        let invalid = self
+            .context
+            .append_basic_block(layout.callback, "io.invalid");
+
+        self.builder.position_at_end(entry);
+        let scratch = self
+            .builder
+            .build_struct_gep(
+                layout.frame,
+                frame,
+                layout.scratch_field,
+                "io.scratch.pointer",
+            )
+            .map_err(builder_error)?;
+        let result_pointer = self
+            .builder
+            .build_struct_gep(
+                layout.frame,
+                frame,
+                layout.result_field,
+                "io.result.pointer",
+            )
+            .map_err(builder_error)?;
+        let outcome_type = self.typed_io_outcome_type();
+        let outcome = self
+            .builder
+            .build_alloca(outcome_type, "io.outcome")
+            .map_err(builder_error)?;
+        self.builder
+            .build_store(outcome, outcome_type.const_zero())
+            .map_err(builder_error)?;
+        let step = call_int(
+            &self.builder,
+            self.typed_io_poll(),
+            &[task.into(), executor.into(), scratch.into(), outcome.into()],
+            "io.poll",
+        )?;
+        self.builder
+            .build_switch(
+                step,
+                invalid,
+                &[
+                    (
+                        self.context
+                            .i32_type()
+                            .const_int(TASK_COMPLETED as u64, false),
+                        completed,
+                    ),
+                    (
+                        self.context
+                            .i32_type()
+                            .const_int(TASK_PENDING as u64, false),
+                        pending,
+                    ),
+                    (
+                        self.context
+                            .i32_type()
+                            .const_int(TASK_FAULTED as u64, false),
+                        faulted,
+                    ),
+                    (
+                        self.context
+                            .i32_type()
+                            .const_int(TASK_CANCELLED as u64, false),
+                        cancelled,
+                    ),
+                ],
+            )
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(completed);
+        let kind_pointer = self
+            .builder
+            .build_struct_gep(outcome_type, outcome, 0, "io.outcome.kind.pointer")
+            .map_err(builder_error)?;
+        let kind = self
+            .builder
+            .build_load(self.context.i32_type(), kind_pointer, "io.outcome.kind")
+            .map_err(builder_error)?
+            .into_int_value();
+        let expected = match layout.operation {
+            IoTaskOperation::FileOpenRead
+            | IoTaskOperation::FileCreate
+            | IoTaskOperation::SocketConnect => TYPED_IO_OUTCOME_RESOURCE,
+            IoTaskOperation::FileReadText | IoTaskOperation::SocketReadText => {
+                TYPED_IO_OUTCOME_TEXT
+            }
+            IoTaskOperation::FileWriteText | IoTaskOperation::SocketWriteText => {
+                TYPED_IO_OUTCOME_UNIT
+            }
+        };
+        self.builder
+            .build_switch(
+                kind,
+                invalid,
+                &[
+                    (
+                        self.context
+                            .i32_type()
+                            .const_int(u64::from(expected), false),
+                        success,
+                    ),
+                    (
+                        self.context
+                            .i32_type()
+                            .const_int(u64::from(TYPED_IO_OUTCOME_ERROR), false),
+                        error,
+                    ),
+                ],
+            )
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(success);
+        let scratch_value = self
+            .builder
+            .build_load(self.ptr_type, scratch, "io.scratch.success")
+            .map_err(builder_error)?
+            .into_pointer_value();
+        let bits_pointer = self
+            .builder
+            .build_struct_gep(outcome_type, outcome, 2, "io.outcome.bits.pointer")
+            .map_err(builder_error)?;
+        let bits = self
+            .builder
+            .build_load(self.context.i64_type(), bits_pointer, "io.outcome.bits")
+            .map_err(builder_error)?
+            .into_int_value();
+        let success_valid = match layout.operation {
+            IoTaskOperation::FileOpenRead
+            | IoTaskOperation::FileCreate
+            | IoTaskOperation::SocketConnect => self
+                .builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    bits,
+                    self.context
+                        .i64_type()
+                        .const_int(TYPED_IO_INVALID_RESOURCE_TOKEN, false),
+                    "io.resource.valid",
+                )
+                .map_err(builder_error)?,
+            IoTaskOperation::FileReadText | IoTaskOperation::SocketReadText => self
+                .builder
+                .build_is_not_null(scratch_value, "io.text.valid")
+                .map_err(builder_error)?,
+            IoTaskOperation::FileWriteText | IoTaskOperation::SocketWriteText => {
+                self.context.bool_type().const_int(1, false)
+            }
+        };
+        self.builder
+            .build_conditional_branch(success_valid, success_write, invalid)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(success_write);
+        let success_offset = self.sum_payload_field_offset(layout.result_type, 0, 0)?;
+        match layout.operation {
+            IoTaskOperation::FileOpenRead
+            | IoTaskOperation::FileCreate
+            | IoTaskOperation::SocketConnect => {
+                let success_physical = self.llvm_type(layout.success_type)?.into_struct_type();
+                let field_offset = self
+                    .target_data
+                    .offset_of_element(&success_physical, 0)
+                    .ok_or_else(|| {
+                        CodegenError::new("LlvmAbiDefect", "I/O resource field offset is missing")
+                    })?;
+                let pointer = self.io_frame_byte_pointer(
+                    result_pointer,
+                    success_offset.checked_add(field_offset).ok_or_else(|| {
+                        CodegenError::new("ProgramTooLarge", "I/O resource offset overflowed")
+                    })?,
+                    "io.result.resource.pointer",
+                )?;
+                self.builder
+                    .build_store(pointer, bits)
+                    .map_err(builder_error)?;
+            }
+            IoTaskOperation::FileReadText | IoTaskOperation::SocketReadText => {
+                let pointer = self.io_frame_byte_pointer(
+                    result_pointer,
+                    success_offset,
+                    "io.result.text.pointer",
+                )?;
+                self.builder
+                    .build_store(pointer, scratch_value)
+                    .map_err(builder_error)?;
+            }
+            IoTaskOperation::FileWriteText | IoTaskOperation::SocketWriteText => {}
+        }
+        self.store_io_result_tag(layout.result_type, result_pointer, 0)?;
+        self.builder
+            .build_store(scratch, self.ptr_type.const_null())
+            .map_err(builder_error)?;
+        self.builder
+            .build_unconditional_branch(publish)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(error);
+        let message = self
+            .builder
+            .build_load(self.ptr_type, scratch, "io.error.message")
+            .map_err(builder_error)?
+            .into_pointer_value();
+        let detail_pointer = self
+            .builder
+            .build_struct_gep(outcome_type, outcome, 1, "io.outcome.detail.pointer")
+            .map_err(builder_error)?;
+        let detail = self
+            .builder
+            .build_load(self.context.i32_type(), detail_pointer, "io.outcome.detail")
+            .map_err(builder_error)?
+            .into_int_value();
+        let detail_valid = self
+            .builder
+            .build_int_compare(
+                IntPredicate::ULT,
+                detail,
+                self.context.i32_type().const_int(10, false),
+                "io.error.kind.valid",
+            )
+            .map_err(builder_error)?;
+        let message_valid = self
+            .builder
+            .build_is_not_null(message, "io.error.message.valid")
+            .map_err(builder_error)?;
+        let error_valid = self
+            .builder
+            .build_and(detail_valid, message_valid, "io.error.valid")
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(error_valid, error_write, invalid)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(error_write);
+        let error_base = self.sum_payload_field_offset(layout.result_type, 1, 0)?;
+        let error_physical = self.llvm_type(layout.error_type)?.into_struct_type();
+        let kind_offset = self
+            .target_data
+            .offset_of_element(&error_physical, 0)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "IoError.kind offset is missing"))?;
+        let message_offset = self
+            .target_data
+            .offset_of_element(&error_physical, 1)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "IoError.message offset is missing")
+            })?;
+        let kind_pointer = self.io_frame_byte_pointer(
+            result_pointer,
+            error_base.checked_add(kind_offset).ok_or_else(|| {
+                CodegenError::new("ProgramTooLarge", "IoError.kind offset overflowed")
+            })?,
+            "io.result.error.kind.pointer",
+        )?;
+        let kind_type = self.llvm_type(layout.error_kind_type)?.into_int_type();
+        let detail = self
+            .builder
+            .build_int_truncate(detail, kind_type, "io.error.kind")
+            .map_err(builder_error)?;
+        self.builder
+            .build_store(kind_pointer, detail)
+            .map_err(builder_error)?;
+        let message_pointer = self.io_frame_byte_pointer(
+            result_pointer,
+            error_base.checked_add(message_offset).ok_or_else(|| {
+                CodegenError::new("ProgramTooLarge", "IoError.message offset overflowed")
+            })?,
+            "io.result.error.message.pointer",
+        )?;
+        self.builder
+            .build_store(message_pointer, message)
+            .map_err(builder_error)?;
+        self.store_io_result_tag(layout.result_type, result_pointer, 1)?;
+        self.builder
+            .build_store(scratch, self.ptr_type.const_null())
+            .map_err(builder_error)?;
+        self.builder
+            .build_unconditional_branch(publish)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(publish);
+        let published = call_int(
+            &self.builder,
+            self.typed_task_publish_result(),
+            &[task.into()],
+            "io.result.publish",
+        )?;
+        self.require_zero_status(published, "io.result.publish")?;
+        self.emit_task_step_return(TASK_COMPLETED)?;
+
+        self.builder.position_at_end(pending);
+        self.emit_task_step_return(TASK_PENDING)?;
+        self.builder.position_at_end(faulted);
+        self.emit_task_step_return(TASK_FAULTED)?;
+        self.builder.position_at_end(cancelled);
+        self.emit_task_step_return(TASK_CANCELLED)?;
+        self.builder.position_at_end(invalid);
+        self.emit_task_step_return(TASK_FAULTED)
+    }
+
+    #[expect(
+        unsafe_code,
+        reason = "target-data-proven typed I/O field offsets stay within the descriptor-validated direct result frame"
+    )]
+    fn io_frame_byte_pointer(
+        &self,
+        base: PointerValue<'ctx>,
+        offset: u64,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        // SAFETY: the typed I/O descriptor was derived from the same target
+        // layouts, and every supplied offset names a complete field inside its
+        // validated zeroed result range.
+        unsafe {
+            self.builder
+                .build_gep(
+                    self.context.i8_type(),
+                    base,
+                    &[self.context.i64_type().const_int(offset, false)],
+                    name,
+                )
+                .map_err(builder_error)
+        }
+    }
+
+    fn store_io_result_tag(
+        &self,
+        result_type: ValueTypeId,
+        result: PointerValue<'ctx>,
+        variant: u32,
+    ) -> Result<(), CodegenError> {
+        let layout = self.sum_layout(result_type)?;
+        let physical = layout.physical.into_struct_type();
+        let tag_type = self
+            .sum_tag_type(layout.tag)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "I/O Result tag is missing"))?;
+        let offset = self
+            .target_data
+            .offset_of_element(&physical, 0)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "I/O Result tag offset is missing")
+            })?;
+        let pointer = self.io_frame_byte_pointer(result, offset, "io.result.tag.pointer")?;
+        self.builder
+            .build_store(pointer, tag_type.const_int(u64::from(variant), false))
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
     fn emit_task_step_return(&self, step: i32) -> Result<(), CodegenError> {
         self.builder
             .build_return(Some(
@@ -3303,6 +4089,40 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                 format!("missing LCIR sum representation {sum}"),
             )
         })
+    }
+
+    fn product_repr(&self, ty: ValueTypeId) -> Result<&loom_codegen_ir::ProductRepr, CodegenError> {
+        let value_type = self
+            .artifact
+            .representations()
+            .value_type(ty)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", format!("missing LCIR type {ty}")))?;
+        let Repr::Product(product) = self
+            .artifact
+            .representations()
+            .repr(value_type.repr())
+            .copied()
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("missing representation for LCIR type {ty}"),
+                )
+            })?
+        else {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!("LCIR type {ty} is not a product"),
+            ));
+        };
+        self.artifact
+            .representations()
+            .product(product)
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("missing LCIR product representation {product}"),
+                )
+            })
     }
 
     fn sum_tag_type(&self, tag: SumTagRepr) -> Option<IntType<'ctx>> {
@@ -4620,6 +5440,21 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         })
     }
 
+    fn io_task_layout(&self, id: InstructionId) -> Result<&IoTaskLayout<'ctx>, CodegenError> {
+        let shape = self.io_task_shapes.get(&id).ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                format!("typed I/O instruction {id} has no exact shape"),
+            )
+        })?;
+        self.io_task_layouts.get(shape).ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                format!("typed I/O instruction {id} has no generated descriptor"),
+            )
+        })
+    }
+
     fn unique(&self, prefix: &str) -> String {
         let index = self.names.get();
         self.names.set(index.saturating_add(1));
@@ -4982,7 +5817,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             })
     }
 
-    fn runtime_resource_close_typed(&self) -> FunctionValue<'ctx> {
+    fn typed_resource_close(&self) -> FunctionValue<'ctx> {
         self.module
             .get_function(TYPED_RESOURCE_CLOSE_SYMBOL)
             .unwrap_or_else(|| {
@@ -5169,6 +6004,92 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                     TYPED_TIMER_TASK_CREATE_SYMBOL,
                     self.ptr_type.fn_type(
                         &[self.ptr_type.into(), self.context.i64_type().into()],
+                        false,
+                    ),
+                    None,
+                )
+            })
+    }
+
+    fn typed_io_request_type(&self) -> StructType<'ctx> {
+        let byte_view = self.context.struct_type(
+            &[self.ptr_type.into(), self.context.i64_type().into()],
+            false,
+        );
+        self.context.struct_type(
+            &[
+                self.context.i32_type().into(),
+                self.context.i32_type().into(),
+                self.context.i64_type().into(),
+                byte_view.into(),
+                self.context.i64_type().into(),
+            ],
+            false,
+        )
+    }
+
+    fn typed_io_outcome_type(&self) -> StructType<'ctx> {
+        self.context.struct_type(
+            &[
+                self.context.i32_type().into(),
+                self.context.i32_type().into(),
+                self.context.i64_type().into(),
+            ],
+            false,
+        )
+    }
+
+    fn typed_io_task_create(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(TYPED_IO_TASK_CREATE_SYMBOL)
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    TYPED_IO_TASK_CREATE_SYMBOL,
+                    self.ptr_type.fn_type(
+                        &[
+                            self.ptr_type.into(),
+                            self.ptr_type.into(),
+                            self.ptr_type.into(),
+                        ],
+                        false,
+                    ),
+                    None,
+                )
+            })
+    }
+
+    fn typed_io_poll(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(TYPED_IO_POLL_SYMBOL)
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    TYPED_IO_POLL_SYMBOL,
+                    self.context.i32_type().fn_type(
+                        &[
+                            self.ptr_type.into(),
+                            self.ptr_type.into(),
+                            self.ptr_type.into(),
+                            self.ptr_type.into(),
+                        ],
+                        false,
+                    ),
+                    None,
+                )
+            })
+    }
+
+    fn typed_io_cancel(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(TYPED_IO_CANCEL_SYMBOL)
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    TYPED_IO_CANCEL_SYMBOL,
+                    self.context.i32_type().fn_type(
+                        &[
+                            self.ptr_type.into(),
+                            self.ptr_type.into(),
+                            self.ptr_type.into(),
+                        ],
                         false,
                     ),
                     None,
@@ -5744,7 +6665,7 @@ struct FunctionEmitter<'backend, 'ctx, 'artifact> {
     root_cells: Vec<Option<PointerValue<'ctx>>>,
     root_frame: Option<PointerValue<'ctx>>,
     root_state: Option<PointerValue<'ctx>>,
-    resource_close_cells: Vec<Option<PointerValue<'ctx>>>,
+    resource_close_token_cells: Vec<Option<PointerValue<'ctx>>>,
     managed_output_cells: Vec<Option<PointerValue<'ctx>>>,
     json_input_cells: Vec<Option<PointerValue<'ctx>>>,
     float_parse_output_cells: Vec<Option<PointerValue<'ctx>>>,
@@ -5897,7 +6818,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             root_cells: vec![None; root_slot_count],
             root_frame: None,
             root_state: None,
-            resource_close_cells: vec![None; source.blocks().len()],
+            resource_close_token_cells: vec![None; source.instructions().len()],
             managed_output_cells: vec![None; source.instructions().len()],
             json_input_cells: vec![None; source.instructions().len()],
             float_parse_output_cells: vec![None; source.instructions().len()],
@@ -6228,7 +7149,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         Ok(())
     }
 
-    fn prepare_resource_close_cells(&mut self) -> Result<(), CodegenError> {
+    fn prepare_resource_close_token_cells(&mut self) -> Result<(), CodegenError> {
         let entry = self.source.entry().ok_or_else(|| {
             CodegenError::new(
                 "LlvmAbiDefect",
@@ -6238,11 +7159,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         self.backend
             .builder
             .position_at_end(self.allocation_block(entry)?);
-        for block in self.source.blocks() {
-            if !matches!(
-                block.terminator().map(Terminator::kind),
-                Some(TerminatorKind::ResourceClose { .. })
-            ) {
+        for instruction in self.source.instructions() {
+            if !matches!(instruction.kind(), InstructionKind::ResourceClose { .. }) {
                 continue;
             }
             let cell = self
@@ -6250,10 +7168,10 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 .builder
                 .build_alloca(
                     self.backend.context.i64_type(),
-                    &format!("resource.close.b{}.handle.cell", block.id().raw()),
+                    &format!("resource.close.i{}.token.cell", instruction.id().raw()),
                 )
                 .map_err(builder_error)?;
-            self.resource_close_cells[block.id().index()] = Some(cell);
+            self.resource_close_token_cells[instruction.id().index()] = Some(cell);
         }
         Ok(())
     }
@@ -7230,7 +8148,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
     }
 
     fn compile(mut self) -> Result<(), CodegenError> {
-        self.prepare_resource_close_cells()?;
+        self.prepare_resource_close_token_cells()?;
         self.prepare_managed_output_cells()?;
         self.prepare_json_input_cells()?;
         self.prepare_float_parse_output_cells()?;
@@ -8395,7 +9313,6 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 TerminatorKind::CheckedIntNegate { normal, fault, .. }
                 | TerminatorKind::CheckedIntBinary { normal, fault, .. }
                 | TerminatorKind::TaskSleep { normal, fault, .. }
-                | TerminatorKind::ResourceClose { normal, fault, .. }
                 | TerminatorKind::LogWrite { normal, fault, .. } => {
                     pending.push(fault.block);
                     pending.push(normal.block);
@@ -8575,6 +9492,15 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     "task.create.child",
                 )?
                 .into())
+            }
+            InstructionKind::IoTaskCreate {
+                operation,
+                arguments,
+            } => one(self
+                .emit_io_task_create(instruction, *operation, arguments)?
+                .into()),
+            InstructionKind::ResourceClose { kind, resource } => {
+                self.emit_resource_close(instruction.id(), *kind, *resource)?
             }
             InstructionKind::TaskJoinAll { tasks } => {
                 one(self.emit_task_join_all(instruction, tasks)?.into())
@@ -12359,19 +13285,6 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 normal,
                 unwind,
             } => self.emit_invoke(block, *callee, arguments, normal, unwind),
-            TerminatorKind::ResourceClose {
-                kind,
-                resource,
-                normal,
-                fault,
-            } => self.emit_resource_close(
-                block,
-                *kind,
-                *resource,
-                terminator.origin(),
-                normal,
-                fault,
-            ),
             TerminatorKind::LogWrite {
                 level,
                 message,
@@ -12579,6 +13492,200 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 .map_err(builder_error)?;
         }
         Ok(())
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exact typed-I/O factory edge stages its closed request shape and publishes the runtime-owned leaf Task"
+    )]
+    fn emit_io_task_create(
+        &self,
+        instruction: &Instruction,
+        operation: IoTaskOperation,
+        arguments: &[ValueId],
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let layout = self.backend.io_task_layout(instruction.id())?;
+        if layout.operation != operation {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "typed I/O instruction operation does not match its descriptor",
+            ));
+        }
+        let invalid_resource = self
+            .backend
+            .context
+            .i64_type()
+            .const_int(TYPED_IO_INVALID_RESOURCE_TOKEN, false);
+        let mut resource_token = invalid_resource;
+        let mut argument_data = self.backend.ptr_type.const_null();
+        let mut argument_length = self.backend.context.i64_type().const_zero();
+        let mut auxiliary = self.backend.context.i64_type().const_zero();
+        let argument = |index: usize| {
+            arguments.get(index).copied().ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("typed I/O operation is missing argument {index}"),
+                )
+            })
+        };
+        match operation {
+            IoTaskOperation::FileOpenRead | IoTaskOperation::FileCreate => {
+                let text = self.io_text_pointer(argument(0)?)?;
+                (argument_data, argument_length) = self.backend.text_parts(text, "io.path")?;
+            }
+            IoTaskOperation::FileReadText | IoTaskOperation::SocketReadText => {
+                resource_token = self.io_resource_token(argument(0)?)?;
+            }
+            IoTaskOperation::FileWriteText | IoTaskOperation::SocketWriteText => {
+                resource_token = self.io_resource_token(argument(0)?)?;
+                let text = self.io_text_pointer(argument(1)?)?;
+                (argument_data, argument_length) =
+                    self.backend.text_parts(text, "io.write_text")?;
+            }
+            IoTaskOperation::SocketConnect => {
+                let text = self.io_text_pointer(argument(0)?)?;
+                (argument_data, argument_length) = self.backend.text_parts(text, "io.host")?;
+                auxiliary = self.int(argument(1)?)?;
+            }
+        }
+        let expected_count = match operation {
+            IoTaskOperation::FileOpenRead
+            | IoTaskOperation::FileCreate
+            | IoTaskOperation::FileReadText
+            | IoTaskOperation::SocketReadText => 1,
+            IoTaskOperation::FileWriteText
+            | IoTaskOperation::SocketConnect
+            | IoTaskOperation::SocketWriteText => 2,
+        };
+        if arguments.len() != expected_count {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!(
+                    "typed I/O operation has {} arguments, expected {expected_count}",
+                    arguments.len()
+                ),
+            ));
+        }
+        let operation = match operation {
+            IoTaskOperation::FileOpenRead => TYPED_IO_OPERATION_FILE_OPEN_READ,
+            IoTaskOperation::FileCreate => TYPED_IO_OPERATION_FILE_CREATE,
+            IoTaskOperation::FileReadText => TYPED_IO_OPERATION_FILE_READ_TEXT,
+            IoTaskOperation::FileWriteText => TYPED_IO_OPERATION_FILE_WRITE_TEXT,
+            IoTaskOperation::SocketConnect => TYPED_IO_OPERATION_SOCKET_CONNECT,
+            IoTaskOperation::SocketReadText => TYPED_IO_OPERATION_SOCKET_READ_TEXT,
+            IoTaskOperation::SocketWriteText => TYPED_IO_OPERATION_SOCKET_WRITE_TEXT,
+        };
+        let request_type = self.backend.typed_io_request_type();
+        let byte_view_type = request_type
+            .get_field_type_at_index(3)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "typed I/O byte view is missing"))?
+            .into_struct_type();
+        let byte_view = self
+            .backend
+            .builder
+            .build_insert_value(
+                byte_view_type.const_zero(),
+                argument_data,
+                0,
+                "io.request.argument.data",
+            )
+            .map_err(builder_error)?
+            .into_struct_value();
+        let byte_view = self
+            .backend
+            .builder
+            .build_insert_value(byte_view, argument_length, 1, "io.request.argument.length")
+            .map_err(builder_error)?
+            .into_struct_value();
+        let mut request = request_type.const_zero();
+        let fields: [(u32, BasicValueEnum<'ctx>); 5] = [
+            (
+                0,
+                self.backend
+                    .context
+                    .i32_type()
+                    .const_int(u64::from(TYPED_IO_ABI_VERSION), false)
+                    .into(),
+            ),
+            (
+                1,
+                self.backend
+                    .context
+                    .i32_type()
+                    .const_int(u64::from(operation), false)
+                    .into(),
+            ),
+            (2, resource_token.into()),
+            (3, byte_view.into()),
+            (4, auxiliary.into()),
+        ];
+        for (field, value) in fields {
+            request = self
+                .backend
+                .builder
+                .build_insert_value(request, value, field, "io.request.field")
+                .map_err(builder_error)?
+                .into_struct_value();
+        }
+        let request_pointer = self
+            .backend
+            .builder
+            .build_alloca(request_type, "io.request")
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_store(request_pointer, request)
+            .map_err(builder_error)?;
+        let task = call_pointer(
+            &self.backend.builder,
+            self.backend.typed_io_task_create(),
+            &[
+                self.executor_context()?.into(),
+                layout.descriptor.into(),
+                request_pointer.into(),
+            ],
+            "io.task.create",
+        )?;
+        self.backend.require_nonnull(task, "io.task.create")?;
+        Ok(task)
+    }
+
+    fn io_text_pointer(&self, value: ValueId) -> Result<PointerValue<'ctx>, CodegenError> {
+        let ty = self
+            .source
+            .value(value)
+            .map(loom_codegen_ir::Value::ty)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "typed I/O Text value is missing"))?;
+        let semantic = self
+            .backend
+            .artifact
+            .representations()
+            .value_type(ty)
+            .map(loom_codegen_ir::ValueType::semantic)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "typed I/O Text type is missing"))?;
+        if semantic == &Type::Text {
+            return Ok(self.value(value)?.into_pointer_value());
+        }
+        let product = self.value(value)?.into_struct_value();
+        Ok(self
+            .backend
+            .builder
+            .build_extract_value(product, 0, "io.path.text")
+            .map_err(builder_error)?
+            .into_pointer_value())
+    }
+
+    fn io_resource_token(&self, value: ValueId) -> Result<IntValue<'ctx>, CodegenError> {
+        Ok(self
+            .backend
+            .builder
+            .build_extract_value(
+                self.value(value)?.into_struct_value(),
+                0,
+                "io.resource.token",
+            )
+            .map_err(builder_error)?
+            .into_int_value())
     }
 
     #[expect(
@@ -13472,165 +14579,79 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         self.unwind_branch(fault)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the exact close ABI, functional writeback, and both fault states form one atomic terminator emission"
-    )]
     fn emit_resource_close(
         &mut self,
-        block: BlockId,
+        instruction: InstructionId,
         kind: ResourceKind,
         resource: ValueId,
-        origin: Origin,
-        normal: &ResultTarget,
-        fault: &UnwindTarget,
-    ) -> Result<(), CodegenError> {
+    ) -> Result<Vec<BasicValueEnum<'ctx>>, CodegenError> {
         let resource = self.value(resource)?.into_struct_value();
-        let handle = self
+        let token = self
             .backend
             .builder
-            .build_extract_value(resource, 0, "resource.close.handle")
+            .build_extract_value(resource, 0, "resource.close.token")
             .map_err(builder_error)?
             .into_int_value();
-        let handle_cell = self
-            .resource_close_cells
-            .get(block.index())
+        let token_cell = self
+            .resource_close_token_cells
+            .get(instruction.index())
             .copied()
             .flatten()
             .ok_or_else(|| {
                 CodegenError::new(
                     "LlvmAbiDefect",
-                    format!("typed resource cleanup block {block} has no entry scratch cell"),
+                    format!(
+                        "typed resource cleanup instruction {instruction} has no entry scratch cell"
+                    ),
                 )
             })?;
         self.backend
             .builder
-            .build_store(handle_cell, handle)
+            .build_store(token_cell, token)
             .map_err(builder_error)?;
-        let fault_context = self.fault_context.ok_or_else(|| {
-            CodegenError::new(
-                "LlvmAbiDefect",
-                format!(
-                    "infallible {} attempted typed resource cleanup",
-                    self.source.id()
-                ),
-            )
-        })?;
-        let runtime_cell = self
-            .backend
-            .builder
-            .build_struct_gep(
-                self.backend.fault_context_type,
-                fault_context,
-                0,
-                "resource.close.runtime.cell",
-            )
-            .map_err(builder_error)?;
-        let runtime = self
-            .backend
-            .builder
-            .build_load(
-                self.backend.ptr_type,
-                runtime_cell,
-                "resource.close.runtime",
-            )
-            .map_err(builder_error)?;
+        let executor = self.executor_context()?;
         let kind = match kind {
             ResourceKind::File => TYPED_RESOURCE_KIND_FILE,
             ResourceKind::Socket => TYPED_RESOURCE_KIND_SOCKET,
         };
         let status = call_int(
             &self.backend.builder,
-            self.backend.runtime_resource_close_typed(),
+            self.backend.typed_resource_close(),
             &[
-                runtime.into(),
+                executor.into(),
                 self.backend
                     .context
                     .i32_type()
                     .const_int(u64::from(kind), false)
                     .into(),
-                handle_cell.into(),
+                token_cell.into(),
             ],
+            "resource.close.status",
+        )?;
+        self.backend.require_exact_status(
+            status,
+            TYPED_RESOURCE_CLOSE_OK.cast_unsigned(),
             "resource.close",
         )?;
-        let closed_handle = self
+        let closed_token = self
             .backend
             .builder
             .build_load(
                 self.backend.context.i64_type(),
-                handle_cell,
-                "resource.close.writeback.handle",
+                token_cell,
+                "resource.close.writeback.token",
             )
             .map_err(builder_error)?;
         let closed_resource = self
             .backend
             .builder
-            .build_insert_value(resource, closed_handle, 0, "resource.close.writeback")
+            .build_insert_value(resource, closed_token, 0, "resource.close.writeback")
             .map_err(builder_error)?
             .into_struct_value();
-        let report = self
-            .backend
-            .context
-            .append_basic_block(self.function, "resource.close.fault");
-        let invalid = self
-            .backend
-            .context
-            .append_basic_block(self.function, "resource.close.invalid_status");
-        let predecessor = self.current_block()?;
-        self.add_result_incoming(
-            normal,
-            &[
-                self.backend.unit_type.const_zero().into(),
-                closed_resource.into(),
-            ],
-            predecessor,
-        )?;
-        self.backend
-            .builder
-            .build_switch(
-                status,
-                invalid,
-                &[
-                    (
-                        self.backend
-                            .context
-                            .i32_type()
-                            .const_int(u64::from(TYPED_RESOURCE_CLOSE_OK.cast_unsigned()), false),
-                        self.block(normal.block)?,
-                    ),
-                    (
-                        self.backend.context.i32_type().const_int(
-                            u64::from(TYPED_RESOURCE_CLOSE_FAILED.cast_unsigned()),
-                            false,
-                        ),
-                        report,
-                    ),
-                ],
-            )
-            .map_err(builder_error)?;
-
-        self.backend.builder.position_at_end(invalid);
-        let trap = inkwell::intrinsics::Intrinsic::find("llvm.trap")
-            .and_then(|intrinsic| intrinsic.get_declaration(&self.backend.module, &[]))
-            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "missing llvm.trap"))?;
-        self.backend
-            .builder
-            .build_call(trap, &[], "resource.close.status.trap")
-            .map_err(builder_error)?;
-        self.backend
-            .builder
-            .build_unreachable()
-            .map_err(builder_error)?;
-
-        self.backend.builder.position_at_end(report);
-        self.emit_source_fault(FaultCode::ResourceClose, origin)?;
-        let predecessor = self.current_block()?;
-        self.add_unwind_incoming(fault, &[closed_resource.into()], predecessor)?;
-        self.backend
-            .builder
-            .build_unconditional_branch(self.block(fault.block)?)
-            .map_err(builder_error)?;
-        Ok(())
+        Ok(vec![
+            self.backend.unit_type.const_zero().into(),
+            closed_resource.into(),
+        ])
     }
 
     fn emit_log_write(
@@ -15331,7 +16352,6 @@ fn fault_properties(code: FaultCode) -> (&'static str, &'static str) {
             SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE,
         ),
         FaultCode::TaskAnyFailed => (TASK_ANY_FAILED_FAULT_CODE, TASK_ANY_FAILED_FAULT_MESSAGE),
-        FaultCode::ResourceClose => ("ResourceCloseFault", "resource close failed"),
         FaultCode::LogWrite => (LOG_WRITE_FAULT_CODE, LOG_WRITE_FAULT_MESSAGE),
     }
 }

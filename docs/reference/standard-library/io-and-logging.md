@@ -96,6 +96,9 @@ try_connect(host Text, port Int) Task[Result[Socket, IoError]]
 
 The port must be in the range 0 through 65535. An invalid port faults in
 `connect` and returns `IoErrorKind.InvalidInput` from `try_connect`.
+Host resolution tries every returned address in resolver order and accepts the
+first successful connection. An empty result is a resolution failure; if every
+address rejects the connection, the final host error determines the I/O error.
 
 On an already scoped Socket:
 

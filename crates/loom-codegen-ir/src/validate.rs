@@ -5,16 +5,17 @@ use std::fmt;
 use loom_mir::Type;
 
 use crate::ir::{
-    BYTES_TYPE_ID, DECODE_TEXT_ERROR_TYPE_ID, FILE_TYPE_ID, JSON_ERROR_TYPE_ID, JSON_TYPE_ID,
-    LOG_LEVEL_TYPE_ID, OPTION_TYPE_ID, PATH_ERROR_TYPE_ID, PATH_TYPE_ID, RESULT_TYPE_ID,
-    SOCKET_TYPE_ID, TEXT_MAP_TYPE_ID,
+    BYTES_TYPE_ID, DECODE_TEXT_ERROR_TYPE_ID, FILE_TYPE_ID, IO_ERROR_KIND_TYPE_ID,
+    IO_ERROR_TYPE_ID, JSON_ERROR_TYPE_ID, JSON_TYPE_ID, LOG_LEVEL_TYPE_ID, OPTION_TYPE_ID,
+    PATH_ERROR_TYPE_ID, PATH_TYPE_ID, RESULT_TYPE_ID, SOCKET_TYPE_ID, TEXT_MAP_TYPE_ID,
 };
 use crate::{
     AwaitMode, BlockId, Constant, Effects, Function, InstanceId, InstanceRole, Instruction,
-    InstructionId, InstructionKind, Origin, ProductReprId, Program, Repr, RepresentationPlan,
-    ResultTarget, SumReprId, SumTagRepr, TASK_FAULT_TYPE_ID, TASK_OUTCOME_CANCELLED_VARIANT,
-    TASK_OUTCOME_COMPLETED_VARIANT, TASK_OUTCOME_FAULTED_VARIANT, TASK_OUTCOME_TYPE_ID, Terminator,
-    TerminatorKind, UnwindTarget, Value, ValueDefinition, ValueId, ValueTypeId, ValueTypeKind,
+    InstructionId, InstructionKind, IoTaskOperation, Origin, ProductReprId, Program, Repr,
+    RepresentationPlan, ResultTarget, SumReprId, SumTagRepr, TASK_FAULT_TYPE_ID,
+    TASK_OUTCOME_CANCELLED_VARIANT, TASK_OUTCOME_COMPLETED_VARIANT, TASK_OUTCOME_FAULTED_VARIANT,
+    TASK_OUTCOME_TYPE_ID, Terminator, TerminatorKind, UnwindTarget, Value, ValueDefinition,
+    ValueId, ValueTypeId, ValueTypeKind,
 };
 
 fn representation_pointer_kinds(
@@ -3127,6 +3128,15 @@ impl<'a> Validator<'a> {
                 let result_kind = result_type
                     .and_then(|ty| self.program.representations.value_type(ty))
                     .map(crate::ValueType::kind);
+                if matches!(instruction.kind(), InstructionKind::ProductConstruct { .. })
+                    && result_type.is_some_and(|ty| self.is_resource_capability_type(ty))
+                {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.result[0]"),
+                        "File and Socket resource capabilities contain opaque tokens and cannot be constructed with general product instructions",
+                    );
+                }
                 let construction_kind_valid = match &instruction.kind {
                     InstructionKind::ProductConstruct { .. } => {
                         result_kind == Some(ValueTypeKind::Direct)
@@ -3171,6 +3181,13 @@ impl<'a> Validator<'a> {
             }
             InstructionKind::ProductExtract { aggregate, field } => {
                 let aggregate_type = function.value(*aggregate).map(|value| value.ty);
+                if aggregate_type.is_some_and(|ty| self.is_resource_capability_type(ty)) {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.aggregate"),
+                        "File and Socket resource capabilities contain opaque tokens and cannot be exposed with general product instructions",
+                    );
+                }
                 if aggregate_type
                     .and_then(|ty| self.program.representations.value_type(ty))
                     .is_some_and(|ty| matches!(ty.kind(), ValueTypeKind::Transparent { .. }))
@@ -3215,6 +3232,15 @@ impl<'a> Validator<'a> {
                 value,
             } => {
                 let aggregate_type = function.value(*aggregate).map(|value| value.ty);
+                if matches!(instruction.kind(), InstructionKind::ProductInsert { .. })
+                    && aggregate_type.is_some_and(|ty| self.is_resource_capability_type(ty))
+                {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.aggregate"),
+                        "File and Socket resource capabilities contain opaque tokens and cannot be replaced with general product instructions",
+                    );
+                }
                 let aggregate_kind = aggregate_type
                     .and_then(|ty| self.program.representations.value_type(ty))
                     .map(crate::ValueType::kind);
@@ -3922,6 +3948,221 @@ impl<'a> Validator<'a> {
                     );
                 }
             }
+            InstructionKind::IoTaskCreate {
+                operation,
+                arguments,
+            } => {
+                let file = self.canonical_resource_type(crate::ResourceKind::File);
+                let socket = self.canonical_resource_type(crate::ResourceKind::Socket);
+                let text = self.scalar_type(&Type::Text).filter(|ty| {
+                    self.program
+                        .representations
+                        .value_type(*ty)
+                        .and_then(|value_type| self.program.representations.repr(value_type.repr()))
+                        == Some(&Repr::ManagedPointer)
+                });
+                let integer = self.scalar_type(&Type::Int);
+                let path_type = self.canonical_path_type().map(|(path, _)| path);
+                if text.is_none() {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        &path,
+                        "typed I/O requires the canonical managed Text representation",
+                    );
+                }
+                if matches!(
+                    operation,
+                    IoTaskOperation::FileOpenRead
+                        | IoTaskOperation::FileCreate
+                        | IoTaskOperation::FileReadText
+                        | IoTaskOperation::FileWriteText
+                ) && file.is_none()
+                {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        &path,
+                        "typed file I/O requires the canonical one-Int File representation",
+                    );
+                }
+                if matches!(
+                    operation,
+                    IoTaskOperation::SocketConnect
+                        | IoTaskOperation::SocketReadText
+                        | IoTaskOperation::SocketWriteText
+                ) && socket.is_none()
+                {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        &path,
+                        "typed socket I/O requires the canonical one-Int Socket representation",
+                    );
+                }
+                if matches!(operation, IoTaskOperation::SocketConnect) && integer.is_none() {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        &path,
+                        "typed socket connect requires the canonical Int representation",
+                    );
+                }
+                let (expected_arguments, success) = match operation {
+                    IoTaskOperation::FileOpenRead | IoTaskOperation::FileCreate => {
+                        if arguments.len() != 1 {
+                            self.error(
+                                ValidationCode::InstructionShape,
+                                format!("{path}.arguments"),
+                                "file open/create requires exactly one Text or Path argument",
+                            );
+                        }
+                        if let Some(argument) = arguments.first().copied() {
+                            let actual = function.value(argument).map(Value::ty);
+                            if actual != text && actual != path_type {
+                                self.error(
+                                    ValidationCode::TypeMismatch,
+                                    format!("{path}.argument[0]"),
+                                    "file open/create argument must be canonical managed Text or Path",
+                                );
+                            }
+                        }
+                        (Vec::new(), file)
+                    }
+                    IoTaskOperation::FileReadText => (vec![file], text),
+                    IoTaskOperation::FileWriteText => {
+                        (vec![file, text], self.scalar_type(&Type::Unit))
+                    }
+                    IoTaskOperation::SocketConnect => (vec![text, integer], socket),
+                    IoTaskOperation::SocketReadText => (vec![socket], text),
+                    IoTaskOperation::SocketWriteText => {
+                        (vec![socket, text], self.scalar_type(&Type::Unit))
+                    }
+                };
+                if !expected_arguments.is_empty() {
+                    if arguments.len() != expected_arguments.len() {
+                        self.error(
+                            ValidationCode::InstructionShape,
+                            format!("{path}.arguments"),
+                            format!(
+                                "typed I/O operation requires {} arguments, got {}",
+                                expected_arguments.len(),
+                                arguments.len()
+                            ),
+                        );
+                    }
+                    for (index, (argument, expected)) in arguments
+                        .iter()
+                        .copied()
+                        .zip(expected_arguments)
+                        .enumerate()
+                    {
+                        self.require_known_value_type(
+                            function,
+                            argument,
+                            expected,
+                            ValidationCode::TypeMismatch,
+                            format!("{path}.argument[{index}]"),
+                        );
+                    }
+                }
+                let io_error = self.canonical_io_error_type();
+                if io_error.is_none() {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        &path,
+                        "typed I/O requires the canonical IoError and IoErrorKind representations",
+                    );
+                }
+                let result = success.zip(io_error).and_then(|(success, io_error)| {
+                    let success = self
+                        .program
+                        .representations
+                        .value_type(success)?
+                        .semantic()
+                        .clone();
+                    let error = self
+                        .program
+                        .representations
+                        .value_type(io_error)?
+                        .semantic()
+                        .clone();
+                    self.program
+                        .representations
+                        .type_id(&Type::Nominal(RESULT_TYPE_ID, vec![success, error]))
+                });
+                if success.is_some() && io_error.is_some() && result.is_none() {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        format!("{path}.result[0]"),
+                        "typed I/O requires an exact canonical Result[success, IoError] registration",
+                    );
+                }
+                if result.is_some_and(|result| {
+                    !self.canonical_io_result_shape(result, success, io_error)
+                }) {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        format!("{path}.result[0]"),
+                        "typed I/O requires canonical Result[success, IoError] variants",
+                    );
+                }
+                let registered_task = result.and_then(|result| {
+                    let result = self
+                        .program
+                        .representations
+                        .value_type(result)?
+                        .semantic()
+                        .clone();
+                    self.program
+                        .representations
+                        .type_id(&Type::Task(Box::new(result)))
+                });
+                let task = registered_task.filter(|task| {
+                    result.is_some_and(|result| self.canonical_task_handle(*task, result))
+                });
+                if result.is_some() && task.is_none() {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        format!("{path}.result[0]"),
+                        "typed I/O requires an exact canonical Task[Result[success, IoError]] handle registration",
+                    );
+                }
+                self.require_results(function, instruction, &[task], &path);
+                if !function.effects().contains(Effects::NEEDS_EXECUTOR) {
+                    self.error(
+                        ValidationCode::EffectMismatch,
+                        &path,
+                        "typed I/O Task creation requires the function's NEEDS_EXECUTOR effect",
+                    );
+                }
+            }
+            InstructionKind::ResourceClose { kind, resource } => {
+                let resource_type = function.value(*resource).map(super::ir::Value::ty);
+                let valid_resource = resource_type == self.canonical_resource_type(*kind);
+                if resource_type.is_some() && !valid_resource {
+                    let expected = match kind {
+                        crate::ResourceKind::File => "File#8",
+                        crate::ResourceKind::Socket => "Socket#9",
+                    };
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.resource"),
+                        format!(
+                            "typed resource close requires canonical {expected} as one direct canonical Int capability token"
+                        ),
+                    );
+                }
+                self.require_results(
+                    function,
+                    instruction,
+                    &[self.scalar_type(&Type::Unit), resource_type],
+                    &path,
+                );
+                if !function.effects.contains(Effects::NEEDS_EXECUTOR) {
+                    self.error(
+                        ValidationCode::EffectMismatch,
+                        &path,
+                        "typed resource close requires the function's NEEDS_EXECUTOR effect",
+                    );
+                }
+            }
             InstructionKind::TaskJoinAll { tasks } => {
                 if tasks.is_empty() {
                     self.error(
@@ -4582,48 +4823,6 @@ impl<'a> Validator<'a> {
                 }
                 self.require_may_fault_effect(function, &path, "invoke");
             }
-            TerminatorKind::ResourceClose {
-                kind,
-                resource,
-                normal,
-                fault,
-            } => {
-                let resource_type = function.value(*resource).map(super::ir::Value::ty);
-                let valid_resource = resource_type == self.canonical_resource_type(*kind);
-                if resource_type.is_some() && !valid_resource {
-                    let expected = match kind {
-                        crate::ResourceKind::File => "File#8",
-                        crate::ResourceKind::Socket => "Socket#9",
-                    };
-                    self.error(
-                        ValidationCode::TypeMismatch,
-                        format!("{path}.resource"),
-                        format!(
-                            "typed resource close requires canonical {expected} as one direct canonical Int product"
-                        ),
-                    );
-                }
-                self.validate_result_target(
-                    function,
-                    normal,
-                    &[self.scalar_type(&Type::Unit), resource_type],
-                    &format!("{path}.normal"),
-                );
-                self.validate_unwind_target(
-                    function,
-                    fault,
-                    &[resource_type],
-                    &format!("{path}.fault"),
-                );
-                self.require_may_fault_effect(function, &path, "typed resource close");
-                if !function.effects.contains(Effects::NEEDS_RUNTIME) {
-                    self.error(
-                        ValidationCode::EffectMismatch,
-                        &path,
-                        "typed resource close requires the function's NEEDS_RUNTIME effect",
-                    );
-                }
-            }
             TerminatorKind::LogWrite {
                 level,
                 message,
@@ -5239,6 +5438,7 @@ impl<'a> Validator<'a> {
                 };
                 let operation = match instruction.kind() {
                     InstructionKind::TaskCreate { .. } => Some("create a Task"),
+                    InstructionKind::IoTaskCreate { .. } => Some("create a typed I/O Task"),
                     InstructionKind::TaskJoinAll { .. } => Some("construct a Task join"),
                     InstructionKind::TaskOutcomeTake { .. } => {
                         Some("consume a terminal Task outcome")
@@ -5650,6 +5850,77 @@ impl<'a> Validator<'a> {
             && value_type.kind() == ValueTypeKind::Direct
             && self.product_fields(resource) == Some(&[integer]))
         .then_some(resource)
+    }
+
+    fn canonical_io_error_type(&self) -> Option<ValueTypeId> {
+        let semantic = Type::Nominal(IO_ERROR_TYPE_ID, Vec::new());
+        let error = self.program.representations.type_id(&semantic)?;
+        let error_value = self.program.representations.value_type(error)?;
+        let kind_semantic = Type::Nominal(IO_ERROR_KIND_TYPE_ID, Vec::new());
+        let kind = self.program.representations.type_id(&kind_semantic)?;
+        let text = self.scalar_type(&Type::Text)?;
+        let text_value = self.program.representations.value_type(text)?;
+        if error_value.semantic() != &semantic
+            || error_value.kind() != ValueTypeKind::Direct
+            || self.program.representations.repr(text_value.repr()) != Some(&Repr::ManagedPointer)
+            || self.product_fields(error) != Some(&[kind, text])
+        {
+            return None;
+        }
+        let sum = self.sum_repr(kind)?;
+        let sum = self.program.representations.sum(sum)?;
+        (sum.tag() == SumTagRepr::I8
+            && sum.variants().len() == 10
+            && sum
+                .variants()
+                .iter()
+                .all(|variant| variant.fields().is_empty()))
+        .then_some(error)
+    }
+
+    fn canonical_task_handle(&self, task: ValueTypeId, output: ValueTypeId) -> bool {
+        let Some(task_type) = self.program.representations.value_type(task) else {
+            return false;
+        };
+        let Some(output_type) = self.program.representations.value_type(output) else {
+            return false;
+        };
+        task_type.kind() == ValueTypeKind::Direct
+            && self.program.representations.repr(task_type.repr()) == Some(&Repr::TaskHandle)
+            && task_type.semantic() == &Type::Task(Box::new(output_type.semantic().clone()))
+            && self.program.representations.type_id(task_type.semantic()) == Some(task)
+    }
+
+    fn is_resource_capability_type(&self, ty: ValueTypeId) -> bool {
+        self.program
+            .representations
+            .value_type(ty)
+            .is_some_and(|value_type| {
+                matches!(
+                    value_type.semantic(),
+                    Type::Nominal(id, arguments)
+                        if arguments.is_empty()
+                            && (*id == FILE_TYPE_ID || *id == SOCKET_TYPE_ID)
+                )
+            })
+    }
+
+    fn canonical_io_result_shape(
+        &self,
+        result: ValueTypeId,
+        success: Option<ValueTypeId>,
+        io_error: Option<ValueTypeId>,
+    ) -> bool {
+        let (Some(success), Some(io_error), Some(sum)) = (success, io_error, self.sum_repr(result))
+        else {
+            return false;
+        };
+        let Some(sum) = self.program.representations.sum(sum) else {
+            return false;
+        };
+        sum.variants().len() == 2
+            && sum.variants()[0].fields() == [success]
+            && sum.variants()[1].fields() == [io_error]
     }
 
     fn product_fields(&self, ty: ValueTypeId) -> Option<&[ValueTypeId]> {
@@ -6670,6 +6941,8 @@ fn instruction_direct_effects(kind: &InstructionKind) -> Effects {
     if matches!(
         kind,
         InstructionKind::TaskCreate { .. }
+            | InstructionKind::IoTaskCreate { .. }
+            | InstructionKind::ResourceClose { .. }
             | InstructionKind::TaskJoinAll { .. }
             | InstructionKind::TaskOutcomeTake { .. }
     ) {
@@ -6734,13 +7007,8 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                 {
                     effects[caller] = effects[caller].union(Effects::MAY_FAULT);
                 }
-                TerminatorKind::TaskSleep { .. } | TerminatorKind::ResourceClose { .. } => {
-                    let required = if matches!(terminator.kind(), TerminatorKind::TaskSleep { .. }) {
-                        Effects::NEEDS_EXECUTOR
-                    } else {
-                        Effects::NEEDS_RUNTIME
-                    };
-                    effects[caller] = effects[caller].union(required);
+                TerminatorKind::TaskSleep { .. } => {
+                    effects[caller] = effects[caller].union(Effects::NEEDS_EXECUTOR);
                     if propagates_fault {
                         effects[caller] = effects[caller].union(Effects::MAY_FAULT);
                     }
@@ -7440,7 +7708,6 @@ fn forwarded_list_edges(kind: &TerminatorKind) -> Vec<(BlockId, &[ValueId])> {
         TerminatorKind::CheckedIntNegate { normal, fault, .. }
         | TerminatorKind::CheckedIntBinary { normal, fault, .. }
         | TerminatorKind::TaskSleep { normal, fault, .. }
-        | TerminatorKind::ResourceClose { normal, fault, .. }
         | TerminatorKind::LogWrite { normal, fault, .. } => vec![
             (normal.block, &normal.arguments),
             (fault.block, &fault.arguments),

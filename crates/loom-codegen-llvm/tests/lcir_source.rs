@@ -6,8 +6,8 @@ use std::process::{Command, Output};
 
 use loom_codegen_ir::{
     CheckedArtifact, Effects, InstanceId, InstanceRole, InstanceWitnessArgument, InstructionKind,
-    LoweringOutcome, Repr, SourceArtifactRequest, TargetLayout, UnsupportedFeature, dump_program,
-    lower_typed_artifact,
+    InvalidRootCode, LoweringErrorCode, LoweringOutcome, Repr, SourceArtifactRequest, TargetLayout,
+    UnsupportedFeature, dump_program, lower_typed_artifact,
 };
 use loom_codegen_llvm::{
     DebugSource, EmitOptions, NativeObjectOptions, NativePreparationErrorKind, NativeRouteKind,
@@ -825,7 +825,11 @@ fn emitted_lcir_function<'ir>(ir: &'ir str, artifact: &CheckedArtifact, suffix: 
         .iter()
         .find(|function| function.name().ends_with(suffix))
         .unwrap_or_else(|| panic!("LCIR function ending in `{suffix}`"));
-    let symbol = format!("@loom.lcir.fn.{}(", function.id().raw());
+    let symbol = if function.coroutine().is_some() {
+        format!("@loom.lcir.coroutine.resume.{}(", function.id().raw())
+    } else {
+        format!("@loom.lcir.fn.{}(", function.id().raw())
+    };
     let symbol_at = ir
         .find(&symbol)
         .unwrap_or_else(|| panic!("emitted LCIR function `{symbol}`"));
@@ -846,14 +850,15 @@ fn assert_typed_resource_close_guard(
 ) {
     let function = emitted_lcir_function(ir, artifact, suffix);
     for required in [
-        "switch i32 %resource.close",
-        "label %resource.close.invalid_status",
-        "i32 0, label",
-        "i32 2, label %resource.close.fault",
-        "resource.close.invalid_status:",
+        "resource.close.status.ok = icmp eq i32",
+        ", 0",
+        "label %resource.close.ok",
+        "label %resource.close.failed",
+        "resource.close.failed:",
         "call void @llvm.trap()",
         "unreachable",
-        "resource.close.fault:",
+        "resource.close.token",
+        "resource.close.writeback.token",
     ] {
         assert!(
             function.contains(required),
@@ -862,25 +867,35 @@ fn assert_typed_resource_close_guard(
     }
     let call = function
         .lines()
-        .find(|line| line.contains("call i32 @loom_runtime_resource_close_typed_v1"))
+        .find(|line| line.contains("call i32 @loom_typed_resource_close_v1"))
         .expect("typed resource close call");
     assert!(
         call.contains(&format!("i32 {resource_kind}")),
         "typed resource close omitted kind {resource_kind}: {call}"
     );
-    let switch = function
-        .split_once("switch i32 %resource.close")
-        .and_then(|(_, suffix)| suffix.split_once(']'))
-        .map(|(switch, _)| switch)
-        .expect("typed resource close status switch");
     assert!(
-        !switch.contains("i32 1, label"),
-        "invalid-argument status must use the trapping default edge: {switch}"
+        call.contains("ptr %__loom_executor"),
+        "typed resource close did not receive the checked executor context: {call}"
     );
     assert!(
-        !function.contains("resource.close.succeeded"),
-        "typed close must not collapse every nonzero status into a source fault:\n{function}"
+        function
+            .lines()
+            .filter(|line| line.contains("resource.close.status.ok = icmp eq i32"))
+            .all(|line| line.trim_end().ends_with(", 0")),
+        "only status zero may leave typed resource close:\n{function}"
     );
+    for forbidden in [
+        "switch i32 %resource.close.status",
+        "resource.close.invalid_status",
+        "resource.close.fault",
+        "ResourceCloseFault",
+        "resource.close.handle",
+    ] {
+        assert!(
+            !function.contains(forbidden),
+            "typed close retained `{forbidden}`:\n{function}"
+        );
+    }
 }
 
 fn checked_float_pattern_fixture() -> CheckedProgram {
@@ -3578,7 +3593,7 @@ fn standard_library_mir_route_is_exactly_the_reviewed_lcir_gap() {
     let report = error
         .support_report()
         .expect("unsupported preparation must carry its complete report");
-    assert_eq!(report.len(), 17);
+    assert_eq!(report.len(), 2);
     assert!(
         report
             .items()
@@ -3599,52 +3614,163 @@ fn standard_library_mir_route_is_exactly_the_reviewed_lcir_gap() {
                 .expect("support-report span belongs to the reviewed fixture");
             if site.starts_with("parse_json(") {
                 "JsonParse"
-            } else if site.starts_with("try_create(") {
-                "FileTryCreate"
-            } else if site.starts_with("try_open_read(") {
-                "FileTryOpenRead"
-            } else if site.starts_with("input.try_read_text(") {
-                "FileTryReadText"
-            } else if site.starts_with("output.try_write_text(")
-                || site.starts_with("replacement.try_write_text(")
-            {
-                "FileTryWriteText"
-            } else if site.starts_with("try_connect(") {
-                "SocketTryConnect"
-            } else if site.starts_with("socket.try_write_text(") {
-                "SocketTryWriteText"
             } else {
                 panic!("unreviewed standard-library LCIR gap: {site}")
             }
         })
         .collect::<Vec<_>>();
-    assert_eq!(
-        operations,
-        [
-            "JsonParse",
-            "JsonParse",
-            "FileTryCreate",
-            "FileTryWriteText",
-            "FileTryOpenRead",
-            "FileTryReadText",
-            "FileTryOpenRead",
-            "FileTryReadText",
-            "FileTryCreate",
-            "FileTryWriteText",
-            "SocketTryConnect",
-            "SocketTryWriteText",
-            "FileTryOpenRead",
-            "SocketTryConnect",
-            "SocketTryConnect",
-            "SocketTryConnect",
-            "SocketTryWriteText",
-        ]
-    );
+    assert_eq!(operations, ["JsonParse", "JsonParse"]);
 
     let prepared =
         prepare_native_object(&program, EmitOptions::tests(), NativeRoutePolicy::Automatic)
             .expect("automatic preparation must retain the complete MIR backend");
     assert_eq!(prepared.route_kind(), NativeRouteKind::Legacy);
+}
+
+#[test]
+fn async_scoped_resource_close_uses_the_checked_executor() {
+    let source = r#"module lcir_async_scoped_resource_close
+
+import std.file.try_create
+
+pub async fn main() {
+    match try_create("scoped-close.txt").await {
+        Ok(file) => {
+            scoped output = file
+        }
+        Err(_) => {
+            assert false
+        }
+    }
+}
+"#;
+    let program = compile_source(source);
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let directory = tempfile::tempdir().expect("create async scoped-close directory");
+    let object = directory.path().join("async-scoped-close.o");
+    let ir_path = directory.path().join("async-scoped-close.ll");
+    let executable = directory.path().join("async-scoped-close");
+    emit_lcir_native_object(
+        &artifact,
+        &object,
+        &NativeObjectOptions {
+            emit_ir: Some(ir_path.clone()),
+            ..NativeObjectOptions::default()
+        },
+    )
+    .expect("emit async scoped-close object");
+    link_native_object(&object, &executable).expect("link async scoped-close executable");
+    let output = Command::new(&executable)
+        .current_dir(directory.path())
+        .output()
+        .expect("run async scoped-close executable");
+    assert!(output.status.success(), "{output:?}");
+    assert!(directory.path().join("scoped-close.txt").is_file());
+
+    let ir = std::fs::read_to_string(ir_path).expect("read async scoped-close LLVM IR");
+    assert_typed_resource_close_guard(&ir, &artifact, "main", 1);
+    assert_no_universal_value_surface(&ir);
+}
+
+#[test]
+fn typed_io_tasks_use_direct_result_frames_and_real_scheduler_io() {
+    let source = include_str!("../../../fixtures/lcir-typed-io/main.loom");
+    let program = compile_source(source);
+    for policy in [NativeRoutePolicy::Automatic, NativeRoutePolicy::LcirOnly] {
+        let prepared = prepare_native_object(&program, EmitOptions::run("main"), policy)
+            .unwrap_or_else(|error| panic!("prepare typed I/O with {policy:?}: {error}"));
+        assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    }
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    for operation in [
+        "io.task_create.file_open_read",
+        "io.task_create.file_create",
+        "io.task_create.file_read_text",
+        "io.task_create.file_write_text",
+        "io.task_create.socket_connect",
+        "io.task_create.socket_read_text",
+        "io.task_create.socket_write_text",
+    ] {
+        assert!(dump.contains(operation), "missing `{operation}`:\n{dump}");
+    }
+
+    let directory = tempfile::tempdir().expect("create typed I/O run directory");
+    let object = directory.path().join("typed-io.o");
+    let ir_path = directory.path().join("typed-io.ll");
+    let executable = directory.path().join("typed-io");
+    emit_lcir_native_object(
+        &artifact,
+        &object,
+        &NativeObjectOptions {
+            emit_ir: Some(ir_path.clone()),
+            ..NativeObjectOptions::default()
+        },
+    )
+    .expect("emit direct typed I/O object");
+    link_native_object(&object, &executable).expect("link direct typed I/O executable");
+    let output = Command::new(&executable)
+        .current_dir(directory.path())
+        .output()
+        .expect("run direct typed I/O executable");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        std::fs::read(directory.path().join("round-trip.txt")).expect("read I/O result"),
+        b"direct typed I/O"
+    );
+    let ir = std::fs::read_to_string(ir_path).expect("read direct typed I/O LLVM IR");
+    for symbol in [
+        "loom_typed_io_task_create_v1",
+        "loom_typed_io_poll_v1",
+        "loom_typed_io_cancel_v1",
+        "loom_typed_resource_close_v1",
+        "loom_typed_task_publish_result_v1",
+    ] {
+        assert!(ir.contains(symbol), "missing `{symbol}`:\n{ir}");
+    }
+    for forbidden in ["loom.Value", "loom_file_try_", "loom_socket_try_"] {
+        assert!(
+            !ir.contains(forbidden),
+            "legacy `{forbidden}` remained:\n{ir}"
+        );
+    }
+    for (function, kind) in [("round_trip", 1), ("missingMain", 1), ("socketMain", 2)] {
+        assert_typed_resource_close_guard(&ir, &artifact, function, kind);
+    }
+    assert!(
+        ir.lines()
+            .filter(|line| line.contains("call i32 @loom_typed_resource_close_v1"))
+            .all(|line| line.contains("ptr %__loom_executor")),
+        "typed scoped cleanup used a non-executor context:\n{ir}"
+    );
+
+    for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
+        let object = directory.path().join(if target.contains("windows") {
+            "typed-io.obj"
+        } else {
+            "typed-io-linux.o"
+        });
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit typed I/O object for {target}: {error}"));
+        assert!(object.is_file(), "missing typed I/O object for {target}");
+    }
 }
 
 #[test]
@@ -5857,97 +5983,34 @@ pub fn initializerFaultMain() {
 }
 
 #[test]
-fn typed_builtin_scoped_cleanup_matches_interpreter_and_legacy_without_executor_routing() {
-    let program = checked_builtin_resource_cleanup_fixture(true);
-    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
-    let artifact = lower_source_artifact(
-        &program,
-        &SourceArtifactRequest::Run {
+fn synchronous_builtin_scoped_cleanup_is_an_invalid_executor_root() {
+    for file in [true, false] {
+        let program = checked_builtin_resource_cleanup_fixture(file);
+        assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+        let request = SourceArtifactRequest::Run {
             entry: "main".into(),
-        },
-    );
-    let dump = dump_program(artifact.program());
-    assert_eq!(dump.matches("resource.close.file").count(), 1, "{dump}");
-    let lcir = emit_and_run_lcir_machine_fault(&artifact, "lcir-scoped-file-close");
-    let legacy = emit_and_run_legacy_machine_fault(&program, "main", "legacy-scoped-file-close");
-    assert!(lcir.output.status.success(), "{:?}", lcir.output);
-    assert!(legacy.status.success(), "{legacy:?}");
-    assert_eq!(lcir.output.stdout, legacy.stdout);
-    assert_eq!(lcir.output.stderr, legacy.stderr);
-    assert!(
-        lcir.ir.contains("@loom_runtime_resource_close_typed_v1"),
-        "{}",
-        lcir.ir
-    );
-    assert_eq!(
-        lcir.ir
-            .matches("call i32 @loom_runtime_resource_close_typed_v1")
-            .count(),
-        1,
-        "{}",
-        lcir.ir
-    );
-    assert_typed_resource_close_guard(&lcir.ir, &artifact, "manual.main", 1);
-    assert_fallible_surface(&lcir.ir);
-    assert_no_indirect_calls(&lcir.ir);
-
-    for target in ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"] {
-        let directory = tempfile::tempdir().expect("create typed close target directory");
-        let object = directory.path().join(if target.contains("windows") {
-            "typed-resource-close.obj"
-        } else {
-            "typed-resource-close.o"
-        });
-        let ir_path = directory.path().join("typed-resource-close.ll");
-        emit_lcir_native_object(
-            &artifact,
-            &object,
-            &NativeObjectOptions {
-                target_triple: Some(target.to_owned()),
-                emit_ir: Some(ir_path.clone()),
-                ..NativeObjectOptions::default()
-            },
+        };
+        let error = lower_typed_artifact(
+            &program,
+            &request,
+            TargetLayout::new(64).expect("test target"),
         )
-        .unwrap_or_else(|error| panic!("emit typed resource close object for {target}: {error}"));
-        assert!(object.is_file(), "missing typed close object for {target}");
-        let ir = std::fs::read_to_string(ir_path).expect("read typed close target IR");
-        assert!(
-            ir.contains(&format!("target triple = \"{target}\"")),
-            "{ir}"
+        .expect_err("a synchronous ResourceClose root must not manufacture an executor");
+        assert_eq!(
+            error.code(),
+            LoweringErrorCode::InvalidRoot(InvalidRootCode::RootCapability)
         );
-        assert_typed_resource_close_guard(&ir, &artifact, "manual.main", 1);
-        assert_no_universal_value_surface(&ir);
-        assert!(!ir.contains("@loom_io_close"), "{ir}");
-    }
-}
 
-#[test]
-fn typed_builtin_socket_cleanup_emits_the_exact_kind_two_boundary() {
-    let program = checked_builtin_resource_cleanup_fixture(false);
-    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
-    let artifact = lower_source_artifact(
-        &program,
-        &SourceArtifactRequest::Run {
-            entry: "main".into(),
-        },
-    );
-    let dump = dump_program(artifact.program());
-    assert_eq!(dump.matches("resource.close.socket").count(), 1, "{dump}");
-    let native = emit_and_run_lcir_machine_fault(&artifact, "lcir-scoped-socket-close");
-    assert!(native.output.status.success(), "{:?}", native.output);
-    assert_typed_resource_close_guard(&native.ir, &artifact, "manual.main", 2);
-    assert_eq!(
-        native
-            .ir
-            .matches("call i32 @loom_runtime_resource_close_typed_v1")
-            .count(),
-        1,
-        "{}",
-        native.ir
-    );
-    assert_no_universal_value_surface(&native.ir);
-    assert!(!native.ir.contains("@loom_io_close"), "{}", native.ir);
-    assert_no_indirect_calls(&native.ir);
+        for policy in [NativeRoutePolicy::Automatic, NativeRoutePolicy::LcirOnly] {
+            let error = prepare_native_object(&program, EmitOptions::run("main"), policy)
+                .err()
+                .unwrap_or_else(|| {
+                    panic!("invalid executor root must never select a native fallback")
+                });
+            assert_eq!(error.kind(), NativePreparationErrorKind::InvalidRoot);
+            assert_eq!(error.code(), "NativePreparationRootCapability");
+        }
+    }
 }
 
 #[test]
@@ -5983,7 +6046,8 @@ pub fn multiplyMain() {
         ("subtractMain", "subtract"),
         ("multiplyMain", "multiply"),
     ] {
-        let operation = source_function(&program, operation_name);
+        let qualified_operation = format!("lcir_integer_overflow_diagnostics.{operation_name}");
+        let operation = source_function(&program, &qualified_operation);
         let expression = operation.body.tail.as_deref().expect("operation tail");
         assert!(
             matches!(

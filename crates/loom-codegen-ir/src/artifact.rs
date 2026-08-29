@@ -801,24 +801,6 @@ impl ArtifactValidator<'_> {
                             0,
                         );
                     }
-                    TerminatorKind::ResourceClose { normal, fault, .. } => {
-                        mark_text_target(
-                            function,
-                            text,
-                            &mut supplied,
-                            normal.block,
-                            &normal.arguments,
-                            2,
-                        );
-                        mark_text_target(
-                            function,
-                            text,
-                            &mut supplied,
-                            fault.block,
-                            &fault.arguments,
-                            1,
-                        );
-                    }
                     TerminatorKind::Assert { success, fault, .. } => {
                         mark_text_target(
                             function,

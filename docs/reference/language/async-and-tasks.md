@@ -147,7 +147,14 @@ code is not yet a cross-backend compatibility guarantee.
 
 A join does not return until cleanup for siblings it cancelled has completed.
 Cancellation unwinds the cancelled task's active lexical scopes and runs their
-`defer` and `scoped` cleanups in LIFO order.
+`defer` and `scoped` cleanups in LIFO order. Queued blocking I/O is atomically
+cancelled and releases its captured resources without waiting for a worker;
+blocking I/O that has already started is allowed to finish, its result is
+discarded, and only then may the cancelled Task become terminal. Structured
+joins therefore never return while a cancelled child can still produce an
+external side effect. Each Task preserves lexical LIFO cleanup internally;
+concurrent sibling Tasks do not promise a cleanup completion order because one
+may still be draining an operation that another sibling never started.
 
 A business `Result.Err` is a successfully completed task value. Join policy
 does not interpret it as a task fault.
@@ -176,11 +183,11 @@ the join; it does not add a source operation to resume or rethrow that task.
 `Completed(T)` preserves every recursive `MustScope` obligation inside `T`.
 If it contains a File, Socket, or another scoped resource, the successful arm
 must bind that payload to `scoped` immediately; `_` and `discard` cannot erase
-the obligation. For built-in File and Socket handles, the runtime transfers
+the obligation. For built-in File and Socket resources, the runtime transfers
 ownership from a completed child to its owner Task, which may itself be the
 root Task, before retiring the child. Faulted, cancelled, losing, and
-unconsumed tasks do not transfer completed-result handles. Terminal cleanup or
-typed result disposal closes their remaining built-in handles before retired-
+unconsumed tasks do not transfer completed-result resources. Terminal cleanup or
+typed result disposal closes their remaining built-in resources before retired-
 task memory reclamation. User-defined `MustScope` obligations add no runtime
 ledger entries.
 
