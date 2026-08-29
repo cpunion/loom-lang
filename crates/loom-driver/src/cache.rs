@@ -674,7 +674,7 @@ impl PersistentCache {
             .and_then(|_| read_bounded(&blob_path, byte_length))
             .is_some_and(|existing| digest_hex(&existing) == digest);
         if !existing_is_valid {
-            atomic_write(&blob_path, bytes, false)?;
+            atomic_write_idempotent(&blob_path, bytes)?;
         }
         let reference = serde_json::to_vec(&BlobRef {
             schema_version: CACHE_SCHEMA_VERSION,
@@ -684,7 +684,7 @@ impl PersistentCache {
             size: byte_length,
         })
         .map_err(|error| CacheError::io(&self.root, error))?;
-        atomic_write(&self.ref_path(namespace, key), &reference, false)
+        atomic_write_idempotent(&self.ref_path(namespace, key), &reference)
     }
 
     fn ref_path(&self, namespace: &str, key: &CacheKey) -> PathBuf {
@@ -920,6 +920,31 @@ fn atomic_write(destination: &Path, bytes: &[u8], executable: bool) -> Result<()
         .persist(destination)
         .map_err(|error| CacheError::io(destination, error.error))?;
     Ok(())
+}
+
+fn atomic_write_idempotent(destination: &Path, bytes: &[u8]) -> Result<(), CacheError> {
+    if file_contents_match(destination, bytes) {
+        return Ok(());
+    }
+
+    let result = atomic_write(destination, bytes, false);
+    if result.is_err() && file_contents_match(destination, bytes) {
+        // Another writer may have published the same immutable cache entry
+        // while this writer was renaming its temporary file. Windows can
+        // reject that competing replacement even though the desired bytes are
+        // already complete at the destination.
+        return Ok(());
+    }
+    result
+}
+
+fn file_contents_match(path: &Path, expected: &[u8]) -> bool {
+    let Ok(length) = u64::try_from(expected.len()) else {
+        return false;
+    };
+    fs::symlink_metadata(path)
+        .is_ok_and(|metadata| metadata.file_type().is_file() && metadata.len() == length)
+        && read_bounded(path, length).is_some_and(|bytes| bytes == expected)
 }
 
 #[cfg(unix)]
