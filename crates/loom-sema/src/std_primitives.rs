@@ -63,6 +63,9 @@ pub(crate) fn resolve_local_call(
         return None;
     };
     program.modules[owner].imports.iter().find_map(|import| {
+        if import.file != name.span.file {
+            return None;
+        }
         let primitive = resolve_import(program, owner, &import.path)?;
         (name.name.as_str() == primitive.local_name()).then_some(primitive)
     })

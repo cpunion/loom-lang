@@ -1,20 +1,20 @@
-schema = 1
+schema = 2
 
-[[package]]
+[[module]]
 name = "application"
 version = "1.0.0"
 language = "0.3"
 source = "root"
 dependencies = ["catalog@1.0.0", "foundation@1.0.0"]
 
-[[package]]
+[[module]]
 name = "catalog"
 version = "1.0.0"
 language = "0.3"
 source = "path"
 dependencies = ["foundation@1.0.0"]
 
-[[package]]
+[[module]]
 name = "foundation"
 version = "1.0.0"
 language = "0.3"

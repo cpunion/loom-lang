@@ -1,0 +1,87 @@
+import std.resource.Dispose
+import std.resource.MustScope
+
+test async fn task_and_cleanup() {
+    let order = cleanupOrder()
+    assert order == 21
+    scoped resource = Resource { value = 3 }
+    let value = parent().await
+    assert value == 8
+    let decodedValue = decoded().await
+    assert decodedValue == 9
+    let number, text = Task.all(child(), label()).await
+    assert number == 7
+    assert text == "loom"
+    let pairedNumber, pairedText = pair()
+    assert pairedNumber == 3
+    assert pairedText == "tuple"
+    let originalCounter = AsyncCounter { value = 0 }
+    let advancedCounter = takeOwnedSource(originalCounter).await
+    assert advancedCounter == 1
+    assert originalCounter.value == 0
+    var returnedSource = makeOwnedSource().await
+    let returnedValue = returnedSource.next()
+    assert returnedValue == 5
+    match propagatedResult() {
+        Ok(propagated) => {
+            assert propagated == 10
+            Unit
+        }
+        Err(_) => {
+            assert false
+            Unit
+        }
+    }
+    match changedSuccessType() {
+        Ok(_) => {
+            assert false
+            Unit
+        }
+        Err(TaskProblem.Failed) => Unit
+    }
+    var probe = CleanupProbe { value = 0 }
+    match probe.propagateFailure() {
+        Ok(_) => {
+            assert false
+            Unit
+        }
+        Err(TaskProblem.Failed) => {
+            let cleaned = probe.value
+            assert cleaned == 1
+            Unit
+        }
+    }
+    match awaitedPropagation().await {
+        Ok(propagated) => {
+            assert propagated == 11
+            Unit
+        }
+        Err(_) => {
+            assert false
+            Unit
+        }
+    }
+    match awaitedFailurePropagation().await {
+        Ok(_) => {
+            assert false
+            Unit
+        }
+        Err(TaskProblem.Failed) => Unit
+    }
+    let delayed = delayedValue().await
+    assert delayed == 12
+    let nested = nestedChoice(false).await
+    assert nested == 7
+    Task.sleep(1).await
+    let storedFirst = delayedValue()
+    let storedSecond = delayedValue()
+    let storedValues = Task.all([storedFirst, storedSecond]).await
+    let winner = Task.any([delayedValue(), delayedValue()]).await
+    assert winner == 12
+    let settled = Task.settled([delayedValue(), delayedValue()]).await
+    let raced = Task.race([delayedValue(), delayedValue()]).await
+    Task.sleep(1).await
+    let firstTimer, secondTimer = Task.all(Task.sleep(2), Task.sleep(1)).await
+    assert firstTimer == Unit
+    assert secondTimer == Unit
+}

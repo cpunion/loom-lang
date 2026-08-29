@@ -16,7 +16,7 @@ use loom_codegen_llvm::{
     prepare_native_object, prepared_native_target_identity, target_identity,
 };
 use loom_core::{FileId, Span};
-use loom_driver::AnalysisHost;
+use loom_driver::{AnalysisHost, ProjectOptions};
 use loom_interpreter::{Interpreter, TestStatus, Value};
 use loom_mir::{CheckedProgram, decode_interpreted_artifact, encode_interpreted_artifact};
 use loom_syntax::{lex, parse_with_file};
@@ -36,6 +36,7 @@ const C3_REPOSITORY: &str = "examples/c3/application";
 const C3_TARGET: &str = "app";
 const ASYNC_GENERIC_FIXTURE: &str = "fixtures/async-generic-contracts";
 const STD_FIXTURE: &str = "fixtures/std/main.loom";
+const STD_TEST_FIXTURE: &str = "fixtures/std/main_test.loom";
 const TYPED_LCIR_FIXTURE: &str = "fixtures/typed-lcir";
 const TYPED_LOGGING_FIXTURE: &str = "fixtures/lcir-typed-logging";
 const TYPED_LOGGING_STDERR: &[u8] =
@@ -58,19 +59,19 @@ const TASKS: &[TaskSpec] = &[
         name: "constraints-contracts",
         path: "examples/constraints-contracts",
         source: "examples/constraints-contracts/shop.loom",
-        sha256: "a452e1c6328d260a471c6352d884f874c1e634f48f2d4f352bf85ea42a7d84b6",
+        sha256: "3d4c58a0e5c3c3283278fdebca8731973036cfdb1dbb0314960d78dc8a4c4cfc",
     },
     TaskSpec {
         name: "concepts-polymorphism",
         path: "examples/concepts-polymorphism",
         source: "examples/concepts-polymorphism/concepts.loom",
-        sha256: "58fecf592ec87c2a0994901dfa58173c6ebc2fdace7db0dbb91956b05a8c7224",
+        sha256: "31e6fafb4c0a3c81b9262416396eb7cbae4ef56157f4c96de08e0a297df2601c",
     },
     TaskSpec {
         name: "async-resources",
         path: "examples/async-resources",
         source: "examples/async-resources/tasks.loom",
-        sha256: "f79a1b90c5b80b697758a1c7c2f81bb7949e41c1bb2c09b4277db86bb40e8dcf",
+        sha256: "5f3277637df363a06005077e61dfb279bd98b6562c74bdd538a1f73cedd11dbf",
     },
 ];
 
@@ -88,6 +89,13 @@ struct NativeRuntime {
 
 struct NativeBuild {
     functions: usize,
+}
+
+fn test_project_options() -> ProjectOptions {
+    ProjectOptions {
+        include_tests: true,
+        ..ProjectOptions::default()
+    }
 }
 
 struct StdFixture {
@@ -662,7 +670,7 @@ fn typed_logging_gate(
 ) -> Result<(), String> {
     let project = workspace.join(TYPED_LOGGING_FIXTURE);
     let analysis_started = Instant::now();
-    let snapshot = AnalysisHost::new(&project)
+    let snapshot = AnalysisHost::new_with_options(&project, &test_project_options())
         .map_err(|error| error.to_string())?
         .snapshot()
         .map_err(|error| error.to_string())?;
@@ -726,7 +734,7 @@ fn typed_logging_gate(
         .output()
         .map_err(|error| format!("execute typed logging tests: {error}"))?;
     if !output.status.success()
-        || output.stdout != b"passed lcir_typed_logging.typedLogging\n"
+        || output.stdout != b"passed standalone.typedLogging\n"
         || output.stderr.as_slice() != TYPED_LOGGING_STDERR
     {
         return Err(format!(
@@ -754,7 +762,7 @@ fn typed_async_gate(
     scenario: &str,
 ) -> Result<(), String> {
     let project = workspace.join(fixture);
-    let snapshot = AnalysisHost::new(&project)
+    let snapshot = AnalysisHost::new_with_options(&project, &test_project_options())
         .map_err(|error| error.to_string())?
         .snapshot()
         .map_err(|error| error.to_string())?;
@@ -840,14 +848,16 @@ fn std_gate(
     let native_fixture = prepare_std_fixture(workspace, native_project.path())?;
 
     let analysis_started = Instant::now();
-    let interpreter_snapshot = AnalysisHost::new(interpreter_project.path())
-        .map_err(|error| error.to_string())?
-        .snapshot()
-        .map_err(|error| error.to_string())?;
-    let native_snapshot = AnalysisHost::new(native_project.path())
-        .map_err(|error| error.to_string())?
-        .snapshot()
-        .map_err(|error| error.to_string())?;
+    let interpreter_snapshot =
+        AnalysisHost::new_with_options(interpreter_project.path(), &test_project_options())
+            .map_err(|error| error.to_string())?
+            .snapshot()
+            .map_err(|error| error.to_string())?;
+    let native_snapshot =
+        AnalysisHost::new_with_options(native_project.path(), &test_project_options())
+            .map_err(|error| error.to_string())?
+            .snapshot()
+            .map_err(|error| error.to_string())?;
     upper_gate(
         gates,
         "std.analysis",
@@ -1013,14 +1023,24 @@ fn prepare_std_fixture(workspace: &Path, project: &Path) -> Result<StdFixture, S
         .local_addr()
         .map_err(|error| format!("read socket-snapshot fixture address: {error}"))?
         .port();
-    let source = std::fs::read_to_string(workspace.join(STD_FIXTURE))
-        .map_err(|error| error.to_string())?
-        .replace("__ROUND_TRIP_PATH__", &loom_text_literal(&round_trip))
-        .replace("__REUSE_PATH__", &loom_text_literal(&reuse))
-        .replace("__MISSING_PATH__", &loom_text_literal(&missing))
-        .replace("__LOOPBACK_PORT__", &empty_write_port.to_string())
-        .replace("__READ_LOOPBACK_PORT__", &snapshot_port.to_string());
-    std::fs::write(project.join("main.loom"), source).map_err(|error| error.to_string())?;
+    let round_trip_literal = loom_text_literal(&round_trip);
+    let reuse_literal = loom_text_literal(&reuse);
+    let missing_literal = loom_text_literal(&missing);
+    let empty_write_port = empty_write_port.to_string();
+    let snapshot_port = snapshot_port.to_string();
+    for (fixture, destination) in [
+        (STD_FIXTURE, "main.loom"),
+        (STD_TEST_FIXTURE, "main_test.loom"),
+    ] {
+        let source = std::fs::read_to_string(workspace.join(fixture))
+            .map_err(|error| error.to_string())?
+            .replace("__ROUND_TRIP_PATH__", &round_trip_literal)
+            .replace("__REUSE_PATH__", &reuse_literal)
+            .replace("__MISSING_PATH__", &missing_literal)
+            .replace("__LOOPBACK_PORT__", &empty_write_port)
+            .replace("__READ_LOOPBACK_PORT__", &snapshot_port);
+        std::fs::write(project.join(destination), source).map_err(|error| error.to_string())?;
+    }
     Ok(StdFixture {
         round_trip,
         empty_write_listener,
@@ -1098,10 +1118,13 @@ fn async_generic_contract_gate(
     gates: &mut Vec<GateEvidence>,
     routes: &mut Vec<NativeRouteEvidence>,
 ) -> Result<(), String> {
-    let snapshot = AnalysisHost::new(workspace.join(ASYNC_GENERIC_FIXTURE))
-        .map_err(|error| error.to_string())?
-        .snapshot()
-        .map_err(|error| error.to_string())?;
+    let snapshot = AnalysisHost::new_with_options(
+        workspace.join(ASYNC_GENERIC_FIXTURE),
+        &test_project_options(),
+    )
+    .map_err(|error| error.to_string())?
+    .snapshot()
+    .map_err(|error| error.to_string())?;
     if snapshot.has_errors() {
         return Err(format!("source diagnostics: {:#?}", snapshot.diagnostics()));
     }
@@ -1151,7 +1174,7 @@ fn async_generic_contract_gate(
         .map_err(|error| format!("execute native tests: {error}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     if !output.status.success()
-        || stdout != "passed async_generic_contracts.generic_async_contracts_and_cancellation\n"
+        || stdout != "passed standalone.generic_async_contracts_and_cancellation\n"
     {
         return Err(format!(
             "native test mismatch: status={:?}, stdout={}, stderr={}",
@@ -1177,10 +1200,11 @@ fn run_c3_repository(
     routes: &mut Vec<NativeRouteEvidence>,
 ) -> Result<RepositoryEvidence, String> {
     let analysis_started = Instant::now();
-    let snapshot = AnalysisHost::new(workspace.join(C3_REPOSITORY))
-        .map_err(|error| error.to_string())?
-        .snapshot()
-        .map_err(|error| error.to_string())?;
+    let snapshot =
+        AnalysisHost::new_with_options(workspace.join(C3_REPOSITORY), &test_project_options())
+            .map_err(|error| error.to_string())?
+            .snapshot()
+            .map_err(|error| error.to_string())?;
     let analysis_elapsed = analysis_started.elapsed();
     upper_gate(
         gates,
@@ -1362,10 +1386,11 @@ fn run_task(
     }
 
     let analysis_started = Instant::now();
-    let snapshot = AnalysisHost::new(workspace.join(task.path))
-        .map_err(|error| error.to_string())?
-        .snapshot()
-        .map_err(|error| error.to_string())?;
+    let snapshot =
+        AnalysisHost::new_with_options(workspace.join(task.path), &test_project_options())
+            .map_err(|error| error.to_string())?
+            .snapshot()
+            .map_err(|error| error.to_string())?;
     let analysis_elapsed = analysis_started.elapsed();
     upper_gate(
         gates,
@@ -1542,11 +1567,16 @@ fn artifact_decode_gate(workspace: &Path, gates: &mut Vec<GateEvidence>) -> Resu
 fn incremental_query_gate(gates: &mut Vec<GateEvidence>) -> Result<(), String> {
     const MODULES: usize = 64;
     let project = tempfile::tempdir().map_err(|error| error.to_string())?;
+    std::fs::write(
+        project.path().join("loom.toml"),
+        "schema = 2\nlanguage = \"0.3\"\n\n[module]\nname = \"scale\"\nversion = \"0.1.0\"\n",
+    )
+    .map_err(|error| error.to_string())?;
     for index in 0..MODULES {
-        let source =
-            format!("module scale.m{index}\n\npub fn value{index}() Int {{\n    {index}\n}}\n");
-        std::fs::write(project.path().join(format!("m{index}.loom")), source)
-            .map_err(|error| error.to_string())?;
+        let package = project.path().join(format!("m{index}"));
+        std::fs::create_dir(&package).map_err(|error| error.to_string())?;
+        let source = format!("pub fn value{index}() Int {{\n    {index}\n}}\n");
+        std::fs::write(package.join("value.loom"), source).map_err(|error| error.to_string())?;
     }
     let host = AnalysisHost::new(project.path()).map_err(|error| error.to_string())?;
     let initial = host.snapshot().map_err(|error| error.to_string())?;
@@ -1556,12 +1586,9 @@ fn incremental_query_gate(gates: &mut Vec<GateEvidence>) -> Result<(), String> {
             initial.diagnostics()
         ));
     }
-    let changed_path = project.path().join("m63.loom");
-    std::fs::write(
-        changed_path,
-        "module scale.m63\n\npub fn value63() Int {\n    64\n}\n",
-    )
-    .map_err(|error| error.to_string())?;
+    let changed_path = project.path().join("m63/value.loom");
+    std::fs::write(changed_path, "pub fn value63() Int {\n    64\n}\n")
+        .map_err(|error| error.to_string())?;
     let started = Instant::now();
     let changed = host.snapshot().map_err(|error| error.to_string())?;
     let elapsed = started.elapsed();

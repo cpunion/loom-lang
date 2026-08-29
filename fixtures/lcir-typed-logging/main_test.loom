@@ -1,0 +1,7 @@
+import std.log.debug
+import std.log.error
+import std.log.info
+import std.log.warn
+import std.log.write
+
+test fn typedLogging() { emitCanonicalLogs() }

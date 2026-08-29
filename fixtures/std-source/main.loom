@@ -1,5 +1,3 @@
-module std_source
-
 import std.int.maximum
 import std.int.minimum
 
@@ -16,9 +14,5 @@ fn exercise() {
 }
 
 pub fn main() {
-    exercise()
-}
-
-test fn sourceBackedAlgorithms() {
     exercise()
 }

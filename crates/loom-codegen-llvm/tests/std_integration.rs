@@ -3,7 +3,6 @@ use std::process::Command;
 use std::{io::Read as _, net::TcpListener};
 
 use loom_codegen_llvm::{EmitOptions, NATIVE_RUNTIME_ABI};
-use loom_driver::AnalysisHost;
 
 mod support;
 use support::{emit_native, loom_text_literal, runtime_bundle_identity};
@@ -15,7 +14,7 @@ const EXPECTED_LOGS: &str = concat!(
 );
 
 fn snapshot(project: &Path) -> loom_driver::AnalysisSnapshot {
-    AnalysisHost::new(project)
+    support::analysis_host(project)
         .expect("load structured standard-library fixture")
         .snapshot()
         .expect("analyze structured standard-library fixture")
@@ -86,12 +85,15 @@ fn structured_values_match_in_interpreter_and_native_runtime() {
             assert_eq!(bytes, b"socket snapshot");
         }
     });
-    let source = include_str!("../../../fixtures/std/main.loom")
-        .replace("__ROUND_TRIP_PATH__", &round_trip_literal)
-        .replace("__MISSING_PATH__", &missing_literal)
-        .replace("__REUSE_PATH__", &reuse_literal)
-        .replace("__LOOPBACK_PORT__", &port.to_string())
-        .replace("__READ_LOOPBACK_PORT__", &read_port.to_string());
+    let source = concat!(
+        include_str!("../../../fixtures/std/main.loom"),
+        include_str!("../../../fixtures/std/main_test.loom")
+    )
+    .replace("__ROUND_TRIP_PATH__", &round_trip_literal)
+    .replace("__MISSING_PATH__", &missing_literal)
+    .replace("__REUSE_PATH__", &reuse_literal)
+    .replace("__LOOPBACK_PORT__", &port.to_string())
+    .replace("__READ_LOOPBACK_PORT__", &read_port.to_string());
     std::fs::write(project.path().join("main.loom"), source).expect("write fixture source");
 
     let interpreter = Command::new(std::env::current_exe().expect("current test executable"))
@@ -142,7 +144,7 @@ fn structured_values_match_in_interpreter_and_native_runtime() {
         "canonical_logging",
     ] {
         assert!(
-            stdout.contains(&format!("passed std_fixture.{test}\n")),
+            stdout.contains(&format!("passed standalone.{test}\n")),
             "{stdout}",
         );
     }

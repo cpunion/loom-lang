@@ -21,8 +21,6 @@ This excerpt is adapted from the checked and executed
 [`examples/constraints-contracts`](examples/constraints-contracts/shop.loom) fixture:
 
 ```loom
-module example.constraints_contracts
-
 import std.float.is_finite
 
 pub type Price = Float where is_finite(self) && self >= 0.0
@@ -66,8 +64,8 @@ Some important properties are visible in the example:
 
 Loom also implements closed enums and exhaustive matching, rank-1 generics,
 static and erased concept dispatch, moving garbage collection, block-scoped
-resource cleanup, stackless coroutines, structured task joins, package
-manifests, an LSP server, and native debug information.
+resource cleanup, stackless coroutines, structured task joins, directory
+packages inside versioned modules, an LSP server, and native debug information.
 
 ## Quick start
 

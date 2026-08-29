@@ -1,7 +1,7 @@
-schema = 1
+schema = 2
 language = "0.3"
 
-[package]
+[module]
 name = "utility"
 version = "1.2.0"
 

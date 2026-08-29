@@ -28,7 +28,7 @@ const MAX_LIBRARY_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 /// Wire format name for portable package artifacts.
 pub const LIBRARY_ARTIFACT_FORMAT: &str = "loom-library";
 /// Version of the portable source package envelope.
-pub const LIBRARY_ARTIFACT_VERSION: u32 = 2;
+pub const LIBRARY_ARTIFACT_VERSION: u32 = 3;
 
 /// A decoded `.loomlib` which has crossed structural package validation.
 #[derive(Clone, Debug)]
@@ -325,7 +325,7 @@ fn validate_packages(
     for package in &envelope.packages {
         if !valid_package_name(package.id.name()) {
             return Err(LibraryArtifactError::InvalidGraph(format!(
-                "package name `{}` must match [a-z][a-z0-9_-]*",
+                "package name `{}` must match [a-z][a-z0-9_]*",
                 package.id.name()
             )));
         }
@@ -357,7 +357,7 @@ fn validate_packages(
         for dependency in &package.dependencies {
             if !valid_package_name(&dependency.alias) {
                 return Err(LibraryArtifactError::InvalidGraph(format!(
-                    "dependency alias `{}` must match [a-z][a-z0-9_-]*",
+                    "dependency alias `{}` must match [a-z][a-z0-9_]*",
                     dependency.alias
                 )));
             }
@@ -473,6 +473,7 @@ fn interfaces_from_sources(
         )));
     }
     let mut parses = Vec::with_capacity(sources.len());
+    let mut modules = Vec::with_capacity(sources.len());
     for (index, source) in sources.iter().enumerate() {
         let file = FileId(u32::try_from(index).expect("library source count is bounded"));
         let parse = parse_with_file(file, &source.text);
@@ -482,21 +483,26 @@ fn interfaces_from_sources(
                 source.path, diagnostic.message
             )));
         }
+        let module = crate::project::package_module_name(
+            &source.package,
+            std::path::Path::new(&source.path),
+        )
+        .map_err(LibraryArtifactError::InvalidGraph)?;
         parses.push(parse);
+        modules.push(module);
     }
     Ok(embedded_module_interfaces(
-        sources
-            .iter()
-            .zip(&parses)
-            .enumerate()
-            .map(|(index, (source, parse))| {
+        sources.iter().zip(&modules).zip(&parses).enumerate().map(
+            |(index, ((source, module), parse))| {
                 (
                     FileId(u32::try_from(index).expect("library source count is bounded")),
                     &source.package,
+                    module,
                     source.path.as_str(),
                     parse,
                 )
-            }),
+            },
+        ),
     ))
 }
 
@@ -570,7 +576,7 @@ fn valid_package_name(name: &str) -> bool {
         .is_some_and(|byte| byte.is_ascii_lowercase())
         && name
             .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_-".contains(&byte))
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
 fn portable_relative_path(path: &str) -> bool {

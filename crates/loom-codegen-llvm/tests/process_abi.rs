@@ -1,7 +1,6 @@
 use std::process::Command;
 
 use loom_codegen_llvm::EmitOptions;
-use loom_driver::AnalysisHost;
 use loom_mir::{Builtin, CallTarget, ExprKind, Function, FunctionId};
 
 mod support;
@@ -9,9 +8,7 @@ use support::emit_native;
 
 #[test]
 fn process_source_wrappers_own_the_private_runtime_primitives() {
-    let source = r#"module process_abi
-
-import std.process.arguments
+    let source = r#"import std.process.arguments
 import std.process.environment
 
 pub fn main() {
@@ -42,13 +39,13 @@ pub fn main() {
 "#;
     let project = tempfile::tempdir().expect("create process ABI project");
     std::fs::write(project.path().join("main.loom"), source).expect("write process ABI source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load process ABI project")
         .snapshot()
         .expect("analyze process ABI project");
     assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
     let program = snapshot.executable().expect("lower process ABI MIR");
-    let main = named_function(program.functions.as_slice(), "process_abi.main");
+    let main = named_function(program.functions.as_slice(), "standalone.main");
     let arguments = named_function(program.functions.as_slice(), "std.process.arguments");
     let environment = named_function(program.functions.as_slice(), "std.process.environment");
 

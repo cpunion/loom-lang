@@ -40,7 +40,6 @@ pub enum TokenKind {
     FloatLiteral,
     TextLiteral,
 
-    ModuleKw,
     ImportKw,
     PubKw,
     TypeKw,
@@ -125,8 +124,7 @@ impl TokenKind {
     pub const fn is_keyword(self) -> bool {
         matches!(
             self,
-            Self::ModuleKw
-                | Self::ImportKw
+            Self::ImportKw
                 | Self::PubKw
                 | Self::TypeKw
                 | Self::WhereKw
@@ -678,7 +676,6 @@ impl<'a> Lexer<'a> {
 
 fn keyword(text: &str) -> TokenKind {
     match text {
-        "module" => TokenKind::ModuleKw,
         "import" => TokenKind::ImportKw,
         "pub" => TokenKind::PubKw,
         "type" => TokenKind::TypeKw,
@@ -770,6 +767,11 @@ mod tests {
     }
 
     #[test]
+    fn module_is_an_ordinary_identifier() {
+        assert_eq!(kinds("module"), vec![TokenKind::Ident, TokenKind::Eof]);
+    }
+
+    #[test]
     fn newline_rules_distinguish_separator_and_continuation() {
         let lexed = lex("a\nb +\n c\nf(\n x,\n y\n)\n{\n z\n}\n");
         let newlines: Vec<_> = lexed
@@ -854,7 +856,7 @@ mod tests {
             lexed
                 .tokens
                 .iter()
-                .any(|token| token.kind == TokenKind::ModuleKw)
+                .any(|token| { token.kind == TokenKind::Ident && token.text == "module" })
         );
     }
 

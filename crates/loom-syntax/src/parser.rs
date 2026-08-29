@@ -8,9 +8,9 @@ use crate::ast::{
     Block, BlockItem, CallableSignature, ConceptDecl, ConceptMember, ConceptRef, ConformanceMember,
     ConstrainedTypeDecl, Contract, ContractKind, Decl, DeclKind, ElseBranch, EnumDecl, EnumVariant,
     ErrorNode, Expr, ExprKind, ForRange, FunctionDecl, GenericParam, Ident, ImplDecl, ImplKind,
-    ImportDecl, Literal, LocalBinding, MatchArm, MethodDecl, MethodRequirement, ModuleDecl,
-    Parameter, Path, Pattern, PatternKind, Receiver, RecordDecl, RecordField, RecordLiteralField,
-    ReturnExpr, SourceFile, TypeArgument, TypeExpr, TypeExprKind, UnaryOp, Visibility,
+    ImportDecl, Literal, LocalBinding, MatchArm, MethodDecl, MethodRequirement, Parameter, Path,
+    Pattern, PatternKind, Receiver, RecordDecl, RecordField, RecordLiteralField, ReturnExpr,
+    SourceFile, TypeArgument, TypeExpr, TypeExprKind, UnaryOp, Visibility,
 };
 use crate::lexer::{Lexed, Token, TokenKind, lex};
 
@@ -218,39 +218,14 @@ impl<'a> Parser<'a> {
 
     fn parse_file(&mut self, source_len: usize) -> SourceFile {
         self.skip_separators();
-        let mut module = None;
         let mut imports = Vec::new();
         let mut declarations = Vec::new();
         let mut saw_declaration = false;
-
-        if self.at(TokenKind::ModuleKw) {
-            module = Some(self.parse_module());
-            self.require_boundary("module declaration");
-        } else {
-            self.error_here(
-                "MissingModuleDeclaration",
-                "every Loom source file must begin with exactly one `module` declaration",
-            );
-        }
 
         loop {
             self.skip_separators();
             if self.at(TokenKind::Eof) {
                 break;
-            }
-
-            if self.at(TokenKind::ModuleKw) {
-                let misplaced = self.parse_module();
-                self.error_at(
-                    "DuplicateModuleDeclaration",
-                    "a source file may contain exactly one leading `module` declaration",
-                    misplaced.range,
-                );
-                if module.is_none() {
-                    module = Some(misplaced);
-                }
-                self.require_boundary("module declaration");
-                continue;
             }
 
             if self.at(TokenKind::ImportKw) {
@@ -290,20 +265,9 @@ impl<'a> Parser<'a> {
         }
 
         SourceFile {
-            module,
             imports,
             declarations,
             range: TextRange::new(0, to_u32(source_len)),
-        }
-    }
-
-    fn parse_module(&mut self) -> ModuleDecl {
-        let start = self.start();
-        self.expect(TokenKind::ModuleKw, "`module`");
-        let name = self.parse_path();
-        ModuleDecl {
-            name,
-            range: self.finish(start),
         }
     }
 
@@ -2116,10 +2080,7 @@ impl<'a> Parser<'a> {
                 index += 1;
                 continue;
             }
-            if saw_boundary
-                && (self.is_top_start_at(index)
-                    || matches!(kind, TokenKind::ModuleKw | TokenKind::ImportKw))
-            {
+            if saw_boundary && (self.is_top_start_at(index) || kind == TokenKind::ImportKw) {
                 self.pos = index;
                 return;
             }

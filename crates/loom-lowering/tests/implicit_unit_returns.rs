@@ -34,9 +34,7 @@ fn compile_and_validate(source: &str) -> loom_mir::CheckedProgram {
 #[test]
 fn omitted_returns_lower_to_unit_without_return_inference() {
     let program = compile_and_validate(
-        r"module returns
-
-record R {}
+        r"record R {}
 
 pub fn omitted() { return }
 async fn omittedAsync() {}

@@ -577,7 +577,7 @@ impl AnalysisSnapshot {
         };
         let map = self.semantic_analysis().def_maps.map(target_module)?;
         let binding = if path.segments.len() == 1 {
-            map.resolve(namespace, name)
+            map.resolve(namespace, name, path.segments.last()?.span.file)
         } else {
             map.resolve_local(namespace, name)
         }?;

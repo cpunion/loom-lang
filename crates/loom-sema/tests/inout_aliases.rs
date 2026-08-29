@@ -37,8 +37,6 @@ fn inout_alias_count(diagnostics: &[loom_core::Diagnostic]) -> usize {
 fn list_add_reservation_allows_reads_and_sibling_mutation() {
     let diagnostics = analyze_source(
         r"
-module inout_list_valid
-
 record Lists {
     left List[Unit]
     right List[Unit]
@@ -63,8 +61,6 @@ fn valid() {
 fn list_add_rejects_overlapping_nested_mutation() {
     let diagnostics = analyze_source(
         r"
-module inout_list_invalid
-
 fn invalid() {
     var values = List[Unit]()
     values.add(values.add(Unit))
@@ -78,8 +74,6 @@ fn invalid() {
 fn inherent_inout_scope_covers_nested_calls_assignments_and_dyn_adaptation() {
     let diagnostics = analyze_source(
         r"
-module inout_inherent
-
 dyn concept Touch {
     method touch(mut self)
 }
@@ -151,8 +145,6 @@ fn invalidMutableView() {
 fn static_and_dynamic_concept_calls_reserve_the_mutable_receiver() {
     let diagnostics = analyze_source(
         r"
-module inout_concepts
-
 record Counter {
     value Int
 }
@@ -206,8 +198,6 @@ fn invalidDynamic(counter dyn CounterOps) {
 fn inout_reservations_do_not_consume_serialized_view_tokens() {
     let analysis = analyze_program(
         r"
-module inout_token_stability
-
 record Cell {
     value Int
 }

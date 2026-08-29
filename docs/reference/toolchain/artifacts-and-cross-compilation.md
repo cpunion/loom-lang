@@ -22,8 +22,8 @@ current MIR field set: missing fields are not synthesized and unknown fields
 are rejected. There is no shape upgrade or compatibility decoder behind the
 version check.
 
-Portable libraries use source-package format version `2`. They record the Loom
-language version, resolved package graph, exact non-standard-library Loom
+Portable libraries use source-and-interface format version `2`. They record the
+Loom language version, resolved module graph, exact non-standard-library Loom
 sources, and canonical public interfaces. The decoder enforces the format and
 language versions, structural and byte/count bounds, graph and identity rules,
 portable paths, and interface fingerprints recomputed from the embedded source.
@@ -32,12 +32,14 @@ and runs the normal parse, type-check, proof, and lowering pipeline. A
 `.loomlib` contains no checked MIR, producer-local proof state, or
 compiler-owned standard-library implementation. The compiler does not append
 the `.loomlib` extension automatically. Other portable-library versions are
-rejected rather than upgraded.
+rejected rather than upgraded. Production source selection excludes
+`*_test.loom`, so dependency test declarations are not distributed in the
+artifact.
 
 A persistent interpreted artifact must contain the complete canonical
 `Dispose`, `MustScope`, and `NoSuspend` identity trio, their prelude ids, and
 the exact `Dispose.dispose` requirement. An identity tag and matching prelude
-id grant authority; source module and name are independent consistency checks
+id grant authority; source package and name are independent consistency checks
 and cannot create compiler-known semantics. Missing, redirected, duplicated,
 or shape-inconsistent metadata is rejected before execution. These are
 structural guarantees, not publisher authentication.

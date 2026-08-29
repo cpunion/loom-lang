@@ -59,7 +59,7 @@ fn expect_error(value: Value, expected_variant: u32, expected_offset: Option<i64
     reason = "one parser contract keeps direct source binding and the complete JSON edge corpus together"
 )]
 fn source_json_parser_handles_syntax_offsets_surrogates_numbers_and_depth() {
-    let source = include_str!("../../../library/std/src/json.loom");
+    let source = include_str!("../../../library/std/json/json.loom");
     let formatted = format_source(FileId(0), source);
     assert!(
         formatted.diagnostics.is_empty(),
@@ -71,7 +71,7 @@ fn source_json_parser_handles_syntax_offsets_surrogates_numbers_and_depth() {
     let project = tempfile::tempdir().expect("temporary source JSON project");
     fs::write(
         project.path().join("main.loom"),
-        "module source_json_test\n\nimport std.json.parse_json\n\nfn forward(text Text) Result[Json, JsonError] {\n    parse_json(text)\n}\n",
+        "import std.json.parse_json\n\nfn forward(text Text) Result[Json, JsonError] {\n    parse_json(text)\n}\n",
     )
     .expect("source JSON test application");
     let snapshot = AnalysisHost::new(project.path())
@@ -89,7 +89,7 @@ fn source_json_parser_handles_syntax_offsets_surrogates_numbers_and_depth() {
     let forward = program
         .functions
         .iter()
-        .find(|function| function.name == "source_json_test.forward")
+        .find(|function| function.name == "standalone.forward")
         .expect("source JSON forwarding function");
     assert!(forward.exprs_preorder().any(|expression| {
         matches!(

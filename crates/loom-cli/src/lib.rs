@@ -20,7 +20,7 @@ const USAGE: &str = "usage: loomc [--json] [--backend llvm|interpreter] [--relea
     runtime pack --archive FILE --output DIR pack a validated host runtime bundle\n\
     check [--target NAME] [PATH] parse, lower, and type-check a project\n\
     build [--target NAME | --entry NAME] [--target-triple TRIPLE] [--runtime-bundle DIR] [--linker PROGRAM] [--emit executable|object] [--output FILE] [PATH] build an executable, object, or portable library\n\
-    test [--target NAME] [PATH] compile and execute ordinary test fn declarations\n\
+    test [PATH] compile and execute `test fn` declarations from `*_test.loom` files\n\
     run [--target NAME | --entry NAME] [PATH] [-- ARGS...] compile and execute an exported function\n\
     run --artifact FILE [-- ARGS...] execute a previously built artifact\n\
     debug [--target NAME | --entry NAME] [--debugger PROGRAM] [PATH] [-- ARGS...] build with source info and launch LLDB/GDB\n\
@@ -405,7 +405,6 @@ fn select_build_target(
                     .to_owned(),
             )),
             TargetKind::Lib => Ok(BuildTarget::Library(target.name().to_owned())),
-            TargetKind::Test => Err(target_kind_mismatch(name, target.kind(), "`bin` or `lib`")),
         };
     }
     if let Some(entry) = explicit_entry {
@@ -465,41 +464,6 @@ fn select_build_target(
                     .join(", ")
             ),
         }),
-    }
-}
-
-fn select_test_target(
-    project: &ProjectGraph,
-    requested: Option<&str>,
-) -> Result<(), TargetSelectionError> {
-    if let Some(name) = requested {
-        let target = project
-            .target(name)
-            .ok_or_else(|| TargetSelectionError::unknown(name))?;
-        if target.kind() != TargetKind::Test {
-            return Err(target_kind_mismatch(name, target.kind(), "`test`"));
-        }
-        return Ok(());
-    }
-    let tests = project
-        .targets()
-        .iter()
-        .filter(|target| target.kind() == TargetKind::Test)
-        .collect::<Vec<_>>();
-    if tests.len() <= 1 {
-        Ok(())
-    } else {
-        Err(TargetSelectionError {
-            code: "AmbiguousTarget",
-            message: format!(
-                "multiple test targets are available: {}; pass --target NAME",
-                tests
-                    .iter()
-                    .map(|target| target.name())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        })
     }
 }
 
@@ -1034,9 +998,6 @@ fn run_test(options: &Options, stdout: &mut dyn Write, stderr: &mut dyn Write) -
     };
     if emit_source_diagnostics(&compilation, options.json, stdout, stderr)? {
         return Ok(EXIT_FAILURE);
-    }
-    if let Err(error) = select_test_target(compilation.project(), options.target.as_deref()) {
-        return emit_target_error(options, stdout, stderr, &error);
     }
     if options.backend == Backend::Llvm {
         let program = match compilation.executable() {
@@ -2540,6 +2501,7 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Pars
     };
     strings.remove(0);
     let command = parse_command(&command_name, &mut strings, backend)?;
+    let include_tests = matches!(command, Command::Test);
     let path = strings
         .first()
         .map_or_else(|| PathBuf::from("."), PathBuf::from);
@@ -2560,6 +2522,7 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Pars
                 LockMode::Use
             },
             offline,
+            include_tests,
         },
         target_triple,
         runtime_bundle,
@@ -2729,9 +2692,10 @@ fn validate_parsed_options(options: &Options, remaining: &[String]) -> Result<()
                     artifact: Some(_),
                     ..
                 }
+                | Command::Test
         )
     {
-        return Err("--target is only valid for source check/build/test/run/debug".to_owned());
+        return Err("--target is only valid for source check/build/run/debug".to_owned());
     }
     if (options.no_cache || options.cache_dir.is_some())
         && matches!(
@@ -2926,7 +2890,7 @@ mod tests {
 
     #[test]
     fn checked_mir_cache_identity_pins_interpreted_artifact_version() {
-        assert_eq!(loom_mir::INTERPRETED_ARTIFACT_VERSION, 29);
+        assert_eq!(loom_mir::INTERPRETED_ARTIFACT_VERSION, 30);
         let context = super::cache_context(loom_mir::LOOM_LANGUAGE_VERSION);
         let artifact_identity = format!(
             "/{}-{}",
@@ -2945,7 +2909,7 @@ mod tests {
         let context = super::cache_context(loom_mir::LOOM_LANGUAGE_VERSION);
         let Some(digest) = context
             .stdlib_identity
-            .strip_prefix("loom-source-stdlib-v1/")
+            .strip_prefix("loom-source-stdlib-v2/")
         else {
             panic!("{}", context.stdlib_identity);
         };
@@ -2968,11 +2932,8 @@ mod tests {
     #[test]
     fn ir_side_artifacts_bypass_the_object_cache_and_are_still_written() {
         let project = tempfile::tempdir().expect("create source project");
-        std::fs::write(
-            project.path().join("main.loom"),
-            "module cache_bypass\n\npub fn main() {}\n",
-        )
-        .expect("write source fixture");
+        std::fs::write(project.path().join("main.loom"), "pub fn main() {}\n")
+            .expect("write source fixture");
         let snapshot = AnalysisHost::new(project.path())
             .expect("load source project")
             .snapshot()

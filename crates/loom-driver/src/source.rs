@@ -4,7 +4,7 @@ use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-use loom_core::{FileId, PackageId};
+use loom_core::{FileId, ModuleName, PackageId};
 
 use crate::project::ProjectGraph;
 use crate::{Position, Range};
@@ -155,6 +155,7 @@ pub struct SourceDocument {
     absolute_path: PathBuf,
     relative_path: String,
     package: Option<PackageId>,
+    module: ModuleName,
     is_root_package: bool,
     origin: SourceOrigin,
     text: Option<String>,
@@ -183,6 +184,21 @@ impl SourceDocument {
     #[must_use]
     pub const fn package(&self) -> Option<&PackageId> {
         self.package.as_ref()
+    }
+
+    /// Filesystem-derived package path used for HIR module identity.
+    #[must_use]
+    pub const fn module(&self) -> &ModuleName {
+        &self.module
+    }
+
+    /// Whether this document follows the package test-source naming rule.
+    #[must_use]
+    pub fn is_test_source(&self) -> bool {
+        Path::new(&self.relative_path)
+            .file_stem()
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|stem| stem.ends_with("_test"))
     }
 
     /// Whether this source belongs to the selected root package.
@@ -376,6 +392,10 @@ impl SourceMap {
         self.by_path.get(&normalized).copied()
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "source loading assigns stable FileIds while applying package and overlay policy"
+    )]
     pub(crate) fn load(
         project: &ProjectGraph,
         overlays: &BTreeMap<PathBuf, String>,
@@ -390,6 +410,7 @@ impl SourceMap {
                     (
                         source.stable_path,
                         source.package,
+                        source.module,
                         source.is_root_package,
                         source.embedded_text,
                         source.origin,
@@ -405,11 +426,18 @@ impl SourceMap {
                     path: overlay,
                 });
             }
-            if let Some(stable_path) = project.overlay_stable_path(&overlay) {
+            if let Some((stable_path, module)) = project.overlay_source(&overlay)? {
                 let package = project.root_package().map(|package| package.id().clone());
                 paths.insert(
                     overlay,
-                    (stable_path, package, true, None, SourceOrigin::FileSystem),
+                    (
+                        stable_path,
+                        package,
+                        module,
+                        true,
+                        None,
+                        SourceOrigin::FileSystem,
+                    ),
                 );
             }
         }
@@ -422,8 +450,10 @@ impl SourceMap {
 
         let mut documents = Vec::with_capacity(paths.len());
         let mut by_path = BTreeMap::new();
-        for (index, (path, (relative_path, package, is_root_package, embedded_text, origin))) in
-            paths.into_iter().enumerate()
+        for (
+            index,
+            (path, (relative_path, package, module, is_root_package, embedded_text, origin)),
+        ) in paths.into_iter().enumerate()
         {
             let id = FileId(u32::try_from(index).expect("file count was checked"));
             // Compiler-owned `std` sources and portable-library payloads
@@ -464,6 +494,7 @@ impl SourceMap {
                 absolute_path: path,
                 relative_path,
                 package,
+                module,
                 is_root_package,
                 origin,
                 text,

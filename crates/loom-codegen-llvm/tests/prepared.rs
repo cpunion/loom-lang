@@ -6,13 +6,14 @@ use loom_codegen_llvm::{
     OptimizationProfile, emit_prepared_native_object, prepare_native_object,
     prepared_native_object_fingerprint, prepared_native_target_identity, target_identity,
 };
-use loom_driver::AnalysisHost;
+
+mod support;
 use loom_mir::CheckedProgram;
 
 fn compile_source(source: &str) -> CheckedProgram {
     let project = tempfile::tempdir().expect("create source project");
     std::fs::write(project.path().join("main.loom"), source).expect("write source fixture");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load source project")
         .snapshot()
         .expect("analyze source project");
@@ -26,9 +27,7 @@ fn compile_source(source: &str) -> CheckedProgram {
 
 fn scalar_program() -> CheckedProgram {
     compile_source(
-        r"module prepared_scalar
-
-fn choose(flag Bool) Int {
+        r"fn choose(flag Bool) Int {
     if flag { 7 } else { 9 }
 }
 
@@ -41,9 +40,7 @@ pub fn main() {
 
 fn allocating_text_program() -> CheckedProgram {
     compile_source(
-        r#"module prepared_text
-
-pub fn main() {
+        r#"pub fn main() {
     discard "left".concat("right")
 }
 "#,
@@ -52,9 +49,7 @@ pub fn main() {
 
 fn text_get_program() -> CheckedProgram {
     compile_source(
-        r#"module prepared_text_get
-
-pub fn main() {
+        r#"pub fn main() {
     discard "value".get(0)
 }
 "#,
@@ -63,9 +58,7 @@ pub fn main() {
 
 fn typed_timer_program() -> CheckedProgram {
     compile_source(
-        r"module prepared_timer
-
-pub async fn main() {
+        r"pub async fn main() {
     Task.sleep(1).await
 }
 ",
@@ -79,9 +72,7 @@ fn sync_task_creation_program(nested: bool) -> CheckedProgram {
         "fn helper() Task[Int] { child() }"
     };
     compile_source(&format!(
-        r"module prepared_sync_task_create
-
-async fn child() Int {{ 1 }}
+        r"async fn child() Int {{ 1 }}
 
 {helper}
 
@@ -94,9 +85,7 @@ pub async fn main() {{
 
 fn sync_executor_root_with_unsupported_site_program() -> CheckedProgram {
     compile_source(
-        r"module prepared_invalid_sync_executor_root
-
-enum Chain {
+        r"enum Chain {
     End
     Next(Chain)
 }
@@ -116,9 +105,7 @@ pub fn main() {
 
 fn sync_executor_root_with_nonregular_instance_program() -> CheckedProgram {
     compile_source(
-        r"module prepared_invalid_sync_executor_nonregular
-
-async fn child() Int { 1 }
+        r"async fn child() Int { 1 }
 
 fn consume(task Task[Int]) {
     consume(task)
@@ -138,9 +125,7 @@ pub fn main() {
 
 fn recursive_sum_program() -> CheckedProgram {
     compile_source(
-        r"module prepared_recursive_sum
-
-enum Chain {
+        r"enum Chain {
     End
     Next(Chain)
 }
@@ -182,9 +167,7 @@ fn automatic_route_is_atomic_over_the_reachable_artifact() {
     assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
 
     let managed_tuple = compile_source(
-        r#"module prepared_managed_tuple
-
-fn make() (Int, Text) { (1, "value") }
+        r#"fn make() (Int, Text) { (1, "value") }
 
 pub fn main() {
     let number, label = make()
@@ -202,9 +185,7 @@ pub fn main() {
     assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
 
     let managed_sum = compile_source(
-        r#"module prepared_managed_sum
-
-record Label { value Text }
+        r#"record Label { value Text }
 
 enum Message { Textual(Label) }
 
@@ -222,9 +203,7 @@ pub fn main() {
     assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
 
     let dead_text = compile_source(
-        r#"module prepared_dead_text
-
-pub fn main() {}
+        r#"pub fn main() {}
 
 fn dead() Text { "unreachable" }
 "#,
@@ -241,9 +220,7 @@ fn dead() Text { "unreachable" }
 #[test]
 fn typed_timer_test_keeps_the_ordered_test_artifact_on_lcir() {
     let program = compile_source(
-        r"module prepared_tests
-
-test fn scalar() {}
+        r"test fn scalar() {}
 
 test async fn timer() {
     Task.sleep(1).await
@@ -523,9 +500,7 @@ fn fingerprints_separate_routes_and_all_codegen_inputs() {
     );
 
     let changed = compile_source(
-        r"module prepared_scalar_changed
-
-pub fn main() {
+        r"pub fn main() {
     discard 8
 }
 ",
@@ -556,17 +531,13 @@ fn tuple_semantics_participate_in_the_lcir_object_cache_identity() {
         prepared_native_object_fingerprint(&prepared).expect("fingerprint tuple artifact")
     };
     let boolean = fingerprint(
-        r"module prepared_tuple_identity
-
-fn consume(value (Int, Bool)) { discard value }
+        r"fn consume(value (Int, Bool)) { discard value }
 
 pub fn main() { consume((1, true)) }
 ",
     );
     let floating = fingerprint(
-        r"module prepared_tuple_identity
-
-fn consume(value (Int, Float)) { discard value }
+        r"fn consume(value (Int, Float)) { discard value }
 
 pub fn main() { consume((1, 1.0)) }
 ",
@@ -589,17 +560,13 @@ fn closed_sum_semantics_participate_in_the_lcir_object_cache_identity() {
         prepared_native_object_fingerprint(&prepared).expect("fingerprint closed-sum artifact")
     };
     let boolean = fingerprint(
-        r"module prepared_sum_identity
-
-enum Choice { Empty, Value(Bool) }
+        r"enum Choice { Empty, Value(Bool) }
 
 pub fn main() { discard Choice.Value(true) }
 ",
     );
     let floating = fingerprint(
-        r"module prepared_sum_identity
-
-enum Choice { Empty, Value(Float) }
+        r"enum Choice { Empty, Value(Float) }
 
 pub fn main() { discard Choice.Value(1.0) }
 ",

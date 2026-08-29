@@ -13,6 +13,7 @@ use loom_codegen_llvm::{
     CodegenError, EmitOptions, NativeArtifact, RuntimeBundle, RuntimeLinker,
     link_object_with_runtime_bundle, native_target_identity,
 };
+use loom_driver::{AnalysisHost, DriverError, ProjectOptions};
 use loom_mir::CheckedProgram;
 
 struct TestRuntime {
@@ -21,6 +22,79 @@ struct TestRuntime {
 }
 
 static TEST_RUNTIME: OnceLock<TestRuntime> = OnceLock::new();
+
+pub fn analysis_host(input: impl AsRef<Path>) -> Result<AnalysisHost, DriverError> {
+    let input = input.as_ref();
+    let source = if input.is_dir() {
+        input.join("main.loom")
+    } else {
+        input.to_path_buf()
+    };
+    split_test_source(&source);
+    AnalysisHost::new_with_options(
+        input,
+        &ProjectOptions {
+            include_tests: true,
+            ..ProjectOptions::default()
+        },
+    )
+}
+
+fn split_test_source(path: &Path) {
+    let Ok(source) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let Some(test_start) = test_source_start(&source) else {
+        return;
+    };
+    let test_file_start = test_import_block_start(&source, test_start).unwrap_or(test_start);
+    let (ordinary, tests) = source.split_at(test_file_start);
+    std::fs::write(path, ordinary.trim_end()).expect("write ordinary source fixture");
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .expect("source fixture has a UTF-8 stem");
+    let test_path = path.with_file_name(format!("{stem}_test.loom"));
+    let imports = ordinary
+        .lines()
+        .filter(|line| line.starts_with("import "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let test_source = if tests.trim_start().starts_with("import ") || imports.is_empty() {
+        tests.to_owned()
+    } else {
+        format!("{imports}\n\n{tests}")
+    };
+    std::fs::write(test_path, test_source).expect("write test source fixture");
+}
+
+fn test_source_start(source: &str) -> Option<usize> {
+    source
+        .match_indices("test ")
+        .find(|(offset, _)| {
+            (*offset == 0 || source.as_bytes().get(offset - 1) == Some(&b'\n'))
+                && (source[*offset..].starts_with("test fn ")
+                    || source[*offset..].starts_with("test async fn "))
+        })
+        .map(|(offset, _)| offset)
+}
+
+fn test_import_block_start(source: &str, test_start: usize) -> Option<usize> {
+    let mut offset = 0;
+    let mut saw_declaration = false;
+    for line in source[..test_start].split_inclusive('\n') {
+        let trimmed = line.trim();
+        if trimmed.starts_with("import ") {
+            if saw_declaration {
+                return Some(offset);
+            }
+        } else if !trimmed.is_empty() {
+            saw_declaration = true;
+        }
+        offset += line.len();
+    }
+    None
+}
 
 fn test_runtime() -> &'static TestRuntime {
     TEST_RUNTIME.get_or_init(|| {

@@ -404,7 +404,7 @@ impl AnalysisHost {
             if let Some(text) = source.text() {
                 let parse = parse_with_file(source.id(), text);
                 diagnostics.extend(parse.diagnostics().iter().cloned());
-                validate_package_module(source, &parse, &mut diagnostics);
+                validate_test_source(source, &parse, &mut diagnostics);
                 parses.insert(source.id(), parse);
             } else {
                 let start = source.invalid_utf8_at().unwrap_or(0);
@@ -454,7 +454,7 @@ impl AnalysisHost {
                     }
                 };
                 diagnostics.extend(parse.diagnostics().iter().cloned());
-                validate_package_module(source, &parse, &mut diagnostics);
+                validate_test_source(source, &parse, &mut diagnostics);
                 parses.insert(source.id(), parse);
             } else {
                 stats.misses += 1;
@@ -507,6 +507,7 @@ impl AnalysisHost {
             PackageSourceUnit {
                 file: *file,
                 package: source.package().cloned().unwrap_or_default(),
+                module: source.module().clone(),
                 syntax: parse.ast(),
             }
         }));
@@ -695,49 +696,29 @@ fn body_may_elide_runtime_validation(body: &loom_hir::Body) -> bool {
         })
 }
 
-fn validate_package_module(
+fn validate_test_source(
     source: &crate::SourceDocument,
     parse: &Parse,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let Some(declaration) = &parse.ast().module else {
-        return;
-    };
-    let module_name = declaration.name.as_string();
-    if crate::stdlib::owns_module(&module_name) && !source.is_authoritative_compiler_std() {
-        diagnostics.push(Diagnostic::error(
-            "ReservedStdModule",
-            format!("module `{module_name}` is supplied by the compiler-owned `std` package"),
-            Span {
-                file: source.id(),
-                range: declaration.range,
-            },
-        ));
+    if source.is_test_source() {
         return;
     }
-    let first = declaration
-        .name
-        .segments
-        .first()
-        .map(|segment| segment.text.as_str());
-    let Some(package) = source.package() else {
-        return;
-    };
-    if first == Some(package.name()) {
-        return;
+    for declaration in &parse.ast().declarations {
+        if matches!(
+            &declaration.kind,
+            loom_syntax::DeclKind::Function(function) if function.is_test
+        ) {
+            diagnostics.push(Diagnostic::error(
+                "TestDeclarationOutsideTestFile",
+                "a `test fn` must be declared in a `*_test.loom` file",
+                Span {
+                    file: source.id(),
+                    range: declaration.range,
+                },
+            ));
+        }
     }
-    diagnostics.push(Diagnostic::error(
-        "PackageModuleNamespace",
-        format!(
-            "module `{}` must be inside package namespace `{}`",
-            declaration.name.as_string(),
-            package.name()
-        ),
-        Span {
-            file: source.id(),
-            range: declaration.range,
-        },
-    ));
 }
 
 fn sort_diagnostics(diagnostics: &mut [Diagnostic], sources: &SourceMap) {

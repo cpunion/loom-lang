@@ -71,7 +71,7 @@ the statically selected disposal operation exactly once on scope exit.
 
 Built-in `File` and `Socket` values have compiler-known close operations. A
 custom resource imports the canonical concepts from the compiler-distributed
-`std.resource` source module:
+`std.resource` source package:
 
 ```loom
 import std.resource.Dispose

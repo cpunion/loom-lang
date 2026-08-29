@@ -1,0 +1,4 @@
+test fn typedTextFromUtf8Units() {
+    verifyUtf8Units()
+    verifyMovingSource()
+}

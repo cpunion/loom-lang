@@ -1,0 +1,10 @@
+import foundation.money.Money
+
+pub enum PriceDecision {
+    Accepted(Money)
+    Rejected
+}
+
+pub fn accept(price Money) PriceDecision {
+    PriceDecision.Accepted(price)
+}

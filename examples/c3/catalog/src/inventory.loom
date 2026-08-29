@@ -1,7 +1,0 @@
-module catalog.inventory
-
-import catalog.product.Product
-
-pub fn available(product Product) Bool {
-    product.stock > 0
-}

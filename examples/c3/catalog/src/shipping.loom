@@ -1,5 +1,0 @@
-module catalog.shipping
-
-pub fn standard_shipping() Float {
-    5.0
-}

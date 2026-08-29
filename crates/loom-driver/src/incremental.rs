@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use loom_core::{FileId, PackageId, TextRange};
+use loom_core::{FileId, ModuleName, PackageId, TextRange};
 use loom_syntax::{
     Block, ConformanceMember, Decl, DeclKind, ImplKind, MethodDecl, Parse, Visibility,
 };
@@ -39,17 +39,18 @@ pub(crate) fn module_interfaces(
 }
 
 pub(crate) fn embedded_module_interfaces<'a>(
-    sources: impl IntoIterator<Item = (FileId, &'a PackageId, &'a str, &'a Parse)>,
+    sources: impl IntoIterator<Item = (FileId, &'a PackageId, &'a ModuleName, &'a str, &'a Parse)>,
 ) -> Vec<ModuleInterface> {
-    module_query_data_from_sources(sources.into_iter().map(|(file, package, path, parse)| {
-        ModuleSource {
+    module_query_data_from_sources(sources.into_iter().map(
+        |(file, package, module, path, parse)| ModuleSource {
             file,
             package: Some(package),
+            module: module.clone(),
             path,
             path_is_package_relative: true,
             parse,
-        }
-    }))
+        },
+    ))
     .into_iter()
     .map(|module| module.interface)
     .collect()
@@ -88,6 +89,10 @@ fn module_query_data(
         ModuleSource {
             file: *file,
             package: source.and_then(crate::SourceDocument::package),
+            module: source.map_or_else(
+                || ModuleName::new("standalone"),
+                |source| source.module().clone(),
+            ),
             path: source.map_or("", crate::SourceDocument::relative_path),
             path_is_package_relative: source.is_none_or(crate::SourceDocument::is_root_package),
             parse,
@@ -98,6 +103,7 @@ fn module_query_data(
 struct ModuleSource<'a> {
     file: FileId,
     package: Option<&'a PackageId>,
+    module: ModuleName,
     path: &'a str,
     path_is_package_relative: bool,
     parse: &'a Parse,
@@ -117,10 +123,7 @@ fn module_query_data_from_sources<'a>(
     >::new();
     for source in sources {
         let ast = source.parse.ast();
-        let source_module = ast.module.as_ref().map_or_else(
-            || format!("<missing:{}>", source.file.0),
-            |declaration| declaration.name.as_string(),
-        );
+        let source_module = source.module.as_str().to_owned();
         let module = source.package.map_or(source_module.clone(), |package| {
             format!(
                 "{}@{}+loom{}::{source_module}",
@@ -193,14 +196,14 @@ fn module_query_data_from_sources<'a>(
                 interface: ModuleInterface {
                     module: module.clone(),
                     files: paths,
-                    fingerprint: fingerprint("loom-module-interface-v2", &module, &interface_files),
+                    fingerprint: fingerprint("loom-module-interface-v3", &module, &interface_files),
                 },
                 shape_fingerprint: fingerprint(
-                    "loom-module-semantic-shape-v2",
+                    "loom-module-semantic-shape-v3",
                     &module,
                     &shape_files,
                 ),
-                body_fingerprint: fingerprint("loom-module-semantic-body-v2", &module, &body_files),
+                body_fingerprint: fingerprint("loom-module-semantic-body-v3", &module, &body_files),
             }
         })
         .collect()

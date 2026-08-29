@@ -1,7 +1,7 @@
-schema = 1
+schema = 2
 language = "0.3"
 
-[package]
+[module]
 name = "application"
 version = "1.0.0"
 
@@ -13,7 +13,3 @@ foundation = { path = "../foundation", version = "^1" }
 name = "app"
 kind = "bin"
 entry = "application.main.start"
-
-[[target]]
-name = "unit"
-kind = "test"

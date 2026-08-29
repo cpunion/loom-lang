@@ -1,0 +1,6 @@
+import std.int.maximum
+import std.int.minimum
+
+test fn sourceBackedAlgorithms() {
+    exercise()
+}

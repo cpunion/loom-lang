@@ -6,7 +6,7 @@ through validated MIR.
 
 ```text
 project input
-  -> package and source discovery
+  -> module, directory-package, and source discovery
      -> versioned compiler-distributed standard-library source
   -> lossless lexing and parsing
   -> HIR construction and name resolution
@@ -38,16 +38,16 @@ migration gates.
 ## Project and source discovery
 
 `loom-driver` resolves a manifest project into a closed graph before loading
-source. Stable source paths, package identities, dependency aliases, selected
+source. Stable source paths, module identities, package paths, dependency aliases, selected
 features, targets, and the lockfile state are part of the project snapshot.
-Standalone file or directory inputs use the synthetic `<standalone>@0` package
+Standalone file or directory inputs use the synthetic `<standalone>@0` module
 identity and have no manifest features.
 
 The source-backed portion of the compiler-distributed standard library is a
-read-only `std` package available through a reserved direct dependency. It
+read-only `std` module available through a reserved direct dependency. It
 is not concatenated with a root source file and it receives no privileged
-frontend pass: its modules are parsed, resolved, checked, lowered, and
-selected by the same reachability rules as user packages. The current package
+frontend pass: its packages are parsed, resolved, checked, lowered, and
+selected by the same reachability rules as user packages. The current module
 contains the `std.int` and `std.json` parsers with their ordinary source error
 values, `std.log` convenience functions over the single output boundary, and
 the public resource concept declarations in `std.resource`. `Dispose`, `MustScope`, and
@@ -57,15 +57,15 @@ and require no runtime registry. JSON formatting remains one exact typed
 compiler/runtime operation; parsing has no special compiler or runtime path. See
 [Core, standard library, and runtime boundary](core-library-runtime-boundary.md).
 
-The `std` identity is the only compiler-owned package identity in language
+The `std` identity is the only compiler-owned module identity in language
 version 0.3.
 
 A version 2 `.loomlib` dependency enters at this same source boundary. Its
-decoder validates the bounded package/source structure and recomputes the
-stored public interfaces, then exposes the embedded files as read-only package
+decoder validates the bounded module/package/source structure and recomputes
+the stored public interfaces, then exposes the embedded files as read-only package
 sources. It does not supply checked MIR, producer proof decisions, or a
 standard-library implementation. The consumer injects its compiler-distributed
-`std` package and compiles the resulting graph normally.
+`std` module and compiles the resulting graph normally.
 
 All source files in the selected graph are parsed and checked. Native
 reachability is a later code-generation concern; it never suppresses a type or
@@ -83,7 +83,7 @@ artifact, and fuzz inputs cannot force unbounded recursive traversal.
 Syntax is lowered into source-independent HIR identities. `loom-sema` then
 builds:
 
-- module and namespace maps;
+- package and namespace maps;
 - declaration and body types;
 - place and mutability facts;
 - contract and refined-value checks;
@@ -127,9 +127,10 @@ Frontend checking and backend roots are intentionally different:
 
 - `check` validates the full resolved source graph and emits no object.
 - a binary `build`, `run`, or `debug` selects one public entry;
-- `test` selects every MIR test in the chosen test graph;
+- `test` adds root-module `*_test.loom` sources and selects every MIR test in
+  that graph; dependency test sources are never loaded;
 - an empty test set produces a successful empty harness;
-- a library target packages the resolved source graph and public interfaces;
+- a library target packages the resolved module graph and public interfaces;
   it has no executable or code-generation root.
 
 For native code, root selection is followed by closed-world reachability.

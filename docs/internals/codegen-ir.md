@@ -695,7 +695,7 @@ shapes that the current source type system cannot yet declare. It is not a
 standard-library identity, source ABI, or persistent extension point.
 
 The completed source boundary instead resolves each public Task policy to its
-ordinary definition `DefId` in the compiler-owned `std` package. Normal
+ordinary definition `DefId` in the compiler-owned `std` module. Normal
 reachability follows that function body, which may call private typed
 join/select readiness, exact value-or-outcome extraction, and structured
 cancellation-and-drain primitives. Neither semantic analysis nor LCIR maps the

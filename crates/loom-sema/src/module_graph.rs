@@ -287,6 +287,7 @@ mod tests {
     fn import(file: FileId, module: &str, item: &str) -> Import {
         let span = Span::new(file, 0, 10);
         Import {
+            file,
             path: Path {
                 segments: module
                     .split('.')

@@ -2,7 +2,6 @@ use std::path::Path;
 use std::process::Command;
 
 use loom_codegen_llvm::EmitOptions;
-use loom_driver::AnalysisHost;
 
 mod support;
 use support::emit_native;
@@ -14,7 +13,7 @@ fn generic_async_contracts_witnesses_and_cancellation_execute_natively() {
         .and_then(Path::parent)
         .expect("workspace root");
     let source = workspace.join("fixtures/async-generic-contracts");
-    let snapshot = AnalysisHost::new(source)
+    let snapshot = support::analysis_host(source)
         .expect("load generic async fixture")
         .snapshot()
         .expect("analyze generic async fixture");
@@ -37,6 +36,6 @@ fn generic_async_contracts_witnesses_and_cancellation_execute_natively() {
     );
     assert_eq!(
         String::from_utf8(output.stdout).expect("UTF-8 output"),
-        "passed async_generic_contracts.generic_async_contracts_and_cancellation\n"
+        "passed standalone.generic_async_contracts_and_cancellation\n"
     );
 }

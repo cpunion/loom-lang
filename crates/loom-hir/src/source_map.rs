@@ -7,7 +7,7 @@ use crate::{ArenaMap, BodyId, DefId, ExprId, LocalId, ModuleId, ParamId, Pattern
 /// Program-wide source provenance.
 #[derive(Clone, Debug, Default)]
 pub struct ProgramSourceMap {
-    modules: ArenaMap<ModuleId, Vec<Span>>,
+    module_files: ArenaMap<ModuleId, Vec<Span>>,
     definitions: ArenaMap<DefId, Span>,
     generic_params: ArenaMap<crate::GenericParamId, Span>,
     params: ArenaMap<ParamId, Span>,
@@ -16,17 +16,17 @@ pub struct ProgramSourceMap {
 }
 
 impl ProgramSourceMap {
-    pub fn add_module_declaration(&mut self, module: ModuleId, span: Span) {
-        if let Some(spans) = self.modules.get_mut(module) {
+    pub fn add_module_file(&mut self, module: ModuleId, span: Span) {
+        if let Some(spans) = self.module_files.get_mut(module) {
             spans.push(span);
         } else {
-            self.modules.insert(module, vec![span]);
+            self.module_files.insert(module, vec![span]);
         }
     }
 
     #[must_use]
-    pub fn module_declarations(&self, module: ModuleId) -> &[Span] {
-        self.modules.get(module).map_or(&[], Vec::as_slice)
+    pub fn module_files(&self, module: ModuleId) -> &[Span] {
+        self.module_files.get(module).map_or(&[], Vec::as_slice)
     }
 
     pub fn insert_definition(&mut self, definition: DefId, span: Span) {

@@ -1,7 +1,6 @@
 use std::process::Command;
 
 use loom_codegen_llvm::EmitOptions;
-use loom_driver::AnalysisHost;
 use loom_interpreter::{Interpreter, TestStatus, Value};
 
 mod support;
@@ -12,9 +11,7 @@ fn omitted_unit_entries_run_and_test_on_both_backends() {
     let project = tempfile::tempdir().expect("create implicit-Unit project");
     std::fs::write(
         project.path().join("main.loom"),
-        r"module implicit_unit
-
-async fn asynchronous() {
+        r"async fn asynchronous() {
     Task.sleep(1).await
 }
 
@@ -31,7 +28,7 @@ test async fn asynchronousTest() {
     )
     .expect("write implicit-Unit source");
 
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("open implicit-Unit project")
         .snapshot()
         .expect("compile implicit-Unit project");
@@ -86,12 +83,9 @@ test async fn asynchronousTest() {
         String::from_utf8_lossy(&native_tests.stderr)
     );
     let stdout = String::from_utf8(native_tests.stdout).expect("native test output is UTF-8");
+    assert!(stdout.contains("passed standalone.ordinary\n"), "{stdout}");
     assert!(
-        stdout.contains("passed implicit_unit.ordinary\n"),
-        "{stdout}"
-    );
-    assert!(
-        stdout.contains("passed implicit_unit.asynchronousTest\n"),
+        stdout.contains("passed standalone.asynchronousTest\n"),
         "{stdout}"
     );
 }

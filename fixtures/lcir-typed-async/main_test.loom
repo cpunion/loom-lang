@@ -1,0 +1,12 @@
+test async fn awaitsScalar() {
+    let marker = "typed ".concat("root")
+    let observed = allocationPressure().await
+    let immediateReady = precreatedChildren().await
+    let echoed = echoText(marker).await
+    let envelope = echoEnvelope(Envelope { text = echoed, flag = observed && immediateReady }).await
+    if envelope.flag && envelope.text == "typed root" {
+        Unit
+    } else {
+        impossible()
+    }
+}

@@ -48,6 +48,11 @@ fn write_fixture(root: &Path) {
         include_str!("../../../fixtures/lcir-text-from-utf8-units/main.loom"),
     )
     .expect("write Text.from_utf8_units fixture");
+    std::fs::write(
+        root.join("main_test.loom"),
+        include_str!("../../../fixtures/lcir-text-from-utf8-units/main_test.loom"),
+    )
+    .expect("write Text.from_utf8_units tests");
 }
 
 #[test]
@@ -106,8 +111,7 @@ fn text_from_utf8_units_closes_native_check_build_test_and_run() {
         .expect("test Text.from_utf8_units source through the production CLI");
     assert_success("test", &tests);
     assert!(
-        String::from_utf8_lossy(&tests.stdout)
-            .contains("passed lcir_text_from_utf8_units.typedTextFromUtf8Units"),
+        String::from_utf8_lossy(&tests.stdout).contains("passed standalone.typedTextFromUtf8Units"),
         "unexpected test output:\n{}",
         String::from_utf8_lossy(&tests.stdout),
     );

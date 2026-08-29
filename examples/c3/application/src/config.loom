@@ -1,7 +1,0 @@
-module application.config
-
-import foundation.money.Money
-
-pub fn maximum_order() Money {
-    Money(1000.0)
-}

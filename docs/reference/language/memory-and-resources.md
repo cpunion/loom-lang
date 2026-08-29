@@ -66,9 +66,9 @@ methods on the binding, but an ordinary `mut self` method still requires `var`
 and is therefore rejected. The registered `Dispose.dispose(mut self)` call is
 performed only by lexical cleanup.
 
-`File` and `Socket` are built-in scoped resources. A module defining a custom
+`File` and `Socket` are built-in scoped resources. A package defining a custom
 resource imports the canonical concepts from the compiler-distributed
-`std.resource` source module:
+`std.resource` source package:
 
 ```loom
 import std.resource.Dispose
@@ -76,7 +76,7 @@ import std.resource.MustScope
 import std.resource.NoSuspend
 ```
 
-Applications do not redeclare these concepts. The `std` package declares
+Applications do not redeclare these concepts. The `std` module declares
 `Dispose` as a non-dynamic concept containing exactly
 `method dispose(mut self)` without contracts; `MustScope` and `NoSuspend` are
 empty non-dynamic marker concepts. Their declarations are ordinary public Loom

@@ -8,39 +8,33 @@ use sha2::{Digest, Sha256};
 use crate::project::ProjectSource;
 
 pub(crate) use loom_core::STD_PACKAGE_NAME;
-const STDLIB_IDENTITY_DOMAIN: &str = "loom-source-stdlib-v1";
+const STDLIB_IDENTITY_DOMAIN: &str = "loom-source-stdlib-v2";
 
 struct StdSource {
     path: &'static str,
-    module: &'static str,
     text: &'static str,
 }
 
 const STD_SOURCES: &[StdSource] = &[
     StdSource {
-        path: "src/int.loom",
-        module: "std.int",
-        text: include_str!("../../../library/std/src/int.loom"),
+        path: "int/int.loom",
+        text: include_str!("../../../library/std/int/int.loom"),
     },
     StdSource {
-        path: "src/json.loom",
-        module: "std.json",
-        text: include_str!("../../../library/std/src/json.loom"),
+        path: "json/json.loom",
+        text: include_str!("../../../library/std/json/json.loom"),
     },
     StdSource {
-        path: "src/log.loom",
-        module: "std.log",
-        text: include_str!("../../../library/std/src/log.loom"),
+        path: "log/log.loom",
+        text: include_str!("../../../library/std/log/log.loom"),
     },
     StdSource {
-        path: "src/process.loom",
-        module: "std.process",
-        text: include_str!("../../../library/std/src/process.loom"),
+        path: "process/process.loom",
+        text: include_str!("../../../library/std/process/process.loom"),
     },
     StdSource {
-        path: "src/resource.loom",
-        module: "std.resource",
-        text: include_str!("../../../library/std/src/resource.loom"),
+        path: "resource/resource.loom",
+        text: include_str!("../../../library/std/resource/resource.loom"),
     },
 ];
 
@@ -55,27 +49,21 @@ pub(crate) fn project_sources(root: &Path, language_version: &str) -> Vec<Projec
     let synthetic_root = synthetic_root(root, language_version);
     STD_SOURCES
         .iter()
-        .map(|source| ProjectSource {
-            absolute: synthetic_root.join(source.path),
-            stable_path: format!("deps/{package}/{}", source.path),
-            package: Some(package.clone()),
-            is_root_package: false,
-            embedded_text: Some(source.text.to_owned()),
-            origin: crate::SourceOrigin::CompilerStd,
+        .map(|source| {
+            let module =
+                crate::project::package_module_name(&package, std::path::Path::new(source.path))
+                    .expect("compiler std paths are valid package paths");
+            ProjectSource {
+                absolute: synthetic_root.join(source.path),
+                stable_path: format!("deps/{package}/{}", source.path),
+                package: Some(package.clone()),
+                module,
+                is_root_package: false,
+                embedded_text: Some(source.text.to_owned()),
+                origin: crate::SourceOrigin::CompilerStd,
+            }
         })
         .collect()
-}
-
-/// Whether a module belongs to the compiler-reserved `std` namespace.
-///
-/// Reserving the complete namespace lets future source modules be added without
-/// colliding with a user module that happened to claim the same path first.
-#[must_use]
-pub(crate) fn owns_module(module: &str) -> bool {
-    module == STD_PACKAGE_NAME
-        || module
-            .strip_prefix(STD_PACKAGE_NAME)
-            .is_some_and(|suffix| suffix.starts_with('.'))
 }
 
 #[must_use]
@@ -97,7 +85,6 @@ fn identity_for_sources(language_version: &str, sources: &[StdSource]) -> String
     hash_field(&mut hasher, language_version.as_bytes());
     for source in sources {
         hash_field(&mut hasher, source.path.as_bytes());
-        hash_field(&mut hasher, source.module.as_bytes());
         hash_field(&mut hasher, source.text.as_bytes());
     }
     format!("{STDLIB_IDENTITY_DOMAIN}/{:x}", hasher.finalize())
@@ -110,31 +97,24 @@ fn hash_field(hasher: &mut Sha256, value: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{STDLIB_IDENTITY_DOMAIN, StdSource, identity_for_sources, owns_module};
+    use super::{STDLIB_IDENTITY_DOMAIN, StdSource, identity_for_sources};
 
-    fn source(path: &'static str, module: &'static str, text: &'static str) -> StdSource {
-        StdSource { path, module, text }
+    fn source(path: &'static str, text: &'static str) -> StdSource {
+        StdSource { path, text }
     }
 
     #[test]
     fn identity_tracks_language_paths_and_contents() {
-        let base = identity_for_sources("0.3", &[source("src/a.loom", "std.a", "module std.a\n")]);
+        let base = identity_for_sources("0.3", &[source("a/a.loom", "pub fn value() Int { 1 }\n")]);
         assert!(base.starts_with(&format!("{STDLIB_IDENTITY_DOMAIN}/")));
         assert_eq!(base.len(), STDLIB_IDENTITY_DOMAIN.len() + 1 + 64);
         assert_ne!(
             base,
-            identity_for_sources("0.4", &[source("src/a.loom", "std.a", "module std.a\n")],)
+            identity_for_sources("0.4", &[source("a/a.loom", "pub fn value() Int { 1 }\n")],)
         );
         assert_ne!(
             base,
-            identity_for_sources("0.3", &[source("src/b.loom", "std.a", "module std.a\n")],)
-        );
-        assert_ne!(
-            base,
-            identity_for_sources(
-                "0.3",
-                &[source("src/a.loom", "std.changed", "module std.changed\n",)],
-            )
+            identity_for_sources("0.3", &[source("b/b.loom", "pub fn value() Int { 1 }\n")],)
         );
     }
 
@@ -143,29 +123,18 @@ mod tests {
         let base = identity_for_sources(
             "0.3",
             &[source(
-                "src/int.loom",
-                "std.int",
-                "module std.int\n\npub fn parse_int(text Text) Int { 1 }\n",
+                "int/int.loom",
+                "pub fn parse_int(text Text) Int { 1 }\n",
             )],
         );
         let changed_body = identity_for_sources(
             "0.3",
             &[source(
-                "src/int.loom",
-                "std.int",
-                "module std.int\n\npub fn parse_int(text Text) Int { 2 }\n",
+                "int/int.loom",
+                "pub fn parse_int(text Text) Int { 2 }\n",
             )],
         );
 
         assert_ne!(base, changed_body);
-    }
-
-    #[test]
-    fn complete_std_namespace_is_reserved_without_matching_prefixes() {
-        assert!(owns_module("std"));
-        assert!(owns_module("std.resource"));
-        assert!(owns_module("std.future.nested"));
-        assert!(!owns_module("stdish.resource"));
-        assert!(!owns_module("application.std"));
     }
 }

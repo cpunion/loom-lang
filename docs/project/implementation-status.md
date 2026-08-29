@@ -7,7 +7,7 @@ long-term compatibility guarantee.
 
 ## Source `std` completion
 
-The compiler currently embeds five Loom source modules: `std.int`, `std.json`,
+The compiler currently embeds five Loom source packages: `std.int`, `std.json`,
 `std.log`, `std.process`, and `std.resource`. Passing interpreter or native
 tests does not by itself make an API source-backed; the table distinguishes
 ordinary source definitions from public names still recognized by semantic
@@ -15,7 +15,7 @@ builtin tables.
 
 | Surface | Ordinary `library/std` source today | Remaining compiler-owned public surface | Status |
 | --- | --- | --- | --- |
-| `std.int` | `ParseIntError`, `minimum`, `maximum`, `parse_int`, and the complete parser helper graph | none for the current module API | source-backed |
+| `std.int` | `ParseIntError`, `minimum`, `maximum`, `parse_int`, and the complete parser helper graph | none for the current package API | source-backed |
 | `std.json` | `parse_json` and its bounded iterative parser helper graph | `Json`, `JsonError`, and `format_json` | partial |
 | `std.log` | `debug`, `info`, `warn`, `error`, and their no-fields helper | `LogLevel` and `write` | partial |
 | `std.resource` | `Dispose`, `MustScope`, and `NoSuspend` declarations | their fixed language-item meaning and static enforcement intentionally remain language core | source declarations complete |
@@ -65,8 +65,8 @@ The following repository fixtures are run through real compiler stages:
 | `examples/concepts-polymorphism` | concepts, associated types, static and dynamic dispatch, mutable receiver writeback, first-class dynamic product/sum/List storage, and typed-LCIR main and test artifacts in the same dual-backend loop |
 | `examples/async-resources` | moving GC, lexical cleanup, stackless async, all four static Task join policies, cancellation/readiness, and typed-LCIR main/test artifacts in the same dual-backend loop |
 | `fixtures/async-generic-contracts` | bounded generic async instances, precondition/postcondition task faults captured by fixed `Task.settled`, `TaskFault` inspection, `Task.any` cancellation, interpreter execution, and a typed-LCIR native test artifact |
-| `examples/packages/application` | path dependency, binary/test targets, and dual-backend source/artifact execution |
-| `examples/c3/application` | three-package graph, multiple modules, binary/test targets, dual-backend execution on Linux and macOS |
+| `examples/packages/application` | path dependency, directory packages, `_test.loom` discovery, binary target, and dual-backend source/artifact execution |
+| `examples/c3/application` | three-module graph, multiple directory packages, `_test.loom` discovery, binary target, and dual-backend execution on Linux and macOS |
 | `fixtures/typed-lcir` | complete typed direct route, native execution, Linux DWARF inspection, and macOS dSYM inspection |
 | `fixtures/lcir-debug-fallible` | target-laid-out fallible debug ABI, visible and artificial formal parameters, return-only parameter locations, and macOS LLDB parameter/step-out inspection |
 | `fixtures/lcir-generics` | bounded concrete generic instances with exact type/proof identity, direct host execution, and direct MSVC object ABI inspection |
@@ -129,8 +129,8 @@ reclamation, and cleanup even when a typed disposer reports a defect.
 | Code generation IR foundation | Implemented for the direct slices listed below. Native preparation is atomic and fails closed to the complete checked-MIR route when any reachable operation is unsupported. |
 | Native LLVM executable | Implemented for Linux x86-64 and macOS arm64 release closures, with macOS also covered by the development gate; the Windows x86-64 release entry must pass before release support is claimed. |
 | Interpreted executable artifact | Implemented with strict cache/executable kind separation, selected-entry definition closure, dense identity remapping, deterministic bytes, complete decode validation, and CLI tests. |
-| Portable `.loomlib` | Source/interface format v2 is implemented and release-gated; consumers recompile packaged source, and the artifact is not a native library or stable ABI. |
-| Manifest/lock/features/path dependencies | Implemented with resolver and CLI integration tests. |
+| Portable `.loomlib` | Source/interface format v2 is implemented and release-gated; consumers recompile embedded module source, and the artifact is not a native library or stable ABI. |
+| Directory packages and manifest/lock/features/path dependencies | Manifest and lock schema 2 derive packages from directories, exclude dependency tests, and are covered by resolver and CLI integration tests. |
 | Local and HTTPS registry | Implemented with authentication, digest verification, bounded downloads, offline validated cache, and hostile-cache tests. Registry-version immutability remains a server protocol requirement. |
 | Persistent compiler cache | Implemented for parse/interface/typed state/checked MIR/route-specific native object/portable artifacts; proof-bearing typed/MIR layers intentionally rebuild from source to preserve cold/warm proof elimination and route identity, canonical `MustScope` identity is rederived from current module-qualified HIR rather than trusted from typed-state bytes, and native final link is intentionally uncached. |
 | Debug source info | Complete typed LCIR artifacts retain direct emission for `debug` and carry source functions, target-laid-out product and physical return types, stable `argN` parameter locations, artificial status/writeback/fault-context state, and instruction locations. Focused Linux DWARF, macOS dSYM/LLDB, and MSVC CodeView/PDB checks remain available, but debugger-container inspection is not part of the lean development gate. Unsupported reachable artifacts use the complete checked-MIR route. |

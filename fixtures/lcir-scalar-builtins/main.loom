@@ -1,5 +1,3 @@
-module lcir_scalar_builtins
-
 import std.float.format_float
 import std.float.is_finite
 import std.float.parse_float
@@ -102,9 +100,5 @@ fn scalarBuiltins() {
 }
 
 pub fn main() {
-    scalarBuiltins()
-}
-
-test fn typedScalarBuiltins() {
     scalarBuiltins()
 }

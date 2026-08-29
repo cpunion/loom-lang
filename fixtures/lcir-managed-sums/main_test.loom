@@ -1,0 +1,41 @@
+test fn optionSum() Result[Unit, Problem] {
+    let kept = join("K", "eep")
+    verdict(optionText(retainOption(Some(kept), true)) == "Keep")
+}
+
+test fn resultProductSum() Result[Unit, Problem] {
+    let kept = join("K", "eep")
+    let pair = resultPair(retainResult(Ok(Pair { left = kept, right = kept })))
+    verdict(pair.left == "Keep" && pair.right == "Keep")
+}
+
+test fn taglessSum() Result[Unit, Problem] {
+    let kept = join("K", "eep")
+    verdict(envelopeText(retainEnvelope(Envelope.Wrapped(kept))) == "Keep")
+}
+
+test fn nestedAliasSum() Result[Unit, Problem] {
+    let kept = join("K", "eep")
+    var holder = Holder { state = Nested.Alias(kept, kept) }
+    holder.relocate()
+    let pair = nestedPair(holder.state)
+    verdict(pair.left == "Keep" && pair.right == "Keep")
+}
+
+test fn nestedOptionSum() Result[Unit, Problem] {
+    let kept = join("K", "eep")
+    let pair = nestedPair(retainNested(Nested.Optional(Some(kept)), true))
+    verdict(pair.left == "Keep" && pair.right == "Keep")
+}
+
+test fn nestedResultSum() Result[Unit, Problem] {
+    let kept = join("K", "eep")
+    let pair = nestedPair(retainNested(Nested.Outcome(Ok(Pair { left = kept, right = kept })), true))
+    verdict(pair.left == "Keep" && pair.right == "Keep")
+}
+
+test fn pointerFreeSum() Result[Unit, Problem] {
+    verdict(pointerFree(Plain.One(42)) == 42)
+}
+
+test fn managedSums() Result[Unit, Problem] { verify() }

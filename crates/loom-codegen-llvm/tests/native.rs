@@ -9,7 +9,6 @@ use loom_codegen_llvm::{
     EmitOptions, OptimizationProfile, emit_native_object, native_object_fingerprint,
     target_identity,
 };
-use loom_driver::AnalysisHost;
 use loom_interpreter::Interpreter;
 use loom_mir::{
     Block, CallArgument, CallPlan, CheckedProgram, Constant, Expr, ExprKind, Function, FunctionId,
@@ -44,19 +43,13 @@ fn loom_text_literals_escape_windows_paths_before_source_interpolation() {
 #[test]
 fn raw_checked_mir_codegen_rejects_non_language_run_roots_before_fingerprinting_or_emission() {
     for (label, source) in [
-        (
-            "non-unit",
-            "module invalid_result\n\npub fn main() Int { 1 }\n",
-        ),
-        (
-            "parameter",
-            "module invalid_parameter\n\npub fn main(value Int) { discard value\n}\n",
-        ),
+        ("non-unit", "pub fn main() Int { 1 }\n"),
+        ("parameter", "pub fn main(value Int) { discard value\n}\n"),
     ] {
         let project = tempfile::tempdir().expect("create invalid root project");
         std::fs::write(project.path().join("main.loom"), source)
             .expect("write invalid root source");
-        let snapshot = AnalysisHost::new(project.path())
+        let snapshot = support::analysis_host(project.path())
             .expect("load invalid root project")
             .snapshot()
             .expect("analyze invalid root project");
@@ -155,9 +148,7 @@ fn checked_mir_passing_tests_return_failure_when_exact_stdout_is_not_writable() 
 #[test]
 #[allow(clippy::too_many_lines)]
 fn unit_output_runs_after_its_runtime_is_destroyed() {
-    let source = r"module root_result_lifetime
-
-pub fn main() {
+    let source = r"pub fn main() {
     var values = List[Int]()
     values.add(1)
 }
@@ -169,7 +160,7 @@ test fn list_result_lifetime() {
 ";
     let project = tempfile::tempdir().expect("create root lifetime project");
     std::fs::write(project.path().join("main.loom"), source).expect("write root lifetime source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load root lifetime project")
         .snapshot()
         .expect("analyze root lifetime project");
@@ -323,9 +314,7 @@ fn universal_value_abi_rejects_32_bit_targets() {
 
 #[test]
 fn text_literals_are_immortal_versioned_objects_across_a_gc_safepoint() {
-    let source = r#"module text_literal_object
-
-pub async fn main() {
+    let source = r#"pub async fn main() {
     let empty = ""
     let unicode = "a界🙂"
     let with_nul = "a\0b"
@@ -343,7 +332,7 @@ pub async fn main() {
 "#;
     let project = tempfile::tempdir().expect("create Text literal project");
     std::fs::write(project.path().join("main.loom"), source).expect("write Text literal source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load Text literal project")
         .snapshot()
         .expect("analyze Text literal project");
@@ -419,9 +408,7 @@ pub async fn main() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn stable_output_runtime_abis_publish_roots_and_run() {
-    let source = r#"module stable_output_abi
-
-import std.float.format_float
+    let source = r#"import std.float.format_float
 import std.process.environment
 
 pub fn main() {
@@ -478,7 +465,7 @@ pub fn main() {
     let project = tempfile::tempdir().expect("create stable-output ABI project");
     std::fs::write(project.path().join("main.loom"), source)
         .expect("write stable-output ABI source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load stable-output ABI project")
         .snapshot()
         .expect("analyze stable-output ABI project");
@@ -495,7 +482,7 @@ pub fn main() {
     .expect("emit stable-output ABI executable");
 
     let llvm = std::fs::read_to_string(ir).expect("read stable-output ABI IR");
-    let main = llvm_native_function(&llvm, "stable_output_abi_main");
+    let main = llvm_native_function(&llvm, "standalone_main");
     for dead_process_surface in [
         "loom_runtime_set_arguments",
         "loom_runtime_process_arguments",
@@ -572,9 +559,7 @@ pub fn main() {
 
 #[test]
 fn range_plan_removes_proved_checks_before_abi_selection_and_release_folds_code() {
-    let source = r"module optimize
-
-fn folded() Int {
+    let source = r"fn folded() Int {
     40 + 2
 }
 
@@ -589,7 +574,7 @@ pub fn main() {
 ";
     let project = tempfile::tempdir().expect("create optimization project");
     std::fs::write(project.path().join("main.loom"), source).expect("write source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load project")
         .snapshot()
         .expect("analyze project");
@@ -610,29 +595,27 @@ pub fn main() {
 
     let development = std::fs::read_to_string(development_ir).expect("read development IR");
     let release = std::fs::read_to_string(release_ir).expect("read release IR");
-    let folded = llvm_native_function(&development, "optimize_folded");
+    let folded = llvm_native_function(&development, "standalone_folded");
     assert!(
         folded.lines().next().is_some_and(|definition| {
             definition.starts_with("define internal i64 @loom.native.fn.")
-                && definition.contains(".optimize_folded()")
+                && definition.contains(".standalone_folded()")
         }),
         "{folded}"
     );
-    assert!(!development.contains("optimize_unreachable"));
+    assert!(!development.contains("standalone_unreachable"));
     assert!(folded.contains("add nsw i64"), "{folded}");
     assert!(!folded.contains("with.overflow"), "{folded}");
     assert!(!folded.lines().next().unwrap_or_default().contains("ptr"));
-    assert!(!release.contains("optimize_folded"));
-    assert!(!release.contains("optimize_unreachable"));
+    assert!(!release.contains("standalone_folded"));
+    assert!(!release.contains("standalone_unreachable"));
     assert!(!release.contains("llvm.sadd.with.overflow.i64"));
 }
 
 #[test]
 #[allow(clippy::too_many_lines)]
 fn scalar_int_abi_is_recursive_checked_and_bridges_to_universal_value_at_root() {
-    let source = r"module scalar_int
-
-fn fibonacci(value Int) Int {
+    let source = r"fn fibonacci(value Int) Int {
     if value < 2 {
         value
     } else {
@@ -665,7 +648,7 @@ fn checkedFibonacci(value Int) Int {
 ";
     let project = tempfile::tempdir().expect("create scalar Int project");
     std::fs::write(project.path().join("main.loom"), source).expect("write scalar Int source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load scalar Int project")
         .snapshot()
         .expect("analyze scalar Int project");
@@ -679,8 +662,8 @@ fn checkedFibonacci(value Int) Int {
     emit_native(program, &executable, &options).expect("emit scalar Int executable");
 
     let llvm = std::fs::read_to_string(ir).expect("read scalar Int LLVM IR");
-    let fibonacci = llvm_native_function(&llvm, "scalar_int_fibonacci");
-    let assumed_fibonacci = llvm_assumed_native_function(&llvm, "scalar_int_fibonacci");
+    let fibonacci = llvm_native_function(&llvm, "standalone_fibonacci");
+    let assumed_fibonacci = llvm_assumed_native_function(&llvm, "standalone_fibonacci");
     let fibonacci_symbol = llvm_defined_symbol(fibonacci);
     let assumed_fibonacci_symbol = llvm_defined_symbol(assumed_fibonacci);
     let checked_fibonacci_call = format!("call {{ i32, i64 }} @{fibonacci_symbol}");
@@ -768,8 +751,8 @@ fn checkedFibonacci(value Int) Int {
         llvm.contains(r#"!{!"branch_weights", i32 1, i32 2000}"#),
         "{llvm}"
     );
-    let wrapper = llvm_function(&llvm, "scalar_int_main");
-    let native_main = llvm_native_function(&llvm, "scalar_int_main");
+    let wrapper = llvm_function(&llvm, "standalone_main");
+    let native_main = llvm_native_function(&llvm, "standalone_main");
     let native_main_symbol = llvm_defined_symbol(native_main);
     assert!(
         native_main.contains(&assumed_fibonacci_call),
@@ -787,13 +770,13 @@ fn checkedFibonacci(value Int) Int {
     let fault_attributes = llvm_declaration_attributes(&llvm, "loom_context_raise_fault_v1");
     assert!(fault_attributes.contains("cold"), "{fault_attributes}");
     assert!(fault_attributes.contains("noinline"), "{fault_attributes}");
-    let contracted = llvm_native_function(&llvm, "scalar_int_contracted");
+    let contracted = llvm_native_function(&llvm, "standalone_contracted");
     assert!(
         contracted.contains("call i32 @loom_gc_clone_value_v1"),
         "{contracted}"
     );
     assert!(
-        llvm_defined_symbol(wrapper).ends_with(".scalar_int_main"),
+        llvm_defined_symbol(wrapper).ends_with(".standalone_main"),
         "{wrapper}"
     );
     assert!(llvm.contains("call ptr @loom_runtime_create_v1"), "{llvm}");
@@ -815,9 +798,7 @@ fn checkedFibonacci(value Int) Int {
     );
     assert_eq!(output.stdout, b"Unit\n");
 
-    let overflow_source = r"module scalar_int_fault
-
-fn checkedAdd(left Int, right Int) Int {
+    let overflow_source = r"fn checkedAdd(left Int, right Int) Int {
     left + right
 }
 
@@ -828,7 +809,7 @@ pub fn main() {
     let overflow_project = tempfile::tempdir().expect("create scalar Int fault project");
     std::fs::write(overflow_project.path().join("main.loom"), overflow_source)
         .expect("write scalar Int fault source");
-    let snapshot = AnalysisHost::new(overflow_project.path())
+    let snapshot = support::analysis_host(overflow_project.path())
         .expect("load scalar Int fault project")
         .snapshot()
         .expect("analyze scalar Int fault project");
@@ -850,9 +831,7 @@ pub fn main() {
         "{output:?}"
     );
 
-    let recursive_overflow_source = r"module scalar_recursive_fault
-
-fn amplified(value Int) Int {
+    let recursive_overflow_source = r"fn amplified(value Int) Int {
     if value < 1 {
         1
     } else {
@@ -871,7 +850,7 @@ pub fn main() {
         recursive_overflow_source,
     )
     .expect("write recursive scalar Int fault source");
-    let snapshot = AnalysisHost::new(recursive_overflow_project.path())
+    let snapshot = support::analysis_host(recursive_overflow_project.path())
         .expect("load recursive scalar Int fault project")
         .snapshot()
         .expect("analyze recursive scalar Int fault project");
@@ -890,11 +869,10 @@ pub fn main() {
     .expect("emit recursive scalar Int fault executable");
     let recursive_llvm =
         std::fs::read_to_string(recursive_overflow_ir).expect("read recursive overflow LLVM IR");
-    let amplified = llvm_native_function(&recursive_llvm, "scalar_recursive_fault_amplified");
+    let amplified = llvm_native_function(&recursive_llvm, "standalone_amplified");
     let amplified_symbol = llvm_defined_symbol(amplified);
     let checked_amplified_call = format!("call {{ i32, i64 }} @{amplified_symbol}");
-    let assumed_amplified =
-        llvm_assumed_native_function(&recursive_llvm, "scalar_recursive_fault_amplified");
+    let assumed_amplified = llvm_assumed_native_function(&recursive_llvm, "standalone_amplified");
     let assumed_amplified_call = format!("call i64 @{}", llvm_defined_symbol(assumed_amplified));
     assert!(amplified.contains("icmp ule i64 %0, 3"), "{amplified}");
     assert_eq!(
@@ -907,7 +885,7 @@ pub fn main() {
         1,
         "{amplified}"
     );
-    let recursive_main = llvm_native_function(&recursive_llvm, "scalar_recursive_fault_main");
+    let recursive_main = llvm_native_function(&recursive_llvm, "standalone_main");
     assert!(
         recursive_main.contains(&checked_amplified_call),
         "{recursive_main}"
@@ -925,9 +903,7 @@ pub fn main() {
 
 #[test]
 fn pure_scalar_int_abi_omits_status_executor_and_root_runtime() {
-    let source = r"module pure_scalar_int
-
-fn identity(value Int) Int {
+    let source = r"fn identity(value Int) Int {
     value
 }
 
@@ -945,7 +921,7 @@ pub fn main() {
 ";
     let project = tempfile::tempdir().expect("create pure scalar Int project");
     std::fs::write(project.path().join("main.loom"), source).expect("write pure scalar source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load pure scalar project")
         .snapshot()
         .expect("analyze pure scalar project");
@@ -959,9 +935,9 @@ pub fn main() {
     emit_native(program, &executable, &options).expect("emit pure scalar executable");
 
     let llvm = std::fs::read_to_string(ir).expect("read pure scalar LLVM IR");
-    let identity = llvm_native_function(&llvm, "pure_scalar_int_identity");
-    let choose = llvm_native_function(&llvm, "pure_scalar_int_choose");
-    let main = llvm_native_function(&llvm, "pure_scalar_int_main");
+    let identity = llvm_native_function(&llvm, "standalone_identity");
+    let choose = llvm_native_function(&llvm, "standalone_choose");
+    let main = llvm_native_function(&llvm, "standalone_main");
     let identity_symbol = llvm_defined_symbol(identity);
     let choose_symbol = llvm_defined_symbol(choose);
     assert!(!llvm.contains("@loom.int.fn."), "{llvm}");
@@ -1009,9 +985,7 @@ pub fn main() {
 
 #[test]
 fn typed_text_copy_and_length_run_without_an_active_runtime() {
-    let source = r#"module pure_text_leaf
-
-fn copiedLiteralLength() Int {
+    let source = r#"fn copiedLiteralLength() Int {
     let original = "loom"
     let copied = original
     copied.length()
@@ -1022,8 +996,8 @@ pub fn main() {
 }
 "#;
     let (project, _program, llvm) = emit_source_with_ir(source);
-    let copied = llvm_native_function(&llvm, "pure_text_leaf_copiedLiteralLength");
-    let main = llvm_native_function(&llvm, "pure_text_leaf_main");
+    let copied = llvm_native_function(&llvm, "standalone_copiedLiteralLength");
+    let main = llvm_native_function(&llvm, "standalone_main");
 
     assert!(!copied.lines().next().unwrap_or_default().contains("ptr"));
     assert!(!main.lines().next().unwrap_or_default().contains("ptr"));
@@ -1044,9 +1018,7 @@ pub fn main() {
 
 #[test]
 fn universal_calls_collect_only_when_argument_evaluation_deep_copies() {
-    let source = r"module universal_call_requirements
-
-record Pair { value Int }
+    let source = r"record Pair { value Int }
 
 fn read(value Pair) Int { value.value }
 
@@ -1062,7 +1034,7 @@ pub fn main() {
 ";
     let project = tempfile::tempdir().expect("create universal call project");
     std::fs::write(project.path().join("main.loom"), source).expect("write universal call source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load universal call project")
         .snapshot()
         .expect("analyze universal call project");
@@ -1100,13 +1072,13 @@ pub fn main() {
     emit_native(&program, &executable, &options).expect("emit universal call executable");
     let llvm = std::fs::read_to_string(ir).expect("read universal call LLVM IR");
 
-    let moved = llvm_function(&llvm, "universal_call_requirements_moveCall");
+    let moved = llvm_function(&llvm, "standalone_moveCall");
     assert!(moved.contains("call i32 @loom.fn."), "{moved}");
     assert!(!moved.contains("@loom_gc_clone_value_v1"), "{moved}");
     assert!(!moved.contains("@loom_gc_root_push_v1"), "{moved}");
     assert!(!moved.contains("@loom_gc_safepoint_v1"), "{moved}");
 
-    let copied = llvm_function(&llvm, "universal_call_requirements_copyCall");
+    let copied = llvm_function(&llvm, "standalone_copyCall");
     assert_balanced_gc_root_frame(copied);
     assert!(copied.contains("@loom_gc_clone_value_v1"), "{copied}");
     assert_gc_state_published_before(copied, "@loom_gc_clone_value_v1");
@@ -1120,9 +1092,7 @@ pub fn main() {
 
 #[test]
 fn allocating_functions_emit_balanced_shadow_roots_while_pure_scalars_do_not() {
-    let source = r#"module shadow_root_shape
-
-fn identity(value Int) Int { value }
+    let source = r#"fn identity(value Int) Int { value }
 
 fn scalarEqual(left Int, right Int) Bool { left == right }
 
@@ -1146,13 +1116,13 @@ pub fn main() {
 "#;
     let (project, _program, llvm) = emit_source_with_ir(source);
 
-    let identity = llvm_native_function(&llvm, "shadow_root_shape_identity");
+    let identity = llvm_native_function(&llvm, "standalone_identity");
     assert!(!identity.contains("@loom_gc_root_push_v1"), "{identity}");
     assert!(!identity.contains("@loom_gc_root_pop_v1"), "{identity}");
     assert!(!identity.contains("@loom_gc_safepoint_v1"), "{identity}");
     assert!(!identity.contains("gc.root.frame"), "{identity}");
 
-    let scalar_equal = llvm_native_function(&llvm, "shadow_root_shape_scalarEqual");
+    let scalar_equal = llvm_native_function(&llvm, "standalone_scalarEqual");
     assert!(
         !scalar_equal.contains("@loom_gc_root_push_v1"),
         "{scalar_equal}"
@@ -1167,7 +1137,7 @@ pub fn main() {
         "scalar equality cannot collect and must not poll: {scalar_equal}"
     );
 
-    let allocate = llvm_function(&llvm, "shadow_root_shape_allocate");
+    let allocate = llvm_function(&llvm, "standalone_allocate");
     assert_balanced_gc_root_frame(allocate);
     assert!(!allocate.contains("@loom_gc_safepoint_v1"), "{allocate}");
     assert!(
@@ -1193,9 +1163,7 @@ pub fn main() {
 
 #[test]
 fn text_leaf_copies_and_read_only_builtins_do_not_create_gc_boundaries() {
-    let source = r#"module text_leaf_requirements
-
-fn inspect(value Text) Int {
+    let source = r#"fn inspect(value Text) Int {
     let copied = value
     let count = copied.length()
     if copied.contains("loom") { count } else { 0 }
@@ -1214,7 +1182,7 @@ pub fn main() {
 "#;
     let (project, _program, llvm) = emit_source_with_ir(source);
 
-    let inspect = llvm_function(&llvm, "text_leaf_requirements_inspect");
+    let inspect = llvm_function(&llvm, "standalone_inspect");
     assert!(inspect.contains("@loom_runtime_text_contains"), "{inspect}");
     assert!(!inspect.contains("@loom_gc_clone_value_v1"), "{inspect}");
     assert!(
@@ -1226,7 +1194,7 @@ pub fn main() {
     assert!(!inspect.contains("@loom_gc_safepoint_v1"), "{inspect}");
     assert!(!inspect.contains("gc.root.frame"), "{inspect}");
 
-    let concatenate = llvm_function(&llvm, "text_leaf_requirements_concatenate");
+    let concatenate = llvm_function(&llvm, "standalone_concatenate");
     assert_balanced_gc_root_frame(concatenate);
     assert!(
         concatenate.contains("@loom_runtime_text_concat"),
@@ -1239,9 +1207,7 @@ pub fn main() {
 
 #[test]
 fn read_only_aggregate_operations_borrow_copies_without_collecting() {
-    let source = r#"module readonly_builtin_requirements
-
-fn byteCount(value Bytes) Int { value.length() }
+    let source = r#"fn byteCount(value Bytes) Int { value.length() }
 
 fn mapFacts(value TextMap[Text]) Int {
     let count = value.length()
@@ -1280,7 +1246,7 @@ pub fn main() {
     let (project, _program, llvm) = emit_source_with_ir(source);
 
     for name in ["byteCount", "mapFacts", "pathText"] {
-        let function = llvm_function(&llvm, &format!("readonly_builtin_requirements_{name}"));
+        let function = llvm_function(&llvm, &format!("standalone_{name}"));
         assert!(!function.contains("@loom_gc_clone_value_v1"), "{function}");
         assert!(
             !function.contains("@loom_gc_build_value_nodes_v1"),
@@ -1291,7 +1257,7 @@ pub fn main() {
         assert!(!function.contains("@loom_gc_safepoint_v1"), "{function}");
         assert!(!function.contains("gc.root.frame"), "{function}");
     }
-    let empty_map = llvm_native_function(&llvm, "readonly_builtin_requirements_emptyMapCount");
+    let empty_map = llvm_native_function(&llvm, "standalone_emptyMapCount");
     assert!(!empty_map.lines().next().unwrap_or_default().contains("ptr"));
     assert!(
         !empty_map.contains("@loom_gc_clone_value_v1"),
@@ -1299,7 +1265,7 @@ pub fn main() {
     );
     assert!(!empty_map.contains("@loom_gc_root_push_v1"), "{empty_map}");
     assert!(!empty_map.contains("@loom_gc_safepoint_v1"), "{empty_map}");
-    let map_facts = llvm_function(&llvm, "readonly_builtin_requirements_mapFacts");
+    let map_facts = llvm_function(&llvm, "standalone_mapFacts");
     assert!(
         map_facts.contains("@loom_runtime_text_map_get"),
         "{map_facts}"
@@ -1312,9 +1278,7 @@ fn scalar_aggregate_temporaries_do_not_expand_gc_root_frames() {
     let small_elements = std::iter::repeat_n("0", 4).collect::<Vec<_>>().join(", ");
     let large_elements = std::iter::repeat_n("0", 256).collect::<Vec<_>>().join(", ");
     let source = format!(
-        r"module scalar_aggregate_roots
-
-fn small() Int {{
+        r"fn small() Int {{
     let values = [{small_elements}]
     values.length()
 }}
@@ -1334,8 +1298,8 @@ pub fn main() {{
     );
     let (project, _program, llvm) = emit_source_with_ir(&source);
 
-    let small = llvm_native_function(&llvm, "scalar_aggregate_roots_small");
-    let large = llvm_native_function(&llvm, "scalar_aggregate_roots_large");
+    let small = llvm_native_function(&llvm, "standalone_small");
+    let large = llvm_native_function(&llvm, "standalone_large");
     assert_balanced_gc_root_frame(small);
     assert_balanced_gc_root_frame(large);
     let small_slots = gc_root_slot_count(small);
@@ -1356,9 +1320,7 @@ fn gc_root_bitmaps_cover_more_than_one_word_without_live_tail_bits() {
         .collect::<Vec<_>>()
         .join(", ");
     let source = format!(
-        r#"module gc_root_bitmap_tail
-
-fn retain({parameters}, count Int) Text {{
+        r#"fn retain({parameters}, count Int) Text {{
     var noise = List[Text]()
     for index in 0..count {{
         noise.add("relocate")
@@ -1374,7 +1336,7 @@ pub fn main() {{
 "#
     );
     let (project, _program, llvm) = emit_source_with_ir(&source);
-    let retain = llvm_function(&llvm, "gc_root_bitmap_tail_retain");
+    let retain = llvm_function(&llvm, "standalone_retain");
     let descriptor = gc_root_descriptor(&llvm, retain);
 
     assert!(descriptor.slot_count > 64, "{descriptor:?}\n{retain}");
@@ -1397,9 +1359,7 @@ pub fn main() {{
 
 #[test]
 fn safepoint_states_drop_dead_temporaries_and_keep_live_caller_values() {
-    let source = r#"module precise_root_liveness
-
-fn allocate(count Int) List[Text] {
+    let source = r#"fn allocate(count Int) List[Text] {
     var values = List[Text]()
     for index in 0..count {
         values.add("relocate")
@@ -1422,7 +1382,7 @@ pub fn main() {
 }
 "#;
     let (project, _program, llvm) = emit_source_with_ir(source);
-    let retain = llvm_function(&llvm, "precise_root_liveness_retain");
+    let retain = llvm_function(&llvm, "standalone_retain");
     assert_balanced_gc_root_frame(retain);
 
     let descriptor = gc_root_descriptor(&llvm, retain);
@@ -1448,9 +1408,7 @@ pub fn main() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn moving_gc_relocates_sync_nested_projected_and_dynamic_call_state() {
-    let source = r#"module moving_gc_sync
-
-dyn concept CounterOps {
+    let source = r#"dyn concept CounterOps {
     method allocateAndAdd(mut self, amount Int, count Int) Int
 }
 
@@ -1501,10 +1459,10 @@ pub fn main() {
 "#;
     let (project, _program, llvm) = emit_source_with_ir(source);
 
-    let allocate = llvm_function(&llvm, "moving_gc_sync_allocateAndAdd");
-    let projected = llvm_function(&llvm, "moving_gc_sync_projected");
-    let nested = llvm_function(&llvm, "moving_gc_sync_nested");
-    let dynamic = llvm_function(&llvm, "moving_gc_sync_dynamicAdd");
+    let allocate = llvm_function(&llvm, "standalone_allocateAndAdd");
+    let projected = llvm_function(&llvm, "standalone_projected");
+    let nested = llvm_function(&llvm, "standalone_nested");
+    let dynamic = llvm_function(&llvm, "standalone_dynamicAdd");
     assert_balanced_gc_root_frame(allocate);
     assert_balanced_gc_root_frame(projected);
     assert_balanced_gc_root_frame(nested);
@@ -1542,9 +1500,7 @@ pub fn main() {
 
 #[test]
 fn moving_gc_rederives_tuple_and_stages_all_match_bindings_before_clone() {
-    let source = r#"module moving_gc_projection_clone
-
-enum Payload {
+    let source = r#"enum Payload {
     Values(List[Text], Text)
 }
 
@@ -1585,7 +1541,7 @@ pub fn main() {
 "#;
     let (project, _program, llvm) = emit_source_with_ir(source);
 
-    let tuple = llvm_function(&llvm, "moving_gc_projection_clone_tupleRetainsSecond");
+    let tuple = llvm_function(&llvm, "standalone_tupleRetainsSecond");
     assert!(
         tuple.matches("call i32 @loom_gc_clone_value_v1").count() >= 2,
         "tuple destructuring must clone both elements: {tuple}"
@@ -1600,7 +1556,7 @@ pub fn main() {
     );
     assert_gc_state_published_before(tuple, "@loom_gc_clone_value_v1");
 
-    let matched = llvm_function(&llvm, "moving_gc_projection_clone_matchRetainsSecond");
+    let matched = llvm_function(&llvm, "standalone_matchRetainsSecond");
     assert!(
         matched.matches("match.binding.proxy").count() >= 2,
         "all derived match bindings must be staged in stable roots: {matched}"
@@ -1616,9 +1572,7 @@ pub fn main() {
 
 #[test]
 fn moving_gc_relocates_async_task_slots_across_pending_and_resume() {
-    let source = r#"module moving_gc_async
-
-async fn allocateAcrossAwait(count Int) Int {
+    let source = r#"async fn allocateAcrossAwait(count Int) Int {
     var values = List[Text]()
     for index in 0..count {
         values.add("before-await")
@@ -1641,8 +1595,8 @@ pub async fn main() {
 "#;
     let (project, _program, llvm) = emit_source_with_ir(source);
 
-    let allocate = llvm_resume_function(&llvm, "moving_gc_async_allocateAcrossAwait");
-    let main = llvm_resume_function(&llvm, "moving_gc_async_main");
+    let allocate = llvm_resume_function(&llvm, "standalone_allocateAcrossAwait");
+    let main = llvm_resume_function(&llvm, "standalone_main");
     assert_balanced_gc_root_frame(allocate);
     assert_balanced_gc_root_frame(main);
     assert!(!allocate.contains("@loom_gc_safepoint_v1"), "{allocate}");
@@ -1663,9 +1617,7 @@ pub async fn main() {
 
 #[test]
 fn primitive_scalar_abi_uses_i1_i64_and_double_without_universal_calls() {
-    let source = r"module primitive_scalar
-
-fn negate(value Bool) Bool {
+    let source = r"fn negate(value Bool) Bool {
     !value
 }
 
@@ -1688,7 +1640,7 @@ pub fn main() {
     let project = tempfile::tempdir().expect("create primitive scalar project");
     std::fs::write(project.path().join("main.loom"), source)
         .expect("write primitive scalar source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load primitive scalar project")
         .snapshot()
         .expect("analyze primitive scalar project");
@@ -1702,10 +1654,10 @@ pub fn main() {
     emit_native(program, &executable, &options).expect("emit primitive scalar executable");
 
     let llvm = std::fs::read_to_string(ir).expect("read primitive scalar LLVM IR");
-    let negate = llvm_native_function(&llvm, "primitive_scalar_negate");
-    let double = llvm_native_function(&llvm, "primitive_scalar_double");
-    let unit = llvm_native_function(&llvm, "primitive_scalar_unitIdentity");
-    let main = llvm_native_function(&llvm, "primitive_scalar_main");
+    let negate = llvm_native_function(&llvm, "standalone_negate");
+    let double = llvm_native_function(&llvm, "standalone_double");
+    let unit = llvm_native_function(&llvm, "standalone_unitIdentity");
+    let main = llvm_native_function(&llvm, "standalone_main");
     let negate_symbol = llvm_defined_symbol(negate);
     let double_symbol = llvm_defined_symbol(double);
     let unit_symbol = llvm_defined_symbol(unit);
@@ -1746,9 +1698,7 @@ pub fn main() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn loop_temporaries_stay_in_one_shot_prologues_and_large_release_loops_do_not_grow_stack() {
-    let source = r#"module stack_loop
-
-record Counter {
+    let source = r#"record Counter {
     total Int
     calls Int
 }
@@ -1849,7 +1799,7 @@ pub fn main() {
 "#;
     let project = tempfile::tempdir().expect("create loop stack project");
     std::fs::write(project.path().join("main.loom"), source).expect("write loop stack source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load loop stack project")
         .snapshot()
         .expect("analyze loop stack project");
@@ -1864,10 +1814,10 @@ pub fn main() {
         .expect("emit development loop IR");
     let llvm = std::fs::read_to_string(development_ir).expect("read development loop IR");
     for function_name in [
-        "stack_loop_spin",
-        "stack_loop_recordMethod",
-        "stack_loop_scalarRecord",
-        "stack_loop_nestedLoops",
+        "standalone_spin",
+        "standalone_recordMethod",
+        "standalone_scalarRecord",
+        "standalone_nestedLoops",
     ] {
         let signature = llvm
             .lines()
@@ -1889,7 +1839,7 @@ pub fn main() {
             );
         }
     }
-    let add = llvm_native_function(&llvm, "stack_loop_add");
+    let add = llvm_native_function(&llvm, "standalone_add");
     assert!(add.contains("copy.scalar"), "{add}");
     assert!(add.contains("assign.scalar"), "{add}");
     assert!(!add.contains("move = load %loom.Value"), "{add}");
@@ -1897,7 +1847,7 @@ pub fn main() {
     assert!(!add.contains("@loom_gc_clone_value_v1"), "{add}");
     assert!(!add.contains("@loom_gc_root_"), "{add}");
     assert!(!add.contains("@loom_gc_safepoint_v1"), "{add}");
-    let modular_product = llvm_native_function(&llvm, "stack_loop_modularProduct");
+    let modular_product = llvm_native_function(&llvm, "standalone_modularProduct");
     assert!(
         modular_product
             .lines()
@@ -1912,12 +1862,12 @@ pub fn main() {
     assert!(modular_product.contains("mul nsw i64"), "{modular_product}");
     assert!(modular_product.contains("sdiv i64"), "{modular_product}");
     let modular_product_symbol = llvm_defined_symbol(modular_product);
-    let spin = llvm_native_function(&llvm, "stack_loop_spin");
+    let spin = llvm_native_function(&llvm, "standalone_spin");
     assert!(
         spin.contains(&format!("call i64 @{modular_product_symbol}")),
         "{spin}"
     );
-    let record_method = llvm_native_function(&llvm, "stack_loop_recordMethod");
+    let record_method = llvm_native_function(&llvm, "standalone_recordMethod");
     assert!(
         record_method.lines().next().is_some_and(|line| line
             .contains("define internal { i64, i64 }")
@@ -1952,7 +1902,7 @@ pub fn main() {
     assert!(!record_method.contains("@loom_gc_build_value_nodes_v1"));
     assert!(!record_method.contains("@loom_gc_root_"));
     assert!(!record_method.contains("node.next"), "{record_method}");
-    let universal_record_method = llvm_function(&llvm, "stack_loop_recordMethod");
+    let universal_record_method = llvm_function(&llvm, "standalone_recordMethod");
     assert_balanced_gc_root_frame(universal_record_method);
     assert_eq!(
         universal_record_method
@@ -1965,14 +1915,14 @@ pub fn main() {
         universal_record_method,
         "call i32 @loom_gc_build_value_nodes_v1",
     );
-    let record_add = llvm_native_function(&llvm, "stack_loop_add");
+    let record_add = llvm_native_function(&llvm, "standalone_add");
     assert_eq!(
         record_add.matches("add nsw i64").count(),
         2,
         "both closed record recurrences must be proved before ABI selection: {record_add}"
     );
     assert!(!record_add.contains("with.overflow"), "{record_add}");
-    let scalar_record = llvm_native_function(&llvm, "stack_loop_scalarRecord");
+    let scalar_record = llvm_native_function(&llvm, "standalone_scalarRecord");
     assert!(!scalar_record.contains("gc.root.frame"), "{scalar_record}");
     assert!(
         !scalar_record.contains("@loom_gc_root_push_v1"),
@@ -1982,14 +1932,14 @@ pub fn main() {
         !scalar_record.contains("@loom_gc_safepoint_v1"),
         "{scalar_record}"
     );
-    let collecting_record = llvm_function(&llvm, "stack_loop_recordWithCollectingField");
+    let collecting_record = llvm_function(&llvm, "standalone_recordWithCollectingField");
     assert_balanced_gc_root_frame(collecting_record);
     assert!(
         !gc_root_slot_is_registered(collecting_record, "record.local."),
         "POD fields entered roots around a collecting field call: {collecting_record}"
     );
     assert_gc_state_published_before(collecting_record, "call i32 @loom.fn.");
-    let main = llvm_native_function(&llvm, "stack_loop_main");
+    let main = llvm_native_function(&llvm, "standalone_main");
     assert!(
         main.contains("record.copy.field"),
         "the original-to-copy path must use independent managed fields: {main}"
@@ -2001,7 +1951,7 @@ pub fn main() {
     release.emit_ir = Some(release_ir.clone());
     emit_native(program, &executable, &release).expect("emit release loop executable");
     let release_llvm = std::fs::read_to_string(release_ir).expect("read release loop IR");
-    if let Some(release_record_method) = llvm_any_function(&release_llvm, "stack_loop_recordMethod")
+    if let Some(release_record_method) = llvm_any_function(&release_llvm, "standalone_recordMethod")
     {
         assert!(
             !release_record_method.contains("with.overflow"),
@@ -2026,9 +1976,7 @@ pub fn main() {
 
 #[test]
 fn private_pod_results_flow_through_status_tail_return_and_branch_calls() {
-    let source = r"module pod_result_flow
-
-record Pair { value Int }
+    let source = r"record Pair { value Int }
 
 fn make(value Int) Pair {
     Pair { value = value }
@@ -2073,7 +2021,7 @@ pub fn faultMain() {
 ";
     let (project, program, llvm) = emit_source_with_ir(source);
 
-    let checked = llvm_native_function(&llvm, "pod_result_flow_checkedMake");
+    let checked = llvm_native_function(&llvm, "standalone_checkedMake");
     assert!(
         checked
             .lines()
@@ -2081,19 +2029,19 @@ pub fn faultMain() {
             .is_some_and(|line| line.contains("define internal { i32, { i64 } }")),
         "{checked}"
     );
-    let main = llvm_native_function(&llvm, "pod_result_flow_main");
+    let main = llvm_native_function(&llvm, "standalone_main");
     assert!(
         main.contains("call { i32, { i64 } } @loom.native.fn.")
-            && main.contains("pod_result_flow_checkedMake"),
+            && main.contains("standalone_checkedMake"),
         "{main}"
     );
     assert!(main.contains("native.call.value"), "{main}");
 
     for suffix in [
-        "pod_result_flow_checkedMake",
-        "pod_result_flow_forward",
-        "pod_result_flow_explicit",
-        "pod_result_flow_choose",
+        "standalone_checkedMake",
+        "standalone_forward",
+        "standalone_explicit",
+        "standalone_choose",
     ] {
         let function = llvm_native_function(&llvm, suffix);
         assert!(
@@ -2107,19 +2055,16 @@ pub fn faultMain() {
         assert!(!function.contains("@loom_gc_clone_value_v1"), "{function}");
     }
 
-    for suffix in ["pod_result_flow_forward", "pod_result_flow_explicit"] {
+    for suffix in ["standalone_forward", "standalone_explicit"] {
         let function = llvm_native_function(&llvm, suffix);
         assert!(
             function.contains("call { i64 } @loom.native.fn.")
-                && function.contains("pod_result_flow_make"),
+                && function.contains("standalone_make"),
             "{function}"
         );
     }
-    let choose = llvm_native_function(&llvm, "pod_result_flow_choose");
-    assert!(
-        choose.matches("pod_result_flow_make").count() >= 2,
-        "{choose}"
-    );
+    let choose = llvm_native_function(&llvm, "standalone_choose");
+    assert!(choose.matches("standalone_make").count() >= 2, "{choose}");
 
     assert_emitted_main_succeeds(&project);
 
@@ -2138,9 +2083,7 @@ pub fn faultMain() {
     assert!(diagnostic.contains("AssertionFault"), "{output:?}");
 }
 
-const POD_VALUE_PARAMETERS_SOURCE: &str = r#"module pod_value_parameters
-
-record Pair {
+const POD_VALUE_PARAMETERS_SOURCE: &str = r#"record Pair {
     left Int
     right Int
 }
@@ -2234,21 +2177,21 @@ pub fn publicBoundary(ignored Text) Int {
 fn private_pod_value_parameters_and_readonly_receivers_use_aggregate_values() {
     let (project, _program, llvm) = emit_source_with_ir(POD_VALUE_PARAMETERS_SOURCE);
 
-    let sum = llvm_native_function(&llvm, "pod_value_parameters_sum");
+    let sum = llvm_native_function(&llvm, "standalone_sum");
     assert!(
         sum.lines().next().is_some_and(|line| {
             line.contains("define internal i64") && line.contains("({ i64, i64 }")
         }),
         "{sum}"
     );
-    let duplicate = llvm_native_function(&llvm, "pod_value_parameters_duplicate");
+    let duplicate = llvm_native_function(&llvm, "standalone_duplicate");
     assert!(
         duplicate.lines().next().is_some_and(|line| {
             line.contains("define internal { i64, i64 }") && line.contains("({ i64, i64 }")
         }),
         "{duplicate}"
     );
-    let readonly = llvm_native_function(&llvm, "pod_value_parameters_total");
+    let readonly = llvm_native_function(&llvm, "standalone_total");
     assert!(
         readonly.lines().next().is_some_and(|line| {
             line.contains("define internal i64") && line.contains("({ i64, i64 }")
@@ -2260,11 +2203,11 @@ fn private_pod_value_parameters_and_readonly_receivers_use_aggregate_values() {
         "{readonly}"
     );
 
-    let main = llvm_native_function(&llvm, "pod_value_parameters_main");
+    let main = llvm_native_function(&llvm, "standalone_main");
     for callee in [
-        "pod_value_parameters_sum",
-        "pod_value_parameters_total",
-        "pod_value_parameters_forward",
+        "standalone_sum",
+        "standalone_total",
+        "standalone_forward",
         "shifted",
         "checkedCopy",
     ] {
@@ -2273,10 +2216,10 @@ fn private_pod_value_parameters_and_readonly_receivers_use_aggregate_values() {
             "missing aggregate call `{callee}`: {main}"
         );
     }
-    let forward = llvm_native_function(&llvm, "pod_value_parameters_forward");
+    let forward = llvm_native_function(&llvm, "standalone_forward");
     assert!(
         forward.contains("call { i64, i64 } @loom.native.fn.")
-            && forward.contains("pod_value_parameters_duplicate"),
+            && forward.contains("standalone_duplicate"),
         "{forward}"
     );
     let checked = llvm_native_function(&llvm, "checkedCopy");
@@ -2287,27 +2230,26 @@ fn private_pod_value_parameters_and_readonly_receivers_use_aggregate_values() {
         "{checked}"
     );
 
-    let boundary = llvm_function(&llvm, "pod_value_parameters_publicBoundary");
+    let boundary = llvm_function(&llvm, "standalone_publicBoundary");
     assert!(
         boundary.contains("@loom.native.fn.")
-            && boundary.contains("pod_value_parameters_sum")
-            && boundary.contains("pod_value_parameters_total"),
+            && boundary.contains("standalone_sum")
+            && boundary.contains("standalone_total"),
         "{boundary}"
     );
     assert!(
         !boundary.lines().any(|line| {
             line.contains("call i32 @loom.fn.")
-                && (line.contains("pod_value_parameters_sum")
-                    || line.contains("pod_value_parameters_total"))
+                && (line.contains("standalone_sum") || line.contains("standalone_total"))
         }),
         "{boundary}"
     );
 
     for suffix in [
-        "pod_value_parameters_sum",
-        "pod_value_parameters_duplicate",
-        "pod_value_parameters_forward",
-        "pod_value_parameters_total",
+        "standalone_sum",
+        "standalone_duplicate",
+        "standalone_forward",
+        "standalone_total",
         "shifted",
         "checkedCopy",
     ] {
@@ -2339,7 +2281,7 @@ fn private_pod_value_parameter_propagates_checked_integer_faults() {
     emit_native(&program, &executable, &options).expect("emit faulting POD value executable");
 
     let llvm = std::fs::read_to_string(ir).expect("read faulting POD value IR");
-    let sum = llvm_native_function(&llvm, "pod_value_parameters_sum");
+    let sum = llvm_native_function(&llvm, "standalone_sum");
     assert!(
         sum.lines().next().is_some_and(|line| {
             line.contains("define internal { i32, i64 }") && line.contains("({ i64, i64 }")
@@ -2382,9 +2324,7 @@ fn private_pod_readonly_result_propagates_assertion_faults() {
 
 #[test]
 fn private_pod_inout_writes_back_before_fault_status_propagates() {
-    let source = r"module pod_fault_writeback
-
-record Counter { value Int }
+    let source = r"record Counter { value Int }
 
 impl Counter {
     method setThenAssert(mut self, accepted Bool) {
@@ -2406,7 +2346,7 @@ pub fn main() {
 ";
     let (project, _program, llvm) = emit_source_with_ir(source);
 
-    let method = llvm_native_function(&llvm, "pod_fault_writeback_setThenAssert");
+    let method = llvm_native_function(&llvm, "standalone_setThenAssert");
     assert!(method.contains("define internal { i32, i1 }"), "{method}");
     assert!(
         !method.contains("@loom_gc_build_value_nodes_v1"),
@@ -2426,9 +2366,9 @@ pub fn main() {
         .expect("native status return after receiver writeback");
     assert!(failure < writeback && writeback < returned, "{method}");
 
-    let caller = llvm_native_function(&llvm, "pod_fault_writeback_exercise");
+    let caller = llvm_native_function(&llvm, "standalone_exercise");
     let call = caller
-        .find("pod_fault_writeback_setThenAssert")
+        .find("standalone_setThenAssert")
         .expect("private POD method call");
     let unpack = caller[call..]
         .find("native.call.inout.result")
@@ -2445,9 +2385,7 @@ pub fn main() {
 
 #[test]
 fn private_pod_release_hot_path_has_no_universal_value_or_gc_operations() {
-    let source = r"module private_pod_release
-
-record Counter {
+    let source = r"record Counter {
     total Int
     calls Int
 }
@@ -2480,7 +2418,7 @@ pub fn main() {
 ";
     let project = tempfile::tempdir().expect("create private POD release project");
     std::fs::write(project.path().join("main.loom"), source).expect("write private POD source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load private POD project")
         .snapshot()
         .expect("analyze private POD project");
@@ -2500,9 +2438,9 @@ pub fn main() {
     let mut hot_functions =
         vec![llvm_any_function(&llvm, "i32 @main(").expect("release C entry point")];
     for suffix in [
-        "private_pod_release_main",
-        "private_pod_release_recordMethod",
-        "private_pod_release_add",
+        "standalone_main",
+        "standalone_recordMethod",
+        "standalone_add",
     ] {
         if let Some(function) = llvm_any_function(&llvm, suffix) {
             hot_functions.push(function);
@@ -2526,8 +2464,7 @@ pub fn main() {
     assert!(
         !llvm.lines().any(|line| {
             line.starts_with("define internal i32 @loom.fn.")
-                && (line.contains("private_pod_release_recordMethod")
-                    || line.contains("private_pod_release_add"))
+                && (line.contains("standalone_recordMethod") || line.contains("standalone_add"))
         }),
         "unreferenced universal POD fallbacks must be eliminated in release IR: {llvm}"
     );
@@ -2541,9 +2478,7 @@ pub fn main() {
 
 #[test]
 fn projected_pod_copy_and_move_publish_the_private_native_result() {
-    let source = r#"module projected_pod_publication
-
-record Pair { left Int, right Int }
+    let source = r#"record Pair { left Int, right Int }
 record Holder { selected Pair, guard Bool }
 
 fn select() Pair {
@@ -2564,7 +2499,7 @@ pub fn main() {
 "#;
     let (copy_project, copy_program, copy_ir) = emit_source_with_ir(source);
     assert_emitted_main_succeeds(&copy_project);
-    let copy = llvm_native_function(&copy_ir, "projected_pod_publication_select");
+    let copy = llvm_native_function(&copy_ir, "standalone_select");
     assert!(copy.contains("record.copy.projected.native"), "{copy}");
 
     let mut raw = copy_program.into_program();
@@ -2605,16 +2540,14 @@ pub fn main() {
     assert!(output.status.success(), "{output:?}");
     assert_eq!(output.stdout, b"Unit\n");
     let move_ir = std::fs::read_to_string(ir_path).expect("read projected move IR");
-    let moved = llvm_native_function(&move_ir, "projected_pod_publication_select");
+    let moved = llvm_native_function(&move_ir, "standalone_select");
     assert!(moved.contains("record.copy.projected.native"), "{moved}");
 }
 
 #[test]
 #[allow(clippy::too_many_lines)]
 fn readonly_list_builtins_snapshot_the_header_and_clone_only_the_selected_value() {
-    let source = r"module list_readonly
-
-record Boxed {
+    let source = r"record Boxed {
     value Int
 }
 
@@ -2701,7 +2634,7 @@ pub async fn main() {
 ";
     let project = tempfile::tempdir().expect("create readonly List project");
     std::fs::write(project.path().join("main.loom"), source).expect("write readonly List source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load readonly List project")
         .snapshot()
         .expect("analyze readonly List project");
@@ -2715,7 +2648,7 @@ pub async fn main() {
     emit_native(program, &executable, &options).expect("emit readonly List executable");
 
     let llvm = std::fs::read_to_string(ir).expect("read readonly List LLVM IR");
-    let read_at = llvm_function(&llvm, "list_readonly_readAt");
+    let read_at = llvm_function(&llvm, "standalone_readAt");
     let get = read_at
         .find("@loom_runtime_list_get")
         .expect("readAt calls native List.get");
@@ -2762,9 +2695,7 @@ pub async fn main() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn synchronous_local_int_lists_use_contiguous_native_storage_by_shape() {
-    let source = r"module native_int_list
-
-fn renamedSameShape(size Int) Int {
+    let source = r"fn renamedSameShape(size Int) Int {
     var items = List[Int]()
     for index in 0..size {
         items.add(index * 3 - 1)
@@ -3017,7 +2948,7 @@ pub fn faultMain() {
 ";
     let project = tempfile::tempdir().expect("create native Int list project");
     std::fs::write(project.path().join("main.loom"), source).expect("write native Int list source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load native Int list project")
         .snapshot()
         .expect("analyze native Int list project");
@@ -3039,7 +2970,7 @@ pub fn faultMain() {
 
     for ir in [&development_ir, &release_ir] {
         let llvm = std::fs::read_to_string(ir).expect("read native Int list LLVM IR");
-        let scan = llvm_native_function(&llvm, "native_int_list_renamedSameShape");
+        let scan = llvm_native_function(&llvm, "standalone_renamedSameShape");
         assert!(!scan.contains("gc.root.frame"), "{scan}");
         assert!(!scan.contains("@loom_gc_root_push_v1"), "{scan}");
         assert!(!scan.contains("@loom_gc_root_pop_v1"), "{scan}");
@@ -3115,7 +3046,7 @@ pub fn faultMain() {
         }
 
         if ir == &development_ir {
-            let append = llvm_native_function(&llvm, "native_int_list_appendOnly");
+            let append = llvm_native_function(&llvm, "standalone_appendOnly");
             for phi in [
                 "int.list.loop.data = phi ptr",
                 "int.list.loop.length = phi i64",
@@ -3125,7 +3056,7 @@ pub fn faultMain() {
                 assert!(append.contains(phi), "missing `{phi}`: {append}");
             }
             assert_deferred_native_int_list_length_commits(append);
-            let nonempty_empty = llvm_native_function(&llvm, "native_int_list_nonemptyEmptyRange");
+            let nonempty_empty = llvm_native_function(&llvm, "standalone_nonemptyEmptyRange");
             assert_deferred_native_int_list_length_commits(nonempty_empty);
             assert!(
                 append
@@ -3180,13 +3111,13 @@ pub fn faultMain() {
                 );
             }
 
-            let observed = llvm_native_function(&llvm, "native_int_list_appendObservedLength");
+            let observed = llvm_native_function(&llvm, "standalone_appendObservedLength");
             assert!(
                 observed.contains("int.list.loop.length = phi i64"),
                 "same-list length observation lost append-loop SSA: {observed}"
             );
             assert_eager_native_int_list_length_commits(observed);
-            let fallback = llvm_native_function(&llvm, "native_int_list_twoAppends");
+            let fallback = llvm_native_function(&llvm, "standalone_twoAppends");
             assert!(
                 !fallback.contains("int.list.loop.length = phi i64"),
                 "multiple append statements must conservatively fall back: {fallback}"
@@ -3205,7 +3136,7 @@ pub fn faultMain() {
             );
             assert!(!fallback.contains("@loom_runtime_list_add"), "{fallback}");
 
-            let faultable = llvm_native_function(&llvm, "native_int_list_faultableAppend");
+            let faultable = llvm_native_function(&llvm, "standalone_faultableAppend");
             assert!(
                 faultable.contains("int.list.loop.length = phi i64"),
                 "fallible element lost append-loop SSA: {faultable}"
@@ -3213,7 +3144,7 @@ pub fn faultMain() {
             assert_deferred_native_int_list_length_commits(faultable);
             assert_native_int_list_dropped_once_on_each_return(faultable);
             let element_call = faultable
-                .find("native_int_list_checkedElement")
+                .find("standalone_checkedElement")
                 .expect("fallible append evaluates its element call");
             let capacity_test = faultable
                 .find("int.list.add.full = icmp")
@@ -3223,19 +3154,19 @@ pub fn faultMain() {
                 "element evaluation must precede capacity synchronization: {faultable}"
             );
 
-            let early_return = llvm_native_function(&llvm, "native_int_list_earlyReturnAppend");
+            let early_return = llvm_native_function(&llvm, "standalone_earlyReturnAppend");
             assert_deferred_native_int_list_length_commits(early_return);
             assert_native_int_list_dropped_once_on_each_return(early_return);
 
             for fallback in [
-                "native_int_list_interveningAppendKeepsCheck",
-                "native_int_list_noneSideEffectFallsBack",
+                "standalone_interveningAppendKeepsCheck",
+                "standalone_noneSideEffectFallsBack",
             ] {
                 let body = llvm_native_function(&llvm, fallback);
                 assert!(body.contains("int.list.get.past.end"), "{body}");
                 assert!(body.contains("int.list.get.none"), "{body}");
             }
-            let cleanup = llvm_native_function(&llvm, "native_int_list_cleanupOnFaultPath");
+            let cleanup = llvm_native_function(&llvm, "standalone_cleanupOnFaultPath");
             assert!(cleanup.contains("@loom_int_list_drop_v1"), "{cleanup}");
             assert_native_int_list_dropped_once_on_each_return(cleanup);
         }
@@ -3270,9 +3201,7 @@ pub fn faultMain() {
 
 #[test]
 fn native_int_list_storage_falls_back_for_escaping_text_async_and_hazards() {
-    let source = r#"module native_int_list_fallback
-
-fn consume(values List[Int]) Int {
+    let source = r#"fn consume(values List[Int]) Int {
     values.length()
 }
 
@@ -3318,7 +3247,7 @@ pub async fn main() {
     let project = tempfile::tempdir().expect("create native Int list fallback project");
     std::fs::write(project.path().join("main.loom"), source)
         .expect("write native Int list fallback source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load native Int list fallback project")
         .snapshot()
         .expect("analyze native Int list fallback project");
@@ -3336,15 +3265,15 @@ pub async fn main() {
 
     let llvm = std::fs::read_to_string(ir).expect("read fallback LLVM IR");
     for function in [
-        "native_int_list_fallback_escaping",
-        "native_int_list_fallback_textList",
-        "native_int_list_fallback_receiverObservationHazard",
+        "standalone_escaping",
+        "standalone_textList",
+        "standalone_receiverObservationHazard",
     ] {
         let body = llvm_native_function(&llvm, function);
         assert!(body.contains("@loom_runtime_list_add"), "{body}");
         assert!(!body.contains("@loom_int_list_reserve_v1"), "{body}");
     }
-    let asynchronous = llvm_resume_function(&llvm, "native_int_list_fallback_asynchronous");
+    let asynchronous = llvm_resume_function(&llvm, "standalone_asynchronous");
     assert!(
         asynchronous.contains("@loom_runtime_list_add"),
         "{asynchronous}"
@@ -3367,9 +3296,7 @@ pub async fn main() {
 
 #[test]
 fn proven_construction_omits_validation_while_dynamic_input_keeps_it() {
-    let source = r"module construction
-
-import std.float.is_finite
+    let source = r"import std.float.is_finite
 
 type Money = Float where is_finite(self) && self >= 0.0
 
@@ -3408,7 +3335,7 @@ pub fn main() {
 ";
     let project = tempfile::tempdir().expect("create construction project");
     std::fs::write(project.path().join("main.loom"), source).expect("write source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load construction project")
         .snapshot()
         .expect("analyze construction project");
@@ -3421,8 +3348,8 @@ pub fn main() {
     emit_native(program, &executable, &options).expect("emit construction executable");
 
     let ir = std::fs::read_to_string(ir).expect("read construction IR");
-    let direct = llvm_function(&ir, "construction_direct");
-    let checked = llvm_function(&ir, "construction_checked");
+    let direct = llvm_function(&ir, "standalone_direct");
+    let checked = llvm_function(&ir, "standalone_checked");
     assert!(!direct.contains("constraint.ok"), "{direct}");
     assert!(!direct.contains("constraint.error"), "{direct}");
     assert!(!direct.contains("PreconditionFault"), "{direct}");
@@ -3448,9 +3375,7 @@ pub fn main() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn requires_faults_preserve_exact_caller_spans_across_llvm_abis() {
-    let source = r#"module requires_caller_blame
-
-fn checked_mir(value Int) Text
+    let source = r#"fn checked_mir(value Int) Text
     requires value > 0
 {
     "accepted"
@@ -3499,7 +3424,7 @@ test fn g_root_boundary()
 "#;
     let project = tempfile::tempdir().expect("create requires blame project");
     std::fs::write(project.path().join("main.loom"), source).expect("write requires blame source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load requires blame project")
         .snapshot()
         .expect("analyze requires blame project");
@@ -3573,7 +3498,7 @@ fn llvm_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'source str
             ir[*index..]
                 .lines()
                 .next()
-                .is_some_and(|line| line.contains(symbol_suffix))
+                .is_some_and(|line| source_symbol_matches(line, symbol_suffix))
         })
         .unwrap_or_else(|| panic!("missing LLVM function containing `{symbol_suffix}`"));
     let rest = &ir[start + marker.len()..];
@@ -3584,7 +3509,7 @@ fn llvm_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'source str
 fn emit_source_with_ir(source: &str) -> (tempfile::TempDir, CheckedProgram, String) {
     let project = tempfile::tempdir().expect("create source project");
     std::fs::write(project.path().join("main.loom"), source).expect("write source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load source project")
         .snapshot()
         .expect("analyze source project");
@@ -3620,7 +3545,7 @@ fn llvm_any_function<'source>(ir: &'source str, symbol_suffix: &str) -> Option<&
             ir[*index..]
                 .lines()
                 .next()
-                .is_some_and(|line| line.contains(symbol_suffix))
+                .is_some_and(|line| source_symbol_matches(line, symbol_suffix))
         })?;
     let rest = &ir[start + "define ".len()..];
     let end = rest.find("\ndefine ").unwrap_or(rest.len());
@@ -3634,7 +3559,7 @@ fn llvm_native_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'sou
         .map(|(index, _)| index)
         .find(|index| {
             ir[*index..].lines().next().is_some_and(|line| {
-                line.contains("@loom.native.fn.") && line.contains(symbol_suffix)
+                line.contains("@loom.native.fn.") && source_symbol_matches(line, symbol_suffix)
             })
         })
         .unwrap_or_else(|| panic!("missing native LLVM function containing `{symbol_suffix}`"));
@@ -3653,6 +3578,13 @@ fn llvm_defined_symbol(function: &str) -> &str {
         .expect("LLVM function definition must contain a symbol")
 }
 
+fn source_symbol_matches(definition: &str, former_qualified_suffix: &str) -> bool {
+    definition.contains(former_qualified_suffix)
+        || former_qualified_suffix
+            .rsplit_once('_')
+            .is_some_and(|(_, name)| definition.contains(&format!("standalone_{name}")))
+}
+
 fn llvm_assumed_native_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'source str {
     let marker = "define internal ";
     let start = ir
@@ -3660,7 +3592,8 @@ fn llvm_assumed_native_function<'source>(ir: &'source str, symbol_suffix: &str) 
         .map(|(index, _)| index)
         .find(|index| {
             ir[*index..].lines().next().is_some_and(|line| {
-                line.contains("@loom.native.assumed.fn.") && line.contains(symbol_suffix)
+                line.contains("@loom.native.assumed.fn.")
+                    && source_symbol_matches(line, symbol_suffix)
             })
         })
         .unwrap_or_else(|| {
@@ -4065,7 +3998,7 @@ fn llvm_resume_function<'source>(ir: &'source str, symbol_suffix: &str) -> &'sou
             ir[*index..]
                 .lines()
                 .next()
-                .is_some_and(|line| line.contains(symbol_suffix))
+                .is_some_and(|line| source_symbol_matches(line, symbol_suffix))
         })
         .unwrap_or_else(|| panic!("missing LLVM resume function containing `{symbol_suffix}`"));
     let rest = &ir[start + marker.len()..];
@@ -4128,7 +4061,7 @@ fn core_examples_compile_and_run_as_native_programs() {
         "async-resources",
     ] {
         let source = workspace.join("examples").join(fixture);
-        let snapshot = AnalysisHost::new(&source)
+        let snapshot = support::analysis_host(&source)
             .expect("load project")
             .snapshot()
             .expect("analyze project");
@@ -4217,9 +4150,7 @@ fn core_examples_compile_and_run_as_native_programs() {
 
 #[test]
 fn stored_tasks_dynamic_lists_and_join_modes_run_natively() {
-    let source = r"module joins
-
-async fn one() Int {
+    let source = r"async fn one() Int {
     Task.sleep(2).await
     1
 }
@@ -4253,7 +4184,7 @@ pub async fn main() {
 ";
     let project = tempfile::tempdir().expect("create join project");
     std::fs::write(project.path().join("main.loom"), source).expect("write join source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load join project")
         .snapshot()
         .expect("analyze join project");
@@ -4274,9 +4205,7 @@ pub async fn main() {
 
 #[test]
 fn task_outcomes_match_and_expose_fault_details_natively() {
-    let source = r#"module outcomes
-
-async fn completed() Int {
+    let source = r#"async fn completed() Int {
     7
 }
 
@@ -4322,7 +4251,7 @@ pub async fn main() {
 "#;
     let project = tempfile::tempdir().expect("create outcome project");
     std::fs::write(project.path().join("main.loom"), source).expect("write outcome source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load outcome project")
         .snapshot()
         .expect("analyze outcome project");
@@ -4363,9 +4292,7 @@ fn duration_file_and_socket_tasks_run_natively() {
         socket.write_all(b"pong").expect("write response");
     });
     let source = format!(
-        r#"module builtin_io
-
-import std.time.milliseconds
+        r#"import std.time.milliseconds
 import std.file.open_read
 import std.file.create
 import std.net.connect
@@ -4397,7 +4324,7 @@ pub async fn main() {{
 "#,
     );
     std::fs::write(project.path().join("main.loom"), source).expect("write I/O source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load I/O project")
         .snapshot()
         .expect("analyze I/O project");
@@ -4422,9 +4349,7 @@ pub async fn main() {{
 
 #[test]
 fn cancellation_resumes_the_suspended_state_and_runs_cleanup() {
-    let source = r"module cancellation
-
-async fn slow() Int {
+    let source = r"async fn slow() Int {
     defer {
         assert false
     }
@@ -4443,7 +4368,7 @@ pub async fn main() {
 ";
     let project = tempfile::tempdir().expect("create cancellation project");
     std::fs::write(project.path().join("main.loom"), source).expect("write source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load cancellation project")
         .snapshot()
         .expect("analyze cancellation project");
@@ -4473,9 +4398,7 @@ pub async fn main() {
 
 #[test]
 fn nested_control_await_resumes_in_the_selected_branch() {
-    let source = r"module nested
-
-async fn child(value Int) Int {
+    let source = r"async fn child(value Int) Int {
     Task.sleep(1).await
     value
 }
@@ -4495,7 +4418,7 @@ pub async fn main() {
 ";
     let project = tempfile::tempdir().expect("create nested await project");
     std::fs::write(project.path().join("main.loom"), source).expect("write source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load nested await project")
         .snapshot()
         .expect("analyze nested await project");
@@ -4518,9 +4441,7 @@ pub async fn main() {
 
 #[test]
 fn compact_witness_ir_removes_linked_nodes_concat_and_universal_task_clone() {
-    let source = r"module compact_witness
-
-concept Check {
+    let source = r"concept Check {
     method check(self) Bool
 }
 
@@ -4568,9 +4489,7 @@ pub async fn main() {
 
 #[test]
 fn static_generic_concepts_and_conditional_witnesses_compile_natively() {
-    let source = r"module sample
-
-concept Equivalent {
+    let source = r"concept Equivalent {
     method equivalent(self, other Self) Bool
 }
 
@@ -4608,7 +4527,7 @@ test fn conditional_witness() {
 ";
     let project = tempfile::tempdir().expect("create source project");
     std::fs::write(project.path().join("main.loom"), source).expect("write source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load project")
         .snapshot()
         .expect("analyze project");
@@ -4635,9 +4554,7 @@ test fn conditional_witness() {
 
 #[test]
 fn conformance_and_method_proofs_keep_their_native_parameter_order() {
-    let source = r#"module sample
-
-concept Check {
+    let source = r#"concept Check {
     method check(self) Bool
 }
 
@@ -4672,7 +4589,7 @@ pub fn main() {
 "#;
     let project = tempfile::tempdir().expect("create source project");
     std::fs::write(project.path().join("main.loom"), source).expect("write source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load project")
         .snapshot()
         .expect("analyze project");
@@ -4738,9 +4655,7 @@ pub fn main() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn witness_method_tables_are_dense_per_concept_and_live_requirement() {
-    let source = r#"module compact_table
-
-dyn concept Noise {
+    let source = r#"dyn concept Noise {
     method noiseOne(self) Text
     method noiseTwo(self) Text
     method noiseThree(self) Text
@@ -4834,9 +4749,7 @@ pub fn main() {
 
 #[test]
 fn concrete_conditional_erasure_owns_proof_after_the_producer_stack_returns() {
-    let source = r#"module compact_escape
-
-dyn concept Render {
+    let source = r#"dyn concept Render {
     method render(self) Text
 }
 
@@ -4914,9 +4827,7 @@ pub fn main() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn projected_inout_and_dynamic_calls_use_address_free_stable_proxies() {
-    let source = r#"module stable_call_carriers
-
-dyn concept CounterOps {
+    let source = r#"dyn concept CounterOps {
     method add(mut self, amount Int) Int
     method read(self) Int
 }
@@ -5004,7 +4915,7 @@ pub fn main() {
 "#;
     let (project, _program, llvm) = emit_source_with_ir(source);
 
-    let projected = llvm_function(&llvm, "stable_call_carriers_addProjected");
+    let projected = llvm_function(&llvm, "standalone_addProjected");
     let projected_call = projected
         .find("call i32 @loom.fn.")
         .expect("projected call");
@@ -5021,16 +4932,16 @@ pub fn main() {
     assert!(projected_call < projected_writeback, "{projected}");
     assert!(projected_writeback < projected_status, "{projected}");
 
-    let allocating = llvm_function(&llvm, "stable_call_carriers_addAfterAllocation");
+    let allocating = llvm_function(&llvm, "standalone_addAfterAllocation");
     let allocation = allocating
-        .find("stable_call_carriers_allocatingAmount")
+        .find("standalone_allocatingAmount")
         .expect("later allocating argument is evaluated");
     let copy_in = allocating
         .find("inout.copy.in.value")
         .expect("projected receiver copy-in");
     assert!(allocation < copy_in, "{allocating}");
 
-    let failure = llvm_function(&llvm, "stable_call_carriers_failProjected");
+    let failure = llvm_function(&llvm, "standalone_failProjected");
     let failure_call = failure.find("call i32 @loom.fn.").expect("failing call");
     let failure_writeback = failure[failure_call..]
         .find("inout.writeback.value")
@@ -5043,7 +4954,7 @@ pub fn main() {
     assert!(failure_call < failure_writeback, "{failure}");
     assert!(failure_writeback < failure_status, "{failure}");
 
-    let dynamic = llvm_function(&llvm, "stable_call_carriers_addDynamic");
+    let dynamic = llvm_function(&llvm, "standalone_addDynamic");
     let dynamic_call = dynamic.find("dyn.call").expect("dynamic dispatch");
     let receiver_writeback = dynamic[dynamic_call..]
         .find("dyn.receiver.writeback.value")
@@ -5058,10 +4969,10 @@ pub fn main() {
     assert!(dynamic_call < receiver_writeback, "{dynamic}");
     assert!(receiver_writeback < dynamic_status, "{dynamic}");
 
-    let main = llvm_native_function(&llvm, "stable_call_carriers_main");
+    let main = llvm_native_function(&llvm, "standalone_main");
     assert!(main.contains("dyn.borrow.writeback.data"), "{main}");
     assert!(main.contains("dyn.borrow.writeback.value"), "{main}");
-    let readonly = llvm_function(&llvm, "stable_call_carriers_observeReadonly");
+    let readonly = llvm_function(&llvm, "standalone_observeReadonly");
     assert!(!readonly.contains("dyn.borrow.writeback"), "{readonly}");
     assert!(!llvm.contains("ptrtoint"), "{llvm}");
     assert!(!llvm.contains("inttoptr"), "{llvm}");
@@ -5071,9 +4982,7 @@ pub fn main() {
 
 #[test]
 fn projected_inout_commits_before_fault_cleanup_observes_the_owner() {
-    let source = r#"module fault_writeback_order
-
-record Cell { value Int }
+    let source = r#"record Cell { value Int }
 record Holder { cell Cell }
 
 impl Cell {
@@ -5138,7 +5047,7 @@ pub async fn main() {
 "#;
     let (project, _program, llvm) = emit_source_with_ir(source);
 
-    let invoke = llvm_function(&llvm, "fault_writeback_order_invokeFailure");
+    let invoke = llvm_function(&llvm, "standalone_invokeFailure");
     let call = invoke.find("call i32 @loom.fn.").expect("failing call");
     let writeback = invoke[call..]
         .find("inout.writeback.value")
@@ -5174,10 +5083,10 @@ fn native_int_is_checked_i64_even_after_llvm_optimization() {
         ),
     ];
     for (name, statement, expected) in cases {
-        let source = format!("module sample\n\npub fn main() {{\n    {statement}\n}}\n");
+        let source = format!("pub fn main() {{\n    {statement}\n}}\n");
         let project = tempfile::tempdir().expect("create source project");
         std::fs::write(project.path().join("main.loom"), source).expect("write source");
-        let snapshot = AnalysisHost::new(project.path())
+        let snapshot = support::analysis_host(project.path())
             .expect("load project")
             .snapshot()
             .expect("analyze project");
@@ -5205,9 +5114,7 @@ fn native_int_is_checked_i64_even_after_llvm_optimization() {
 
 #[test]
 fn deferred_integer_checks_use_cleanup_execution_order_not_registration_order() {
-    let source = r"module deferred_overflow
-
-pub fn main() {
+    let source = r"pub fn main() {
     var value = 0
     defer {
         value = value * 9223372036854775807
@@ -5222,7 +5129,7 @@ pub fn main() {
     let project = tempfile::tempdir().expect("create deferred overflow project");
     std::fs::write(project.path().join("main.loom"), source)
         .expect("write deferred overflow source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load deferred overflow project")
         .snapshot()
         .expect("analyze deferred overflow project");
@@ -5247,9 +5154,7 @@ pub fn main() {
 
 #[test]
 fn float_text_builtins_compile_and_run_natively() {
-    let source = r#"module sample
-
-import std.float.parse_float
+    let source = r#"import std.float.parse_float
 import std.float.format_float
 
 pub fn main() {
@@ -5297,7 +5202,7 @@ pub fn main() {
 "#;
     let project = tempfile::tempdir().expect("create source project");
     std::fs::write(project.path().join("main.loom"), source).expect("write source");
-    let snapshot = AnalysisHost::new(project.path())
+    let snapshot = support::analysis_host(project.path())
         .expect("load project")
         .snapshot()
         .expect("analyze project");

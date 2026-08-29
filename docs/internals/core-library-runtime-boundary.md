@@ -16,7 +16,7 @@ native runtime
 This boundary is an optimization and maintainability invariant, not only a
 source-organization preference. A library feature implemented in ordinary Loom
 participates in the same type checking, monomorphization, reachability, and
-dead-code elimination as application code. An unused library module must not
+dead-code elimination as application code. An unused library package must not
 force its algorithms or data tables into a native artifact.
 
 ## Language core
@@ -41,13 +41,13 @@ over smaller primitives.
 ## Standard library
 
 The standard library is compiler-distributed Loom source. It is loaded as a
-read-only, versioned `std` package rather than merged into the user's root
-package. Its source is parsed, resolved, type-checked, lowered, instantiated,
+read-only, versioned `std` module rather than merged into the user's root
+module. Its source is parsed, resolved, type-checked, lowered, instantiated,
 and optimized by the ordinary pipeline.
 
 The boundary requires every public library declaration to have an ordinary
-source `DefId`. A compiler primitive may be imported only by a module whose
-package identity is the compiler-owned `std`; application packages and
+source `DefId`. A compiler primitive may be imported only by a package whose
+owning module identity is the compiler-owned `std`; application packages and
 dependencies must receive an ordinary unresolved-import diagnostic for the same
 spelling. Primitive names are compiler-private implementation details, never
 public `std` API names. A migrated wrapper records the primitive identity only
@@ -56,11 +56,11 @@ elimination remain the authority for including library behavior. The
 implementation-status document identifies APIs that have not reached this
 boundary yet.
 
-The `std.resource` module declares the public `Dispose`, `MustScope`, and
+The `std.resource` package declares the public `Dispose`, `MustScope`, and
 `NoSuspend` concepts in ordinary Loom source. Moving these declarations into
-the `std` package removes copies from applications and fixtures; it does not
+the `std` module removes copies from applications and fixtures; it does not
 turn lexical cleanup into a library convention. The compiler identifies the
-definitions from its own `std` package, validates their fixed shapes, and
+definitions from its own `std` module, validates their fixed shapes, and
 enforces disposal, recursive resource obligations, and suspension restrictions
 statically. Concept witnesses lower through the normal direct-call machinery;
 there is no source-visible runtime resource registry or name-based runtime
@@ -91,14 +91,14 @@ The library owns reusable policy and algorithms, including:
 - task-composition conveniences that do not require new scheduler semantics;
 - high-level file, socket, logging, and process APIs over narrow platform
   operations;
-- protocol, encoding, and data-format modules.
+- protocol, encoding, and data-format packages.
 
 `std.process.arguments` and `std.process.environment` demonstrate the intended
 vertical boundary. Both are ordinary source functions with normal `DefId`
 calls. Only their bodies may import the exact private argument/environment
 primitives. The driver authenticates compiler-owned source origin together with
-the exact `std` package identity; semantic analysis then rechecks that nominal
-identity and the owning `std.process` module before accepting either import.
+the exact `std` module identity; semantic analysis then rechecks that nominal
+identity and the owning `std.process` package before accepting either import.
 Application imports of the private spelling follow ordinary resolution and
 fail; there is no public-name fallback to a builtin. The existing interpreter
 and native runtime operations remain the irreducible host boundary beneath

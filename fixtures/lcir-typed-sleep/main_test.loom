@@ -1,0 +1,14 @@
+import std.time.milliseconds
+
+test async fn sleepsWithIntAndDuration() {
+    let immediate = Task.sleep(0)
+    let integer = waitInt(1)
+    let duration = waitDuration(1)
+    let pressure = allocationPressure()
+    immediate.await
+    integer.await
+    let answer = duration.await
+    let survived = pressure.await
+    assert answer == 42
+    assert survived
+}
