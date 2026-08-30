@@ -5559,7 +5559,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
     }
 
     fn invalidate_mutated_place(&mut self, place: &Place, ty: TyId) {
-        let proof_place = proof_place(&place);
+        let proof_place = proof_place(place);
         self.proof_facts.invalidate(&proof_place);
         self.local_terms
             .retain(|_, term| !term.contains_place(&proof_place));
@@ -6810,9 +6810,22 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 );
             }
         }
+        let dynamic_mutations =
+            self.coerce_callable_arguments(signature, actual_types, &substitution);
+        self.apply_mutable_dynamic_mutations(dynamic_mutations);
+        let return_ty = self.types().substitute(signature.return_ty, &substitution);
+        (return_ty, substitution)
+    }
+
+    fn coerce_callable_arguments(
+        &mut self,
+        signature: &CallableSignature,
+        actual_types: Vec<(ExprId, TyId, TyId)>,
+        substitution: &Substitution,
+    ) -> Vec<(ExprId, Place, TyId)> {
         let mut dynamic_mutations = Vec::new();
         for (argument, actual, parameter_ty) in actual_types {
-            let expected = self.types().substitute(parameter_ty, &substitution);
+            let expected = self.types().substitute(parameter_ty, substitution);
             if self.has_must_scope_obligation_root(expected) {
                 self.error_at(
                     "MustScopeArgumentNotAllowed",
@@ -6868,6 +6881,10 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 }
             }
         }
+        dynamic_mutations
+    }
+
+    fn apply_mutable_dynamic_mutations(&mut self, dynamic_mutations: Vec<(ExprId, Place, TyId)>) {
         let dirty_before_call = self.self_dirty;
         let mut dirties_self = false;
         let mut reported_isolation = false;
@@ -6889,8 +6906,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             dirties_self |= crosses_self;
         }
         self.self_dirty |= dirties_self;
-        let return_ty = self.types().substitute(signature.return_ty, &substitution);
-        (return_ty, substitution)
     }
 
     fn transfer_task_receiver(
