@@ -97,6 +97,26 @@ fn representation_contains_task_handle(
     Some(false)
 }
 
+fn representation_is_exact_task_list(
+    representations: &RepresentationPlan,
+    root: ValueTypeId,
+) -> bool {
+    let Some(value) = representations.value_type(root) else {
+        return false;
+    };
+    let Type::List(element) = value.semantic() else {
+        return false;
+    };
+    value.kind() == ValueTypeKind::Direct
+        && representations.repr(value.repr()) == Some(&Repr::ManagedPointer)
+        && representations.type_id(element).is_some_and(|element| {
+            representations.value_type(element).is_some_and(|element| {
+                matches!(element.semantic(), Type::Task(_))
+                    && representations.repr(element.repr()) == Some(&Repr::TaskHandle)
+            })
+        })
+}
+
 fn semantic_type_is_task_free(root: &Type) -> bool {
     let mut pending = vec![root];
     let mut visited = 0_usize;
@@ -827,8 +847,10 @@ impl<'a> Validator<'a> {
                                                             | Repr::Sum(_)
                                                     )
                                                 )
-                                                && (representations.repr(element.repr())
+                                                && ((representations.repr(element.repr())
                                                     == Some(&Repr::TaskHandle)
+                                                    && element.kind() == ValueTypeKind::Direct
+                                                    && matches!(element.semantic(), Type::Task(_)))
                                                     || (semantic_type_is_task_free(
                                                         element.semantic(),
                                                     ) && representation_contains_task_handle(
@@ -894,8 +916,8 @@ impl<'a> Validator<'a> {
                         ValueTypeId::from_index(self.program.brand, index).is_some_and(|ty| {
                             representations.type_id(value_type.semantic()) == Some(ty)
                         });
-                    let valid_semantic = match value_type.semantic() {
-                        Type::Task(output) => {
+                    let valid_semantic = match (value_type.kind(), value_type.semantic()) {
+                        (ValueTypeKind::Direct, Type::Task(output)) => {
                             representations.type_id(output).is_some_and(|output_id| {
                                 representations.value_type(output_id).is_some_and(|output| {
                                     output.semantic() != &Type::Never
@@ -907,17 +929,21 @@ impl<'a> Validator<'a> {
                                 })
                             })
                         }
+                        (ValueTypeKind::Transparent { base }, Type::Nominal(_, _)) => {
+                            representations.value_type(base).is_some_and(|base| {
+                                representations.repr(base.repr()) == Some(&Repr::TaskHandle)
+                            })
+                        }
                         _ => false,
                     };
                     if !canonical
                         || !valid_semantic
-                        || value_type.kind() != ValueTypeKind::Direct
                         || representations.target().pointer_bits() != 64
                     {
                         self.error(
                             ValidationCode::RepresentationPlan,
                             format!("representations.type[{index}].task_handle"),
-                            "Task handles must be direct Task[output] values with a registered inhabited task-free output on a 64-bit target",
+                            "Task handles must be direct Task[output] values with a registered inhabited task-free output, or transparent constrained wrappers over one, on a 64-bit target",
                         );
                     }
                 }
@@ -1019,14 +1045,14 @@ impl<'a> Validator<'a> {
         let supported_product_field = |field: ValueTypeId| {
             representations.value_type(field).is_some_and(|value_type| {
                 value_type.semantic() != &Type::Never
-                    && semantic_type_is_task_free(value_type.semantic())
-                    && representation_contains_task_handle(&representations, field) == Some(false)
+                    && !representation_is_exact_task_list(&representations, field)
                     && matches!(
                         representations.repr(value_type.repr()),
                         Some(
                             Repr::Zst
                                 | Repr::Scalar(_)
                                 | Repr::ManagedPointer
+                                | Repr::TaskHandle
                                 | Repr::Product(_)
                                 | Repr::Sum(_)
                         )
@@ -1056,11 +1082,17 @@ impl<'a> Validator<'a> {
             }
             aggregate_costs[index] = 1_usize.saturating_add(product.fields().len());
             for (field_index, field) in product.fields().iter().copied().enumerate() {
-                if !supported_product_field(field) {
+                if representation_is_exact_task_list(&representations, field) {
                     self.error(
                         ValidationCode::RepresentationPlan,
                         format!("representations.product[{index}].field[{field_index}]"),
-                        "product fields must reference inhabited non-Task direct values; Text leaves require ManagedPointer",
+                        "exact List[Task[T]] is a top-level affine carrier and cannot be nested in a product",
+                    );
+                } else if !supported_product_field(field) {
+                    self.error(
+                        ValidationCode::RepresentationPlan,
+                        format!("representations.product[{index}].field[{field_index}]"),
+                        "product fields must reference inhabited direct values; Text leaves require ManagedPointer",
                     );
                 }
                 if let Some(nested) = aggregate_index(field) {
@@ -1109,13 +1141,21 @@ impl<'a> Validator<'a> {
                 .saturating_add(payload_fields);
             for (variant_index, variant) in sum.variants().iter().enumerate() {
                 for (field_index, field) in variant.fields().iter().copied().enumerate() {
-                    if !supported_sum_field(field) {
+                    if representation_is_exact_task_list(&representations, field) {
                         self.error(
                             ValidationCode::RepresentationPlan,
                             format!(
                                 "representations.sum[{index}].variant[{variant_index}].field[{field_index}]"
                             ),
-                            "sum payloads must reference inhabited non-Task direct values; Text leaves require ManagedPointer",
+                            "exact List[Task[T]] is a top-level affine carrier and cannot be nested in a sum",
+                        );
+                    } else if !supported_sum_field(field) {
+                        self.error(
+                            ValidationCode::RepresentationPlan,
+                            format!(
+                                "representations.sum[{index}].variant[{variant_index}].field[{field_index}]"
+                            ),
+                            "sum payloads must reference inhabited direct values; Text leaves require ManagedPointer",
                         );
                     }
                     if let Some(nested) = aggregate_index(field) {
@@ -1560,13 +1600,8 @@ impl<'a> Validator<'a> {
             .values()
             .iter()
             .map(|value| {
-                self.program
-                    .representations
-                    .value_type(value.ty())
-                    .is_some_and(|ty| {
-                        self.program.representations.repr(ty.repr()) == Some(&Repr::TaskHandle)
-                            || self.task_list_output(value.ty()).is_some()
-                    })
+                representation_contains_task_handle(&self.program.representations, value.ty())
+                    == Some(true)
             })
             .collect::<Vec<_>>();
         if !task_values.iter().any(|is_task| *is_task) {
@@ -1982,7 +2017,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::InvalidCoroutinePlan,
                         format!("{base}.coroutine.suspension[{index}].live[{live_index}]"),
-                        "typed coroutine live slots require closed direct values or a top-level Task handle",
+                        "typed coroutine live slots require supported closed by-value carriers",
                     );
                 }
             }
@@ -2412,7 +2447,13 @@ impl<'a> Validator<'a> {
                     let Some(product) = self.program.representations.product(*product) else {
                         return false;
                     };
-                    pending.extend(product.fields().iter().copied().map(|field| (field, false)));
+                    pending.extend(
+                        product
+                            .fields()
+                            .iter()
+                            .copied()
+                            .map(|field| (field, task_handle_allowed)),
+                    );
                 }
                 Some(Repr::Sum(sum)) => {
                     let Some(sum) = self.program.representations.sum(*sum) else {
@@ -2422,7 +2463,7 @@ impl<'a> Validator<'a> {
                         sum.variants()
                             .iter()
                             .flat_map(|variant| variant.fields().iter().copied())
-                            .map(|field| (field, false)),
+                            .map(|field| (field, task_handle_allowed)),
                     );
                 }
                 Some(Repr::Uninhabited) | None => return false,
@@ -3487,6 +3528,16 @@ impl<'a> Validator<'a> {
                     );
                 }
                 self.require_results(function, instruction, &[expected], &path);
+                if expected.is_some_and(|field| {
+                    representation_contains_task_handle(&self.program.representations, field)
+                        == Some(true)
+                }) {
+                    self.error(
+                        ValidationCode::InvalidTaskOwnership,
+                        format!("{path}.field"),
+                        "product.extract cannot split a Task-bearing field from its affine aggregate owner",
+                    );
+                }
             }
             InstructionKind::ProductInsert {
                 aggregate,
@@ -3499,6 +3550,16 @@ impl<'a> Validator<'a> {
                 value,
             } => {
                 let aggregate_type = function.value(*aggregate).map(|value| value.ty);
+                if aggregate_type.is_some_and(|aggregate| {
+                    representation_contains_task_handle(&self.program.representations, aggregate)
+                        == Some(true)
+                }) {
+                    self.error(
+                        ValidationCode::InvalidTaskOwnership,
+                        format!("{path}.aggregate"),
+                        "product insertion cannot rebuild or mutate an affine Task-bearing aggregate",
+                    );
+                }
                 if matches!(instruction.kind(), InstructionKind::ProductInsert { .. })
                     && aggregate_type.is_some_and(|ty| self.is_resource_capability_type(ty))
                 {
@@ -7832,7 +7893,7 @@ fn consume_task_handle(
         issues.push(TaskOwnershipIssue {
             site,
             value,
-            message: "a Task handle or List[Task] carrier is consumed more than once or is unavailable on an incoming control-flow path",
+            message: "an affine Task carrier is consumed more than once or is unavailable on an incoming control-flow path",
         });
     }
     *state = TaskAvailability::CONSUMED;
@@ -7853,7 +7914,7 @@ fn borrow_task_carrier(
         issues.push(TaskOwnershipIssue {
             site,
             value,
-            message: "a Task handle or List[Task] carrier is borrowed after it was consumed or is unavailable on an incoming control-flow path",
+            message: "an affine Task carrier is borrowed after it was consumed or is unavailable on an incoming control-flow path",
         });
     }
 }
@@ -7879,6 +7940,14 @@ fn transfer_task_ownership(
         match instruction.kind() {
             InstructionKind::ListLength { list } => borrow_task_carrier(
                 *list,
+                site,
+                &states,
+                task_values,
+                collect_issues,
+                &mut issues,
+            ),
+            InstructionKind::ProductExtract { aggregate, .. } => borrow_task_carrier(
+                *aggregate,
                 site,
                 &states,
                 task_values,
@@ -7939,6 +8008,14 @@ fn transfer_task_ownership(
         }
         TerminatorKind::Return(value) => consume_task_handle(
             *value,
+            site,
+            &mut states,
+            task_values,
+            collect_issues,
+            &mut issues,
+        ),
+        TerminatorKind::SumSwitch { scrutinee, .. } => consume_task_handle(
+            *scrutinee,
             site,
             &mut states,
             task_values,

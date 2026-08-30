@@ -606,11 +606,6 @@ pub fn lower_typed_artifact(
                 LoweringError::defect(LoweringDefectCode::InconsistentPlan, message)
             }
         })?;
-    for task in task_handles {
-        builder
-            .add_task_handle_type(task)
-            .map_err(LoweringError::from)?;
-    }
     for (index, planned) in effects.entries().iter().enumerate() {
         let function_id = planned.key.source();
         let function = mir.function(function_id).ok_or_else(|| {
@@ -1069,6 +1064,78 @@ fn task_free_type(program: &mir::Program, dyn_concepts: &DynConceptPlan, root: &
         }
     }
     true
+}
+
+#[derive(Default)]
+struct ByValueAffineCarriers {
+    handles: BTreeSet<Type>,
+    outputs: BTreeSet<Type>,
+}
+
+/// Collects the affine leaves that LCIR can move as part of one by-value
+/// product, sum, or transparent constrained wrapper. Exact `List[Task[T]]`
+/// remains a top-level-only carrier; admitting any repeated or erased carrier
+/// here would require an ownership operation that LCIR does not yet expose.
+fn by_value_affine_carriers(
+    program: &mir::Program,
+    dyn_concepts: &DynConceptPlan,
+    root: &Type,
+) -> Option<ByValueAffineCarriers> {
+    let mut carriers = ByValueAffineCarriers::default();
+    let mut pending = vec![root.clone()];
+    let mut visited = BTreeSet::new();
+    let mut inspected = 0_usize;
+    while let Some(semantic) = pending.pop() {
+        inspected = inspected.checked_add(1)?;
+        if inspected > crate::repr::DIRECT_PRODUCT_MAX_STRUCTURAL_NODES {
+            return None;
+        }
+        if !visited.insert(semantic.clone()) {
+            continue;
+        }
+        if matches!(&semantic, Type::Nominal(id, _) if program.prelude.text_map == Some(*id)) {
+            if task_free_type(program, dyn_concepts, &semantic) {
+                continue;
+            }
+            return None;
+        }
+        match &semantic {
+            Type::Task(_) => {
+                let physical = dyn_concepts.physical_type(&semantic)?;
+                let Type::Task(output) = &physical else {
+                    return None;
+                };
+                if !task_free_type(program, dyn_concepts, output) {
+                    return None;
+                }
+                carriers.outputs.insert(output.as_ref().clone());
+                carriers.handles.insert(physical);
+            }
+            Type::Tuple(elements) => pending.extend(elements.iter().cloned()),
+            Type::Nominal(_, _) => {
+                if let Some(fields) = concrete_any_record_fields(program, &semantic) {
+                    pending.extend(fields.into_vec());
+                } else if let Some(base) = concrete_refined_base(program, &semantic) {
+                    pending.push(base);
+                } else {
+                    let variants = closed_enum_variants(program, &semantic)?;
+                    pending.extend(variants.into_vec().into_iter().flat_map(Vec::from));
+                }
+            }
+            // A dynamic value remains an erased carrier even when its finite
+            // catalog happens to physicalize to one concrete candidate.
+            // Repeated affine aggregates and erased values need ownership
+            // operations beyond a single by-value move.
+            Type::View { .. } | Type::List(_) | Type::TaskOutcome(_) => {
+                if !task_free_type(program, dyn_concepts, &semantic) {
+                    return None;
+                }
+            }
+            Type::Never | Type::Unit | Type::Bool | Type::Int | Type::Float | Type::Text => {}
+            Type::Parameter(_) | Type::AssociatedProjection { .. } | Type::Error => return None,
+        }
+    }
+    (!carriers.handles.is_empty()).then_some(carriers)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1843,7 +1910,8 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
     }
 
     fn supported_value_type(&mut self, ty: &Type) -> bool {
-        let Some(ty) = self.dyn_concepts.physical_type(ty) else {
+        let semantic = ty;
+        let Some(ty) = self.dyn_concepts.physical_type(semantic) else {
             return false;
         };
         if ty == Type::Text {
@@ -1853,11 +1921,20 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             self.immortal_text = true;
             return true;
         }
-        if let Type::List(element) = &ty
-            && let Type::Task(output) = element.as_ref()
-        {
-            if self.target.pointer_bits() != 64
-                || !task_free_type(self.program, self.dyn_concepts, output)
+        if task_free_type(self.program, self.dyn_concepts, &ty) {
+            return self.aggregates.supports_value_type(&ty);
+        }
+        if self.target.pointer_bits() != 64 {
+            return false;
+        }
+        if matches!(semantic, Type::List(element) if matches!(element.as_ref(), Type::Task(_))) {
+            let Type::List(element) = &ty else {
+                return false;
+            };
+            let Type::Task(output) = element.as_ref() else {
+                return false;
+            };
+            if !task_free_type(self.program, self.dyn_concepts, output)
                 || !self.supported_value_type(output)
             {
                 return false;
@@ -1865,22 +1942,27 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             self.task_handles.insert(element.as_ref().clone());
             return self.aggregates.supports_task_list_type(&ty);
         }
-        if let Type::Task(output) = &ty {
-            if self.target.pointer_bits() != 64
-                || !task_free_type(self.program, self.dyn_concepts, output)
-            {
-                return false;
-            }
-            if !self.supported_value_type(output) {
-                return false;
-            }
-            self.task_handles.insert(ty.clone());
-            return true;
-        }
-        if !task_free_type(self.program, self.dyn_concepts, &ty) {
+        let Some(carriers) = by_value_affine_carriers(self.program, self.dyn_concepts, semantic)
+        else {
+            return false;
+        };
+        if carriers
+            .outputs
+            .iter()
+            .any(|output| !self.supported_value_type(output))
+        {
             return false;
         }
-        self.aggregates.supports_value_type(&ty)
+        for task in carriers.handles {
+            if !self.aggregates.admit_task_handle(&task) {
+                return false;
+            }
+            self.task_handles.insert(task);
+        }
+        match &ty {
+            Type::Task(_) => true,
+            _ => self.aggregates.supports_value_type(&ty),
+        }
     }
 
     fn supported_coroutine_frame_type(&self, ty: &Type, allow_task_handle: bool) -> bool {
@@ -1909,9 +1991,16 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 Type::Unit | Type::Bool | Type::Int | Type::Float | Type::Text | Type::List(_) => {
                     true
                 }
-                Type::Tuple(elements) => elements
-                    .iter()
-                    .all(|element| visit(program, dyn_concepts, element, false, active, remaining)),
+                Type::Tuple(elements) => elements.iter().all(|element| {
+                    visit(
+                        program,
+                        dyn_concepts,
+                        element,
+                        allow_task_handle,
+                        active,
+                        remaining,
+                    )
+                }),
                 Type::Task(_) => allow_task_handle,
                 Type::Nominal(id, arguments)
                     if (program.prelude.bytes == Some(*id) && arguments.is_empty())
@@ -1925,14 +2014,35 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     }
                     let supported = if let Some(fields) = concrete_any_record_fields(program, &ty) {
                         fields.iter().all(|field| {
-                            visit(program, dyn_concepts, field, false, active, remaining)
+                            visit(
+                                program,
+                                dyn_concepts,
+                                field,
+                                allow_task_handle,
+                                active,
+                                remaining,
+                            )
                         })
                     } else if let Some(base) = concrete_refined_base(program, &ty) {
-                        visit(program, dyn_concepts, &base, false, active, remaining)
+                        visit(
+                            program,
+                            dyn_concepts,
+                            &base,
+                            allow_task_handle,
+                            active,
+                            remaining,
+                        )
                     } else if let Some(variants) = closed_enum_variants(program, &ty) {
                         variants.iter().all(|variant| {
                             variant.iter().all(|payload| {
-                                visit(program, dyn_concepts, payload, false, active, remaining)
+                                visit(
+                                    program,
+                                    dyn_concepts,
+                                    payload,
+                                    allow_task_handle,
+                                    active,
+                                    remaining,
+                                )
                             })
                         })
                     } else {
@@ -2084,6 +2194,12 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
         if !self.supported_value_type(&ty) {
             return None;
         }
+        if !place.projection.is_empty()
+            && matches!(usage, PlaceUse::Write | PlaceUse::InOut)
+            && !task_free_type(self.program, self.dyn_concepts, &ty)
+        {
+            return None;
+        }
         let invariant_receiver = function.receiver == Some(mir::Receiver::Mutable)
             && function
                 .params
@@ -2104,6 +2220,9 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 .ok()
                 .and_then(|index| fields.get(index))
                 .cloned()?;
+            if !task_free_type(self.program, self.dyn_concepts, &next) {
+                return None;
+            }
             ty = next;
         }
         self.supported_value_type(&ty).then_some(ty)
@@ -2170,9 +2289,10 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     )
                 })
                 .is_some_and(|ty| {
-                    self.supported_record_type(&ty)
-                        || (is_invariant_record_type(self.program, &ty)
-                            && self.aggregates.supports_value_type(&ty))
+                    task_free_type(self.program, self.dyn_concepts, &ty)
+                        && (self.supported_record_type(&ty)
+                            || (is_invariant_record_type(self.program, &ty)
+                                && self.aggregates.supports_value_type(&ty)))
                 });
         if function.receiver == Some(mir::Receiver::Mutable) && !mutable_pod_receiver {
             self.function_item(UnsupportedFeature::MutableReceiver, function, &base);
@@ -2185,9 +2305,10 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 && InstanceSubstitution::new(self.program, key)
                     .instantiate_type(&parameter.ty)
                     .is_ok_and(|ty| {
-                        self.supported_record_type(&ty)
-                            || (is_invariant_record_type(self.program, &ty)
-                                && self.aggregates.supports_value_type(&ty))
+                        task_free_type(self.program, self.dyn_concepts, &ty)
+                            && (self.supported_record_type(&ty)
+                                || (is_invariant_record_type(self.program, &ty)
+                                    && self.aggregates.supports_value_type(&ty)))
                     });
             if parameter.mutable && !supported_inout_receiver {
                 self.item(
@@ -2630,10 +2751,30 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
         path: &str,
     ) -> bool {
         match &statement.kind {
-            StatementKind::Let { value, .. }
-            | StatementKind::LetTuple { value, .. }
-            | StatementKind::Scoped { value, .. } => {
+            StatementKind::Let { value, .. } | StatementKind::Scoped { value, .. } => {
                 self.visit_expr(function, key, value, &format!("{path}.value"))
+            }
+            StatementKind::LetTuple { value, .. } => {
+                let continues = self.visit_expr(function, key, value, &format!("{path}.value"));
+                let task_free = self
+                    .instantiated_type(
+                        function,
+                        key,
+                        Some(value),
+                        &value.ty,
+                        value.span,
+                        &format!("{path}.value.ty"),
+                    )
+                    .is_some_and(|ty| task_free_type(self.program, self.dyn_concepts, &ty));
+                if continues && !task_free {
+                    self.expression_item(
+                        UnsupportedFeature::ProjectedPlace,
+                        function,
+                        value,
+                        &format!("{path}.value"),
+                    );
+                }
+                continues
             }
             StatementKind::ForRange {
                 start, end, body, ..
@@ -3389,6 +3530,11 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                                                 .physical_type(ty)
                                                 .unwrap_or_else(|| ty.clone());
                                             mutable_receiver.as_ref() == Some(&physical)
+                                                && task_free_type(
+                                                    self.program,
+                                                    self.dyn_concepts,
+                                                    &physical,
+                                                )
                                                 && (self.supported_record_type(&physical)
                                                     || (is_invariant_record_type(
                                                         self.program,
@@ -3409,9 +3555,14 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                                             .dyn_concepts
                                             .physical_type(ty)
                                             .unwrap_or_else(|| ty.clone());
-                                        self.supported_record_type(&physical)
-                                            || (is_invariant_record_type(self.program, &physical)
-                                                && self.aggregates.supports_value_type(&physical))
+                                        task_free_type(self.program, self.dyn_concepts, &physical)
+                                            && (self.supported_record_type(&physical)
+                                                || (is_invariant_record_type(
+                                                    self.program,
+                                                    &physical,
+                                                ) && self
+                                                    .aggregates
+                                                    .supports_value_type(&physical)))
                                     })
                             };
                             if !allowed {
@@ -12526,39 +12677,88 @@ mod tests {
     use crate::ids::ProgramBrand;
 
     #[test]
-    fn task_free_proof_expands_nominal_fields_independently_of_planner_state() {
+    fn affine_proofs_expand_nominal_fields_and_keep_task_lists_top_level() {
         let wrapper = mir::TypeId(0);
+        let direct_wrapper = mir::TypeId(1);
+        let refined_task = mir::TypeId(2);
         let task_list = Type::List(Box::new(Type::Task(Box::new(Type::Int))));
         let program = mir::Program {
-            types: vec![mir::TypeDef {
-                id: wrapper,
-                name: "TaskWrapper".into(),
-                span: Span::default(),
-                type_parameters: 0,
-                kind: mir::TypeDefKind::Record {
-                    fields: vec![mir::FieldDef {
-                        name: "tasks".into(),
-                        ty: task_list.clone(),
-                        span: Span::default(),
-                    }],
-                    invariant: None,
+            types: vec![
+                mir::TypeDef {
+                    id: wrapper,
+                    name: "TaskListWrapper".into(),
+                    span: Span::default(),
+                    type_parameters: 0,
+                    kind: mir::TypeDefKind::Record {
+                        fields: vec![mir::FieldDef {
+                            name: "tasks".into(),
+                            ty: task_list.clone(),
+                            span: Span::default(),
+                        }],
+                        invariant: None,
+                    },
                 },
-            }],
+                mir::TypeDef {
+                    id: direct_wrapper,
+                    name: "TaskWrapper".into(),
+                    span: Span::default(),
+                    type_parameters: 0,
+                    kind: mir::TypeDefKind::Record {
+                        fields: vec![mir::FieldDef {
+                            name: "task".into(),
+                            ty: Type::Task(Box::new(Type::Int)),
+                            span: Span::default(),
+                        }],
+                        invariant: None,
+                    },
+                },
+                mir::TypeDef {
+                    id: refined_task,
+                    name: "RefinedTask".into(),
+                    span: Span::default(),
+                    type_parameters: 0,
+                    kind: mir::TypeDefKind::Refined {
+                        base: Type::Task(Box::new(Type::Int)),
+                        predicate: mir::Contract {
+                            code: "true".into(),
+                            span: Span::default(),
+                            expression: mir::ContractExpr {
+                                kind: mir::ContractExprKind::Constant(mir::Constant::Bool(true)),
+                                span: Span::default(),
+                            },
+                        },
+                    },
+                },
+            ],
             ..mir::Program::default()
         };
         let dyn_concepts = DynConceptPlan::default();
         let wrapper_type = Type::Nominal(wrapper, Vec::new());
+        let direct_wrapper_type = Type::Nominal(direct_wrapper, Vec::new());
+        let refined_task_type = Type::Nominal(refined_task, Vec::new());
         assert!(!task_free_type(&program, &dyn_concepts, &wrapper_type));
         assert!(!task_free_type(
             &program,
             &dyn_concepts,
-            &Type::List(Box::new(wrapper_type))
+            &Type::List(Box::new(wrapper_type.clone()))
         ));
         assert!(!task_free_type(
             &program,
             &dyn_concepts,
             &Type::Task(Box::new(task_list))
         ));
+        assert!(
+            by_value_affine_carriers(&program, &dyn_concepts, &direct_wrapper_type).is_some(),
+            "a product may carry a direct Task leaf by value"
+        );
+        assert!(
+            by_value_affine_carriers(&program, &dyn_concepts, &refined_task_type).is_some(),
+            "a constrained wrapper may carry a direct Task by value"
+        );
+        assert!(
+            by_value_affine_carriers(&program, &dyn_concepts, &wrapper_type).is_none(),
+            "exact List[Task] must not become a nested product leaf"
+        );
     }
 
     #[test]

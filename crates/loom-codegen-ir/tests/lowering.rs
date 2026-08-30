@@ -6367,6 +6367,10 @@ test fn fails() Result[Unit, Problem] { Err(Problem.Failed) }
 }
 
 #[test]
+#[expect(
+    clippy::single_element_loop,
+    reason = "the table form keeps unsupported aggregate graph cases easy to extend"
+)]
 fn managed_sums_lower_directly_while_unsupported_sum_graphs_fall_back_atomically() {
     let managed = r#"record Label { value Text }
 
@@ -6413,17 +6417,7 @@ pub fn main() {
     };
     assert!(!dump_program(dynamic_sum.program()).contains("View["));
 
-    for source in [
-        r"enum Chain {
-    End
-    Next(Chain)
-}
-
-pub fn main() {
-    discard Chain.End
-}
-",
-        r"enum Work { Pending(Task[Int]) }
+    let task_sum = r"enum Work { Pending(Task[Int]) }
 
 async fn child() Int { 1 }
 
@@ -6433,8 +6427,24 @@ pub async fn main() {
         Pending(task) => { discard task.await }
     }
 }
-",
-    ] {
+";
+    let LoweringOutcome::Complete(task_sum) = lower_run(task_sum) else {
+        panic!("a closed sum may move one Task payload through sum.switch")
+    };
+    let task_sum_dump = dump_program(task_sum.program());
+    assert!(task_sum_dump.contains("sum.construct"), "{task_sum_dump}");
+    assert!(task_sum_dump.contains("sum.switch"), "{task_sum_dump}");
+
+    for source in [r"enum Chain {
+    End
+    Next(Chain)
+}
+
+pub fn main() {
+    discard Chain.End
+}
+"]
+    {
         let LoweringOutcome::Unsupported(report) = lower_run(source) else {
             panic!("unsupported sum graph must select atomic fallback")
         };
@@ -6447,6 +6457,59 @@ pub async fn main() {
                 | UnsupportedFeature::RefinedValue
                 | UnsupportedFeature::View
                 | UnsupportedFeature::AsyncFunction
+                | UnsupportedFeature::TaskOperation
+        )));
+    }
+}
+
+#[test]
+fn task_carrying_options_move_through_sync_calls_returns_and_matches() {
+    let source = r"async fn child() Int { 1 }
+
+fn forward(value Option[Task[Int]]) Option[Task[Int]] {
+    value
+}
+
+pub async fn main() {
+    let pending = forward(Some(child()))
+    match pending {
+        Some(task) => { discard task.await }
+        None => Unit
+    }
+}
+";
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("Option[Task[Int]] whole-carrier transfer must use typed LCIR")
+    };
+    let dump = dump_program(artifact.program());
+    for required in ["sum.construct", "call i", "sum.switch", "await_tasks"] {
+        assert!(dump.contains(required), "missing `{required}`:\n{dump}");
+    }
+}
+
+#[test]
+#[expect(
+    clippy::single_element_loop,
+    reason = "the table form keeps unsupported affine operations easy to extend"
+)]
+fn unsupported_affine_carrier_operations_keep_atomic_lcir_fallback() {
+    for source in [r"async fn child() Int { 1 }
+
+pub async fn main() {
+    let task, label = (child(), 1)
+    assert label == 1
+    discard task.await
+}
+"]
+    {
+        let LoweringOutcome::Unsupported(report) = lower_run(source) else {
+            panic!("unsupported affine carrier operation entered typed LCIR")
+        };
+        assert!(report.items().iter().any(|item| matches!(
+            item.feature(),
+            UnsupportedFeature::ExpressionType
+                | UnsupportedFeature::ProjectedPlace
+                | UnsupportedFeature::SignatureType
                 | UnsupportedFeature::TaskOperation
         )));
     }

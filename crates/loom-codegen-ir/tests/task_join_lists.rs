@@ -360,8 +360,7 @@ fn representation_validation_rejects_direct_and_nominally_hidden_task_outputs() 
             .expect_err("Task outputs cannot carry nested Task ownership");
         assert!(errors.as_slice().iter().any(|error| {
             error.code() == ValidationCode::RepresentationPlan
-                && (error.message().contains("task-free output")
-                    || error.message().contains("non-Task direct values"))
+                && error.message().contains("task-free output")
         }));
     }
 }
