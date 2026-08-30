@@ -10236,6 +10236,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         enabled: bool,
         check: impl FnOnce(&mut Self) -> Result,
     ) -> Result {
+        let dirties_self = enabled && self.check_inout_invariant_boundary(receiver);
         let scope = enabled
             .then(|| self.semantics.expression_places.get(receiver).cloned())
             .flatten()
@@ -10258,7 +10259,60 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             self.borrows
                 .retain(|borrow| borrow.identity != BorrowIdentity::InOut(scope));
         }
+        if dirties_self {
+            self.self_dirty = true;
+        }
         result
+    }
+
+    /// Rejects an inout receiver that would mutate through a record whose
+    /// invariant is outside the current method's recheck boundary. The one
+    /// permitted protected prefix is the current `self` root: its owning
+    /// method already rechecks that invariant on normal exit.
+    fn check_inout_invariant_boundary(&mut self, receiver: ExprId) -> bool {
+        let Some(place) = self.semantics.expression_places.get(receiver).cloned() else {
+            return false;
+        };
+        if place.projections.is_empty() {
+            return false;
+        }
+        let self_definition =
+            match place.root {
+                PlaceRoot::SelfValue => self.environment.self_ty.and_then(|ty| {
+                    match self.analyzer.typed.types.data(ty) {
+                        TyData::Nominal { definition, .. } => Some(*definition),
+                        _ => None,
+                    }
+                }),
+                PlaceRoot::Param(_) | PlaceRoot::Local(_) => None,
+            };
+        let mut crosses_self_invariant = false;
+        for (index, projection) in place.projections.iter().enumerate() {
+            let PlaceProjection::Field(field) = projection;
+            let DefinitionKind::Field(field) = &self.analyzer.program.definitions[*field].kind
+            else {
+                continue;
+            };
+            let owner = field.owner;
+            let DefinitionKind::Record(record) = &self.analyzer.program.definitions[owner].kind
+            else {
+                continue;
+            };
+            if record.invariant.is_none() {
+                continue;
+            }
+            if index == 0 && self_definition == Some(owner) {
+                crosses_self_invariant = true;
+                continue;
+            }
+            self.error_at(
+                "InvariantInteriorMutation",
+                "a mutable receiver call cannot cross an invariant-bearing record boundary; call a `mut self` method on that record so its invariant is rechecked",
+                receiver,
+            );
+            return false;
+        }
+        crosses_self_invariant && place.mutability == Mutability::Mutable
     }
 
     fn with_optional_inout_argument_scope<Result>(
