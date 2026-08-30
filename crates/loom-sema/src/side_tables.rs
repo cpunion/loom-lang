@@ -1,6 +1,6 @@
 //! Semantic facts keyed by immutable HIR identities.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use loom_hir::{
     ArenaMap, BodyId, DefId, ExprId, GenericParamId, LocalId, ParamId, PatternId, ReceiverKind,
@@ -241,6 +241,9 @@ pub struct BodySemantics {
     pub construction_checks: ArenaMap<ExprId, ConstructionCheck>,
     /// Per-assert proof disposition, keyed by the assertion condition.
     pub assertion_checks: ArenaMap<ExprId, RuntimeCheck>,
+    /// Assertions whose successful evaluation re-establishes the current
+    /// mutable receiver's declared invariant after protected mutation.
+    pub receiver_invariant_recoveries: BTreeSet<ExprId>,
     /// Proof disposition of this body when it is a refinement predicate,
     /// record invariant, requires, or ensures body.
     pub contract_check: Option<RuntimeCheck>,

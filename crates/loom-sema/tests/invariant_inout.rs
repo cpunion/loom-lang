@@ -53,6 +53,10 @@ impl Holder {
     method bypassNestedInvariant(mut self) {
         self.value.counter.decrement()
     }
+
+    method assignThroughNestedInvariant(mut self) {
+        self.value.counter.value = 0
+    }
 }
 
 fn bypassExternalInvariant() {
@@ -65,7 +69,7 @@ fn bypassExternalInvariant() {
         .iter()
         .filter(|diagnostic| diagnostic.code == "InvariantInteriorMutation")
         .count();
-    assert_eq!(invariant_interior, 2, "{diagnostics:#?}");
+    assert_eq!(invariant_interior, 3, "{diagnostics:#?}");
     assert!(
         diagnostics
             .iter()
@@ -98,18 +102,45 @@ impl Positive {
         self.counter.increment()
         assert self.counter.value >= 0
     }
+
+    method reset(mut self) {
+        self.counter.value = 0
+        assert self.counter.value >= 0
+    }
 }
 
 record Plain {
     counter Counter
+    positive Positive
+}
+
+impl Plain {
+    method observe(self) {
+    }
+
+    method mutateThenObserve(mut self) {
+        self.counter.value = 1
+        self.observe()
+    }
+
+    method replacePositive(mut self, value Positive) {
+        self.positive = value
+    }
 }
 
 fn valid() {
     var positive = Positive { counter = Counter { value = 0 } }
     positive.increment()
 
-    var plain = Plain { counter = Counter { value = 0 } }
+    positive.reset()
+
+    var plain = Plain {
+        counter = Counter { value = 0 }
+        positive = Positive { counter = Counter { value = 0 } }
+    }
     plain.counter.increment()
+    plain.mutateThenObserve()
+    plain.replacePositive(positive)
 }
 ",
     );
@@ -128,11 +159,32 @@ impl Counter {
     method decrement(mut self) {
         self.value = self.value - 1
     }
+
+    method add(mut self, value Int) {
+        self.value = self.value + value
+    }
+
+    method decrementAndRead(mut self) Int {
+        self.value = self.value - 1
+        self.value
+    }
+}
+
+concept Increment {
+    method increment(mut self)
+}
+
+impl Increment for Counter {
+    method increment(mut self) {
+        self.value = self.value + 1
+    }
 }
 
 record Positive {
     counter Counter
-    invariant self.counter.value >= 0
+    other Counter
+    items List[Int]
+    invariant self.counter.value >= 0 && self.other.value >= 0
 }
 
 impl Positive {
@@ -149,6 +201,20 @@ impl Positive {
         assert self.counter.value >= 0
         self.observe()
     }
+
+    method nestedArgumentMutation(mut self) {
+        self.counter.add(self.other.decrementAndRead())
+    }
+
+    method repeatedBuiltinMutation(mut self) {
+        self.items.add(1)
+        self.items.add(2)
+    }
+
+    method qualifiedAfterMutation(mut self) {
+        self.counter.decrement()
+        <Counter as Increment>.increment(self.other)
+    }
 }
 ",
     );
@@ -157,7 +223,7 @@ impl Positive {
             .iter()
             .filter(|diagnostic| diagnostic.code == "InvariantIsolationViolation")
             .count(),
-        1,
+        4,
         "{diagnostics:#?}"
     );
     assert!(

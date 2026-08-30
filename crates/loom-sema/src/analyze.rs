@@ -2752,6 +2752,12 @@ enum PlaceAccess {
     Write,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InvariantMutation {
+    Assignment,
+    ReceiverCall,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ActiveBorrow {
     owner: Place,
@@ -3955,7 +3961,11 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     };
                     self.semantics.assertion_checks.insert(*predicate, check);
                     self.proof_facts.assume(term, true);
-                    self.recover_receiver_invariant();
+                    if self.recover_receiver_invariant() {
+                        self.semantics
+                            .receiver_invariant_recoveries
+                            .insert(*predicate);
+                    }
                 }
             }
             if let Some(unreachable_flow) = unreachable_flow {
@@ -4412,6 +4422,12 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 target,
             );
         }
+        let dirties_self = matches!(place.root, PlaceRoot::SelfValue)
+            && self.check_invariant_mutation_boundary(
+                target,
+                &place,
+                InvariantMutation::Assignment,
+            );
         self.check_expr(value, Some(target_ty), ExpressionContext::Value);
         let value_term = self.proof_term(value);
         let proof_place = proof_place(&place);
@@ -4433,7 +4449,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         }
         let established = ProofTerm::Place(proof_place);
         self.assume_established_type(target_ty, &established);
-        if matches!(place.root, PlaceRoot::SelfValue) && !place.projections.is_empty() {
+        if dirties_self {
             self.self_dirty = true;
         }
         let unit = self.types().builtin(BuiltinType::Unit);
@@ -5445,12 +5461,12 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         self.assume_established_record_fields(ty, value);
     }
 
-    fn recover_receiver_invariant(&mut self) {
+    fn recover_receiver_invariant(&mut self) -> bool {
         if !self.self_dirty {
-            return;
+            return false;
         }
         let Some(self_ty) = self.environment.self_ty else {
-            return;
+            return false;
         };
         let value = ProofTerm::Place(ProofPlace {
             root: ProofRoot::SelfValue,
@@ -5461,7 +5477,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             .is_some_and(|invariant| self.proof_facts.prove(&invariant) == ProofResult::Proven)
         {
             self.self_dirty = false;
+            return true;
         }
+        false
     }
 
     fn assume_established_record_fields(&mut self, ty: TyId, value: &ProofTerm) {
@@ -6665,6 +6683,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             return (self.types().error(), passing);
         };
         self.check_expr(*receiver, Some(resource), ExpressionContext::Value);
+        self.check_receiver_isolation(*receiver);
         if passing == ReceiverPassing::InOut
             && self
                 .semantics
@@ -6957,6 +6976,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         let receiver_ty = self.check_expr(receiver, None, ExpressionContext::Value);
         self.allow_dirty_self_projection = previous;
         self.checking_scoped_receiver = previous_scoped;
+        self.check_receiver_isolation(receiver);
         if let TyData::List(element) = self.types().data(receiver_ty).clone()
             && let Some(result) = self.check_list_method_call(
                 expression,
@@ -7040,25 +7060,10 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             // target may be recorded for this rejected spelling.
             return self.types().builtin(BuiltinType::Unit);
         }
-        let receiver_is_self = self
-            .semantics
-            .expression_places
-            .get(receiver)
-            .is_some_and(|place| matches!(place.root, PlaceRoot::SelfValue));
-        if self.cleanup_depth > 0 && receiver_is_self {
-            self.current_defer_self_boundaries.insert(receiver);
-        }
         if self.has_must_scope_obligation_root(receiver_ty) && !scoped_receiver {
             self.error_at(
                 "MustScopeRequiresScoped",
                 "methods on a MustScope value require a receiver already bound with `scoped`",
-                receiver,
-            );
-        }
-        if self.self_dirty && receiver_is_self {
-            self.error_at(
-                "InvariantIsolationViolation",
-                "a mutated receiver cannot be used for a nested method call",
                 receiver,
             );
         }
@@ -8211,6 +8216,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             (arguments, None)
         } else if let Some((receiver, rest)) = arguments.split_first() {
             self.check_expr(*receiver, Some(self_ty), ExpressionContext::Value);
+            self.check_receiver_isolation(*receiver);
             if signature.receiver == Some(ReceiverKind::Mutable)
                 && self
                     .semantics
@@ -10236,9 +10242,21 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         enabled: bool,
         check: impl FnOnce(&mut Self) -> Result,
     ) -> Result {
-        let dirties_self = enabled && self.check_inout_invariant_boundary(receiver);
+        let receiver_place = self.semantics.expression_places.get(receiver).cloned();
+        let receiver_uses_self = receiver_place
+            .as_ref()
+            .is_some_and(|place| matches!(place.root, PlaceRoot::SelfValue));
+        let dirty_before_arguments = self.self_dirty;
+        let dirties_self = enabled
+            && receiver_place.as_ref().is_some_and(|place| {
+                self.check_invariant_mutation_boundary(
+                    receiver,
+                    place,
+                    InvariantMutation::ReceiverCall,
+                )
+            });
         let scope = enabled
-            .then(|| self.semantics.expression_places.get(receiver).cloned())
+            .then_some(receiver_place)
             .flatten()
             .and_then(|owner| {
                 let region = *self.regions.last().expect("body has a lexical region");
@@ -10259,25 +10277,52 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             self.borrows
                 .retain(|borrow| borrow.identity != BorrowIdentity::InOut(scope));
         }
+        if receiver_uses_self && !dirty_before_arguments && self.self_dirty {
+            self.error_at(
+                "InvariantIsolationViolation",
+                "a call argument mutated `self` before this receiver call could begin",
+                receiver,
+            );
+        }
         if dirties_self {
             self.self_dirty = true;
         }
         result
     }
 
-    /// Rejects an inout receiver that would mutate through a record whose
-    /// invariant is outside the current method's recheck boundary. The one
-    /// permitted protected prefix is the current `self` root: its owning
-    /// method already rechecks that invariant on normal exit.
-    fn check_inout_invariant_boundary(&mut self, receiver: ExprId) -> bool {
-        let Some(place) = self.semantics.expression_places.get(receiver).cloned() else {
-            return false;
-        };
+    fn check_receiver_isolation(&mut self, receiver: ExprId) {
+        let receiver_is_self = self
+            .semantics
+            .expression_places
+            .get(receiver)
+            .is_some_and(|place| matches!(place.root, PlaceRoot::SelfValue));
+        if self.cleanup_depth > 0 && receiver_is_self {
+            self.current_defer_self_boundaries.insert(receiver);
+        }
+        if self.self_dirty && receiver_is_self {
+            self.error_at(
+                "InvariantIsolationViolation",
+                "a mutated receiver cannot be used for a nested method call",
+                receiver,
+            );
+        }
+    }
+
+    /// Rejects mutation through a record whose invariant is outside the
+    /// current method's recheck boundary. The one permitted protected prefix
+    /// is the current `self` root: its owning method rechecks that invariant on
+    /// normal exit.
+    fn check_invariant_mutation_boundary(
+        &mut self,
+        expression: ExprId,
+        place: &Place,
+        mutation: InvariantMutation,
+    ) -> bool {
         if place.projections.is_empty() {
             return false;
         }
         let self_definition =
-            match place.root {
+            match &place.root {
                 PlaceRoot::SelfValue => self.environment.self_ty.and_then(|ty| {
                     match self.analyzer.typed.types.data(ty) {
                         TyData::Nominal { definition, .. } => Some(*definition),
@@ -10307,8 +10352,11 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             }
             self.error_at(
                 "InvariantInteriorMutation",
-                "a mutable receiver call cannot cross an invariant-bearing record boundary; call a `mut self` method on that record so its invariant is rechecked",
-                receiver,
+                match mutation {
+                    InvariantMutation::Assignment => "assignment cannot cross an invariant-bearing record boundary; replace the complete record or call its `mut self` method",
+                    InvariantMutation::ReceiverCall => "a mutable receiver call cannot cross an invariant-bearing record boundary; call a `mut self` method on that record so its invariant is rechecked",
+                },
+                expression,
             );
             return false;
         }
