@@ -1469,8 +1469,14 @@ async fn pathFiles(path Path) {
     ] {
         assert!(debug.contains(builtin), "missing {builtin} in {debug}");
     }
-    assert!(!debug.contains("FileOpenReadPath"), "{debug}");
-    assert!(!debug.contains("FileCreatePath"), "{debug}");
+    for removed_builtin in [
+        "FileOpenReadPath",
+        "FileCreatePath",
+        "FileTryOpenReadPath",
+        "FileTryCreatePath",
+    ] {
+        assert!(!debug.contains(removed_builtin), "{debug}");
+    }
     assert_eq!(debug.matches("Scoped").count(), 2, "{debug}");
     assert!(!debug.contains("Defer"), "{debug}");
 }

@@ -6188,12 +6188,8 @@ impl<'program> Validator<'program> {
             builtin,
             Builtin::FileOpenRead
                 | Builtin::FileCreate
-                | Builtin::FileOpenReadPath
-                | Builtin::FileCreatePath
                 | Builtin::FileTryOpenRead
                 | Builtin::FileTryCreate
-                | Builtin::FileTryOpenReadPath
-                | Builtin::FileTryCreatePath
                 | Builtin::FileReadText
                 | Builtin::FileWriteText
                 | Builtin::FileTryReadText
@@ -6538,8 +6534,6 @@ impl<'program> Validator<'program> {
             | Builtin::DurationAsMilliseconds
             | Builtin::FileOpenRead
             | Builtin::FileCreate
-            | Builtin::FileOpenReadPath
-            | Builtin::FileCreatePath
             | Builtin::FileReadText
             | Builtin::FileClose
             | Builtin::SocketReadText
@@ -6551,8 +6545,6 @@ impl<'program> Validator<'program> {
             | Builtin::StdoutWrite
             | Builtin::FileTryOpenRead
             | Builtin::FileTryCreate
-            | Builtin::FileTryOpenReadPath
-            | Builtin::FileTryCreatePath
             | Builtin::FileTryReadText
             | Builtin::SocketTryReadText => 1,
         };
@@ -6610,19 +6602,8 @@ impl<'program> Validator<'program> {
             {
                 file.map(|id| Type::Task(Box::new(Type::Nominal(id, Vec::new()))))
             }
-            Builtin::FileOpenReadPath | Builtin::FileCreatePath
-                if Self::nominal_builtin_argument(types, 0, self.program.prelude.path) =>
-            {
-                file.map(|id| Type::Task(Box::new(Type::Nominal(id, Vec::new()))))
-            }
             Builtin::FileTryOpenRead | Builtin::FileTryCreate
                 if types_compatible(&Type::Text, types[0].as_ref()?) =>
-            {
-                let file = Type::Nominal(file?, Vec::new());
-                self.expected_io_result_task(file, span, path)
-            }
-            Builtin::FileTryOpenReadPath | Builtin::FileTryCreatePath
-                if Self::nominal_builtin_argument(types, 0, self.program.prelude.path) =>
             {
                 let file = Type::Nominal(file?, Vec::new());
                 self.expected_io_result_task(file, span, path)
@@ -8730,8 +8711,6 @@ impl<'program> Validator<'program> {
         match builtin {
             Builtin::FileOpenRead
             | Builtin::FileCreate
-            | Builtin::FileOpenReadPath
-            | Builtin::FileCreatePath
             | Builtin::FileReadText
             | Builtin::FileWriteText
             | Builtin::SocketConnect
@@ -8739,8 +8718,6 @@ impl<'program> Validator<'program> {
             | Builtin::SocketWriteText
             | Builtin::FileTryOpenRead
             | Builtin::FileTryCreate
-            | Builtin::FileTryOpenReadPath
-            | Builtin::FileTryCreatePath
             | Builtin::FileTryReadText
             | Builtin::FileTryWriteText
             | Builtin::SocketTryConnect

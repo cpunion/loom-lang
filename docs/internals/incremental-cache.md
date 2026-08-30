@@ -48,7 +48,7 @@ larger graph.
 
 ## Persistent layers
 
-The persistent cache schema is `11`. Current layers include source parse,
+The persistent cache schema is `12`. Current layers include source parse,
 package-interface presence, typed package state, complete checked MIR, target
 objects, and deterministic final artifacts.
 
@@ -79,15 +79,17 @@ cached semantic bytes never grant a same-named function or enum compiler-owned
 authority.
 
 Task policy and timer calls currently store a resolved `TaskIntrinsic` in typed
-body facts. Cache schema `11` and the `loom-compilation-cache-v11` domain cover
-that identity, the current compiler-private Float and logging primitive sets,
-and the replacement of fixed standard type slots with exact source definitions.
+body facts. Cache schema `12` and the `loom-compilation-cache-v12` domain cover
+that identity, the current compiler-private Float, logging, file, and network
+primitive sets, and the replacement of fixed standard type slots with exact
+source definitions. They also exclude the removed Path-specific file builtin
+tags: the source wrappers convert Path to Text before the private primitive.
 Whether a body is reused or conservatively reanalyzed, MIR lowering consumes
 only the resolved identity; it never reconstructs a policy or canonical
 standard-library item from source spelling. The Task cache identity disappears
 when the temporary catalog is replaced by ordinary source definitions.
 
-Checked-MIR cache envelopes use artifact version `35` and its exact current
+Checked-MIR cache envelopes use artifact version `36` and its exact current
 MIR shape. The artifact profile requires the complete compiler-known resource
 identity trio, all matching prelude ids, the canonical six-field
 `ConstraintError`, the exact source-backed decoding/path error identities and

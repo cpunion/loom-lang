@@ -1022,8 +1022,6 @@ fn builtin_requirements(builtin: Builtin) -> Result<RuntimeRequirements, Codegen
         | Builtin::ProcessEnvironment => RuntimeRequirements::NONE,
         Builtin::FileOpenRead
         | Builtin::FileCreate
-        | Builtin::FileOpenReadPath
-        | Builtin::FileCreatePath
         | Builtin::FileReadText
         | Builtin::FileWriteText
         | Builtin::SocketConnect
@@ -1031,8 +1029,6 @@ fn builtin_requirements(builtin: Builtin) -> Result<RuntimeRequirements, Codegen
         | Builtin::SocketWriteText
         | Builtin::FileTryOpenRead
         | Builtin::FileTryCreate
-        | Builtin::FileTryOpenReadPath
-        | Builtin::FileTryCreatePath
         | Builtin::FileTryReadText
         | Builtin::FileTryWriteText
         | Builtin::SocketTryConnect
@@ -1447,8 +1443,6 @@ mod tests {
         for builtin in [
             Builtin::FileOpenRead,
             Builtin::FileCreate,
-            Builtin::FileOpenReadPath,
-            Builtin::FileCreatePath,
             Builtin::FileReadText,
             Builtin::FileWriteText,
             Builtin::FileClose,
@@ -1458,8 +1452,6 @@ mod tests {
             Builtin::SocketClose,
             Builtin::FileTryOpenRead,
             Builtin::FileTryCreate,
-            Builtin::FileTryOpenReadPath,
-            Builtin::FileTryCreatePath,
             Builtin::FileTryReadText,
             Builtin::FileTryWriteText,
             Builtin::SocketTryConnect,

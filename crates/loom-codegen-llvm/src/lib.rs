@@ -60,8 +60,6 @@ pub(crate) const fn builtin_requires_typed_io(builtin: Builtin) -> bool {
         builtin,
         Builtin::FileOpenRead
             | Builtin::FileCreate
-            | Builtin::FileOpenReadPath
-            | Builtin::FileCreatePath
             | Builtin::FileReadText
             | Builtin::FileWriteText
             | Builtin::FileClose
@@ -71,8 +69,6 @@ pub(crate) const fn builtin_requires_typed_io(builtin: Builtin) -> bool {
             | Builtin::SocketClose
             | Builtin::FileTryOpenRead
             | Builtin::FileTryCreate
-            | Builtin::FileTryOpenReadPath
-            | Builtin::FileTryCreatePath
             | Builtin::FileTryReadText
             | Builtin::FileTryWriteText
             | Builtin::SocketTryConnect
@@ -103,8 +99,6 @@ mod typed_io_guard_tests {
         for builtin in [
             Builtin::FileOpenRead,
             Builtin::FileCreate,
-            Builtin::FileOpenReadPath,
-            Builtin::FileCreatePath,
             Builtin::FileReadText,
             Builtin::FileWriteText,
             Builtin::FileClose,
@@ -114,8 +108,6 @@ mod typed_io_guard_tests {
             Builtin::SocketClose,
             Builtin::FileTryOpenRead,
             Builtin::FileTryCreate,
-            Builtin::FileTryOpenReadPath,
-            Builtin::FileTryCreatePath,
             Builtin::FileTryReadText,
             Builtin::FileTryWriteText,
             Builtin::SocketTryConnect,
