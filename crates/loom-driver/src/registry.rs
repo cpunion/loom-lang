@@ -1155,7 +1155,7 @@ fn valid_digest(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Read as _, Write as _};
+    use std::io::Write as _;
     use std::net::TcpListener;
     use std::thread;
 

@@ -123,6 +123,22 @@ fn compile_with_std_resource(source: &str) -> loom_mir::CheckedProgram {
     )
 }
 
+fn compile_with_std_text(source: &str) -> loom_mir::CheckedProgram {
+    compile_with_std_module(
+        source,
+        "std.text",
+        include_str!("../../../library/std/text/text.loom"),
+    )
+}
+
+fn compile_with_std_path(source: &str) -> loom_mir::CheckedProgram {
+    compile_with_std_module(
+        source,
+        "std.path",
+        include_str!("../../../library/std/path/path.loom"),
+    )
+}
+
 fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
     compile_with_std_module(
         source,
@@ -141,14 +157,20 @@ fn compile_with_std_json(source: &str) -> loom_mir::CheckedProgram {
         FileId(2),
         include_str!("../../../library/std/float/float.loom"),
     );
+    let text = parse_with_file(
+        FileId(3),
+        include_str!("../../../library/std/text/text.loom"),
+    );
     assert!(
         application.diagnostics().is_empty()
             && json.diagnostics().is_empty()
-            && float.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} json={:#?} float={:#?}",
+            && float.diagnostics().is_empty()
+            && text.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} json={:#?} float={:#?} text={:#?}",
         application.diagnostics(),
         json.diagnostics(),
-        float.diagnostics()
+        float.diagnostics(),
+        text.diagnostics()
     );
     let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("codegen-ir-test", "0");
@@ -170,6 +192,12 @@ fn compile_with_std_json(source: &str) -> loom_mir::CheckedProgram {
             package: std_package.clone(),
             module: ModuleName::new("std.float"),
             syntax: float.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(3),
+            package: std_package.clone(),
+            module: ModuleName::new("std.text"),
+            syntax: text.ast(),
         },
     ]);
     lowered
@@ -207,6 +235,30 @@ fn lower_run(source: &str) -> LoweringOutcome {
 
 fn lower_run_with_std_resource(source: &str) -> LoweringOutcome {
     let mir = compile_with_std_resource(source);
+    lower_typed_artifact(
+        &mir,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("lower typed artifact")
+}
+
+fn lower_run_with_std_text(source: &str) -> LoweringOutcome {
+    let mir = compile_with_std_text(source);
+    lower_typed_artifact(
+        &mir,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("lower typed artifact")
+}
+
+fn lower_run_with_std_path(source: &str) -> LoweringOutcome {
+    let mir = compile_with_std_path(source);
     lower_typed_artifact(
         &mir,
         &SourceArtifactRequest::Run {
@@ -255,8 +307,10 @@ fn complete_dump(source: &str) -> String {
     reason = "one source fixture verifies the complete Bytes lowering, effect, root, equality, and dump closure"
 )]
 fn canonical_bytes_lower_to_exact_typed_operations_effects_roots_and_content_equality() {
-    let outcome = lower_run(
-        r#"fn exercise(left Text, right Text) Bool {
+    let outcome = lower_run_with_std_text(
+        r#"import std.text.DecodeTextError
+
+fn exercise(left Text, right Text) Bool {
     let bytes = left.encode_utf8()
     let appended = bytes.append("!".encode_utf8())
     let count = appended.length()
@@ -392,8 +446,9 @@ pub fn main() {
 
 #[test]
 fn canonical_paths_lower_to_exact_typed_operations_effects_and_safepoints() {
-    let outcome = lower_run(
-        r#"fn exercise(base Path, child Path) {
+    let outcome = lower_run_with_std_path(
+        r#"import std.path.PathError
+fn exercise(base Path, child Path) {
     discard base.join(child)
     discard base.as_text()
 }
@@ -485,11 +540,7 @@ pub fn main() {
         }
     }
     assert_eq!(from_count, 2);
-    assert!(
-        saw_as_text && saw_join,
-        "{}",
-        dump_program(artifact.program())
-    );
+    assert!(saw_as_text && saw_join);
     let dump = dump_program(artifact.program());
     for opcode in ["path.from_text", "path.as_text", "path.join"] {
         assert!(dump.contains(opcode), "missing {opcode}: {dump}");

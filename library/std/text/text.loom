@@ -1,0 +1,4 @@
+/// Describes why a byte sequence cannot be decoded as Text.
+pub enum DecodeTextError {
+    InvalidUtf8
+}

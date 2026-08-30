@@ -49,6 +49,21 @@ struct NativeRun {
     output: Output,
 }
 
+fn assert_dump_has_nominal(dump: &str, id: u32) {
+    let expected = format!("Nominal#{id}[] =>");
+    assert!(dump.contains(&expected), "missing `{expected}`:\n{dump}");
+}
+
+fn assert_interpreted_tests_pass(program: &CheckedProgram) {
+    let interpreted = Interpreter::new(program).run_tests();
+    assert!(
+        interpreted
+            .iter()
+            .all(|test| test.status == TestStatus::Passed),
+        "{interpreted:?}"
+    );
+}
+
 fn analyze_source(source: &str) -> loom_driver::AnalysisSnapshot {
     let project = tempfile::tempdir().expect("create source project");
     std::fs::write(project.path().join("main.loom"), source).expect("write source fixture");
@@ -2216,13 +2231,7 @@ fn managed_bytes_close_the_typed_lcir_route_on_all_supported_targets() {
     );
     let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
-    let interpreted = Interpreter::new(&program).run_tests();
-    assert!(
-        interpreted
-            .iter()
-            .all(|test| test.status == TestStatus::Passed),
-        "{interpreted:?}"
-    );
+    assert_interpreted_tests_pass(&program);
 
     let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
     let dump = dump_program(artifact.program());
@@ -2332,24 +2341,20 @@ fn text_from_utf8_units_is_direct_typed_lcir_on_all_supported_targets() {
     );
     let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
-    let interpreted = Interpreter::new(&program).run_tests();
-    assert!(
-        interpreted
-            .iter()
-            .all(|test| test.status == TestStatus::Passed),
-        "{interpreted:?}"
-    );
+    assert_interpreted_tests_pass(&program);
 
     let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
     let dump = dump_program(artifact.program());
-    for required in [
-        "List[Int] =>",
-        "managed_ptr",
-        "text.from_utf8_units",
-        "Nominal#11[] =>",
-    ] {
+    let decode_text_error = artifact
+        .program()
+        .as_program()
+        .canonical_types()
+        .decode_text_error
+        .expect("canonical DecodeTextError identity");
+    for required in ["List[Int] =>", "managed_ptr", "text.from_utf8_units"] {
         assert!(dump.contains(required), "missing `{required}`:\n{dump}");
     }
+    assert_dump_has_nominal(&dump, decode_text_error.0);
     let verifier = artifact
         .functions()
         .iter()
@@ -2425,24 +2430,20 @@ fn lexical_path_is_direct_typed_lcir_on_all_supported_targets() {
     );
     let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
-    let interpreted = Interpreter::new(&program).run_tests();
-    assert!(
-        interpreted
-            .iter()
-            .all(|test| test.status == TestStatus::Passed),
-        "{interpreted:?}"
-    );
+    assert_interpreted_tests_pass(&program);
 
     let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
     let dump = dump_program(artifact.program());
-    for required in [
-        "Nominal#10[] =>",
-        "path.from_text",
-        "path.as_text",
-        "path.join",
-        "Nominal#12[] =>",
-    ] {
+    let canonical_types = artifact.program().as_program().canonical_types();
+    let path = canonical_types.path.expect("canonical Path identity");
+    let path_error = canonical_types
+        .path_error
+        .expect("canonical PathError identity");
+    for required in ["path.from_text", "path.as_text", "path.join"] {
         assert!(dump.contains(required), "missing `{required}`:\n{dump}");
+    }
+    for expected in [path, path_error] {
+        assert_dump_has_nominal(&dump, expected.0);
     }
     let verifier = artifact
         .functions()

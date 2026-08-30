@@ -1,13 +1,15 @@
 use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId};
-use loom_hir::{PackageSourceUnit, lower_package_files};
-use loom_sema::analyze;
+use loom_hir::{DefId, DefinitionKind, PackageSourceUnit, Program, lower_package_files};
+use loom_sema::{Analysis, BuiltinValue, CallTarget, Resolution, TyData, analyze};
 use loom_syntax::parse_with_file;
 
-fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
+fn analyze_source_program(source: &str) -> (Program, Analysis) {
     let root_file = FileId(0);
     let std_log_file = FileId(1);
     let std_json_file = FileId(2);
     let std_float_file = FileId(3);
+    let std_text_file = FileId(4);
+    let std_path_file = FileId(5);
     let parsed = parse_with_file(root_file, source);
     let std_log = parse_with_file(
         std_log_file,
@@ -21,6 +23,14 @@ fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
         std_float_file,
         include_str!("../../../library/std/float/float.loom"),
     );
+    let std_text = parse_with_file(
+        std_text_file,
+        include_str!("../../../library/std/text/text.loom"),
+    );
+    let std_path = parse_with_file(
+        std_path_file,
+        include_str!("../../../library/std/path/path.loom"),
+    );
     assert!(
         parsed.diagnostics().is_empty(),
         "syntax diagnostics: {:#?}",
@@ -29,11 +39,15 @@ fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
     assert!(
         std_log.diagnostics().is_empty()
             && std_json.diagnostics().is_empty()
-            && std_float.diagnostics().is_empty(),
-        "standard syntax diagnostics: log={:#?} json={:#?} float={:#?}",
+            && std_float.diagnostics().is_empty()
+            && std_text.diagnostics().is_empty()
+            && std_path.diagnostics().is_empty(),
+        "standard syntax diagnostics: log={:#?} json={:#?} float={:#?} text={:#?} path={:#?}",
         std_log.diagnostics(),
         std_json.diagnostics(),
-        std_float.diagnostics()
+        std_float.diagnostics(),
+        std_text.diagnostics(),
+        std_path.diagnostics()
     );
     let root_package = PackageId::new("sema-test", "0");
     let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
@@ -62,6 +76,18 @@ fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
             module: ModuleName::new("std.float"),
             syntax: std_float.ast(),
         },
+        PackageSourceUnit {
+            file: std_text_file,
+            package: std_package.clone(),
+            module: ModuleName::new("std.text"),
+            syntax: std_text.ast(),
+        },
+        PackageSourceUnit {
+            file: std_path_file,
+            package: std_package.clone(),
+            module: ModuleName::new("std.path"),
+            syntax: std_path.ast(),
+        },
     ]);
     assert!(
         lowered.diagnostics.is_empty(),
@@ -74,7 +100,66 @@ fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
     lowered
         .program
         .register_package(root_package, [(Name::new("std"), std_package)], true);
-    analyze(&lowered.program).diagnostics
+    let analysis = analyze(&lowered.program);
+    (lowered.program, analysis)
+}
+
+fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
+    analyze_source_program(source).1.diagnostics
+}
+
+fn definition_named(program: &Program, package: &PackageId, module: &str, name: &str) -> DefId {
+    program
+        .definitions
+        .iter()
+        .find_map(|(definition, item)| {
+            let owner = &program.modules[item.module];
+            (owner.package == *package
+                && owner.name.as_str() == module
+                && item
+                    .name
+                    .as_ref()
+                    .is_some_and(|candidate| candidate.as_str() == name))
+            .then_some(definition)
+        })
+        .unwrap_or_else(|| panic!("missing {package:?} {module}.{name}"))
+}
+
+fn assert_builtin_error_result_types(analysis: &Analysis, decode_error: DefId, path_error: DefId) {
+    let mut decode_results = 0_usize;
+    let mut path_results = 0_usize;
+    for body in analysis.typed.bodies.values() {
+        for (expression, call) in body.calls.iter() {
+            let expected = match call.target {
+                CallTarget::Builtin(BuiltinValue::BytesDecodeUtf8) => {
+                    decode_results = decode_results.saturating_add(1);
+                    decode_error
+                }
+                CallTarget::Builtin(BuiltinValue::PathFromText | BuiltinValue::PathJoin) => {
+                    path_results = path_results.saturating_add(1);
+                    path_error
+                }
+                _ => continue,
+            };
+            let result = *body
+                .expression_types
+                .get(expression)
+                .expect("builtin call result type");
+            let TyData::Result { error, .. } = analysis.typed.types.data(result) else {
+                panic!("builtin error operation must return Result");
+            };
+            assert_eq!(
+                analysis.typed.types.data(*error),
+                &TyData::Nominal {
+                    definition: expected,
+                    arguments: Vec::new(),
+                },
+                "builtin result must use the exact compiler-owned source enum"
+            );
+        }
+    }
+    assert_eq!(decode_results, 1);
+    assert_eq!(path_results, 2);
 }
 
 #[test]
@@ -83,6 +168,8 @@ fn text_bytes_path_and_path_file_calls_type_check() {
         r#"
 import std.file.open_read_path
 import std.file.create_path
+import std.path.PathError
+import std.text.DecodeTextError
 
 concept IndexSelf {
     method indexSelf(self) TextMap[Self]
@@ -122,7 +209,7 @@ fn decodeOutcome(value Result[Text, DecodeTextError]) {
     match value {
         Ok(_) => Unit
         Err(error) => match error {
-            InvalidUtf8 => Unit
+            DecodeTextError.InvalidUtf8 => Unit
         }
     }
 }
@@ -131,8 +218,8 @@ fn pathOutcome(value Result[Path, PathError]) {
     match value {
         Ok(_) => Unit
         Err(error) => match error {
-            ContainsNul => Unit
-            AbsoluteJoin => Unit
+            PathError.ContainsNul => Unit
+            PathError.AbsoluteJoin => Unit
         }
     }
 }
@@ -144,6 +231,162 @@ async fn pathFiles(path Path) {
 "#,
     );
     assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+}
+
+#[test]
+fn builtin_error_results_and_patterns_use_exact_source_definitions() {
+    let (program, analysis) = analyze_source_program(
+        r"
+import std.path.PathError
+import std.text.DecodeTextError
+
+fn values(bytes Bytes, text Text, base Path, child Path) {
+    let decoded = bytes.decode_utf8()
+    let parsed = Path.from_text(text)
+    let joined = base.join(child)
+}
+
+fn decodeOutcome(value Result[Text, DecodeTextError]) {
+    match value {
+        Ok(_) => Unit
+        Err(error) => match error {
+            DecodeTextError.InvalidUtf8 => Unit
+        }
+    }
+}
+
+fn pathOutcome(value Result[Path, PathError]) {
+    match value {
+        Ok(_) => Unit
+        Err(error) => match error {
+            PathError.ContainsNul => Unit
+            PathError.AbsoluteJoin => Unit
+        }
+    }
+}
+",
+    );
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "{:#?}",
+        analysis.diagnostics
+    );
+
+    let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+    let decode_error = definition_named(&program, &std, "std.text", "DecodeTextError");
+    let path_error = definition_named(&program, &std, "std.path", "PathError");
+    assert_eq!(
+        analysis.canonical_std_items.decode_text_error,
+        Some(decode_error)
+    );
+    assert_eq!(analysis.canonical_std_items.path_error, Some(path_error));
+
+    let DefinitionKind::Enum(decode_enum) = &program.definitions[decode_error].kind else {
+        panic!("DecodeTextError must be an ordinary source enum");
+    };
+    let DefinitionKind::Enum(path_enum) = &program.definitions[path_error].kind else {
+        panic!("PathError must be an ordinary source enum");
+    };
+    let source_variants = decode_enum
+        .variants
+        .iter()
+        .chain(&path_enum.variants)
+        .copied()
+        .collect::<Vec<_>>();
+    let resolved_patterns = analysis
+        .typed
+        .bodies
+        .values()
+        .flat_map(|body| body.pattern_resolutions.values())
+        .filter_map(|resolution| match resolution {
+            Resolution::Definition(definition) if source_variants.contains(definition) => {
+                Some(*definition)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for variant in &source_variants {
+        assert!(
+            resolved_patterns.contains(variant),
+            "source variant {variant:?} was not selected by a pattern: {resolved_patterns:#?}"
+        );
+    }
+
+    assert_builtin_error_result_types(&analysis, decode_error, path_error);
+}
+
+#[test]
+fn enum_pattern_qualifiers_must_resolve_to_the_expected_source_type() {
+    let diagnostics = analyze_source(
+        r"
+import std.path.PathError
+import std.text.DecodeTextError
+
+enum FakeDecodeError {
+    InvalidUtf8
+}
+
+enum FakePathError {
+    ContainsNul
+    AbsoluteJoin
+}
+
+fn decodeOutcome(value DecodeTextError) {
+    match value {
+        FakeDecodeError.InvalidUtf8 => Unit
+        DecodeTextError.InvalidUtf8 => Unit
+    }
+}
+
+fn pathOutcome(value PathError) {
+    match value {
+        FakePathError.ContainsNul => Unit
+        PathError.ContainsNul => Unit
+        PathError.AbsoluteJoin => Unit
+    }
+}
+",
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "UnknownName")
+            .count(),
+        2,
+        "a same-shaped enum must not qualify variants of the expected source type: {diagnostics:#?}"
+    );
+}
+
+#[test]
+fn same_named_application_errors_cannot_replace_canonical_std_results() {
+    let diagnostics = analyze_source(
+        r"
+enum DecodeTextError {
+    InvalidUtf8
+}
+
+enum PathError {
+    ContainsNul
+    AbsoluteJoin
+}
+
+fn decode(bytes Bytes) Result[Text, DecodeTextError] {
+    bytes.decode_utf8()
+}
+
+fn path(text Text) Result[Path, PathError] {
+    Path.from_text(text)
+}
+",
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "TypeMismatch")
+            .count(),
+        2,
+        "same-named application enums must not gain canonical authority: {diagnostics:#?}"
+    );
 }
 
 #[test]
@@ -171,6 +414,8 @@ fn wrong() {
 fn builtin_value_calls_reject_wrong_shapes_and_incomplete_error_matches() {
     let diagnostics = analyze_source(
         r#"
+import std.path.PathError
+
 fn wrong(text Text, bytes Bytes, path Path) {
     let scalar = text.get("zero")
     let appended = bytes.append(text)
@@ -180,7 +425,7 @@ fn wrong(text Text, bytes Bytes, path Path) {
 
 fn incomplete(error PathError) {
     match error {
-        ContainsNul => Unit
+        PathError.ContainsNul => Unit
     }
 }
 "#,

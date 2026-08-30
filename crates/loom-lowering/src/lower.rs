@@ -37,15 +37,13 @@ const FILE_TYPE: TypeId = TypeId(7);
 const SOCKET_TYPE: TypeId = TypeId(8);
 const BYTES_TYPE: TypeId = TypeId(9);
 const PATH_TYPE: TypeId = TypeId(10);
-const DECODE_TEXT_ERROR_TYPE: TypeId = TypeId(11);
-const PATH_ERROR_TYPE: TypeId = TypeId(12);
-const TEXT_MAP_TYPE: TypeId = TypeId(13);
-const JSON_TYPE: TypeId = TypeId(14);
-const JSON_ERROR_TYPE: TypeId = TypeId(15);
-const IO_ERROR_TYPE: TypeId = TypeId(16);
-const IO_ERROR_KIND_TYPE: TypeId = TypeId(17);
-const LOG_LEVEL_TYPE: TypeId = TypeId(18);
-const SYNTHETIC_TYPE_COUNT: u32 = 19;
+const TEXT_MAP_TYPE: TypeId = TypeId(11);
+const JSON_TYPE: TypeId = TypeId(12);
+const JSON_ERROR_TYPE: TypeId = TypeId(13);
+const IO_ERROR_TYPE: TypeId = TypeId(14);
+const IO_ERROR_KIND_TYPE: TypeId = TypeId(15);
+const LOG_LEVEL_TYPE: TypeId = TypeId(16);
+const SYNTHETIC_TYPE_COUNT: u32 = 17;
 
 /// Failure at the trusted typed-HIR to MIR boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -271,6 +269,22 @@ impl<'a> Compiler<'a> {
         })
     }
 
+    fn canonical_std_type_id(
+        &self,
+        definition: Option<DefId>,
+        missing: &'static str,
+    ) -> LowerResult<Option<TypeId>> {
+        definition
+            .map(|definition| {
+                required(
+                    self.indices.types.get(&definition).copied(),
+                    missing,
+                    definition_span(self.hir, definition),
+                )
+            })
+            .transpose()
+    }
+
     fn run(&self) -> LowerResult<Program> {
         let dispose = self
             .analysis
@@ -320,6 +334,14 @@ impl<'a> Compiler<'a> {
                 )
             })
             .transpose()?;
+        let decode_text_error = self.canonical_std_type_id(
+            self.analysis.canonical_std_items.decode_text_error,
+            "canonical DecodeTextError has no MIR type id",
+        )?;
+        let path_error = self.canonical_std_type_id(
+            self.analysis.canonical_std_items.path_error,
+            "canonical PathError has no MIR type id",
+        )?;
         let mut program = Program {
             types: self.lower_types()?,
             concepts: self.lower_concepts()?,
@@ -339,8 +361,8 @@ impl<'a> Compiler<'a> {
                 socket: Some(SOCKET_TYPE),
                 bytes: Some(BYTES_TYPE),
                 path: Some(PATH_TYPE),
-                decode_text_error: Some(DECODE_TEXT_ERROR_TYPE),
-                path_error: Some(PATH_ERROR_TYPE),
+                decode_text_error,
+                path_error,
                 text_map: Some(TEXT_MAP_TYPE),
                 json: Some(JSON_TYPE),
                 json_error: Some(JSON_ERROR_TYPE),
@@ -904,10 +926,6 @@ impl<'a> Compiler<'a> {
                 BuiltinType::Duration => RequirementType::Nominal(DURATION_TYPE, Vec::new()),
                 BuiltinType::File => RequirementType::Nominal(FILE_TYPE, Vec::new()),
                 BuiltinType::Socket => RequirementType::Nominal(SOCKET_TYPE, Vec::new()),
-                BuiltinType::DecodeTextError => {
-                    RequirementType::Nominal(DECODE_TEXT_ERROR_TYPE, Vec::new())
-                }
-                BuiltinType::PathError => RequirementType::Nominal(PATH_ERROR_TYPE, Vec::new()),
                 BuiltinType::Json => RequirementType::Nominal(JSON_TYPE, Vec::new()),
                 BuiltinType::JsonError => RequirementType::Nominal(JSON_ERROR_TYPE, Vec::new()),
                 BuiltinType::IoError => RequirementType::Nominal(IO_ERROR_TYPE, Vec::new()),
@@ -3203,9 +3221,6 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             BuiltinValue::Some
             | BuiltinValue::Ok
             | BuiltinValue::Err
-            | BuiltinValue::DecodeTextInvalidUtf8
-            | BuiltinValue::PathContainsNul
-            | BuiltinValue::PathAbsoluteJoin
             | BuiltinValue::JsonNull
             | BuiltinValue::JsonBool
             | BuiltinValue::JsonNumber
@@ -3237,9 +3252,6 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                     BuiltinValue::Some => (OPTION_TYPE, VariantId(1)),
                     BuiltinValue::Ok => (RESULT_TYPE, VariantId(0)),
                     BuiltinValue::Err => (RESULT_TYPE, VariantId(1)),
-                    BuiltinValue::DecodeTextInvalidUtf8 => (DECODE_TEXT_ERROR_TYPE, VariantId(0)),
-                    BuiltinValue::PathContainsNul => (PATH_ERROR_TYPE, VariantId(0)),
-                    BuiltinValue::PathAbsoluteJoin => (PATH_ERROR_TYPE, VariantId(1)),
                     BuiltinValue::JsonNull => (JSON_TYPE, VariantId(0)),
                     BuiltinValue::JsonBool => (JSON_TYPE, VariantId(1)),
                     BuiltinValue::JsonNumber => (JSON_TYPE, VariantId(2)),
@@ -3829,9 +3841,6 @@ fn builtin_variant_id(builtin: BuiltinValue) -> Option<(TypeId, VariantId)> {
         BuiltinValue::Some => (OPTION_TYPE, VariantId(1)),
         BuiltinValue::Ok => (RESULT_TYPE, VariantId(0)),
         BuiltinValue::Err => (RESULT_TYPE, VariantId(1)),
-        BuiltinValue::DecodeTextInvalidUtf8 => (DECODE_TEXT_ERROR_TYPE, VariantId(0)),
-        BuiltinValue::PathContainsNul => (PATH_ERROR_TYPE, VariantId(0)),
-        BuiltinValue::PathAbsoluteJoin => (PATH_ERROR_TYPE, VariantId(1)),
         BuiltinValue::JsonNull => (JSON_TYPE, VariantId(0)),
         BuiltinValue::JsonBool => (JSON_TYPE, VariantId(1)),
         BuiltinValue::JsonNumber => (JSON_TYPE, VariantId(2)),
@@ -4130,18 +4139,6 @@ fn synthetic_types() -> Vec<TypeDef> {
         opaque_record_type(SOCKET_TYPE, "Socket", Type::Int, span),
         opaque_record_type(BYTES_TYPE, "Bytes", Type::Text, span),
         opaque_record_type(PATH_TYPE, "Path", Type::Text, span),
-        closed_error_type(
-            DECODE_TEXT_ERROR_TYPE,
-            "DecodeTextError",
-            &["InvalidUtf8"],
-            span,
-        ),
-        closed_error_type(
-            PATH_ERROR_TYPE,
-            "PathError",
-            &["ContainsNul", "AbsoluteJoin"],
-            span,
-        ),
         TypeDef {
             id: TEXT_MAP_TYPE,
             name: "TextMap".into(),
@@ -4302,8 +4299,6 @@ fn lower_builtin_type(builtin: BuiltinType) -> Type {
         BuiltinType::Duration => Type::Nominal(DURATION_TYPE, Vec::new()),
         BuiltinType::File => Type::Nominal(FILE_TYPE, Vec::new()),
         BuiltinType::Socket => Type::Nominal(SOCKET_TYPE, Vec::new()),
-        BuiltinType::DecodeTextError => Type::Nominal(DECODE_TEXT_ERROR_TYPE, Vec::new()),
-        BuiltinType::PathError => Type::Nominal(PATH_ERROR_TYPE, Vec::new()),
         BuiltinType::Json => Type::Nominal(JSON_TYPE, Vec::new()),
         BuiltinType::JsonError => Type::Nominal(JSON_ERROR_TYPE, Vec::new()),
         BuiltinType::IoError => Type::Nominal(IO_ERROR_TYPE, Vec::new()),

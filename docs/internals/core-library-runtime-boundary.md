@@ -113,6 +113,15 @@ definitions are ordinary Loom source, while only the exact compiler-owned
 primitive accepts Text bytes and returns no policy-bearing value; line-feed
 composition remains in `write_line` source.
 
+`DecodeTextError` and `PathError` are likewise ordinary public enums declared
+by compiler-distributed `std.text` and `std.path` source. Checked MIR retains
+their exact source `TypeId` values in its prelude catalog, and typed LCIR
+revalidates those identities and variant shapes before decode or path
+instructions may construct a result. A same-named application or dependency
+enum cannot substitute for either compiler-owned source declaration; there is
+no builtin type, builtin variant, or compatibility alias behind the public
+names.
+
 The embedded source content is part of compiler-cache identity. Editing an
 unused private library body may leave a native object reusable when ordinary
 reachability proves that body dead; changing an imported public interface or a

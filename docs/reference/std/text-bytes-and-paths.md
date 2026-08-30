@@ -5,6 +5,17 @@
 `Text`, `Bytes`, and `Path` are immutable values. Their storage address,
 capacity, sharing, and allocation strategy are not observable.
 
+The error types named below are ordinary compiler-distributed source enums:
+
+```loom
+import std.text.DecodeTextError
+import std.path.PathError
+```
+
+Import them when their names or variants are used explicitly. They follow
+normal enum resolution and carry no public builtin-type or builtin-variant
+alias.
+
 ## `Text`
 
 `Text` is a sequence of Unicode scalar values. Source literals always construct
@@ -26,6 +37,9 @@ source libraries that decode external formats. Every Int must be in the range
 Text; an out-of-range unit or malformed sequence produces
 `DecodeTextError.InvalidUtf8`. The conversion is never implicit, and it does
 not define JSON or any other data-format policy.
+
+`DecodeTextError` is the closed public enum declared by `std.text`; its only
+current variant is `InvalidUtf8`.
 
 `length` counts Unicode scalar values, not UTF-8 bytes or user-perceived
 grapheme clusters. `get` indexes the same scalar sequence and returns a
@@ -80,7 +94,7 @@ path.as_text() Text
 path.join(child Path) Result[Path, PathError]
 ```
 
-`PathError` is closed:
+`PathError` is the closed public enum declared by `std.path`:
 
 ```text
 ContainsNul

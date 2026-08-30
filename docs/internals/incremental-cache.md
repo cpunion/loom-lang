@@ -48,7 +48,7 @@ larger graph.
 
 ## Persistent layers
 
-The persistent cache schema is `9`. Current layers include source parse,
+The persistent cache schema is `10`. Current layers include source parse,
 package-interface presence, typed package state, complete checked MIR, target
 objects, and deterministic final artifacts.
 
@@ -72,26 +72,29 @@ and prelude ids. Cache serialization requires the complete artifact resource
 profile, and cache reads cross both ordinary MIR validation and that profile;
 inconsistent or incomplete identity metadata is a cache miss.
 
-The canonical source `std.float.is_finite` identity follows the same rule. Its
-exact `DefId` is rederived before body checking and proof recognition; cached
-semantic bytes never grant a same-named function contract authority.
+The canonical source identities for `std.float.is_finite`,
+`std.text.DecodeTextError`, and `std.path.PathError` follow the same rule. Their
+exact `DefId` values are rederived before body checking; cached semantic bytes
+never grant a same-named function or enum compiler-owned authority.
 
 Task policy and timer calls currently store a resolved `TaskIntrinsic` in typed
-body facts. Cache schema `9` and the `loom-compilation-cache-v9` domain cover
-that identity and the current compiler-private Float primitive set. Whether a
-body is reused or conservatively reanalyzed, MIR lowering consumes only the
-resolved identity; it never reconstructs a policy from source spelling. The
-Task cache identity disappears when the temporary catalog is replaced by
-ordinary source definitions.
+body facts. Cache schema `10` and the `loom-compilation-cache-v10` domain cover
+that identity, the current compiler-private Float primitive set, and the
+replacement of fixed decoding/path error slots with exact source definitions.
+Whether a body is reused or conservatively reanalyzed, MIR lowering consumes
+only the resolved identity; it never reconstructs a policy or canonical
+standard-library item from source spelling. The Task cache identity disappears
+when the temporary catalog is replaced by ordinary source definitions.
 
-Checked-MIR cache envelopes use artifact version `33` and its exact current
+Checked-MIR cache envelopes use artifact version `34` and its exact current
 MIR shape. The artifact profile requires the complete compiler-known resource
 identity trio, all matching prelude ids, the canonical six-field
-`ConstraintError`, and the current builtin set. Generic cache envelopes have a
-null `entry`; executable `.loomi` envelopes have one fixed exported entry.
-Each decoder rejects the opposite kind before MIR body validation. Integer
-parsing is ordinary `std.int` source and enters MIR as ordinary definitions and
-direct calls.
+`ConstraintError`, the exact source-backed decoding/path error identities and
+shapes, and the current builtin set. Generic cache envelopes have a null
+`entry`; executable `.loomi` envelopes have one fixed exported entry. Each
+decoder rejects the opposite kind before MIR body validation. Integer parsing
+is ordinary `std.int` source and enters MIR as ordinary definitions and direct
+calls.
 
 The complete compilation key includes the normalized project graph, exact
 sources, language and frontend build identities, embedded standard library,
