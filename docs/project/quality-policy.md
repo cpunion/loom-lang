@@ -70,8 +70,9 @@ fails the runner. The evidence schema has no exception or allowance field.
 
 Run and test artifacts are judged independently because their exact reachable
 graphs may differ. The constraints-and-contracts fixture requires typed LCIR
-for both graphs; source contracts and nongeneric runtime-checked constrained
-construction lower directly.
+for both graphs; source contracts, nongeneric task-free runtime-checked refined
+construction, and fully concrete task-free invariant-record construction lower
+directly.
 
 Those time bounds detect gross regressions and runaway behavior on CI; they are
 not user latency service-level objectives. The C3 label in the report means
