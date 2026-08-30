@@ -38,6 +38,7 @@ use support::{emit_native, link_native_object, run_with_read_only_stderr};
 
 const TYPED_LOGGING_INTERPRETER_CHILD_ENV: &str = "LOOM_LCIR_TYPED_LOGGING_INTERPRETER_CHILD";
 const TYPED_STDOUT_INTERPRETER_CHILD_ENV: &str = "LOOM_LCIR_TYPED_STDOUT_INTERPRETER_CHILD";
+const FINITE_DYN_FAULT_INTERPRETER_CHILD_ENV: &str = "LOOM_LCIR_FINITE_DYN_FAULT_INTERPRETER_CHILD";
 const TYPED_LOGGING_STDERR: &[u8] =
     include_bytes!("../../../fixtures/lcir-typed-logging/expected.stderr");
 
@@ -3510,6 +3511,23 @@ fn typed_stdout_interpreter_child() {
 }
 
 #[test]
+fn finite_dynamic_projected_fault_interpreter_child() {
+    if std::env::var_os(FINITE_DYN_FAULT_INTERPRETER_CHILD_ENV).is_none() {
+        return;
+    }
+    let program = compile_sources(
+        include_str!("../../../fixtures/lcir-dyn-finite/main.loom"),
+        include_str!("../../../fixtures/lcir-dyn-finite/main_test.loom"),
+    );
+    let failure = interpret_run(&program, "projectedFaultMain")
+        .expect_err("projected mutable method must retain its primary fault");
+    assert!(
+        matches!(failure, ExecutionFailure::Contract { ref fault } if fault.code == "AssertionFault"),
+        "{failure:#?}"
+    );
+}
+
+#[test]
 fn source_std_io_writes_exact_text_through_typed_lcir() {
     let program = compile_sources(
         include_str!("../../../fixtures/lcir-typed-stdout/main.loom"),
@@ -6259,6 +6277,41 @@ fn finite_dynamic_witnesses_use_precise_single_pointer_boxes_and_direct_dispatch
     for dead in ["standalone.cold", "7001", "7002"] {
         assert!(!dump.contains(dead), "retained dead `{dead}`:\n{dump}");
     }
+    let verify = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("verify"))
+        .expect("finite-dyn verification function");
+    let checked_stores = artifact
+        .functions()
+        .iter()
+        .filter(|function| function.name().ends_with("storeChecked"))
+        .map(loom_codegen_ir::Function::id)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(checked_stores.len(), 2, "{dump}");
+    assert!(checked_stores.iter().all(|callee| {
+        artifact
+            .function(*callee)
+            .is_some_and(|function| function.effects().contains(Effects::MAY_FAULT))
+    }));
+    let invoked_checked_stores = verify
+        .blocks()
+        .iter()
+        .filter_map(
+            |block| match block.terminator().map(loom_codegen_ir::Terminator::kind) {
+                Some(loom_codegen_ir::TerminatorKind::Invoke { callee, .. })
+                    if checked_stores.contains(callee) =>
+                {
+                    Some(*callee)
+                }
+                _ => None,
+            },
+        )
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        invoked_checked_stores, checked_stores,
+        "both candidates of storeChecked must use fallible Invoke edges"
+    );
     let projected_dispatch = artifact
         .functions()
         .iter()
@@ -6408,34 +6461,37 @@ fn finite_dynamic_witnesses_use_precise_single_pointer_boxes_and_direct_dispatch
             entry: "projectedFaultMain".into(),
         },
     );
-    let interpreted_fault = serde_json::to_value(
-        interpret_run(&program, "projectedFaultMain")
-            .expect_err("projected mutable call must preserve its method fault"),
-    )
-    .expect("serialize projected mutable fault");
-    assert_eq!(
-        interpreted_fault["fault"]["code"], "AssertionFault",
-        "the defer assertion must observe the latest sibling and preserve the method fault"
+    let interpreted_fault =
+        Command::new(std::env::current_exe().expect("current LCIR test executable"))
+            .args([
+                "--exact",
+                "finite_dynamic_projected_fault_interpreter_child",
+                "--nocapture",
+            ])
+            .env(FINITE_DYN_FAULT_INTERPRETER_CHILD_ENV, "1")
+            .output()
+            .expect("run projected finite-dyn interpreter child");
+    assert!(interpreted_fault.status.success(), "{interpreted_fault:?}");
+    let interpreted_stdout = String::from_utf8_lossy(&interpreted_fault.stdout);
+    assert!(
+        interpreted_stdout.contains("projected fault writeback\n"),
+        "{interpreted_fault:?}"
+    );
+    assert!(
+        !interpreted_stdout.contains("stale projected fault writeback"),
+        "{interpreted_fault:?}"
     );
     let faulted =
         emit_and_run_lcir_machine_fault(&fault_artifact, "finite-dyn-projected-writeback-fault");
-    let checked_faulted = emit_and_run_checked_mir_machine_fault(
-        &program,
-        "projectedFaultMain",
-        "checked-mir-finite-dyn-projected-writeback-fault",
-    );
     assert!(!faulted.output.status.success(), "{:?}", faulted.output);
-    assert!(!checked_faulted.status.success(), "{checked_faulted:?}");
-    assert_eq!(faulted.output.stdout, checked_faulted.stdout);
     assert_eq!(
-        machine_fault(&faulted.output),
-        interpreted_fault,
-        "LCIR projected writeback changed the primary fault"
+        faulted.output.stdout, b"projected fault writeback\n",
+        "LCIR defer observed stale sibling state"
     );
     assert_eq!(
-        machine_fault(&checked_faulted),
-        interpreted_fault,
-        "checked-MIR projected writeback changed the primary fault"
+        machine_fault(&faulted.output)["fault"]["code"],
+        "AssertionFault",
+        "LCIR projected writeback changed the primary method fault"
     );
     for forbidden in ["%loom.Value", "ValueNode", "loom_witness_", "dyn.registry"] {
         assert!(

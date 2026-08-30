@@ -1,3 +1,5 @@
+import std.io.write_line
+
 dyn concept Metric {
     method read(self) Int
     method cold(self) Int
@@ -6,6 +8,7 @@ dyn concept Metric {
 dyn concept Advance {
     method advance(mut self) Int
     method store(mut self, value Int) Int
+    method storeChecked(mut self, value Int) Int
     method storeThenFail(mut self, value Int)
     method read(self) Int
 }
@@ -35,6 +38,12 @@ impl Advance for Counter {
         self.value
     }
 
+    method storeChecked(mut self, value Int) Int {
+        self.value = value
+        assert value >= 0
+        self.value
+    }
+
     method storeThenFail(mut self, value Int) {
         self.value = value
         assert false
@@ -56,6 +65,12 @@ impl Advance for Offset {
 
     method store(mut self, value Int) Int {
         self.value = value
+        self.value
+    }
+
+    method storeChecked(mut self, value Int) Int {
+        self.value = value
+        assert value >= 0
         self.value
     }
 
@@ -237,6 +252,15 @@ fn verify() {
     assert orderedItem == 12
     assert orderedSibling == 12
     assert orderedGuard == 101
+
+    let checkedResult = ordered.slot.item.storeChecked(ordered.slot.sibling.set(17))
+    let checkedItem = ordered.slot.item.read()
+    let checkedSibling = ordered.slot.sibling.value
+    let checkedGuard = ordered.guard
+    assert checkedResult == 17
+    assert checkedItem == 17
+    assert checkedSibling == 17
+    assert checkedGuard == 101
 }
 
 pub fn projectedFaultMain() {
@@ -251,7 +275,11 @@ pub fn projectedFaultMain() {
         let item = holder.slot.item.read()
         let sibling = holder.slot.sibling.value
         let guard = holder.guard
-        assert item == 23 && sibling == 23 && guard == 103
+        if item == 23 && sibling == 23 && guard == 103 {
+            write_line("projected fault writeback")
+        } else {
+            write_line("stale projected fault writeback")
+        }
     }
     holder.slot.item.storeThenFail(holder.slot.sibling.set(23))
 }
