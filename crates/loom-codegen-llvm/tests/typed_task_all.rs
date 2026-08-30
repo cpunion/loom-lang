@@ -59,7 +59,10 @@ fn join_widths(function: &loom_codegen_ir::Function) -> Vec<usize> {
         .instructions()
         .iter()
         .filter_map(|instruction| match instruction.kind() {
-            InstructionKind::TaskJoinAll { tasks } => Some(tasks.len()),
+            InstructionKind::TaskJoin {
+                mode: loom_codegen_ir::AwaitMode::All,
+                tasks,
+            } => Some(tasks.len()),
             _ => None,
         })
         .collect()
@@ -133,7 +136,7 @@ fn canonical_dump_distinguishes_immediate_and_stored_task_all() {
     let direct_dump = function_dump(&dump, direct);
     let stored_dump = function_dump(&dump, stored);
     assert_eq!(
-        direct_dump.matches("task.join_all(").count(),
+        direct_dump.matches("task.join.all(").count(),
         0,
         "{direct_dump}"
     );
@@ -143,7 +146,7 @@ fn canonical_dump_distinguishes_immediate_and_stored_task_all() {
         "{direct_dump}"
     );
     assert_eq!(
-        stored_dump.matches("task.join_all(").count(),
+        stored_dump.matches("task.join.all(").count(),
         1,
         "{stored_dump}"
     );

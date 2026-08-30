@@ -9446,12 +9446,13 @@ fn synchronous_task_helpers_borrow_one_checked_executor_context() {
     for helper in [direct, nested, combined] {
         assert!(!helper.effects().contains(Effects::MAY_FAULT));
     }
-    assert!(
-        combined
-            .instructions()
-            .iter()
-            .any(|instruction| matches!(instruction.kind(), InstructionKind::TaskJoinAll { .. }))
-    );
+    assert!(combined.instructions().iter().any(|instruction| matches!(
+        instruction.kind(),
+        InstructionKind::TaskJoin {
+            mode: loom_codegen_ir::AwaitMode::All,
+            ..
+        }
+    )));
 
     let lcir = emit_and_run_lcir_with_options(
         &artifact,
@@ -9805,7 +9806,7 @@ fn typed_static_task_all_uses_exact_direct_and_first_class_codegen() {
     );
     let dump = dump_program(artifact.program());
     assert!(dump.contains("await_tasks"), "{dump}");
-    assert!(dump.contains("task.join_all"), "{dump}");
+    assert!(dump.contains("task.join.all"), "{dump}");
     let exercise = artifact
         .functions()
         .iter()
@@ -9835,8 +9836,8 @@ fn typed_static_task_all_uses_exact_direct_and_first_class_codegen() {
     assert_eq!(lcir.output.stdout, b"Unit\n");
     assert!(lcir.output.stderr.is_empty(), "{:?}", lcir.output);
     for required in [
-        "loom.lcir.task_join_all.resume.",
-        "loom.lcir.task_join_all.0.descriptor",
+        "loom.lcir.task_join.all.resume.",
+        "loom.lcir.task_join.all.0.descriptor",
         "loom_typed_task_publish_adopting_v1",
         "loom_typed_task_abort_unpublished_v1",
         "loom_task_prepare_join",
@@ -9855,7 +9856,7 @@ fn typed_static_task_all_uses_exact_direct_and_first_class_codegen() {
         lcir.ir
             .lines()
             .filter(|line| {
-                line.starts_with("@loom.lcir.task_join_all.") && line.contains(".descriptor =")
+                line.starts_with("@loom.lcir.task_join.all.") && line.contains(".descriptor =")
             })
             .count(),
         2,
@@ -9867,7 +9868,7 @@ fn typed_static_task_all_uses_exact_direct_and_first_class_codegen() {
             .lines()
             .filter(|line| {
                 line.starts_with("define internal")
-                    && line.contains(" i32 @loom.lcir.task_join_all.resume.")
+                    && line.contains(" i32 @loom.lcir.task_join.all.resume.")
             })
             .count(),
         2,
@@ -9876,14 +9877,14 @@ fn typed_static_task_all_uses_exact_direct_and_first_class_codegen() {
     );
     assert!(
         lcir.ir.contains(
-            "@loom.lcir.task_join_all.0.root_offsets = private unnamed_addr constant [1 x i64] [i64 32]"
+            "@loom.lcir.task_join.all.0.root_offsets = private unnamed_addr constant [1 x i64] [i64 32]"
         ),
         "the Text-bearing composite must expose its exact completed-result root offset:\n{}",
         lcir.ir
     );
     assert!(
         lcir.ir.contains(
-            "@loom.lcir.task_join_all.0.live_bitmaps = private unnamed_addr constant [3 x i64] [i64 0, i64 0, i64 1]"
+            "@loom.lcir.task_join.all.0.live_bitmaps = private unnamed_addr constant [3 x i64] [i64 0, i64 0, i64 1]"
         ),
         "only the completed composite state may root its initialized Text result:\n{}",
         lcir.ir
@@ -9967,7 +9968,8 @@ pub async fn main() {
 }
 
 pub async fn allFailed() {
-    discard Task.any(failed(), failed()).await
+    let failedJoin = Task.any(failed(), failed())
+    discard failedJoin.await
 }
 "#;
     let program = compile_source(source);
@@ -9980,7 +9982,7 @@ pub async fn allFailed() {
     );
     let dump = dump_program(artifact.program());
     assert!(dump.contains("await_tasks any"), "{dump}");
-    assert!(!dump.contains("task.join_all"), "{dump}");
+    assert!(!dump.contains("task.join."), "{dump}");
     let lcir = emit_and_run_lcir_with_options(
         &artifact,
         "source-typed-task-any-release",
@@ -10031,6 +10033,25 @@ pub async fn allFailed() {
     let native = emit_and_run_lcir_machine_fault(&failed_artifact, "source-typed-task-any-failed");
     assert!(!native.output.status.success(), "{:?}", native.output);
     assert_eq!(machine_fault(&native.output), expected);
+    for required in [
+        "loom.lcir.task_join.any.resume.",
+        "task.join.any.fault.winner",
+        "task.join.any.no_winner",
+        TASK_ANY_FAILED_FAULT_CODE,
+    ] {
+        assert!(
+            native.ir.contains(required),
+            "stored Task.any omitted `{required}` from typed IR:\n{}",
+            native.ir
+        );
+    }
+    for forbidden in ["%loom.Value", "loom.Value", "loom_join_create"] {
+        assert!(
+            !native.ir.contains(forbidden),
+            "stored Task.any retained `{forbidden}` in typed IR:\n{}",
+            native.ir
+        );
+    }
 }
 
 #[test]
@@ -10063,6 +10084,8 @@ fn typed_fixed_task_outcomes_capture_faults_and_race_nonzero_winners() {
     for required in [
         "await_tasks settled",
         "await_tasks race",
+        "task.join.settled",
+        "task.join.race",
         "task.outcome_take %",
     ] {
         assert!(
@@ -10071,8 +10094,8 @@ fn typed_fixed_task_outcomes_capture_faults_and_race_nonzero_winners() {
         );
     }
     assert!(
-        dump.matches("task.outcome_take %").count() >= 9,
-        "every fixed settled child and race winner must be captured explicitly:\n{dump}"
+        dump.matches("task.outcome_take %").count() >= 6,
+        "direct settled children and race winners must be captured explicitly while stored joins capture inside their typed callback:\n{dump}"
     );
 
     let lcir = emit_and_run_lcir_with_options(
@@ -10090,8 +10113,11 @@ fn typed_fixed_task_outcomes_capture_faults_and_race_nonzero_winners() {
         "loom_task_suspend_join",
         "loom_task_join_step",
         "loom_task_join_winner",
+        "loom.lcir.task_join.settled.",
+        "loom.lcir.task_join.race.",
+        "task.join.settled.collecting_root_state",
+        "task.join.race.outcome.",
         "task.await.settled.child.2",
-        "task.await.race.1",
         "task.outcome.fault.code",
         "task.outcome.fault.message",
         "coroutine.cancel.live",
@@ -10103,6 +10129,47 @@ fn typed_fixed_task_outcomes_capture_faults_and_race_nonzero_winners() {
             lcir.ir
         );
     }
+    assert!(
+        lcir.ir.lines().any(|line| {
+            line.starts_with("@loom.lcir.task_join.settled.")
+                && line.contains(".live_bitmaps =")
+                && line.contains("[4 x i64] [i64 0, i64 0, i64 15, i64 15]")
+        }),
+        "stored Task.settled must root both partial and completed fault outcomes:\n{}",
+        lcir.ir
+    );
+    assert!(
+        lcir.ir.lines().any(|line| {
+            line.starts_with("@loom.lcir.task_join.race.")
+                && line.contains(".live_bitmaps =")
+                && line.contains("[3 x i64] [i64 0, i64 0, i64 3]")
+        }),
+        "stored Task.race must root its completed fault outcome:\n{}",
+        lcir.ir
+    );
+    assert_eq!(
+        lcir.ir
+            .lines()
+            .filter(|line| {
+                line.starts_with("@loom.lcir.task_join.race.") && line.contains(".descriptor =")
+            })
+            .count(),
+        1,
+        "identical stored Task.race shapes must share one descriptor:\n{}",
+        lcir.ir
+    );
+    assert_eq!(
+        lcir.ir
+            .lines()
+            .filter(|line| {
+                line.starts_with("define internal")
+                    && line.contains(" i32 @loom.lcir.task_join.race.resume.")
+            })
+            .count(),
+        1,
+        "identical stored Task.race shapes must share one callback:\n{}",
+        lcir.ir
+    );
     for forbidden in [
         "%loom.Value",
         "loom.Value",

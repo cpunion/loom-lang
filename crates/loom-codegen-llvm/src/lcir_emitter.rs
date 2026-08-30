@@ -1816,10 +1816,13 @@ struct CoroutineLayout<'ctx> {
 }
 
 #[derive(Clone)]
-struct TaskJoinAllLayout<'ctx> {
+struct TaskJoinLayout<'ctx> {
+    mode: AwaitMode,
+    fault_origin: Option<Origin>,
     frame: StructType<'ctx>,
     child_fields: Vec<u32>,
     result_field: u32,
+    collecting_root_state: Option<u64>,
     output_types: Vec<ValueTypeId>,
     result_type: ValueTypeId,
     callback: FunctionValue<'ctx>,
@@ -1827,9 +1830,11 @@ struct TaskJoinAllLayout<'ctx> {
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct TaskJoinAllShape {
+struct TaskJoinShape {
+    mode: AwaitMode,
     output_types: Vec<ValueTypeId>,
     result_type: ValueTypeId,
+    fault_origin: Option<(u32, u32, u32)>,
 }
 
 #[derive(Clone)]
@@ -1877,8 +1882,8 @@ struct Backend<'ctx, 'artifact> {
     coroutine_callbacks: Vec<Option<FunctionValue<'ctx>>>,
     coroutine_layouts: Vec<Option<CoroutineLayout<'ctx>>>,
     coroutine_cancel: Option<FunctionValue<'ctx>>,
-    task_join_all_layouts: BTreeMap<TaskJoinAllShape, TaskJoinAllLayout<'ctx>>,
-    task_join_all_shapes: BTreeMap<InstructionId, TaskJoinAllShape>,
+    task_join_layouts: BTreeMap<TaskJoinShape, TaskJoinLayout<'ctx>>,
+    task_join_shapes: BTreeMap<InstructionId, TaskJoinShape>,
     io_task_layouts: BTreeMap<IoTaskShape, IoTaskLayout<'ctx>>,
     io_task_shapes: BTreeMap<InstructionId, IoTaskShape>,
     debug: Option<DebugState<'ctx>>,
@@ -2068,8 +2073,8 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             coroutine_callbacks: Vec::with_capacity(artifact.functions().len()),
             coroutine_layouts: Vec::with_capacity(artifact.functions().len()),
             coroutine_cancel: None,
-            task_join_all_layouts: BTreeMap::new(),
-            task_join_all_shapes: BTreeMap::new(),
+            task_join_layouts: BTreeMap::new(),
+            task_join_shapes: BTreeMap::new(),
             io_task_layouts: BTreeMap::new(),
             io_task_shapes: BTreeMap::new(),
             debug,
@@ -2158,7 +2163,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             self.coroutine_callbacks.push(None);
             self.coroutine_layouts.push(None);
         }
-        self.declare_task_join_all_layouts()?;
+        self.declare_task_join_layouts()?;
         self.declare_io_task_layouts()
     }
 
@@ -2205,36 +2210,37 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         Ok(function)
     }
 
-    fn declare_task_join_all_layouts(&mut self) -> Result<(), CodegenError> {
+    fn declare_task_join_layouts(&mut self) -> Result<(), CodegenError> {
         let joins = self
             .artifact
             .functions()
             .iter()
             .flat_map(|source| {
                 source.instructions().iter().filter_map(move |instruction| {
-                    matches!(instruction.kind(), InstructionKind::TaskJoinAll { .. })
+                    matches!(instruction.kind(), InstructionKind::TaskJoin { .. })
                         .then_some((source, instruction))
                 })
             })
             .collect::<Vec<_>>();
         for (source, instruction) in joins {
-            let shape = self.task_join_all_shape(source, instruction)?;
-            if self.task_join_all_shapes.contains_key(&instruction.id()) {
+            let shape = self.task_join_shape(source, instruction)?;
+            if self.task_join_shapes.contains_key(&instruction.id()) {
                 return Err(CodegenError::new(
                     "LlvmAbiDefect",
-                    format!("duplicate typed Task.all instruction {}", instruction.id()),
+                    format!("duplicate typed Task join instruction {}", instruction.id()),
                 ));
             }
-            if !self.task_join_all_layouts.contains_key(&shape) {
-                let shape_index = self.task_join_all_layouts.len();
+            if !self.task_join_layouts.contains_key(&shape) {
+                let shape_index = self.task_join_layouts.len();
+                let mode_name = task_join_mode_name(shape.mode);
                 let cancel = self.coroutine_cancel.ok_or_else(|| {
                     CodegenError::new(
                         "LlvmAbiDefect",
-                        "typed Task.all descriptor has no cancellation callback",
+                        "typed Task join descriptor has no cancellation callback",
                     )
                 })?;
                 let callback = self.module.add_function(
-                    &format!("loom.lcir.task_join_all.resume.{shape_index}"),
+                    &format!("loom.lcir.task_join.{mode_name}.resume.{shape_index}"),
                     self.context.i32_type().fn_type(
                         &[
                             self.ptr_type.into(),
@@ -2245,11 +2251,16 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                     ),
                     Some(Linkage::Internal),
                 );
-                let layout =
-                    self.build_task_join_all_layout(&shape, shape_index, callback, cancel)?;
-                self.task_join_all_layouts.insert(shape.clone(), layout);
+                let layout = self.build_task_join_layout(
+                    &shape,
+                    instruction.origin(),
+                    shape_index,
+                    callback,
+                    cancel,
+                )?;
+                self.task_join_layouts.insert(shape.clone(), layout);
             }
-            self.task_join_all_shapes.insert(instruction.id(), shape);
+            self.task_join_shapes.insert(instruction.id(), shape);
         }
         Ok(())
     }
@@ -2578,23 +2589,23 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "exact Task.all shape validation keeps child semantics, canonical output identities, and tuple agreement in one audit boundary"
+        reason = "exact fixed Task-join validation keeps mode semantics, canonical output identities, and result agreement in one audit boundary"
     )]
-    fn task_join_all_shape(
+    fn task_join_shape(
         &self,
         source: &Function,
         instruction: &Instruction,
-    ) -> Result<TaskJoinAllShape, CodegenError> {
-        let InstructionKind::TaskJoinAll { tasks } = instruction.kind() else {
+    ) -> Result<TaskJoinShape, CodegenError> {
+        let InstructionKind::TaskJoin { mode, tasks } = instruction.kind() else {
             return Err(CodegenError::new(
                 "LlvmAbiDefect",
-                format!("{} is not a typed Task.all instruction", instruction.id()),
+                format!("{} is not a typed Task join instruction", instruction.id()),
             ));
         };
         if tasks.is_empty() {
             return Err(CodegenError::new(
                 "LlvmAbiDefect",
-                "typed Task.all cannot have an empty exact shape",
+                "typed fixed Task join cannot have an empty exact shape",
             ));
         }
         let output_types = tasks
@@ -2608,13 +2619,13 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                     .ok_or_else(|| {
                         CodegenError::new(
                             "LlvmAbiDefect",
-                            format!("typed Task.all child {task} has no semantic type"),
+                            format!("typed Task join child {task} has no semantic type"),
                         )
                     })?;
                 let Type::Task(output) = semantic else {
                     return Err(CodegenError::new(
                         "LlvmAbiDefect",
-                        format!("typed Task.all child {task} is not a Task"),
+                        format!("typed Task join child {task} is not a Task"),
                     ));
                 };
                 self.artifact
@@ -2623,7 +2634,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                     .ok_or_else(|| {
                         CodegenError::new(
                             "LlvmAbiDefect",
-                            format!("typed Task.all child {task} output has no LCIR type"),
+                            format!("typed Task join child {task} output has no LCIR type"),
                         )
                     })
             })
@@ -2632,21 +2643,19 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             .results()
             .first()
             .and_then(|result| source.value(*result))
-            .ok_or_else(|| {
-                CodegenError::new("LlvmAbiDefect", "typed Task.all has no result value")
-            })?;
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "typed Task join has no result"))?;
         let result_semantic = self
             .artifact
             .representations()
             .value_type(result.ty())
             .map(loom_codegen_ir::ValueType::semantic)
             .ok_or_else(|| {
-                CodegenError::new("LlvmAbiDefect", "typed Task.all result type is missing")
+                CodegenError::new("LlvmAbiDefect", "typed Task join result type is missing")
             })?;
         let Type::Task(result_type) = result_semantic else {
             return Err(CodegenError::new(
                 "LlvmAbiDefect",
-                "typed Task.all result is not a Task",
+                "typed Task join result is not a Task",
             ));
         };
         let result_type = self
@@ -2654,64 +2663,113 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             .representations()
             .type_id(result_type)
             .ok_or_else(|| {
-                CodegenError::new(
-                    "LlvmAbiDefect",
-                    "typed Task.all tuple output has no LCIR type",
-                )
+                CodegenError::new("LlvmAbiDefect", "typed Task join output has no LCIR type")
             })?;
-        let tuple = self
+        let actual = self
             .artifact
             .representations()
             .value_type(result_type)
             .map(loom_codegen_ir::ValueType::semantic)
             .ok_or_else(|| {
-                CodegenError::new("LlvmAbiDefect", "typed Task.all tuple type is missing")
+                CodegenError::new("LlvmAbiDefect", "typed Task join output type is missing")
             })?;
-        if tuple
-            != &Type::Tuple(
-                output_types
-                    .iter()
-                    .map(|ty| {
-                        self.artifact
-                            .representations()
-                            .value_type(*ty)
-                            .map(|value| value.semantic().clone())
-                            .ok_or_else(|| {
-                                CodegenError::new(
-                                    "LlvmAbiDefect",
-                                    "typed Task.all output type disappeared",
-                                )
-                            })
+        let outputs = output_types
+            .iter()
+            .map(|ty| {
+                self.artifact
+                    .representations()
+                    .value_type(*ty)
+                    .map(|value| value.semantic().clone())
+                    .ok_or_else(|| {
+                        CodegenError::new(
+                            "LlvmAbiDefect",
+                            "typed Task join output type disappeared",
+                        )
                     })
-                    .collect::<Result<Vec<_>, _>>()?,
-            )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if matches!(mode, AwaitMode::Any | AwaitMode::Race)
+            && outputs.iter().any(|output| output != &outputs[0])
         {
             return Err(CodegenError::new(
                 "LlvmAbiDefect",
-                "typed Task.all result tuple does not match its child outputs",
+                "typed Task.any/race children do not share one output type",
             ));
         }
-        Ok(TaskJoinAllShape {
+        let outcome = |output: Type| {
+            self.artifact
+                .program()
+                .as_program()
+                .canonical_types()
+                .task_outcome
+                .map(|outcome| Type::Nominal(outcome, vec![output]))
+                .ok_or_else(|| {
+                    CodegenError::new(
+                        "LlvmAbiDefect",
+                        "typed Task.settled/race has no canonical TaskOutcome identity",
+                    )
+                })
+        };
+        let expected = match mode {
+            AwaitMode::All => Type::Tuple(outputs),
+            AwaitMode::Settled => Type::Tuple(
+                outputs
+                    .into_iter()
+                    .map(outcome)
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            AwaitMode::Any => outputs[0].clone(),
+            AwaitMode::Race => outcome(outputs[0].clone())?,
+        };
+        if actual != &expected {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "typed Task join result does not match its mode and child outputs",
+            ));
+        }
+        let origin = instruction.origin();
+        Ok(TaskJoinShape {
+            mode: *mode,
             output_types,
             result_type,
+            fault_origin: (*mode == AwaitMode::Any).then_some((
+                origin.span.file.0,
+                origin.span.range.start,
+                origin.span.range.end,
+            )),
         })
     }
 
     #[expect(
         clippy::too_many_lines,
-        reason = "one target-data proof constructs the exact heterogeneous Task.all frame, completed roots, and immutable descriptor"
+        reason = "one target-data proof constructs the exact fixed Task-join frame, completed roots, and immutable descriptor"
     )]
-    fn build_task_join_all_layout(
+    fn build_task_join_layout(
         &self,
-        shape: &TaskJoinAllShape,
+        shape: &TaskJoinShape,
+        origin: Origin,
         shape_index: usize,
         callback: FunctionValue<'ctx>,
         cancel: FunctionValue<'ctx>,
-    ) -> Result<TaskJoinAllLayout<'ctx>, CodegenError> {
-        let TaskJoinAllShape {
+    ) -> Result<TaskJoinLayout<'ctx>, CodegenError> {
+        let TaskJoinShape {
+            mode,
             output_types,
             result_type,
+            fault_origin,
         } = shape;
+        let mode = *mode;
+        let actual_fault_origin = (
+            origin.span.file.0,
+            origin.span.range.start,
+            origin.span.range.end,
+        );
+        if fault_origin.is_some_and(|expected| expected != actual_fault_origin) {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "typed Task.any shape disagrees with its fault origin",
+            ));
+        }
 
         let mut fields = vec![self.context.i64_type().into()];
         let mut child_fields = Vec::with_capacity(output_types.len());
@@ -2721,7 +2779,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             next_field = next_field.checked_add(1).ok_or_else(|| {
                 CodegenError::new(
                     "ProgramTooLarge",
-                    "typed Task.all frame has too many fields",
+                    "typed Task join frame has too many fields",
                 )
             })?;
             fields.push(self.ptr_type.into());
@@ -2740,7 +2798,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             return Err(CodegenError::new(
                 "ProgramTooLarge",
                 format!(
-                    "typed Task.all has unsupported frame size/alignment {frame_size}/{frame_align}"
+                    "typed Task join has unsupported frame size/alignment {frame_size}/{frame_align}"
                 ),
             ));
         }
@@ -2750,26 +2808,37 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         if u64::try_from(completed_roots.len()).unwrap_or(u64::MAX) > GC_MAX_ROOT_SLOTS {
             return Err(CodegenError::new(
                 "ProgramTooLarge",
-                "typed Task.all result has too many exact managed roots",
+                "typed Task join result has too many exact managed roots",
             ));
         }
         let offsets = completed_roots.into_iter().collect::<Vec<_>>();
         let bitmap_words = offsets.len().div_ceil(64);
-        let state_count = 3_usize;
+        let collecting_root_state = (mode == AwaitMode::Settled).then_some(2_u64);
+        let completed_root_state = collecting_root_state.map_or(2_u64, |_| 3_u64);
+        let state_count = usize::try_from(completed_root_state.saturating_add(1))
+            .map_err(|_| CodegenError::new("ProgramTooLarge", "Task join state overflowed"))?;
         let total_bitmap_words = state_count.checked_mul(bitmap_words).ok_or_else(|| {
-            CodegenError::new("ProgramTooLarge", "typed Task.all root bitmap overflowed")
+            CodegenError::new("ProgramTooLarge", "typed Task join root bitmap overflowed")
         })?;
         if u64::try_from(total_bitmap_words).unwrap_or(u64::MAX) > GC_MAX_ROOT_BITMAP_WORDS {
             return Err(CodegenError::new(
                 "ProgramTooLarge",
-                "typed Task.all root bitmap exceeds the runtime ABI limit",
+                "typed Task join root bitmap exceeds the runtime ABI limit",
             ));
         }
         let mut bitmaps = vec![0_u64; total_bitmap_words];
-        for slot in 0..offsets.len() {
-            bitmaps[2 * bitmap_words + slot / 64] |= 1_u64 << (slot % 64);
+        for state in collecting_root_state.unwrap_or(completed_root_state)..=completed_root_state {
+            let state = usize::try_from(state).map_err(|_| {
+                CodegenError::new("ProgramTooLarge", "Task join root state overflowed")
+            })?;
+            for slot in 0..offsets.len() {
+                bitmaps[state * bitmap_words + slot / 64] |= 1_u64 << (slot % 64);
+            }
         }
-        let stem = format!("loom.lcir.task_join_all.{shape_index}");
+        let stem = format!(
+            "loom.lcir.task_join.{}.{shape_index}",
+            task_join_mode_name(mode)
+        );
         let offsets_pointer = self.emit_i64_array(&format!("{stem}.root_offsets"), &offsets)?;
         let bitmaps_pointer = self.emit_i64_array(&format!("{stem}.live_bitmaps"), &bitmaps)?;
         let result_physical = self.llvm_type(*result_type)?;
@@ -2834,16 +2903,22 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                     .into(),
                 offsets_pointer.into(),
                 bitmaps_pointer.into(),
-                self.context.i64_type().const_int(2, false).into(),
+                self.context
+                    .i64_type()
+                    .const_int(completed_root_state, false)
+                    .into(),
             ]),
         );
         descriptor.set_constant(true);
         descriptor.set_linkage(Linkage::Private);
         descriptor.set_unnamed_address(UnnamedAddress::Global);
-        Ok(TaskJoinAllLayout {
+        Ok(TaskJoinLayout {
+            mode,
+            fault_origin: (mode == AwaitMode::Any).then_some(origin),
             frame,
             child_fields,
             result_field,
+            collecting_root_state,
             output_types: output_types.clone(),
             result_type: *result_type,
             callback,
@@ -3251,8 +3326,8 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
 
     fn compile(&self) -> Result<(), CodegenError> {
         self.emit_coroutine_cancel()?;
-        for layout in self.task_join_all_layouts.values() {
-            self.emit_task_join_all_callback(layout)?;
+        for layout in self.task_join_layouts.values() {
+            self.emit_task_join_callback(layout)?;
         }
         for layout in self.io_task_layouts.values() {
             self.emit_io_task_callback(layout)?;
@@ -3273,26 +3348,25 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "one generated callback owns the complete pointer-only Task.all join protocol and exact tuple publication"
+        reason = "one generated callback owns the complete pointer-only fixed Task-join protocol and exact result publication"
     )]
-    fn emit_task_join_all_callback(
-        &self,
-        layout: &TaskJoinAllLayout<'ctx>,
-    ) -> Result<(), CodegenError> {
+    fn emit_task_join_callback(&self, layout: &TaskJoinLayout<'ctx>) -> Result<(), CodegenError> {
         let task = layout
             .callback
             .get_nth_param(0)
-            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "Task.all callback has no task"))?
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "Task join callback has no task"))?
             .into_pointer_value();
         let executor = layout
             .callback
             .get_nth_param(1)
-            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "Task.all callback has no executor"))?
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "Task join callback has no executor")
+            })?
             .into_pointer_value();
         let frame = layout
             .callback
             .get_nth_param(2)
-            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "Task.all callback has no frame"))?
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "Task join callback has no frame"))?
             .into_pointer_value();
         let entry = self.context.append_basic_block(layout.callback, "entry");
         let start = self
@@ -3320,11 +3394,11 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         self.builder.position_at_end(entry);
         let state_pointer = self
             .builder
-            .build_struct_gep(layout.frame, frame, 0, "task.all.state.pointer")
+            .build_struct_gep(layout.frame, frame, 0, "task.join.state.pointer")
             .map_err(builder_error)?;
         let state = self
             .builder
-            .build_load(self.context.i64_type(), state_pointer, "task.all.state")
+            .build_load(self.context.i64_type(), state_pointer, "task.join.state")
             .map_err(builder_error)?
             .into_int_value();
         self.builder
@@ -3339,6 +3413,12 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             .map_err(builder_error)?;
 
         self.builder.position_at_end(start);
+        let runtime_mode = match layout.mode {
+            AwaitMode::All => TASK_JOIN_ALL,
+            AwaitMode::Any => TASK_JOIN_ANY,
+            AwaitMode::Settled => TASK_JOIN_SETTLED,
+            AwaitMode::Race => TASK_JOIN_RACE,
+        };
         let prepared = call_int(
             &self.builder,
             self.task_prepare_join(),
@@ -3347,12 +3427,12 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                 task.into(),
                 self.context
                     .i32_type()
-                    .const_int(u64::from(TASK_JOIN_ALL), false)
+                    .const_int(u64::from(runtime_mode), false)
                     .into(),
             ],
-            "task.all.prepare",
+            "task.join.prepare",
         )?;
-        self.require_zero_status(prepared, "task.all.prepare")?;
+        self.require_zero_status(prepared, "task.join.prepare")?;
         for (index, field) in layout.child_fields.iter().copied().enumerate() {
             let pointer = self
                 .builder
@@ -3360,15 +3440,15 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                     layout.frame,
                     frame,
                     field,
-                    &format!("task.all.child.{index}.pointer"),
+                    &format!("task.join.child.{index}.pointer"),
                 )
                 .map_err(builder_error)?;
             let child = self
                 .builder
-                .build_load(self.ptr_type, pointer, &format!("task.all.child.{index}"))
+                .build_load(self.ptr_type, pointer, &format!("task.join.child.{index}"))
                 .map_err(builder_error)?
                 .into_pointer_value();
-            let name = format!("task.all.add_child.{index}");
+            let name = format!("task.join.add_child.{index}");
             let added = call_int(
                 &self.builder,
                 self.task_add_join_child(),
@@ -3387,14 +3467,14 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                 task.into(),
                 self.context.i64_type().const_int(1, false).into(),
             ],
-            "task.all.root_state",
+            "task.join.root_state",
         )?;
-        self.require_zero_status(rooted, "task.all.root_state")?;
+        self.require_zero_status(rooted, "task.join.root_state")?;
         let suspended = call_int(
             &self.builder,
             self.task_suspend_join(),
             &[executor.into(), task.into()],
-            "task.all.suspend",
+            "task.join.suspend",
         )?;
         self.builder
             .build_switch(
@@ -3415,7 +3495,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             &self.builder,
             self.task_join_step(),
             &[task.into()],
-            "task.all.join_step",
+            "task.join.join_step",
         )?;
         self.builder
             .build_switch(
@@ -3445,79 +3525,328 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             .map_err(builder_error)?;
 
         self.builder.position_at_end(completed);
-        let mut tuple = self
-            .llvm_type(layout.result_type)?
-            .into_struct_type()
-            .get_undef();
-        for (index, (field, output)) in layout
-            .child_fields
-            .iter()
-            .copied()
-            .zip(layout.output_types.iter().copied())
-            .enumerate()
-        {
-            let child_pointer = self
-                .builder
-                .build_struct_gep(
-                    layout.frame,
-                    frame,
-                    field,
-                    &format!("task.all.result.child.{index}.pointer"),
-                )
-                .map_err(builder_error)?;
-            let child = self
-                .builder
-                .build_load(
-                    self.ptr_type,
-                    child_pointer,
-                    &format!("task.all.result.child.{index}"),
-                )
-                .map_err(builder_error)?
-                .into_pointer_value();
-            let value = self.take_typed_task_result_exact(
-                child,
-                output,
-                &format!("task.all.result.{index}"),
-            )?;
-            let index = u32::try_from(index).map_err(|_| {
-                CodegenError::new(
-                    "ProgramTooLarge",
-                    "typed Task.all tuple has too many fields",
-                )
-            })?;
-            tuple = self
-                .builder
-                .build_insert_value(tuple, value, index, "task.all.tuple")
-                .map_err(builder_error)?
-                .into_struct_value();
-        }
         let result_pointer = self
             .builder
             .build_struct_gep(
                 layout.frame,
                 frame,
                 layout.result_field,
-                "task.all.result.pointer",
+                "task.join.result.pointer",
             )
             .map_err(builder_error)?;
-        self.builder
-            .build_store(result_pointer, tuple)
-            .map_err(builder_error)?;
+        self.emit_task_join_result(layout, task, frame, result_pointer)?;
         let published = call_int(
             &self.builder,
             self.typed_task_publish_result(),
             &[task.into()],
-            "task.all.publish_result",
+            "task.join.publish_result",
         )?;
-        self.require_zero_status(published, "task.all.publish_result")?;
+        self.require_zero_status(published, "task.join.publish_result")?;
         self.emit_task_step_return(TASK_COMPLETED)?;
 
         self.builder.position_at_end(faulted);
+        if layout.mode == AwaitMode::Any {
+            let winner = call_int(
+                &self.builder,
+                self.task_join_winner(),
+                &[task.into()],
+                "task.join.any.fault.winner",
+            )?;
+            let no_winner = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    winner,
+                    self.context.i64_type().const_all_ones(),
+                    "task.join.any.no_winner",
+                )
+                .map_err(builder_error)?;
+            let report = self
+                .context
+                .append_basic_block(layout.callback, "join.any.report_failed");
+            let propagate = self
+                .context
+                .append_basic_block(layout.callback, "join.any.propagate_fault");
+            self.builder
+                .build_conditional_branch(no_winner, report, propagate)
+                .map_err(builder_error)?;
+            self.builder.position_at_end(report);
+            self.raise_fault(
+                executor,
+                FaultCode::TaskAnyFailed,
+                layout.fault_origin.ok_or_else(|| {
+                    CodegenError::new("LlvmAbiDefect", "Task.any join has no fault origin")
+                })?,
+            )?;
+            self.emit_task_step_return(TASK_FAULTED)?;
+            self.builder.position_at_end(propagate);
+        }
         self.emit_task_step_return(TASK_FAULTED)?;
         self.builder.position_at_end(cancelled);
         self.emit_task_step_return(TASK_CANCELLED)?;
         self.builder.position_at_end(invalid);
         self.emit_task_step_return(TASK_FAULTED)
+    }
+
+    fn task_join_child(
+        &self,
+        layout: &TaskJoinLayout<'ctx>,
+        frame: PointerValue<'ctx>,
+        index: usize,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let field = layout.child_fields.get(index).copied().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                format!("Task join child {index} is missing"),
+            )
+        })?;
+        let pointer = self
+            .builder
+            .build_struct_gep(layout.frame, frame, field, &format!("{name}.pointer"))
+            .map_err(builder_error)?;
+        self.builder
+            .build_load(self.ptr_type, pointer, name)
+            .map(BasicValueEnum::into_pointer_value)
+            .map_err(builder_error)
+    }
+
+    fn task_outcome_type(&self, output: ValueTypeId) -> Result<ValueTypeId, CodegenError> {
+        let output = self
+            .artifact
+            .representations()
+            .value_type(output)
+            .map(|output| output.semantic().clone())
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "Task output type is missing"))?;
+        let outcome = self
+            .artifact
+            .program()
+            .as_program()
+            .canonical_types()
+            .task_outcome
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "canonical TaskOutcome identity is missing")
+            })?;
+        self.artifact
+            .representations()
+            .type_id(&Type::Nominal(outcome, vec![output]))
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "canonical TaskOutcome type is missing")
+            })
+    }
+
+    fn emit_task_join_result(
+        &self,
+        layout: &TaskJoinLayout<'ctx>,
+        task: PointerValue<'ctx>,
+        frame: PointerValue<'ctx>,
+        result_pointer: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        match layout.mode {
+            AwaitMode::All => {
+                let mut tuple = self
+                    .llvm_type(layout.result_type)?
+                    .into_struct_type()
+                    .get_undef();
+                for (index, output) in layout.output_types.iter().copied().enumerate() {
+                    let child = self.task_join_child(
+                        layout,
+                        frame,
+                        index,
+                        &format!("task.join.all.child.{index}"),
+                    )?;
+                    let value = self.take_typed_task_result_exact(
+                        child,
+                        output,
+                        &format!("task.join.all.result.{index}"),
+                    )?;
+                    let index = u32::try_from(index).map_err(|_| {
+                        CodegenError::new("ProgramTooLarge", "Task.all has too many fields")
+                    })?;
+                    tuple = self
+                        .builder
+                        .build_insert_value(tuple, value, index, "task.join.all.tuple")
+                        .map_err(builder_error)?
+                        .into_struct_value();
+                }
+                self.builder
+                    .build_store(result_pointer, tuple)
+                    .map_err(builder_error)?;
+            }
+            AwaitMode::Settled => {
+                self.emit_task_join_settled_result(layout, task, frame, result_pointer)?;
+            }
+            AwaitMode::Any | AwaitMode::Race => {
+                let selected = self.emit_task_join_selected_result(layout, task, frame)?;
+                self.builder
+                    .build_store(result_pointer, selected)
+                    .map_err(builder_error)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_task_join_settled_result(
+        &self,
+        layout: &TaskJoinLayout<'ctx>,
+        task: PointerValue<'ctx>,
+        frame: PointerValue<'ctx>,
+        result_pointer: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let collecting = layout.collecting_root_state.ok_or_else(|| {
+            CodegenError::new("LlvmAbiDefect", "Task.settled has no collecting root state")
+        })?;
+        self.builder
+            .build_store(result_pointer, self.zero(layout.result_type)?)
+            .map_err(builder_error)?;
+        let rooted = call_int(
+            &self.builder,
+            self.typed_task_set_root_state(),
+            &[
+                task.into(),
+                self.context.i64_type().const_int(collecting, false).into(),
+            ],
+            "task.join.settled.collecting_root_state",
+        )?;
+        self.require_zero_status(rooted, "task.join.settled.collecting_root_state")?;
+        let tuple_type = self.llvm_type(layout.result_type)?.into_struct_type();
+        for (index, output) in layout.output_types.iter().copied().enumerate() {
+            let child = self.task_join_child(
+                layout,
+                frame,
+                index,
+                &format!("task.join.settled.child.{index}"),
+            )?;
+            let outcome = self.task_outcome_type(output)?;
+            let value = self.take_typed_task_outcome_exact(
+                child,
+                output,
+                outcome,
+                &format!("task.join.settled.outcome.{index}"),
+            )?;
+            // `take_outcome` may move managed leaves already stored in earlier
+            // fields. Reload the precisely rooted frame result after every
+            // capture before inserting the next outcome.
+            let tuple = self
+                .builder
+                .build_load(
+                    tuple_type,
+                    result_pointer,
+                    "task.join.settled.partial.reload",
+                )
+                .map_err(builder_error)?
+                .into_struct_value();
+            let index = u32::try_from(index).map_err(|_| {
+                CodegenError::new("ProgramTooLarge", "Task.settled has too many fields")
+            })?;
+            let tuple = self
+                .builder
+                .build_insert_value(tuple, value, index, "task.join.settled.partial")
+                .map_err(builder_error)?;
+            self.builder
+                .build_store(result_pointer, tuple)
+                .map_err(builder_error)?;
+        }
+        Ok(())
+    }
+
+    fn emit_task_join_selected_result(
+        &self,
+        layout: &TaskJoinLayout<'ctx>,
+        task: PointerValue<'ctx>,
+        frame: PointerValue<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let output = layout.output_types.first().copied().ok_or_else(|| {
+            CodegenError::new("LlvmAbiDefect", "winner-selecting Task join has no output")
+        })?;
+        if layout
+            .output_types
+            .iter()
+            .any(|candidate| *candidate != output)
+        {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "winner-selecting Task join has heterogeneous outputs",
+            ));
+        }
+        let winner = call_int(
+            &self.builder,
+            self.task_join_winner(),
+            &[task.into()],
+            "task.join.winner",
+        )?;
+        let invalid = self
+            .context
+            .append_basic_block(layout.callback, "join.winner.invalid");
+        let merge = self
+            .context
+            .append_basic_block(layout.callback, "join.winner.merge");
+        let cases = layout
+            .child_fields
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                let ordinal = u64::try_from(index).map_err(|_| {
+                    CodegenError::new("ProgramTooLarge", "Task join has too many children")
+                })?;
+                Ok((
+                    self.context.i64_type().const_int(ordinal, false),
+                    self.context
+                        .append_basic_block(layout.callback, &format!("join.winner.{ordinal}")),
+                ))
+            })
+            .collect::<Result<Vec<_>, CodegenError>>()?;
+        self.builder
+            .build_switch(winner, invalid, &cases)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(invalid);
+        self.emit_task_step_return(TASK_FAULTED)?;
+
+        let mut incoming = Vec::with_capacity(cases.len());
+        for (index, (_, block)) in cases.into_iter().enumerate() {
+            self.builder.position_at_end(block);
+            let child = self.task_join_child(
+                layout,
+                frame,
+                index,
+                &format!("task.join.winner.child.{index}"),
+            )?;
+            let value = match layout.mode {
+                AwaitMode::Any => self.take_typed_task_result_exact(
+                    child,
+                    output,
+                    &format!("task.join.any.result.{index}"),
+                )?,
+                AwaitMode::Race => self.take_typed_task_outcome_exact(
+                    child,
+                    output,
+                    layout.result_type,
+                    &format!("task.join.race.outcome.{index}"),
+                )?,
+                AwaitMode::All | AwaitMode::Settled => {
+                    return Err(CodegenError::new(
+                        "LlvmAbiDefect",
+                        "non-selecting Task join requested a winner result",
+                    ));
+                }
+            };
+            let predecessor = self.builder.get_insert_block().ok_or_else(|| {
+                CodegenError::new("LlvmBuilderFailed", "Task join winner lost its block")
+            })?;
+            self.builder
+                .build_unconditional_branch(merge)
+                .map_err(builder_error)?;
+            incoming.push((value, predecessor));
+        }
+        self.builder.position_at_end(merge);
+        let phi = self
+            .builder
+            .build_phi(self.llvm_type(layout.result_type)?, "task.join.selected")
+            .map_err(builder_error)?;
+        for (value, block) in &incoming {
+            phi.add_incoming(&[(value as &dyn inkwell::values::BasicValue<'ctx>, *block)]);
+        }
+        Ok(phi.as_basic_value())
     }
 
     #[expect(
@@ -5666,20 +5995,17 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             })
     }
 
-    fn task_join_all_layout(
-        &self,
-        id: InstructionId,
-    ) -> Result<&TaskJoinAllLayout<'ctx>, CodegenError> {
-        let shape = self.task_join_all_shapes.get(&id).ok_or_else(|| {
+    fn task_join_layout(&self, id: InstructionId) -> Result<&TaskJoinLayout<'ctx>, CodegenError> {
+        let shape = self.task_join_shapes.get(&id).ok_or_else(|| {
             CodegenError::new(
                 "LlvmAbiDefect",
-                format!("typed Task.all instruction {id} has no exact shape"),
+                format!("typed Task join instruction {id} has no exact shape"),
             )
         })?;
-        self.task_join_all_layouts.get(shape).ok_or_else(|| {
+        self.task_join_layouts.get(shape).ok_or_else(|| {
             CodegenError::new(
                 "LlvmAbiDefect",
-                format!("typed Task.all instruction {id} has no generated descriptor"),
+                format!("typed Task join instruction {id} has no generated descriptor"),
             )
         })
     }
@@ -6268,6 +6594,345 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         } else {
             self.zero(output)
         }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "exact callback-side sum construction keeps payload layout, tag layout, and carrier copying in one audited ABI path"
+    )]
+    fn construct_sum_exact(
+        &self,
+        ty: ValueTypeId,
+        variant: u32,
+        payload: &[BasicValueEnum<'ctx>],
+        name: &str,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let layout = self.sum_layout(ty)?;
+        let variant_index = usize::try_from(variant).map_err(|_| {
+            CodegenError::new("LlvmAbiDefect", format!("invalid sum variant {variant}"))
+        })?;
+        let payload_type = layout.payloads.get(variant_index).copied().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                format!("sum type {ty} has no variant {variant}"),
+            )
+        })?;
+        if usize::try_from(payload_type.count_fields()).ok() != Some(payload.len()) {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!(
+                    "sum type {ty} variant {variant} has {} physical fields but {} values",
+                    payload_type.count_fields(),
+                    payload.len()
+                ),
+            ));
+        }
+        let mut payload_value = payload_type.get_undef();
+        for (index, value) in payload.iter().copied().enumerate() {
+            let index = u32::try_from(index)
+                .map_err(|_| CodegenError::new("ProgramTooLarge", "too many sum fields"))?;
+            payload_value = self
+                .builder
+                .build_insert_value(payload_value, value, index, &format!("{name}.payload"))
+                .map_err(builder_error)?
+                .into_struct_value();
+        }
+        match layout.tag {
+            SumTagRepr::Tagless => Ok(payload_value.into()),
+            SumTagRepr::I8 | SumTagRepr::I16 | SumTagRepr::I32 => {
+                let tag = self
+                    .sum_tag_type(layout.tag)
+                    .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "sum tag is missing"))?
+                    .const_int(u64::from(variant), false);
+                let Some(carrier_type) = layout.carrier else {
+                    if !payload.is_empty() {
+                        return Err(CodegenError::new(
+                            "LlvmAbiDefect",
+                            format!("tag-only sum type {ty} carried a payload"),
+                        ));
+                    }
+                    return Ok(tag.into());
+                };
+                let physical = layout.physical.into_struct_type();
+                let storage = self
+                    .builder
+                    .build_alloca(physical, &format!("{name}.storage"))
+                    .map_err(builder_error)?;
+                self.builder
+                    .build_store(storage, physical.const_zero())
+                    .map_err(builder_error)?;
+                let tag_pointer = self
+                    .builder
+                    .build_struct_gep(physical, storage, 0, &format!("{name}.tag.pointer"))
+                    .map_err(builder_error)?;
+                self.builder
+                    .build_store(tag_pointer, tag)
+                    .map_err(builder_error)?;
+                let payload_size = self.target_data.get_abi_size(&payload_type);
+                self.charge_sum_carrier_emission_work(payload_size)?;
+                if payload_size != 0 {
+                    let carrier = self
+                        .builder
+                        .build_struct_gep(physical, storage, 1, &format!("{name}.carrier.pointer"))
+                        .map_err(builder_error)?;
+                    let bytes = self
+                        .builder
+                        .build_struct_gep(
+                            carrier_type,
+                            carrier,
+                            1,
+                            &format!("{name}.bytes.pointer"),
+                        )
+                        .map_err(builder_error)?;
+                    let address = self
+                        .builder
+                        .build_ptr_to_int(
+                            bytes,
+                            self.context.i64_type(),
+                            &format!("{name}.bytes.address"),
+                        )
+                        .map_err(builder_error)?;
+                    let address = self
+                        .builder
+                        .build_int_add(
+                            address,
+                            self.context
+                                .i64_type()
+                                .const_int(layout.payload_byte_offset(variant_index)?, false),
+                            &format!("{name}.payload.address"),
+                        )
+                        .map_err(builder_error)?;
+                    let destination = self
+                        .builder
+                        .build_int_to_ptr(address, self.ptr_type, &format!("{name}.destination"))
+                        .map_err(builder_error)?;
+                    let source = self
+                        .builder
+                        .build_alloca(payload_type, &format!("{name}.payload.storage"))
+                        .map_err(builder_error)?;
+                    self.builder
+                        .build_store(source, payload_value)
+                        .map_err(builder_error)?;
+                    let alignment = self.target_data.get_abi_alignment(&payload_type);
+                    self.builder
+                        .build_memcpy(
+                            destination,
+                            alignment,
+                            source,
+                            alignment,
+                            self.context.i64_type().const_int(payload_size, false),
+                        )
+                        .map_err(builder_error)?;
+                }
+                self.builder
+                    .build_load(physical, storage, &format!("{name}.value"))
+                    .map_err(builder_error)
+            }
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exact outcome capture keeps the terminal runtime ABI and canonical three-variant sum construction together"
+    )]
+    fn take_typed_task_outcome_exact(
+        &self,
+        child: PointerValue<'ctx>,
+        output: ValueTypeId,
+        outcome: ValueTypeId,
+        name: &str,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let fault = self
+            .sum_repr(outcome)?
+            .variants()
+            .get(usize::try_from(TASK_OUTCOME_FAULTED_VARIANT).map_err(|_| {
+                CodegenError::new("LlvmAbiDefect", "TaskOutcome fault variant overflowed")
+            })?)
+            .and_then(|variant| variant.fields().first())
+            .copied()
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "TaskOutcome fault payload is missing")
+            })?;
+        let output_physical = self.llvm_type(output)?;
+        let output_size = self.target_data.get_abi_size(&output_physical);
+        let output_alignment = u64::from(self.target_data.get_abi_alignment(&output_physical));
+        let output_storage = (output_size != 0)
+            .then(|| {
+                self.builder
+                    .build_alloca(output_physical, &format!("{name}.result.storage"))
+                    .map_err(builder_error)
+            })
+            .transpose()?;
+        let code_output = self
+            .builder
+            .build_alloca(self.ptr_type, &format!("{name}.code.output"))
+            .map_err(builder_error)?;
+        let message_output = self
+            .builder
+            .build_alloca(self.ptr_type, &format!("{name}.message.output"))
+            .map_err(builder_error)?;
+        for cell in [code_output, message_output] {
+            self.builder
+                .build_store(cell, self.ptr_type.const_null())
+                .map_err(builder_error)?;
+        }
+        let status = call_int(
+            &self.builder,
+            self.typed_task_take_outcome(),
+            &[
+                child.into(),
+                output_storage
+                    .unwrap_or_else(|| self.ptr_type.const_null())
+                    .into(),
+                self.context.i64_type().const_int(output_size, false).into(),
+                self.context
+                    .i64_type()
+                    .const_int(output_alignment, false)
+                    .into(),
+                code_output.into(),
+                message_output.into(),
+            ],
+            &format!("{name}.take"),
+        )?;
+        let function = self
+            .builder
+            .get_insert_block()
+            .and_then(BasicBlock::get_parent)
+            .ok_or_else(|| CodegenError::new("LlvmBuilderFailed", "outcome has no function"))?;
+        let completed = self
+            .context
+            .append_basic_block(function, "join.outcome.completed");
+        let faulted = self
+            .context
+            .append_basic_block(function, "join.outcome.faulted");
+        let cancelled = self
+            .context
+            .append_basic_block(function, "join.outcome.cancelled");
+        let invalid = self
+            .context
+            .append_basic_block(function, "join.outcome.invalid");
+        let merge = self
+            .context
+            .append_basic_block(function, "join.outcome.merge");
+        self.builder
+            .build_switch(
+                status,
+                invalid,
+                &[
+                    (
+                        self.context
+                            .i32_type()
+                            .const_int(TASK_COMPLETED as u64, false),
+                        completed,
+                    ),
+                    (
+                        self.context
+                            .i32_type()
+                            .const_int(TASK_FAULTED as u64, false),
+                        faulted,
+                    ),
+                    (
+                        self.context
+                            .i32_type()
+                            .const_int(TASK_CANCELLED as u64, false),
+                        cancelled,
+                    ),
+                ],
+            )
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(invalid);
+        let trap = inkwell::intrinsics::Intrinsic::find("llvm.trap")
+            .and_then(|intrinsic| intrinsic.get_declaration(&self.module, &[]))
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "missing llvm.trap"))?;
+        self.builder
+            .build_call(trap, &[], &format!("{name}.invalid.trap"))
+            .map_err(builder_error)?;
+        self.builder.build_unreachable().map_err(builder_error)?;
+
+        self.builder.position_at_end(completed);
+        let completed_payload = if let Some(storage) = output_storage {
+            self.builder
+                .build_load(
+                    output_physical,
+                    storage,
+                    &format!("{name}.completed.payload"),
+                )
+                .map_err(builder_error)?
+        } else {
+            self.zero(output)?
+        };
+        let completed_value = self.construct_sum_exact(
+            outcome,
+            TASK_OUTCOME_COMPLETED_VARIANT,
+            &[completed_payload],
+            &format!("{name}.completed"),
+        )?;
+        self.builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(faulted);
+        let code = self
+            .builder
+            .build_load(self.ptr_type, code_output, &format!("{name}.fault.code"))
+            .map_err(builder_error)?;
+        let message = self
+            .builder
+            .build_load(
+                self.ptr_type,
+                message_output,
+                &format!("{name}.fault.message"),
+            )
+            .map_err(builder_error)?;
+        let fault_type = self.llvm_type(fault)?.into_struct_type();
+        let fault_value = self
+            .builder
+            .build_insert_value(
+                fault_type.get_undef(),
+                code,
+                0,
+                &format!("{name}.fault.code"),
+            )
+            .map_err(builder_error)?
+            .into_struct_value();
+        let fault_value = self
+            .builder
+            .build_insert_value(fault_value, message, 1, &format!("{name}.fault.message"))
+            .map_err(builder_error)?
+            .into_struct_value();
+        let faulted_value = self.construct_sum_exact(
+            outcome,
+            TASK_OUTCOME_FAULTED_VARIANT,
+            &[fault_value.into()],
+            &format!("{name}.faulted"),
+        )?;
+        self.builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(cancelled);
+        let cancelled_value = self.construct_sum_exact(
+            outcome,
+            TASK_OUTCOME_CANCELLED_VARIANT,
+            &[],
+            &format!("{name}.cancelled"),
+        )?;
+        self.builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(merge);
+        let phi = self
+            .builder
+            .build_phi(self.llvm_type(outcome)?, &format!("{name}.value"))
+            .map_err(builder_error)?;
+        phi.add_incoming(&[
+            (&completed_value, completed),
+            (&faulted_value, faulted),
+            (&cancelled_value, cancelled),
+        ]);
+        Ok(phi.as_basic_value())
     }
 
     fn typed_task_abort_unpublished(&self) -> FunctionValue<'ctx> {
@@ -9953,8 +10618,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             InstructionKind::ResourceClose { kind, resource } => {
                 self.emit_resource_close(instruction.id(), *kind, *resource)?
             }
-            InstructionKind::TaskJoinAll { tasks } => {
-                one(self.emit_task_join_all(instruction, tasks)?.into())
+            InstructionKind::TaskJoin { mode, tasks } => {
+                one(self.emit_task_join(instruction, *mode, tasks)?.into())
             }
             InstructionKind::TaskOutcomeTake { task } => {
                 one(self.emit_task_outcome_take(instruction, *task)?)
@@ -14941,23 +15606,25 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "one exact Task.all construction edge initializes its generated frame and atomically adopts every child before publishing the handle"
+        reason = "one exact fixed-join construction edge initializes its generated frame and atomically adopts every child before publishing the handle"
     )]
-    fn emit_task_join_all(
+    fn emit_task_join(
         &self,
         instruction: &Instruction,
+        mode: AwaitMode,
         tasks: &[ValueId],
     ) -> Result<PointerValue<'ctx>, CodegenError> {
         let executor = self.executor_context()?;
-        let layout = self.backend.task_join_all_layout(instruction.id())?;
-        if tasks.is_empty()
+        let layout = self.backend.task_join_layout(instruction.id())?;
+        if layout.mode != mode
+            || tasks.is_empty()
             || tasks.len() != layout.child_fields.len()
             || tasks.len() != layout.output_types.len()
         {
             return Err(CodegenError::new(
                 "LlvmAbiDefect",
                 format!(
-                    "typed Task.all {} disagrees with its generated shape",
+                    "typed Task join {} disagrees with its generated shape",
                     instruction.id()
                 ),
             ));
@@ -14971,20 +15638,21 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             &self.backend.builder,
             self.backend.typed_task_create(),
             &[executor.into(), layout.descriptor.into()],
-            "task.all.create",
+            "task.join.create",
         )?;
-        self.backend.require_nonnull(composite, "task.all.create")?;
+        self.backend
+            .require_nonnull(composite, "task.join.create")?;
         let frame = call_pointer(
             &self.backend.builder,
             self.backend.typed_task_frame(),
             &[composite.into()],
-            "task.all.frame",
+            "task.join.frame",
         )?;
-        self.backend.require_nonnull(frame, "task.all.frame")?;
+        self.backend.require_nonnull(frame, "task.join.frame")?;
         let state = self
             .backend
             .builder
-            .build_struct_gep(layout.frame, frame, 0, "task.all.frame.state")
+            .build_struct_gep(layout.frame, frame, 0, "task.join.frame.state")
             .map_err(builder_error)?;
         self.backend
             .builder
@@ -15003,7 +15671,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     layout.frame,
                     frame,
                     field,
-                    &format!("task.all.frame.child.{index}"),
+                    &format!("task.join.frame.child.{index}"),
                 )
                 .map_err(builder_error)?;
             self.backend
@@ -15018,10 +15686,10 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 composite.into(),
                 self.backend.context.i64_type().const_zero().into(),
             ],
-            "task.all.initialize",
+            "task.join.initialize",
         )?;
         self.backend
-            .require_zero_status(initialized, "task.all.initialize")?;
+            .require_zero_status(initialized, "task.join.initialize")?;
 
         let count = self
             .backend
@@ -15031,15 +15699,15 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         let child_array = self
             .backend
             .builder
-            .build_array_alloca(self.backend.ptr_type, count, "task.all.children")
+            .build_array_alloca(self.backend.ptr_type, count, "task.join.children")
             .map_err(builder_error)?;
         for (index, child) in children.iter().copied().enumerate() {
             let pointer = self.task_pointer_array_element(
                 child_array,
                 u64::try_from(index).map_err(|_| {
-                    CodegenError::new("ProgramTooLarge", "typed Task.all has too many children")
+                    CodegenError::new("ProgramTooLarge", "typed Task join has too many children")
                 })?,
-                &format!("task.all.children.{index}"),
+                &format!("task.join.children.{index}"),
             )?;
             self.backend
                 .builder
@@ -15055,16 +15723,16 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 child_array.into(),
                 count.into(),
             ],
-            "task.all.publish_adopting",
+            "task.join.publish_adopting",
         )?;
         let success = self
             .backend
             .context
-            .append_basic_block(self.function, "task.all.publish_adopting.ok");
+            .append_basic_block(self.function, "task.join.publish_adopting.ok");
         let failure = self
             .backend
             .context
-            .append_basic_block(self.function, "task.all.publish_adopting.failed");
+            .append_basic_block(self.function, "task.join.publish_adopting.failed");
         let ok = self
             .backend
             .builder
@@ -15072,7 +15740,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 IntPredicate::EQ,
                 published,
                 self.backend.context.i32_type().const_zero(),
-                "task.all.publish_adopting.status.ok",
+                "task.join.publish_adopting.status.ok",
             )
             .map_err(builder_error)?;
         self.backend
@@ -15084,14 +15752,14 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             &self.backend.builder,
             self.backend.typed_task_abort_unpublished(),
             &[executor.into(), composite.into()],
-            "task.all.abort_unpublished",
+            "task.join.abort_unpublished",
         )?;
         let trap = inkwell::intrinsics::Intrinsic::find("llvm.trap")
             .and_then(|intrinsic| intrinsic.get_declaration(&self.backend.module, &[]))
             .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "missing llvm.trap"))?;
         self.backend
             .builder
-            .build_call(trap, &[], "task.all.publish_adopting.trap")
+            .build_call(trap, &[], "task.join.publish_adopting.trap")
             .map_err(builder_error)?;
         self.backend
             .builder
@@ -15112,7 +15780,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         name: &str,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
         // SAFETY: `array` is the base returned by `build_array_alloca(ptr, N)`
-        // in `emit_task_join_all`, and every caller proves `index < N` by
+        // in `emit_task_join`, and every caller proves `index < N` by
         // iterating the same checked nonempty child slice.
         unsafe {
             self.backend
@@ -17670,6 +18338,15 @@ impl<'ctx> Backend<'ctx, '_> {
                 self.module
                     .add_function(STDOUT_WRITE_SYMBOL, function_type, None)
             })
+    }
+}
+
+const fn task_join_mode_name(mode: AwaitMode) -> &'static str {
+    match mode {
+        AwaitMode::All => "all",
+        AwaitMode::Any => "any",
+        AwaitMode::Settled => "settled",
+        AwaitMode::Race => "race",
     }
 }
 
