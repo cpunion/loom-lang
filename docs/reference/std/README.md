@@ -23,12 +23,13 @@ tests remain for ABI and compiler boundaries rather than duplicating ordinary
 library behavior.
 
 Source-backed packages are distributed as Loom source and compile through the
-ordinary package, type, MIR, reachability, and native pipelines. The current
-source module contains the `std.int`, `std.float`, and `std.json` parsers, their
-public parse-error values, the complete `std.float` public API and conversion
-error, `std.io.write` and `write_line`, the `std.log.debug`,
-`info`, `warn`, and `error` convenience functions, and the public `Dispose`,
-`MustScope`, and `NoSuspend` declarations in `std.resource`.
+ordinary package, type, MIR, reachability, and native pipelines. Current source
+declarations include the `std.int`, `std.float`, and `std.json` parsers and
+their public errors; the complete `std.float` public API and conversion error;
+`std.text.DecodeTextError`; `std.path.PathError`; `std.io.write` and
+`write_line`; the `std.log.debug`, `info`, `warn`, and `error` conveniences;
+and the public `Dispose`, `MustScope`, and `NoSuspend` declarations in
+`std.resource`.
 The logging conveniences are ordinary Loom functions over the irreducible
 `std.log.write` output boundary. Resource declarations are source-backed, but
 their fixed shapes and irreducible static rules remain part of the language

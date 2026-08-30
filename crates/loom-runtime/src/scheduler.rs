@@ -94,8 +94,8 @@ impl IoResourceKind {
     }
 }
 const RESULT_TYPE: u64 = 1;
-const IO_ERROR_TYPE: u64 = 16;
-const IO_ERROR_KIND_TYPE: u64 = 17;
+const IO_ERROR_TYPE: u64 = 14;
+const IO_ERROR_KIND_TYPE: u64 = 15;
 
 const JOIN_RESULT_TUPLE: u32 = 1;
 const JOIN_RESULT_LIST: u32 = 2;

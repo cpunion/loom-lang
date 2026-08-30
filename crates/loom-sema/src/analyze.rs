@@ -23,6 +23,8 @@ use crate::{
 
 const RESOURCE_MODULE: &str = "std.resource";
 const FLOAT_MODULE: &str = "std.float";
+const PATH_MODULE: &str = "std.path";
+const TEXT_MODULE: &str = "std.text";
 const DISPOSE_CONCEPT: &str = "Dispose";
 const MUST_SCOPE_CONCEPT: &str = "MustScope";
 const NO_SUSPEND_CONCEPT: &str = "NoSuspend";
@@ -43,7 +45,7 @@ pub struct Analysis {
     /// from an unqualified source name.
     pub canonical_concepts: CanonicalConcepts,
     /// Compiler-owned standard-library declarations whose exact source
-    /// identity affects language proof recognition.
+    /// identity affects language lowering or proof recognition.
     pub canonical_std_items: CanonicalStdItems,
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -67,6 +69,8 @@ pub struct CanonicalConcepts {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CanonicalStdItems {
     pub is_finite: Option<DefId>,
+    pub decode_text_error: Option<DefId>,
+    pub path_error: Option<DefId>,
 }
 
 impl Analysis {
@@ -259,6 +263,14 @@ impl Analyzer<'_> {
         CanonicalStdItems {
             is_finite: self.resolve_compiler_std_definition(FLOAT_MODULE, "is_finite", |kind| {
                 matches!(kind, DefinitionKind::Function(_))
+            }),
+            decode_text_error: self.resolve_compiler_std_definition(
+                TEXT_MODULE,
+                "DecodeTextError",
+                |kind| matches!(kind, DefinitionKind::Enum(_)),
+            ),
+            path_error: self.resolve_compiler_std_definition(PATH_MODULE, "PathError", |kind| {
+                matches!(kind, DefinitionKind::Enum(_))
             }),
         }
     }
@@ -4103,8 +4115,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 | BuiltinType::ConstraintError
                 | BuiltinType::TaskFault
                 | BuiltinType::Duration
-                | BuiltinType::DecodeTextError
-                | BuiltinType::PathError
                 | BuiltinType::Json
                 | BuiltinType::JsonError
                 | BuiltinType::IoErrorKind
@@ -4947,6 +4957,26 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
 
     fn types(&mut self) -> &mut crate::TyInterner {
         &mut self.analyzer.typed.types
+    }
+
+    fn canonical_std_type(
+        &mut self,
+        definition: Option<DefId>,
+        qualified_name: &'static str,
+        expression: ExprId,
+    ) -> TyId {
+        let Some(definition) = definition else {
+            self.error_at(
+                "MissingStandardLibraryItem",
+                format!("compiler-owned `{qualified_name}` is missing"),
+                expression,
+            );
+            return self.types().error();
+        };
+        self.types().intern(TyData::Nominal {
+            definition,
+            arguments: Vec::new(),
+        })
     }
 
     fn expr_span(&self, expression: ExprId) -> Span {
@@ -6163,9 +6193,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             }
             BuiltinValue::Unit
             | BuiltinValue::None
-            | BuiltinValue::DecodeTextInvalidUtf8
-            | BuiltinValue::PathContainsNul
-            | BuiltinValue::PathAbsoluteJoin
             | BuiltinValue::JsonNull
             | BuiltinValue::JsonBool
             | BuiltinValue::JsonNumber
@@ -7249,11 +7276,12 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             return None;
         };
         let (builtin, parameters, result) = match (segment.name.as_str(), method_name.as_str()) {
-            ("Text", "from_utf8_units") => self.text_from_utf8_units_signature(),
+            ("Text", "from_utf8_units") => self.text_from_utf8_units_signature(expression),
             ("Path", "from_text") => {
                 let text = self.types().builtin(BuiltinType::Text);
                 let path = self.types().builtin(BuiltinType::Path);
-                let error = self.types().builtin(BuiltinType::PathError);
+                let definition = self.analyzer.canonical_std_items.path_error;
+                let error = self.canonical_std_type(definition, "std.path.PathError", expression);
                 (
                     BuiltinValue::PathFromText,
                     vec![text],
@@ -7334,11 +7362,15 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         Some(result)
     }
 
-    fn text_from_utf8_units_signature(&mut self) -> (BuiltinValue, Vec<TyId>, TyId) {
+    fn text_from_utf8_units_signature(
+        &mut self,
+        expression: ExprId,
+    ) -> (BuiltinValue, Vec<TyId>, TyId) {
         let int = self.types().builtin(BuiltinType::Int);
         let units = self.types().intern(TyData::List(int));
         let text = self.types().builtin(BuiltinType::Text);
-        let error = self.types().builtin(BuiltinType::DecodeTextError);
+        let definition = self.analyzer.canonical_std_items.decode_text_error;
+        let error = self.canonical_std_type(definition, "std.text.DecodeTextError", expression);
         let result = self.types().intern(TyData::Result { ok: text, error });
         (BuiltinValue::TextFromUtf8Units, vec![units], result)
     }
@@ -7458,7 +7490,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     )
                 }
                 (BuiltinType::Bytes, "decode_utf8") => {
-                    let error = self.types().builtin(BuiltinType::DecodeTextError);
+                    let definition = self.analyzer.canonical_std_items.decode_text_error;
+                    let error =
+                        self.canonical_std_type(definition, "std.text.DecodeTextError", expression);
                     (
                         BuiltinValue::BytesDecodeUtf8,
                         ReceiverPassing::Value,
@@ -7474,7 +7508,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 ),
                 (BuiltinType::Path, "join") => {
                     let path = self.types().builtin(BuiltinType::Path);
-                    let error = self.types().builtin(BuiltinType::PathError);
+                    let definition = self.analyzer.canonical_std_items.path_error;
+                    let error =
+                        self.canonical_std_type(definition, "std.path.PathError", expression);
                     (
                         BuiltinValue::PathJoin,
                         ReceiverPassing::Value,
@@ -9123,6 +9159,46 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             .map(|variant| (variant, owner))
     }
 
+    fn pattern_qualifier_matches(&self, path: &Path, expected: TyId) -> bool {
+        let Some((_, qualifier)) = path.segments.split_last() else {
+            return false;
+        };
+        if qualifier.is_empty() {
+            return true;
+        }
+        let expected_name = match self.analyzer.typed.types.data(expected) {
+            TyData::Option(_) => Some("Option"),
+            TyData::Result { .. } => Some("Result"),
+            TyData::TaskOutcome(_) => Some("TaskOutcome"),
+            TyData::Builtin(BuiltinType::Json) => Some("Json"),
+            TyData::Builtin(BuiltinType::JsonError) => Some("JsonError"),
+            TyData::Builtin(BuiltinType::IoErrorKind) => Some("IoErrorKind"),
+            TyData::Builtin(BuiltinType::LogLevel) => Some("LogLevel"),
+            TyData::Nominal { definition, .. } => {
+                let module = self.analyzer.program.definitions[self.environment.owner].module;
+                let mut resolver =
+                    crate::Resolver::new(self.analyzer.program, self.analyzer.def_maps, module);
+                for parameter in self.analyzer.generic_ids_for(self.environment.owner) {
+                    resolver.add_generic_param(
+                        self.analyzer.program.generic_params[parameter].name.clone(),
+                        parameter,
+                    );
+                }
+                let type_path = Path {
+                    segments: qualifier.to_vec(),
+                };
+                return matches!(
+                    resolver.resolve_type(&type_path),
+                    Ok(Resolution::Definition(owner)) if owner == *definition
+                );
+            }
+            _ => None,
+        };
+        qualifier.len() == 1
+            && expected_name
+                .is_some_and(|expected_name| qualifier[0].name.as_str() == expected_name)
+    }
+
     #[allow(clippy::too_many_lines)]
     fn resolve_pattern_variant(
         &self,
@@ -9130,6 +9206,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         payload: &[PatternId],
         expected: TyId,
     ) -> Option<PatternVariant> {
+        if !self.pattern_qualifier_matches(path, expected) {
+            return None;
+        }
         let name = path.last()?;
         match self.analyzer.typed.types.data(expected) {
             TyData::Option(_) => match name.as_str() {
@@ -9146,15 +9225,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 "Completed" => Some(PatternVariant::TaskCompleted),
                 "Faulted" => Some(PatternVariant::TaskFaulted),
                 "Cancelled" if payload.is_empty() => Some(PatternVariant::TaskCancelled),
-                _ => None,
-            },
-            TyData::Builtin(BuiltinType::DecodeTextError) => match name.as_str() {
-                "InvalidUtf8" if payload.is_empty() => Some(PatternVariant::DecodeTextInvalidUtf8),
-                _ => None,
-            },
-            TyData::Builtin(BuiltinType::PathError) => match name.as_str() {
-                "ContainsNul" if payload.is_empty() => Some(PatternVariant::PathContainsNul),
-                "AbsoluteJoin" if payload.is_empty() => Some(PatternVariant::PathAbsoluteJoin),
                 _ => None,
             },
             TyData::Builtin(BuiltinType::Json) => match name.as_str() {
@@ -9424,19 +9494,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     self.variant_payload(variant, expected),
                 )
             })
-            .collect(),
-            TyData::Builtin(BuiltinType::DecodeTextError) => {
-                vec![(
-                    CheckedPatternHead::Variant(PatternVariant::DecodeTextInvalidUtf8),
-                    Vec::new(),
-                )]
-            }
-            TyData::Builtin(BuiltinType::PathError) => [
-                PatternVariant::PathContainsNul,
-                PatternVariant::PathAbsoluteJoin,
-            ]
-            .into_iter()
-            .map(|variant| (CheckedPatternHead::Variant(variant), Vec::new()))
             .collect(),
             TyData::Builtin(BuiltinType::Json) => [
                 PatternVariant::JsonNull,
@@ -9946,9 +10003,6 @@ enum PatternVariant {
     Some,
     Ok,
     Err,
-    DecodeTextInvalidUtf8,
-    PathContainsNul,
-    PathAbsoluteJoin,
     JsonNull,
     JsonBool,
     JsonNumber,
@@ -10022,11 +10076,6 @@ fn pattern_variant_resolution(variant: PatternVariant) -> Resolution {
         PatternVariant::Some => Resolution::Builtin(BuiltinValue::Some),
         PatternVariant::Ok => Resolution::Builtin(BuiltinValue::Ok),
         PatternVariant::Err => Resolution::Builtin(BuiltinValue::Err),
-        PatternVariant::DecodeTextInvalidUtf8 => {
-            Resolution::Builtin(BuiltinValue::DecodeTextInvalidUtf8)
-        }
-        PatternVariant::PathContainsNul => Resolution::Builtin(BuiltinValue::PathContainsNul),
-        PatternVariant::PathAbsoluteJoin => Resolution::Builtin(BuiltinValue::PathAbsoluteJoin),
         PatternVariant::JsonNull => Resolution::Builtin(BuiltinValue::JsonNull),
         PatternVariant::JsonBool => Resolution::Builtin(BuiltinValue::JsonBool),
         PatternVariant::JsonNumber => Resolution::Builtin(BuiltinValue::JsonNumber),
@@ -10418,8 +10467,6 @@ fn builtin_type(name: &str) -> Option<BuiltinType> {
         "Duration" => Some(BuiltinType::Duration),
         "File" => Some(BuiltinType::File),
         "Socket" => Some(BuiltinType::Socket),
-        "DecodeTextError" => Some(BuiltinType::DecodeTextError),
-        "PathError" => Some(BuiltinType::PathError),
         "Json" => Some(BuiltinType::Json),
         "JsonError" => Some(BuiltinType::JsonError),
         "IoError" => Some(BuiltinType::IoError),

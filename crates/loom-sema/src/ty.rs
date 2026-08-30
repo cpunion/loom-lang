@@ -46,8 +46,6 @@ pub enum BuiltinType {
     Duration,
     File,
     Socket,
-    DecodeTextError,
-    PathError,
     Json,
     JsonError,
     IoError,

@@ -34,6 +34,62 @@ fn compile_and_validate(source: &str) -> loom_mir::CheckedProgram {
     compile(source)
 }
 
+fn compile_with_std_text_and_path(source: &str) -> loom_mir::CheckedProgram {
+    let application = parse_with_file(FileId(0), source);
+    let text = parse_with_file(
+        FileId(1),
+        include_str!("../../../library/std/text/text.loom"),
+    );
+    let path = parse_with_file(
+        FileId(2),
+        include_str!("../../../library/std/path/path.loom"),
+    );
+    assert!(
+        application.diagnostics().is_empty()
+            && text.diagnostics().is_empty()
+            && path.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} text={:#?} path={:#?}",
+        application.diagnostics(),
+        text.diagnostics(),
+        path.diagnostics()
+    );
+    let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+    let root = PackageId::new("lowering-test", "0");
+    let mut lowered = lower_package_files([
+        PackageSourceUnit {
+            file: FileId(0),
+            package: root.clone(),
+            module: ModuleName::new("lowering_test"),
+            syntax: application.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(1),
+            package: std.clone(),
+            module: ModuleName::new("std.text"),
+            syntax: text.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(2),
+            package: std.clone(),
+            module: ModuleName::new("std.path"),
+            syntax: path.ast(),
+        },
+    ]);
+    lowered.program.register_package(std.clone(), [], false);
+    lowered
+        .program
+        .register_package(root, [(Name::new("std"), std)], true);
+    assert!(lowered.diagnostics.is_empty(), "{:#?}", lowered.diagnostics);
+    let analysis = analyze(&lowered.program);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "semantic diagnostics: {:#?}",
+        analysis.diagnostics
+    );
+    lower_to_mir(&lowered.program, &analysis)
+        .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
+}
+
 fn lower_with_std_resource(source: &str) -> loom_hir::Program {
     let application = parse_with_file(FileId(0), source);
     let resource = parse_with_file(
@@ -140,16 +196,22 @@ fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
         FileId(3),
         include_str!("../../../library/std/float/float.loom"),
     );
+    let text = parse_with_file(
+        FileId(4),
+        include_str!("../../../library/std/text/text.loom"),
+    );
     assert!(
         application.diagnostics().is_empty()
             && log.diagnostics().is_empty()
             && json.diagnostics().is_empty()
-            && float.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} log={:#?} json={:#?} float={:#?}",
+            && float.diagnostics().is_empty()
+            && text.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} log={:#?} json={:#?} float={:#?} text={:#?}",
         application.diagnostics(),
         log.diagnostics(),
         json.diagnostics(),
-        float.diagnostics()
+        float.diagnostics(),
+        text.diagnostics()
     );
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("lowering-test", "0");
@@ -177,6 +239,12 @@ fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
             package: std.clone(),
             module: ModuleName::new("std.float"),
             syntax: float.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(4),
+            package: std.clone(),
+            module: ModuleName::new("std.text"),
+            syntax: text.ast(),
         },
     ]);
     lowered.program.register_package(std.clone(), [], false);
@@ -252,14 +320,20 @@ fn compile_with_std_json(source: &str) -> loom_mir::CheckedProgram {
         FileId(2),
         include_str!("../../../library/std/float/float.loom"),
     );
+    let text = parse_with_file(
+        FileId(3),
+        include_str!("../../../library/std/text/text.loom"),
+    );
     assert!(
         application.diagnostics().is_empty()
             && json.diagnostics().is_empty()
-            && float.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} json={:#?} float={:#?}",
+            && float.diagnostics().is_empty()
+            && text.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} json={:#?} float={:#?} text={:#?}",
         application.diagnostics(),
         json.diagnostics(),
-        float.diagnostics()
+        float.diagnostics(),
+        text.diagnostics()
     );
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("lowering-test", "0");
@@ -281,6 +355,12 @@ fn compile_with_std_json(source: &str) -> loom_mir::CheckedProgram {
             package: std.clone(),
             module: ModuleName::new("std.float"),
             syntax: float.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(3),
+            package: std.clone(),
+            module: ModuleName::new("std.text"),
+            syntax: text.ast(),
         },
     ]);
     lowered.program.register_package(std.clone(), [], false);
@@ -1203,10 +1283,12 @@ async fn returns(flag Bool, first Int, second Int) Int {
 
 #[test]
 fn text_bytes_path_and_path_file_calls_lower_to_checked_mir() {
-    let program = compile_and_validate(
+    let program = compile_with_std_text_and_path(
         r#"
 import std.file.open_read_path
 import std.file.create_path
+import std.path.PathError
+import std.text.DecodeTextError
 
 fn values(text Text, bytes Bytes, base Path, child Path, index Int) {
     let scalar_count = text.length()
@@ -1230,7 +1312,7 @@ fn decodeOutcome(value Result[Text, DecodeTextError]) {
     match value {
         Ok(_) => Unit
         Err(error) => match error {
-            InvalidUtf8 => Unit
+            DecodeTextError.InvalidUtf8 => Unit
         }
     }
 }
@@ -1239,8 +1321,8 @@ fn pathOutcome(value Result[Path, PathError]) {
     match value {
         Ok(_) => Unit
         Err(error) => match error {
-            ContainsNul => Unit
-            AbsoluteJoin => Unit
+            PathError.ContainsNul => Unit
+            PathError.AbsoluteJoin => Unit
         }
     }
 }

@@ -10470,7 +10470,6 @@ impl<'program> Validator<'program> {
                 value,
                 writeback,
                 mutable,
-                token: _,
                 ..
             } => {
                 let flow = self.dataflow_expr_as(

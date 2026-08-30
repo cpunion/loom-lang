@@ -1564,7 +1564,8 @@ fn direct_structural_equality_children(program: &mir::Program, ty: &Type) -> Opt
                 fields.into_vec()
             } else if let Some(base) = concrete_refined_base(program, ty) {
                 vec![base]
-            } else if let Some(variants) = closed_enum_variants(program, ty) {
+            } else {
+                let variants = closed_enum_variants(program, ty)?;
                 // `branch_on_sum_equality` emits one complete right-hand
                 // switch for every left-hand variant. Keep that quadratic
                 // one-helper CFG inside the same explicit 4096-node gate that
@@ -1584,8 +1585,6 @@ fn direct_structural_equality_children(program: &mir::Program, ty: &Type) -> Opt
                     .into_iter()
                     .flat_map(Vec::from)
                     .collect()
-            } else {
-                return None;
             }
         }
         Type::Never
@@ -3780,8 +3779,7 @@ fn summarize_effects(
         matches!(expression.kind, ExprKind::MakeView { .. })
             && substitution
                 .instantiate_type(&expression.ty)
-                .ok()
-                .is_some_and(|ty| dyn_concepts.finite(&ty).is_some())
+                .is_ok_and(|ty| dyn_concepts.finite(&ty).is_some())
     }) {
         summary.include(Effects::MAY_COLLECT);
     }
@@ -5046,8 +5044,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             .filter_map(|parameter| {
                 substitution
                     .instantiate_type(&parameter.ty)
-                    .ok()
-                    .is_some_and(|ty| is_functional_inout_parameter(source, parameter, &ty))
+                    .is_ok_and(|ty| is_functional_inout_parameter(source, parameter, &ty))
                     .then_some(parameter.id)
             })
             .collect::<Vec<_>>()
@@ -10901,8 +10898,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             .filter_map(|(index, parameter)| {
                 InstanceSubstitution::new(self.program, &key)
                     .instantiate_type(&parameter.ty)
-                    .ok()
-                    .is_some_and(|ty| is_functional_inout_parameter(callee_source, parameter, &ty))
+                    .is_ok_and(|ty| is_functional_inout_parameter(callee_source, parameter, &ty))
                     .then_some(index)
             })
             .collect::<Vec<_>>();

@@ -1,0 +1,5 @@
+/// Describes why a portable lexical Path operation cannot succeed.
+pub enum PathError {
+    ContainsNul
+    AbsoluteJoin
+}

@@ -5346,7 +5346,9 @@ impl<'program> Interpreter<'program> {
             return Err(self.invalid_builtin_fault(span));
         }
         fields
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| match pair {
                 [Value::Text { value: key }, value] => Ok((key.clone(), value.clone())),
                 _ => Err(self.invalid_builtin_fault(span)),
@@ -8552,6 +8554,11 @@ mod builtin_value_tests {
     use super::*;
     use loom_mir::{FieldDef, Type, TypeDef, VariantDef};
 
+    const BYTES_TYPE: TypeId = TypeId(13);
+    const PATH_TYPE: TypeId = TypeId(14);
+    const DECODE_TEXT_ERROR_TYPE: TypeId = TypeId(15);
+    const PATH_ERROR_TYPE: TypeId = TypeId(16);
+
     fn variant(id: u32, name: &str, payload: Vec<Type>) -> VariantDef {
         VariantDef {
             id: VariantId(id),
@@ -8587,7 +8594,7 @@ mod builtin_value_tests {
                 ],
             },
         });
-        for index in 2..9 {
+        for index in 2..13 {
             types.push(TypeDef {
                 id: TypeId(index),
                 name: format!("unused#{index}"),
@@ -8599,9 +8606,9 @@ mod builtin_value_tests {
                 },
             });
         }
-        for (id, name) in [(9, "Bytes"), (10, "Path")] {
+        for (id, name) in [(BYTES_TYPE, "Bytes"), (PATH_TYPE, "Path")] {
             types.push(TypeDef {
-                id: TypeId(id),
+                id,
                 name: name.into(),
                 span: Span::default(),
                 type_parameters: 0,
@@ -8616,7 +8623,7 @@ mod builtin_value_tests {
             });
         }
         types.push(TypeDef {
-            id: TypeId(11),
+            id: DECODE_TEXT_ERROR_TYPE,
             name: "DecodeTextError".into(),
             span: Span::default(),
             type_parameters: 0,
@@ -8625,7 +8632,7 @@ mod builtin_value_tests {
             },
         });
         types.push(TypeDef {
-            id: TypeId(12),
+            id: PATH_ERROR_TYPE,
             name: "PathError".into(),
             span: Span::default(),
             type_parameters: 0,
@@ -8641,10 +8648,10 @@ mod builtin_value_tests {
             prelude: loom_mir::PreludeIds {
                 option: Some(TypeId(0)),
                 result: Some(TypeId(1)),
-                bytes: Some(TypeId(9)),
-                path: Some(TypeId(10)),
-                decode_text_error: Some(TypeId(11)),
-                path_error: Some(TypeId(12)),
+                bytes: Some(BYTES_TYPE),
+                path: Some(PATH_TYPE),
+                decode_text_error: Some(DECODE_TEXT_ERROR_TYPE),
+                path_error: Some(PATH_ERROR_TYPE),
                 ..loom_mir::PreludeIds::default()
             },
             ..Program::default()
@@ -8677,7 +8684,7 @@ mod builtin_value_tests {
         ));
 
         let invalid = Value::Record {
-            ty: TypeId(9),
+            ty: BYTES_TYPE,
             fields: vec![Value::Bytes {
                 value: vec![0xff, 0xfe],
             }],
@@ -8689,7 +8696,7 @@ mod builtin_value_tests {
             decoded,
             Value::Enum { ty: TypeId(1), variant: VariantId(1), payload, .. }
                 if matches!(payload.as_slice(), [Value::Enum {
-                    ty: TypeId(11), variant: VariantId(0), payload, ..
+                    ty: DECODE_TEXT_ERROR_TYPE, variant: VariantId(0), payload, ..
                 }] if payload.is_empty())
         ));
 
@@ -8722,7 +8729,7 @@ mod builtin_value_tests {
                 decoded,
                 Value::Enum { ty: TypeId(1), variant: VariantId(1), payload, .. }
                     if matches!(payload.as_slice(), [Value::Enum {
-                        ty: TypeId(11), variant: VariantId(0), payload, ..
+                        ty: DECODE_TEXT_ERROR_TYPE, variant: VariantId(0), payload, ..
                     }] if payload.is_empty())
             ));
         }

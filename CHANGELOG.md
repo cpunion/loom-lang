@@ -41,10 +41,15 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   rejected rather than upgraded when their current identity does not match.
 - Compiler-distributed `std` source modules compiled through the ordinary
   frontend, including integer and JSON parsing, logging wrappers, process
-  wrappers, and resource concepts. `std.process.arguments` builds its List in
-  source over typed snapshot primitives; process input has no universal-value
-  or checked-MIR runtime path. JSON parsing has no compiler opcode or runtime entry point;
-  canonical JSON formatting uses an exact typed layout boundary.
+  wrappers, resource concepts, and the public `DecodeTextError` and `PathError`
+  enums; those public error types and variants have no builtin aliases.
+  Runtime bundles version the checked-MIR `IoError` nominal-tag shift caused
+  by removing the former synthetic error-type slots, so an older bundle cannot
+  be accepted under the new MIR layout.
+  `std.process.arguments` builds its List in source over typed snapshot
+  primitives; process input has no universal-value or checked-MIR runtime path.
+  JSON parsing has no compiler opcode or runtime entry point; canonical JSON
+  formatting uses an exact typed layout boundary.
 - A precise moving collector, lazy single-threaded executor, OS reactor, bounded
   blocking pool, structured cancellation, deterministic cleanup, and strict
   runtime-bundle identity checks.
