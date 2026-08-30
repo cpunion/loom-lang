@@ -310,6 +310,161 @@ fn canonical_program(source: TakeSource) -> OutcomeProgram {
 
 #[expect(
     clippy::too_many_lines,
+    reason = "one raw builder makes the first-class settled/race result ABI independently forgeable"
+)]
+fn first_class_outcome_join_program(
+    fault_shape: FaultShape,
+    outcome_shape: OutcomeShape,
+    mode: AwaitMode,
+) -> Program {
+    assert!(matches!(mode, AwaitMode::Settled | AwaitMode::Race));
+    let root_origin = Origin::synthetic(FunctionId(0));
+    let child_origin = Origin::synthetic(FunctionId(1));
+    let mut builder = ProgramBuilder::with_canonical_types(
+        TargetLayout::new(64).expect("target"),
+        task_catalog(),
+    );
+    let unit = builder.type_id(&Type::Unit).expect("Unit");
+    let integer = builder.type_id(&Type::Int).expect("Int");
+    builder
+        .add_managed_text_type()
+        .expect("canonical managed Text");
+    let fault_semantic = Type::Nominal(TASK_FAULT_TYPE_ID, Vec::new());
+    let fault_fields = match fault_shape {
+        FaultShape::Canonical => vec![Type::Text, Type::Text],
+        FaultShape::WrongMessageType => vec![Type::Text, Type::Int],
+    };
+    builder
+        .add_pod_record_type(fault_semantic.clone(), &fault_fields)
+        .expect("TaskFault product");
+    let outcome_id = match outcome_shape {
+        OutcomeShape::WrongNominal => TypeId(TASK_OUTCOME_TYPE_ID.0 + 1),
+        OutcomeShape::Canonical | OutcomeShape::WrongCompletedPayload => TASK_OUTCOME_TYPE_ID,
+    };
+    let completed = match outcome_shape {
+        OutcomeShape::WrongCompletedPayload => Type::Bool,
+        OutcomeShape::Canonical | OutcomeShape::WrongNominal => Type::Int,
+    };
+    let outcome_semantic = Type::Nominal(outcome_id, vec![Type::Int]);
+    builder
+        .add_sum_type(
+            outcome_semantic.clone(),
+            &[
+                Box::from([completed]),
+                Box::from([fault_semantic]),
+                Box::new([]),
+            ],
+        )
+        .expect("TaskOutcome sum");
+    let outcome_tuple_semantic =
+        Type::Tuple(vec![outcome_semantic.clone(), outcome_semantic.clone()]);
+    builder
+        .add_tuple_type(&[outcome_semantic.clone(), outcome_semantic.clone()])
+        .expect("settled output tuple");
+    let task_int = builder
+        .add_task_handle_type(Type::Task(Box::new(Type::Int)))
+        .expect("Task[Int]");
+    let task_outcome = builder
+        .add_task_handle_type(Type::Task(Box::new(outcome_semantic)))
+        .expect("Task[TaskOutcome[Int]]");
+    let task_outcome_tuple = builder
+        .add_task_handle_type(Type::Task(Box::new(outcome_tuple_semantic)))
+        .expect("Task[(TaskOutcome[Int], TaskOutcome[Int])]");
+
+    let child = builder
+        .declare_function(
+            child_origin,
+            "join_outcome.child",
+            Signature::new([], integer),
+            Effects::NEEDS_EXECUTOR.with_implications(),
+        )
+        .expect("child coroutine");
+    {
+        let mut function = builder.function(child).expect("child builder");
+        function
+            .set_coroutine_plan(CoroutinePlan::new(integer, []))
+            .expect("child plan");
+        let entry = function.create_block().expect("child entry");
+        function.set_entry(entry).expect("child entry");
+        let value = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(loom_codegen_ir::Constant::Int(7)),
+                &[integer],
+                child_origin,
+            )
+            .expect("Int")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(TerminatorKind::Return(value), child_origin),
+            )
+            .expect("child return");
+    }
+
+    let root = builder
+        .declare_function(
+            root_origin,
+            "join_outcome.root",
+            Signature::new([], unit),
+            Effects::NEEDS_EXECUTOR.with_implications(),
+        )
+        .expect("root");
+    {
+        let mut function = builder.function(root).expect("root builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("entry");
+        let mut tasks = Vec::new();
+        for _ in 0..2 {
+            tasks.push(
+                function
+                    .append_instruction(
+                        entry,
+                        InstructionKind::TaskCreate {
+                            coroutine: child,
+                            arguments: Box::new([]),
+                        },
+                        &[task_int],
+                        root_origin,
+                    )
+                    .expect("Task[Int]")[0],
+            );
+        }
+        function
+            .append_instruction(
+                entry,
+                InstructionKind::TaskJoin {
+                    mode,
+                    tasks: tasks.into_boxed_slice(),
+                },
+                &[if mode == AwaitMode::Settled {
+                    task_outcome_tuple
+                } else {
+                    task_outcome
+                }],
+                root_origin,
+            )
+            .expect("outcome join");
+        let result = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(loom_codegen_ir::Constant::Unit),
+                &[unit],
+                root_origin,
+            )
+            .expect("Unit")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(TerminatorKind::Return(result), root_origin),
+            )
+            .expect("root return");
+    }
+    builder.finish()
+}
+
+#[expect(
+    clippy::too_many_lines,
     reason = "the hostile raw builder keeps terminal-result width, forwarded live parameters, and instruction order independently forgeable"
 )]
 fn terminal_prefix_program(mode: AwaitMode, prefix: TakePrefix) -> Program {
@@ -687,6 +842,31 @@ fn outcome_take_rechecks_the_complete_canonical_nominal_shapes() {
                 .any(|error| error.message().contains(message)),
             "missing `{message}` diagnostic: {errors:?}"
         );
+    }
+}
+
+#[test]
+fn first_class_settled_and_race_recheck_exact_task_outcome_shapes() {
+    for mode in [AwaitMode::Settled, AwaitMode::Race] {
+        validate_program(&first_class_outcome_join_program(
+            FaultShape::Canonical,
+            OutcomeShape::Canonical,
+            mode,
+        ))
+        .unwrap_or_else(|errors| panic!("canonical {mode:?} join must validate: {errors:?}"));
+
+        for (fault, outcome) in [
+            (FaultShape::Canonical, OutcomeShape::WrongNominal),
+            (FaultShape::WrongMessageType, OutcomeShape::Canonical),
+            (FaultShape::Canonical, OutcomeShape::WrongCompletedPayload),
+        ] {
+            let errors = validate_program(&first_class_outcome_join_program(fault, outcome, mode))
+                .expect_err("a forged first-class TaskOutcome join must fail");
+            assert!(errors.as_slice().iter().any(|error| {
+                error.code() == ValidationCode::TypeMismatch
+                    && error.message().contains("mode-specific Task result")
+            }));
+        }
     }
 }
 

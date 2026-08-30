@@ -32,7 +32,7 @@ writers for unreleased formats. Development history belongs in
 | LCIR artifact route | `typed-lcir-whole-artifact` |
 | LCIR native-object domain | `loom-lcir-native-object-v43` |
 | Checked-MIR native-object domain | `loom-checked-mir-native-object-v3` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v47` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v48` |
 | Controlled quality evidence | schema `4` |
 | Runtime bundle manifest | schema `2` |
 | Native runtime ABI component | `36` |

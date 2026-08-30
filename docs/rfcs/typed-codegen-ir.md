@@ -293,7 +293,7 @@ resource_close kind, resource -> (Unit, resource_writeback)
 
 task.create coroutine(arguments...) -> Task[T]
 
-task.join_all(tasks...) -> Task[(T0, ..., Tn)]
+task.join mode, (tasks...) -> Task[R]
 
 await_tasks all state, (task0, ..., taskN)
     normal target(result0, ..., resultN; exact_live_values...)
@@ -407,7 +407,7 @@ coroutine's state-zero path, so `TaskCreate` does not inherit child effects.
 `TextConcat`, `TextGet`, `TextFromUtf8Units`, `BytesAppend`,
 `BytesDecodeUtf8`, `PathJoin`, `FloatFormat`, and `JsonFormat` are collecting
 opcodes. `PathFromText` and `PathAsText` are non-collecting. `TaskCreate` and
-`TaskJoinAll` require an
+`TaskJoin` require an
 executor; neither operation itself suspends. `AwaitTasks` contributes both
 `MAY_FAULT` and `MAY_SUSPEND` and accepts one or more ordered children. The
 explicit fallible `TaskSleep` terminator requires `MAY_FAULT` and
@@ -497,16 +497,19 @@ and nested product, sum, and suspension-frame shapes. A finite multi-witness
 dynamic View or an open dynamic View has no coroutine-frame representation in
 this slice.
 
-An immediately awaited fixed tuple or fixed-argument `Task.all` evaluates its
+An immediately awaited fixed tuple or fixed Task-policy call evaluates its
 children left to right and lowers directly to one multi-child `AwaitTasks`, with
-no intermediate composite. Its continuation constructs the exact heterogeneous
-tuple from the ordered implicit results. A first-class stored fixed
-`Task.all` lowers to `TaskJoinAll`, which creates an exact
-`Task[(T0, ..., Tn)]`; a one-child join retains its canonical one-field tuple.
-LLVM generates one target-laid-out composite frame, completed-result root map,
-immutable descriptor, and callback per distinct static result shape. The
-callback uses the existing structured `all` join-step protocol, takes exact
-child results in order, and publishes the tuple without a universal envelope.
+no intermediate composite. Its continuation constructs the exact static
+result. A first-class stored fixed policy lowers to `TaskJoin`: `all` and
+`settled` preserve their value/outcome tuples, while homogeneous `any` and
+`race` publish one winner value/outcome. A one-child tuple mode retains its
+canonical one-field tuple. LLVM generates one target-laid-out composite frame,
+completed-result root map, immutable descriptor, and callback per distinct
+mode, child-output row, and result type. `Task.any` additionally partitions
+that shape by producer origin so its generated callback can record exact fault
+blame; the other modes reuse matching shapes across source sites. The callback
+uses the existing structured join-step protocol and publishes the exact result
+without a universal envelope.
 
 A nonempty, immediately awaited, fixed-arity `Task.any` also lowers directly to
 one `AwaitTasks` when every child has the same exact output type. The runtime
@@ -515,7 +518,8 @@ and retires losers exactly once when generated code consumes the valid join
 completion. LLVM selects the winner from the original static child fields in the
 coroutine frame and performs one exact typed take. A completed loser's disposal
 fault reaches the await fault edge before static coroutine cleanup. If no child
-succeeds, generated code records canonical `TaskAnyFailed` at the await origin.
+succeeds, generated code records canonical `TaskAnyFailed` at the `Task.any`
+expression origin, including when the join is fused into its immediate await.
 Cancellation uses the checked cancel edge instead and does not synthesize that
 fault.
 
@@ -565,13 +569,12 @@ Task policy operators.
 
 The remaining fallback boundary includes explicit mutable coroutine
 parameters, finite-catalog or open dynamic-concept frame values, raw readiness,
-empty/stored/computed/runtime-sized Task List joins, and first-class
-`Task.any`, `Task.settled`, or `Task.race` results. Concrete closed `List[T]`
+empty/stored/computed/runtime-sized Task List joins. Concrete closed `List[T]`
 and compiler-private `TextMap[V]` values are canonical one-pointer frame
 carriers in parameters, results, nested products, and suspension-live rows.
-Static joins are admitted only when a nonempty fixed argument row or sole List
-literal is consumed immediately by `.await`; `any` and `race` require one exact
-output type.
+Fixed argument joins are admitted both as first-class Tasks and when consumed
+immediately by `.await`; a sole List literal is admitted only for immediate
+consumption. `any` and `race` require one exact output type.
 
 Managed Text concat calls
 `loom_runtime_text_concat_typed_v1(left, right, output)`. The helper stages and
@@ -620,8 +623,8 @@ existing one-shot timer source, publishes Unit after readiness, and removes the
 registration on cancellation.
 
 `loom_typed_task_publish_adopting_v1(executor, composite, children, count)`
-publishes a stored fixed `Task.all`. Generated code initializes an unpublished
-exact composite and supplies an ordered child-pointer array. The runtime
+publishes a stored fixed Task-policy composite. Generated code initializes an
+unpublished exact composite and supplies an ordered child-pointer array. The runtime
 validates every ownership edge and completes every fallible reservation before
 one allocation-free commit transfers the children from the active parent,
 publishes the composite, and queues it. Failure leaves ownership and queue

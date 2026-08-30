@@ -1083,6 +1083,32 @@ fn task_outcome_type(program: &mir::Program, output: Type) -> Option<Type> {
         .map(|outcome| Type::Nominal(outcome, vec![output]))
 }
 
+/// Computes the exact output carried by one first-class fixed-width join.
+/// Dynamic `List[Task[T]]` operands are deliberately absent: their runtime
+/// width needs a separate runtime-width lowering and validation contract.
+fn fixed_task_join_output_type(
+    program: &mir::Program,
+    mode: mir::TaskJoinMode,
+    outputs: &[Type],
+) -> Option<Type> {
+    if outputs.is_empty() {
+        return None;
+    }
+    match mode {
+        mir::TaskJoinMode::All => Some(Type::Tuple(outputs.to_vec())),
+        mir::TaskJoinMode::Any => homogeneous_output(outputs),
+        mir::TaskJoinMode::Settled => outputs
+            .iter()
+            .cloned()
+            .map(|output| task_outcome_type(program, output))
+            .collect::<Option<Vec<_>>>()
+            .map(Type::Tuple),
+        mir::TaskJoinMode::Race => {
+            homogeneous_output(outputs).and_then(|output| task_outcome_type(program, output))
+        }
+    }
+}
+
 /// Computes the exact source-visible value produced after the raw child row
 /// completes. This is intentionally stricter than MIR validation so the
 /// direct lowering never widens fixed-row support by accident.
@@ -3664,12 +3690,11 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     expression.span,
                     &format!("{path}.ty"),
                 );
-                let supported = *mode == mir::TaskJoinMode::All
-                    && outputs
-                        .filter(|outputs| !outputs.is_empty())
-                        .is_some_and(|outputs| {
-                            result == Some(Type::Task(Box::new(Type::Tuple(outputs))))
-                        });
+                let expected = outputs.as_deref().and_then(|outputs| {
+                    fixed_task_join_output_type(self.program, *mode, outputs)
+                        .map(|output| Type::Task(Box::new(output)))
+                });
+                let supported = expected.is_some() && result == expected;
                 if !supported {
                     self.expression_item(
                         UnsupportedFeature::TaskOperation,
@@ -7806,6 +7831,17 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                         ),
                     )
                 })?;
+                // `TaskAnyFailed` belongs to the composite operation that
+                // produces the Task, not to its eventual consumer. Keep the
+                // same origin whether the fixed join is stored as `TaskJoin`
+                // or fused into this `AwaitTasks` terminator.
+                let await_operation_origin = if await_source.mode == AwaitMode::Any
+                    && matches!(&task.kind, ExprKind::TaskJoin { .. })
+                {
+                    self.expression_origin(task)
+                } else {
+                    origin
+                };
                 let mut flow = flow;
                 let mut tasks = Vec::with_capacity(await_source.children.len());
                 for child in await_source.children {
@@ -7957,7 +7993,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                         fault: UnwindTarget::new(fault, arguments.clone()),
                         cancel: BlockTarget::new(cancel, arguments),
                     },
-                    origin,
+                    await_operation_origin,
                 )?;
                 let resumed = Flow {
                     block: normal,
@@ -8089,10 +8125,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     value: task,
                 })
             }
-            ExprKind::TaskJoin {
-                mode: mir::TaskJoinMode::All,
-                arguments,
-            } => {
+            ExprKind::TaskJoin { mode, arguments } => {
                 let mut flow = flow;
                 let mut tasks = Vec::with_capacity(arguments.len());
                 for argument in arguments {
@@ -8109,20 +8142,23 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 if tasks.is_empty() {
                     return Err(LoweringError::defect(
                         LoweringDefectCode::InconsistentPlan,
-                        "classified Task.all has no fixed child Tasks",
+                        "classified first-class Task join has no fixed child Tasks",
                     ));
                 }
                 self.one_instruction(
                     flow,
-                    InstructionKind::TaskJoinAll {
+                    InstructionKind::TaskJoin {
+                        mode: match mode {
+                            mir::TaskJoinMode::All => AwaitMode::All,
+                            mir::TaskJoinMode::Any => AwaitMode::Any,
+                            mir::TaskJoinMode::Settled => AwaitMode::Settled,
+                            mir::TaskJoinMode::Race => AwaitMode::Race,
+                        },
                         tasks: tasks.into_boxed_slice(),
                     },
                     self.type_id(&expression.ty)?,
                     origin,
                 )
-            }
-            ExprKind::TaskJoin { arguments, .. } => {
-                self.lower_unsupported_values(flow, arguments, "non-all task join")
             }
         }
     }
@@ -9068,23 +9104,6 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 Ok(())
             }
         }
-    }
-
-    fn lower_unsupported_values(
-        &mut self,
-        mut flow: Flow,
-        values: &[mir::Expr],
-        operation: &str,
-    ) -> Result<EvalFlow, LoweringError> {
-        for value in values {
-            match self.lower_expr(flow, value)? {
-                EvalFlow::Continue {
-                    flow: next_flow, ..
-                } => flow = next_flow,
-                EvalFlow::Terminated => return Ok(EvalFlow::Terminated),
-            }
-        }
-        Err(self.unsupported_reached(operation))
     }
 
     #[expect(

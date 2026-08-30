@@ -4409,30 +4409,31 @@ impl<'a> Validator<'a> {
                     );
                 }
             }
-            InstructionKind::TaskJoinAll { tasks } => {
+            InstructionKind::TaskJoin { mode, tasks } => {
                 if tasks.is_empty() {
                     self.error(
                         ValidationCode::InstructionShape,
                         format!("{path}.tasks"),
-                        "task.join_all requires at least one child Task",
+                        "task.join requires at least one child Task",
                     );
                 }
                 if tasks.iter().copied().collect::<BTreeSet<_>>().len() != tasks.len() {
                     self.error(
                         ValidationCode::InstructionShape,
                         format!("{path}.tasks"),
-                        "task.join_all cannot consume the same child Task more than once",
+                        "task.join cannot consume the same child Task more than once",
                     );
                 }
-                let mut outputs = Vec::with_capacity(tasks.len());
-                let mut valid = true;
+                let mut output_types = Vec::with_capacity(tasks.len());
+                let mut output_semantics = Vec::with_capacity(tasks.len());
+                let mut valid = !tasks.is_empty();
                 for (index, task) in tasks.iter().copied().enumerate() {
                     let output = self.task_output_type(function, task);
                     if function.value(task).is_some() && output.is_none() {
                         self.error(
                             ValidationCode::TypeMismatch,
                             format!("{path}.task[{index}]"),
-                            "task.join_all operand must be a canonical concrete Task handle",
+                            "task.join operand must be a canonical concrete Task handle",
                         );
                     }
                     let Some(output) = output else {
@@ -4449,26 +4450,85 @@ impl<'a> Validator<'a> {
                         valid = false;
                         continue;
                     };
-                    outputs.push(semantic);
+                    output_types.push(output);
+                    output_semantics.push(semantic);
                 }
-                let expected = valid.then(|| {
+                if valid
+                    && matches!(mode, AwaitMode::Any | AwaitMode::Race)
+                    && output_types
+                        .first()
+                        .is_some_and(|first| output_types.iter().any(|output| output != first))
+                {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.tasks"),
+                        format!(
+                            "task.join {} requires every child Task to have the same output type",
+                            match mode {
+                                AwaitMode::Any => "any",
+                                AwaitMode::Race => "race",
+                                AwaitMode::All | AwaitMode::Settled => unreachable!(),
+                            }
+                        ),
+                    );
+                    valid = false;
+                }
+                let joined_output = valid.then(|| match mode {
+                    AwaitMode::All => self
+                        .program
+                        .representations
+                        .type_id(&Type::Tuple(output_semantics)),
+                    AwaitMode::Any => output_types.first().copied(),
+                    AwaitMode::Settled => output_types
+                        .iter()
+                        .copied()
+                        .map(|output| self.canonical_task_outcome_type(output))
+                        .collect::<Option<Vec<_>>>()
+                        .and_then(|outcomes| {
+                            outcomes
+                                .iter()
+                                .map(|outcome| {
+                                    self.program
+                                        .representations
+                                        .value_type(*outcome)
+                                        .map(crate::ValueType::semantic)
+                                        .cloned()
+                                })
+                                .collect::<Option<Vec<_>>>()
+                        })
+                        .and_then(|outcomes| {
+                            self.program.representations.type_id(&Type::Tuple(outcomes))
+                        }),
+                    AwaitMode::Race => output_types
+                        .first()
+                        .copied()
+                        .and_then(|output| self.canonical_task_outcome_type(output)),
+                });
+                let expected = joined_output.flatten().and_then(|output| {
                     self.program
                         .representations
-                        .type_id(&Type::Task(Box::new(Type::Tuple(outputs))))
+                        .value_type(output)
+                        .map(crate::ValueType::semantic)
+                        .cloned()
+                        .and_then(|output| {
+                            self.program
+                                .representations
+                                .type_id(&Type::Task(Box::new(output)))
+                        })
                 });
-                if valid && expected.is_some_and(|expected| expected.is_none()) {
+                if valid && expected.is_none() {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.result[0]"),
-                        "task.join_all requires the canonical Task of its exact result tuple",
+                        "task.join requires the canonical mode-specific Task result",
                     );
                 }
-                self.require_results(function, instruction, &[expected.flatten()], &path);
+                self.require_results(function, instruction, &[expected], &path);
                 if !function.effects().contains(Effects::NEEDS_EXECUTOR) {
                     self.error(
                         ValidationCode::EffectMismatch,
                         &path,
-                        "task.join_all requires the function's NEEDS_EXECUTOR effect",
+                        "task.join requires the function's NEEDS_EXECUTOR effect",
                     );
                 }
             }
@@ -5718,7 +5778,7 @@ impl<'a> Validator<'a> {
                 let operation = match instruction.kind() {
                     InstructionKind::TaskCreate { .. } => Some("create a Task"),
                     InstructionKind::IoTaskCreate { .. } => Some("create a typed I/O Task"),
-                    InstructionKind::TaskJoinAll { .. } => Some("construct a Task join"),
+                    InstructionKind::TaskJoin { .. } => Some("construct a Task join"),
                     InstructionKind::TaskOutcomeTake { .. } => {
                         Some("consume a terminal Task outcome")
                     }
@@ -6238,6 +6298,62 @@ impl<'a> Validator<'a> {
             && self.program.representations.repr(task_type.repr()) == Some(&Repr::TaskHandle)
             && task_type.semantic() == &Type::Task(Box::new(output_type.semantic().clone()))
             && self.program.representations.type_id(task_type.semantic()) == Some(task)
+    }
+
+    /// Resolves one cataloged `TaskOutcome[T]` only after rechecking the exact
+    /// runtime-visible sum and fault payload contract. First-class `settled`
+    /// and `race` joins publish this value from scheduler callbacks, so their
+    /// result type needs the same independent proof as `task.outcome_take`.
+    fn canonical_task_outcome_type(&self, output: ValueTypeId) -> Option<ValueTypeId> {
+        let output_semantic = self
+            .program
+            .representations
+            .value_type(output)?
+            .semantic()
+            .clone();
+        let outcome_semantic = Type::Nominal(
+            self.program.canonical_types.task_outcome?,
+            vec![output_semantic],
+        );
+        let outcome = self.program.representations.type_id(&outcome_semantic)?;
+        let outcome_value = self.program.representations.value_type(outcome)?;
+        if outcome_value.kind() != ValueTypeKind::Direct
+            || outcome_value.semantic() != &outcome_semantic
+            || self.program.representations.type_id(&outcome_semantic) != Some(outcome)
+        {
+            return None;
+        }
+
+        let text = self.scalar_type(&Type::Text)?;
+        let text_value = self.program.representations.value_type(text)?;
+        if text_value.kind() != ValueTypeKind::Direct
+            || text_value.semantic() != &Type::Text
+            || self.program.representations.repr(text_value.repr()) != Some(&Repr::ManagedPointer)
+        {
+            return None;
+        }
+        let fault_semantic = Type::Nominal(self.program.canonical_types.task_fault?, Vec::new());
+        let fault = self.program.representations.type_id(&fault_semantic)?;
+        let fault_value = self.program.representations.value_type(fault)?;
+        if fault_value.kind() != ValueTypeKind::Direct
+            || fault_value.semantic() != &fault_semantic
+            || self.program.representations.type_id(&fault_semantic) != Some(fault)
+            || self.product_fields(fault) != Some(&[text, text])
+        {
+            return None;
+        }
+
+        let variants = self
+            .sum_repr(outcome)
+            .and_then(|sum| self.program.representations.sum(sum))?
+            .variants();
+        (variants.len() == 3
+            && variants[TASK_OUTCOME_COMPLETED_VARIANT as usize].fields() == [output]
+            && variants[TASK_OUTCOME_FAULTED_VARIANT as usize].fields() == [fault]
+            && variants[TASK_OUTCOME_CANCELLED_VARIANT as usize]
+                .fields()
+                .is_empty())
+        .then_some(outcome)
     }
 
     fn is_resource_capability_type(&self, ty: ValueTypeId) -> bool {
@@ -7194,7 +7310,7 @@ fn instruction_direct_effects(kind: &InstructionKind) -> Effects {
         InstructionKind::TaskCreate { .. }
             | InstructionKind::IoTaskCreate { .. }
             | InstructionKind::ResourceClose { .. }
-            | InstructionKind::TaskJoinAll { .. }
+            | InstructionKind::TaskJoin { .. }
             | InstructionKind::TaskOutcomeTake { .. }
     ) {
         effects = effects.union(Effects::NEEDS_EXECUTOR);

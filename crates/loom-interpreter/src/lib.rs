@@ -210,6 +210,8 @@ pub enum Value {
         mode: TaskJoinMode,
         tasks: Vec<u64>,
         dynamic: bool,
+        #[serde(skip)]
+        origin: Span,
     },
     TaskOutcome {
         outcome: TaskOutcomeValue,
@@ -417,6 +419,7 @@ struct ManagedTask {
     join_dynamic: bool,
     join_combined: bool,
     join_winner: Option<usize>,
+    join_origin: Option<Span>,
     cancel_requested: bool,
 }
 
@@ -1501,8 +1504,8 @@ impl<'program> Interpreter<'program> {
                 }
                 Err(EvalAbort::Cancelled) => return Ok(AwaitPoll::Cancelled),
             };
-            let (children, mode, dynamic, combined) = match value {
-                Value::Task { id } => (vec![id], TaskJoinMode::All, false, false),
+            let (children, mode, dynamic, combined, join_origin) = match value {
+                Value::Task { id } => (vec![id], TaskJoinMode::All, false, false, awaited.span),
                 Value::Tuple { elements } => {
                     let mut children = Vec::with_capacity(elements.len());
                     for element in elements {
@@ -1517,13 +1520,14 @@ impl<'program> Interpreter<'program> {
                         };
                         children.push(id);
                     }
-                    (children, TaskJoinMode::All, false, true)
+                    (children, TaskJoinMode::All, false, true, awaited.span)
                 }
                 Value::TaskJoin {
                     mode,
                     tasks,
                     dynamic,
-                } => (tasks, mode, dynamic, true),
+                    origin,
+                } => (tasks, mode, dynamic, true, origin),
                 _ => {
                     return Err(self
                         .runtime_fault(
@@ -1545,7 +1549,7 @@ impl<'program> Interpreter<'program> {
                         self.runtime_fault(
                             "EmptyTaskJoin",
                             "Task.any and Task.race require a non-empty task list",
-                            awaited.span,
+                            join_origin,
                         )
                         .into(),
                     )),
@@ -1558,6 +1562,7 @@ impl<'program> Interpreter<'program> {
             current.join_dynamic = dynamic;
             current.join_combined = combined;
             current.join_winner = None;
+            current.join_origin = Some(join_origin);
             current.status = TaskStatus::Waiting;
             for child in children {
                 if let Some(child_task) = self.tasks.get_mut(&child) {
@@ -1598,13 +1603,14 @@ impl<'program> Interpreter<'program> {
                     awaited.span,
                 ))
             })?;
-        let (mode, dynamic, combined, winner) = {
+        let (mode, dynamic, combined, winner, join_origin) = {
             let current = self.tasks.get(&task_id).expect("task exists");
             (
                 current.join_mode,
                 current.join_dynamic,
                 current.join_combined,
                 current.join_winner,
+                current.join_origin.unwrap_or(awaited.span),
             )
         };
         let mut values = Vec::with_capacity(children.len());
@@ -1645,6 +1651,7 @@ impl<'program> Interpreter<'program> {
         let current = self.tasks.get_mut(&task_id).expect("task exists");
         current.awaiting_state = None;
         current.children.clear();
+        current.join_origin = None;
         self.collect_tasks(self.active_root);
         match mode {
             TaskJoinMode::All => {
@@ -1682,7 +1689,7 @@ impl<'program> Interpreter<'program> {
                         self.runtime_fault(
                             loom_core::runtime_fault::TASK_ANY_FAILED_FAULT_CODE,
                             loom_core::runtime_fault::TASK_ANY_FAILED_FAULT_MESSAGE,
-                            awaited.span,
+                            join_origin,
                         )
                         .into(),
                     ))
@@ -2031,6 +2038,7 @@ impl<'program> Interpreter<'program> {
                     join_dynamic: false,
                     join_combined: false,
                     join_winner: None,
+                    join_origin: None,
                     cancel_requested: false,
                 },
             );
@@ -3638,6 +3646,7 @@ impl<'program> Interpreter<'program> {
                 join_dynamic: false,
                 join_combined: false,
                 join_winner: None,
+                join_origin: None,
                 cancel_requested: false,
             },
         );
@@ -3672,6 +3681,7 @@ impl<'program> Interpreter<'program> {
             mode,
             tasks,
             dynamic,
+            origin: span,
         })
     }
 
@@ -4364,6 +4374,7 @@ impl<'program> Interpreter<'program> {
                         join_dynamic: false,
                         join_combined: false,
                         join_winner: None,
+                        join_origin: None,
                         cancel_requested: false,
                     },
                 );
@@ -4396,6 +4407,7 @@ impl<'program> Interpreter<'program> {
                     mode: *mode,
                     tasks,
                     dynamic,
+                    origin: expression.span,
                 })
             }
         }
@@ -6325,6 +6337,7 @@ impl<'program> Interpreter<'program> {
                 join_dynamic: false,
                 join_combined: false,
                 join_winner: None,
+                join_origin: None,
                 cancel_requested: false,
             },
         );
@@ -6389,6 +6402,7 @@ impl<'program> Interpreter<'program> {
                 join_dynamic: false,
                 join_combined: false,
                 join_winner: None,
+                join_origin: None,
                 cancel_requested: false,
             },
         );
@@ -6439,6 +6453,7 @@ impl<'program> Interpreter<'program> {
                 join_dynamic: false,
                 join_combined: false,
                 join_winner: None,
+                join_origin: None,
                 cancel_requested: false,
             },
         );
@@ -6498,6 +6513,7 @@ impl<'program> Interpreter<'program> {
                 join_dynamic: false,
                 join_combined: false,
                 join_winner: None,
+                join_origin: None,
                 cancel_requested: false,
             },
         );
@@ -7551,10 +7567,12 @@ fn clone_value(value: &Value, clear_dyn_writeback: bool) -> Value {
                 mode,
                 tasks,
                 dynamic,
+                origin,
             } => Value::TaskJoin {
                 mode: *mode,
                 tasks: tasks.clone(),
                 dynamic: *dynamic,
+                origin: *origin,
             },
             Value::TaskOutcome {
                 outcome: TaskOutcomeValue::Faulted,

@@ -69,11 +69,25 @@ async fn exerciseSettled() {
     assert secondCode == "AssertionFault"
     assert secondMessage == "assertion was not satisfied"
 
-    let laterFailure, laterCompleted = Task.settled(
-    faultedText("later"),
-    completedText("later")
-    ).await
-    match laterFailure {
+    let laterJoin = Task.settled(
+    faultedText("later first"),
+    faultedText("later second")
+    )
+    let laterFailure, laterSecondFailure = laterJoin.await
+    let laterCode, laterMessage = match laterFailure {
+        Completed(_) => {
+            assert false
+            ("unreachable", "unreachable")
+        }
+        Faulted(fault) => {
+            (fault.code(), fault.message())
+        }
+        Cancelled => {
+            assert false
+            ("unreachable", "unreachable")
+        }
+    }
+    match laterSecondFailure {
         Completed(_) => {
             assert false
             Unit
@@ -90,20 +104,10 @@ async fn exerciseSettled() {
             Unit
         }
     }
-    match laterCompleted {
-        Completed(value) => {
-            assert value == "later completed"
-            Unit
-        }
-        Faulted(_) => {
-            assert false
-            Unit
-        }
-        Cancelled => {
-            assert false
-            Unit
-        }
-    }
+    // Capturing the second fault allocates another Text pair and may move the
+    // first pair. The composite frame must keep its partial result rooted.
+    assert laterCode == "AssertionFault"
+    assert laterMessage == "assertion was not satisfied"
 
     // These managed Text leaves came from the first captured fault. They must
     // remain rooted across the later await and its two outcome-capture
@@ -135,10 +139,11 @@ async fn exerciseRace() {
         }
     }
 
-    let completedWinner = Task.race(
+    let completedRace = Task.race(
     slowManagedLoser(73),
     fastManagedWinner()
-    ).await
+    )
+    let completedWinner = completedRace.await
     match completedWinner {
         Completed(value) => {
             assert value == "fast winner"
@@ -157,10 +162,11 @@ async fn exerciseRace() {
     // The first child suspends, so the second child is the deterministic
     // nonzero winner. Finalizing the race cancels and drains the first child,
     // including its registered defer cleanup.
-    let faultWinner = Task.race([
+    let faultRace = Task.race(
     slowManagedLoser(73),
     faultedText("race failure")
-    ]).await
+    )
+    let faultWinner = faultRace.await
     match faultWinner {
         Completed(_) => {
             assert false

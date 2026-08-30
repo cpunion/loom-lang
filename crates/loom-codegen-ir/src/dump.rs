@@ -537,8 +537,8 @@ fn write_instruction(
             };
             write!(output, "resource.close.{kind} %{resource}")
         }
-        InstructionKind::TaskJoinAll { tasks } => {
-            write!(output, "task.join_all(")?;
+        InstructionKind::TaskJoin { mode, tasks } => {
+            write!(output, "task.join.{}(", await_mode_name(*mode))?;
             write_arguments(output, tasks)?;
             write!(output, ")")
         }

@@ -37,7 +37,7 @@ there is no suspended lexical state to restore.
 root. No universal value slot, witness arena, runtime type tag, or synchronous
 expression executor is introduced by this route.
 
-LCIR has explicit `TaskCreate`, `TaskSleep`, `TaskJoinAll`, `AwaitTasks`, and
+LCIR has explicit `TaskCreate`, `TaskSleep`, `TaskJoin`, `AwaitTasks`, and
 `TaskOutcomeTake` operations. `AwaitTasks` stores its checked ordered child row,
 join mode, and live row, registers one private structured join, and publishes
 its state. The terminator has explicit normal, fault, and cancellation edges.
@@ -91,7 +91,7 @@ Lexical `defer` and admitted `scoped` resources may remain active across
 suspension. The collision-free carrier gives managed sums one static union of
 exact pointer offsets, and pack leaves inactive pointer lanes zero. This applies
 equally to coroutine parameters, suspension rows, completed Task results, and
-exact stored-join tuple results without changing typed-task v1. A fallible
+exact stored-join results without changing typed-task v1. A fallible
 callback creates one activation-local fault context attached to its executor.
 Checked arithmetic, assertions, ordinary fallible invokes, async state-zero
 preconditions, and callee-side postconditions record only the first fault on the
@@ -103,11 +103,9 @@ suspension bookkeeping.
 
 For reachable graphs with no LCIR-only primitive, selected async functions with
 explicit mutable coroutine parameters, raw readiness, dynamically sized or
-computed-List Task joins, `Task.any`,
-`Task.settled`, or `Task.race` whose result is stored or otherwise used
-first-class, and finite-catalog or open dynamic-concept frame values still
-select the complete checked-MIR route. Async roots with `requires` use the same
-typed state-zero check as child Tasks.
+computed-List Task joins, and finite-catalog or open dynamic-concept frame
+values still select the complete checked-MIR route. Async roots with `requires`
+use the same typed state-zero check as child Tasks.
 
 ## Runtime and executor
 
@@ -214,13 +212,15 @@ to one multi-child `AwaitTasks`; no intermediate composite Task is allocated.
 The resume edge receives one exact result per child in task order and constructs
 the source tuple, including the canonical one-field tuple for one child.
 
-A first-class stored fixed `Task.all` instead lowers to `TaskJoinAll`. LLVM
-generates an exact composite frame holding state, the ordered child handles, and
-the target-laid-out result tuple. Its immutable typed-task descriptor traces
-only the managed leaves of the completed tuple. Identical static result shapes
-share one generated descriptor and resume callback. That callback uses the
-ordinary structured `all` protocol, takes each exact child result, builds the
-tuple, and publishes it without a universal join-result buffer or runtime type
+A first-class stored fixed policy instead lowers to `TaskJoin`. LLVM generates
+an exact composite frame holding state, the ordered child handles, and the
+target-laid-out result. Its immutable typed-task descriptor traces only the
+managed leaves of that completed result. The mode, ordered child-output row, and
+result type form a static shape; identical shapes share one generated descriptor
+and resume callback. `Task.any` additionally partitions by producer origin so
+the callback can record exact `TaskAnyFailed` blame. That callback uses the
+ordinary structured join protocol, materializes the exact all/settled/any/race
+result, and publishes it without a universal join-result buffer or runtime type
 tag.
 
 Construction initializes the composite while it is unpublished, then calls
@@ -237,8 +237,8 @@ typed-task, timer, wait, and GC protocols without a second Task representation.
 A nonempty, immediately awaited, fixed-arity `Task.any` is also direct when
 every child has the same exact output type `T`. Its `AwaitTasks` plan retains one
 output entry and one frame child field for every source child, while the normal
-continuation receives only the successful winner's `T`. No first-class
-composite Task or universal join-result buffer is created.
+continuation receives only the successful winner's `T`. This immediate form
+does not allocate the first-class composite used when the join itself is stored.
 
 The ordinary scheduler selects the first successful child, requests
 cancellation of unfinished losers, and drains the complete child set. When the
@@ -247,11 +247,12 @@ source callback consumes the resulting completion token through
 disposes completed loser results and retires every loser in static reverse-input
 order. A loser-disposal fault changes the await outcome to fault before the
 coroutine enters its static LIFO cleanup. If every child fails or is cancelled,
-generated code records the canonical `TaskAnyFailed` fault at the await's source
-origin before entering the same fault cleanup. Cancellation of the source
-coroutine bypasses normal join finalization, preserves cancellation as primary,
-and relies on ordinary terminal child retirement; an established cancellation
-continues to suppress a cleanup fault.
+generated code records the canonical `TaskAnyFailed` fault at the source
+`Task.any` expression before entering the same fault cleanup. This remains true
+whether the producer is stored or fused into its immediate await. Cancellation
+of the source coroutine bypasses normal join finalization, preserves
+cancellation as primary, and relies on ordinary terminal child retirement. An
+established cancellation continues to suppress a cleanup fault.
 
 The winner keeps its original input ordinal and remains attached until generated
 code switches over the coroutine frame's original child fields and performs the
@@ -392,12 +393,12 @@ resources. Their terminal cleanup or typed result disposal releases remaining
 built-in owners before retired-task memory reclamation.
 
 The complete runtime and checked-MIR compiler route implement all of those source
-forms. The typed-LCIR route admits nonempty immediately awaited fixed-argument
-forms of all four APIs and a sole nonempty List literal. `all` and `settled`
-may preserve heterogeneous fixed outputs; `any` and `race` require one exact
-output type. A stored fixed `Task.all` also has an exact composite Task. Empty,
-stored, computed, or runtime-sized List joins and first-class results of the
-other three APIs remain atomic whole-artifact fallback.
+forms. The typed-LCIR route admits nonempty fixed-argument forms of all four
+APIs, both immediately awaited and stored as first-class composite Tasks, plus
+a sole nonempty List literal consumed immediately. `all` and `settled` may
+preserve heterogeneous fixed outputs; `any` and `race` require one exact output
+type. Empty, stored, computed, or runtime-sized List joins remain atomic
+whole-artifact fallback.
 
 ## Current limits
 

@@ -463,7 +463,7 @@ opcodes and contribute `MAY_COLLECT`. Process argument count, Path construction,
 and Path extraction remain non-collecting. `TaskCreate` contributes
 `NEEDS_EXECUTOR`, while the `AwaitTasks` terminator contributes `MAY_FAULT` and
 `MAY_SUSPEND`.
-`TaskJoinAll` contributes `NEEDS_EXECUTOR` but does not itself suspend.
+`TaskJoin` contributes `NEEDS_EXECUTOR` but does not itself suspend.
 `TaskSleep` contributes `MAY_FAULT` and `NEEDS_EXECUTOR`, but neither
 `MAY_SUSPEND` nor `MAY_COLLECT`: it constructs a first-class Task and does not
 wait for it. Assertions, deferred blocks, and scoped disposal lower into direct
@@ -657,14 +657,15 @@ deadline addition, and then calls
 `loom_typed_timer_task_create_v1(executor, deadline_ns)`. Task creation itself
 does not suspend; a later `AwaitTasks` does.
 
-An immediately awaited fixed tuple and an immediately awaited `Task.all`
-evaluate children left to right and lower directly to `AwaitTasks`, avoiding
-an intermediate composite. A first-class stored `Task.all` lowers to
-`TaskJoinAll` and returns `Task[(A, B, ...)]`, including a one-field tuple for
-one child. LLVM generates one exact typed composite frame and result tuple for
-that static shape. Runtime adoption validates the complete ordered child set
-before transferring it from the current parent and publishing the composite;
-the checked-MIR universal join-result path is never called.
+An immediately awaited fixed tuple or fixed Task-policy call evaluates children
+left to right and lowers directly to `AwaitTasks`, avoiding an intermediate
+composite. A first-class stored fixed policy lowers to `TaskJoin`. `all` returns
+the exact result tuple, `settled` the corresponding outcome tuple, `any` one
+homogeneous winner, and `race` one homogeneous winner outcome. LLVM generates
+one exact typed composite frame for that static mode and result shape. Runtime
+adoption validates the complete ordered child set before transferring it from
+the current parent and publishing the composite; the checked-MIR universal
+join-result path is never called.
 
 A nonempty, immediately awaited, fixed-arity `Task.any` also lowers directly to
 `AwaitTasks` when every child has the same exact output type. The plan and frame
@@ -673,8 +674,9 @@ winner result. The runtime finalizes and retires losers before the callback
 observes the completed step. Generated code then switches on the original winner
 ordinal, loads that exact child pointer from its static frame field, and takes
 the result. A loser-disposal fault enters the await fault edge with that fault
-active; if no child succeeds, generated code raises canonical `TaskAnyFailed` at
-the await origin before static coroutine cleanup.
+active; if no child succeeds, generated code raises canonical `TaskAnyFailed`
+at the `Task.any` expression origin before static coroutine cleanup. Immediate
+fusion therefore preserves the same producer origin as a stored `TaskJoin`.
 
 Immediately awaited fixed `Task.settled` and `Task.race` calls use the same
 `AwaitTasks` terminator. Their normal edges receive terminal affine handles,
@@ -763,10 +765,10 @@ witness is recursively physicalized to its concrete representation in those
 locations. The recursive frame walk consumes one shared bounded structural
 budget, so cyclic or non-regular generic expansion fails closed instead of
 growing the compiler stack. Finite-catalog or open dynamic-concept frame values,
-raw readiness, stored or computed dynamic Task collections, first-class
-`Task.any`, `Task.settled`, or `Task.race` results, and cancellation sources
-remain atomic whole-artifact fallback. Fixed arguments and a sole nonempty List
-literal are admitted when the join is consumed immediately by `.await`; `any`
+raw readiness, stored or computed dynamic Task collections, and cancellation
+sources remain atomic whole-artifact fallback. Fixed argument joins are
+admitted both as first-class Tasks and when consumed immediately by `.await`; a
+sole nonempty List literal is admitted only for immediate consumption. `any`
 and `race` additionally require one homogeneous output type.
 An exact transitive `NEEDS_EXECUTOR` effect adds one compiler-private executor
 parameter to a synchronous function after its optional fault context. Direct
