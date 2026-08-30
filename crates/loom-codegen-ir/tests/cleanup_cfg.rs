@@ -29,7 +29,7 @@ fn resource_program(
 fn file_resource_program(fields: &[Type], effects: Effects) -> Program {
     resource_program(
         ResourceKind::File,
-        Type::Nominal(TypeId(8), Vec::new()),
+        Type::Nominal(TypeId(7), Vec::new()),
         fields,
         effects,
     )
@@ -131,7 +131,7 @@ fn typed_resource_cleanup_rejects_noncanonical_shape_and_missing_executor_effect
     assert_has_code(
         resource_program_with_representation(
             ResourceKind::File,
-            Type::Nominal(TypeId(8), Vec::new()),
+            Type::Nominal(TypeId(7), Vec::new()),
             &[Type::Int],
             effects,
             true,
@@ -149,20 +149,20 @@ fn typed_resource_cleanup_requires_the_exact_canonical_nominal_for_each_kind() {
     let effects = resource_effects();
     resource_program(
         ResourceKind::Socket,
-        Type::Nominal(TypeId(9), Vec::new()),
+        Type::Nominal(TypeId(8), Vec::new()),
         &[Type::Int],
         effects,
     )
     .into_checked()
-    .expect("canonical Socket#9 cleanup is valid");
+    .expect("canonical Socket#8 cleanup is valid");
 
     for (kind, semantic) in [
-        (ResourceKind::File, Type::Nominal(TypeId(9), Vec::new())),
-        (ResourceKind::Socket, Type::Nominal(TypeId(8), Vec::new())),
+        (ResourceKind::File, Type::Nominal(TypeId(8), Vec::new())),
+        (ResourceKind::Socket, Type::Nominal(TypeId(7), Vec::new())),
         (ResourceKind::File, Type::Nominal(TypeId(90), Vec::new())),
         (
             ResourceKind::File,
-            Type::Nominal(TypeId(8), vec![Type::Int]),
+            Type::Nominal(TypeId(7), vec![Type::Int]),
         ),
     ] {
         assert_has_code(
@@ -178,7 +178,7 @@ fn active_resource_cleanup_preserves_the_primary_after_close() {
     let boolean = program.type_id(&Type::Bool).expect("Bool");
     let unit = program.type_id(&Type::Unit).expect("Unit");
     let resource = program
-        .add_pod_record_type(Type::Nominal(TypeId(9), Vec::new()), &[Type::Int])
+        .add_pod_record_type(Type::Nominal(TypeId(8), Vec::new()), &[Type::Int])
         .expect("resource product");
     let function = program
         .declare_function(

@@ -132,11 +132,65 @@ fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
 }
 
 fn compile_with_std_json(source: &str) -> loom_mir::CheckedProgram {
-    compile_with_std_module(
-        source,
-        "std.json",
+    let application = parse_with_file(FileId(0), source);
+    let json = parse_with_file(
+        FileId(1),
         include_str!("../../../library/std/json/json.loom"),
-    )
+    );
+    let float = parse_with_file(
+        FileId(2),
+        include_str!("../../../library/std/float/float.loom"),
+    );
+    assert!(
+        application.diagnostics().is_empty()
+            && json.diagnostics().is_empty()
+            && float.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} json={:#?} float={:#?}",
+        application.diagnostics(),
+        json.diagnostics(),
+        float.diagnostics()
+    );
+    let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+    let root = PackageId::new("codegen-ir-test", "0");
+    let mut lowered = lower_package_files([
+        PackageSourceUnit {
+            file: FileId(0),
+            package: root.clone(),
+            module: ModuleName::new("codegen_ir_test"),
+            syntax: application.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(1),
+            package: std_package.clone(),
+            module: ModuleName::new("std.json"),
+            syntax: json.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(2),
+            package: std_package.clone(),
+            module: ModuleName::new("std.float"),
+            syntax: float.ast(),
+        },
+    ]);
+    lowered
+        .program
+        .register_package(std_package.clone(), [], false);
+    lowered
+        .program
+        .register_package(root, [(Name::new("std"), std_package)], true);
+    assert!(
+        lowered.diagnostics.is_empty(),
+        "HIR diagnostics: {:#?}",
+        lowered.diagnostics
+    );
+    let analysis = analyze(&lowered.program);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "semantic diagnostics: {:#?}",
+        analysis.diagnostics
+    );
+    lower_to_mir(&lowered.program, &analysis)
+        .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
 }
 
 fn lower_run(source: &str) -> LoweringOutcome {
@@ -353,7 +407,7 @@ pub fn main() {
             .representations()
             .type_id(&Type::Nominal(PATH_TYPE_ID, Vec::new()))
             .is_some(),
-        "canonical Path#11 representation is missing"
+        "canonical Path#10 representation is missing"
     );
 
     let mut from_count = 0_usize;
@@ -1963,9 +2017,9 @@ pub async fn main() {
 )]
 fn builtin_scoped_file_cleanup_rejects_a_synchronous_executor_root() {
     let span = Span::default();
-    let file_id = TypeId(8);
+    let file_id = TypeId(7);
     let file = Type::Nominal(file_id, Vec::new());
-    let mut types = (0_u32..8)
+    let mut types = (0_u32..7)
         .map(|id| TypeDef {
             id: TypeId(id),
             name: format!("Placeholder{id}"),

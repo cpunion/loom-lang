@@ -13,6 +13,9 @@ const FLOAT_MODULE: &str = "std.float";
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum CompilerStdPrimitive {
     FloatFromInt,
+    FloatFormat,
+    FloatIsFinite,
+    FloatParseStatus,
     FloatToInt,
     IoWriteStdout,
     ProcessArguments,
@@ -24,6 +27,9 @@ impl CompilerStdPrimitive {
     pub(crate) const fn local_name(self) -> &'static str {
         match self {
             Self::FloatFromInt => "__from_int",
+            Self::FloatFormat => "__format",
+            Self::FloatIsFinite => "__is_finite",
+            Self::FloatParseStatus => "__parse",
             Self::FloatToInt => "__to_int",
             Self::IoWriteStdout => "__write_stdout",
             Self::ProcessArguments => "__arguments",
@@ -59,6 +65,9 @@ pub(crate) fn resolve_import(
         item.name.as_str(),
     ) {
         (FLOAT_MODULE, "float", "__from_int") => Some(CompilerStdPrimitive::FloatFromInt),
+        (FLOAT_MODULE, "float", "__format") => Some(CompilerStdPrimitive::FloatFormat),
+        (FLOAT_MODULE, "float", "__is_finite") => Some(CompilerStdPrimitive::FloatIsFinite),
+        (FLOAT_MODULE, "float", "__parse") => Some(CompilerStdPrimitive::FloatParseStatus),
         (FLOAT_MODULE, "float", "__to_int") => Some(CompilerStdPrimitive::FloatToInt),
         (IO_MODULE, "io", "__write_stdout") => Some(CompilerStdPrimitive::IoWriteStdout),
         (PROCESS_MODULE, "process", "__arguments") => Some(CompilerStdPrimitive::ProcessArguments),
@@ -140,6 +149,22 @@ mod tests {
             Some(CompilerStdPrimitive::FloatFromInt)
         );
         assert_eq!(
+            resolve_import(&program, float_owner, &path(&["std", "float", "__parse"]),),
+            Some(CompilerStdPrimitive::FloatParseStatus)
+        );
+        assert_eq!(
+            resolve_import(&program, float_owner, &path(&["std", "float", "__format"]),),
+            Some(CompilerStdPrimitive::FloatFormat)
+        );
+        assert_eq!(
+            resolve_import(
+                &program,
+                float_owner,
+                &path(&["std", "float", "__is_finite"]),
+            ),
+            Some(CompilerStdPrimitive::FloatIsFinite)
+        );
+        assert_eq!(
             resolve_import(&program, float_owner, &path(&["std", "float", "__to_int"]),),
             Some(CompilerStdPrimitive::FloatToInt)
         );
@@ -164,6 +189,9 @@ mod tests {
             (io_owner, path(&["std", "io", "write"])),
             (owner, path(&["std", "float", "__from_int"])),
             (float_owner, path(&["std", "float", "from_int"])),
+            (float_owner, path(&["std", "float", "parse_float"])),
+            (float_owner, path(&["std", "float", "format_float"])),
+            (float_owner, path(&["std", "float", "is_finite"])),
             (float_owner, path(&["std.float", "__from_int"])),
             (float_owner, path(&["std", "float", "__to_int", "extra"])),
         ] {

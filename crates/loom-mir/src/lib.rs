@@ -79,8 +79,6 @@ pub struct PreludeIds {
     #[serde(deserialize_with = "deserialize_required_option")]
     pub constraint_error: Option<TypeId>,
     #[serde(deserialize_with = "deserialize_required_option")]
-    pub parse_float_error: Option<TypeId>,
-    #[serde(deserialize_with = "deserialize_required_option")]
     pub task_fault: Option<TypeId>,
     #[serde(deserialize_with = "deserialize_required_option")]
     pub task_outcome: Option<TypeId>,
@@ -1090,11 +1088,11 @@ impl ExprIdAssigner {
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Builtin {
-    IsFinite,
+    FloatIsFinite,
     IntToFloat,
     FloatToIntStatus,
-    ParseFloat,
-    FormatFloat,
+    FloatParseStatus,
+    FloatFormat,
     TextLength,
     TextGet,
     TextConcat,

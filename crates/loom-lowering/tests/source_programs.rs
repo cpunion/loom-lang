@@ -86,6 +86,49 @@ fn compile_with_std_resource(source: &str) -> loom_mir::CheckedProgram {
         .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
 }
 
+fn compile_with_std_float(source: &str) -> loom_mir::CheckedProgram {
+    let application = parse_with_file(FileId(0), source);
+    let float = parse_with_file(
+        FileId(1),
+        include_str!("../../../library/std/float/float.loom"),
+    );
+    assert!(
+        application.diagnostics().is_empty() && float.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} float={:#?}",
+        application.diagnostics(),
+        float.diagnostics()
+    );
+    let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+    let root = PackageId::new("lowering-test", "0");
+    let mut lowered = lower_package_files([
+        PackageSourceUnit {
+            file: FileId(0),
+            package: root.clone(),
+            module: ModuleName::new("lowering_test"),
+            syntax: application.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(1),
+            package: std.clone(),
+            module: ModuleName::new("std.float"),
+            syntax: float.ast(),
+        },
+    ]);
+    lowered.program.register_package(std.clone(), [], false);
+    lowered
+        .program
+        .register_package(root, [(Name::new("std"), std)], true);
+    assert!(lowered.diagnostics.is_empty(), "{:#?}", lowered.diagnostics);
+    let analysis = analyze(&lowered.program);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "semantic diagnostics: {:#?}",
+        analysis.diagnostics
+    );
+    lower_to_mir(&lowered.program, &analysis)
+        .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
+}
+
 fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
     let application = parse_with_file(FileId(0), source);
     let log = parse_with_file(FileId(1), include_str!("../../../library/std/log/log.loom"));
@@ -93,14 +136,20 @@ fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
         FileId(2),
         include_str!("../../../library/std/json/json.loom"),
     );
+    let float = parse_with_file(
+        FileId(3),
+        include_str!("../../../library/std/float/float.loom"),
+    );
     assert!(
         application.diagnostics().is_empty()
             && log.diagnostics().is_empty()
-            && json.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} log={:#?} json={:#?}",
+            && json.diagnostics().is_empty()
+            && float.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} log={:#?} json={:#?} float={:#?}",
         application.diagnostics(),
         log.diagnostics(),
-        json.diagnostics()
+        json.diagnostics(),
+        float.diagnostics()
     );
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("lowering-test", "0");
@@ -122,6 +171,12 @@ fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
             package: std.clone(),
             module: ModuleName::new("std.json"),
             syntax: json.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(3),
+            package: std.clone(),
+            module: ModuleName::new("std.float"),
+            syntax: float.ast(),
         },
     ]);
     lowered.program.register_package(std.clone(), [], false);
@@ -193,11 +248,18 @@ fn compile_with_std_json(source: &str) -> loom_mir::CheckedProgram {
         FileId(1),
         include_str!("../../../library/std/json/json.loom"),
     );
+    let float = parse_with_file(
+        FileId(2),
+        include_str!("../../../library/std/float/float.loom"),
+    );
     assert!(
-        application.diagnostics().is_empty() && json.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} std={:#?}",
+        application.diagnostics().is_empty()
+            && json.diagnostics().is_empty()
+            && float.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} json={:#?} float={:#?}",
         application.diagnostics(),
-        json.diagnostics()
+        json.diagnostics(),
+        float.diagnostics()
     );
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("lowering-test", "0");
@@ -213,6 +275,12 @@ fn compile_with_std_json(source: &str) -> loom_mir::CheckedProgram {
             package: std.clone(),
             module: ModuleName::new("std.json"),
             syntax: json.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(2),
+            package: std.clone(),
+            module: ModuleName::new("std.float"),
+            syntax: float.ast(),
         },
     ]);
     lowered.program.register_package(std.clone(), [], false);
@@ -287,7 +355,7 @@ fn contract_contains_binding(expression: &loom_mir::ContractExpr, expected: u32)
 
 #[test]
 fn constraints_contracts_source_lowers_and_validates() {
-    compile_and_validate(include_str!(
+    compile_with_std_float(include_str!(
         "../../../examples/constraints-contracts/shop.loom"
     ));
 }
@@ -793,7 +861,7 @@ fn generic_enum_construction_carries_its_instantiation() {
 
 #[test]
 fn compiler_builtins_lower_to_validated_calls() {
-    compile_and_validate(
+    compile_with_std_float(
         "import std.float.parse_float\nimport std.float.format_float\n\ntest fn float_text_boundary() {\n    let parsed = parse_float(\"1.25\")\n    let rendered = format_float(1.25)\n    assert rendered == \"1.25\"\n    match parsed {\n        Ok(value) => {\n            assert value == 1.25\n            Unit\n        }\n        Err(std.float.ParseFloatError.InvalidSyntax) => {\n            assert false\n            Unit\n        }\n        Err(std.float.ParseFloatError.OutOfRange) => {\n            assert false\n            Unit\n        }\n    }\n}\n",
     );
 }
@@ -1480,7 +1548,7 @@ fn idle() {
         "BytesGet",
         "ListAdd",
         "ListToTextMap",
-        "ParseFloat",
+        "FloatParseStatus",
     ] {
         assert!(debug.contains(builtin), "missing {builtin} in {debug}");
     }

@@ -1617,7 +1617,7 @@ pub fn main() {
     );
     let dump = dump_program(artifact.program());
     for required in [
-        "parse.float",
+        "parse.float.status",
         "convert.int_to_float",
         "convert.float_to_int_status",
         "text.encode_utf8",
@@ -2227,7 +2227,7 @@ fn managed_bytes_close_the_typed_lcir_route_on_all_supported_targets() {
     let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
     let dump = dump_program(artifact.program());
     for required in [
-        "Nominal#10[] =>",
+        "Nominal#9[] =>",
         "managed_ptr",
         "text.encode_utf8",
         "bytes.length",
@@ -2346,7 +2346,7 @@ fn text_from_utf8_units_is_direct_typed_lcir_on_all_supported_targets() {
         "List[Int] =>",
         "managed_ptr",
         "text.from_utf8_units",
-        "Nominal#12[] =>",
+        "Nominal#11[] =>",
     ] {
         assert!(dump.contains(required), "missing `{required}`:\n{dump}");
     }
@@ -2436,11 +2436,11 @@ fn lexical_path_is_direct_typed_lcir_on_all_supported_targets() {
     let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
     let dump = dump_program(artifact.program());
     for required in [
-        "Nominal#11[] =>",
+        "Nominal#10[] =>",
         "path.from_text",
         "path.as_text",
         "path.join",
-        "Nominal#13[] =>",
+        "Nominal#12[] =>",
     ] {
         assert!(dump.contains(required), "missing `{required}`:\n{dump}");
     }

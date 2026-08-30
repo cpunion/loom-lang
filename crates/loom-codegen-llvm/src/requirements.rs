@@ -997,7 +997,7 @@ pub(crate) const fn builtin_borrows_copy_argument(builtin: Builtin, index: usize
 
 const fn builtin_requirements(builtin: Builtin) -> RuntimeRequirements {
     match builtin {
-        Builtin::IsFinite
+        Builtin::FloatIsFinite
         | Builtin::IntToFloat
         | Builtin::FloatToIntStatus
         | Builtin::TextLength
@@ -1036,10 +1036,10 @@ const fn builtin_requirements(builtin: Builtin) -> RuntimeRequirements {
         | Builtin::TextMapContains
         | Builtin::LogWrite
         | Builtin::StdoutWrite => RuntimeRequirements::MAY_FAULT,
-        Builtin::ParseFloat | Builtin::TextEncodeUtf8 | Builtin::TextMapEntryAt => {
+        Builtin::FloatParseStatus | Builtin::TextEncodeUtf8 | Builtin::TextMapEntryAt => {
             RuntimeRequirements::MAY_COLLECT
         }
-        Builtin::FormatFloat
+        Builtin::FloatFormat
         | Builtin::TextGet
         | Builtin::TextConcat
         | Builtin::BytesGet
@@ -1415,7 +1415,7 @@ mod tests {
         }
         for builtin in [
             Builtin::TextGet,
-            Builtin::FormatFloat,
+            Builtin::FloatFormat,
             Builtin::ListGet,
             Builtin::TextMapGet,
             Builtin::TextMapEntryAt,

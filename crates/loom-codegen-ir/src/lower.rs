@@ -3283,11 +3283,11 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         | mir::Builtin::TextMapGet
                         | mir::Builtin::TextMapEntryAt
                         | mir::Builtin::TextMapRemove
-                        | mir::Builtin::IsFinite
+                        | mir::Builtin::FloatIsFinite
                         | mir::Builtin::IntToFloat
                         | mir::Builtin::FloatToIntStatus
-                        | mir::Builtin::ParseFloat
-                        | mir::Builtin::FormatFloat
+                        | mir::Builtin::FloatParseStatus
+                        | mir::Builtin::FloatFormat
                         | mir::Builtin::JsonFormat
                         | mir::Builtin::IoErrorKind
                         | mir::Builtin::IoErrorMessage
@@ -3310,7 +3310,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                             CallTarget::Builtin(
                                 mir::Builtin::TextConcat
                                     | mir::Builtin::TextGet
-                                    | mir::Builtin::FormatFloat
+                                    | mir::Builtin::FloatFormat
                                     | mir::Builtin::JsonFormat
                                     | mir::Builtin::TextMapNew
                                     | mir::Builtin::TextMapInsert
@@ -4075,7 +4075,7 @@ fn scan_effect_expr(
                         | mir::Builtin::ListToTextMap
                         | mir::Builtin::TextMapInsert
                         | mir::Builtin::TextMapRemove
-                        | mir::Builtin::FormatFloat
+                        | mir::Builtin::FloatFormat
                         | mir::Builtin::JsonFormat
                         | mir::Builtin::FileTryOpenRead
                         | mir::Builtin::FileTryCreate
@@ -11773,16 +11773,11 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 invalid_utf8_variant: 0,
             }
             .into(),
-            (mir::Builtin::ParseFloat, [text]) => InstructionKind::ParseFloat {
-                text: *text,
-                ok_variant: 0,
-                error_variant: 1,
-                invalid_syntax_variant: 0,
-                out_of_range_variant: 1,
+            (mir::Builtin::FloatParseStatus, [text]) => {
+                InstructionKind::FloatParseStatus { text: *text }.into()
             }
-            .into(),
-            (mir::Builtin::FormatFloat, [value]) => {
-                InstructionKind::FormatFloat { value: *value }.into()
+            (mir::Builtin::FloatFormat, [value]) => {
+                InstructionKind::FloatFormat { value: *value }.into()
             }
             (mir::Builtin::IntToFloat, [value]) => {
                 InstructionKind::IntToFloat { value: *value }.into()
@@ -11847,7 +11842,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 arguments: Box::new([*socket, *text]),
             }
             .into(),
-            (mir::Builtin::IsFinite, [value]) => {
+            (mir::Builtin::FloatIsFinite, [value]) => {
                 return self.lower_float_is_finite(flow, *value, origin);
             }
             (mir::Builtin::TaskFaultCode, [fault]) => InstructionKind::ProductExtract {

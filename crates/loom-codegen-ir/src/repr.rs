@@ -1020,10 +1020,10 @@ mod tests {
     fn canonical_file_close_program() -> (Program, ValueTypeId, ValueTypeId) {
         let origin = Origin::synthetic(MirFunctionId(93));
         let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
-        let file_semantic = Type::Nominal(TypeId(8), Vec::new());
+        let file_semantic = Type::Nominal(TypeId(7), Vec::new());
         let file = builder
             .add_pod_record_type(file_semantic, &[Type::Int])
-            .expect("canonical File#8");
+            .expect("canonical File#7");
         let unit = builder.type_id(&Type::Unit).expect("Unit");
         let function = builder
             .declare_function(
@@ -1070,7 +1070,7 @@ mod tests {
         assert!(errors.as_slice().iter().any(|error| {
             error.code() == ValidationCode::TypeMismatch
                 && error.path() == "function[0].instruction[0].resource"
-                && error.message().contains("canonical File#8")
+                && error.message().contains("canonical File#7")
         }));
     }
 
@@ -1103,7 +1103,7 @@ mod tests {
             .representations
             .registrations
             .iter()
-            .find(|registration| registration.semantic == Type::Nominal(TypeId(8), Vec::new()))
+            .find(|registration| registration.semantic == Type::Nominal(TypeId(7), Vec::new()))
             .cloned()
             .expect("File registration");
         duplicate_registration
@@ -1245,7 +1245,7 @@ mod tests {
         let list = builder
             .add_managed_list_type(list_semantic)
             .expect("canonical List[Int]");
-        let decode_error_semantic = Type::Nominal(TypeId(12), Vec::new());
+        let decode_error_semantic = Type::Nominal(TypeId(11), Vec::new());
         builder
             .add_sum_type(decode_error_semantic.clone(), &[Box::new([])])
             .expect("DecodeTextError");
@@ -1341,7 +1341,7 @@ mod tests {
         let path = builder
             .add_invariant_record_type(path_semantic.clone(), &[Type::Text])
             .expect("Path");
-        let error_semantic = Type::Nominal(TypeId(13), Vec::new());
+        let error_semantic = Type::Nominal(TypeId(12), Vec::new());
         builder
             .add_sum_type(error_semantic.clone(), &[Box::new([]), Box::new([])])
             .expect("PathError");
@@ -1504,7 +1504,7 @@ mod tests {
                 error.code() == ValidationCode::TypeMismatch
                     && error
                         .message()
-                        .contains("canonical prelude Result#1[Path#11, PathError#13]")
+                        .contains("canonical prelude Result#1[Path#10, PathError#12]")
             }),
             "{errors:#?}"
         );

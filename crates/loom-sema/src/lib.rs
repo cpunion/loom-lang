@@ -16,7 +16,9 @@ mod std_primitives;
 mod task_intrinsics;
 mod ty;
 
-pub use analyze::{Analysis, CanonicalConcepts, analyze, analyze_reusing_bodies};
+pub use analyze::{
+    Analysis, CanonicalConcepts, CanonicalStdItems, analyze, analyze_reusing_bodies,
+};
 pub use conformance::*;
 pub use def_map::{Binding, DefMap, DefMapBuild, Namespace};
 pub use module_graph::{ImportEdge, ModuleGraph, ModuleGraphBuild};

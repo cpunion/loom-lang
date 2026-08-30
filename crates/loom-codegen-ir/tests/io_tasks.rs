@@ -6,10 +6,10 @@ use loom_codegen_ir::{
 use loom_mir::{FunctionId, Type, TypeId};
 
 const RESULT_TYPE_ID: TypeId = TypeId(1);
-const FILE_TYPE_ID: TypeId = TypeId(8);
-const SOCKET_TYPE_ID: TypeId = TypeId(9);
-const IO_ERROR_TYPE_ID: TypeId = TypeId(17);
-const IO_ERROR_KIND_TYPE_ID: TypeId = TypeId(18);
+const FILE_TYPE_ID: TypeId = TypeId(7);
+const SOCKET_TYPE_ID: TypeId = TypeId(8);
+const IO_ERROR_TYPE_ID: TypeId = TypeId(16);
+const IO_ERROR_KIND_TYPE_ID: TypeId = TypeId(17);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Defect {

@@ -10852,7 +10852,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             return Ok(continues);
         }
         let continues = match (builtin, prepared.values.as_slice()) {
-            (Builtin::IsFinite, [value]) => {
+            (Builtin::FloatIsFinite, [value]) => {
                 let number = self.float_scalar(*value)?;
                 let ordered = self
                     .backend
@@ -10910,8 +10910,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 self.emit_float_to_int_status(*value, destination)?;
                 Ok(true)
             }
-            (Builtin::ParseFloat, [value]) => self.emit_parse_float(*value, destination),
-            (Builtin::FormatFloat, [value]) => self.emit_format_float(*value, destination),
+            (Builtin::FloatParseStatus, [value]) => {
+                self.emit_parse_float_status(*value, destination)
+            }
+            (Builtin::FloatFormat, [value]) => self.emit_format_float(*value, destination),
             _ => Err(CodegenError::new(
                 "InvalidBuiltinCall",
                 format!(
@@ -13269,81 +13271,72 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         )
     }
 
-    fn emit_parse_float(
+    fn emit_parse_float_status(
         &self,
         value: PointerValue<'ctx>,
         destination: PointerValue<'ctx>,
     ) -> Result<bool, CodegenError> {
         let (data, length) = self.text_parts(value, "parse.float")?;
         let parsed = self.alloc_temporary(self.backend.context.f64_type(), "parse.output")?;
+        self.backend
+            .builder
+            .build_store(parsed, self.backend.context.f64_type().const_zero())
+            .map_err(builder_error)?;
         let status = call_int(
             &self.backend.builder,
             self.backend.native_parse_float(),
             &[data.into(), length.into(), parsed.into()],
             "parse.float",
         )?;
-        let success = self.append_block("parse.success");
-        let failure = self.append_block("parse.failure");
-        let invalid = self.append_block("parse.invalid");
-        let out_of_range = self.append_block("parse.out_of_range");
-        let merge = self.append_block("parse.merge");
-        let ok = self
+        let recognized = self
             .backend
             .builder
             .build_int_compare(
-                IntPredicate::EQ,
+                IntPredicate::ULE,
                 status,
-                self.backend.context.i32_type().const_zero(),
-                "parse.ok",
+                self.backend.context.i32_type().const_int(2, false),
+                "parse.status.recognized",
             )
             .map_err(builder_error)?;
-        self.backend
+        let invalid_status = self
+            .backend
             .builder
-            .build_conditional_branch(ok, success, failure)
+            .build_not(recognized, "parse.status.invalid")
             .map_err(builder_error)?;
-
-        self.backend.builder.position_at_end(success);
+        self.fail_if(invalid_status, "NativeFloatParseStatus")?;
         let number = self
             .backend
             .builder
             .build_load(self.backend.context.f64_type(), parsed, "parse.value")
             .map_err(builder_error)?
             .into_float_value();
-        let payload = self.alloc_value("parse.payload");
-        self.store_float(payload, number)?;
-        self.emit_result(true, payload, destination)?;
-        self.backend.branch(merge)?;
-
-        self.backend.builder.position_at_end(failure);
-        let range_error = self
+        let status = self
             .backend
             .builder
-            .build_int_compare(
-                IntPredicate::EQ,
+            .build_int_z_extend(
                 status,
-                self.backend.context.i32_type().const_int(2, false),
-                "parse.range",
+                self.backend.context.i64_type(),
+                "parse.status.value",
             )
             .map_err(builder_error)?;
-        self.backend
-            .builder
-            .build_conditional_branch(range_error, out_of_range, invalid)
-            .map_err(builder_error)?;
-
-        let error_type = self
-            .backend
-            .program
-            .prelude
-            .parse_float_error
-            .ok_or_else(|| CodegenError::new("InvalidPrelude", "ParseFloatError is missing"))?;
-        for (block, variant) in [(invalid, 0), (out_of_range, 1)] {
-            self.backend.builder.position_at_end(block);
-            let error = self.alloc_value("parse.error");
-            self.emit_variant_from_pointers(error_type, variant, &[], error)?;
-            self.emit_result(false, error, destination)?;
-            self.backend.branch(merge)?;
-        }
-        self.backend.builder.position_at_end(merge);
+        let value = self.alloc_typed_value(&Type::Float, "parse.value.slot");
+        self.store_float(value, number)?;
+        let status_value = self.alloc_typed_value(&Type::Int, "parse.status.slot");
+        self.store_int(status_value, status)?;
+        self.initialize(destination, VALUE_TAG_TUPLE)?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_AUX,
+            self.backend.context.i64_type().const_int(2, false),
+        )?;
+        let head = self.build_value_nodes(&[value, status_value])?;
+        self.backend.store_pointer_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_DATA,
+            head,
+        )?;
         Ok(true)
     }
 

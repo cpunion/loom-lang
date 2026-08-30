@@ -48,7 +48,7 @@ larger graph.
 
 ## Persistent layers
 
-The persistent cache schema is `7`. Current layers include source parse,
+The persistent cache schema is `8`. Current layers include source parse,
 package-interface presence, typed package state, complete checked MIR, target
 objects, and deterministic final artifacts.
 
@@ -72,14 +72,19 @@ and prelude ids. Cache serialization requires the complete artifact resource
 profile, and cache reads cross both ordinary MIR validation and that profile;
 inconsistent or incomplete identity metadata is a cache miss.
 
-Task policy and timer calls currently store a resolved `TaskIntrinsic` in typed
-body facts. Cache schema `7` and the `loom-compilation-cache-v7` domain require
-that identity. Whether a body is reused or conservatively reanalyzed, MIR
-lowering consumes only the resolved identity; it never reconstructs a policy
-from source spelling. This cache identity disappears when the temporary Task
-catalog is replaced by ordinary source definitions.
+The canonical source `std.float.is_finite` identity follows the same rule. Its
+exact `DefId` is rederived before body checking and proof recognition; cached
+semantic bytes never grant a same-named function contract authority.
 
-Checked-MIR cache envelopes use artifact version `31` and its exact current
+Task policy and timer calls currently store a resolved `TaskIntrinsic` in typed
+body facts. Cache schema `8` and the `loom-compilation-cache-v8` domain cover
+that identity and the current compiler-private Float primitive set. Whether a
+body is reused or conservatively reanalyzed, MIR lowering consumes only the
+resolved identity; it never reconstructs a policy from source spelling. The
+Task cache identity disappears when the temporary catalog is replaced by
+ordinary source definitions.
+
+Checked-MIR cache envelopes use artifact version `32` and its exact current
 MIR shape. The artifact profile requires the complete compiler-known resource
 identity trio, all matching prelude ids, the canonical six-field
 `ConstraintError`, and the current builtin set. Generic cache envelopes have a

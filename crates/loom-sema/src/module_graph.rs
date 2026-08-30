@@ -247,10 +247,7 @@ pub(crate) fn imported_name(import: &Import) -> Option<&loom_core::Name> {
 pub(crate) fn is_compiler_known_import(path: &Path) -> bool {
     matches!(
         path.as_string().as_str(),
-        "std.float.parse_float"
-            | "std.float.format_float"
-            | "std.float.is_finite"
-            | "std.time.milliseconds"
+        "std.time.milliseconds"
             | "std.file.open_read"
             | "std.file.create"
             | "std.file.open_read_path"

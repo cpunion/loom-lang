@@ -209,7 +209,7 @@ fn malformed_sum_construction_and_switch_are_rejected_independently() {
 }
 
 #[test]
-fn forged_float_parse_status_variants_are_rejected_at_the_typed_boundary() {
+fn forged_float_parse_status_result_is_rejected_at_the_typed_boundary() {
     let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
     let text = builder
         .add_immortal_text_type()
@@ -248,13 +248,7 @@ fn forged_float_parse_status_variants_are_rejected_at_the_typed_boundary() {
         let parsed = function
             .append_instruction(
                 entry,
-                InstructionKind::ParseFloat {
-                    text: input,
-                    ok_variant: 0,
-                    error_variant: 1,
-                    invalid_syntax_variant: 0,
-                    out_of_range_variant: 0,
-                },
+                InstructionKind::FloatParseStatus { text: input },
                 &[result],
                 origin,
             )
@@ -267,9 +261,9 @@ fn forged_float_parse_status_variants_are_rejected_at_the_typed_boundary() {
             .expect("return");
     }
 
-    let errors = validate_program(&builder.finish()).expect_err("forged parse variants must fail");
+    let errors = validate_program(&builder.finish()).expect_err("forged parse result must fail");
     assert!(errors.as_slice().iter().any(|error| {
-        error.code() == ValidationCode::InstructionShape && error.path().contains("error_variants")
+        error.code() == ValidationCode::TypeMismatch && error.path().contains("result")
     }));
 }
 

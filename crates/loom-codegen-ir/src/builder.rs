@@ -168,7 +168,7 @@ impl ProgramBuilder {
             .ok_or_else(|| {
                 BuildError::new(
                     BuildErrorCode::InvalidBytesType,
-                    "LCIR managed Bytes requires one unique canonical Bytes#10 registration on a 64-bit target",
+                    "LCIR managed Bytes requires one unique canonical Bytes#9 registration on a 64-bit target",
                 )
             })
     }

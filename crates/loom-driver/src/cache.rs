@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 use loom_core::{FileId, Severity};
 use loom_mir::{CheckedProgram, decode_interpreted_artifact, encode_interpreted_artifact};
 use loom_sema::{
-    Analysis, CanonicalConcepts, ConstructionCheck, DefMapBuild, ImplIndex, ModuleGraph,
-    RuntimeCheck, TypedProgram,
+    Analysis, CanonicalConcepts, CanonicalStdItems, ConstructionCheck, DefMapBuild, ImplIndex,
+    ModuleGraph, RuntimeCheck, TypedProgram,
 };
 use loom_syntax::{Parse, SYNTAX_NESTING_LIMIT_VERSION};
 use serde::{Deserialize, Serialize};
@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256};
 use crate::incremental::ModuleQueryKey;
 use crate::{DiagnosticRecord, ModuleInterface, ProjectGraph, SourceMap};
 
-pub const CACHE_SCHEMA_VERSION: u32 = 7;
+pub const CACHE_SCHEMA_VERSION: u32 = 8;
 const MAX_REF_BYTES: u64 = 64 * 1024;
 const MAX_BLOB_BYTES: u64 = 1024 * 1024 * 1024;
 const CHECKED_MIR_NAMESPACE: &str = "checked-mir";
@@ -34,7 +34,7 @@ const MODULE_INTERFACE_NAMESPACE: &str = "module-interface";
 const TYPED_MODULE_STATE_NAMESPACE: &str = "typed-module-state";
 const TARGET_OBJECT_NAMESPACE: &str = "target-object";
 const ARTIFACT_NAMESPACE: &str = "artifact";
-const COMPILATION_CACHE_DOMAIN: &str = "loom-compilation-cache-v7";
+const COMPILATION_CACHE_DOMAIN: &str = "loom-compilation-cache-v8";
 
 /// Frontend facts which can change validated checked MIR.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -775,6 +775,7 @@ impl SemanticAnalysisWire {
             // identity again from the current module-qualified HIR before MIR
             // lowering can observe the returned Analysis.
             canonical_concepts: CanonicalConcepts::default(),
+            canonical_std_items: CanonicalStdItems::default(),
             diagnostics: self.diagnostics,
         }
     }

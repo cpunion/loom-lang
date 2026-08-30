@@ -493,14 +493,25 @@ pub fn main() {
             "environment-only source retained dead argument surface `{dead_process_surface}`: {llvm}"
         );
     }
-    for symbol in [
-        "@loom_runtime_format_float",
-        "@loom_runtime_text_get",
-        "@loom_runtime_list_get",
-    ] {
+    for symbol in ["@loom_runtime_text_get", "@loom_runtime_list_get"] {
         assert!(main.contains(symbol), "missing {symbol}: {main}");
         assert_gc_state_published_before(main, symbol);
     }
+    let float_format = llvm_function(&llvm, "std_float_format_float");
+    let float_format_symbol = llvm_defined_symbol(float_format);
+    assert!(
+        main.contains(&format!("@{float_format_symbol}(")),
+        "application main must call the ordinary std.float.format_float wrapper: {main}"
+    );
+    assert!(
+        !main.contains("@loom_runtime_format_float"),
+        "the private Float formatter must not be emitted in the application function: {main}"
+    );
+    assert!(
+        float_format.contains("@loom_runtime_format_float"),
+        "the std.float.format_float wrapper must own the private runtime primitive: {float_format}"
+    );
+    assert_gc_state_published_before(float_format, "@loom_runtime_format_float");
     let process_environment = llvm_function(&llvm, "std_process_environment");
     let process_environment_symbol = llvm_defined_symbol(process_environment);
     assert!(

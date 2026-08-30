@@ -439,7 +439,7 @@ synchronous body does not gain that effect merely because it declares
 `requires`. An async precondition instead contributes `MAY_FAULT` to the child
 coroutine's state-zero path. `TaskCreate` does not inherit any child effect.
 `TextConcat`, `TextGet`, `TextFromUtf8Units`, `BytesAppend`,
-`BytesDecodeUtf8`, `PathJoin`, `FormatFloat`, and `JsonFormat` are collecting
+`BytesDecodeUtf8`, `PathJoin`, `FloatFormat`, and `JsonFormat` are collecting
 opcodes and contribute `MAY_COLLECT`. Path construction and extraction remain
 non-collecting. `TaskCreate` contributes
 `NEEDS_EXECUTOR`, while the `AwaitTasks` terminator contributes `MAY_FAULT` and
@@ -494,8 +494,8 @@ mutable receiver is written back on both normal and unwind edges. Canonical
 File and Socket disposal uses the `ResourceClose` instruction: it consumes one
 exact nominal resource value and produces `Unit` plus the closed resource,
 without raising a source fault. Independent validation accepts only canonical
-`File#8` for the File kind or canonical
-`Socket#9` for the Socket kind. Each is the registered direct one-field
+`File#7` for the File kind or canonical
+`Socket#8` for the Socket kind. Each is the registered direct one-field
 product whose sole `Int` is an opaque runtime capability token; it is never a
 raw descriptor or handle. An unregistered, generic, structurally similar, or
 representation-alternative nominal fails closed. LLVM calls the typed close
@@ -1043,8 +1043,8 @@ not repair a malformed program. Current checks include:
   only canonical direct Text/List values or compiler-private `ManagedTextMap`
   values, while dynamic boxes continue to fail closed;
 - implicit result/writeback parameter shape and type on normal and fault edges;
-- exact canonical direct one-`Int` product registration for `File#8` or
-  `Socket#9`, exact agreement between the nominal type and `ResourceClose`
+- exact canonical direct one-`Int` product registration for `File#7` or
+  `Socket#8`, exact agreement between the nominal type and `ResourceClose`
   kind, its exact Unit/resource result pair, and the required executor
   capability without a source fault capability;
 - return types and operation-specific fault-effect requirements;

@@ -161,7 +161,7 @@ mixes the two routes.
 
 ## Typed external resources
 
-Canonical `File#8` and `Socket#9` are protected direct one-field products
+Canonical `File#7` and `Socket#8` are protected direct one-field products
 containing an `Int` runtime capability token. The token is not an OS
 descriptor or handle. The concrete RAII owner remains in the runtime Task
 ledger, and every operation resolves the token against the current active,

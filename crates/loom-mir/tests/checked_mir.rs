@@ -903,7 +903,7 @@ fn assigner_and_canonical_walker_agree_for_every_expression_shape() {
         ),
         expr(
             ExprKind::Call {
-                target: CallTarget::Builtin(loom_mir::Builtin::IsFinite),
+                target: CallTarget::Builtin(loom_mir::Builtin::FloatIsFinite),
                 type_arguments: Vec::new(),
                 arguments: vec![
                     CallArgument::Value(constant(Constant::Float(1.0), Type::Float)),
@@ -1956,7 +1956,6 @@ fn prelude_ids_are_explicit_and_shape_checked() {
             result: Some(TypeId(0)),
             option: Some(TypeId(99)),
             constraint_error: Some(TypeId(1)),
-            parse_float_error: None,
             task_fault: None,
             task_outcome: None,
             duration: None,

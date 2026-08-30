@@ -1,5 +1,14 @@
 import std.float.__from_int
+import std.float.__format
+import std.float.__is_finite
+import std.float.__parse
 import std.float.__to_int
+
+/// Describes why Text cannot be parsed as a Float.
+pub enum ParseFloatError {
+    InvalidSyntax
+    OutOfRange
+}
 
 /// Describes why a Float cannot be represented as an Int.
 pub enum FloatToIntError {
@@ -22,4 +31,26 @@ pub fn to_int(value Float) Result[Int, FloatToIntError] {
         return Err(FloatToIntError.NonFinite)
     }
     Err(FloatToIntError.OutOfRange)
+}
+
+/// Parses the complete Text value as an IEEE-754 binary64 Float.
+pub fn parse_float(text Text) Result[Float, ParseFloatError] {
+    let value, status = __parse(text)
+    if status == 0 {
+        return Ok(value)
+    }
+    if status == 1 {
+        return Err(ParseFloatError.InvalidSyntax)
+    }
+    Err(ParseFloatError.OutOfRange)
+}
+
+/// Formats a Float as its shortest round-tripping decimal representation.
+pub fn format_float(value Float) Text {
+    __format(value)
+}
+
+/// Reports whether a Float is neither infinite nor NaN.
+pub fn is_finite(value Float) Bool {
+    __is_finite(value)
 }
