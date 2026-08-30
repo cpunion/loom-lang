@@ -530,6 +530,68 @@ fn qualified(value TaskBox) TaskBox {
 }
 
 #[test]
+fn constrained_task_predicates_borrow_the_wrapped_obligation() {
+    let diagnostics = analyze_source(
+        r"
+type Pending = Task[Int] where true
+
+async fn work() Int { 42 }
+
+fn wrap(value Task[Int]) Pending {
+    Pending(value)
+}
+
+fn unwrap(value Pending) Task[Int] {
+    value
+}
+
+async fn consume() {
+    discard unwrap(wrap(work())).await
+}
+",
+    );
+    assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+}
+
+#[test]
+fn fallible_checks_cannot_drop_task_carrying_values() {
+    let diagnostics = analyze_source(
+        r"
+record Box {
+    task Task[Int]
+    allowed Bool
+}
+
+type CheckedBox = Box where self.allowed
+
+record CheckedRecord {
+    task Task[Int]
+    allowed Bool
+    invariant self.allowed
+}
+
+async fn work() Int { 42 }
+
+fn constrained(flag Bool) {
+    let checked = CheckedBox(Box { task = work(), allowed = flag })
+}
+
+fn checkedRecord(flag Bool) {
+    let checked = CheckedRecord { task = work(), allowed = flag }
+}
+",
+    );
+    assert_eq!(
+        codes(&diagnostics),
+        [
+            "TaskFallibleConstructionUnsupported",
+            "TaskFallibleConstructionUnsupported"
+        ],
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
 fn match_transfers_whole_carrier_and_checks_payloads() {
     let diagnostics = analyze_source(
         r"
