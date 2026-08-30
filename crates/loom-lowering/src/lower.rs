@@ -13,10 +13,10 @@ use loom_mir::{
     CheckedProgram, ConceptDef, ConceptId, ConceptIdentity, Constant, ConstructionMode, Contract,
     ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, FieldDef, Function,
     FunctionId, LocalDecl, LocalId, MatchArm, Pattern, PreludeIds, Program, Receiver,
-    RequirementDef, RequirementId, RequirementType, RequirementWitnessParam,
-    ScopedDisposal as MirScopedDisposal, Statement, StatementKind, SuspensionPoint, Type, TypeDef,
-    TypeDefKind, TypeId, UnaryOp, VariantDef, VariantId, Witness, WitnessId, WitnessParam,
-    WitnessRef,
+    ReceiverInvariantCheck, RequirementDef, RequirementId, RequirementType,
+    RequirementWitnessParam, ScopedDisposal as MirScopedDisposal, Statement, StatementKind,
+    SuspensionPoint, Type, TypeDef, TypeDefKind, TypeId, UnaryOp, VariantDef, VariantId, Witness,
+    WitnessId, WitnessParam, WitnessRef,
 };
 use loom_sema::{
     Analysis, BodySemantics, BuiltinType, BuiltinValue, CallResolution,
@@ -2314,14 +2314,25 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                     "assertion has no proof disposition",
                     self.expr_span(*condition),
                 )?;
-                if check == RuntimeCheck::Proven {
-                    return Ok(());
+                let restores_receiver = self
+                    .semantics
+                    .receiver_invariant_recoveries
+                    .contains(condition);
+                if check != RuntimeCheck::Proven {
+                    let condition = self.lower_suspendable_expr(*condition, output, false)?;
+                    output.push(Statement {
+                        span: condition.span,
+                        kind: StatementKind::Assert { condition },
+                    });
                 }
-                let condition = self.lower_suspendable_expr(*condition, output, false)?;
-                output.push(Statement {
-                    span: condition.span,
-                    kind: StatementKind::Assert { condition },
-                });
+                if restores_receiver {
+                    output.push(Statement {
+                        span: self.expr_span(*condition),
+                        kind: StatementKind::RestoreReceiverInvariant {
+                            check: ReceiverInvariantCheck::Proven,
+                        },
+                    });
+                }
             }
             HirStatement::Discard(expression) => {
                 let expression = self.lower_suspendable_expr(*expression, output, true)?;

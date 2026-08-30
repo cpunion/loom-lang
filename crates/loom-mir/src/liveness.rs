@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 use crate::{
     BinaryOp, Block, CallArgument, CallPlan, ConstructionMode, ContractExpr, ContractExprKind,
-    ContractValue, Expr, ExprKind, LocalDecl, LocalId, MatchArm, Place, Receiver, Statement,
-    StatementKind, Type, UnaryOp,
+    ContractValue, Expr, ExprKind, LocalDecl, LocalId, MatchArm, Place, Receiver,
+    ReceiverInvariantCheck, Statement, StatementKind, Type, UnaryOp,
 };
 
 type NodeId = usize;
@@ -512,6 +512,13 @@ impl<'mir> CfgBuilder<'mir> {
                 let assertion = self.fault_continuation(continuation, active_cleanup);
                 self.build_expr(condition, assertion, active_cleanup)
             }
+            StatementKind::RestoreReceiverInvariant { check } => match check {
+                ReceiverInvariantCheck::Proven => continuation,
+                ReceiverInvariantCheck::Recheck => {
+                    let check = self.fault_continuation(continuation, active_cleanup);
+                    self.node([LocalId(0)], [], [check])
+                }
+            },
             StatementKind::Evaluate(expression) => {
                 self.build_expr(expression, continuation, active_cleanup)
             }

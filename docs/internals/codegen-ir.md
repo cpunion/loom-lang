@@ -439,7 +439,11 @@ and creates the established nominal value only in the accepted block. Generic
 invariant records first apply the current function-instance substitution and then their
 independent definition-parameter substitution to fields and lexical contract
 bindings. Unsupported concrete representations or contract shapes remain an
-explicit `SerializedProofRecheck` fallback. Enum construction uses
+explicit `SerializedProofRecheck` fallback. A receiver-restoration `Proven`
+marker is erased during lowering. The artifact `Recheck` form reads only the
+current receiver SSA value, derives its exact instantiated invariant from the
+nominal declaration, and lowers to the same `ArtifactProofRejected` guard; it
+does not require result, argument, or old-value operands. Enum construction uses
 `SumConstruct`. Exhaustive matches lower through a bounded decision DAG
 which preserves source arm order, evaluates the scrutinee once, compares scalar
 or Text-literal subpatterns only where needed, and emits an exhaustive
@@ -454,17 +458,27 @@ match and is removed from the decision plan. Pattern, decision-node, and
 abstract-value budgets are each 512, planning work is limited to 32,768 units,
 and the complete match may require at most 1,024 CFG blocks including its join.
 All limits are checked before the lowerer allocates any match LCIR; exceeding a
-limit selects whole-artifact fallback. A mutable inherent
-receiver is a functional inout parameter:
+limit selects whole-artifact fallback. A mutable inherent receiver is a
+functional inout parameter:
 the callee returns its current product on both normal and fault exits. A direct
 mutable inherent call may also borrow an invariant-free record at a projected
-place when the leaf has the exact receiver type. Its leaf writeback is rebuilt
-into the current aggregate root on both exits; unsupported receiver shapes
-select atomic fallback. The same synchronous call ABI is valid inside an async
-body. Its normal edge installs the result and writebacks before ordinary
-continuation. Its fault bridge installs every writeback before requesting the
-coroutine's fault target, so `defer` and `scoped` cleanup observe the callee's
-latest mutation rather than the pre-call snapshot.
+place when the leaf has the exact receiver type. The same plan may cross the
+current function's own top-level invariant product when that root is its
+synchronous `mut self` parameter. The reconstructed receiver reaches its
+invariant check only on the normal function continuation. Source analysis and
+checked MIR reject external or nested invariant crossings before LCIR and make
+every invariant-bearing place affected by fault writeback unavailable to the
+fault cleanup suffix. Cleanup therefore cannot observe a partially updated
+product. Checked MIR fail-closes the complete borrowed root when its type
+contains a nested invariant or is an open parameter or associated projection.
+A dynamic view is opaque, and exact witness dispatch checks its hidden receiver
+invariant before method entry. An admitted leaf writeback is rebuilt into the
+current aggregate root on both exits; unsupported receiver shapes select atomic fallback. The same
+synchronous call ABI is valid inside an async body. Its normal edge installs
+the result and writebacks before ordinary continuation. Its fault bridge
+installs every writeback before requesting the coroutine's fault target;
+checked MIR has already proved that `defer` and `scoped` cleanup cannot observe
+an invariant-bearing value whose latest mutation is not established.
 A dense reverse-call worklist computes the least transitive effect fixed point
 in linear time and chooses direct calls versus fallible invokes. The effect
 set has independent `MAY_FAULT`, `NEEDS_RUNTIME`, `MAY_COLLECT`,
@@ -857,9 +871,14 @@ their exact types.
 
 For a task-free root, `Copy` and `Move` read a projected leaf with a forward
 `ProductExtract` chain. A projected `Move` also consumes the complete MIR root;
-Loom does not create a partially initialized aggregate. A Task-bearing root
-cannot be moved, written, or passed inout through a projected place. Structural
-tuple binding handles that case separately with one `ProductSplit`, which
+Loom does not create a partially initialized aggregate. Read-only extraction
+may cross an established constrained wrapper or invariant product. A move never
+may. Mutation may cross only the current function's own top-level invariant
+`mut self` record receiver, whose complete reconstructed value is checked at
+method exit; constrained wrappers and nested invariant products remain closed.
+These are checked-MIR rules rather than LCIR fallback
+cases. A Task-bearing root cannot be moved, written, or passed inout through a
+projected place. Structural tuple binding handles that case separately with one `ProductSplit`, which
 consumes the whole ordinary direct tuple and publishes all fields together;
 there is no partial Task projection. Assignment extracts the required parents
 and rebuilds them in reverse with `ProductInsert`. The reconstruction always

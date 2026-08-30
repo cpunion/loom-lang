@@ -10,10 +10,10 @@ use crate::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, ConceptDef, ConceptId, ConceptIdentity,
     Constant, ConstructionMode, Contract, ContractArm, ContractExpr, ContractExprKind,
     ContractValue, Expr, ExprKind, Function, FunctionId, LocalDecl, LocalId, MatchArm, Pattern,
-    Place, Program, Receiver, RequirementDef, RequirementId, RequirementType,
-    RequirementWitnessParam, ScopedDisposal, Statement, StatementKind, SuspensionPoint,
-    TaskJoinMode, Type, TypeDef, TypeDefKind, UnaryOp, VariantId, Witness, WitnessParam,
-    WitnessRef,
+    Place, Program, Receiver, ReceiverInvariantCheck, RequirementDef, RequirementId,
+    RequirementType, RequirementWitnessParam, ScopedDisposal, Statement, StatementKind,
+    SuspensionPoint, TaskJoinMode, Type, TypeDef, TypeDefKind, UnaryOp, VariantId, Witness,
+    WitnessParam, WitnessRef,
 };
 
 const MAX_VALIDATION_DEPTH: u16 = 64;
@@ -48,6 +48,7 @@ pub enum MirValidationCode {
     ConceptShape,
     RequirementShape,
     ContractShape,
+    InvariantShape,
     ParameterShape,
     ReceiverShape,
     LocalState,
@@ -87,6 +88,7 @@ impl MirValidationCode {
             Self::ConceptShape => "MirConceptShape",
             Self::RequirementShape => "MirRequirementShape",
             Self::ContractShape => "MirContractShape",
+            Self::InvariantShape => "MirInvariantShape",
             Self::ParameterShape => "MirParameterShape",
             Self::ReceiverShape => "MirReceiverShape",
             Self::LocalState => "MirLocalState",
@@ -208,7 +210,7 @@ impl CheckedProgram {
     }
 
     /// Reports whether artifact decoding replaced at least one serialized
-    /// construction proof with a mandatory replay.
+    /// construction or receiver-invariant proof with a mandatory replay.
     ///
     /// A compiler cache uses this provenance bit to rebuild from its exact
     /// source input instead of turning a warm build into a `Recheck` build.
@@ -426,6 +428,12 @@ enum BorrowedViewPosition {
     Other,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum InvariantPlaceAccess {
+    Mutate,
+    Move,
+}
+
 type SlotRoot = u32;
 
 const EMPTY_SLOT_ROOT: SlotRoot = 0;
@@ -634,6 +642,13 @@ impl SlotStateArena {
 struct DataflowState {
     slots: SlotRoot,
     local_count: usize,
+    /// A protected mutation has crossed the current mutable receiver's own
+    /// invariant and no checked restoration point has completed yet.
+    receiver_invariant_dirty: bool,
+    /// Invariant-bearing places that are not established at the current
+    /// cleanup boundary. Cleanup code cannot observe them before a complete
+    /// checked replacement.
+    untrusted_invariants: Rc<BTreeSet<Place>>,
     /// Accesses established by arguments of every active call expression.
     /// Each call restores its entry checkpoint only after every argument has
     /// finished evaluating.
@@ -4082,6 +4097,13 @@ impl<'program> Validator<'program> {
                     statement.span,
                     &format!("{path}.place"),
                 );
+                self.validate_invariant_place_access(
+                    function,
+                    place,
+                    InvariantPlaceAccess::Mutate,
+                    statement.span,
+                    &format!("{path}.place"),
+                );
                 let value_ty = self.validate_expr(function, value, &format!("{path}.value"), depth);
                 if place_ty
                     .as_ref()
@@ -4112,6 +4134,25 @@ impl<'program> Validator<'program> {
                     self.validate_expr(function, condition, &format!("{path}.condition"), depth);
                 if !types_compatible(&Type::Bool, &ty) {
                     self.type_mismatch(&Type::Bool, &ty, condition.span, path);
+                }
+            }
+            StatementKind::RestoreReceiverInvariant { .. } => {
+                let valid_receiver = function.receiver == Some(Receiver::Mutable)
+                    && function
+                        .params
+                        .first()
+                        .is_some_and(|receiver| receiver.mutable)
+                    && self
+                        .program
+                        .instantiated_receiver_invariant(function)
+                        .is_some();
+                if !valid_receiver {
+                    self.push(
+                        MirValidationCode::InvariantShape,
+                        "an invariant restoration marker requires an invariant-bearing mutable receiver",
+                        statement.span,
+                        path,
+                    );
                 }
             }
             StatementKind::Evaluate(expression) => {
@@ -4256,13 +4297,21 @@ impl<'program> Validator<'program> {
                         format!("{path}.place"),
                     );
                 }
-                self.validate_place(
+                let ty = self.validate_place(
                     function,
                     place,
                     false,
                     expression.span,
                     &format!("{path}.place"),
-                )
+                );
+                self.validate_invariant_place_access(
+                    function,
+                    place,
+                    InvariantPlaceAccess::Move,
+                    expression.span,
+                    &format!("{path}.place"),
+                );
+                ty
             }
             ExprKind::Unary(operator, operand) => {
                 let operand_ty =
@@ -6397,15 +6446,18 @@ impl<'program> Validator<'program> {
                 Some(self.validate_expr(function, expression, path, depth))
             }
             CallArgument::InOut(place) => {
+                let span = expected.map_or(Span::default(), |parameter| parameter.span);
                 let mutable_view = Self::local_decl(function, place.local)
                     .is_some_and(|local| matches!(local.ty, Type::View { mutable: true, .. }));
-                self.validate_place(
+                let ty = self.validate_place(function, place, !mutable_view, span, path);
+                self.validate_invariant_place_access(
                     function,
                     place,
-                    !mutable_view,
-                    expected.map_or(Span::default(), |p| p.span),
+                    InvariantPlaceAccess::Mutate,
+                    span,
                     path,
-                )
+                );
+                ty
             }
         }
     }
@@ -7246,6 +7298,15 @@ impl<'program> Validator<'program> {
                 expression.span,
                 &format!("{path}.writeback"),
             );
+            if mutable {
+                self.validate_invariant_place_access(
+                    function,
+                    writeback,
+                    InvariantPlaceAccess::Mutate,
+                    expression.span,
+                    &format!("{path}.writeback"),
+                );
+            }
             if writeback_ty
                 .as_ref()
                 .is_some_and(|writeback| !types_compatible(&value_ty, writeback))
@@ -7322,6 +7383,15 @@ impl<'program> Validator<'program> {
             expression.span,
             &format!("{path}.owner"),
         );
+        if mutable {
+            self.validate_invariant_place_access(
+                function,
+                owner,
+                InvariantPlaceAccess::Mutate,
+                expression.span,
+                &format!("{path}.owner"),
+            );
+        }
         if owner_ty.as_ref() != Some(&expression.ty) {
             self.push(
                 MirValidationCode::ExpressionShape,
@@ -8219,6 +8289,115 @@ impl<'program> Validator<'program> {
             ty = self.project_type(ty, field, span, &format!("{path}.projection[{index}]"))?;
         }
         Some(ty)
+    }
+
+    /// Rejects access that would cross a record invariant without restoring
+    /// that complete record at a checked boundary. The final place type is
+    /// deliberately not inspected: passing or replacing a complete invariant
+    /// value preserves its boundary.
+    fn validate_invariant_place_access(
+        &mut self,
+        function: &Function,
+        place: &Place,
+        access: InvariantPlaceAccess,
+        span: Span,
+        path: &str,
+    ) {
+        let Some(local) = Self::local_decl(function, place.local) else {
+            return;
+        };
+        let mut ty = local.ty.clone();
+        for (index, field) in place.projection.iter().copied().enumerate() {
+            let Some((refined, record, has_invariant, projected)) =
+                self.record_projection_step(ty, field)
+            else {
+                // `validate_place` owns malformed-place diagnostics.
+                return;
+            };
+            if let Some(refined) = refined {
+                let refined_name = self.program.type_def(refined).map_or_else(
+                    || format!("type#{}", refined.0),
+                    |definition| definition.name.clone(),
+                );
+                let message = match access {
+                    InvariantPlaceAccess::Mutate => format!(
+                        "mutable access cannot cross the interior of constrained type `{refined_name}`"
+                    ),
+                    InvariantPlaceAccess::Move => format!(
+                        "a value cannot move out through the interior of constrained type `{refined_name}`"
+                    ),
+                };
+                self.push(
+                    MirValidationCode::InvariantShape,
+                    message,
+                    span,
+                    format!("{path}.projection[{index}]"),
+                );
+                return;
+            }
+            let receiver_boundary = access == InvariantPlaceAccess::Mutate
+                && index == 0
+                && function.receiver == Some(Receiver::Mutable)
+                && function.params.first().is_some_and(|receiver| {
+                    receiver.id == place.local
+                        && matches!(&receiver.ty, Type::Nominal(id, _) if *id == record)
+                });
+            if has_invariant && !receiver_boundary {
+                let record_name = self.program.type_def(record).map_or_else(
+                    || format!("type#{}", record.0),
+                    |record| record.name.clone(),
+                );
+                let message = match access {
+                    InvariantPlaceAccess::Mutate => format!(
+                        "mutable access cannot cross the interior of invariant-bearing record `{record_name}`"
+                    ),
+                    InvariantPlaceAccess::Move => format!(
+                        "a value cannot move out through the interior of invariant-bearing record `{record_name}`"
+                    ),
+                };
+                self.push(
+                    MirValidationCode::InvariantShape,
+                    message,
+                    span,
+                    format!("{path}.projection[{index}]"),
+                );
+                return;
+            }
+            ty = projected;
+        }
+    }
+
+    /// Resolves the record owner of one field projection without producing a
+    /// second diagnostic for a place already checked by `validate_place`.
+    fn record_projection_step(
+        &self,
+        mut ty: Type,
+        field: u32,
+    ) -> Option<(Option<crate::TypeId>, crate::TypeId, bool, Type)> {
+        let mut refined = None;
+        for _ in 0..64 {
+            let Type::Nominal(type_id, arguments) = ty else {
+                return None;
+            };
+            let definition = self.program.type_def(type_id)?;
+            match &definition.kind {
+                TypeDefKind::Record { fields, invariant } => {
+                    let field = fields.get(field as usize)?;
+                    return Some((
+                        refined,
+                        type_id,
+                        invariant.is_some(),
+                        substitute_type(&field.ty, &arguments),
+                    ));
+                }
+                TypeDefKind::Refined { base, .. } => {
+                    refined.get_or_insert(type_id);
+                    ty = substitute_type(base, &arguments);
+                }
+                TypeDefKind::Enum { .. } => return None,
+            }
+        }
+        None
     }
 
     fn project_type(&mut self, mut ty: Type, field: u32, span: Span, path: &str) -> Option<Type> {
@@ -9119,7 +9298,9 @@ impl<'program> Validator<'program> {
                 );
                 self.validate_borrowed_view_block(function, body, &format!("{path}.body"), depth);
             }
-            StatementKind::Break | StatementKind::Continue => {}
+            StatementKind::Break
+            | StatementKind::Continue
+            | StatementKind::RestoreReceiverInvariant { .. } => {}
             StatementKind::Assert { condition } => self.validate_borrowed_view_expr(
                 function,
                 condition,
@@ -9356,6 +9537,8 @@ impl<'program> Validator<'program> {
         let mut state = DataflowState {
             slots: EMPTY_SLOT_ROOT,
             local_count,
+            receiver_invariant_dirty: false,
+            untrusted_invariants: Rc::new(BTreeSet::new()),
             temporary_loans: Rc::new(TemporaryLoanSet::default()),
             active_cleanup: None,
         };
@@ -9469,6 +9652,7 @@ impl<'program> Validator<'program> {
                 | StatementKind::Continue
                 | StatementKind::Assign { .. }
                 | StatementKind::Assert { .. }
+                | StatementKind::RestoreReceiverInvariant { .. }
                 | StatementKind::Evaluate(_)
                 | StatementKind::Defer(_)
                 | StatementKind::Return(_) => {}
@@ -9510,6 +9694,12 @@ impl<'program> Validator<'program> {
         // Faulting exits are joined by cleanup suffix and drained after the
         // primary function flow, so they never enumerate path subsets here.
         let mut normal = state.clone();
+        let promoted_receiver = self.tracked_receiver_place(function).filter(|receiver| {
+            normal.receiver_invariant_dirty && !normal.untrusted_invariants.contains(receiver)
+        });
+        if let Some(receiver) = &promoted_receiver {
+            Rc::make_mut(&mut normal.untrusted_invariants).insert(receiver.clone());
+        }
         while normal.active_cleanup != normal_base {
             let Some(cleanup_id) = normal.active_cleanup else {
                 // A checked lexical stack cannot lose its entry suffix. Keep
@@ -9532,6 +9722,12 @@ impl<'program> Validator<'program> {
             normal = success;
         }
         debug_assert_eq!(normal.active_cleanup, normal_base);
+        if let Some(receiver) = promoted_receiver {
+            // The promotion protects only the cleanup execution boundary.
+            // A continuing body returns to its ordinary isolated-self state;
+            // fault snapshots captured inside cleanup retain their own copy.
+            Rc::make_mut(&mut normal.untrusted_invariants).remove(&receiver);
+        }
         *state = normal;
         true
     }
@@ -9559,29 +9755,55 @@ impl<'program> Validator<'program> {
                 (!flow.diverges).then_some(state)
             }
             RegisteredCleanupAction::Scoped { local, span, .. } => {
+                let _ = self.reject_untrusted_invariant_access(
+                    &Place::local(*local),
+                    &state,
+                    *span,
+                    cleanup.path.as_ref(),
+                );
                 self.require_available(*local, &state, *span, cleanup.path.as_ref());
                 // Dispose may fault. At this point the current registration is
                 // already popped, so its unwind can only execute older
                 // cleanups and cannot re-enter itself.
-                self.enqueue_cleanup_unwind(state.clone());
+                let mut fault_state = state.clone();
+                if let Some(local) = Self::local_decl(function, *local) {
+                    let place = Place::local(local.id);
+                    Rc::make_mut(&mut fault_state.untrusted_invariants).extend(
+                        self.fault_invalidated_invariant_places(function, &place, &local.ty),
+                    );
+                }
+                self.promote_dirty_receiver_for_cleanup(function, &mut fault_state);
+                self.enqueue_cleanup_unwind(fault_state);
                 self.set_slot_state(&mut state, local.0 as usize, SlotState::Moved);
                 Some(state)
             }
         }
     }
 
-    fn dataflow_cleanup_exit(&mut self, _function: &Function, state: &mut DataflowState) {
+    fn dataflow_cleanup_exit(&mut self, function: &Function, state: &mut DataflowState) {
         state.temporary_loans = Rc::new(TemporaryLoanSet::default());
-        self.enqueue_cleanup_unwind(state.clone());
+        let mut unwind = state.clone();
+        self.promote_dirty_receiver_for_cleanup(function, &mut unwind);
+        self.enqueue_cleanup_unwind(unwind);
         state.active_cleanup = None;
     }
 
     fn validate_active_cleanups_at_fault_point(
         &mut self,
-        _function: &Function,
+        function: &Function,
         state: &DataflowState,
     ) {
-        self.enqueue_cleanup_unwind(state.clone());
+        let mut unwind = state.clone();
+        self.promote_dirty_receiver_for_cleanup(function, &mut unwind);
+        self.enqueue_cleanup_unwind(unwind);
+    }
+
+    fn promote_dirty_receiver_for_cleanup(&self, function: &Function, state: &mut DataflowState) {
+        if state.receiver_invariant_dirty
+            && let Some(receiver) = self.tracked_receiver_place(function)
+        {
+            Rc::make_mut(&mut state.untrusted_invariants).insert(receiver);
+        }
     }
 
     fn enqueue_cleanup_unwind(&mut self, mut state: DataflowState) {
@@ -9898,6 +10120,7 @@ impl<'program> Validator<'program> {
                         format!("{path}.value"),
                     );
                 }
+                Self::clear_replaced_untrusted_invariants(place, state);
                 let index = place.local.0 as usize;
                 if place.projection.is_empty() {
                     self.reject_owner_mutation_while_borrowed(place, state, statement.span, path);
@@ -9905,6 +10128,9 @@ impl<'program> Validator<'program> {
                 } else {
                     self.require_available(place.local, state, statement.span, path);
                     self.reject_owner_mutation_while_borrowed(place, state, statement.span, path);
+                }
+                if self.place_roots_tracked_receiver(function, place) {
+                    state.receiver_invariant_dirty = !place.projection.is_empty();
                 }
                 false
             }
@@ -9920,6 +10146,16 @@ impl<'program> Validator<'program> {
                     self.validate_active_cleanups_at_fault_point(function, state);
                 }
                 flow.diverges
+            }
+            StatementKind::RestoreReceiverInvariant { check } => {
+                if let Some(receiver) = self.tracked_receiver_local(function) {
+                    self.require_available(receiver, state, statement.span, path);
+                }
+                if *check == ReceiverInvariantCheck::Recheck {
+                    self.validate_active_cleanups_at_fault_point(function, state);
+                }
+                state.receiver_invariant_dirty = false;
+                false
             }
             StatementKind::Defer(cleanup) => {
                 let older = state.active_cleanup;
@@ -10010,6 +10246,238 @@ impl<'program> Validator<'program> {
                 .is_some_and(|parameter| parameter.id == local)
     }
 
+    fn tracked_receiver_local(&self, function: &Function) -> Option<LocalId> {
+        (function.receiver == Some(Receiver::Mutable))
+            .then(|| function.params.first())
+            .flatten()
+            .filter(|receiver| receiver.mutable)
+            .filter(|_| {
+                self.program
+                    .instantiated_receiver_invariant(function)
+                    .is_some()
+            })
+            .map(|receiver| receiver.id)
+    }
+
+    fn place_roots_tracked_receiver(&self, function: &Function, place: &Place) -> bool {
+        self.tracked_receiver_local(function) == Some(place.local)
+    }
+
+    fn tracked_receiver_place(&self, function: &Function) -> Option<Place> {
+        self.tracked_receiver_local(function).map(Place::local)
+    }
+
+    fn type_is_invariant_record(&self, mut ty: Type) -> bool {
+        for _ in 0..64 {
+            let Type::Nominal(type_id, arguments) = ty else {
+                return false;
+            };
+            let Some(definition) = self.program.type_def(type_id) else {
+                return false;
+            };
+            match &definition.kind {
+                TypeDefKind::Record { invariant, .. } => return invariant.is_some(),
+                TypeDefKind::Refined { base, .. } => {
+                    ty = substitute_type(base, &arguments);
+                }
+                TypeDefKind::Enum { .. } => return false,
+            }
+        }
+        false
+    }
+
+    /// Returns every record invariant enclosing this place, including an
+    /// invariant on the place's own complete value. Checked shape validation
+    /// has already bounded and validated each projection.
+    fn invariant_place_owners(&self, function: &Function, place: &Place) -> BTreeSet<Place> {
+        let Some(local) = Self::local_decl(function, place.local) else {
+            return BTreeSet::new();
+        };
+        let mut owners = BTreeSet::new();
+        let mut ty = local.ty.clone();
+        let mut prefix = Place::local(place.local);
+        for field in &place.projection {
+            if self.type_is_invariant_record(ty.clone()) {
+                owners.insert(prefix.clone());
+            }
+            let Some((_, _, _, projected)) = self.record_projection_step(ty, *field) else {
+                return owners;
+            };
+            prefix.projection.push(*field);
+            ty = projected;
+        }
+        if self.type_is_invariant_record(ty) {
+            owners.insert(prefix);
+        }
+        owners
+    }
+
+    fn place_type_without_diagnostics(&self, function: &Function, place: &Place) -> Option<Type> {
+        let mut ty = Self::local_decl(function, place.local)?.ty.clone();
+        for field in &place.projection {
+            let (_, _, _, projected) = self.record_projection_step(ty, *field)?;
+            ty = projected;
+        }
+        Some(ty)
+    }
+
+    /// A faulting inout call may have changed any part of the borrowed value.
+    /// If its type contains a nested invariant, protect the complete borrowed
+    /// place instead of attempting path-sensitive rollback. Open generic
+    /// shapes are fail-closed because their concrete payload is not known at
+    /// this validation boundary. A dynamic view is an opaque boundary: hidden
+    /// record state is observable only through a witness method, whose exact
+    /// receiver invariant is checked at method entry.
+    fn type_may_contain_invariant(&self, root: &Type) -> bool {
+        let mut pending = vec![root.clone()];
+        let mut visited = BTreeSet::new();
+        let mut remaining = MAX_VALIDATION_TYPE_NODES;
+        while let Some(ty) = pending.pop() {
+            if remaining == 0 {
+                return true;
+            }
+            remaining -= 1;
+            if !visited.insert(ty.clone()) {
+                continue;
+            }
+            match ty {
+                Type::Tuple(elements) => pending.extend(elements),
+                Type::List(element) | Type::Task(element) | Type::TaskOutcome(element) => {
+                    pending.push(*element);
+                }
+                Type::Nominal(type_id, arguments) => {
+                    let Some(definition) = self.program.type_def(type_id) else {
+                        return true;
+                    };
+                    match &definition.kind {
+                        TypeDefKind::Record {
+                            invariant: Some(_), ..
+                        }
+                        | TypeDefKind::Refined { .. } => return true,
+                        TypeDefKind::Record {
+                            fields,
+                            invariant: None,
+                        } => {
+                            for field in fields {
+                                let Some(field) = copy_type_bounded(
+                                    &field.ty,
+                                    Some(&arguments),
+                                    &mut remaining,
+                                    0,
+                                ) else {
+                                    return true;
+                                };
+                                pending.push(field);
+                            }
+                        }
+                        TypeDefKind::Enum { variants } => {
+                            for payload in variants.iter().flat_map(|variant| &variant.payload) {
+                                let Some(payload) =
+                                    copy_type_bounded(payload, Some(&arguments), &mut remaining, 0)
+                                else {
+                                    return true;
+                                };
+                                pending.push(payload);
+                            }
+                        }
+                    }
+                }
+                Type::Parameter(_) | Type::AssociatedProjection { .. } | Type::Error => {
+                    return true;
+                }
+                Type::Never
+                | Type::Unit
+                | Type::Bool
+                | Type::Int
+                | Type::Float
+                | Type::Text
+                | Type::View { .. } => {}
+            }
+        }
+        false
+    }
+
+    fn fault_invalidated_invariant_places(
+        &self,
+        function: &Function,
+        place: &Place,
+        ty: &Type,
+    ) -> BTreeSet<Place> {
+        let mut places = self.invariant_place_owners(function, place);
+        if self.type_may_contain_invariant(ty) {
+            places.insert(place.clone());
+        }
+        places
+    }
+
+    fn reject_untrusted_invariant_access(
+        &mut self,
+        place: &Place,
+        state: &DataflowState,
+        span: Span,
+        path: &str,
+    ) -> bool {
+        let rejected = state
+            .untrusted_invariants
+            .iter()
+            .any(|dirty| places_overlap(dirty, place));
+        if rejected {
+            self.push(
+                MirValidationCode::InvariantShape,
+                "an invariant value not established at this cleanup boundary cannot be observed",
+                span,
+                path,
+            );
+        }
+        rejected
+    }
+
+    fn clear_replaced_untrusted_invariants(place: &Place, state: &mut DataflowState) {
+        // Projected assignment may participate in recovery, but it cannot
+        // prove the enclosing value. Retain that protection until a complete
+        // checked replacement covers the invalidated place.
+        Rc::make_mut(&mut state.untrusted_invariants).retain(|dirty| {
+            dirty.local != place.local || !dirty.projection.starts_with(&place.projection)
+        });
+    }
+
+    fn reject_dirty_receiver_value(
+        &mut self,
+        function: &Function,
+        place: &Place,
+        state: &DataflowState,
+        span: Span,
+        path: &str,
+    ) {
+        if state.receiver_invariant_dirty
+            && place.projection.is_empty()
+            && self.place_roots_tracked_receiver(function, place)
+        {
+            self.push(
+                MirValidationCode::InvariantShape,
+                "a dirty invariant receiver cannot escape or be used as a complete value",
+                span,
+                path,
+            );
+        }
+    }
+
+    fn call_argument_place(argument: &CallArgument) -> Option<&Place> {
+        match argument {
+            CallArgument::InOut(place) => Some(place),
+            CallArgument::Value(value) => match &value.kind {
+                ExprKind::Copy(place)
+                | ExprKind::Move(place)
+                | ExprKind::MakeView {
+                    writeback: Some(place),
+                    ..
+                }
+                | ExprKind::ReborrowView { owner: place, .. } => Some(place),
+                _ => None,
+            },
+        }
+    }
+
     fn call_target_has_receiver(&self, target: &CallTarget) -> bool {
         match target {
             CallTarget::Direct(function) | CallTarget::Inherent(function) => self
@@ -10034,6 +10502,18 @@ impl<'program> Validator<'program> {
                     | Builtin::SocketTryWriteText
                     | Builtin::SocketClose
             ),
+        }
+    }
+
+    fn call_target_receiver(&self, target: &CallTarget) -> Option<Receiver> {
+        match target {
+            CallTarget::Direct(function) | CallTarget::Inherent(function) => {
+                self.program.function(*function)?.receiver
+            }
+            CallTarget::StaticConcept { requirement, .. } | CallTarget::Dynamic { requirement } => {
+                self.program.requirement(*requirement)?.receiver
+            }
+            CallTarget::Builtin(_) => None,
         }
     }
 
@@ -10337,6 +10817,11 @@ impl<'program> Validator<'program> {
             }
             ExprKind::Copy(place) => {
                 self.require_available(place.local, state, expression.span, path);
+                let rejected =
+                    self.reject_untrusted_invariant_access(place, state, expression.span, path);
+                if !rejected {
+                    self.reject_dirty_receiver_value(function, place, state, expression.span, path);
+                }
                 if Self::owner_has_mutable_loan(place, state) {
                     self.push(
                         MirValidationCode::BorrowShape,
@@ -10362,6 +10847,11 @@ impl<'program> Validator<'program> {
             }
             ExprKind::Move(place) => {
                 self.require_available(place.local, state, expression.span, path);
+                let rejected =
+                    self.reject_untrusted_invariant_access(place, state, expression.span, path);
+                if !rejected {
+                    self.reject_dirty_receiver_value(function, place, state, expression.span, path);
+                }
                 self.reject_owner_mutation_while_borrowed(place, state, expression.span, path);
                 self.validate_resource_place_use(
                     function,
@@ -10653,6 +11143,8 @@ impl<'program> Validator<'program> {
             } => {
                 let target_is_synchronous = self.call_target_is_proven_synchronous(target);
                 let target_has_receiver = self.call_target_has_receiver(target);
+                let target_restores_receiver_on_success =
+                    self.call_target_receiver(target) == Some(Receiver::Mutable);
                 if self.call_target_is_manual_disposal(target)
                     && !self.call_is_authorized_resource_close(function, target, arguments)
                 {
@@ -10667,6 +11159,10 @@ impl<'program> Validator<'program> {
                 // entry root makes every normal or diverging exit an O(1)
                 // restoration and preserves pointer identity for joins.
                 let checkpoint = Rc::clone(&state.temporary_loans);
+                let mut call_dirties_receiver = false;
+                let mut fault_dirties_receiver = false;
+                let mut fault_invalidates = BTreeSet::new();
+                let mut mutating_receiver_argument = None;
                 for (index, argument) in arguments.iter().enumerate() {
                     match argument {
                         CallArgument::Value(value) => {
@@ -10716,11 +11212,46 @@ impl<'program> Validator<'program> {
                                     format!("{path}.arguments[{index}]"),
                                 );
                             }
+                            let mut mutates_receiver = false;
+                            let mut dirties_receiver = false;
+                            for loan in &flow.loans {
+                                if !loan.mutable {
+                                    continue;
+                                }
+                                if let Some(owner_ty) =
+                                    self.place_type_without_diagnostics(function, &loan.owner)
+                                {
+                                    fault_invalidates.extend(
+                                        self.fault_invalidated_invariant_places(
+                                            function,
+                                            &loan.owner,
+                                            &owner_ty,
+                                        ),
+                                    );
+                                } else {
+                                    fault_invalidates.insert(loan.owner.clone());
+                                }
+                                if self.place_roots_tracked_receiver(function, &loan.owner) {
+                                    mutates_receiver = true;
+                                    dirties_receiver |= !loan.owner.projection.is_empty();
+                                }
+                            }
+                            call_dirties_receiver |= dirties_receiver;
+                            fault_dirties_receiver |= mutates_receiver;
+                            if mutates_receiver && mutating_receiver_argument.is_none() {
+                                mutating_receiver_argument = Some(index);
+                            }
                             Rc::make_mut(&mut state.temporary_loans).extend(flow.loans);
                         }
                         CallArgument::InOut(place) => {
                             self.require_available(place.local, state, expression.span, path);
                             let argument_path = format!("{path}.arguments[{index}]");
+                            let _ = self.reject_untrusted_invariant_access(
+                                place,
+                                state,
+                                expression.span,
+                                &argument_path,
+                            );
                             let place_ty = self
                                 .validate_place(
                                     function,
@@ -10767,12 +11298,72 @@ impl<'program> Validator<'program> {
                                 // remain forbidden until the call begins.
                                 mutable: false,
                             });
+                            let mutates_receiver =
+                                self.place_roots_tracked_receiver(function, place);
+                            let invariant_owners = self.invariant_place_owners(function, place);
+                            let complete_invariant = invariant_owners.contains(place);
+                            if complete_invariant
+                                && !(index == 0 && target_restores_receiver_on_success)
+                            {
+                                self.push(
+                                    MirValidationCode::InvariantShape,
+                                    "a complete invariant value may enter mutable inout only as a checked receiver",
+                                    expression.span,
+                                    &argument_path,
+                                );
+                            }
+                            fault_invalidates.extend(
+                                self.fault_invalidated_invariant_places(function, place, &place_ty),
+                            );
+                            let dirties_receiver = mutates_receiver
+                                && (!place.projection.is_empty()
+                                    || index != 0
+                                    || !target_restores_receiver_on_success);
+                            call_dirties_receiver |= dirties_receiver;
+                            fault_dirties_receiver |= mutates_receiver;
+                            if mutates_receiver && mutating_receiver_argument.is_none() {
+                                mutating_receiver_argument = Some(index);
+                            }
                         }
                     }
                 }
                 state.temporary_loans = checkpoint;
-                if expression.ty != Type::Never {
-                    self.validate_active_cleanups_at_fault_point(function, state);
+                let receiver_uses_self = target_has_receiver
+                    && arguments
+                        .first()
+                        .and_then(Self::call_argument_place)
+                        .is_some_and(|place| self.place_roots_tracked_receiver(function, place));
+                let receiver_is_untrusted =
+                    self.tracked_receiver_place(function)
+                        .is_some_and(|receiver| {
+                            state
+                                .untrusted_invariants
+                                .iter()
+                                .any(|dirty| places_overlap(dirty, &receiver))
+                        });
+                if (receiver_uses_self || fault_dirties_receiver)
+                    && state.receiver_invariant_dirty
+                    && !receiver_is_untrusted
+                {
+                    let argument = mutating_receiver_argument.unwrap_or(0);
+                    self.push(
+                        MirValidationCode::InvariantShape,
+                        "a dirty invariant receiver cannot enter another receiver call before its invariant is restored",
+                        expression.span,
+                        format!("{path}.arguments[{argument}]"),
+                    );
+                }
+                state.receiver_invariant_dirty |= call_dirties_receiver;
+                if expression.ty == Type::Never {
+                    // There is no normal continuation. Any cleanup edge sees
+                    // the inout writeback performed by the diverging call.
+                    state.receiver_invariant_dirty |= fault_dirties_receiver;
+                    Rc::make_mut(&mut state.untrusted_invariants).extend(fault_invalidates);
+                } else {
+                    let mut fault_state = state.clone();
+                    fault_state.receiver_invariant_dirty |= fault_dirties_receiver;
+                    Rc::make_mut(&mut fault_state.untrusted_invariants).extend(fault_invalidates);
+                    self.validate_active_cleanups_at_fault_point(function, &fault_state);
                 }
                 no_value(expression.ty == Type::Never)
             }
@@ -10861,6 +11452,7 @@ impl<'program> Validator<'program> {
         path: &str,
     ) -> ExprFlow {
         self.require_available(owner.local, state, expression.span, path);
+        let _ = self.reject_untrusted_invariant_access(owner, state, expression.span, path);
         let conflicts = state.temporary_loans.has_overlapping(owner, mutable);
         if conflicts {
             self.push(
@@ -10885,6 +11477,11 @@ impl<'program> Validator<'program> {
             debug_assert_eq!(joined.active_cleanup, state.active_cleanup);
             debug_assert_eq!(joined.local_count, state.local_count);
             joined.slots = self.slot_states.join(joined.slots, state.slots);
+            joined.receiver_invariant_dirty |= state.receiver_invariant_dirty;
+            if !Rc::ptr_eq(&joined.untrusted_invariants, &state.untrusted_invariants) {
+                Rc::make_mut(&mut joined.untrusted_invariants)
+                    .extend(state.untrusted_invariants.iter().cloned());
+            }
             if !Rc::ptr_eq(&joined.temporary_loans, &state.temporary_loans) {
                 joined.temporary_loans = Rc::new(TemporaryLoanSet::union(
                     joined.temporary_loans.as_ref(),
@@ -10950,6 +11547,22 @@ impl<'program> Validator<'program> {
                 format!("{path}.body.backedge.temporary_loans"),
             );
         }
+        if entry.receiver_invariant_dirty != iteration.receiver_invariant_dirty {
+            self.push(
+                MirValidationCode::InvariantShape,
+                "continuing ForRange body does not restore the receiver invariant state",
+                span,
+                format!("{path}.body.backedge.receiver_invariant"),
+            );
+        }
+        if entry.untrusted_invariants != iteration.untrusted_invariants {
+            self.push(
+                MirValidationCode::InvariantShape,
+                "continuing ForRange body does not restore cleanup-invalidated invariant places",
+                span,
+                format!("{path}.body.backedge.untrusted_invariants"),
+            );
+        }
     }
 
     fn validate_loop_backedge(
@@ -10980,6 +11593,22 @@ impl<'program> Validator<'program> {
                 "continuing While body does not restore temporary call-scoped accesses",
                 span,
                 format!("{path}.body.backedge.temporary_loans"),
+            );
+        }
+        if entry.receiver_invariant_dirty != iteration.receiver_invariant_dirty {
+            self.push(
+                MirValidationCode::InvariantShape,
+                "continuing While body does not restore the receiver invariant state",
+                span,
+                format!("{path}.body.backedge.receiver_invariant"),
+            );
+        }
+        if entry.untrusted_invariants != iteration.untrusted_invariants {
+            self.push(
+                MirValidationCode::InvariantShape,
+                "continuing While body does not restore cleanup-invalidated invariant places",
+                span,
+                format!("{path}.body.backedge.untrusted_invariants"),
             );
         }
     }
@@ -11330,7 +11959,7 @@ fn block_definitely_diverges(block: &Block, depth: u16) -> bool {
                 expr_definitely_diverges(condition, depth + 1)
             }
             StatementKind::Assert { condition } => expr_definitely_diverges(condition, depth + 1),
-            StatementKind::Defer(_) => false,
+            StatementKind::RestoreReceiverInvariant { .. } | StatementKind::Defer(_) => false,
         };
         if diverges {
             return true;
@@ -11386,6 +12015,7 @@ fn cleanup_contains_forbidden_control_at(block: &Block, depth: u16, loop_depth: 
             StatementKind::Assert { condition } => {
                 expr_contains_forbidden_cleanup_control(condition, depth + 1, loop_depth)
             }
+            StatementKind::RestoreReceiverInvariant { .. } => false,
         })
         || block.tail.as_deref().is_some_and(|tail| {
             expr_contains_forbidden_cleanup_control(tail, depth + 1, loop_depth)

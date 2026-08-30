@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use loom_codegen_ir::ReachableSourceGraph;
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, Expr, ExprKind, Function, FunctionId,
-    Program, ScopedDisposal, StatementKind, Type, TypeDefKind, UnaryOp, WitnessRef,
+    Program, ReceiverInvariantCheck, ScopedDisposal, StatementKind, Type, TypeDefKind, UnaryOp,
+    WitnessRef,
 };
 
 use crate::native_layout::{NativeLayout, NativePassMode, NativeSignatureShape};
@@ -434,6 +435,13 @@ impl RequirementScanner<'_> {
                 StatementKind::Assert { condition } => {
                     output.requirements.include(RuntimeRequirements::MAY_FAULT);
                     self.scan_expr(condition, output)?;
+                }
+                StatementKind::RestoreReceiverInvariant { check } => {
+                    if *check == ReceiverInvariantCheck::Recheck {
+                        output.requirements.include(
+                            RuntimeRequirements::MAY_FAULT.union(RuntimeRequirements::MAY_COLLECT),
+                        );
+                    }
                 }
                 StatementKind::Defer(cleanup) => {
                     self.scan_block(cleanup, output)?;

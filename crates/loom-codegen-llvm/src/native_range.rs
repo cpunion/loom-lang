@@ -1142,7 +1142,9 @@ impl FunctionAnalyzer<'_, '_> {
                 self.eval_block(body, &mut iteration);
                 *environment = join_environments(&entry, &iteration);
             }
-            StatementKind::Break | StatementKind::Continue => {}
+            StatementKind::Break
+            | StatementKind::Continue
+            | StatementKind::RestoreReceiverInvariant { .. } => {}
             StatementKind::Assert { condition } => {
                 self.eval_expr(condition, environment);
                 refine_condition(condition, true, environment);
@@ -2477,7 +2479,9 @@ fn collect_block_mutations(block: &Block, roots: &mut BTreeSet<LocalId>) {
                 collect_expr_mutations(condition, roots);
                 collect_block_mutations(body, roots);
             }
-            StatementKind::Break | StatementKind::Continue => {}
+            StatementKind::Break
+            | StatementKind::Continue
+            | StatementKind::RestoreReceiverInvariant { .. } => {}
             StatementKind::Let { value, .. }
             | StatementKind::LetTuple { value, .. }
             | StatementKind::Evaluate(value) => collect_expr_mutations(value, roots),
@@ -2586,7 +2590,9 @@ fn block_moves_local(block: &Block, local: LocalId) -> bool {
             StatementKind::While { condition, body } => {
                 expression_moves_local(condition, local) || block_moves_local(body, local)
             }
-            StatementKind::Break | StatementKind::Continue => false,
+            StatementKind::Break
+            | StatementKind::Continue
+            | StatementKind::RestoreReceiverInvariant { .. } => false,
             StatementKind::Assert { condition } => expression_moves_local(condition, local),
             StatementKind::Defer(cleanup) => block_moves_local(cleanup, local),
             StatementKind::Return(value) => value
@@ -2853,7 +2859,9 @@ fn block_contains_loop(block: &Block) -> bool {
         .iter()
         .any(|statement| match &statement.kind {
             StatementKind::ForRange { .. } | StatementKind::While { .. } => true,
-            StatementKind::Break | StatementKind::Continue => false,
+            StatementKind::Break
+            | StatementKind::Continue
+            | StatementKind::RestoreReceiverInvariant { .. } => false,
             StatementKind::Defer(body) => block_contains_loop(body),
             StatementKind::Let { value, .. }
             | StatementKind::LetTuple { value, .. }
@@ -2930,7 +2938,9 @@ fn block_contains_nested_loop_at(block: &Block, inside_loop: bool) -> bool {
                     || expression_contains_nested_loop_at(condition, inside_loop)
                     || block_contains_nested_loop_at(body, true)
             }
-            StatementKind::Break | StatementKind::Continue => false,
+            StatementKind::Break
+            | StatementKind::Continue
+            | StatementKind::RestoreReceiverInvariant { .. } => false,
             StatementKind::Defer(body) => block_contains_nested_loop_at(body, inside_loop),
             StatementKind::Let { value, .. }
             | StatementKind::LetTuple { value, .. }
@@ -3017,6 +3027,7 @@ fn block_contains_loop_control(block: &Block) -> bool {
             // for such functions, as well as functions with non-local loop
             // control, instead of trusting first-iteration facts.
             StatementKind::Break | StatementKind::Continue | StatementKind::While { .. } => true,
+            StatementKind::RestoreReceiverInvariant { .. } => false,
             StatementKind::ForRange {
                 start, end, body, ..
             } => {
@@ -3097,7 +3108,9 @@ fn block_contains_return(block: &Block) -> bool {
             StatementKind::While { condition, body } => {
                 expression_contains_return(condition) || block_contains_return(body)
             }
-            StatementKind::Break | StatementKind::Continue => false,
+            StatementKind::Break
+            | StatementKind::Continue
+            | StatementKind::RestoreReceiverInvariant { .. } => false,
             StatementKind::Defer(body) => block_contains_return(body),
             StatementKind::Let { value, .. }
             | StatementKind::LetTuple { value, .. }
@@ -3166,7 +3179,9 @@ fn block_contains_defer(block: &Block) -> bool {
             StatementKind::While { condition, body } => {
                 expression_contains_defer(condition) || block_contains_defer(body)
             }
-            StatementKind::Break | StatementKind::Continue => false,
+            StatementKind::Break
+            | StatementKind::Continue
+            | StatementKind::RestoreReceiverInvariant { .. } => false,
             StatementKind::Let { value, .. }
             | StatementKind::LetTuple { value, .. }
             | StatementKind::Assign { value, .. }

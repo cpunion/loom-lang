@@ -5,25 +5,27 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Block, CallArgument, CheckedProgram, Constant, Contract, ContractExpr, ContractExprKind, Expr,
-    ExprKind, MirValidationErrors, Pattern, Program, StatementKind, TypeDefKind, check_program,
-    validation::validate_interpreted_artifact_profile,
+    ExprKind, MirValidationErrors, Pattern, Program, ReceiverInvariantCheck, StatementKind,
+    TypeDefKind, check_program, validation::validate_interpreted_artifact_profile,
 };
 
 pub const INTERPRETED_ARTIFACT_FORMAT: &str = "loom.interpreted-mir";
-pub const INTERPRETED_ARTIFACT_VERSION: u32 = 41;
+pub const INTERPRETED_ARTIFACT_VERSION: u32 = 42;
 pub const LOOM_LANGUAGE_VERSION: &str = loom_core::LOOM_LANGUAGE_VERSION;
 const CANONICAL_NAN_BITS: u64 = 0x7ff8_0000_0000_0000;
 const MAX_ARTIFACT_JSON_NESTING: usize = 512;
 
 impl CheckedProgram {
     /// Reports whether serialization would have to replace a process-local
-    /// construction proof with an executable replay boundary.
+    /// construction or receiver-invariant proof with an executable replay
+    /// boundary.
     ///
     /// Persistent compiler layers use this to avoid publishing an entry which
     /// cannot be reused without changing the fresh-source optimization route.
     #[must_use]
     pub fn requires_serialized_construction_replay(&self) -> bool {
         contains_nonportable_construction_proofs(self.as_program())
+            || contains_nonportable_receiver_invariant_proofs(self.as_program())
     }
 }
 
@@ -172,6 +174,7 @@ fn encode_interpreted_artifact_envelope(
     validate_entry(program, entry)?;
     let mut normalized = program.clone();
     distrust_serialized_construction_proofs(&mut normalized);
+    rebuild_receiver_invariants(&mut normalized);
     let mut float_bits = Vec::new();
     visit_program_constants(&mut normalized, &mut |constant| {
         if let Constant::Float(value) = constant {
@@ -251,6 +254,11 @@ fn decode_interpreted_artifact_envelope(
     // shape while requiring every execution backend to replay the predicate.
     let construction_proofs_distrusted =
         distrust_serialized_construction_proofs(&mut envelope.program);
+    // A receiver call plan may omit a process-locally proven invariant, and
+    // its serialized duplicate is never an authority. Rebuild it from the
+    // nominal record definition before interpreting the Float table so the
+    // wire shape is canonical even when the duplicate was removed or forged.
+    let receiver_invariant_proofs_distrusted = rebuild_receiver_invariants(&mut envelope.program);
 
     let slots = count_program_floats(&envelope.program);
     if slots != envelope.float_bits.len() {
@@ -272,10 +280,14 @@ fn decode_interpreted_artifact_envelope(
             *value = f64::from_bits(next);
         }
     });
+    // Float slots in the duplicated call plan are untrusted independently of
+    // the record definition's slots. Clone the restored definition once more
+    // so a forged side-table entry cannot weaken the executable invariant.
+    rebuild_receiver_invariants(&mut envelope.program);
     let mut program = check_program(envelope.program).map_err(ArtifactError::InvalidProgram)?;
     validate_interpreted_artifact_profile(program.as_program())
         .map_err(ArtifactError::InvalidProgram)?;
-    if construction_proofs_distrusted {
+    if construction_proofs_distrusted || receiver_invariant_proofs_distrusted {
         program.mark_serialized_construction_proofs_distrusted();
     }
     validate_entry(program.as_program(), envelope.entry.as_deref())?;
@@ -397,6 +409,30 @@ fn canonical_float_bits(value: f64) -> u64 {
     }
 }
 
+fn contains_nonportable_receiver_invariant_proofs(program: &Program) -> bool {
+    program.functions.iter().any(|function| {
+        function.call_plan.receiver_invariant.is_none()
+            && program.instantiated_receiver_invariant(function).is_some()
+    })
+}
+
+/// Canonicalizes the executable receiver boundary from its single nominal
+/// authority. Fresh checked MIR may omit a statically proven invariant, but a
+/// persistent artifact always carries the exact instantiated record contract.
+fn rebuild_receiver_invariants(program: &mut Program) -> bool {
+    let rebuilt = program
+        .functions
+        .iter()
+        .map(|function| program.instantiated_receiver_invariant(function))
+        .collect::<Vec<_>>();
+    let mut distrusted_omission = false;
+    for (function, rebuilt) in program.functions.iter_mut().zip(rebuilt) {
+        distrusted_omission |= rebuilt.is_some() && function.call_plan.receiver_invariant.is_none();
+        function.call_plan.receiver_invariant = rebuilt;
+    }
+    distrusted_omission
+}
+
 fn contains_nonportable_construction_proofs(program: &Program) -> bool {
     program
         .functions
@@ -428,6 +464,10 @@ fn block_contains_nonportable_construction_proofs(block: &Block) -> bool {
                 expr_contains_nonportable_construction_proofs(condition)
                     || block_contains_nonportable_construction_proofs(body)
             }
+            StatementKind::RestoreReceiverInvariant { check } => matches!(
+                check,
+                ReceiverInvariantCheck::Proven | ReceiverInvariantCheck::Recheck
+            ),
             StatementKind::Break | StatementKind::Continue => false,
             StatementKind::Defer(cleanup) => {
                 block_contains_nonportable_construction_proofs(cleanup)
@@ -543,6 +583,17 @@ fn distrust_block_construction_proofs(block: &mut Block, distrusted: &mut bool) 
             StatementKind::While { condition, body } => {
                 distrust_expr_construction_proofs(condition, distrusted);
                 distrust_block_construction_proofs(body, distrusted);
+            }
+            StatementKind::RestoreReceiverInvariant { check } => {
+                if matches!(
+                    *check,
+                    ReceiverInvariantCheck::Proven | ReceiverInvariantCheck::Recheck
+                ) {
+                    *distrusted = true;
+                }
+                if *check == ReceiverInvariantCheck::Proven {
+                    *check = ReceiverInvariantCheck::Recheck;
+                }
             }
             StatementKind::Break | StatementKind::Continue => {}
             StatementKind::Defer(cleanup) => {
@@ -734,7 +785,9 @@ fn visit_block(block: &mut Block, visitor: &mut impl FnMut(&mut Constant)) {
                 visit_expr(condition, visitor);
                 visit_block(body, visitor);
             }
-            StatementKind::Break | StatementKind::Continue => {}
+            StatementKind::Break
+            | StatementKind::Continue
+            | StatementKind::RestoreReceiverInvariant { .. } => {}
             StatementKind::Defer(block) => visit_block(block, visitor),
             StatementKind::Return(value) => {
                 if let Some(value) = value {
@@ -822,5 +875,289 @@ fn visit_pattern(pattern: &mut Pattern, visitor: &mut impl FnMut(&mut Constant))
             }
         }
         Pattern::Wildcard | Pattern::Binding => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        CallPlan, ConceptDef, ConceptId, ConceptIdentity, ContractArm, ContractValue, FieldDef,
+        Function, FunctionId, LocalDecl, LocalId, PreludeIds, Receiver, RequirementDef,
+        RequirementId, RequirementType, Statement, Type, TypeDef, TypeId, VariantDef, VariantId,
+    };
+    use loom_core::Span;
+
+    fn receiver_function(id: u32, ty: Type, invariant: Option<Contract>) -> Function {
+        Function {
+            id: FunctionId(id),
+            name: format!("receiver_{id}"),
+            span: Span::default(),
+            type_parameters: 0,
+            is_async: false,
+            suspension_points: Vec::new(),
+            params: vec![LocalDecl {
+                id: LocalId(0),
+                name: "self".to_owned(),
+                ty,
+                mutable: true,
+                span: Span::default(),
+            }],
+            witness_params: Vec::new(),
+            witness_prefix_count: 0,
+            locals: Vec::new(),
+            return_ty: Type::Unit,
+            receiver: Some(Receiver::Mutable),
+            body: Block::default(),
+            call_plan: CallPlan {
+                receiver_invariant: invariant,
+                requires: Vec::new(),
+                ensures: Vec::new(),
+            },
+        }
+    }
+
+    fn add_artifact_profile(program: &mut Program) {
+        program.concepts = vec![
+            ConceptDef {
+                id: ConceptId(0),
+                module: "std.resource".to_owned(),
+                name: "Dispose".to_owned(),
+                span: Span::default(),
+                identity: Some(ConceptIdentity::Dispose),
+                dynamic: false,
+                associated_types: Vec::new(),
+                requirements: vec![RequirementId(0)],
+            },
+            ConceptDef {
+                id: ConceptId(1),
+                module: "std.resource".to_owned(),
+                name: "MustScope".to_owned(),
+                span: Span::default(),
+                identity: Some(ConceptIdentity::MustScope),
+                dynamic: false,
+                associated_types: Vec::new(),
+                requirements: Vec::new(),
+            },
+            ConceptDef {
+                id: ConceptId(2),
+                module: "std.resource".to_owned(),
+                name: "NoSuspend".to_owned(),
+                span: Span::default(),
+                identity: Some(ConceptIdentity::NoSuspend),
+                dynamic: false,
+                associated_types: Vec::new(),
+                requirements: Vec::new(),
+            },
+        ];
+        program.requirements = vec![RequirementDef {
+            id: RequirementId(0),
+            concept: ConceptId(0),
+            name: "dispose".to_owned(),
+            span: Span::default(),
+            receiver: Some(Receiver::Mutable),
+            method_type_parameters: 0,
+            params: vec![RequirementType::SelfType],
+            return_ty: RequirementType::Unit,
+            witness_params: Vec::new(),
+        }];
+        program.prelude = PreludeIds {
+            dispose_concept: Some(ConceptId(0)),
+            dispose_requirement: Some(RequirementId(0)),
+            must_scope_concept: Some(ConceptId(1)),
+            no_suspend_concept: Some(ConceptId(2)),
+            ..PreludeIds::default()
+        };
+    }
+
+    #[test]
+    fn receiver_invariant_restore_proofs_are_rechecked_across_artifacts() {
+        let span = Span::default();
+        let invariant = Contract {
+            code: "Guard.invariant".to_owned(),
+            span,
+            expression: ContractExpr {
+                kind: ContractExprKind::Constant(Constant::Bool(true)),
+                span,
+            },
+        };
+        let receiver = Type::Nominal(TypeId(0), Vec::new());
+        let mut function = receiver_function(0, receiver, Some(invariant.clone()));
+        function.body.statements.push(Statement {
+            kind: StatementKind::RestoreReceiverInvariant {
+                check: ReceiverInvariantCheck::Proven,
+            },
+            span,
+        });
+        let mut program = Program {
+            types: vec![TypeDef {
+                id: TypeId(0),
+                name: "Guard".to_owned(),
+                span,
+                type_parameters: 0,
+                kind: TypeDefKind::Record {
+                    fields: vec![FieldDef {
+                        name: "value".to_owned(),
+                        ty: Type::Int,
+                        span,
+                    }],
+                    invariant: Some(invariant),
+                },
+            }],
+            functions: vec![function],
+            ..Program::default()
+        };
+        add_artifact_profile(&mut program);
+
+        let checked = check_program(program).expect("fresh receiver restoration marker");
+        assert!(checked.requires_serialized_construction_replay());
+        let encoded = encode_interpreted_artifact(&checked).expect("encode receiver marker");
+        let mut wire =
+            serde_json::from_slice::<serde_json::Value>(&encoded).expect("artifact JSON");
+        let wire_check = &mut wire["program"]["functions"][0]["body"]["statements"][0]["kind"]["RestoreReceiverInvariant"]
+            ["check"];
+        assert_eq!(wire_check.as_str(), Some("recheck"));
+
+        *wire_check = serde_json::Value::String("proven".to_owned());
+        let forged = serde_json::to_vec(&wire).expect("forged artifact JSON");
+        let decoded = decode_interpreted_artifact(&forged).expect("decode receiver marker");
+        assert!(decoded.serialized_construction_proofs_were_distrusted());
+        assert!(decoded.requires_serialized_construction_replay());
+        let StatementKind::RestoreReceiverInvariant { check } =
+            &decoded.functions[0].body.statements[0].kind
+        else {
+            panic!("receiver restoration marker");
+        };
+        assert_eq!(*check, ReceiverInvariantCheck::Recheck);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn receiver_invariants_rebuild_omissions_forgery_and_generic_bindings() {
+        let span = Span::default();
+        let invariant = Contract {
+            code: "Pair.invariant".to_owned(),
+            span,
+            expression: ContractExpr {
+                kind: ContractExprKind::Match {
+                    scrutinee: Box::new(ContractExpr {
+                        kind: ContractExprKind::Field(
+                            Box::new(ContractExpr {
+                                kind: ContractExprKind::Value(ContractValue::SelfValue),
+                                span,
+                            }),
+                            0,
+                        ),
+                        span,
+                    }),
+                    arms: vec![ContractArm {
+                        pattern: Pattern::Variant {
+                            ty: TypeId(1),
+                            variant: VariantId(0),
+                            payload: vec![Pattern::Binding, Pattern::Binding],
+                        },
+                        bindings: vec![Type::Parameter(1), Type::Parameter(0)],
+                        value: ContractExpr {
+                            kind: ContractExprKind::Constant(Constant::Bool(true)),
+                            span,
+                        },
+                    }],
+                },
+                span,
+            },
+        };
+        let weak = Contract {
+            code: "forged".to_owned(),
+            span,
+            expression: ContractExpr {
+                kind: ContractExprKind::Constant(Constant::Bool(true)),
+                span,
+            },
+        };
+        let receiver = Type::Nominal(TypeId(0), vec![Type::Text, Type::Int]);
+        let mut program = Program {
+            types: vec![
+                TypeDef {
+                    id: TypeId(0),
+                    name: "Pair".to_owned(),
+                    span,
+                    type_parameters: 2,
+                    kind: TypeDefKind::Record {
+                        fields: vec![FieldDef {
+                            name: "value".to_owned(),
+                            ty: Type::Nominal(
+                                TypeId(1),
+                                vec![Type::Parameter(1), Type::Parameter(0)],
+                            ),
+                            span,
+                        }],
+                        invariant: Some(invariant),
+                    },
+                },
+                TypeDef {
+                    id: TypeId(1),
+                    name: "Payload".to_owned(),
+                    span,
+                    type_parameters: 2,
+                    kind: TypeDefKind::Enum {
+                        variants: vec![VariantDef {
+                            id: VariantId(0),
+                            name: "Both".to_owned(),
+                            payload: vec![Type::Parameter(0), Type::Parameter(1)],
+                            span,
+                        }],
+                    },
+                },
+            ],
+            functions: vec![
+                receiver_function(0, receiver.clone(), None),
+                receiver_function(1, receiver, Some(weak.clone())),
+            ],
+            ..Program::default()
+        };
+        add_artifact_profile(&mut program);
+
+        let checked = check_program(program.clone()).expect("fresh generic receiver program");
+        assert!(checked.requires_serialized_construction_replay());
+        let encoded = encode_interpreted_artifact(&checked).expect("encode normalized receiver");
+        let mut wire =
+            serde_json::from_slice::<serde_json::Value>(&encoded).expect("artifact JSON");
+        let functions = wire["program"]["functions"]
+            .as_array_mut()
+            .expect("wire functions");
+        functions[0]["call_plan"]["receiver_invariant"] = serde_json::Value::Null;
+        functions[1]["call_plan"]["receiver_invariant"] =
+            serde_json::to_value(weak).expect("weak contract JSON");
+        let forged = serde_json::to_vec(&wire).expect("forged artifact JSON");
+        let decoded = decode_interpreted_artifact(&forged).expect("distrust receiver proofs");
+        assert!(decoded.serialized_construction_proofs_were_distrusted());
+        assert!(!decoded.requires_serialized_construction_replay());
+
+        for function in &decoded.functions {
+            let rebuilt = function
+                .call_plan
+                .receiver_invariant
+                .as_ref()
+                .expect("record receiver invariant");
+            assert_eq!(rebuilt.code, "Pair.invariant");
+            let ContractExprKind::Match { arms, .. } = &rebuilt.expression.kind else {
+                panic!("forged contract was not overwritten");
+            };
+            assert_eq!(arms[0].bindings, vec![Type::Int, Type::Text]);
+        }
+        let TypeDefKind::Record {
+            invariant: Some(declared),
+            ..
+        } = &decoded.types[0].kind
+        else {
+            panic!("record invariant");
+        };
+        let ContractExprKind::Match { arms, .. } = &declared.expression.kind else {
+            panic!("declared invariant match");
+        };
+        assert_eq!(
+            arms[0].bindings,
+            vec![Type::Parameter(1), Type::Parameter(0)]
+        );
     }
 }

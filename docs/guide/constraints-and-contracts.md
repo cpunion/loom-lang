@@ -106,6 +106,22 @@ method may temporarily invalidate it while executing, but cannot let the
 partially updated `self` escape or call another method through that invalid
 state. Normal exits, including a returned `Err`, re-establish the invariant.
 
+Call mutable methods on the complete invariant-bearing record. Loom rejects a
+mutable receiver call or assignment that reaches through such a record into a
+nested field, because that would bypass its exit check. Inside the record's own
+`mut self` method, projected mutation belongs to the current receiver boundary;
+it isolates `self` until an `assert` proves the invariant again or the method
+reaches its checked exit. A nested invariant-bearing record remains a separate
+boundary and must be mutated through its own complete receiver.
+
+Mutable `dyn C` adaptation and mutable interface reborrowing obey the same
+rule. Adapting the complete invariant-bearing value is allowed; adapting a
+projected part is allowed only below the current owning `mut self` boundary and
+makes that receiver isolated. If a mutable call faults after writing an inout
+value back, deferred cleanup cannot observe the possibly invalid value. Cleanup
+may replace the complete value with another checked value, but cannot inspect
+or reborrow the fault-invalidated state.
+
 ## Preconditions, postconditions, and assertions
 
 Attach contracts to a callable between its signature and body:

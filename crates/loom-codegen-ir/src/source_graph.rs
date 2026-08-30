@@ -585,6 +585,7 @@ fn scan_block_with_flow<'mir>(
             StatementKind::Assert { condition: value } | StatementKind::Evaluate(value) => {
                 scan_expr(value, edges, flow, active_cleanups, loops)
             }
+            StatementKind::RestoreReceiverInvariant { .. } => true,
             StatementKind::ForRange {
                 local,
                 start,

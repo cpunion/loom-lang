@@ -6,9 +6,10 @@ use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallPlan, CallTarget, CheckedProgram, ConceptDef,
     ConceptId, ConceptIdentity, Constant, ConstructionMode, Contract, ContractExpr,
     ContractExprKind, ContractValue, Expr, ExprId, ExprKind, FieldDef, Function, FunctionId,
-    LocalDecl, LocalId, MirValidationCode, Place, PreludeIds, Program, Receiver, RequirementDef,
-    RequirementId, RequirementType, ScopedDisposal, Statement, StatementKind, Type, TypeDef,
-    TypeDefKind, TypeId, VariantDef, VariantId, Witness, WitnessId, WitnessRef,
+    LocalDecl, LocalId, MirValidationCode, Place, PreludeIds, Program, Receiver,
+    ReceiverInvariantCheck, RequirementDef, RequirementId, RequirementType, ScopedDisposal,
+    Statement, StatementKind, Type, TypeDef, TypeDefKind, TypeId, VariantDef, VariantId, Witness,
+    WitnessId, WitnessRef,
 };
 
 fn checked(mut program: Program) -> CheckedProgram {
@@ -588,6 +589,89 @@ fn non_negative_first_field_contract() -> Contract {
     contract
 }
 
+fn invariant_restore_function(id: u32, check: ReceiverInvariantCheck) -> Function {
+    Function {
+        id: FunctionId(id),
+        name: format!("restore_{check:?}"),
+        span: span(),
+        type_parameters: 0,
+        is_async: false,
+        suspension_points: Vec::new(),
+        params: vec![local(0, "self", Type::Nominal(TypeId(0), Vec::new()), true)],
+        witness_params: Vec::new(),
+        witness_prefix_count: 0,
+        locals: Vec::new(),
+        return_ty: Type::Unit,
+        receiver: Some(Receiver::Mutable),
+        body: Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Assign {
+                        place: Place {
+                            local: LocalId(0),
+                            projection: vec![0],
+                        },
+                        value: constant(Constant::Float(-1.0), Type::Float),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::RestoreReceiverInvariant { check },
+                    span: span(),
+                },
+            ],
+            tail: None,
+            span: span(),
+        },
+        call_plan: CallPlan::default(),
+    }
+}
+
+#[test]
+fn receiver_invariant_restore_rechecks_artifact_proofs() {
+    let program = checked(Program {
+        types: vec![TypeDef {
+            id: TypeId(0),
+            name: "Guard".into(),
+            span: span(),
+            type_parameters: 0,
+            kind: TypeDefKind::Record {
+                fields: vec![FieldDef {
+                    name: "value".into(),
+                    ty: Type::Float,
+                    span: span(),
+                }],
+                invariant: Some(non_negative_first_field_contract()),
+            },
+        }],
+        functions: vec![
+            invariant_restore_function(0, ReceiverInvariantCheck::Proven),
+            invariant_restore_function(1, ReceiverInvariantCheck::Recheck),
+        ],
+        ..Program::default()
+    });
+    let valid = Value::Record {
+        ty: TypeId(0),
+        fields: vec![Value::Float { value: 1.0 }],
+    };
+    let mut interpreter = Interpreter::new(&program);
+
+    assert_eq!(
+        interpreter
+            .invoke(FunctionId(0), vec![valid.clone()], span())
+            .expect("fresh proven restoration is a no-op"),
+        Value::Unit
+    );
+    let failure = interpreter
+        .invoke(FunctionId(1), vec![valid], span())
+        .expect_err("serialized proof must replay the nominal invariant");
+    assert!(matches!(
+        failure,
+        ExecutionFailure::Runtime { fault }
+            if fault.code == "ArtifactProofRejected"
+    ));
+}
+
 #[test]
 fn refined_construction_returns_language_result() {
     let price = TypeDef {
@@ -751,38 +835,56 @@ fn mutable_receiver_is_an_inout_place_and_exit_invariant_wins() {
         is_async: false,
         suspension_points: Vec::new(),
         params: vec![
-            local(0, "order", Type::Nominal(TypeId(0), vec![]), true),
+            local(0, "order", Type::Nominal(TypeId(0), vec![]), false),
             local(1, "value", Type::Float, false),
         ],
         witness_params: Vec::new(),
         witness_prefix_count: 0,
-        locals: vec![local(2, "ignored", Type::Unit, false)],
+        locals: vec![
+            local(2, "ignored", Type::Unit, false),
+            local(3, "working", Type::Nominal(TypeId(0), Vec::new()), true),
+        ],
         return_ty: Type::Float,
         receiver: None,
         body: Block {
-            statements: vec![Statement {
-                kind: StatementKind::Let {
-                    local: LocalId(2),
-                    value: Expr {
-                        id: ExprId::UNASSIGNED,
-                        kind: ExprKind::Call {
-                            target: CallTarget::Inherent(FunctionId(0)),
-                            type_arguments: Vec::new(),
-                            arguments: vec![
-                                CallArgument::InOut(Place::local(LocalId(0))),
-                                CallArgument::Value(copy(Place::local(LocalId(1)), Type::Float)),
-                            ],
-                            witnesses: Vec::new(),
-                        },
-                        ty: Type::Unit,
-                        span: span(),
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(3),
+                        value: copy(
+                            Place::local(LocalId(0)),
+                            Type::Nominal(TypeId(0), Vec::new()),
+                        ),
                     },
+                    span: span(),
                 },
-                span: span(),
-            }],
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(2),
+                        value: Expr {
+                            id: ExprId::UNASSIGNED,
+                            kind: ExprKind::Call {
+                                target: CallTarget::Inherent(FunctionId(0)),
+                                type_arguments: Vec::new(),
+                                arguments: vec![
+                                    CallArgument::InOut(Place::local(LocalId(3))),
+                                    CallArgument::Value(copy(
+                                        Place::local(LocalId(1)),
+                                        Type::Float,
+                                    )),
+                                ],
+                                witnesses: Vec::new(),
+                            },
+                            ty: Type::Unit,
+                            span: span(),
+                        },
+                    },
+                    span: span(),
+                },
+            ],
             tail: Some(Box::new(copy(
                 Place {
-                    local: LocalId(0),
+                    local: LocalId(3),
                     projection: vec![0],
                 },
                 Type::Float,
@@ -1444,7 +1546,7 @@ fn method_contract_arguments_exclude_the_receiver() {
 }
 
 #[test]
-fn entry_contract_order_distinguishes_sync_functions_methods_and_async_methods() {
+fn entry_contract_order_covers_sync_functions_methods_and_async_functions() {
     let record_invariant = rejected_contract("record.invariant");
     let ordinary = unit_contract_function(
         0,
@@ -1470,14 +1572,16 @@ fn entry_contract_order_distinguishes_sync_functions_methods_and_async_methods()
             ..CallPlan::default()
         },
     );
-    let async_method = unit_contract_function(
+    let async_function = unit_contract_function(
         2,
-        "sample.R.async_method",
+        "async_function",
         true,
-        Some(Receiver::Readonly),
+        None,
         CallPlan {
-            receiver_invariant: Some(record_invariant.clone()),
-            requires: vec![rejected_contract("async.method.requires")],
+            requires: vec![
+                rejected_contract("async.first"),
+                rejected_contract("async.second"),
+            ],
             ..CallPlan::default()
         },
     );
@@ -1492,7 +1596,7 @@ fn entry_contract_order_distinguishes_sync_functions_methods_and_async_methods()
                 invariant: Some(record_invariant),
             },
         }],
-        functions: vec![ordinary, sync_method, async_method],
+        functions: vec![ordinary, sync_method, async_function],
         ..Program::default()
     });
     let mut interpreter = Interpreter::new(&program);
@@ -1521,14 +1625,14 @@ fn entry_contract_order_distinguishes_sync_functions_methods_and_async_methods()
     assert!(fault.message.contains("sync.method.requires"), "{fault:?}");
 
     let failure = interpreter
-        .invoke(FunctionId(2), vec![receiver()], span())
-        .expect_err("the async entry invariant must remain first");
+        .invoke(FunctionId(2), Vec::new(), span())
+        .expect_err("the first async precondition must fail the task");
     let ExecutionFailure::Contract { fault } = failure else {
-        panic!("async invariant must produce a contract fault");
+        panic!("async precondition must produce a contract fault");
     };
-    assert_eq!(fault.category, ContractFaultKind::Invariant);
-    assert_eq!(fault.code, "InvariantFault");
-    assert!(fault.message.contains("record.invariant"), "{fault:?}");
+    assert_eq!(fault.category, ContractFaultKind::Precondition);
+    assert_eq!(fault.code, "PreconditionFault");
+    assert!(fault.message.contains("async.first"), "{fault:?}");
 }
 
 #[test]

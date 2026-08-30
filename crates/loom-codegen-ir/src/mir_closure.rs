@@ -519,7 +519,9 @@ impl SerializationClosure {
                     self.scan_expr(program, condition);
                     self.scan_block(program, body);
                 }
-                StatementKind::Break | StatementKind::Continue => {}
+                StatementKind::Break
+                | StatementKind::Continue
+                | StatementKind::RestoreReceiverInvariant { .. } => {}
                 StatementKind::Assert { condition } => self.scan_expr(program, condition),
                 StatementKind::Defer(cleanup) => self.scan_block(program, cleanup),
                 StatementKind::Return(value) => {
@@ -1170,7 +1172,9 @@ impl IdMaps {
                     self.remap_expr(condition)?;
                     self.remap_block(body)?;
                 }
-                StatementKind::Break | StatementKind::Continue => {}
+                StatementKind::Break
+                | StatementKind::Continue
+                | StatementKind::RestoreReceiverInvariant { .. } => {}
                 StatementKind::Assert { condition } => self.remap_expr(condition)?,
                 StatementKind::Defer(cleanup) => self.remap_block(cleanup)?,
                 StatementKind::Return(value) => {

@@ -233,7 +233,10 @@ product. Its returned leaf is inserted through the statically typed field path
 on the normal edge and before fault propagation on the unwind edge. LLVM sees
 only `extractvalue`, `insertvalue`, direct aggregate values, and the existing
 functional return ABI; no proxy allocation, universal value, or runtime
-writeback helper is introduced. Protected or managed projections still select
+writeback helper is introduced. The owning synchronous `mut self` body may
+reconstruct through its own top-level invariant product before its exit check;
+the frontend and checked MIR reject every external or nested invariant
+crossing. Task-bearing or otherwise unrepresentable projections still select
 atomic whole-artifact fallback. Nongeneric task-free refined and fully concrete
 task-free invariant-record runtime construction instead returns the exact typed
 `Result[..., ConstraintError]`; open, affine, or unsupported-shape construction
@@ -251,6 +254,13 @@ Serialized task-free refined and concrete task-free invariant-record proof
 rechecks retain their nominal result shape on typed LCIR, guard publication with
 the canonical `ArtifactProofRejected` runtime fault, and preserve concrete
 generic contract types without a universal value.
+
+Receiver-invariant restoration uses the same trust split without adding an ABI
+operation. A fresh `RestoreReceiverInvariant(Proven)` emits no code. Its
+artifact-normalized `Recheck` form derives the exact instantiated invariant from
+parameter zero's nominal type, evaluates it against only the current receiver,
+and raises `ArtifactProofRejected` through the existing cleanup/fault route.
+It never requires old-parameter snapshots or trusts serialized contract text.
 
 The current debug-info boundary describes that physical ABI as well. A
 transparent scalar is reported as its base scalar debug type, and transparent

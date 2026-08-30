@@ -94,11 +94,14 @@ resource methods, and disposal witnesses use exact ordinary source definitions.
 The Task cache identity disappears when the temporary catalog is replaced by
 ordinary source definitions.
 
-Checked-MIR cache envelopes use artifact version `41` and its exact current
+Checked-MIR cache envelopes use artifact version `42` and its exact current
 MIR shape. The artifact profile requires the complete compiler-known resource
 identity trio, all matching prelude ids, the canonical six-field
 `ConstraintError`, the exact source-backed decoding/path error identities and
-shapes, and the current builtin set. Generic cache envelopes have a null
+shapes, the current builtin set, and one-way normalization of receiver
+invariant restoration proofs from `Proven` to executable `Recheck`. A recheck
+derives the exact contract from the receiver's nominal type rather than
+trusting a serialized copy. Generic cache envelopes have a null
 `entry`; executable `.loomi` envelopes have one fixed exported entry. Each
 decoder rejects the opposite kind before MIR body validation. Integer parsing
 is ordinary `std.int` source and enters MIR as ordinary definitions and direct

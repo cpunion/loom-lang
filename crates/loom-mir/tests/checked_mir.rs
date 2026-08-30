@@ -8,10 +8,10 @@ use loom_mir::{
     CheckedProgram, ConceptDef, ConceptId, ConceptIdentity, Constant, ConstructionMode, Contract,
     ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr, ExprId, ExprKind, FieldDef,
     Function, FunctionId, INTERPRETED_ARTIFACT_VERSION, LocalDecl, LocalId, MatchArm,
-    MirValidationCode, Pattern, Place, PreludeIds, Program, Receiver, RequirementDef,
-    RequirementId, RequirementType, RequirementWitnessParam, ScopedDisposal, Statement,
-    StatementKind, SuspensionPoint, Type, TypeDef, TypeDefKind, TypeId, VariantDef, VariantId,
-    Witness, WitnessId, WitnessParam, WitnessRef, decode_interpreted_artifact,
+    MirValidationCode, Pattern, Place, PreludeIds, Program, Receiver, ReceiverInvariantCheck,
+    RequirementDef, RequirementId, RequirementType, RequirementWitnessParam, ScopedDisposal,
+    Statement, StatementKind, SuspensionPoint, Type, TypeDef, TypeDefKind, TypeId, VariantDef,
+    VariantId, Witness, WitnessId, WitnessParam, WitnessRef, decode_interpreted_artifact,
     decode_interpreted_executable_artifact, encode_interpreted_artifact,
     encode_interpreted_executable_artifact, validate_program,
 };
@@ -8039,6 +8039,1178 @@ fn projected_inout_allows_sibling_nested_mutation_but_rejects_parent_reset() {
             && error.path.contains("arguments[1]")
             && error.path.contains("arguments[0]")
     }));
+}
+
+fn invariant_test_record(id: u32, name: &str, fields: Vec<Type>, invariant: bool) -> TypeDef {
+    TypeDef {
+        id: TypeId(id),
+        name: name.to_owned(),
+        span: span(),
+        type_parameters: 0,
+        kind: TypeDefKind::Record {
+            fields: fields
+                .into_iter()
+                .enumerate()
+                .map(|(index, ty)| FieldDef {
+                    name: format!("field_{index}"),
+                    ty,
+                    span: span(),
+                })
+                .collect(),
+            invariant: invariant.then(|| Contract {
+                code: format!("{name}.invariant"),
+                span: span(),
+                expression: ContractExpr {
+                    kind: ContractExprKind::Constant(Constant::Bool(true)),
+                    span: span(),
+                },
+            }),
+        },
+    }
+}
+
+fn invariant_test_inout_call(target: u32, place: Place) -> Expr {
+    expr(
+        ExprKind::Call {
+            target: CallTarget::Inherent(FunctionId(target)),
+            type_arguments: Vec::new(),
+            arguments: vec![CallArgument::InOut(place)],
+            witnesses: Vec::new(),
+        },
+        Type::Unit,
+    )
+}
+
+fn invariant_test_mut_receiver(id: u32, receiver: Type, body: Block) -> Function {
+    let mut function = function(
+        id,
+        vec![local(0, receiver, true)],
+        Vec::new(),
+        Type::Unit,
+        body,
+    );
+    function.receiver = Some(Receiver::Mutable);
+    function
+}
+
+fn invariant_test_unit_block(statements: Vec<Statement>, tail: Option<Expr>) -> Block {
+    Block {
+        statements,
+        tail: Some(Box::new(
+            tail.unwrap_or_else(|| constant(Constant::Unit, Type::Unit)),
+        )),
+        span: span(),
+    }
+}
+
+#[test]
+fn checked_mir_allows_owner_mutation_and_complete_invariant_writeback() {
+    let positive = Type::Nominal(TypeId(0), Vec::new());
+    let holder = Type::Nominal(TypeId(1), Vec::new());
+    let touch_int =
+        invariant_test_mut_receiver(0, Type::Int, invariant_test_unit_block(Vec::new(), None));
+    let mutate_own_field = invariant_test_mut_receiver(
+        1,
+        positive.clone(),
+        invariant_test_unit_block(
+            Vec::new(),
+            Some(invariant_test_inout_call(
+                0,
+                Place {
+                    local: LocalId(0),
+                    projection: vec![0],
+                },
+            )),
+        ),
+    );
+    let assign_own_field = invariant_test_mut_receiver(
+        2,
+        positive.clone(),
+        invariant_test_unit_block(
+            vec![Statement {
+                kind: StatementKind::Assign {
+                    place: Place {
+                        local: LocalId(0),
+                        projection: vec![0],
+                    },
+                    value: constant(Constant::Int(1), Type::Int),
+                },
+                span: span(),
+            }],
+            None,
+        ),
+    );
+    let mutate_complete_positive = invariant_test_mut_receiver(
+        3,
+        holder.clone(),
+        invariant_test_unit_block(
+            Vec::new(),
+            Some(invariant_test_inout_call(
+                1,
+                Place {
+                    local: LocalId(0),
+                    projection: vec![0],
+                },
+            )),
+        ),
+    );
+
+    validate_program(&Program {
+        types: vec![
+            invariant_test_record(0, "Positive", vec![Type::Int], true),
+            invariant_test_record(1, "Holder", vec![positive], false),
+        ],
+        functions: vec![
+            touch_int,
+            mutate_own_field,
+            assign_own_field,
+            mutate_complete_positive,
+        ],
+        ..Program::default()
+    })
+    .expect("an owning mut self boundary and a complete invariant receiver preserve rechecking");
+}
+
+#[test]
+fn dirty_receiver_values_require_restore_or_complete_replacement() {
+    let positive = Type::Nominal(TypeId(0), Vec::new());
+    let dirty_assignment = || Statement {
+        kind: StatementKind::Assign {
+            place: Place {
+                local: LocalId(0),
+                projection: vec![0],
+            },
+            value: constant(Constant::Int(-1), Type::Int),
+        },
+        span: span(),
+    };
+    let escaped = invariant_test_mut_receiver(
+        0,
+        positive.clone(),
+        invariant_test_unit_block(
+            vec![
+                dirty_assignment(),
+                Statement {
+                    kind: StatementKind::Evaluate(copy(0, positive.clone())),
+                    span: span(),
+                },
+            ],
+            None,
+        ),
+    );
+    let errors = validation_errors(&Program {
+        types: vec![invariant_test_record(0, "Positive", vec![Type::Int], true)],
+        functions: vec![escaped],
+        ..Program::default()
+    });
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::InvariantShape
+            && error.message.contains("dirty invariant receiver")
+    }));
+
+    let restored = invariant_test_mut_receiver(
+        0,
+        positive.clone(),
+        invariant_test_unit_block(
+            vec![
+                dirty_assignment(),
+                Statement {
+                    kind: StatementKind::RestoreReceiverInvariant {
+                        check: ReceiverInvariantCheck::Proven,
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(copy(0, positive.clone())),
+                    span: span(),
+                },
+            ],
+            None,
+        ),
+    );
+    validate_program(&Program {
+        types: vec![invariant_test_record(0, "Positive", vec![Type::Int], true)],
+        functions: vec![restored],
+        ..Program::default()
+    })
+    .expect("an explicit compiler proof restores complete receiver use");
+
+    let replacement = expr(
+        ExprKind::Record {
+            ty: TypeId(0),
+            type_arguments: Vec::new(),
+            fields: vec![constant(Constant::Int(1), Type::Int)],
+            construction: ConstructionMode::Proven,
+        },
+        positive.clone(),
+    );
+    let replaced = invariant_test_mut_receiver(
+        0,
+        positive.clone(),
+        invariant_test_unit_block(
+            vec![
+                dirty_assignment(),
+                Statement {
+                    kind: StatementKind::Assign {
+                        place: Place::local(LocalId(0)),
+                        value: replacement,
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(copy(0, positive)),
+                    span: span(),
+                },
+            ],
+            None,
+        ),
+    );
+    validate_program(&Program {
+        types: vec![invariant_test_record(0, "Positive", vec![Type::Int], true)],
+        functions: vec![replaced],
+        ..Program::default()
+    })
+    .expect("a complete checked replacement restores the receiver invariant state");
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn faulting_whole_receiver_calls_keep_invalid_writeback_out_of_cleanup() {
+    let positive = Type::Nominal(TypeId(0), Vec::new());
+    let observe_call = || {
+        expr(
+            ExprKind::Call {
+                target: CallTarget::Inherent(FunctionId(0)),
+                type_arguments: Vec::new(),
+                arguments: vec![CallArgument::Value(copy(0, positive.clone()))],
+                witnesses: Vec::new(),
+            },
+            Type::Unit,
+        )
+    };
+    let corrupt_call = || invariant_test_inout_call(1, Place::local(LocalId(0)));
+
+    let mut observe = function(
+        0,
+        vec![local(0, positive.clone(), false)],
+        Vec::new(),
+        Type::Unit,
+        invariant_test_unit_block(Vec::new(), None),
+    );
+    observe.receiver = Some(Receiver::Readonly);
+    let corrupt = invariant_test_mut_receiver(
+        1,
+        positive.clone(),
+        invariant_test_unit_block(
+            vec![
+                Statement {
+                    kind: StatementKind::Assign {
+                        place: Place {
+                            local: LocalId(0),
+                            projection: vec![0],
+                        },
+                        value: constant(Constant::Int(-1), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Assert {
+                        condition: constant(Constant::Bool(false), Type::Bool),
+                    },
+                    span: span(),
+                },
+            ],
+            None,
+        ),
+    );
+    let cleanup = Block {
+        statements: Vec::new(),
+        tail: Some(Box::new(observe_call())),
+        span: span(),
+    };
+    let with_observing_cleanup = invariant_test_mut_receiver(
+        2,
+        positive.clone(),
+        invariant_test_unit_block(
+            vec![
+                Statement {
+                    kind: StatementKind::Defer(cleanup),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(corrupt_call()),
+                    span: span(),
+                },
+            ],
+            None,
+        ),
+    );
+    let errors = validation_errors(&Program {
+        types: vec![invariant_test_record(0, "Positive", vec![Type::Int], true)],
+        functions: vec![observe.clone(), corrupt.clone(), with_observing_cleanup],
+        ..Program::default()
+    });
+    assert_eq!(
+        errors
+            .iter()
+            .filter(|error| {
+                error.code == MirValidationCode::InvariantShape
+                    && error.path.contains("cleanup")
+                    && error
+                        .message
+                        .contains("not established at this cleanup boundary")
+            })
+            .count(),
+        1,
+        "one cleanup observation should produce one invariant diagnostic: {errors:#?}",
+    );
+
+    let normal_observation = invariant_test_mut_receiver(
+        2,
+        positive.clone(),
+        invariant_test_unit_block(
+            vec![
+                Statement {
+                    kind: StatementKind::Evaluate(corrupt_call()),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(observe_call()),
+                    span: span(),
+                },
+            ],
+            None,
+        ),
+    );
+    validate_program(&Program {
+        types: vec![invariant_test_record(0, "Positive", vec![Type::Int], true)],
+        functions: vec![observe, corrupt, normal_observation],
+        ..Program::default()
+    })
+    .expect("a successful mutable receiver call restores its invariant before continuation");
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn faulting_inout_marks_invariant_locals_unobservable_to_cleanup() {
+    let positive = Type::Nominal(TypeId(0), Vec::new());
+    let leak = function(
+        0,
+        vec![local(0, Type::Int, false)],
+        Vec::new(),
+        Type::Unit,
+        invariant_test_unit_block(Vec::new(), None),
+    );
+    let corrupt = invariant_test_mut_receiver(
+        1,
+        positive.clone(),
+        invariant_test_unit_block(
+            vec![
+                Statement {
+                    kind: StatementKind::Assign {
+                        place: Place {
+                            local: LocalId(0),
+                            projection: vec![0],
+                        },
+                        value: constant(Constant::Int(-1), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Assert {
+                        condition: constant(Constant::Bool(false), Type::Bool),
+                    },
+                    span: span(),
+                },
+            ],
+            None,
+        ),
+    );
+    let cleanup = Block {
+        statements: Vec::new(),
+        tail: Some(Box::new(expr(
+            ExprKind::Call {
+                target: CallTarget::Direct(FunctionId(0)),
+                type_arguments: Vec::new(),
+                arguments: vec![CallArgument::Value(copy_place(
+                    Place {
+                        local: LocalId(0),
+                        projection: vec![0],
+                    },
+                    Type::Int,
+                ))],
+                witnesses: Vec::new(),
+            },
+            Type::Unit,
+        ))),
+        span: span(),
+    };
+    let caller = function(
+        2,
+        Vec::new(),
+        vec![local(0, positive.clone(), true)],
+        Type::Unit,
+        invariant_test_unit_block(
+            vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: expr(
+                            ExprKind::Record {
+                                ty: TypeId(0),
+                                type_arguments: Vec::new(),
+                                fields: vec![constant(Constant::Int(1), Type::Int)],
+                                construction: ConstructionMode::Proven,
+                            },
+                            positive,
+                        ),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(cleanup),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(invariant_test_inout_call(
+                        1,
+                        Place::local(LocalId(0)),
+                    )),
+                    span: span(),
+                },
+            ],
+            None,
+        ),
+    );
+    let errors = validation_errors(&Program {
+        types: vec![invariant_test_record(0, "Positive", vec![Type::Int], true)],
+        functions: vec![leak, corrupt, caller],
+        ..Program::default()
+    });
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::InvariantShape
+            && error.path.contains("cleanup")
+            && error
+                .message
+                .contains("not established at this cleanup boundary")
+    }));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn faulting_inout_protects_nested_invariants_inside_plain_records() {
+    let positive = Type::Nominal(TypeId(0), Vec::new());
+    let holder = Type::Nominal(TypeId(1), Vec::new());
+    let corrupt_positive = invariant_test_mut_receiver(
+        0,
+        positive.clone(),
+        invariant_test_unit_block(
+            vec![
+                Statement {
+                    kind: StatementKind::Assign {
+                        place: Place {
+                            local: LocalId(0),
+                            projection: vec![0],
+                        },
+                        value: constant(Constant::Int(-1), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Assert {
+                        condition: constant(Constant::Bool(false), Type::Bool),
+                    },
+                    span: span(),
+                },
+            ],
+            None,
+        ),
+    );
+    let corrupt_holder = invariant_test_mut_receiver(
+        1,
+        holder.clone(),
+        invariant_test_unit_block(
+            vec![Statement {
+                kind: StatementKind::Evaluate(invariant_test_inout_call(
+                    0,
+                    Place {
+                        local: LocalId(0),
+                        projection: vec![0],
+                    },
+                )),
+                span: span(),
+            }],
+            None,
+        ),
+    );
+    let cleanup = Block {
+        statements: vec![Statement {
+            kind: StatementKind::Evaluate(copy_place(
+                Place {
+                    local: LocalId(0),
+                    projection: vec![0, 0],
+                },
+                Type::Int,
+            )),
+            span: span(),
+        }],
+        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+        span: span(),
+    };
+    let caller = function(
+        2,
+        Vec::new(),
+        vec![local(0, holder.clone(), true)],
+        Type::Unit,
+        invariant_test_unit_block(
+            vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: expr(
+                            ExprKind::Record {
+                                ty: TypeId(1),
+                                type_arguments: Vec::new(),
+                                fields: vec![expr(
+                                    ExprKind::Record {
+                                        ty: TypeId(0),
+                                        type_arguments: Vec::new(),
+                                        fields: vec![constant(Constant::Int(1), Type::Int)],
+                                        construction: ConstructionMode::Proven,
+                                    },
+                                    positive.clone(),
+                                )],
+                                construction: ConstructionMode::Plain,
+                            },
+                            holder,
+                        ),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Defer(cleanup),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(invariant_test_inout_call(
+                        1,
+                        Place::local(LocalId(0)),
+                    )),
+                    span: span(),
+                },
+            ],
+            None,
+        ),
+    );
+    let errors = validation_errors(&Program {
+        types: vec![
+            invariant_test_record(0, "Positive", vec![Type::Int], true),
+            invariant_test_record(1, "Holder", vec![positive], false),
+        ],
+        functions: vec![corrupt_positive, corrupt_holder, caller],
+        ..Program::default()
+    });
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::InvariantShape
+            && error.path.contains("cleanup")
+            && error
+                .message
+                .contains("not established at this cleanup boundary")
+    }));
+}
+
+#[test]
+fn generic_inout_faults_fail_closed_for_unknown_invariant_payloads() {
+    let open_holder = Type::Nominal(TypeId(0), vec![Type::Parameter(0)]);
+    let mut faulting = invariant_test_mut_receiver(
+        0,
+        open_holder.clone(),
+        invariant_test_unit_block(
+            vec![Statement {
+                kind: StatementKind::Assert {
+                    condition: constant(Constant::Bool(false), Type::Bool),
+                },
+                span: span(),
+            }],
+            None,
+        ),
+    );
+    faulting.type_parameters = 1;
+    let cleanup = Block {
+        statements: vec![Statement {
+            kind: StatementKind::Evaluate(copy_place(
+                Place {
+                    local: LocalId(0),
+                    projection: vec![0],
+                },
+                Type::Parameter(0),
+            )),
+            span: span(),
+        }],
+        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+        span: span(),
+    };
+    let call = expr(
+        ExprKind::Call {
+            target: CallTarget::Inherent(FunctionId(0)),
+            type_arguments: vec![Type::Parameter(0)],
+            arguments: vec![CallArgument::InOut(Place::local(LocalId(0)))],
+            witnesses: Vec::new(),
+        },
+        Type::Unit,
+    );
+    let mut caller = invariant_test_mut_receiver(
+        1,
+        open_holder,
+        invariant_test_unit_block(
+            vec![
+                Statement {
+                    kind: StatementKind::Defer(cleanup),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Evaluate(call),
+                    span: span(),
+                },
+            ],
+            None,
+        ),
+    );
+    caller.type_parameters = 1;
+    let errors = validation_errors(&Program {
+        types: vec![TypeDef {
+            id: TypeId(0),
+            name: "Holder".to_owned(),
+            span: span(),
+            type_parameters: 1,
+            kind: TypeDefKind::Record {
+                fields: vec![FieldDef {
+                    name: "value".to_owned(),
+                    ty: Type::Parameter(0),
+                    span: span(),
+                }],
+                invariant: None,
+            },
+        }],
+        functions: vec![faulting, caller],
+        ..Program::default()
+    });
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::InvariantShape
+            && error.path.contains("cleanup")
+            && error
+                .message
+                .contains("not established at this cleanup boundary")
+    }));
+}
+
+#[test]
+fn normal_cleanup_cannot_observe_a_dirty_receiver_before_exit_recheck() {
+    let positive = Type::Nominal(TypeId(0), Vec::new());
+    let cleanup = Block {
+        statements: vec![Statement {
+            kind: StatementKind::Evaluate(copy_place(
+                Place {
+                    local: LocalId(0),
+                    projection: vec![0],
+                },
+                Type::Int,
+            )),
+            span: span(),
+        }],
+        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+        span: span(),
+    };
+    let method = invariant_test_mut_receiver(
+        0,
+        positive,
+        invariant_test_unit_block(
+            vec![
+                Statement {
+                    kind: StatementKind::Defer(cleanup),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Assign {
+                        place: Place {
+                            local: LocalId(0),
+                            projection: vec![0],
+                        },
+                        value: constant(Constant::Int(-1), Type::Int),
+                    },
+                    span: span(),
+                },
+            ],
+            None,
+        ),
+    );
+    let errors = validation_errors(&Program {
+        types: vec![invariant_test_record(0, "Positive", vec![Type::Int], true)],
+        functions: vec![method],
+        ..Program::default()
+    });
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::InvariantShape
+            && error.path.contains("cleanup")
+            && error
+                .message
+                .contains("not established at this cleanup boundary")
+    }));
+}
+
+#[test]
+fn normal_cleanup_may_write_a_dirty_receiver_before_exit_recheck() {
+    let positive = Type::Nominal(TypeId(0), Vec::new());
+    let field = Place {
+        local: LocalId(0),
+        projection: vec![0],
+    };
+    let cleanup = Block {
+        statements: vec![Statement {
+            kind: StatementKind::Assign {
+                place: field.clone(),
+                value: constant(Constant::Int(1), Type::Int),
+            },
+            span: span(),
+        }],
+        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+        span: span(),
+    };
+    let method = invariant_test_mut_receiver(
+        0,
+        positive,
+        invariant_test_unit_block(
+            vec![
+                Statement {
+                    kind: StatementKind::Defer(cleanup),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Assign {
+                        place: field,
+                        value: constant(Constant::Int(-1), Type::Int),
+                    },
+                    span: span(),
+                },
+            ],
+            None,
+        ),
+    );
+    validate_program(&Program {
+        types: vec![invariant_test_record(0, "Positive", vec![Type::Int], true)],
+        functions: vec![method],
+        ..Program::default()
+    })
+    .expect("cleanup may recover a dirty receiver before its checked exit invariant");
+}
+
+#[test]
+fn scoped_disposal_cannot_observe_fault_invalidated_nested_invariants() {
+    let positive = Type::Nominal(TypeId(1), Vec::new());
+    let resource = resource_type();
+    let mut scoped = scoped_resource(0, 0);
+    let StatementKind::Scoped { value, .. } = &mut scoped.kind else {
+        panic!("scoped resource fixture");
+    };
+    *value = expr(
+        ExprKind::Record {
+            ty: TypeId(0),
+            type_arguments: Vec::new(),
+            fields: vec![expr(
+                ExprKind::Record {
+                    ty: TypeId(1),
+                    type_arguments: Vec::new(),
+                    fields: vec![constant(Constant::Int(1), Type::Int)],
+                    construction: ConstructionMode::Proven,
+                },
+                positive.clone(),
+            )],
+            construction: ConstructionMode::Plain,
+        },
+        resource.clone(),
+    );
+    let main = function(
+        1,
+        Vec::new(),
+        vec![local(0, resource.clone(), true)],
+        Type::Unit,
+        invariant_test_unit_block(
+            vec![
+                scoped,
+                Statement {
+                    kind: StatementKind::Evaluate(invariant_test_inout_call(
+                        2,
+                        Place::local(LocalId(0)),
+                    )),
+                    span: span(),
+                },
+            ],
+            None,
+        ),
+    );
+    let faulting = invariant_test_mut_receiver(
+        2,
+        resource,
+        invariant_test_unit_block(
+            vec![Statement {
+                kind: StatementKind::Assert {
+                    condition: constant(Constant::Bool(false), Type::Bool),
+                },
+                span: span(),
+            }],
+            None,
+        ),
+    );
+    let mut program = resource_program(main, vec![faulting], false);
+    let TypeDefKind::Record { fields, .. } = &mut program.types[0].kind else {
+        panic!("resource record fixture");
+    };
+    fields[0].ty = positive;
+    program
+        .types
+        .push(invariant_test_record(1, "Positive", vec![Type::Int], true));
+
+    let errors = validation_errors(&program);
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::InvariantShape
+            && error.path == "functions[1].body.statements[0].disposal"
+            && error
+                .message
+                .contains("not established at this cleanup boundary")
+    }));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn checked_mir_rejects_every_nested_invariant_writeback_path() {
+    let positive = Type::Nominal(TypeId(0), Vec::new());
+    let holder = Type::Nominal(TypeId(1), Vec::new());
+    let protected_view = Type::Nominal(TypeId(2), Vec::new());
+    let view_holder = Type::Nominal(TypeId(3), Vec::new());
+    let nested_field = || Place {
+        local: LocalId(0),
+        projection: vec![0, 0],
+    };
+    let touch_int =
+        invariant_test_mut_receiver(0, Type::Int, invariant_test_unit_block(Vec::new(), None));
+    let view = view_type(true);
+    let view_sink = function(
+        1,
+        vec![local(0, view.clone(), false)],
+        Vec::new(),
+        Type::Unit,
+        invariant_test_unit_block(Vec::new(), None),
+    );
+    let nested_inout = invariant_test_mut_receiver(
+        2,
+        holder.clone(),
+        invariant_test_unit_block(
+            Vec::new(),
+            Some(invariant_test_inout_call(0, nested_field())),
+        ),
+    );
+    let nested_assign = invariant_test_mut_receiver(
+        3,
+        holder.clone(),
+        invariant_test_unit_block(
+            vec![Statement {
+                kind: StatementKind::Assign {
+                    place: nested_field(),
+                    value: constant(Constant::Int(1), Type::Int),
+                },
+                span: span(),
+            }],
+            None,
+        ),
+    );
+    let nested_view = invariant_test_mut_receiver(
+        4,
+        holder.clone(),
+        invariant_test_unit_block(
+            Vec::new(),
+            Some(expr(
+                ExprKind::Call {
+                    target: CallTarget::Direct(FunctionId(1)),
+                    type_arguments: Vec::new(),
+                    arguments: vec![CallArgument::Value(expr(
+                        ExprKind::MakeView {
+                            value: Box::new(copy_place(nested_field(), Type::Int)),
+                            writeback: Some(nested_field()),
+                            witness: WitnessRef::Concrete(WitnessId(0)),
+                            mutable: true,
+                            token: 1,
+                        },
+                        view.clone(),
+                    ))],
+                    witnesses: Vec::new(),
+                },
+                Type::Unit,
+            )),
+        ),
+    );
+    let nested_reborrow = invariant_test_mut_receiver(
+        5,
+        view_holder,
+        invariant_test_unit_block(
+            Vec::new(),
+            Some(expr(
+                ExprKind::Call {
+                    target: CallTarget::Direct(FunctionId(1)),
+                    type_arguments: Vec::new(),
+                    arguments: vec![CallArgument::Value(expr(
+                        ExprKind::ReborrowView {
+                            owner: Place {
+                                local: LocalId(0),
+                                projection: vec![0, 0],
+                            },
+                            mutable: true,
+                            token: 1,
+                        },
+                        view.clone(),
+                    ))],
+                    witnesses: Vec::new(),
+                },
+                Type::Unit,
+            )),
+        ),
+    );
+
+    let errors = validation_errors(&Program {
+        types: vec![
+            invariant_test_record(0, "Positive", vec![Type::Int], true),
+            invariant_test_record(1, "Holder", vec![positive], true),
+            invariant_test_record(2, "ProtectedView", vec![view], true),
+            invariant_test_record(3, "ViewHolder", vec![protected_view], true),
+        ],
+        concepts: vec![empty_dyn_concept()],
+        functions: vec![
+            touch_int,
+            view_sink,
+            nested_inout,
+            nested_assign,
+            nested_view,
+            nested_reborrow,
+        ],
+        witnesses: vec![empty_witness(0, Type::Int)],
+        ..Program::default()
+    });
+    let invariant_errors = errors
+        .iter()
+        .filter(|error| error.code == MirValidationCode::InvariantShape)
+        .collect::<Vec<_>>();
+    assert_eq!(invariant_errors.len(), 4, "{errors:#?}");
+    assert!(
+        invariant_errors
+            .iter()
+            .all(|error| error.path.ends_with("projection[1]")),
+        "{errors:#?}"
+    );
+    assert_eq!(
+        invariant_errors
+            .iter()
+            .filter(|error| error.message.contains("`Positive`"))
+            .count(),
+        3,
+        "{errors:#?}"
+    );
+    assert!(
+        invariant_errors
+            .iter()
+            .any(|error| error.message.contains("`ProtectedView`")),
+        "{errors:#?}"
+    );
+}
+
+#[test]
+fn checked_mir_rejects_forged_moves_from_invariant_interiors() {
+    let positive = Type::Nominal(TypeId(0), Vec::new());
+    let mut move_field = function(
+        0,
+        vec![local(0, positive.clone(), true)],
+        Vec::new(),
+        Type::Int,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(expr(
+                ExprKind::Move(Place {
+                    local: LocalId(0),
+                    projection: vec![0],
+                }),
+                Type::Int,
+            ))),
+            span: span(),
+        },
+    );
+    move_field.receiver = Some(Receiver::Mutable);
+    let errors = validation_errors(&Program {
+        types: vec![invariant_test_record(0, "Positive", vec![Type::Int], true)],
+        functions: vec![move_field],
+        ..Program::default()
+    });
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::InvariantShape
+            && error.path == "functions[0].body.tail.place.projection[0]"
+            && error.message.contains("move out")
+    }));
+
+    let holder = Type::Nominal(TypeId(1), Vec::new());
+    validate_program(&Program {
+        types: vec![
+            invariant_test_record(0, "Positive", vec![Type::Int], true),
+            invariant_test_record(1, "Holder", vec![positive.clone()], false),
+        ],
+        functions: vec![
+            function(
+                0,
+                vec![local(0, positive.clone(), false)],
+                Vec::new(),
+                positive.clone(),
+                Block {
+                    statements: Vec::new(),
+                    tail: Some(Box::new(move_local(
+                        0,
+                        Type::Nominal(TypeId(0), Vec::new()),
+                    ))),
+                    span: span(),
+                },
+            ),
+            function(
+                1,
+                vec![local(0, holder, false)],
+                Vec::new(),
+                positive,
+                Block {
+                    statements: Vec::new(),
+                    tail: Some(Box::new(expr(
+                        ExprKind::Move(Place {
+                            local: LocalId(0),
+                            projection: vec![0],
+                        }),
+                        Type::Nominal(TypeId(0), Vec::new()),
+                    ))),
+                    span: span(),
+                },
+            ),
+        ],
+        ..Program::default()
+    })
+    .expect("moving a complete invariant value or leaf preserves its boundary");
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn checked_mir_protects_refined_record_interiors() {
+    let boxed = Type::Nominal(TypeId(0), Vec::new());
+    let checked = Type::Nominal(TypeId(1), Vec::new());
+    let types = || {
+        vec![
+            invariant_test_record(0, "Box", vec![Type::Int], false),
+            TypeDef {
+                id: TypeId(1),
+                name: "CheckedBox".to_owned(),
+                span: span(),
+                type_parameters: 0,
+                kind: TypeDefKind::Refined {
+                    base: boxed.clone(),
+                    predicate: Contract {
+                        code: "CheckedBox.constraint".to_owned(),
+                        span: span(),
+                        expression: ContractExpr {
+                            kind: ContractExprKind::Constant(Constant::Bool(true)),
+                            span: span(),
+                        },
+                    },
+                },
+            },
+        ]
+    };
+    let touch_int =
+        invariant_test_mut_receiver(0, Type::Int, invariant_test_unit_block(Vec::new(), None));
+    let assign = invariant_test_mut_receiver(
+        1,
+        checked.clone(),
+        invariant_test_unit_block(
+            vec![Statement {
+                kind: StatementKind::Assign {
+                    place: Place {
+                        local: LocalId(0),
+                        projection: vec![0],
+                    },
+                    value: constant(Constant::Int(1), Type::Int),
+                },
+                span: span(),
+            }],
+            None,
+        ),
+    );
+    let inout = invariant_test_mut_receiver(
+        2,
+        checked.clone(),
+        invariant_test_unit_block(
+            Vec::new(),
+            Some(invariant_test_inout_call(
+                0,
+                Place {
+                    local: LocalId(0),
+                    projection: vec![0],
+                },
+            )),
+        ),
+    );
+    let mut move_field = function(
+        3,
+        vec![local(0, checked.clone(), true)],
+        Vec::new(),
+        Type::Int,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(expr(
+                ExprKind::Move(Place {
+                    local: LocalId(0),
+                    projection: vec![0],
+                }),
+                Type::Int,
+            ))),
+            span: span(),
+        },
+    );
+    move_field.receiver = Some(Receiver::Mutable);
+    let errors = validation_errors(&Program {
+        types: types(),
+        functions: vec![touch_int, assign, inout, move_field],
+        ..Program::default()
+    });
+    let invariant_errors = errors
+        .iter()
+        .filter(|error| error.code == MirValidationCode::InvariantShape)
+        .collect::<Vec<_>>();
+    assert_eq!(invariant_errors.len(), 3, "{errors:#?}");
+    assert!(invariant_errors.iter().all(|error| {
+        error.path.ends_with("projection[0]") && error.message.contains("`CheckedBox`")
+    }));
+
+    validate_program(&Program {
+        types: types(),
+        functions: vec![function(
+            0,
+            vec![local(0, checked, false)],
+            Vec::new(),
+            Type::Int,
+            Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(copy_place(
+                    Place {
+                        local: LocalId(0),
+                        projection: vec![0],
+                    },
+                    Type::Int,
+                ))),
+                span: span(),
+            },
+        )],
+        ..Program::default()
+    })
+    .expect("read-only projection through a constrained record remains valid");
 }
 
 #[allow(clippy::too_many_lines)]
