@@ -7,7 +7,7 @@ use loom_mir::{FunctionId as MirFunctionId, Type, TypeId};
 
 const OPTION_TYPE_ID: TypeId = TypeId(0);
 const RESULT_TYPE_ID: TypeId = TypeId(1);
-const DECODE_TEXT_ERROR_TYPE_ID: TypeId = TypeId(12);
+const DECODE_TEXT_ERROR_TYPE_ID: TypeId = TypeId(11);
 
 #[derive(Clone, Copy)]
 struct BytesTypes {
@@ -460,7 +460,7 @@ fn text_construction_rejects_a_transparent_decode_error_carrier() {
             error.code() == ValidationCode::InstructionShape
                 && error
                     .message()
-                    .contains("canonical direct DecodeTextError#12")
+                    .contains("canonical direct DecodeTextError#11")
         }),
         "{errors:#?}"
     );
@@ -514,6 +514,6 @@ fn bytes_opcodes_fail_closed_without_the_canonical_registration() {
         .expect_err("missing canonical Bytes must fail closed");
     assert!(errors.as_slice().iter().any(|error| {
         error.code() == ValidationCode::TypeMismatch
-            && error.message().contains("canonical managed Bytes#10")
+            && error.message().contains("canonical managed Bytes#9")
     }));
 }

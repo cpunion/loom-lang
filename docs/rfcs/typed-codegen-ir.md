@@ -404,7 +404,7 @@ closure over direct and invoke edges. A synchronous caller inherits the effect
 of a precondition it evaluates. An async precondition belongs to the child
 coroutine's state-zero path, so `TaskCreate` does not inherit child effects.
 `TextConcat`, `TextGet`, `TextFromUtf8Units`, `BytesAppend`,
-`BytesDecodeUtf8`, `PathJoin`, `FormatFloat`, and `JsonFormat` are collecting
+`BytesDecodeUtf8`, `PathJoin`, `FloatFormat`, and `JsonFormat` are collecting
 opcodes. `PathFromText` and `PathAsText` are non-collecting. `TaskCreate` and
 `TaskJoinAll` require an
 executor; neither operation itself suspends. `AwaitTasks` contributes both
@@ -595,8 +595,8 @@ accepts a live token only when the active Task owns its unique, kind-matching
 resource-ledger entry, closes that concrete RAII owner, and writes the
 invalid-token sentinel; an invalid or already-closed sentinel is rejected. It
 neither constructs a universal value nor enters the executor loop. Independent
-validation rederives canonical one-`Int` `File#8`
-and `Socket#9` products and requires the close kind to agree exactly. Status
+validation rederives canonical one-`Int` `File#7`
+and `Socket#8` products and requires the close kind to agree exactly. Status
 `0` produces `Unit` and the closed resource; every other status traps as an ABI
 defect.
 Static-concept disposal remains an ordinary selected-witness call, and deferred

@@ -1015,11 +1015,6 @@ impl<'program> Validator<'program> {
                 self.program.prelude.constraint_error,
                 "record",
             ),
-            (
-                "parse_float_error",
-                self.program.prelude.parse_float_error,
-                "enum",
-            ),
             ("task_fault", self.program.prelude.task_fault, "record"),
             ("task_outcome", self.program.prelude.task_outcome, "enum"),
             ("duration", self.program.prelude.duration, "record"),
@@ -1462,33 +1457,6 @@ impl<'program> Validator<'program> {
                     "prelude Option must use variants #0() and #1(T)",
                     definition.span,
                     "prelude.option",
-                );
-            }
-        }
-        if let Some(definition) = self
-            .program
-            .prelude
-            .parse_float_error
-            .and_then(|id| self.program.type_def(id))
-        {
-            let valid = matches!(
-                &definition.kind,
-                TypeDefKind::Enum { variants }
-                    if definition.type_parameters == 0
-                        && variants.len() == 2
-                        && variants[0].id == VariantId(0)
-                        && variants[0].name == "InvalidSyntax"
-                        && variants[0].payload.is_empty()
-                        && variants[1].id == VariantId(1)
-                        && variants[1].name == "OutOfRange"
-                        && variants[1].payload.is_empty()
-            );
-            if !valid {
-                self.push(
-                    MirValidationCode::VariantShape,
-                    "prelude ParseFloatError must use empty InvalidSyntax#0 and OutOfRange#1 variants",
-                    definition.span,
-                    "prelude.parse_float_error",
                 );
             }
         }
@@ -6373,22 +6341,17 @@ impl<'program> Validator<'program> {
                 };
                 Some(Type::Nominal(option, vec![Type::Text]))
             }
-            Builtin::IsFinite if self.is_float_like(types[0].as_ref()?) => Some(Type::Bool),
+            Builtin::FloatIsFinite if self.is_float_like(types[0].as_ref()?) => Some(Type::Bool),
             Builtin::IntToFloat if types_compatible(&Type::Int, types[0].as_ref()?) => {
                 Some(Type::Float)
             }
             Builtin::FloatToIntStatus if self.is_float_like(types[0].as_ref()?) => {
                 Some(Type::Tuple(vec![Type::Int, Type::Int]))
             }
-            Builtin::ParseFloat if types_compatible(&Type::Text, types[0].as_ref()?) => self
-                .expected_result_type(
-                    Type::Float,
-                    self.program.prelude.parse_float_error,
-                    "parse_float_error",
-                    expression.span,
-                    path,
-                ),
-            Builtin::FormatFloat if self.is_float_like(types[0].as_ref()?) => Some(Type::Text),
+            Builtin::FloatParseStatus if types_compatible(&Type::Text, types[0].as_ref()?) => {
+                Some(Type::Tuple(vec![Type::Float, Type::Int]))
+            }
+            Builtin::FloatFormat if self.is_float_like(types[0].as_ref()?) => Some(Type::Text),
             Builtin::TextLength if types_compatible(&Type::Text, types[0].as_ref()?) => {
                 Some(Type::Int)
             }
@@ -6550,11 +6513,11 @@ impl<'program> Validator<'program> {
             | Builtin::SocketTryWriteText => 2,
             Builtin::TextMapInsert | Builtin::LogWrite => 3,
             Builtin::ProcessArguments | Builtin::TextMapNew => 0,
-            Builtin::IsFinite
+            Builtin::FloatIsFinite
             | Builtin::IntToFloat
             | Builtin::FloatToIntStatus
-            | Builtin::ParseFloat
-            | Builtin::FormatFloat
+            | Builtin::FloatParseStatus
+            | Builtin::FloatFormat
             | Builtin::TextLength
             | Builtin::TextEncodeUtf8
             | Builtin::TextFromUtf8Units
@@ -8779,11 +8742,11 @@ impl<'program> Validator<'program> {
             | Builtin::SocketTryConnect
             | Builtin::SocketTryReadText
             | Builtin::SocketTryWriteText => false,
-            Builtin::IsFinite
+            Builtin::FloatIsFinite
             | Builtin::IntToFloat
             | Builtin::FloatToIntStatus
-            | Builtin::ParseFloat
-            | Builtin::FormatFloat
+            | Builtin::FloatParseStatus
+            | Builtin::FloatFormat
             | Builtin::TextLength
             | Builtin::TextGet
             | Builtin::TextConcat

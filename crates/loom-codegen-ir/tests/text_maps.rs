@@ -6,7 +6,7 @@ use loom_codegen_ir::{
 use loom_mir::{FunctionId, Type, TypeId};
 
 const RESULT_TYPE_ID: TypeId = TypeId(1);
-const TEXT_MAP_TYPE_ID: TypeId = TypeId(14);
+const TEXT_MAP_TYPE_ID: TypeId = TypeId(13);
 
 fn text_map(value: Type) -> Type {
     Type::Nominal(TypeId(100), vec![value])

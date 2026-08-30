@@ -22,6 +22,7 @@ use crate::{
 };
 
 const RESOURCE_MODULE: &str = "std.resource";
+const FLOAT_MODULE: &str = "std.float";
 const DISPOSE_CONCEPT: &str = "Dispose";
 const MUST_SCOPE_CONCEPT: &str = "MustScope";
 const NO_SUSPEND_CONCEPT: &str = "NoSuspend";
@@ -41,6 +42,9 @@ pub struct Analysis {
     /// HIR definitions. Downstream lowering must not reconstruct these facts
     /// from an unqualified source name.
     pub canonical_concepts: CanonicalConcepts,
+    /// Compiler-owned standard-library declarations whose exact source
+    /// identity affects language proof recognition.
+    pub canonical_std_items: CanonicalStdItems,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -55,6 +59,14 @@ pub struct CanonicalConcepts {
     pub must_scope: Option<DefId>,
     /// The `std.resource.NoSuspend` marker selected by semantic analysis.
     pub no_suspend: Option<DefId>,
+}
+
+/// Exact compiler-owned standard-library source declarations recognized by
+/// semantic analysis. Public calls still resolve and execute as ordinary
+/// source definitions; these identities grant no builtin-call authority.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CanonicalStdItems {
+    pub is_finite: Option<DefId>,
 }
 
 impl Analysis {
@@ -100,7 +112,7 @@ fn analyze_with_reused_bodies(
     let mut diagnostics = graph.diagnostics;
     diagnostics.extend(def_maps.diagnostics.iter().cloned());
 
-    let (typed, impl_index, canonical_concepts, mut diagnostics) = {
+    let (typed, impl_index, canonical_concepts, canonical_std_items, mut diagnostics) = {
         let mut typed = TypedProgram::default();
         if let Some((previous, _)) = previous {
             typed.types = previous.typed.types.clone();
@@ -111,6 +123,7 @@ fn analyze_with_reused_bodies(
             typed,
             impl_index: crate::ImplIndex::default(),
             canonical_concepts: CanonicalConcepts::default(),
+            canonical_std_items: CanonicalStdItems::default(),
             diagnostics,
         };
         analyzer.collect_signatures();
@@ -118,12 +131,15 @@ fn analyze_with_reused_bodies(
         analyzer.build_conformances();
         let canonical_concepts = analyzer.resolve_canonical_concepts();
         analyzer.canonical_concepts = canonical_concepts;
+        let canonical_std_items = analyzer.resolve_canonical_std_items();
+        analyzer.canonical_std_items = canonical_std_items;
         analyzer.validate_resource_concepts(canonical_concepts);
         analyzer.check_bodies(previous);
         (
             analyzer.typed,
             analyzer.impl_index,
             canonical_concepts,
+            canonical_std_items,
             analyzer.diagnostics,
         )
     };
@@ -135,6 +151,7 @@ fn analyze_with_reused_bodies(
         def_maps,
         impl_index,
         canonical_concepts,
+        canonical_std_items,
         diagnostics,
     }
 }
@@ -145,6 +162,7 @@ struct Analyzer<'a> {
     typed: TypedProgram,
     impl_index: crate::ImplIndex,
     canonical_concepts: CanonicalConcepts,
+    canonical_std_items: CanonicalStdItems,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -211,6 +229,37 @@ impl Analyzer<'_> {
             dispose_requirement,
             must_scope: self.resolve_language_concept(MUST_SCOPE_CONCEPT),
             no_suspend: self.resolve_language_concept(NO_SUSPEND_CONCEPT),
+        }
+    }
+
+    fn resolve_compiler_std_definition(
+        &self,
+        module_name: &str,
+        item_name: &str,
+        kind: fn(&DefinitionKind) -> bool,
+    ) -> Option<DefId> {
+        let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+        self.program
+            .definitions
+            .iter()
+            .find_map(|(definition, item)| {
+                let module = &self.program.modules[item.module];
+                (module.package == std
+                    && module.name.as_str() == module_name
+                    && item
+                        .name
+                        .as_ref()
+                        .is_some_and(|candidate| candidate.as_str() == item_name)
+                    && kind(&item.kind))
+                .then_some(definition)
+            })
+    }
+
+    fn resolve_canonical_std_items(&self) -> CanonicalStdItems {
+        CanonicalStdItems {
+            is_finite: self.resolve_compiler_std_definition(FLOAT_MODULE, "is_finite", |kind| {
+                matches!(kind, DefinitionKind::Function(_))
+            }),
         }
     }
 
@@ -4054,7 +4103,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 | BuiltinType::ConstraintError
                 | BuiltinType::TaskFault
                 | BuiltinType::Duration
-                | BuiltinType::ParseFloatError
                 | BuiltinType::DecodeTextError
                 | BuiltinType::PathError
                 | BuiltinType::Json
@@ -5396,7 +5444,10 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             Expr::Call { arguments, .. } => {
                 let resolution = self.semantics.calls.get(expression);
                 match resolution.map(|resolution| &resolution.target) {
-                    Some(CallTarget::Builtin(BuiltinValue::IsFinite)) if arguments.len() == 1 => {
+                    Some(CallTarget::Function(definition))
+                        if Some(*definition) == self.analyzer.canonical_std_items.is_finite
+                            && arguments.len() == 1 =>
+                    {
                         ProofTerm::is_finite(
                             self.proof_term_inner(arguments[0], depth + 1).unrefine(),
                         )
@@ -5709,7 +5760,11 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             Expr::Call {
                 arguments: values, ..
             } if semantics.calls.get(expression).is_some_and(|resolution| {
-                resolution.target == CallTarget::Builtin(BuiltinValue::IsFinite)
+                matches!(
+                    resolution.target,
+                    CallTarget::Function(definition)
+                        if Some(definition) == self.analyzer.canonical_std_items.is_finite
+                )
             }) && values.len() == 1 =>
             {
                 ProofTerm::is_finite(
@@ -5825,6 +5880,15 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     crate::std_primitives::CompilerStdPrimitive::FloatFromInt => {
                         BuiltinValue::IntToFloat
                     }
+                    crate::std_primitives::CompilerStdPrimitive::FloatFormat => {
+                        BuiltinValue::FloatFormat
+                    }
+                    crate::std_primitives::CompilerStdPrimitive::FloatIsFinite => {
+                        BuiltinValue::FloatIsFinite
+                    }
+                    crate::std_primitives::CompilerStdPrimitive::FloatParseStatus => {
+                        BuiltinValue::FloatParseStatus
+                    }
                     crate::std_primitives::CompilerStdPrimitive::FloatToInt => {
                         BuiltinValue::FloatToIntStatus
                     }
@@ -5842,15 +5906,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     "Some" => Some(BuiltinValue::Some),
                     "Ok" => Some(BuiltinValue::Ok),
                     "Err" => Some(BuiltinValue::Err),
-                    "parse_float" if self.builtin_is_imported("std.float.parse_float") => {
-                        Some(BuiltinValue::ParseFloat)
-                    }
-                    "format_float" if self.builtin_is_imported("std.float.format_float") => {
-                        Some(BuiltinValue::FormatFloat)
-                    }
-                    "is_finite" if self.builtin_is_imported("std.float.is_finite") => {
-                        Some(BuiltinValue::IsFinite)
-                    }
                     "milliseconds" if self.builtin_is_imported("std.time.milliseconds") => {
                         Some(BuiltinValue::DurationMilliseconds)
                     }
@@ -6032,9 +6087,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             BuiltinValue::Ok | BuiltinValue::Err => {
                 self.check_result_constructor_call(expression, builtin, arguments, expected)
             }
-            BuiltinValue::ParseFloat
-            | BuiltinValue::FormatFloat
-            | BuiltinValue::IsFinite
+            BuiltinValue::FloatParseStatus
+            | BuiltinValue::FloatFormat
+            | BuiltinValue::FloatIsFinite
             | BuiltinValue::IntToFloat
             | BuiltinValue::FloatToIntStatus
             | BuiltinValue::ProcessArguments
@@ -6104,8 +6159,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             }
             BuiltinValue::Unit
             | BuiltinValue::None
-            | BuiltinValue::ParseFloatInvalidSyntax
-            | BuiltinValue::ParseFloatOutOfRange
             | BuiltinValue::DecodeTextInvalidUtf8
             | BuiltinValue::PathContainsNul
             | BuiltinValue::PathAbsoluteJoin
@@ -6220,19 +6273,19 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         arguments: &[ExprId],
     ) -> TyId {
         match builtin {
-            BuiltinValue::ParseFloat => {
+            BuiltinValue::FloatParseStatus => {
                 let text = self.types().builtin(BuiltinType::Text);
                 self.check_fixed_arguments(expression, arguments, &[text]);
                 let float = self.types().builtin(BuiltinType::Float);
-                let error = self.types().builtin(BuiltinType::ParseFloatError);
-                self.types().intern(TyData::Result { ok: float, error })
+                let status = self.types().builtin(BuiltinType::Int);
+                self.types().intern(TyData::Tuple(vec![float, status]))
             }
-            BuiltinValue::FormatFloat => {
+            BuiltinValue::FloatFormat => {
                 let float = self.types().builtin(BuiltinType::Float);
                 self.check_fixed_arguments(expression, arguments, &[float]);
                 self.types().builtin(BuiltinType::Text)
             }
-            BuiltinValue::IsFinite => {
+            BuiltinValue::FloatIsFinite => {
                 let float = self.types().builtin(BuiltinType::Float);
                 self.check_fixed_arguments(expression, arguments, &[float]);
                 self.types().builtin(BuiltinType::Bool)
@@ -9087,13 +9140,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 "Cancelled" if payload.is_empty() => Some(PatternVariant::TaskCancelled),
                 _ => None,
             },
-            TyData::Builtin(BuiltinType::ParseFloatError) => match name.as_str() {
-                "InvalidSyntax" if payload.is_empty() => {
-                    Some(PatternVariant::ParseFloatInvalidSyntax)
-                }
-                "OutOfRange" if payload.is_empty() => Some(PatternVariant::ParseFloatOutOfRange),
-                _ => None,
-            },
             TyData::Builtin(BuiltinType::DecodeTextError) => match name.as_str() {
                 "InvalidUtf8" if payload.is_empty() => Some(PatternVariant::DecodeTextInvalidUtf8),
                 _ => None,
@@ -9371,13 +9417,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 )
             })
             .collect(),
-            TyData::Builtin(BuiltinType::ParseFloatError) => [
-                PatternVariant::ParseFloatInvalidSyntax,
-                PatternVariant::ParseFloatOutOfRange,
-            ]
-            .into_iter()
-            .map(|variant| (CheckedPatternHead::Variant(variant), Vec::new()))
-            .collect(),
             TyData::Builtin(BuiltinType::DecodeTextError) => {
                 vec![(
                     CheckedPatternHead::Variant(PatternVariant::DecodeTextInvalidUtf8),
@@ -9527,13 +9566,23 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | Expr::Unary { .. }
             | Expr::Binary { .. }
             | Expr::Match { .. } => true,
-            Expr::Call { callee, .. } => matches!(
-                &self.source().expressions[*callee],
-                Expr::Path(path)
-                    if path.segments.len() == 1
-                        && path.segments[0].name.as_str() == "is_finite"
-                        && self.builtin_is_imported("std.float.is_finite")
-            ),
+            Expr::Call { callee, .. } => {
+                let Expr::Path(path) = &self.source().expressions[*callee] else {
+                    return self.error_at(
+                        "InvalidContractExpression",
+                        "expression is outside the pure, effect-restricted contract predicate subset",
+                        expression,
+                    );
+                };
+                let module = self.analyzer.program.definitions[self.environment.owner].module;
+                let resolved =
+                    crate::Resolver::new(self.analyzer.program, self.analyzer.def_maps, module)
+                        .resolve_definition(path, Namespace::Value)
+                        .ok();
+                resolved.is_some_and(|definition| {
+                    Some(definition) == self.analyzer.canonical_std_items.is_finite
+                })
+            }
             Expr::Tuple(_)
             | Expr::List(_)
             | Expr::Block { .. }
@@ -9889,8 +9938,6 @@ enum PatternVariant {
     Some,
     Ok,
     Err,
-    ParseFloatInvalidSyntax,
-    ParseFloatOutOfRange,
     DecodeTextInvalidUtf8,
     PathContainsNul,
     PathAbsoluteJoin,
@@ -9967,12 +10014,6 @@ fn pattern_variant_resolution(variant: PatternVariant) -> Resolution {
         PatternVariant::Some => Resolution::Builtin(BuiltinValue::Some),
         PatternVariant::Ok => Resolution::Builtin(BuiltinValue::Ok),
         PatternVariant::Err => Resolution::Builtin(BuiltinValue::Err),
-        PatternVariant::ParseFloatInvalidSyntax => {
-            Resolution::Builtin(BuiltinValue::ParseFloatInvalidSyntax)
-        }
-        PatternVariant::ParseFloatOutOfRange => {
-            Resolution::Builtin(BuiltinValue::ParseFloatOutOfRange)
-        }
         PatternVariant::DecodeTextInvalidUtf8 => {
             Resolution::Builtin(BuiltinValue::DecodeTextInvalidUtf8)
         }
@@ -10530,6 +10571,50 @@ fn consume(source Source[Item = Int]) {
         (lowered.program, analysis)
     }
 
+    fn analyze_source_with_std_float(source: &str) -> (Program, Analysis) {
+        let std_file = FileId(0);
+        let application_file = FileId(1);
+        let float = parse_with_file(
+            std_file,
+            include_str!("../../../library/std/float/float.loom"),
+        );
+        let application = parse_with_file(application_file, source);
+        assert!(float.diagnostics().is_empty(), "{:#?}", float.diagnostics());
+        assert!(
+            application.diagnostics().is_empty(),
+            "{:#?}",
+            application.diagnostics()
+        );
+
+        let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+        let application_package = PackageId::new("application", "0");
+        let mut lowered = lower_package_files([
+            PackageSourceUnit {
+                file: std_file,
+                package: std_package.clone(),
+                module: ModuleName::new("std.float"),
+                syntax: float.ast(),
+            },
+            PackageSourceUnit {
+                file: application_file,
+                package: application_package.clone(),
+                module: ModuleName::new("application"),
+                syntax: application.ast(),
+            },
+        ]);
+        assert!(lowered.diagnostics.is_empty(), "{:#?}", lowered.diagnostics);
+        lowered
+            .program
+            .register_package(std_package.clone(), [], false);
+        lowered.program.register_package(
+            application_package,
+            [(loom_core::Name::new("std"), std_package)],
+            true,
+        );
+        let analysis = analyze(&lowered.program);
+        (lowered.program, analysis)
+    }
+
     #[test]
     fn constants_are_evaluated_and_expand_in_contract_proofs() {
         let (_, analysis) = analyze_source(
@@ -10840,20 +10925,9 @@ pub concept NoSuspend {}
 
     #[test]
     fn constraints_contracts_source_reaches_body_checker() {
-        let parsed = parse_with_file(
-            FileId(0),
-            include_str!("../../../examples/constraints-contracts/shop.loom"),
-        );
-        assert!(
-            parsed.diagnostics().is_empty(),
-            "{:?}",
-            parsed.diagnostics()
-        );
-        let lowered = lower_files([SourceUnit {
-            file: FileId(0),
-            syntax: parsed.ast(),
-        }]);
-        let analysis = analyze(&lowered.program);
+        let (_, analysis) = analyze_source_with_std_float(include_str!(
+            "../../../examples/constraints-contracts/shop.loom"
+        ));
         assert!(
             analysis.diagnostics.is_empty(),
             "{:#?}",
@@ -11634,8 +11708,9 @@ fn choose(flag Bool) Int {
 
     #[test]
     fn parse_float_error_variants_are_matchable_and_exhaustive() {
-        let (_, analysis) = analyze_source(
+        let (_, analysis) = analyze_source_with_std_float(
             r"
+import std.float.ParseFloatError
 import std.float.parse_float
 
 fn classify(text Text) Int {
@@ -11745,7 +11820,7 @@ fn repeatedBody() {
 
     #[test]
     fn constrained_construction_uses_constants_and_established_path_facts() {
-        let (_, analysis) = analyze_source(
+        let (_, analysis) = analyze_source_with_std_float(
             r"
 import std.float.is_finite
 
@@ -11810,6 +11885,7 @@ fn branched(raw Float) Result[Money, ConstraintError] {
     fn constrained_literal_proof_is_independent_of_package_file_order() {
         let application_file = FileId(0);
         let foundation_file = FileId(1);
+        let std_file = FileId(2);
         let application = parse_with_file(
             application_file,
             r"import foundation.money.Money
@@ -11826,15 +11902,23 @@ fn maximum_order() Money {
 pub type Money = Float where is_finite(self) && self >= 0.0
 ",
         );
+        let float = parse_with_file(
+            std_file,
+            include_str!("../../../library/std/float/float.loom"),
+        );
         assert!(
-            application.diagnostics().is_empty() && foundation.diagnostics().is_empty(),
-            "application={:#?}, foundation={:#?}",
+            application.diagnostics().is_empty()
+                && foundation.diagnostics().is_empty()
+                && float.diagnostics().is_empty(),
+            "application={:#?}, foundation={:#?}, float={:#?}",
             application.diagnostics(),
-            foundation.diagnostics()
+            foundation.diagnostics(),
+            float.diagnostics()
         );
 
         let application_package = PackageId::new("application", "0");
         let foundation_package = PackageId::new("foundation", "0");
+        let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
         let mut lowered = lower_package_files([
             PackageSourceUnit {
                 file: application_file,
@@ -11848,10 +11932,19 @@ pub type Money = Float where is_finite(self) && self >= 0.0
                 module: ModuleName::new("foundation.money"),
                 syntax: foundation.ast(),
             },
+            PackageSourceUnit {
+                file: std_file,
+                package: std_package.clone(),
+                module: ModuleName::new("std.float"),
+                syntax: float.ast(),
+            },
         ]);
-        lowered
-            .program
-            .register_package(foundation_package.clone(), [], false);
+        lowered.program.register_package(
+            foundation_package.clone(),
+            [(loom_core::Name::new("std"), std_package.clone())],
+            false,
+        );
+        lowered.program.register_package(std_package, [], false);
         lowered.program.register_package(
             application_package,
             [(loom_core::Name::new("foundation"), foundation_package)],

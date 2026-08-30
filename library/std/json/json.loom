@@ -1,3 +1,4 @@
+import std.float.ParseFloatError
 import std.float.parse_float
 
 fn finish_utf8(units List[Int]) Text {

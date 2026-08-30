@@ -341,7 +341,7 @@ fn collect_safepoint_values(
                     | InstructionKind::PathJoin { .. }
                     | InstructionKind::BytesAppend { .. }
                     | InstructionKind::BytesDecodeUtf8 { .. }
-                    | InstructionKind::FormatFloat { .. }
+                    | InstructionKind::FloatFormat { .. }
                     | InstructionKind::JsonFormat { .. }
                     | InstructionKind::TaskOutcomeTake { .. }
                     | InstructionKind::TextMapInsert { .. }

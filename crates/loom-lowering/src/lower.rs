@@ -30,23 +30,22 @@ const OPTION_TYPE: TypeId = TypeId(0);
 const RESULT_TYPE: TypeId = TypeId(1);
 const CONSTRAINT_ERROR_TYPE: TypeId = TypeId(2);
 const CONTRACT_FAULT_TYPE: TypeId = TypeId(3);
-const PARSE_FLOAT_ERROR_TYPE: TypeId = TypeId(4);
-const TASK_FAULT_TYPE: TypeId = TypeId(5);
-const TASK_OUTCOME_TYPE: TypeId = TypeId(6);
-const DURATION_TYPE: TypeId = TypeId(7);
-const FILE_TYPE: TypeId = TypeId(8);
-const SOCKET_TYPE: TypeId = TypeId(9);
-const BYTES_TYPE: TypeId = TypeId(10);
-const PATH_TYPE: TypeId = TypeId(11);
-const DECODE_TEXT_ERROR_TYPE: TypeId = TypeId(12);
-const PATH_ERROR_TYPE: TypeId = TypeId(13);
-const TEXT_MAP_TYPE: TypeId = TypeId(14);
-const JSON_TYPE: TypeId = TypeId(15);
-const JSON_ERROR_TYPE: TypeId = TypeId(16);
-const IO_ERROR_TYPE: TypeId = TypeId(17);
-const IO_ERROR_KIND_TYPE: TypeId = TypeId(18);
-const LOG_LEVEL_TYPE: TypeId = TypeId(19);
-const SYNTHETIC_TYPE_COUNT: u32 = 20;
+const TASK_FAULT_TYPE: TypeId = TypeId(4);
+const TASK_OUTCOME_TYPE: TypeId = TypeId(5);
+const DURATION_TYPE: TypeId = TypeId(6);
+const FILE_TYPE: TypeId = TypeId(7);
+const SOCKET_TYPE: TypeId = TypeId(8);
+const BYTES_TYPE: TypeId = TypeId(9);
+const PATH_TYPE: TypeId = TypeId(10);
+const DECODE_TEXT_ERROR_TYPE: TypeId = TypeId(11);
+const PATH_ERROR_TYPE: TypeId = TypeId(12);
+const TEXT_MAP_TYPE: TypeId = TypeId(13);
+const JSON_TYPE: TypeId = TypeId(14);
+const JSON_ERROR_TYPE: TypeId = TypeId(15);
+const IO_ERROR_TYPE: TypeId = TypeId(16);
+const IO_ERROR_KIND_TYPE: TypeId = TypeId(17);
+const LOG_LEVEL_TYPE: TypeId = TypeId(18);
+const SYNTHETIC_TYPE_COUNT: u32 = 19;
 
 /// Failure at the trusted typed-HIR to MIR boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -333,7 +332,6 @@ impl<'a> Compiler<'a> {
                 result: Some(RESULT_TYPE),
                 option: Some(OPTION_TYPE),
                 constraint_error: Some(CONSTRAINT_ERROR_TYPE),
-                parse_float_error: Some(PARSE_FLOAT_ERROR_TYPE),
                 task_fault: Some(TASK_FAULT_TYPE),
                 task_outcome: Some(TASK_OUTCOME_TYPE),
                 duration: Some(DURATION_TYPE),
@@ -906,9 +904,6 @@ impl<'a> Compiler<'a> {
                 BuiltinType::Duration => RequirementType::Nominal(DURATION_TYPE, Vec::new()),
                 BuiltinType::File => RequirementType::Nominal(FILE_TYPE, Vec::new()),
                 BuiltinType::Socket => RequirementType::Nominal(SOCKET_TYPE, Vec::new()),
-                BuiltinType::ParseFloatError => {
-                    RequirementType::Nominal(PARSE_FLOAT_ERROR_TYPE, Vec::new())
-                }
                 BuiltinType::DecodeTextError => {
                     RequirementType::Nominal(DECODE_TEXT_ERROR_TYPE, Vec::new())
                 }
@@ -1611,8 +1606,11 @@ impl ContractLowerer<'_, '_> {
             }
             loom_hir::Expr::Call { arguments, .. } => {
                 let resolution = self.call(id, span)?;
-                if resolution.target != SemaCallTarget::Builtin(BuiltinValue::IsFinite)
-                    || arguments.len() != 1
+                if !matches!(
+                    resolution.target,
+                    SemaCallTarget::Function(definition)
+                        if Some(definition) == self.compiler.analysis.canonical_std_items.is_finite
+                ) || arguments.len() != 1
                 {
                     return Err(defect(
                         "non-predicate call reached contract MIR lowering",
@@ -3205,8 +3203,6 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             BuiltinValue::Some
             | BuiltinValue::Ok
             | BuiltinValue::Err
-            | BuiltinValue::ParseFloatInvalidSyntax
-            | BuiltinValue::ParseFloatOutOfRange
             | BuiltinValue::DecodeTextInvalidUtf8
             | BuiltinValue::PathContainsNul
             | BuiltinValue::PathAbsoluteJoin
@@ -3241,8 +3237,6 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                     BuiltinValue::Some => (OPTION_TYPE, VariantId(1)),
                     BuiltinValue::Ok => (RESULT_TYPE, VariantId(0)),
                     BuiltinValue::Err => (RESULT_TYPE, VariantId(1)),
-                    BuiltinValue::ParseFloatInvalidSyntax => (PARSE_FLOAT_ERROR_TYPE, VariantId(0)),
-                    BuiltinValue::ParseFloatOutOfRange => (PARSE_FLOAT_ERROR_TYPE, VariantId(1)),
                     BuiltinValue::DecodeTextInvalidUtf8 => (DECODE_TEXT_ERROR_TYPE, VariantId(0)),
                     BuiltinValue::PathContainsNul => (PATH_ERROR_TYPE, VariantId(0)),
                     BuiltinValue::PathAbsoluteJoin => (PATH_ERROR_TYPE, VariantId(1)),
@@ -3285,9 +3279,9 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                         .collect::<LowerResult<_>>()?,
                 }
             }
-            BuiltinValue::ParseFloat
-            | BuiltinValue::FormatFloat
-            | BuiltinValue::IsFinite
+            BuiltinValue::FloatParseStatus
+            | BuiltinValue::FloatFormat
+            | BuiltinValue::FloatIsFinite
             | BuiltinValue::IntToFloat
             | BuiltinValue::FloatToIntStatus
             | BuiltinValue::TextLength
@@ -3763,9 +3757,9 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
 
 fn executable_builtin(builtin: BuiltinValue) -> Option<Builtin> {
     Some(match builtin {
-        BuiltinValue::ParseFloat => Builtin::ParseFloat,
-        BuiltinValue::FormatFloat => Builtin::FormatFloat,
-        BuiltinValue::IsFinite => Builtin::IsFinite,
+        BuiltinValue::FloatParseStatus => Builtin::FloatParseStatus,
+        BuiltinValue::FloatFormat => Builtin::FloatFormat,
+        BuiltinValue::FloatIsFinite => Builtin::FloatIsFinite,
         BuiltinValue::IntToFloat => Builtin::IntToFloat,
         BuiltinValue::FloatToIntStatus => Builtin::FloatToIntStatus,
         BuiltinValue::TextLength => Builtin::TextLength,
@@ -3833,8 +3827,6 @@ fn builtin_variant_id(builtin: BuiltinValue) -> Option<(TypeId, VariantId)> {
         BuiltinValue::Some => (OPTION_TYPE, VariantId(1)),
         BuiltinValue::Ok => (RESULT_TYPE, VariantId(0)),
         BuiltinValue::Err => (RESULT_TYPE, VariantId(1)),
-        BuiltinValue::ParseFloatInvalidSyntax => (PARSE_FLOAT_ERROR_TYPE, VariantId(0)),
-        BuiltinValue::ParseFloatOutOfRange => (PARSE_FLOAT_ERROR_TYPE, VariantId(1)),
         BuiltinValue::DecodeTextInvalidUtf8 => (DECODE_TEXT_ERROR_TYPE, VariantId(0)),
         BuiltinValue::PathContainsNul => (PATH_ERROR_TYPE, VariantId(0)),
         BuiltinValue::PathAbsoluteJoin => (PATH_ERROR_TYPE, VariantId(1)),
@@ -4129,12 +4121,6 @@ fn synthetic_types() -> Vec<TypeDef> {
                 invariant: None,
             },
         },
-        closed_error_type(
-            PARSE_FLOAT_ERROR_TYPE,
-            "ParseFloatError",
-            &["InvalidSyntax", "OutOfRange"],
-            span,
-        ),
         task_fault_type(span),
         task_outcome_type(span),
         opaque_record_type(DURATION_TYPE, "Duration", Type::Int, span),
@@ -4314,7 +4300,6 @@ fn lower_builtin_type(builtin: BuiltinType) -> Type {
         BuiltinType::Duration => Type::Nominal(DURATION_TYPE, Vec::new()),
         BuiltinType::File => Type::Nominal(FILE_TYPE, Vec::new()),
         BuiltinType::Socket => Type::Nominal(SOCKET_TYPE, Vec::new()),
-        BuiltinType::ParseFloatError => Type::Nominal(PARSE_FLOAT_ERROR_TYPE, Vec::new()),
         BuiltinType::DecodeTextError => Type::Nominal(DECODE_TEXT_ERROR_TYPE, Vec::new()),
         BuiltinType::PathError => Type::Nominal(PATH_ERROR_TYPE, Vec::new()),
         BuiltinType::Json => Type::Nominal(JSON_TYPE, Vec::new()),

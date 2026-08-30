@@ -6,9 +6,9 @@ use loom_codegen_ir::{
 use loom_mir::{FunctionId, Type, TypeId};
 
 const RESULT_TYPE: TypeId = TypeId(1);
-const TEXT_MAP_TYPE: TypeId = TypeId(14);
-const JSON_TYPE: TypeId = TypeId(15);
-const JSON_ERROR_TYPE: TypeId = TypeId(16);
+const TEXT_MAP_TYPE: TypeId = TypeId(13);
+const JSON_TYPE: TypeId = TypeId(14);
+const JSON_ERROR_TYPE: TypeId = TypeId(15);
 
 struct JsonTypes {
     json: loom_codegen_ir::ValueTypeId,

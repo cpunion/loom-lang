@@ -147,7 +147,7 @@ registry, artifact, feature, and offline behavior.
 
 ## Generated state
 
-The default persistent cache lives below `target/loom/cache/v7`. Build outputs
+The default persistent cache lives below `target/loom/cache/v8`. Build outputs
 also default below `target/loom`. These paths are implementation details and
 should not be committed.
 

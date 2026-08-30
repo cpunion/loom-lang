@@ -686,10 +686,6 @@ impl SerializationClosure {
             | Builtin::ListGet => {
                 self.add_optional_type(prelude.option);
             }
-            Builtin::ParseFloat => {
-                self.add_optional_type(prelude.result);
-                self.add_optional_type(prelude.parse_float_error);
-            }
             Builtin::TextEncodeUtf8 | Builtin::BytesLength | Builtin::BytesAppend => {
                 self.add_optional_type(prelude.bytes);
             }
@@ -783,10 +779,11 @@ impl SerializationClosure {
                 self.add_optional_type(prelude.text_map);
             }
             Builtin::StdoutWrite
-            | Builtin::IsFinite
+            | Builtin::FloatParseStatus
+            | Builtin::FloatIsFinite
             | Builtin::IntToFloat
             | Builtin::FloatToIntStatus
-            | Builtin::FormatFloat
+            | Builtin::FloatFormat
             | Builtin::TextLength
             | Builtin::TextConcat
             | Builtin::TextContains
@@ -1339,7 +1336,6 @@ impl IdMaps {
         prelude.result = self.optional_type(prelude.result);
         prelude.option = self.optional_type(prelude.option);
         prelude.constraint_error = self.optional_type(prelude.constraint_error);
-        prelude.parse_float_error = self.optional_type(prelude.parse_float_error);
         prelude.task_fault = self.optional_type(prelude.task_fault);
         prelude.task_outcome = self.optional_type(prelude.task_outcome);
         prelude.duration = self.optional_type(prelude.duration);

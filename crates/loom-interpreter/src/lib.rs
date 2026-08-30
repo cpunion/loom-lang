@@ -5079,7 +5079,7 @@ impl<'program> Interpreter<'program> {
             return self.eval_stdout_builtin(arguments, span);
         }
         match (builtin, arguments) {
-            (Builtin::IsFinite, [value]) => Ok(Value::Bool {
+            (Builtin::FloatIsFinite, [value]) => Ok(Value::Bool {
                 value: as_float(value).is_some_and(f64::is_finite),
             }),
             (Builtin::IntToFloat, [value]) => as_int(value).map_or_else(
@@ -5121,14 +5121,20 @@ impl<'program> Interpreter<'program> {
                     })
                 },
             ),
-            (Builtin::ParseFloat, [Value::Text { value }]) => match parse_float(value) {
-                Ok(number) => self.result_value(true, Value::Float { value: number }, span),
-                Err(error) => {
-                    let error = self.parse_float_error_value(error, span)?;
-                    self.result_value(false, error, span)
-                }
-            },
-            (Builtin::FormatFloat, [value]) => as_float(value).map_or_else(
+            (Builtin::FloatParseStatus, [Value::Text { value }]) => {
+                let (number, status) = match parse_float(value) {
+                    Ok(number) => (number, 0),
+                    Err(ParseFloatFailure::InvalidSyntax) => (0.0, 1),
+                    Err(ParseFloatFailure::OutOfRange) => (0.0, 2),
+                };
+                Ok(Value::Tuple {
+                    elements: vec![
+                        Value::Float { value: number },
+                        Value::Int { value: status },
+                    ],
+                })
+            }
+            (Builtin::FloatFormat, [value]) => as_float(value).map_or_else(
                 || {
                     Err(self
                         .runtime_fault(
@@ -6853,53 +6859,6 @@ impl<'program> Interpreter<'program> {
         })
     }
 
-    fn parse_float_error_value(
-        &self,
-        error: ParseFloatFailure,
-        span: Span,
-    ) -> Result<Value, ExecutionFailure> {
-        let definition = self
-            .program
-            .prelude
-            .parse_float_error
-            .and_then(|id| self.program.type_def(id))
-            .ok_or_else(|| {
-                ExecutionFailure::from(self.runtime_fault(
-                    "LOOM_RUNTIME_INVALID_MIR",
-                    "prelude ParseFloatError type is missing",
-                    span,
-                ))
-            })?;
-        let TypeDefKind::Enum { variants } = &definition.kind else {
-            return Err(self
-                .runtime_fault(
-                    "LOOM_RUNTIME_INVALID_MIR",
-                    "prelude ParseFloatError is not an enum",
-                    span,
-                )
-                .into());
-        };
-        let expected = match error {
-            ParseFloatFailure::InvalidSyntax => "InvalidSyntax",
-            ParseFloatFailure::OutOfRange => "OutOfRange",
-        };
-        let variant = variants
-            .iter()
-            .find(|variant| variant.name == expected)
-            .ok_or_else(|| {
-                ExecutionFailure::from(self.runtime_fault(
-                    "LOOM_RUNTIME_INVALID_MIR",
-                    format!("prelude ParseFloatError is missing {expected}"),
-                    span,
-                ))
-            })?;
-        Ok(Value::Enum {
-            ty: definition.id,
-            variant: variant.id,
-            payload: Vec::new(),
-        })
-    }
-
     fn eval_contract(
         &mut self,
         expression: &ContractExpr,
@@ -8611,7 +8570,7 @@ mod builtin_value_tests {
                 ],
             },
         });
-        for index in 2..10 {
+        for index in 2..9 {
             types.push(TypeDef {
                 id: TypeId(index),
                 name: format!("unused#{index}"),
@@ -8623,7 +8582,7 @@ mod builtin_value_tests {
                 },
             });
         }
-        for (id, name) in [(10, "Bytes"), (11, "Path")] {
+        for (id, name) in [(9, "Bytes"), (10, "Path")] {
             types.push(TypeDef {
                 id: TypeId(id),
                 name: name.into(),
@@ -8640,7 +8599,7 @@ mod builtin_value_tests {
             });
         }
         types.push(TypeDef {
-            id: TypeId(12),
+            id: TypeId(11),
             name: "DecodeTextError".into(),
             span: Span::default(),
             type_parameters: 0,
@@ -8649,7 +8608,7 @@ mod builtin_value_tests {
             },
         });
         types.push(TypeDef {
-            id: TypeId(13),
+            id: TypeId(12),
             name: "PathError".into(),
             span: Span::default(),
             type_parameters: 0,
@@ -8665,10 +8624,10 @@ mod builtin_value_tests {
             prelude: loom_mir::PreludeIds {
                 option: Some(TypeId(0)),
                 result: Some(TypeId(1)),
-                bytes: Some(TypeId(10)),
-                path: Some(TypeId(11)),
-                decode_text_error: Some(TypeId(12)),
-                path_error: Some(TypeId(13)),
+                bytes: Some(TypeId(9)),
+                path: Some(TypeId(10)),
+                decode_text_error: Some(TypeId(11)),
+                path_error: Some(TypeId(12)),
                 ..loom_mir::PreludeIds::default()
             },
             ..Program::default()
@@ -8701,7 +8660,7 @@ mod builtin_value_tests {
         ));
 
         let invalid = Value::Record {
-            ty: TypeId(10),
+            ty: TypeId(9),
             fields: vec![Value::Bytes {
                 value: vec![0xff, 0xfe],
             }],
@@ -8713,7 +8672,7 @@ mod builtin_value_tests {
             decoded,
             Value::Enum { ty: TypeId(1), variant: VariantId(1), payload, .. }
                 if matches!(payload.as_slice(), [Value::Enum {
-                    ty: TypeId(12), variant: VariantId(0), payload, ..
+                    ty: TypeId(11), variant: VariantId(0), payload, ..
                 }] if payload.is_empty())
         ));
 
@@ -8746,7 +8705,7 @@ mod builtin_value_tests {
                 decoded,
                 Value::Enum { ty: TypeId(1), variant: VariantId(1), payload, .. }
                     if matches!(payload.as_slice(), [Value::Enum {
-                        ty: TypeId(12), variant: VariantId(0), payload, ..
+                        ty: TypeId(11), variant: VariantId(0), payload, ..
                     }] if payload.is_empty())
             ));
         }

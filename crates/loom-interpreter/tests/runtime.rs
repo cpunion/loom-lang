@@ -435,31 +435,6 @@ fn result_type() -> TypeDef {
     }
 }
 
-fn parse_float_error_type() -> TypeDef {
-    TypeDef {
-        id: TypeId(1),
-        name: "std.float.ParseFloatError".into(),
-        span: span(),
-        type_parameters: 0,
-        kind: TypeDefKind::Enum {
-            variants: vec![
-                VariantDef {
-                    id: VariantId(0),
-                    name: "InvalidSyntax".into(),
-                    payload: Vec::new(),
-                    span: span(),
-                },
-                VariantDef {
-                    id: VariantId(1),
-                    name: "OutOfRange".into(),
-                    payload: Vec::new(),
-                    span: span(),
-                },
-            ],
-        },
-    }
-}
-
 fn constraint_error_type(id: TypeId) -> TypeDef {
     TypeDef {
         id,
@@ -1512,10 +1487,7 @@ fn projecting_a_refined_record_reaches_the_requested_field() {
 #[test]
 #[allow(clippy::too_many_lines, clippy::float_cmp)]
 fn float_text_builtins_follow_the_frozen_boundary() {
-    let parse_result_ty = Type::Nominal(
-        TypeId(0),
-        vec![Type::Float, Type::Nominal(TypeId(1), Vec::new())],
-    );
+    let parse_result_ty = Type::Tuple(vec![Type::Float, Type::Int]);
     let parse = Function {
         id: FunctionId(0),
         name: "parse".into(),
@@ -1534,7 +1506,7 @@ fn float_text_builtins_follow_the_frozen_boundary() {
             tail: Some(Box::new(Expr {
                 id: ExprId::UNASSIGNED,
                 kind: ExprKind::Call {
-                    target: CallTarget::Builtin(Builtin::ParseFloat),
+                    target: CallTarget::Builtin(Builtin::FloatParseStatus),
                     type_arguments: Vec::new(),
                     arguments: vec![CallArgument::Value(copy(
                         Place::local(LocalId(0)),
@@ -1567,7 +1539,7 @@ fn float_text_builtins_follow_the_frozen_boundary() {
             tail: Some(Box::new(Expr {
                 id: ExprId::UNASSIGNED,
                 kind: ExprKind::Call {
-                    target: CallTarget::Builtin(Builtin::FormatFloat),
+                    target: CallTarget::Builtin(Builtin::FloatFormat),
                     type_arguments: Vec::new(),
                     arguments: vec![CallArgument::Value(copy(
                         Place::local(LocalId(0)),
@@ -1583,13 +1555,8 @@ fn float_text_builtins_follow_the_frozen_boundary() {
         call_plan: CallPlan::default(),
     };
     let program = Program {
-        types: vec![result_type(), parse_float_error_type()],
+        types: Vec::new(),
         functions: vec![parse, format],
-        prelude: PreludeIds {
-            result: Some(TypeId(0)),
-            parse_float_error: Some(TypeId(1)),
-            ..PreludeIds::default()
-        },
         ..Program::default()
     };
     let program = checked(program);
@@ -1606,22 +1573,22 @@ fn float_text_builtins_follow_the_frozen_boundary() {
         .expect("valid float");
     assert!(matches!(
         valid,
-        Value::Enum { variant: VariantId(0), payload, .. }
-            if matches!(payload.as_slice(), [Value::Float { value }] if *value == 1000.0)
+        Value::Tuple { elements }
+            if matches!(elements.as_slice(), [Value::Float { value }, Value::Int { value: 0 }] if *value == 1000.0)
     ));
 
-    for (text, expected_variant) in [("1", 0), ("1e999", 1), ("inf", 0)] {
+    for (text, expected_status) in [("1", 1), ("1e999", 2), ("inf", 1)] {
         let rejected = interpreter
             .invoke(
                 FunctionId(0),
                 vec![Value::Text { value: text.into() }],
                 span(),
             )
-            .expect("parse failure is a Result.Err value");
+            .expect("parse failure is a status value");
         assert!(matches!(
             rejected,
-            Value::Enum { variant: VariantId(1), payload, .. }
-                if matches!(payload.as_slice(), [Value::Enum { variant, .. }] if variant.0 == expected_variant)
+            Value::Tuple { elements }
+                if matches!(elements.as_slice(), [Value::Float { value: 0.0 }, Value::Int { value }] if *value == expected_status)
         ));
     }
 

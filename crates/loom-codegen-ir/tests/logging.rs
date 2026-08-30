@@ -5,8 +5,8 @@ use loom_codegen_ir::{
 };
 use loom_mir::{FunctionId, Type, TypeId};
 
-const LOG_LEVEL_TYPE: TypeId = TypeId(19);
-const TEXT_MAP_TYPE: TypeId = TypeId(14);
+const LOG_LEVEL_TYPE: TypeId = TypeId(18);
+const TEXT_MAP_TYPE: TypeId = TypeId(13);
 
 fn origin(source: u32) -> Origin {
     Origin::synthetic(FunctionId(source))

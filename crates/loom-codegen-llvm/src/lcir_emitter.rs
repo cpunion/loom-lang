@@ -7196,7 +7196,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     | InstructionKind::PathJoin { .. }
                     | InstructionKind::BytesAppend { .. }
                     | InstructionKind::BytesDecodeUtf8 { .. }
-                    | InstructionKind::FormatFloat { .. }
+                    | InstructionKind::FloatFormat { .. }
                     | InstructionKind::JsonFormat { .. }
             ) {
                 continue;
@@ -7292,7 +7292,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .builder
             .position_at_end(self.allocation_block(entry)?);
         for instruction in self.source.instructions() {
-            if !matches!(instruction.kind(), InstructionKind::ParseFloat { .. }) {
+            if !matches!(instruction.kind(), InstructionKind::FloatParseStatus { .. }) {
                 continue;
             }
             let cell = self
@@ -9678,21 +9678,10 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 };
                 one(compared.into())
             }
-            InstructionKind::ParseFloat {
-                text,
-                ok_variant,
-                error_variant,
-                invalid_syntax_variant,
-                out_of_range_variant,
-            } => one(self.emit_parse_float_instruction(
-                instruction,
-                *text,
-                *ok_variant,
-                *error_variant,
-                *invalid_syntax_variant,
-                *out_of_range_variant,
-            )?),
-            InstructionKind::FormatFloat { value } => {
+            InstructionKind::FloatParseStatus { text } => {
+                one(self.emit_parse_float_status(instruction, *text)?)
+            }
+            InstructionKind::FloatFormat { value } => {
                 let result = instruction.results().first().copied().ok_or_else(|| {
                     CodegenError::new("LlvmAbiDefect", "Float formatting has no Text result")
                 })?;
@@ -10768,14 +10757,10 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .map_err(builder_error)
     }
 
-    fn emit_parse_float_instruction(
+    fn emit_parse_float_status(
         &self,
         instruction: &Instruction,
         text: ValueId,
-        ok_variant: u32,
-        error_variant: u32,
-        invalid_syntax_variant: u32,
-        out_of_range_variant: u32,
     ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
         let result = instruction.results().first().copied().ok_or_else(|| {
             CodegenError::new("LlvmAbiDefect", "Float parse instruction has no result")
@@ -10787,7 +10772,6 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 CodegenError::new("LlvmAbiDefect", "Float parse result value is missing")
             })?
             .ty();
-        let error_ty = self.sum_variant_field_type(result_ty, error_variant, 0)?;
         let output = self.float_parse_output_cell(instruction.id())?;
         let runtime = self.backend.runtime_parse_float();
         let output_type = self.backend.context.f64_type();
@@ -10806,32 +10790,26 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             &[data.into(), length.into(), output.into()],
             &format!("{name}.status"),
         )?;
-        let (ok, out_of_range) = self.backend.require_float_parse_status(status)?;
+        self.backend.require_float_parse_status(status)?;
         let parsed = self
             .backend
             .builder
             .build_load(output_type, output, &format!("{name}.value"))
             .map_err(builder_error)?;
-        let ok_value = self.emit_sum_construct_values(result_ty, ok_variant, &[parsed])?;
-        let invalid_error =
-            self.emit_sum_construct_values(error_ty, invalid_syntax_variant, &[])?;
-        let range_error = self.emit_sum_construct_values(error_ty, out_of_range_variant, &[])?;
-        let selected_error = self
+        let status = self
             .backend
             .builder
-            .build_select(
-                out_of_range,
-                range_error,
-                invalid_error,
-                &format!("{name}.error"),
+            .build_int_z_extend(
+                status,
+                self.backend.context.i64_type(),
+                &format!("{name}.status.value"),
             )
             .map_err(builder_error)?;
-        let error_value =
-            self.emit_sum_construct_values(result_ty, error_variant, &[selected_error])?;
-        self.backend
-            .builder
-            .build_select(ok, ok_value, error_value, &format!("{name}.result"))
-            .map_err(builder_error)
+        self.emit_product_construct_values(
+            result_ty,
+            &[parsed, status.into()],
+            &format!("{name}.result"),
+        )
     }
 
     fn sum_variant_field_type(

@@ -56,15 +56,15 @@ const TASK_VALUE_DIRECT: u64 = 0;
 
 // Compiler-private synthetic prelude ids. Keep these synchronized with
 // loom-lowering until the native value ABI becomes self-describing.
-const TASK_FAULT_TYPE: u64 = 5;
-const TASK_OUTCOME_TYPE: u64 = 6;
+const TASK_FAULT_TYPE: u64 = 4;
+const TASK_OUTCOME_TYPE: u64 = 5;
 const TASK_OUTCOME_COMPLETED: u64 = 0;
 const TASK_OUTCOME_FAULTED: u64 = 1;
 const TASK_OUTCOME_CANCELLED: u64 = 2;
 const TASK_FAULT_CODE: &str = "TaskFault";
 const TASK_FAULT_MESSAGE: &str = "task execution failed";
-const FILE_TYPE: u64 = 8;
-const SOCKET_TYPE: u64 = 9;
+const FILE_TYPE: u64 = 7;
+const SOCKET_TYPE: u64 = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum IoResourceKind {
@@ -94,8 +94,8 @@ impl IoResourceKind {
     }
 }
 const RESULT_TYPE: u64 = 1;
-const IO_ERROR_TYPE: u64 = 17;
-const IO_ERROR_KIND_TYPE: u64 = 18;
+const IO_ERROR_TYPE: u64 = 16;
+const IO_ERROR_KIND_TYPE: u64 = 17;
 
 const JOIN_RESULT_TUPLE: u32 = 1;
 const JOIN_RESULT_LIST: u32 = 2;

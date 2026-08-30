@@ -24,9 +24,9 @@ library behavior.
 
 Source-backed packages are distributed as Loom source and compile through the
 ordinary package, type, MIR, reachability, and native pipelines. The current
-source module contains the `std.int` and `std.json` parsers, their public
-parse-error values, the `std.float` Int-conversion API and conversion error,
-`std.io.write` and `write_line`, the `std.log.debug`,
+source module contains the `std.int`, `std.float`, and `std.json` parsers, their
+public parse-error values, the complete `std.float` public API and conversion
+error, `std.io.write` and `write_line`, the `std.log.debug`,
 `info`, `warn`, and `error` convenience functions, and the public `Dispose`,
 `MustScope`, and `NoSuspend` declarations in `std.resource`.
 The logging conveniences are ordinary Loom functions over the irreducible
@@ -100,6 +100,10 @@ point or exponent. The special spellings are `NaN`, `Infinity`, and
 
 `is_finite` is a pure contract predicate and returns false for NaN and either
 infinity.
+
+All three functions are ordinary source definitions. Their exact-owner private
+scalar calls expose only `(Float, Int)` parse status, managed Text formatting,
+and one finite Boolean; the compiler never constructs `ParseFloatError`.
 
 `from_int` rounds the exact signed 64-bit integer to the nearest IEEE-754
 binary64 value, with ties rounded to even. It always succeeds, but integers

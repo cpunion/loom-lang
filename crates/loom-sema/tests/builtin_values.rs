@@ -7,6 +7,7 @@ fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
     let root_file = FileId(0);
     let std_log_file = FileId(1);
     let std_json_file = FileId(2);
+    let std_float_file = FileId(3);
     let parsed = parse_with_file(root_file, source);
     let std_log = parse_with_file(
         std_log_file,
@@ -16,16 +17,23 @@ fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
         std_json_file,
         include_str!("../../../library/std/json/json.loom"),
     );
+    let std_float = parse_with_file(
+        std_float_file,
+        include_str!("../../../library/std/float/float.loom"),
+    );
     assert!(
         parsed.diagnostics().is_empty(),
         "syntax diagnostics: {:#?}",
         parsed.diagnostics()
     );
     assert!(
-        std_log.diagnostics().is_empty() && std_json.diagnostics().is_empty(),
-        "standard syntax diagnostics: log={:#?} json={:#?}",
+        std_log.diagnostics().is_empty()
+            && std_json.diagnostics().is_empty()
+            && std_float.diagnostics().is_empty(),
+        "standard syntax diagnostics: log={:#?} json={:#?} float={:#?}",
         std_log.diagnostics(),
-        std_json.diagnostics()
+        std_json.diagnostics(),
+        std_float.diagnostics()
     );
     let root_package = PackageId::new("sema-test", "0");
     let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
@@ -47,6 +55,12 @@ fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
             package: std_package.clone(),
             module: ModuleName::new("std.json"),
             syntax: std_json.ast(),
+        },
+        PackageSourceUnit {
+            file: std_float_file,
+            package: std_package.clone(),
+            module: ModuleName::new("std.float"),
+            syntax: std_float.ast(),
         },
     ]);
     assert!(
