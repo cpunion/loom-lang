@@ -1548,6 +1548,10 @@ fn windows_file_uri_to_path_text(uri: &str) -> Result<String, String> {
             return Err("file URI path must be absolute".to_owned());
         }
         let decoded_path = percent_decode_utf8(encoded_path)?;
+        if has_windows_drive_uri_prefix(&decoded_path) && !is_windows_drive_uri_path(&decoded_path)
+        {
+            return Err("Windows drive file URI path must be absolute".to_owned());
+        }
         let local_path = if is_windows_drive_uri_path(&decoded_path) {
             &decoded_path[1..]
         } else {
@@ -1570,6 +1574,12 @@ fn windows_file_uri_to_path_text(uri: &str) -> Result<String, String> {
 
 #[cfg(any(windows, test))]
 fn is_windows_drive_uri_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    has_windows_drive_uri_prefix(path) && bytes.len() >= 4 && matches!(bytes[3], b'/' | b'\\')
+}
+
+#[cfg(any(windows, test))]
+fn has_windows_drive_uri_prefix(path: &str) -> bool {
     let bytes = path.as_bytes();
     bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':'
 }
@@ -1607,6 +1617,10 @@ mod tests {
         let uri = windows_path_text_to_file_uri(path);
         assert_eq!(uri, "file:///C:/loom%20project/%E4%BB%B7%E6%A0%BC.loom");
         assert_eq!(windows_file_uri_to_path_text(&uri).as_deref(), Ok(path));
+        assert_eq!(
+            windows_file_uri_to_path_text("file:///C:relative").unwrap_err(),
+            "Windows drive file URI path must be absolute"
+        );
     }
 
     #[test]
