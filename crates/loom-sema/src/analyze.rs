@@ -6119,12 +6119,8 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::DurationMilliseconds
             | BuiltinValue::FileOpenRead
             | BuiltinValue::FileCreate
-            | BuiltinValue::FileOpenReadPath
-            | BuiltinValue::FileCreatePath
             | BuiltinValue::FileTryOpenRead
             | BuiltinValue::FileTryCreate
-            | BuiltinValue::FileTryOpenReadPath
-            | BuiltinValue::FileTryCreatePath
             | BuiltinValue::SocketConnect
             | BuiltinValue::SocketTryConnect
             | BuiltinValue::JsonFormat
@@ -6341,20 +6337,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 let file = self.types().builtin(BuiltinType::File);
                 self.types().intern(TyData::Task(file))
             }
-            BuiltinValue::FileOpenReadPath | BuiltinValue::FileCreatePath => {
-                let path = self.types().builtin(BuiltinType::Path);
-                self.check_fixed_arguments(expression, arguments, &[path]);
-                let file = self.types().builtin(BuiltinType::File);
-                self.types().intern(TyData::Task(file))
-            }
             BuiltinValue::FileTryOpenRead | BuiltinValue::FileTryCreate => {
                 let text = self.types().builtin(BuiltinType::Text);
                 self.check_fixed_arguments(expression, arguments, &[text]);
-                self.try_resource_task(BuiltinType::File)
-            }
-            BuiltinValue::FileTryOpenReadPath | BuiltinValue::FileTryCreatePath => {
-                let path = self.types().builtin(BuiltinType::Path);
-                self.check_fixed_arguments(expression, arguments, &[path]);
                 self.try_resource_task(BuiltinType::File)
             }
             BuiltinValue::SocketConnect => {

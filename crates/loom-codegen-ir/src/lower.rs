@@ -40,8 +40,6 @@ fn io_task_error_mode(builtin: mir::Builtin) -> IoTaskErrorMode {
     match builtin {
         mir::Builtin::FileTryOpenRead
         | mir::Builtin::FileTryCreate
-        | mir::Builtin::FileTryOpenReadPath
-        | mir::Builtin::FileTryCreatePath
         | mir::Builtin::FileTryReadText
         | mir::Builtin::FileTryWriteText
         | mir::Builtin::SocketTryConnect
@@ -49,8 +47,6 @@ fn io_task_error_mode(builtin: mir::Builtin) -> IoTaskErrorMode {
         | mir::Builtin::SocketTryWriteText => IoTaskErrorMode::Result,
         mir::Builtin::FileOpenRead
         | mir::Builtin::FileCreate
-        | mir::Builtin::FileOpenReadPath
-        | mir::Builtin::FileCreatePath
         | mir::Builtin::FileReadText
         | mir::Builtin::FileWriteText
         | mir::Builtin::SocketConnect
@@ -3325,12 +3321,8 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         | mir::Builtin::IoErrorMessage
                         | mir::Builtin::FileOpenRead
                         | mir::Builtin::FileCreate
-                        | mir::Builtin::FileOpenReadPath
-                        | mir::Builtin::FileCreatePath
                         | mir::Builtin::FileTryOpenRead
                         | mir::Builtin::FileTryCreate
-                        | mir::Builtin::FileTryOpenReadPath
-                        | mir::Builtin::FileTryCreatePath
                         | mir::Builtin::FileReadText
                         | mir::Builtin::FileWriteText
                         | mir::Builtin::FileTryReadText
@@ -3365,12 +3357,8 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                                     | mir::Builtin::TextMapRemove
                                     | mir::Builtin::FileOpenRead
                                     | mir::Builtin::FileCreate
-                                    | mir::Builtin::FileOpenReadPath
-                                    | mir::Builtin::FileCreatePath
                                     | mir::Builtin::FileTryOpenRead
                                     | mir::Builtin::FileTryCreate
-                                    | mir::Builtin::FileTryOpenReadPath
-                                    | mir::Builtin::FileTryCreatePath
                                     | mir::Builtin::FileReadText
                                     | mir::Builtin::FileWriteText
                                     | mir::Builtin::FileTryReadText
@@ -4132,12 +4120,8 @@ fn scan_effect_expr(
                         | mir::Builtin::JsonFormat
                         | mir::Builtin::FileOpenRead
                         | mir::Builtin::FileCreate
-                        | mir::Builtin::FileOpenReadPath
-                        | mir::Builtin::FileCreatePath
                         | mir::Builtin::FileTryOpenRead
                         | mir::Builtin::FileTryCreate
-                        | mir::Builtin::FileTryOpenReadPath
-                        | mir::Builtin::FileTryCreatePath
                         | mir::Builtin::FileReadText
                         | mir::Builtin::FileWriteText
                         | mir::Builtin::FileTryReadText
@@ -4155,12 +4139,8 @@ fn scan_effect_expr(
                     CallTarget::Builtin(
                         mir::Builtin::FileOpenRead
                             | mir::Builtin::FileCreate
-                            | mir::Builtin::FileOpenReadPath
-                            | mir::Builtin::FileCreatePath
                             | mir::Builtin::FileTryOpenRead
                             | mir::Builtin::FileTryCreate
-                            | mir::Builtin::FileTryOpenReadPath
-                            | mir::Builtin::FileTryCreatePath
                             | mir::Builtin::FileReadText
                             | mir::Builtin::FileWriteText
                             | mir::Builtin::FileTryReadText
@@ -11884,30 +11864,22 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 field: 1,
             }
             .into(),
-            (
-                builtin @ (mir::Builtin::FileOpenRead
-                | mir::Builtin::FileOpenReadPath
-                | mir::Builtin::FileTryOpenRead
-                | mir::Builtin::FileTryOpenReadPath),
-                [path],
-            ) => InstructionKind::IoTaskCreate {
-                operation: IoTaskOperation::FileOpenRead,
-                error_mode: io_task_error_mode(builtin),
-                arguments: Box::new([*path]),
+            (builtin @ (mir::Builtin::FileOpenRead | mir::Builtin::FileTryOpenRead), [path]) => {
+                InstructionKind::IoTaskCreate {
+                    operation: IoTaskOperation::FileOpenRead,
+                    error_mode: io_task_error_mode(builtin),
+                    arguments: Box::new([*path]),
+                }
+                .into()
             }
-            .into(),
-            (
-                builtin @ (mir::Builtin::FileCreate
-                | mir::Builtin::FileCreatePath
-                | mir::Builtin::FileTryCreate
-                | mir::Builtin::FileTryCreatePath),
-                [path],
-            ) => InstructionKind::IoTaskCreate {
-                operation: IoTaskOperation::FileCreate,
-                error_mode: io_task_error_mode(builtin),
-                arguments: Box::new([*path]),
+            (builtin @ (mir::Builtin::FileCreate | mir::Builtin::FileTryCreate), [path]) => {
+                InstructionKind::IoTaskCreate {
+                    operation: IoTaskOperation::FileCreate,
+                    error_mode: io_task_error_mode(builtin),
+                    arguments: Box::new([*path]),
+                }
+                .into()
             }
-            .into(),
             (builtin @ (mir::Builtin::FileReadText | mir::Builtin::FileTryReadText), [file]) => {
                 InstructionKind::IoTaskCreate {
                     operation: IoTaskOperation::FileReadText,

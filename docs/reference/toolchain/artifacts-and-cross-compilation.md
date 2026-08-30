@@ -15,14 +15,14 @@ rather than assuming every build output is executable.
 | Runtime bundle | `runtime pack` or a release archive | target-specific | used by the linker |
 
 The interpreted artifact format is `loom.interpreted-mir`, currently version
-`28`. A build checks the complete source program, then writes the closed
+`36`. A build checks the complete source program, then writes the closed
 checked-MIR definitions for one selected export. The artifact is decoded and
 fully validated before execution. A matching version must also use the exact
 current MIR field set: missing fields are not synthesized and unknown fields
 are rejected. There is no shape upgrade or compatibility decoder behind the
 version check.
 
-Portable libraries use source-and-interface format version `2`. They record the
+Portable libraries use source-and-interface format version `3`. They record the
 Loom language version, resolved module graph, exact non-standard-library Loom
 sources, and canonical public interfaces. The decoder enforces the format and
 language versions, structural and byte/count bounds, graph and identity rules,

@@ -5018,12 +5018,8 @@ impl<'program> Interpreter<'program> {
             builtin,
             Builtin::FileOpenRead
                 | Builtin::FileCreate
-                | Builtin::FileOpenReadPath
-                | Builtin::FileCreatePath
                 | Builtin::FileTryOpenRead
                 | Builtin::FileTryCreate
-                | Builtin::FileTryOpenReadPath
-                | Builtin::FileTryCreatePath
                 | Builtin::FileReadText
                 | Builtin::FileWriteText
                 | Builtin::FileTryReadText
@@ -5875,40 +5871,9 @@ impl<'program> Interpreter<'program> {
                         .map_err(|error| io_failure("FileCreateFault", &error, span))
                 })
             }
-            (Builtin::FileOpenReadPath, [path]) => {
-                let path = self.path_payload(path, span)?.to_owned();
-                self.spawn_host_io_task(span, move || {
-                    std::fs::File::open(path)
-                        .map(HostIoValue::File)
-                        .map_err(|error| io_failure("FileOpenFault", &error, span))
-                })
-            }
-            (Builtin::FileCreatePath, [path]) => {
-                let path = self.path_payload(path, span)?.to_owned();
-                self.spawn_host_io_task(span, move || {
-                    std::fs::File::create(path)
-                        .map(HostIoValue::File)
-                        .map_err(|error| io_failure("FileCreateFault", &error, span))
-                })
-            }
-            (
-                Builtin::FileTryOpenRead
-                | Builtin::FileTryCreate
-                | Builtin::FileTryOpenReadPath
-                | Builtin::FileTryCreatePath,
-                [path],
-            ) => {
-                let path = if matches!(
-                    builtin,
-                    Builtin::FileTryOpenReadPath | Builtin::FileTryCreatePath
-                ) {
-                    self.path_payload(path, span)?.to_owned()
-                } else if let Value::Text { value } = path {
-                    value.clone()
-                } else {
-                    return Err(self.invalid_builtin_fault(span));
-                };
-                let create = matches!(builtin, Builtin::FileTryCreate | Builtin::FileTryCreatePath);
+            (Builtin::FileTryOpenRead | Builtin::FileTryCreate, [Value::Text { value: path }]) => {
+                let path = path.clone();
+                let create = builtin == Builtin::FileTryCreate;
                 self.spawn_try_host_io_task(span, move || {
                     let result = if create {
                         std::fs::File::create(path)

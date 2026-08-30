@@ -3328,12 +3328,8 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             | BuiltinValue::DurationAsMilliseconds
             | BuiltinValue::FileOpenRead
             | BuiltinValue::FileCreate
-            | BuiltinValue::FileOpenReadPath
-            | BuiltinValue::FileCreatePath
             | BuiltinValue::FileTryOpenRead
             | BuiltinValue::FileTryCreate
-            | BuiltinValue::FileTryOpenReadPath
-            | BuiltinValue::FileTryCreatePath
             | BuiltinValue::FileReadText
             | BuiltinValue::FileWriteText
             | BuiltinValue::FileTryReadText
@@ -3807,12 +3803,8 @@ fn executable_builtin(builtin: BuiltinValue) -> Option<Builtin> {
         BuiltinValue::DurationAsMilliseconds => Builtin::DurationAsMilliseconds,
         BuiltinValue::FileOpenRead => Builtin::FileOpenRead,
         BuiltinValue::FileCreate => Builtin::FileCreate,
-        BuiltinValue::FileOpenReadPath => Builtin::FileOpenReadPath,
-        BuiltinValue::FileCreatePath => Builtin::FileCreatePath,
         BuiltinValue::FileTryOpenRead => Builtin::FileTryOpenRead,
         BuiltinValue::FileTryCreate => Builtin::FileTryCreate,
-        BuiltinValue::FileTryOpenReadPath => Builtin::FileTryOpenReadPath,
-        BuiltinValue::FileTryCreatePath => Builtin::FileTryCreatePath,
         BuiltinValue::FileReadText => Builtin::FileReadText,
         BuiltinValue::FileWriteText => Builtin::FileWriteText,
         BuiltinValue::FileTryReadText => Builtin::FileTryReadText,

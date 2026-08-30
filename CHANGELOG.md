@@ -49,7 +49,8 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   only its exact-owner private typed write primitive remains compiler-owned.
   All public `std.file` open/create and `std.net` connect functions likewise
   resolve through ordinary source wrappers; four Path forms reuse the Text
-  wrappers, leaving only six exact-owner typed I/O primitives below source.
+  wrappers, leaving only six exact-owner typed I/O primitives below source and
+  no duplicate Path-specific semantic or MIR builtin tags.
   Native runtime ABI 36 (`runtime-v30`) records the removal of the former
   universal File, Socket, and close entry points and their fixed File/Socket
   nominal IDs; the complete identity also retains the earlier removal of

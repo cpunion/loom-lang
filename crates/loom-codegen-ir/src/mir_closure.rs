@@ -718,20 +718,10 @@ impl SerializationClosure {
             | Builtin::FileClose => {
                 self.add_optional_type(prelude.file);
             }
-            Builtin::FileOpenReadPath | Builtin::FileCreatePath => {
-                self.add_optional_type(prelude.path);
-                self.add_optional_type(prelude.file);
-            }
             Builtin::FileTryOpenRead
             | Builtin::FileTryCreate
             | Builtin::FileTryReadText
             | Builtin::FileTryWriteText => {
-                self.add_optional_type(prelude.file);
-                self.add_optional_type(prelude.result);
-                self.add_optional_type(prelude.io_error);
-            }
-            Builtin::FileTryOpenReadPath | Builtin::FileTryCreatePath => {
-                self.add_optional_type(prelude.path);
                 self.add_optional_type(prelude.file);
                 self.add_optional_type(prelude.result);
                 self.add_optional_type(prelude.io_error);
