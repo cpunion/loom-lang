@@ -2771,6 +2771,93 @@ pub fn main() {{
 }
 
 #[test]
+fn caller_side_generic_contract_matches_use_the_callee_instance_key() {
+    let outcome = lower_run(
+        r"fn guarded[T](value Option[T])
+    requires match value {
+        Some(item) => true
+        None => false
+    }
+{}
+
+pub fn main() {
+    guarded(Some(1))
+}
+",
+    );
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("generic contract binding schemas must close under the callee instance: {outcome:?}")
+    };
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("contract PreconditionFault"), "{dump}");
+    assert!(!dump.contains("Parameter#"), "{dump}");
+}
+
+#[test]
+fn contract_text_budget_charges_each_finite_dynamic_candidate_emission() {
+    let source = |call_count: usize| {
+        let direct = "D".repeat(TEXT_LITERAL_MAX_TOTAL_BYTES / 32);
+        let pattern = "P".repeat(TEXT_LITERAL_MAX_TOTAL_BYTES / 32);
+        let calls = "    discard value.check(\"\")\n".repeat(call_count);
+        format!(
+            r#"dyn concept Guard {{
+    method check(self, value Text)
+        requires value == "{direct}" || match value {{
+            "{pattern}" => true
+            _ => false
+        }}
+}}
+
+record First {{ marker Int }}
+record Second {{ marker Int }}
+
+impl Guard for First {{
+    method check(self, value Text) {{}}
+}}
+
+impl Guard for Second {{
+    method check(self, value Text) {{}}
+}}
+
+fn choose(first Bool) dyn Guard {{
+    if first {{ First {{ marker = 1 }} }} else {{ Second {{ marker = 2 }} }}
+}}
+
+pub fn main() {{
+    let value = choose(true)
+{calls}}}
+"#
+        )
+    };
+
+    let small = lower_run(&source(1));
+    let LoweringOutcome::Complete(artifact) = small else {
+        panic!("one finite candidate contract emission must remain supported: {small:?}")
+    };
+    assert_eq!(
+        artifact
+            .functions()
+            .iter()
+            .flat_map(loom_codegen_ir::Function::instructions)
+            .filter(|instruction| matches!(instruction.kind(), InstructionKind::TextLiteral { utf8 } if !utf8.is_empty()))
+            .count(),
+        4,
+        "two literals must be emitted independently in both candidate branches"
+    );
+
+    let overflowing = lower_run(&source(9));
+    let LoweringOutcome::Unsupported(report) = overflowing else {
+        panic!("finite candidate Text amplification must select atomic fallback: {overflowing:?}")
+    };
+    assert_eq!(report.items().len(), 1, "{report:?}");
+    assert_eq!(
+        report.items()[0].feature(),
+        UnsupportedFeature::TextConstant,
+        "{report:?}"
+    );
+}
+
+#[test]
 fn text_budget_charges_each_expanded_cleanup_match_emission() {
     let source = |return_count: usize| {
         let pattern = "C".repeat(TEXT_LITERAL_MAX_TOTAL_BYTES / 16);
@@ -3918,6 +4005,71 @@ pub fn main() {
     );
 }
 
+fn assert_finite_mutable_contract_edges(artifact: &loom_codegen_ir::CheckedArtifact, dump: &str) {
+    let mutable = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with(".advanceOne"))
+        .expect("mutable finite caller");
+    let mut precondition_faults = BTreeSet::new();
+    let mut precondition_metadata = Vec::new();
+    let mut method_edges = Vec::new();
+    for block in mutable.blocks() {
+        match block.terminator().map(loom_codegen_ir::Terminator::kind) {
+            Some(TerminatorKind::Assert {
+                metadata: loom_codegen_ir::FaultMetadata::Contract(metadata),
+                fault,
+                ..
+            }) if metadata.kind() == loom_codegen_ir::ContractFaultKind::Precondition => {
+                precondition_faults.insert(fault.block);
+                precondition_metadata.push((metadata.contract_span(), metadata.blame_span()));
+            }
+            Some(TerminatorKind::Invoke { normal, unwind, .. }) => {
+                method_edges.push((normal.block, unwind.block));
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(precondition_faults.len(), 1, "{dump}");
+    assert_eq!(precondition_metadata.len(), 2, "{dump}");
+    assert!(
+        precondition_metadata
+            .iter()
+            .all(|metadata| *metadata == precondition_metadata[0]),
+        "each candidate must retain the same contract and caller blame: {dump}"
+    );
+    assert_ne!(
+        Some(precondition_metadata[0].0),
+        precondition_metadata[0].1,
+        "precondition blame must be the call site rather than its declaration"
+    );
+    let precondition_fault = mutable
+        .block(*precondition_faults.first().expect("precondition fault"))
+        .expect("precondition fault block");
+    assert!(precondition_fault.instructions().iter().all(|instruction| {
+        !matches!(
+            mutable
+                .instruction(*instruction)
+                .expect("fault instruction")
+                .kind(),
+            InstructionKind::DynConstruct { .. }
+        )
+    }));
+    assert_eq!(method_edges.len(), 2, "{dump}");
+    for (normal, fault) in method_edges {
+        for edge in [normal, fault] {
+            let block = mutable.block(edge).expect("method continuation");
+            assert!(block.instructions().iter().any(|instruction| matches!(
+                mutable
+                    .instruction(*instruction)
+                    .expect("continuation instruction")
+                    .kind(),
+                InstructionKind::DynConstruct { .. }
+            )));
+        }
+    }
+}
+
 #[test]
 fn finite_dynamic_requirements_lower_at_each_exact_candidate_call_site() {
     let LoweringOutcome::Complete(artifact) = lower_run(
@@ -3989,6 +4141,7 @@ pub fn main() {
     assert!(dump.contains("read.requires[0]"), "{dump}");
     assert!(dump.contains("advance.requires[0]"), "{dump}");
     assert!(dump.matches("invoke i").count() >= 4, "{dump}");
+    assert_finite_mutable_contract_edges(&artifact, &dump);
 }
 
 #[test]
