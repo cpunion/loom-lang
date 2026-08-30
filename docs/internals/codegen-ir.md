@@ -139,11 +139,13 @@ found Unicode scalar is allocated through the typed helper. Other dynamic Text
 producers and Text inside transparent/refined carriers still select atomic
 whole-artifact fallback.
 
-Text planning is bounded before LCIR allocation or source storage is cloned.
-One UTF-8 literal may contain at most 1 MiB, and all literal instructions in
-one artifact may contain at most 16 MiB in total. Crossing either bound is
-unsupported coverage and selects the complete checked-MIR route. Independent LCIR
-validation repeats both limits before LLVM constructs any constant object.
+Text planning preflights every source literal before a match plan or LCIR
+instruction clones its storage. One UTF-8 literal may contain at most 1 MiB.
+The disposable artifact builder also charges every actual `TextLiteral`
+emission, including duplicated lexical-cleanup paths, against a 16 MiB total
+before cloning its bytes. Crossing either bound atomically discards the whole
+builder and selects the complete checked-MIR route. Independent LCIR validation
+repeats both limits before LLVM constructs any constant object.
 
 Canonical `Bytes` has one tagless managed-pointer representation. The exact
 `Text.encode_utf8` instruction preserves the immutable Text object pointer, so
@@ -429,7 +431,8 @@ bindings. Unsupported concrete representations or contract shapes remain an
 explicit `SerializedProofRecheck` fallback. Enum construction uses
 `SumConstruct`. Exhaustive matches lower through a bounded decision DAG
 which preserves source arm order, evaluates the scrutinee once, compares scalar
-subpatterns only where needed, and emits an exhaustive `SumSwitch` with typed
+or Text-literal subpatterns only where needed, and emits an exhaustive
+`SumSwitch` with typed
 payload edge parameters at each sum decision. Every selected source arm has
 one shared LCIR block with typed capture parameters, so multiple DAG paths do
 not duplicate its body. A generic body's plan is keyed by its exact concrete
@@ -1261,7 +1264,8 @@ exhaustive matches, tagless/tag-only/tagged ABIs, unusual carrier alignment,
 `Result` test outcomes, normal and fault writebacks,
 source/interpreter/checked-MIR differentials, an explicit checked-MIR float-pattern
 differential across the interpreter and both native routes, shared typed arm
-blocks for wide enums, high-use validation against wide schemas, live
+blocks for wide enums, managed Text-literal matches after moving collection,
+high-use validation against wide schemas, live
 optimized sum-carrier SSA, route-separated identity, object-cache
 behavior, linking, execution, and verifier/optimization gates on Linux and
 macOS. The parameter-driven cross-language benchmark remains on the atomic

@@ -1267,6 +1267,94 @@ fn float_patterns_use_ieee_ordered_equality_in_all_three_backends() {
 }
 
 #[test]
+fn executable_text_literal_patterns_match_managed_values_after_relocation() {
+    let pressure = "x".repeat(40 * 1024);
+    let source = r#"enum Envelope {
+    Empty
+    Wrapped(Option[Text])
+}
+
+fn join(left Text, right Text) Text { left.concat(right) }
+
+fn collectPressure() Text { "__PRESSURE__".concat("__PRESSURE__") }
+
+fn classify(value Text) Int {
+    let pressure = collectPressure()
+    discard pressure.length()
+    match value {
+        "hit" => 1
+        "miss" => 2
+        _ => 3
+    }
+}
+
+fn classifyNested(value Envelope) Int {
+    let pressure = collectPressure()
+    discard pressure.length()
+    match value {
+        Wrapped(Some("nested")) => 4
+        Wrapped(Some(_)) => 5
+        _ => 6
+    }
+}
+
+pub fn main() {
+    let hit = classify(join("h", "it"))
+    let miss = classify(join("m", "iss"))
+    let fallback = classify(join("other", ""))
+    let nestedHit = classifyNested(Envelope.Wrapped(Some(join("nest", "ed"))))
+    let nestedFallback = classifyNested(Envelope.Wrapped(Some(join("other", ""))))
+    let empty = classifyNested(Envelope.Empty)
+    assert hit == 1
+    assert miss == 2
+    assert fallback == 3
+    assert nestedHit == 4
+    assert nestedFallback == 5
+    assert empty == 6
+}
+"#
+    .replace("__PRESSURE__", &pressure);
+    let program = compile_source(&source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    assert_eq!(dump.matches("text.compare.equal").count(), 3, "{dump}");
+    assert!(dump.contains("managed_ptr"), "{dump}");
+    assert!(!dump.contains("loom.Value"), "{dump}");
+
+    let native = emit_and_run_lcir(&artifact, "source-text-literal-patterns");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert_eq!(native.output.stdout, b"Unit\n");
+    assert!(native.output.stderr.is_empty(), "{:?}", native.output);
+    assert!(
+        native.ir.contains("text.compare.same_length"),
+        "{}",
+        native.ir
+    );
+    assert!(native.ir.contains("text.compare.equal"), "{}", native.ir);
+    for suffix in ["classify", "classifyNested"] {
+        let function = emitted_lcir_function(&native.ir, &artifact, suffix);
+        for required in [
+            "loom_gc_typed_root_push_v1",
+            "managed.root.reload",
+            "text.compare.equal",
+        ] {
+            assert!(
+                function.contains(required),
+                "{suffix} omitted `{required}`:\n{function}"
+            );
+        }
+    }
+    assert_typed_lcir_surface(&native.ir);
+}
+
+#[test]
 fn source_lowered_pure_scalars_run_without_runtime_or_universal_values() {
     let source = r"fn choose(flag Bool, left Float, right Float) Bool {
     if flag { left < right } else { !flag }

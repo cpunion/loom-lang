@@ -2,9 +2,18 @@ enum Problem { WrongText }
 
 fn join(left Text, right Text) Text { left.concat(right) }
 
+fn classify(value Text) Int {
+    match value {
+        "KeepRight" => 1
+        "Keep" => 2
+        _ => 0
+    }
+}
+
 fn exercise() {
     let kept = "Keep"
     let joined = join(kept, "Right")
+    discard classify(joined)
     discard joined.length()
     discard kept.length()
 }
@@ -12,7 +21,8 @@ fn exercise() {
 fn verify() Result[Unit, Problem] {
     let kept = "Keep"
     let joined = join(kept, "Right")
-    if joined == "KeepRight" && kept == "Keep" {
+    let classification = classify(joined)
+    if joined == "KeepRight" && kept == "Keep" && classification == 1 {
         Ok(Unit)
     } else {
         Err(Problem.WrongText)

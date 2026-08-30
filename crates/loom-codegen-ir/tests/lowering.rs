@@ -8,9 +8,9 @@ use std::{
 use loom_codegen_ir::{
     AwaitMode, CheckedIntBinaryOp, Effects, InstanceKey, InstanceRole, InstructionKind,
     InvalidRootCode, IoTaskErrorMode, IoTaskOperation, LoweringErrorCode, LoweringOutcome,
-    ManagedSafepoint, ResourceKind, ResourceLimitCode, SourceArtifactRequest, TargetLayout,
-    TerminatorKind, UnsupportedFeature, artifact_identity, dump_program, lower_typed_artifact,
-    plan_managed_roots,
+    ManagedSafepoint, ResourceKind, ResourceLimitCode, SourceArtifactRequest,
+    TEXT_LITERAL_MAX_TOTAL_BYTES, TargetLayout, TerminatorKind, UnsupportedFeature,
+    artifact_identity, dump_program, lower_typed_artifact, plan_managed_roots,
 };
 use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId, Span};
 use loom_hir::{PackageSourceUnit, lower_package_files};
@@ -2601,6 +2601,214 @@ pub fn main() {
     ] {
         assert!(dump.contains(expected), "missing `{expected}`:\n{dump}");
     }
+}
+
+#[test]
+fn executable_text_literal_patterns_plan_nested_managed_comparisons() {
+    let outcome = lower_run(
+        r#"enum Envelope {
+    Empty
+    Wrapped(Option[Text])
+}
+
+fn join(left Text, right Text) Text { left.concat(right) }
+
+fn classify(value Text) Int {
+    match value {
+        "hit" => 1
+        "miss" => 2
+        _ => 3
+    }
+}
+
+fn classifyNested(value Envelope) Int {
+    match value {
+        Wrapped(Some("nested")) => 4
+        Wrapped(Some(_)) => 5
+        _ => 6
+    }
+}
+
+pub fn main() {
+    let hit = classify(join("h", "it"))
+    let miss = classify(join("m", "iss"))
+    let fallback = classify(join("other", ""))
+    let nestedHit = classifyNested(Envelope.Wrapped(Some(join("nest", "ed"))))
+    let nestedFallback = classifyNested(Envelope.Wrapped(Some(join("other", ""))))
+    let empty = classifyNested(Envelope.Empty)
+    assert hit == 1
+    assert miss == 2
+    assert fallback == 3
+    assert nestedHit == 4
+    assert nestedFallback == 5
+    assert empty == 6
+}
+"#,
+    );
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("executable Text literal patterns must lower through typed LCIR: {outcome:?}")
+    };
+    assert_eq!(
+        artifact
+            .representations()
+            .type_id(&loom_mir::Type::Text)
+            .and_then(|ty| artifact.representations().value_type(ty))
+            .and_then(|ty| artifact.representations().repr(ty.repr())),
+        Some(&loom_codegen_ir::Repr::ManagedPointer)
+    );
+    let instructions = artifact
+        .functions()
+        .iter()
+        .flat_map(loom_codegen_ir::Function::instructions)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        instructions
+            .iter()
+            .filter(|instruction| matches!(instruction.kind(), InstructionKind::TextCompare { .. }))
+            .count(),
+        3,
+        "{}",
+        dump_program(artifact.program())
+    );
+    let dump = dump_program(artifact.program());
+    for required in [
+        "text.literal \"hit\"",
+        "text.literal \"miss\"",
+        "text.literal \"nested\"",
+        "text.compare.equal",
+        "sum.switch",
+    ] {
+        assert!(dump.contains(required), "missing `{required}`:\n{dump}");
+    }
+    assert!(!dump.contains("loom.Value"), "{dump}");
+}
+
+#[test]
+fn text_pattern_budget_charges_specialized_decision_nodes_atomically() {
+    let mut distinct_arms = String::new();
+    for index in 0..31 {
+        writeln!(
+            distinct_arms,
+            "        Pair(\"x{index}\", \"a{index}\") => {index}"
+        )
+        .expect("write generated match arm");
+    }
+    let repeated = "B".repeat(TEXT_LITERAL_MAX_TOTAL_BYTES / 32 + 1);
+    let source = format!(
+        r#"enum Pair {{
+    Pair(Text, Text)
+}}
+
+fn classify(value Pair) Int {{
+    match value {{
+{distinct_arms}        Pair(_, "{repeated}") => 31
+        _ => 32
+    }}
+}}
+
+pub fn main() {{
+    discard classify(Pair.Pair("other", "other"))
+}}
+"#
+    );
+    let LoweringOutcome::Unsupported(report) = lower_run(&source) else {
+        panic!("specialized Text literals must select atomic fallback")
+    };
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::TextConstant),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn contract_text_budget_charges_each_synchronous_call_emission() {
+    let source = |call_count: usize| {
+        let direct = "A".repeat(TEXT_LITERAL_MAX_TOTAL_BYTES / 32);
+        let pattern = "B".repeat(TEXT_LITERAL_MAX_TOTAL_BYTES / 32);
+        let calls = "    discard guarded(\"\")\n".repeat(call_count);
+        format!(
+            r#"fn guarded(value Text)
+    requires value == "{direct}" || match value {{
+        "{pattern}" => true
+        _ => false
+    }}
+{{}}
+
+pub fn main() {{
+{calls}}}
+"#
+        )
+    };
+
+    let small = lower_run(&source(2));
+    let LoweringOutcome::Complete(artifact) = small else {
+        panic!("a few synchronous contract emissions must remain supported: {small:?}")
+    };
+    assert_eq!(
+        artifact
+            .functions()
+            .iter()
+            .flat_map(loom_codegen_ir::Function::instructions)
+            .filter(|instruction| matches!(instruction.kind(), InstructionKind::TextLiteral { utf8 } if !utf8.is_empty()))
+            .count(),
+        4
+    );
+
+    let overflowing = lower_run(&source(17));
+    let LoweringOutcome::Unsupported(report) = overflowing else {
+        panic!("contract Text amplification must select atomic fallback: {overflowing:?}")
+    };
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::TextConstant),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn text_budget_charges_each_expanded_cleanup_match_emission() {
+    let source = |return_count: usize| {
+        let pattern = "C".repeat(TEXT_LITERAL_MAX_TOTAL_BYTES / 16);
+        let returns = "    if flag {\n        return\n    }\n".repeat(return_count);
+        format!(
+            r#"fn exercise(value Text, flag Bool) {{
+    defer {{
+        discard match value {{
+            "{pattern}" => 1
+            _ => 0
+        }}
+    }}
+{returns}}}
+
+pub fn main() {{
+    exercise("other", false)
+}}
+"#
+        )
+    };
+
+    let small = lower_run(&source(1));
+    assert!(
+        matches!(small, LoweringOutcome::Complete(_)),
+        "a few expanded cleanup literals must remain supported: {small:?}"
+    );
+
+    let overflowing = lower_run(&source(16));
+    let LoweringOutcome::Unsupported(report) = overflowing else {
+        panic!("cleanup Text amplification must select atomic fallback: {overflowing:?}")
+    };
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::TextConstant),
+        "{report:?}"
+    );
 }
 
 #[test]
