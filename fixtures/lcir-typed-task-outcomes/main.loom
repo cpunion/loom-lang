@@ -69,10 +69,11 @@ async fn exerciseSettled() {
     assert secondCode == "AssertionFault"
     assert secondMessage == "assertion was not satisfied"
 
-    let laterFailure, laterCompleted = Task.settled(
+    let laterJoin = Task.settled(
     faultedText("later"),
     completedText("later")
-    ).await
+    )
+    let laterFailure, laterCompleted = laterJoin.await
     match laterFailure {
         Completed(_) => {
             assert false
@@ -135,10 +136,11 @@ async fn exerciseRace() {
         }
     }
 
-    let completedWinner = Task.race(
+    let completedRace = Task.race(
     slowManagedLoser(73),
     fastManagedWinner()
-    ).await
+    )
+    let completedWinner = completedRace.await
     match completedWinner {
         Completed(value) => {
             assert value == "fast winner"

@@ -18,6 +18,10 @@ async fn exerciseAny() {
     let first = selectFastText().await
     assert first == "fast winner"
 
+    let storedSelection = Task.any(slowText(), fastText())
+    let stored = storedSelection.await
+    assert stored == "fast winner"
+
     let second = selectFastText().await
     assert second == "fast winner"
     let third = selectFastText().await
