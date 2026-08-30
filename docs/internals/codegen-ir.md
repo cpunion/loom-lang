@@ -1056,8 +1056,8 @@ enum instantiations, runtime constructions with open, affine, or unsupported
 shapes, affine or unsupported-shape proof replay, incomplete dynamic witness
 catalogs, derived dynamic proof conversion, contracts over unsupported value
 shapes, and coroutine forms outside the bounded typed slice are not
-implemented. Nongeneric
-task-free refined and fully concrete task-free invariant-record runtime
+implemented. Nongeneric task-free refined and fully concrete task-free
+invariant-record runtime
 construction is direct typed CFG returning the exact
 `Result[..., ConstraintError]`; portable task-free refined and concrete
 task-free invariant-record proof replay uses a canonical runtime-fault

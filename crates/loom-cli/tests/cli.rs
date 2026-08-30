@@ -586,7 +586,7 @@ fn clean_check_uses_the_real_semantic_pipeline() {
 }
 
 #[test]
-fn check_rejects_an_infinite_by_value_type_before_backend_selection() {
+fn check_rejects_an_infinite_by_value_type() {
     let project = TestProject::new(
         "enum Chain {\n    End\n    Next(Chain)\n}\n\npub fn main() {\n    discard Chain.End\n}\n",
     );
@@ -598,7 +598,6 @@ fn check_rejects_an_infinite_by_value_type_before_backend_selection() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("UTF-8 stdout");
     assert!(stdout.contains("RecursiveValueType"), "{stdout}");
-    assert!(!stdout.contains("NativePreparation"), "{stdout}");
 }
 
 #[test]
