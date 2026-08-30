@@ -429,7 +429,8 @@ bindings. Unsupported concrete representations or contract shapes remain an
 explicit `SerializedProofRecheck` fallback. Enum construction uses
 `SumConstruct`. Exhaustive matches lower through a bounded decision DAG
 which preserves source arm order, evaluates the scrutinee once, compares scalar
-subpatterns only where needed, and emits an exhaustive `SumSwitch` with typed
+or Text-literal subpatterns only where needed, and emits an exhaustive
+`SumSwitch` with typed
 payload edge parameters at each sum decision. Every selected source arm has
 one shared LCIR block with typed capture parameters, so multiple DAG paths do
 not duplicate its body. A generic body's plan is keyed by its exact concrete
@@ -1261,7 +1262,8 @@ exhaustive matches, tagless/tag-only/tagged ABIs, unusual carrier alignment,
 `Result` test outcomes, normal and fault writebacks,
 source/interpreter/checked-MIR differentials, an explicit checked-MIR float-pattern
 differential across the interpreter and both native routes, shared typed arm
-blocks for wide enums, high-use validation against wide schemas, live
+blocks for wide enums, managed Text-literal matches after moving collection,
+high-use validation against wide schemas, live
 optimized sum-carrier SSA, route-separated identity, object-cache
 behavior, linking, execution, and verifier/optimization gates on Linux and
 macOS. The parameter-driven cross-language benchmark remains on the atomic
