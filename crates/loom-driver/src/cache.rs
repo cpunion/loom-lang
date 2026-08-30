@@ -166,7 +166,7 @@ pub struct PersistentCache {
     root: PathBuf,
 }
 
-/// Deterministic cache inventory used by `loomc cache stat`.
+/// Deterministic cache inventory used by `loom cache stat`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct CacheStats {
     pub schema_version: u32,

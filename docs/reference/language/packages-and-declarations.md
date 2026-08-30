@@ -61,6 +61,26 @@ The first path segment names the root module or one of its direct dependency
 aliases. The alias `std` is reserved for the read-only compiler-owned standard
 library module.
 
+## Package initialization
+
+Importing a package never executes user code. Loom 0.3 has no `init`
+declaration or block, no executable top-level statements, no mutable globals,
+and no user-defined top-level constant syntax. A function named `init` is an
+ordinary function and is never discovered or called implicitly.
+
+Applications perform runtime initialization through ordinary functions called
+explicitly from `main`. Reusable packages expose those functions without
+creating an implicit initialization order. A future constant declaration may
+be admitted only when its value can be evaluated completely at compile time;
+it must not introduce hidden runtime work. Process-wide lazy values belong in
+future standard-library abstractions such as `Lazy` and `Once`, whose use
+remains explicit in the package graph.
+
+The compiler and runtime may establish fixed facilities such as the GC,
+executor, or Runtime ABI before invoking the program entry point. That is an
+internal toolchain contract, not a user-extensible package initialization
+mechanism, and it does not make imports effectful.
+
 ## Visibility
 
 Declarations are private to their package unless prefixed by `pub`. Files in
@@ -113,7 +133,7 @@ test async fn name() { ... }
 ```
 
 Test declarations are rejected in every other file. Production compilation
-excludes all `*_test.loom` files. `loomc test` adds only test files belonging to
+excludes all `*_test.loom` files. `loom test` adds only test files belonging to
 the selected root module; dependency test files are neither loaded nor run.
 
 The bracketed parts above denote optional generic parameter lists; they are not

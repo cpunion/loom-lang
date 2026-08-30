@@ -124,15 +124,15 @@ impl Drop for TestProject {
     }
 }
 
-fn loomc() -> Command {
+fn loom() -> Command {
     let runtime = test_runtime_bundle_root();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_loomc"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_loom"));
     command.env("LOOM_RUNTIME_BUNDLE", runtime);
     command
 }
 
-fn loomc_without_test_runtime() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_loomc"))
+fn loom_without_test_runtime() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_loom"))
 }
 
 fn run_git(repository: &Path, arguments: &[&str]) -> String {
@@ -236,7 +236,7 @@ fn test_runtime_bundle_root() -> &'static PathBuf {
                 || {
                     panic!(
                         "native CLI tests require LOOM_TEST_RUNTIME_BUNDLE or \
-                     LOOM_RUNTIME_BUNDLE; prepare one with `loomc runtime pack`"
+                     LOOM_RUNTIME_BUNDLE; prepare one with `loom runtime pack`"
                     )
                 },
                 PathBuf::from,
@@ -515,11 +515,11 @@ fn json_record(output: &[u8], category: &str) -> Option<serde_json::Value> {
 #[test]
 fn check_reports_source_errors_before_pipeline_incompleteness() {
     let project = TestProject::new("fn broken(");
-    let output = loomc()
+    let output = loom()
         .args(["--json", "check"])
         .arg(&project.0)
         .output()
-        .expect("run loomc");
+        .expect("run loom");
     assert_eq!(output.status.code(), Some(1));
     let stdout = String::from_utf8(output.stdout).expect("UTF-8 output");
     assert!(stdout.contains("UnexpectedEndOfFile"), "{stdout}");
@@ -529,7 +529,7 @@ fn check_reports_source_errors_before_pipeline_incompleteness() {
 #[test]
 fn human_code_frames_do_not_change_the_json_diagnostic_contract() {
     let project = TestProject::new("pub fn main() {\n    missing()\n}\n");
-    let human = loomc()
+    let human = loom()
         .arg("check")
         .arg(&project.0)
         .output()
@@ -539,7 +539,7 @@ fn human_code_frames_do_not_change_the_json_diagnostic_contract() {
     assert!(stderr.contains("2 |     missing()"), "{stderr}");
     assert!(stderr.contains('^'), "{stderr}");
 
-    let machine = loomc()
+    let machine = loom()
         .args(["--json", "check"])
         .arg(&project.0)
         .output()
@@ -575,7 +575,7 @@ fn human_code_frames_do_not_change_the_json_diagnostic_contract() {
 fn native_and_interpreter_failures_share_the_structured_json_schema() {
     let project = TestProject::new("pub fn main() {\n    assert false\n}\n");
     let failures = ["interpreter", "llvm"].map(|backend| {
-        let output = loomc()
+        let output = loom()
             .args(["--json", "--no-cache", "--backend", backend, "run"])
             .arg(&project.0)
             .output()
@@ -610,7 +610,7 @@ fn check_rejects_an_unknown_language_version() {
         "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"future\"\nversion = \"1.0.0\"\n",
     );
     project.write("main.loom", "");
-    let output = loomc()
+    let output = loom()
         .args(["--json", "check"])
         .arg(&project.0)
         .output()
@@ -623,11 +623,11 @@ fn check_rejects_an_unknown_language_version() {
 #[test]
 fn clean_check_uses_the_real_semantic_pipeline() {
     let project = TestProject::new("fn main() {\n}\n");
-    let output = loomc()
+    let output = loom()
         .args(["check", "--json"])
         .arg(&project.0)
         .output()
-        .expect("run loomc");
+        .expect("run loom");
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8(output.stdout).expect("UTF-8 output");
     assert!(stdout.contains("\"status\":\"ok\""), "{stdout}");
@@ -647,7 +647,7 @@ pub fn main() {
     );
 
     for command in ["check", "build"] {
-        let output = loomc_without_test_runtime()
+        let output = loom_without_test_runtime()
             .args(["--backend", "interpreter", "--no-cache", command])
             .arg(&project.0)
             .output()
@@ -745,7 +745,7 @@ fn dead() DeadRecord {
     let project = TestProject::new(INITIAL_SOURCE);
     let main_artifact = project.0.join("main.loomi");
     let build = |entry: &str, artifact: &std::path::Path, no_cache: bool| {
-        let mut command = loomc_without_test_runtime();
+        let mut command = loom_without_test_runtime();
         command.args(["--json", "--backend", "interpreter"]);
         if no_cache {
             command.arg("--no-cache");
@@ -851,7 +851,7 @@ fn dead() DeadRecord {
         "an unreachable definition edit must not perturb final executable bytes"
     );
 
-    let run = loomc_without_test_runtime()
+    let run = loom_without_test_runtime()
         .args(["--backend", "interpreter", "run", "--artifact"])
         .arg(main_artifact)
         .output()
@@ -865,7 +865,7 @@ fn persistent_cache_hits_content_keys_and_final_artifacts() {
     let project = TestProject::new("pub fn main() {\n}\n");
 
     let check = |extra: &[&str]| {
-        loomc()
+        loom()
             .args(["--json", "--backend", "interpreter"])
             .args(extra)
             .arg(&project.0)
@@ -902,7 +902,7 @@ fn persistent_cache_hits_content_keys_and_final_artifacts() {
     );
 
     let first_artifact = project.0.join("first.loomi");
-    let first_build = loomc()
+    let first_build = loom()
         .args(["--json", "--backend", "interpreter", "build", "--output"])
         .arg(&first_artifact)
         .arg(&project.0)
@@ -915,7 +915,7 @@ fn persistent_cache_hits_content_keys_and_final_artifacts() {
     );
 
     let second_artifact = project.0.join("second.loomi");
-    let second_build = loomc()
+    let second_build = loom()
         .args(["--json", "--backend", "interpreter", "build", "--output"])
         .arg(&second_artifact)
         .arg(&project.0)
@@ -935,7 +935,7 @@ fn persistent_cache_hits_content_keys_and_final_artifacts() {
 #[test]
 fn backend_switch_reuses_the_same_checked_mir_identity() {
     let project = TestProject::new("pub fn main() {\n}\n");
-    let interpreter = loomc()
+    let interpreter = loom()
         .args(["--json", "--backend", "interpreter", "check"])
         .arg(&project.0)
         .output()
@@ -946,7 +946,7 @@ fn backend_switch_reuses_the_same_checked_mir_identity() {
         Some("miss")
     );
 
-    let llvm = loomc()
+    let llvm = loom()
         .args(["--json", "--backend", "llvm", "check"])
         .arg(&project.0)
         .output()
@@ -972,7 +972,7 @@ fn target_and_optimization_split_object_cache_but_reuse_checked_mir() {
     .expect("host target identity")
     .triple;
     let build = |name: &str, target: Option<&str>, release: bool| {
-        let mut command = loomc();
+        let mut command = loom();
         command.arg("--json");
         if release {
             command.arg("--release");
@@ -1071,7 +1071,7 @@ fn ordinary_native_commands_use_the_atomic_automatic_route() {
         "fn choose(flag Bool) Int { if flag { 1 } else { 2 } }\n\npub fn main() {\n    discard choose(true)\n}\n\ntest fn scalar() {\n    discard choose(false)\n}\n",
     );
     let scalar_object = scalar.0.join("scalar.o");
-    let build = loomc()
+    let build = loom()
         .args(["build", "--emit", "object", "--output"])
         .arg(&scalar_object)
         .arg(&scalar.0)
@@ -1082,14 +1082,14 @@ fn ordinary_native_commands_use_the_atomic_automatic_route() {
     assert!(contains_bytes(&object, b"loom.lcir.fn"));
     assert!(!contains_bytes(&object, b"loom.fn."));
 
-    let run = loomc()
+    let run = loom()
         .arg("run")
         .arg(&scalar.0)
         .output()
         .expect("run typed artifact through the production CLI");
     assert_eq!(run.status.code(), Some(0), "{run:?}");
     assert_eq!(run.stdout, b"Unit\n");
-    let tests = loomc()
+    let tests = loom()
         .arg("test")
         .arg(&scalar.0)
         .output()
@@ -1098,7 +1098,7 @@ fn ordinary_native_commands_use_the_atomic_automatic_route() {
 
     let managed = TestProject::new("pub fn main() {\n    discard \"left\".concat(\"right\")\n}\n");
     let managed_object = managed.0.join("managed-text.o");
-    let build = loomc()
+    let build = loom()
         .args(["build", "--emit", "object", "--output"])
         .arg(&managed_object)
         .arg(&managed.0)
@@ -1118,7 +1118,7 @@ fn ordinary_native_commands_use_the_atomic_automatic_route() {
 fn async_managed_collections_close_real_check_build_test_and_run_commands() {
     let project = TestProject::new(fixture_source!("lcir-async-managed-collections"));
 
-    let check = loomc()
+    let check = loom()
         .args(["--no-cache", "check"])
         .arg(&project.0)
         .output()
@@ -1126,7 +1126,7 @@ fn async_managed_collections_close_real_check_build_test_and_run_commands() {
     assert_eq!(check.status.code(), Some(0), "{check:?}");
 
     let object_path = project.0.join("async-managed-collections.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
@@ -1163,7 +1163,7 @@ fn async_managed_collections_close_real_check_build_test_and_run_commands() {
         );
     }
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
@@ -1175,7 +1175,7 @@ fn async_managed_collections_close_real_check_build_test_and_run_commands() {
         "{tests:?}"
     );
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
@@ -1188,7 +1188,7 @@ fn async_managed_collections_close_real_check_build_test_and_run_commands() {
 fn typed_sleep_closes_real_check_build_test_and_run_commands() {
     let project = TestProject::new(fixture_source!("lcir-typed-sleep"));
 
-    let check = loomc()
+    let check = loom()
         .args(["--no-cache", "check"])
         .arg(&project.0)
         .output()
@@ -1196,7 +1196,7 @@ fn typed_sleep_closes_real_check_build_test_and_run_commands() {
     assert_eq!(check.status.code(), Some(0), "{check:?}");
 
     let object_path = project.0.join("typed-sleep.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
@@ -1228,7 +1228,7 @@ fn typed_sleep_closes_real_check_build_test_and_run_commands() {
         );
     }
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
@@ -1240,7 +1240,7 @@ fn typed_sleep_closes_real_check_build_test_and_run_commands() {
         "{tests:?}"
     );
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
@@ -1253,7 +1253,7 @@ fn typed_sleep_closes_real_check_build_test_and_run_commands() {
 fn synchronous_task_helpers_close_real_check_build_test_and_run_commands() {
     let project = TestProject::new(fixture_source!("lcir-sync-task-helpers"));
 
-    let check = loomc()
+    let check = loom()
         .args(["--no-cache", "check"])
         .arg(&project.0)
         .output()
@@ -1261,7 +1261,7 @@ fn synchronous_task_helpers_close_real_check_build_test_and_run_commands() {
     assert_eq!(check.status.code(), Some(0), "{check:?}");
 
     let object_path = project.0.join("sync-task-helpers.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
@@ -1289,7 +1289,7 @@ fn synchronous_task_helpers_close_real_check_build_test_and_run_commands() {
         );
     }
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
@@ -1301,7 +1301,7 @@ fn synchronous_task_helpers_close_real_check_build_test_and_run_commands() {
         "{tests:?}"
     );
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
@@ -1314,7 +1314,7 @@ fn synchronous_task_helpers_close_real_check_build_test_and_run_commands() {
 fn typed_task_all_closes_real_check_build_test_and_run_commands() {
     let project = TestProject::new(fixture_source!("lcir-typed-task-all"));
 
-    let check = loomc()
+    let check = loom()
         .args(["--no-cache", "check"])
         .arg(&project.0)
         .output()
@@ -1322,7 +1322,7 @@ fn typed_task_all_closes_real_check_build_test_and_run_commands() {
     assert_eq!(check.status.code(), Some(0), "{check:?}");
 
     let object_path = project.0.join("typed-task-all.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
@@ -1359,7 +1359,7 @@ fn typed_task_all_closes_real_check_build_test_and_run_commands() {
         );
     }
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
@@ -1371,7 +1371,7 @@ fn typed_task_all_closes_real_check_build_test_and_run_commands() {
         "{tests:?}"
     );
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
@@ -1384,7 +1384,7 @@ fn typed_task_all_closes_real_check_build_test_and_run_commands() {
 fn typed_task_any_closes_real_check_build_test_and_run_commands() {
     let project = TestProject::new(fixture_source!("lcir-typed-task-any"));
 
-    let check = loomc()
+    let check = loom()
         .args(["--no-cache", "check"])
         .arg(&project.0)
         .output()
@@ -1392,7 +1392,7 @@ fn typed_task_any_closes_real_check_build_test_and_run_commands() {
     assert_eq!(check.status.code(), Some(0), "{check:?}");
 
     let object_path = project.0.join("typed-task-any.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
@@ -1432,7 +1432,7 @@ fn typed_task_any_closes_real_check_build_test_and_run_commands() {
         );
     }
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
@@ -1444,7 +1444,7 @@ fn typed_task_any_closes_real_check_build_test_and_run_commands() {
         "{tests:?}"
     );
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
@@ -1457,7 +1457,7 @@ fn typed_task_any_closes_real_check_build_test_and_run_commands() {
 fn typed_task_outcomes_close_real_check_build_test_and_run_commands() {
     let project = TestProject::new(fixture_source!("lcir-typed-task-outcomes"));
 
-    let check = loomc()
+    let check = loom()
         .args(["--no-cache", "check"])
         .arg(&project.0)
         .output()
@@ -1465,7 +1465,7 @@ fn typed_task_outcomes_close_real_check_build_test_and_run_commands() {
     assert_eq!(check.status.code(), Some(0), "{check:?}");
 
     let object_path = project.0.join("typed-task-outcomes.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
@@ -1504,7 +1504,7 @@ fn typed_task_outcomes_close_real_check_build_test_and_run_commands() {
         );
     }
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
@@ -1516,7 +1516,7 @@ fn typed_task_outcomes_close_real_check_build_test_and_run_commands() {
         "{tests:?}"
     );
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
@@ -1529,7 +1529,7 @@ fn typed_task_outcomes_close_real_check_build_test_and_run_commands() {
 fn typed_async_cleanup_closes_real_check_build_test_and_run_commands() {
     let project = TestProject::new(fixture_source!("lcir-async-cleanup"));
 
-    let check = loomc()
+    let check = loom()
         .args(["--no-cache", "check"])
         .arg(&project.0)
         .output()
@@ -1537,7 +1537,7 @@ fn typed_async_cleanup_closes_real_check_build_test_and_run_commands() {
     assert_eq!(check.status.code(), Some(0), "{check:?}");
 
     let object_path = project.0.join("async-cleanup.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
@@ -1572,7 +1572,7 @@ fn typed_async_cleanup_closes_real_check_build_test_and_run_commands() {
         );
     }
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
@@ -1584,7 +1584,7 @@ fn typed_async_cleanup_closes_real_check_build_test_and_run_commands() {
         "{tests:?}"
     );
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
@@ -1592,7 +1592,7 @@ fn typed_async_cleanup_closes_real_check_build_test_and_run_commands() {
     assert_eq!(run.status.code(), Some(0), "{run:?}");
     assert_eq!(run.stdout, b"Unit\n");
 
-    let cancellation = loomc()
+    let cancellation = loom()
         .args(["--json", "--no-cache", "run", "--entry", "cancellationMain"])
         .arg(&project.0)
         .output()
@@ -1614,7 +1614,7 @@ fn typed_async_cleanup_closes_real_check_build_test_and_run_commands() {
 fn typed_async_writeback_closes_real_check_build_test_and_run_commands() {
     let project = TestProject::new(fixture_source!("lcir-async-writeback"));
 
-    let check = loomc()
+    let check = loom()
         .args(["--no-cache", "check"])
         .arg(&project.0)
         .output()
@@ -1622,7 +1622,7 @@ fn typed_async_writeback_closes_real_check_build_test_and_run_commands() {
     assert_eq!(check.status.code(), Some(0), "{check:?}");
 
     let object_path = project.0.join("async-writeback.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
@@ -1658,7 +1658,7 @@ fn typed_async_writeback_closes_real_check_build_test_and_run_commands() {
         );
     }
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
@@ -1670,7 +1670,7 @@ fn typed_async_writeback_closes_real_check_build_test_and_run_commands() {
         "{tests:?}"
     );
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
@@ -1683,7 +1683,7 @@ fn typed_async_writeback_closes_real_check_build_test_and_run_commands() {
 fn generic_native_commands_close_check_build_test_and_run() {
     let project = TestProject::new(fixture_source!("lcir-generics"));
 
-    let check = loomc()
+    let check = loom()
         .args(["--no-cache", "check"])
         .arg(&project.0)
         .output()
@@ -1691,7 +1691,7 @@ fn generic_native_commands_close_check_build_test_and_run() {
     assert_eq!(check.status.code(), Some(0), "{check:?}");
 
     let object_path = project.0.join("generics.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
@@ -1702,7 +1702,7 @@ fn generic_native_commands_close_check_build_test_and_run() {
     assert!(contains_bytes(&object, b"loom.lcir.fn"));
     assert!(!contains_bytes(&object, b"loom.fn."));
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
@@ -1713,7 +1713,7 @@ fn generic_native_commands_close_check_build_test_and_run() {
         "{tests:?}"
     );
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
@@ -1726,7 +1726,7 @@ fn generic_native_commands_close_check_build_test_and_run() {
 fn generic_products_close_real_check_build_test_and_run_commands() {
     let project = TestProject::new(fixture_source!("lcir-generic-products"));
 
-    let check = loomc()
+    let check = loom()
         .args(["--no-cache", "check"])
         .arg(&project.0)
         .output()
@@ -1734,7 +1734,7 @@ fn generic_products_close_real_check_build_test_and_run_commands() {
     assert_eq!(check.status.code(), Some(0), "{check:?}");
 
     let object_path = project.0.join("generic-products.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
@@ -1769,7 +1769,7 @@ fn generic_products_close_real_check_build_test_and_run_commands() {
         );
     }
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
@@ -1780,7 +1780,7 @@ fn generic_products_close_real_check_build_test_and_run_commands() {
         "{tests:?}"
     );
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
@@ -1795,7 +1795,7 @@ fn scalar_std_apis_close_both_backends_and_typed_object_surface() {
 
     for backend in ["interpreter", "llvm"] {
         for command in ["check", "test", "run"] {
-            let output = loomc()
+            let output = loom()
                 .args(["--backend", backend, "--no-cache", command])
                 .arg(&project.0)
                 .output()
@@ -1819,7 +1819,7 @@ fn scalar_std_apis_close_both_backends_and_typed_object_surface() {
         }
 
         let artifact = project.0.join(format!("scalar-{backend}.artifact"));
-        let build = loomc()
+        let build = loom()
             .args(["--backend", backend, "--no-cache", "build", "--output"])
             .arg(&artifact)
             .arg(&project.0)
@@ -1827,7 +1827,7 @@ fn scalar_std_apis_close_both_backends_and_typed_object_surface() {
             .expect("build scalar std API artifact");
         assert_eq!(build.status.code(), Some(0), "{backend}: {build:?}");
 
-        let run = loomc()
+        let run = loom()
             .args(["--backend", backend, "run", "--artifact"])
             .arg(&artifact)
             .output()
@@ -1837,7 +1837,7 @@ fn scalar_std_apis_close_both_backends_and_typed_object_surface() {
     }
 
     let object_path = project.0.join("scalar-builtins.o");
-    let build = loomc()
+    let build = loom()
         .args([
             "--backend",
             "llvm",
@@ -1888,7 +1888,7 @@ fn scalar_std_apis_close_both_backends_and_typed_object_surface() {
 fn structural_equality_closes_real_check_build_test_and_run_commands() {
     let project = TestProject::new(fixture_source!("lcir-structural-equality"));
 
-    let check = loomc()
+    let check = loom()
         .args(["--no-cache", "check"])
         .arg(&project.0)
         .output()
@@ -1896,7 +1896,7 @@ fn structural_equality_closes_real_check_build_test_and_run_commands() {
     assert_eq!(check.status.code(), Some(0), "{check:?}");
 
     let object_path = project.0.join("structural-equality.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
@@ -1931,7 +1931,7 @@ fn structural_equality_closes_real_check_build_test_and_run_commands() {
         );
     }
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
@@ -1942,7 +1942,7 @@ fn structural_equality_closes_real_check_build_test_and_run_commands() {
         "{tests:?}"
     );
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
@@ -1955,7 +1955,7 @@ fn structural_equality_closes_real_check_build_test_and_run_commands() {
 fn static_concepts_close_real_check_build_test_and_run_commands() {
     let project = TestProject::new(fixture_source!("lcir-static-concepts"));
 
-    let check = loomc()
+    let check = loom()
         .args(["--no-cache", "check"])
         .arg(&project.0)
         .output()
@@ -1963,7 +1963,7 @@ fn static_concepts_close_real_check_build_test_and_run_commands() {
     assert_eq!(check.status.code(), Some(0), "{check:?}");
 
     let object_path = project.0.join("static-concepts.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
@@ -1987,7 +1987,7 @@ fn static_concepts_close_real_check_build_test_and_run_commands() {
         );
     }
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
@@ -1998,7 +1998,7 @@ fn static_concepts_close_real_check_build_test_and_run_commands() {
         "{tests:?}"
     );
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
@@ -2011,7 +2011,7 @@ fn static_concepts_close_real_check_build_test_and_run_commands() {
 fn unique_dynamic_concepts_close_real_check_build_test_and_run_commands() {
     let project = TestProject::new(fixture_source!("lcir-dyn-unique"));
 
-    let check = loomc()
+    let check = loom()
         .args(["--no-cache", "check"])
         .arg(&project.0)
         .output()
@@ -2019,7 +2019,7 @@ fn unique_dynamic_concepts_close_real_check_build_test_and_run_commands() {
     assert_eq!(check.status.code(), Some(0), "{check:?}");
 
     let object_path = project.0.join("unique-dyn.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
@@ -2042,7 +2042,7 @@ fn unique_dynamic_concepts_close_real_check_build_test_and_run_commands() {
         );
     }
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
@@ -2053,7 +2053,7 @@ fn unique_dynamic_concepts_close_real_check_build_test_and_run_commands() {
         "{tests:?}"
     );
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
@@ -2066,7 +2066,7 @@ fn unique_dynamic_concepts_close_real_check_build_test_and_run_commands() {
 fn finite_dynamic_concepts_close_real_check_build_test_and_run_commands() {
     let project = TestProject::new(fixture_source!("lcir-dyn-finite"));
 
-    let check = loomc()
+    let check = loom()
         .args(["--no-cache", "check"])
         .arg(&project.0)
         .output()
@@ -2074,7 +2074,7 @@ fn finite_dynamic_concepts_close_real_check_build_test_and_run_commands() {
     assert_eq!(check.status.code(), Some(0), "{check:?}");
 
     let object_path = project.0.join("finite-dyn.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
@@ -2107,7 +2107,7 @@ fn finite_dynamic_concepts_close_real_check_build_test_and_run_commands() {
         );
     }
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
@@ -2118,7 +2118,7 @@ fn finite_dynamic_concepts_close_real_check_build_test_and_run_commands() {
         "{tests:?}"
     );
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
@@ -2134,7 +2134,7 @@ fn concepts_polymorphism_uses_the_unique_witness_lcir_route() {
         include_str!("../../../examples/concepts-polymorphism/concepts_test.loom")
     ));
     let object_path = project.0.join("concepts-polymorphism-unique-dyn.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
@@ -2157,7 +2157,7 @@ fn concepts_polymorphism_uses_the_unique_witness_lcir_route() {
         );
     }
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
@@ -2165,7 +2165,7 @@ fn concepts_polymorphism_uses_the_unique_witness_lcir_route() {
     assert_eq!(run.status.code(), Some(0), "{run:?}");
     assert_eq!(run.stdout, b"Unit\n");
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
@@ -2185,7 +2185,7 @@ fn concepts_polymorphism_uses_the_unique_witness_lcir_route() {
 fn lexical_cleanup_and_source_contracts_close_real_check_build_test_and_run_commands() {
     let project = TestProject::new(fixture_source!("lcir-lexical-cleanup"));
 
-    let check = loomc()
+    let check = loom()
         .args(["--no-cache", "check"])
         .arg(&project.0)
         .output()
@@ -2193,7 +2193,7 @@ fn lexical_cleanup_and_source_contracts_close_real_check_build_test_and_run_comm
     assert_eq!(check.status.code(), Some(0), "{check:?}");
 
     let object_path = project.0.join("lexical-cleanup.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
@@ -2218,7 +2218,7 @@ fn lexical_cleanup_and_source_contracts_close_real_check_build_test_and_run_comm
         );
     }
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
@@ -2229,7 +2229,7 @@ fn lexical_cleanup_and_source_contracts_close_real_check_build_test_and_run_comm
         "{tests:?}"
     );
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
@@ -2242,7 +2242,7 @@ fn lexical_cleanup_and_source_contracts_close_real_check_build_test_and_run_comm
 fn projected_places_close_real_check_build_test_and_run_commands() {
     let project = TestProject::new(fixture_source!("lcir-projected-places"));
 
-    let check = loomc()
+    let check = loom()
         .args(["--no-cache", "check"])
         .arg(&project.0)
         .output()
@@ -2250,7 +2250,7 @@ fn projected_places_close_real_check_build_test_and_run_commands() {
     assert_eq!(check.status.code(), Some(0), "{check:?}");
 
     let object_path = project.0.join("projected-places.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
@@ -2261,7 +2261,7 @@ fn projected_places_close_real_check_build_test_and_run_commands() {
     assert!(contains_bytes(&object, b"loom.lcir.fn"));
     assert!(!contains_bytes(&object, b"loom.fn."));
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
@@ -2272,7 +2272,7 @@ fn projected_places_close_real_check_build_test_and_run_commands() {
         "{tests:?}"
     );
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
@@ -2285,7 +2285,7 @@ fn projected_places_close_real_check_build_test_and_run_commands() {
 fn immortal_text_closes_real_check_build_test_and_run_commands() {
     let project = TestProject::new(fixture_source!("lcir-text"));
 
-    let check = loomc()
+    let check = loom()
         .args(["--no-cache", "check"])
         .arg(&project.0)
         .output()
@@ -2293,7 +2293,7 @@ fn immortal_text_closes_real_check_build_test_and_run_commands() {
     assert_eq!(check.status.code(), Some(0), "{check:?}");
 
     let object_path = project.0.join("immortal-text.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
@@ -2310,7 +2310,7 @@ fn immortal_text_closes_real_check_build_test_and_run_commands() {
     assert!(!contains_bytes(&object, b"loom_gc_"));
     assert!(!contains_bytes(&object, b"loom_executor_"));
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
@@ -2321,7 +2321,7 @@ fn immortal_text_closes_real_check_build_test_and_run_commands() {
         "{tests:?}"
     );
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
@@ -2334,7 +2334,7 @@ fn immortal_text_closes_real_check_build_test_and_run_commands() {
 fn managed_text_concat_closes_real_check_build_test_and_run_commands() {
     let project = TestProject::new(fixture_source!("lcir-managed-text"));
 
-    let check = loomc()
+    let check = loom()
         .args(["--no-cache", "check"])
         .arg(&project.0)
         .output()
@@ -2342,7 +2342,7 @@ fn managed_text_concat_closes_real_check_build_test_and_run_commands() {
     assert_eq!(check.status.code(), Some(0), "{check:?}");
 
     let object_path = project.0.join("managed-text.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
@@ -2378,7 +2378,7 @@ fn managed_text_concat_closes_real_check_build_test_and_run_commands() {
         );
     }
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
@@ -2389,7 +2389,7 @@ fn managed_text_concat_closes_real_check_build_test_and_run_commands() {
         "{tests:?}"
     );
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
@@ -2402,7 +2402,7 @@ fn managed_text_concat_closes_real_check_build_test_and_run_commands() {
 fn managed_product_leaves_close_real_check_build_test_and_run_commands() {
     let project = TestProject::new(fixture_source!("lcir-managed-products"));
 
-    let check = loomc()
+    let check = loom()
         .args(["--no-cache", "check"])
         .arg(&project.0)
         .output()
@@ -2410,7 +2410,7 @@ fn managed_product_leaves_close_real_check_build_test_and_run_commands() {
     assert_eq!(check.status.code(), Some(0), "{check:?}");
 
     let object_path = project.0.join("managed-products.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
@@ -2445,7 +2445,7 @@ fn managed_product_leaves_close_real_check_build_test_and_run_commands() {
         );
     }
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
@@ -2456,7 +2456,7 @@ fn managed_product_leaves_close_real_check_build_test_and_run_commands() {
         "{tests:?}"
     );
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
@@ -2469,7 +2469,7 @@ fn managed_product_leaves_close_real_check_build_test_and_run_commands() {
 fn managed_sum_leaves_close_real_check_build_test_and_run_commands() {
     let project = TestProject::new(fixture_source!("lcir-managed-sums"));
 
-    let check = loomc()
+    let check = loom()
         .args(["--no-cache", "check"])
         .arg(&project.0)
         .output()
@@ -2477,7 +2477,7 @@ fn managed_sum_leaves_close_real_check_build_test_and_run_commands() {
     assert_eq!(check.status.code(), Some(0), "{check:?}");
 
     let object_path = project.0.join("managed-sums.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
@@ -2512,7 +2512,7 @@ fn managed_sum_leaves_close_real_check_build_test_and_run_commands() {
         );
     }
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
@@ -2523,7 +2523,7 @@ fn managed_sum_leaves_close_real_check_build_test_and_run_commands() {
         "{tests:?}"
     );
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
@@ -2536,7 +2536,7 @@ fn managed_sum_leaves_close_real_check_build_test_and_run_commands() {
 fn managed_lists_close_real_check_build_test_and_run_commands() {
     let project = TestProject::new(fixture_source!("lcir-managed-lists"));
 
-    let check = loomc()
+    let check = loom()
         .args(["--no-cache", "check"])
         .arg(&project.0)
         .output()
@@ -2544,7 +2544,7 @@ fn managed_lists_close_real_check_build_test_and_run_commands() {
     assert_eq!(check.status.code(), Some(0), "{check:?}");
 
     let object_path = project.0.join("managed-lists.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
@@ -2581,7 +2581,7 @@ fn managed_lists_close_real_check_build_test_and_run_commands() {
         );
     }
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
@@ -2592,7 +2592,7 @@ fn managed_lists_close_real_check_build_test_and_run_commands() {
         "{tests:?}"
     );
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
@@ -2605,7 +2605,7 @@ fn managed_lists_close_real_check_build_test_and_run_commands() {
 fn typed_text_maps_close_real_check_build_test_and_run_commands() {
     let project = TestProject::new(fixture_source!("lcir-typed-textmap"));
 
-    let check = loomc()
+    let check = loom()
         .args(["--no-cache", "check"])
         .arg(&project.0)
         .output()
@@ -2613,7 +2613,7 @@ fn typed_text_maps_close_real_check_build_test_and_run_commands() {
     assert_eq!(check.status.code(), Some(0), "{check:?}");
 
     let object_path = project.0.join("typed-text-map.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
@@ -2652,7 +2652,7 @@ fn typed_text_maps_close_real_check_build_test_and_run_commands() {
         );
     }
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
@@ -2663,7 +2663,7 @@ fn typed_text_maps_close_real_check_build_test_and_run_commands() {
         "{tests:?}"
     );
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
@@ -2677,7 +2677,7 @@ fn typed_logging_closes_real_check_build_test_and_run_commands() {
     let project = TestProject::new(fixture_source!("lcir-typed-logging"));
     let expected = include_bytes!("../../../fixtures/lcir-typed-logging/expected.stderr");
 
-    let check = loomc()
+    let check = loom()
         .args(["--no-cache", "check"])
         .arg(&project.0)
         .output()
@@ -2686,7 +2686,7 @@ fn typed_logging_closes_real_check_build_test_and_run_commands() {
     assert!(check.stderr.is_empty(), "{check:?}");
 
     let object_path = project.0.join("typed-logging.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
@@ -2722,7 +2722,7 @@ fn typed_logging_closes_real_check_build_test_and_run_commands() {
         );
     }
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
@@ -2731,7 +2731,7 @@ fn typed_logging_closes_real_check_build_test_and_run_commands() {
     assert_eq!(tests.stdout, b"passed standalone.typedLogging\n");
     assert_eq!(tests.stderr, expected);
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
@@ -2745,7 +2745,7 @@ fn typed_logging_closes_real_check_build_test_and_run_commands() {
 fn typed_json_format_closes_real_check_build_test_and_run_commands() {
     let project = TestProject::new(fixture_source!("lcir-json-format"));
 
-    let check = loomc()
+    let check = loom()
         .args(["--no-cache", "check"])
         .arg(&project.0)
         .output()
@@ -2754,7 +2754,7 @@ fn typed_json_format_closes_real_check_build_test_and_run_commands() {
     assert!(check.stderr.is_empty(), "{check:?}");
 
     let object_path = project.0.join("typed-json-format.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
@@ -2792,7 +2792,7 @@ fn typed_json_format_closes_real_check_build_test_and_run_commands() {
         );
     }
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
@@ -2801,7 +2801,7 @@ fn typed_json_format_closes_real_check_build_test_and_run_commands() {
     assert_eq!(tests.stdout, b"passed standalone.typedJsonFormat\n");
     assert!(tests.stderr.is_empty(), "{tests:?}");
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
@@ -2817,7 +2817,7 @@ fn source_json_parse_closes_real_check_build_test_and_run_commands() {
 
     for backend in ["interpreter", "llvm"] {
         for command in ["check", "test", "run"] {
-            let output = loomc()
+            let output = loom()
                 .args(["--backend", backend, "--no-cache", command])
                 .arg(&project.0)
                 .output()
@@ -2843,7 +2843,7 @@ fn source_json_parse_closes_real_check_build_test_and_run_commands() {
         let artifact = project
             .0
             .join(format!("source-json-parse-{backend}.artifact"));
-        let build = loomc()
+        let build = loom()
             .args(["--backend", backend, "--no-cache", "build", "--output"])
             .arg(&artifact)
             .arg(&project.0)
@@ -2852,7 +2852,7 @@ fn source_json_parse_closes_real_check_build_test_and_run_commands() {
         assert_eq!(build.status.code(), Some(0), "{backend}: {build:?}");
         assert!(build.stderr.is_empty(), "{backend}: {build:?}");
 
-        let run = loomc()
+        let run = loom()
             .args(["--backend", backend, "run", "--artifact"])
             .arg(&artifact)
             .output()
@@ -2863,7 +2863,7 @@ fn source_json_parse_closes_real_check_build_test_and_run_commands() {
     }
 
     let object_path = project.0.join("source-json-parse.o");
-    let build = loomc()
+    let build = loom()
         .args([
             "--backend",
             "llvm",
@@ -2909,14 +2909,14 @@ fn source_json_parse_closes_real_check_build_test_and_run_commands() {
 #[test]
 fn cache_stat_and_prune_have_stable_json_reports() {
     let project = TestProject::new("pub fn main() {}\n");
-    let check = loomc()
+    let check = loom()
         .args(["--json", "--backend", "interpreter", "check"])
         .arg(&project.0)
         .output()
         .expect("populate cache");
     assert_eq!(check.status.code(), Some(0));
 
-    let stat = loomc()
+    let stat = loom()
         .args(["--json", "cache", "stat"])
         .arg(&project.0)
         .output()
@@ -2926,7 +2926,7 @@ fn cache_stat_and_prune_have_stable_json_reports() {
     assert!(stdout.contains("\"category\":\"cache_stat\""), "{stdout}");
     assert!(stdout.contains("\"schema_version\":6"), "{stdout}");
 
-    let prune = loomc()
+    let prune = loom()
         .args(["--json", "cache", "prune"])
         .arg(&project.0)
         .output()
@@ -2940,7 +2940,7 @@ fn cache_stat_and_prune_have_stable_json_reports() {
 fn unreachable_private_body_edits_reuse_native_object_and_relink() {
     let project = TestProject::new("pub fn main() {\n}\n\nfn dead() Int {\n    1\n}\n");
     let first_artifact = project.0.join("first.native");
-    let first = loomc()
+    let first = loom()
         .args(["--json", "build", "--output"])
         .arg(&first_artifact)
         .arg(&project.0)
@@ -2961,7 +2961,7 @@ fn unreachable_private_body_edits_reuse_native_object_and_relink() {
         "pub fn main() {\n}\n\nfn dead() Int {\n    2\n}\n",
     );
     let second_artifact = project.0.join("second.native");
-    let second = loomc()
+    let second = loom()
         .args(["--json", "build", "--output"])
         .arg(&second_artifact)
         .arg(&project.0)
@@ -2983,7 +2983,7 @@ fn unreachable_private_body_edits_reuse_native_object_and_relink() {
     assert!(first_artifact.is_file());
     assert!(second_artifact.is_file());
 
-    let third = loomc()
+    let third = loom()
         .args(["--json", "build", "--output"])
         .arg(project.0.join("third.native"))
         .arg(&project.0)
@@ -3029,7 +3029,7 @@ fn manifest_targets_and_path_dependencies_drive_cli_roots() {
         vec!["check", "--target", "app"],
         vec!["run", "--target", "app"],
     ] {
-        let output = loomc()
+        let output = loom()
             .args(arguments)
             .arg(&root)
             .output()
@@ -3043,7 +3043,7 @@ fn manifest_targets_and_path_dependencies_drive_cli_roots() {
         );
     }
 
-    let tests = loomc()
+    let tests = loom()
         .arg("test")
         .arg(&root)
         .output()
@@ -3055,7 +3055,7 @@ fn manifest_targets_and_path_dependencies_drive_cli_roots() {
     );
 
     let artifact = project.0.join("application.native");
-    let build = loomc()
+    let build = loom()
         .args(["--json", "build", "--target", "app", "--output"])
         .arg(&artifact)
         .arg(&root)
@@ -3073,7 +3073,7 @@ fn manifest_targets_and_path_dependencies_drive_cli_roots() {
     );
     assert!(artifact.is_file());
 
-    let artifact_run = loomc()
+    let artifact_run = loom()
         .args(["run", "--artifact"])
         .arg(&artifact)
         .output()
@@ -3082,7 +3082,7 @@ fn manifest_targets_and_path_dependencies_drive_cli_roots() {
     assert_eq!(artifact_run.stdout, b"Unit\n");
 
     let interpreted_artifact = project.0.join("application.loomi");
-    let interpreted_build = loomc()
+    let interpreted_build = loom()
         .args([
             "--backend",
             "interpreter",
@@ -3102,7 +3102,7 @@ fn manifest_targets_and_path_dependencies_drive_cli_roots() {
         String::from_utf8_lossy(&interpreted_build.stdout),
         String::from_utf8_lossy(&interpreted_build.stderr)
     );
-    let interpreted_run = loomc()
+    let interpreted_run = loom()
         .args(["--backend", "interpreter", "run", "--artifact"])
         .arg(&interpreted_artifact)
         .output()
@@ -3110,7 +3110,7 @@ fn manifest_targets_and_path_dependencies_drive_cli_roots() {
     assert_eq!(interpreted_run.status.code(), Some(0));
     assert_eq!(interpreted_run.stdout, b"Unit\n");
 
-    let test_target = loomc()
+    let test_target = loom()
         .args(["test", "--target", "app"])
         .arg(&root)
         .output()
@@ -3133,7 +3133,7 @@ fn library_targets_build_portable_validated_artifacts() {
     );
     project.write("lib.loom", "pub fn answer() Int {\n    42\n}\n");
     let first_artifact = project.0.join("sample.loomlib");
-    let first = loomc()
+    let first = loom()
         .args(["--json", "build", "--target", "api", "--output"])
         .arg(&first_artifact)
         .arg(&project.0)
@@ -3158,7 +3158,7 @@ fn library_targets_build_portable_validated_artifacts() {
     assert_eq!(checked.interfaces().len(), 1);
 
     let second_artifact = project.0.join("sample-copy.loomlib");
-    let second = loomc()
+    let second = loom()
         .args(["--json", "build", "--target", "api", "--output"])
         .arg(&second_artifact)
         .arg(&project.0)
@@ -3174,7 +3174,7 @@ fn library_targets_build_portable_validated_artifacts() {
         fs::read(second_artifact).expect("read cached library")
     );
 
-    let rejected = loomc()
+    let rejected = loom()
         .args(["--json", "run", "--target", "api"])
         .arg(&project.0)
         .output()
@@ -3182,7 +3182,7 @@ fn library_targets_build_portable_validated_artifacts() {
     assert_eq!(rejected.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&rejected.stdout).contains("TargetKindMismatch"));
 
-    let test_target = loomc()
+    let test_target = loom()
         .args(["test", "--target", "api"])
         .arg(&project.0)
         .output()
@@ -3203,7 +3203,7 @@ fn library_targets_build_portable_validated_artifacts() {
         "import sample.answer\n\npub fn main() {\n    let value = answer()\n    assert value == 42\n}\n\ntest fn artifact_dependency_works() {\n    main()\n}\n",
     );
     fs::remove_file(project.0.join("lib.loom")).expect("remove producer source");
-    let consumed = loomc()
+    let consumed = loom()
         .args(["--backend", "interpreter", "run"])
         .arg(project.0.join("consumer"))
         .output()
@@ -3218,7 +3218,7 @@ fn library_targets_build_portable_validated_artifacts() {
     assert_eq!(consumed.stdout, b"Unit\n");
 
     for command in ["check", "test"] {
-        let verified = loomc()
+        let verified = loom()
             .arg(command)
             .arg(project.0.join("consumer"))
             .output()
@@ -3231,7 +3231,7 @@ fn library_targets_build_portable_validated_artifacts() {
             String::from_utf8_lossy(&verified.stderr)
         );
     }
-    let native = loomc()
+    let native = loom()
         .args(["run", "--target", "consumer"])
         .arg(project.0.join("consumer"))
         .output()
@@ -3269,7 +3269,7 @@ fn git_fork_dependencies_lock_run_offline_and_update_as_one_cli_flow() {
     );
     project.write("old-field/loom.toml", &old_field_manifest);
     project.write("old-field/main.loom", "fn local() {}\n");
-    let old_field = loomc_without_test_runtime()
+    let old_field = loom_without_test_runtime()
         .args(["--json", "check"])
         .arg(project.0.join("old-field"))
         .output()
@@ -3299,7 +3299,7 @@ fn git_fork_dependencies_lock_run_offline_and_update_as_one_cli_flow() {
     );
     let consumer = project.0.join("consumer");
 
-    let resolved = loomc_without_test_runtime()
+    let resolved = loom_without_test_runtime()
         .args(["--json", "resolve"])
         .arg(&consumer)
         .output()
@@ -3321,7 +3321,7 @@ fn git_fork_dependencies_lock_run_offline_and_update_as_one_cli_flow() {
         &first_commit,
     );
 
-    let locked = loomc_without_test_runtime()
+    let locked = loom_without_test_runtime()
         .args(["--locked", "--backend", "interpreter", "check"])
         .arg(&consumer)
         .output()
@@ -3333,7 +3333,7 @@ fn git_fork_dependencies_lock_run_offline_and_update_as_one_cli_flow() {
         String::from_utf8_lossy(&locked.stdout),
         String::from_utf8_lossy(&locked.stderr)
     );
-    let tests = loomc_without_test_runtime()
+    let tests = loom_without_test_runtime()
         .args(["--backend", "interpreter", "test"])
         .arg(&consumer)
         .output()
@@ -3356,7 +3356,7 @@ fn git_fork_dependencies_lock_run_offline_and_update_as_one_cli_flow() {
     );
     let second_commit = commit_git_fixture(&repository, "update utility");
     assert_ne!(first_commit, second_commit);
-    let pinned = loomc_without_test_runtime()
+    let pinned = loom_without_test_runtime()
         .arg("resolve")
         .arg(&consumer)
         .output()
@@ -3373,7 +3373,7 @@ fn git_fork_dependencies_lock_run_offline_and_update_as_one_cli_flow() {
         first_lock
     );
 
-    let updated = loomc_without_test_runtime()
+    let updated = loom_without_test_runtime()
         .args(["resolve", "--update"])
         .arg(&consumer)
         .output()
@@ -3402,7 +3402,7 @@ fn git_fork_dependencies_lock_run_offline_and_update_as_one_cli_flow() {
     );
     fs::rename(&repository, project.0.join("utility-fork-unavailable"))
         .expect("make git remote unavailable");
-    let offline = loomc_without_test_runtime()
+    let offline = loom_without_test_runtime()
         .args([
             "--offline",
             "--locked",
@@ -3438,7 +3438,7 @@ fn loopback_http_registry_publish_fetch_lock_and_offline_cache_close_the_loop() 
         ),
     );
     project.write("plaintext-token/lib.loom", "pub fn answer() Int { 42 }\n");
-    let plaintext_token = loomc()
+    let plaintext_token = loom()
         .args(["--json", "publish", "--registry", "remote"])
         .arg(project.0.join("plaintext-token"))
         .env("LOOM_TEST_REGISTRY_TOKEN", "fixture-token")
@@ -3463,7 +3463,7 @@ fn loopback_http_registry_publish_fetch_lock_and_offline_cache_close_the_loop() 
         ),
     );
     project.write("producer/lib.loom", "pub fn answer() Int { 42 }\n");
-    let published = loomc()
+    let published = loom()
         .args(["--json", "publish", "--registry", "remote"])
         .arg(project.0.join("producer"))
         .output()
@@ -3502,7 +3502,7 @@ fn loopback_http_registry_publish_fetch_lock_and_offline_cache_close_the_loop() 
     let consumer_source = "import utility.answer\n\npub fn main() {\n    let value = answer()\n    assert value == 42\n}\n";
     project.write("consumer/loom.toml", &consumer_manifest);
     project.write("consumer/main.loom", consumer_source);
-    let resolved = loomc()
+    let resolved = loom()
         .args(["--json", "resolve"])
         .arg(project.0.join("consumer"))
         .output()
@@ -3522,7 +3522,7 @@ fn loopback_http_registry_publish_fetch_lock_and_offline_cache_close_the_loop() 
         project.0.join("locked/loom.lock"),
     )
     .expect("copy lock into cold project");
-    let locked = loomc()
+    let locked = loom()
         .args(["--json", "--locked", "check"])
         .arg(project.0.join("locked"))
         .output()
@@ -3556,7 +3556,7 @@ fn loopback_http_registry_publish_fetch_lock_and_offline_cache_close_the_loop() 
         .collect::<Vec<_>>();
     assert_eq!(published_paths, ["lib.loom", "loom.toml"]);
 
-    let offline = loomc()
+    let offline = loom()
         .args([
             "--offline",
             "--backend",
@@ -3583,7 +3583,7 @@ fn loopback_http_registry_publish_fetch_lock_and_offline_cache_close_the_loop() 
         .find(|path| path.ends_with("lib.loom"))
         .expect("materialized cached source");
     fs::write(&cached_source, "").expect("tamper registry cache source");
-    let tampered = loomc()
+    let tampered = loom()
         .args(["--json", "--offline", "check"])
         .arg(project.0.join("consumer"))
         .output()
@@ -3597,7 +3597,7 @@ fn loopback_http_registry_publish_fetch_lock_and_offline_cache_close_the_loop() 
 
     project.write("cold/loom.toml", &consumer_manifest);
     project.write("cold/main.loom", consumer_source);
-    let cold = loomc()
+    let cold = loom()
         .args(["--json", "--offline", "check"])
         .arg(project.0.join("cold"))
         .env_remove("LOOM_TEST_REGISTRY_TOKEN")
@@ -3664,7 +3664,7 @@ fn cli_resolves_registry_features_and_enforces_lockfiles() {
     );
     let root = project.0.join("app");
 
-    let resolved = loomc()
+    let resolved = loom()
         .args(["--json", "resolve"])
         .arg(&root)
         .output()
@@ -3675,21 +3675,21 @@ fn cli_resolves_registry_features_and_enforces_lockfiles() {
     let first_lock = fs::read_to_string(&lock_path).expect("read generated lockfile");
     assert!(first_lock.contains("version = \"1.2.0\""), "{first_lock}");
 
-    let locked_check = loomc()
+    let locked_check = loom()
         .args(["--locked", "check"])
         .arg(&root)
         .output()
         .expect("check locked graph");
     assert_eq!(locked_check.status.code(), Some(0));
 
-    let without_default = loomc()
+    let without_default = loom()
         .args(["--no-default-features", "check"])
         .arg(&root)
         .output()
         .expect("disable optional registry dependency");
     assert_eq!(without_default.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&without_default.stderr).contains("utility"));
-    let explicit_feature = loomc()
+    let explicit_feature = loom()
         .args(["--no-default-features", "--features", "utilities", "check"])
         .arg(&root)
         .output()
@@ -3697,7 +3697,7 @@ fn cli_resolves_registry_features_and_enforces_lockfiles() {
     assert_eq!(explicit_feature.status.code(), Some(0));
 
     write_registry("1.3.0", 13);
-    let pinned = loomc()
+    let pinned = loom()
         .arg("resolve")
         .arg(&root)
         .output()
@@ -3708,7 +3708,7 @@ fn cli_resolves_registry_features_and_enforces_lockfiles() {
             .expect("read pinned lockfile")
             .contains("version = \"1.2.0\"")
     );
-    let updated = loomc()
+    let updated = loom()
         .args(["resolve", "--update"])
         .arg(&root)
         .output()
@@ -3724,7 +3724,7 @@ fn cli_resolves_registry_features_and_enforces_lockfiles() {
         "registry/utility/1.3.0/lib.loom",
         "pub fn answer() Int {\n    99\n}\n",
     );
-    let tampered = loomc()
+    let tampered = loom()
         .arg("check")
         .arg(&root)
         .output()
@@ -3736,25 +3736,21 @@ fn cli_resolves_registry_features_and_enforces_lockfiles() {
 #[test]
 fn fmt_check_and_write_form_an_idempotent_real_file_flow() {
     let project = TestProject::new("fn main() {\r\n}\r\n\r\n");
-    let first = loomc()
+    let first = loom()
         .args(["fmt", "--check"])
         .arg(&project.0)
         .output()
         .expect("run fmt check");
     assert_eq!(first.status.code(), Some(1));
 
-    let write = loomc()
-        .arg("fmt")
-        .arg(&project.0)
-        .output()
-        .expect("run fmt");
+    let write = loom().arg("fmt").arg(&project.0).output().expect("run fmt");
     assert_eq!(write.status.code(), Some(0));
     assert_eq!(
         fs::read_to_string(project.0.join("main.loom")).expect("read formatted source"),
         "fn main() {\n}\n"
     );
 
-    let second = loomc()
+    let second = loom()
         .args(["fmt", "--check"])
         .arg(&project.0)
         .output()
@@ -3777,7 +3773,7 @@ fn fmt_never_writes_dependency_sources() {
     );
     project.write("application/main.loom", "fn local() {\n}\n");
 
-    let output = loomc()
+    let output = loom()
         .arg("fmt")
         .arg(project.0.join("application"))
         .output()
@@ -3806,7 +3802,7 @@ fn configured_entries_use_one_strict_signature_check() {
             "schema = 2\n[module]\nname = \"sample\"\nversion = \"1.0.0\"\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"sample.main\"\n",
         );
         project.write("main.loom", &format!("{declaration}\n"));
-        let output = loomc()
+        let output = loom()
             .args(["--json", "check"])
             .arg(&project.0)
             .output()
@@ -3830,7 +3826,7 @@ fn dependency_public_functions_cannot_be_selected_as_root_entries() {
         "schema = 2\n[module]\nname = \"application\"\nversion = \"1.0.0\"\n[dependencies]\ndependency = { path = \"../dependency\" }\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"dependency.main\"\n",
     );
     project.write("application/main.loom", "");
-    let output = loomc()
+    let output = loom()
         .args(["--json", "check"])
         .arg(project.0.join("application"))
         .output()
@@ -3844,20 +3840,20 @@ fn dependency_public_functions_cannot_be_selected_as_root_entries() {
 fn test_and_run_execute_native_code() {
     let project =
         TestProject::new("pub fn main() {\n}\n\ntest fn passes() {\n    assert true\n}\n");
-    let test = loomc()
+    let test = loom()
         .arg("test")
         .arg(&project.0)
         .output()
-        .expect("run loomc test");
+        .expect("run loom test");
     assert_eq!(test.status.code(), Some(0));
     let stdout = String::from_utf8(test.stdout).expect("UTF-8 stdout");
     assert!(stdout.contains("passed standalone.passes"), "{stdout}");
 
-    let run = loomc()
+    let run = loom()
         .arg("run")
         .arg(&project.0)
         .output()
-        .expect("run loomc run");
+        .expect("run loom run");
     assert_eq!(run.status.code(), Some(0));
     assert_eq!(run.stdout, b"Unit\n");
 }
@@ -3886,7 +3882,7 @@ test async fn discards_awaited_value() {
 
     for backend in ["interpreter", "llvm"] {
         for command in ["check", "test", "run"] {
-            let output = loomc()
+            let output = loom()
                 .args(["--no-cache", "--backend", backend, command])
                 .arg(&project.0)
                 .output()
@@ -3904,7 +3900,7 @@ test async fn discards_awaited_value() {
         }
 
         let artifact = project.0.join(format!("discard-{backend}.artifact"));
-        let build = loomc()
+        let build = loom()
             .args(["--no-cache", "--backend", backend, "build", "--output"])
             .arg(&artifact)
             .arg(&project.0)
@@ -3918,7 +3914,7 @@ test async fn discards_awaited_value() {
             String::from_utf8_lossy(&build.stderr)
         );
 
-        let output = loomc()
+        let output = loom()
             .args(["--backend", backend, "run", "--artifact"])
             .arg(&artifact)
             .output()
@@ -3940,7 +3936,7 @@ fn range_and_growable_list_run_on_both_backends() {
         "import std.int.ParseIntError\nimport std.int.parse_int\nimport std.process.arguments\nimport std.process.environment\n\nasync fn worker(value Int) Int {\n    value * 2\n}\n\npub async fn main() {\n    let processArguments = arguments()\n    let argumentCount = processArguments.length()\n    assert argumentCount == 5\n    let count = match environment(\"LOOM_WORKERS\") {\n        Some(text) => {\n            match parse_int(text) {\n                Ok(value) => value\n                Err(ParseIntError.InvalidSyntax) => 0\n                Err(ParseIntError.OutOfRange) => 0\n            }\n        }\n        None => 0\n    }\n    assert count == 5\n    match environment(\"LOOM_TEST_ENV\") {\n        Some(value) => {\n            assert value == \"visible\"\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    var tasks = List[Task[Int]]()\n    for i in 0..count {\n        tasks.add(worker(i))\n        Unit\n    }\n    let values = Task.all(tasks).await\n    let length = values.length()\n    assert length == count\n    let selected = values.get(3)\n    match selected {\n        Some(value) => {\n            assert value == 6\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    let missing = values.get(-1)\n    match missing {\n        Some(_) => {\n            assert false\n            Unit\n        }\n        None => Unit\n    }\n}\n",
     );
     for backend in ["interpreter", "llvm"] {
-        let output = loomc()
+        let output = loom()
             .args(["--backend", backend, "run"])
             .arg(&project.0)
             .arg("--")
@@ -3959,7 +3955,7 @@ fn range_and_growable_list_run_on_both_backends() {
         assert_eq!(output.stdout, b"Unit\n");
 
         let artifact = project.0.join(format!("dynamic-{backend}.artifact"));
-        let build = loomc()
+        let build = loom()
             .args(["--backend", backend, "build", "--output"])
             .arg(&artifact)
             .arg(&project.0)
@@ -3972,7 +3968,7 @@ fn range_and_growable_list_run_on_both_backends() {
             String::from_utf8_lossy(&build.stdout),
             String::from_utf8_lossy(&build.stderr)
         );
-        let artifact_output = loomc()
+        let artifact_output = loom()
             .args(["--backend", backend, "run", "--artifact"])
             .arg(&artifact)
             .arg("--")
@@ -4024,7 +4020,7 @@ test fn readsEnvironment() {
 
     for backend in ["interpreter", "llvm"] {
         for command in ["check", "test"] {
-            let output = loomc()
+            let output = loom()
                 .args(["--no-cache", "--backend", backend, command])
                 .arg(&project.0)
                 .env("LOOM_SOURCE_PROCESS_TEST", "visible")
@@ -4039,7 +4035,7 @@ test fn readsEnvironment() {
             );
         }
 
-        let run = loomc()
+        let run = loom()
             .args(["--no-cache", "--backend", backend, "run"])
             .arg(&project.0)
             .arg("--")
@@ -4057,7 +4053,7 @@ test fn readsEnvironment() {
         assert_eq!(run.stdout, b"Unit\n", "{backend} run");
 
         let artifact = project.0.join(format!("source-process-{backend}.artifact"));
-        let build = loomc()
+        let build = loom()
             .args(["--no-cache", "--backend", backend, "build", "--output"])
             .arg(&artifact)
             .arg(&project.0)
@@ -4071,7 +4067,7 @@ test fn readsEnvironment() {
             String::from_utf8_lossy(&build.stderr)
         );
 
-        let artifact_run = loomc()
+        let artifact_run = loom()
             .args(["--backend", backend, "run", "--artifact"])
             .arg(&artifact)
             .arg("--")
@@ -4094,12 +4090,12 @@ test fn readsEnvironment() {
 fn build_writes_a_runnable_native_artifact() {
     let project = TestProject::new("pub fn main() {\n}\n");
     let artifact = project.0.join("out.native");
-    let mut build = loomc();
+    let mut build = loom();
     build
         .args(["build", "--output"])
         .arg(&artifact)
         .arg(&project.0);
-    let output = build.output().expect("run loomc build");
+    let output = build.output().expect("run loom build");
     assert_eq!(output.status.code(), Some(0));
     assert!(artifact.exists());
     assert!(
@@ -4108,7 +4104,7 @@ fn build_writes_a_runnable_native_artifact() {
             .starts_with(b"{")
     );
 
-    let run = loomc()
+    let run = loom()
         .args(["run", "--artifact"])
         .arg(&artifact)
         .output()
@@ -4127,7 +4123,7 @@ fn debug_builds_source_mapped_native_code_and_launches_a_debugger() {
     );
     project.make_executable("debug-wrapper");
     let debug_copy = project.0.join("debug-program-copy");
-    let output = loomc()
+    let output = loom()
         .env("LOOM_DEBUG_COPY", &debug_copy)
         .args(["debug", "--debugger"])
         .arg(project.0.join("debug-wrapper"))
@@ -4165,7 +4161,7 @@ fn debug_routes_text_selection_through_typed_lcir_codegen() {
     );
     project.make_executable("debug-wrapper");
     let debug_copy = project.0.join("text-get-debug-program-copy");
-    let output = loomc()
+    let output = loom()
         .env("LOOM_DEBUG_COPY", &debug_copy)
         .args(["debug", "--debugger"])
         .arg(project.0.join("debug-wrapper"))
@@ -4206,7 +4202,7 @@ fn debug_rejects_non_native_noninteractive_and_release_modes() {
         (vec!["--release", "debug"], "does not accept --release"),
         (vec!["--json", "debug"], "does not accept --json"),
     ] {
-        let output = loomc()
+        let output = loom()
             .args(arguments)
             .arg(&project.0)
             .output()
@@ -4224,7 +4220,7 @@ fn debug_rejects_non_native_noninteractive_and_release_modes() {
 fn release_and_cross_target_object_builds_are_distinct_and_cached() {
     let project = TestProject::new("pub fn main() {\n}\n");
     let release_object = project.0.join("release-aarch64.o");
-    let release = loomc()
+    let release = loom()
         .args([
             "--json",
             "--release",
@@ -4257,7 +4253,7 @@ fn release_and_cross_target_object_builds_are_distinct_and_cached() {
     );
 
     let cached_object = project.0.join("release-aarch64-copy.o");
-    let cached = loomc()
+    let cached = loom()
         .args([
             "--json",
             "--release",
@@ -4283,7 +4279,7 @@ fn release_and_cross_target_object_builds_are_distinct_and_cached() {
     );
 
     let development_object = project.0.join("development-aarch64.o");
-    let development = loomc()
+    let development = loom()
         .args([
             "--json",
             "--target-triple",
@@ -4307,7 +4303,7 @@ fn release_and_cross_target_object_builds_are_distinct_and_cached() {
         cache_key(&development.stdout, "target_object")
     );
 
-    let cross_link = loomc()
+    let cross_link = loom()
         .args([
             "--json",
             "--target-triple",
@@ -4326,7 +4322,7 @@ fn release_and_cross_target_object_builds_are_distinct_and_cached() {
 #[test]
 fn native_target_preparation_errors_are_usage_errors() {
     let project = TestProject::new("pub fn main() {}\n");
-    let output = loomc()
+    let output = loom()
         .args([
             "--json",
             "--target-triple",
@@ -4354,7 +4350,7 @@ fn non_linking_commands_do_not_resolve_the_native_runtime_bundle() {
     let project = TestProject::new("pub fn main() {}\n\ntest fn passes() {}\n");
     let unavailable = project.0.join("unavailable-runtime-bundle");
 
-    let checked = loomc_without_test_runtime()
+    let checked = loom_without_test_runtime()
         .args(["--json", "check"])
         .arg(&project.0)
         .env("LOOM_RUNTIME_BUNDLE", &unavailable)
@@ -4363,7 +4359,7 @@ fn non_linking_commands_do_not_resolve_the_native_runtime_bundle() {
     assert_eq!(checked.status.code(), Some(0), "{checked:?}");
 
     let object = project.0.join("program-object");
-    let built_object = loomc_without_test_runtime()
+    let built_object = loom_without_test_runtime()
         .args(["--json", "build", "--emit", "object", "--output"])
         .arg(&object)
         .arg(&project.0)
@@ -4380,7 +4376,7 @@ fn non_linking_commands_do_not_resolve_the_native_runtime_bundle() {
         .is_file()
     );
 
-    let interpreted = loomc_without_test_runtime()
+    let interpreted = loom_without_test_runtime()
         .args(["--json", "--backend", "interpreter", "test"])
         .arg(&project.0)
         .env("LOOM_RUNTIME_BUNDLE", &unavailable)
@@ -4394,7 +4390,7 @@ fn non_linking_commands_do_not_resolve_the_native_runtime_bundle() {
 fn packed_host_runtime_bundle_builds_and_target_mismatch_fails_closed() {
     let project = TestProject::new("pub fn main() {\n}\n");
     let bundle = project.0.join("host-runtime");
-    let packed = loomc()
+    let packed = loom()
         .args(["--json", "runtime", "pack", "--archive"])
         .arg(test_runtime_archive())
         .arg("--output")
@@ -4427,7 +4423,7 @@ fn packed_host_runtime_bundle_builds_and_target_mismatch_fails_closed() {
     );
 
     let output = project.0.join("host-bundle-program");
-    let built = loomc()
+    let built = loom()
         .args(["--json", "--runtime-bundle"])
         .arg(&bundle)
         .arg("--linker")
@@ -4452,7 +4448,7 @@ fn packed_host_runtime_bundle_builds_and_target_mismatch_fails_closed() {
             .success()
     );
 
-    let mismatch = loomc()
+    let mismatch = loom()
         .args([
             "--json",
             "--target-triple",
@@ -4470,7 +4466,7 @@ fn packed_host_runtime_bundle_builds_and_target_mismatch_fails_closed() {
     assert_eq!(mismatch.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&mismatch.stdout).contains("RuntimeBundleTargetMismatch"));
 
-    let missing_output = loomc()
+    let missing_output = loom()
         .args(["runtime", "pack", "--archive"])
         .arg(test_runtime_archive())
         .output()
@@ -4486,7 +4482,7 @@ fn invalid_explicit_runtime_bundle_does_not_fall_back_to_the_environment() {
     fs::write(&invalid_explicit_bundle, b"not a runtime directory")
         .expect("write invalid explicit bundle");
 
-    let no_fallback = loomc()
+    let no_fallback = loom()
         .args(["--json", "--runtime-bundle"])
         .arg(&invalid_explicit_bundle)
         .args(["build", "--output"])
@@ -4521,7 +4517,7 @@ exec "${LOOM_REAL_LINKER:?}" "$@"
     let real_linker = std::env::var_os("LOOM_CC").unwrap_or_else(|| "clang".into());
 
     let environment_output = project.0.join("environment-linker");
-    let environment = loomc()
+    let environment = loom()
         .args(["--json", "build", "--output"])
         .arg(&environment_output)
         .arg(&project.0)
@@ -4534,7 +4530,7 @@ exec "${LOOM_REAL_LINKER:?}" "$@"
     assert!(environment_output.is_file());
 
     let explicit_output = project.0.join("explicit-linker");
-    let explicit = loomc()
+    let explicit = loom()
         .arg("--linker")
         .arg(&linker)
         .args(["--json", "build", "--output"])
@@ -4565,7 +4561,7 @@ fn foreign_runtime_bundle_relinks_when_undeclared_tool_inputs_change() {
     fs::write(&link_payload, b"payload one\n").expect("first linker payload");
 
     let build = |bundle: &std::path::Path, output: &std::path::Path| {
-        loomc()
+        loom()
             .args([
                 "--json",
                 "--target-triple",
@@ -4691,14 +4687,14 @@ fn foreign_runtime_bundle_relinks_when_undeclared_tool_inputs_change() {
 fn release_build_produces_a_runnable_native_executable() {
     let project = TestProject::new("pub fn main() {\n}\n");
     let release_output = project.0.join("release-native");
-    let native = loomc()
+    let native = loom()
         .args(["--release", "build", "--output"])
         .arg(&release_output)
         .arg(&project.0)
         .output()
         .expect("build release native executable");
     assert_eq!(native.status.code(), Some(0));
-    let executed = loomc()
+    let executed = loom()
         .args(["run", "--artifact"])
         .arg(native_executable(&release_output))
         .output()
@@ -4711,7 +4707,7 @@ fn release_build_produces_a_runnable_native_executable() {
 fn source_backed_std_closes_real_check_build_test_and_run_commands() {
     let project = TestProject::new(fixture_source!("std-source"));
 
-    let check = loomc()
+    let check = loom()
         .args(["--no-cache", "check"])
         .arg(&project.0)
         .output()
@@ -4719,7 +4715,7 @@ fn source_backed_std_closes_real_check_build_test_and_run_commands() {
     assert_eq!(check.status.code(), Some(0), "{check:?}");
 
     let object_path = project.0.join("std-source.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
@@ -4730,7 +4726,7 @@ fn source_backed_std_closes_real_check_build_test_and_run_commands() {
     assert!(contains_bytes(&object, b"loom.lcir.fn"));
     assert!(!contains_bytes(&object, b"loom.fn."));
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
@@ -4741,7 +4737,7 @@ fn source_backed_std_closes_real_check_build_test_and_run_commands() {
         "{tests:?}"
     );
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
@@ -4768,11 +4764,11 @@ fn core_examples_close_check_build_test_and_run() {
     ] {
         let project = TestProject::new(source);
         for command in ["check", "test", "run"] {
-            let output = loomc()
+            let output = loom()
                 .arg(command)
                 .arg(&project.0)
                 .output()
-                .expect("run loomc command");
+                .expect("run loom command");
             assert_eq!(
                 output.status.code(),
                 Some(0),
@@ -4783,14 +4779,14 @@ fn core_examples_close_check_build_test_and_run() {
         }
 
         let artifact = project.0.join(format!("{fixture}.native"));
-        let mut command = loomc();
+        let mut command = loom();
         command
             .args(["build", "--output"])
             .arg(&artifact)
             .arg(&project.0);
         let build = command.output().expect("build fixture artifact");
         assert_eq!(build.status.code(), Some(0), "{fixture} build");
-        let run = loomc()
+        let run = loom()
             .args(["run", "--artifact"])
             .arg(artifact)
             .output()
@@ -4827,7 +4823,7 @@ test fn resource_identity() {
 ",
     );
 
-    let check = loomc_without_test_runtime()
+    let check = loom_without_test_runtime()
         .args(["--json", "--backend", "interpreter", "check"])
         .arg(&project.0)
         .output()
@@ -4839,7 +4835,7 @@ test fn resource_identity() {
     );
 
     let artifact = project.0.join("resource.loomi");
-    let build = loomc_without_test_runtime()
+    let build = loom_without_test_runtime()
         .args(["--json", "--backend", "interpreter", "build", "--output"])
         .arg(&artifact)
         .arg(&project.0)
@@ -4869,7 +4865,7 @@ test fn resource_identity() {
     );
 
     for (command, expected_cache) in [("test", "miss"), ("run", "hit")] {
-        let output = loomc_without_test_runtime()
+        let output = loom_without_test_runtime()
             .args(["--json", "--backend", "interpreter", command])
             .arg(&project.0)
             .output()
@@ -4882,7 +4878,7 @@ test fn resource_identity() {
         );
     }
 
-    let artifact_run = loomc_without_test_runtime()
+    let artifact_run = loom_without_test_runtime()
         .args(["--json", "--backend", "interpreter", "run", "--artifact"])
         .arg(&artifact)
         .output()
@@ -4907,7 +4903,7 @@ fn run_rejects_an_incompatible_artifact_format_version() {
         .expect("encode incompatible artifact"),
     )
     .expect("write incompatible artifact");
-    let output = loomc_without_test_runtime()
+    let output = loom_without_test_runtime()
         .args(["--json", "--backend", "interpreter", "run", "--artifact"])
         .arg(&artifact)
         .output()
@@ -4921,7 +4917,7 @@ fn run_rejects_an_incompatible_artifact_format_version() {
 fn run_rejects_an_incompatible_artifact_language_version() {
     let project = TestProject::new("pub fn main() {}\n");
     let artifact = project.0.join("future.loomi");
-    let build = loomc()
+    let build = loom()
         .args(["--backend", "interpreter", "build", "--output"])
         .arg(&artifact)
         .arg(&project.0)
@@ -4937,7 +4933,7 @@ fn run_rejects_an_incompatible_artifact_language_version() {
     )
     .expect("tamper language version");
 
-    let output = loomc()
+    let output = loom()
         .args(["--json", "--backend", "interpreter", "run", "--artifact"])
         .arg(&artifact)
         .output()

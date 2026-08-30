@@ -646,6 +646,36 @@ fn manifest_resolves_directory_packages_and_targets() {
 }
 
 #[test]
+fn package_initialization_is_explicit_and_init_is_an_ordinary_function() {
+    let implicit = parse_with_file(FileId(0), "init {}\n");
+    assert!(
+        !implicit.diagnostics().is_empty(),
+        "package-level init blocks are not declarations"
+    );
+
+    let project = TestProject::new();
+    project.write(
+        "loom.toml",
+        "schema = 2\n[module]\nname = \"application\"\nversion = \"1.0.0\"\n",
+    );
+    project.write(
+        "main.loom",
+        "fn init() {\n    assert false\n}\n\npub fn main() {}\n",
+    );
+    let snapshot = AnalysisHost::new(&project.root)
+        .expect("open explicit-initialization project")
+        .snapshot()
+        .expect("compile ordinary init-named function");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let program = snapshot.executable().expect("lower explicit entry");
+    let entry = program.exports["application.main"];
+    let result = Interpreter::new(program)
+        .invoke(entry, Vec::new(), Span::default())
+        .expect("run main without implicit package initialization");
+    assert_eq!(result, Value::Unit);
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn portable_library_is_a_consumable_versioned_dependency() {
     let project = TestProject::new();

@@ -12,7 +12,7 @@ fn runtime_bundle_root() -> &'static PathBuf {
                 || {
                     panic!(
                         "native CLI tests require LOOM_TEST_RUNTIME_BUNDLE or \
-                         LOOM_RUNTIME_BUNDLE; prepare one with `loomc runtime pack`"
+                         LOOM_RUNTIME_BUNDLE; prepare one with `loom runtime pack`"
                     )
                 },
                 PathBuf::from,
@@ -20,8 +20,8 @@ fn runtime_bundle_root() -> &'static PathBuf {
     })
 }
 
-fn loomc() -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_loomc"));
+fn loom() -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_loom"));
     command.env("LOOM_RUNTIME_BUNDLE", runtime_bundle_root());
     command
 }
@@ -60,7 +60,7 @@ fn typed_path_closes_native_check_build_test_and_run() {
     let project = tempfile::tempdir().expect("create typed-Path project");
     write_fixture(project.path());
 
-    let check = loomc()
+    let check = loom()
         .args(["--no-cache", "check"])
         .arg(project.path())
         .output()
@@ -68,7 +68,7 @@ fn typed_path_closes_native_check_build_test_and_run() {
     assert_success("check", &check);
 
     let object_path = project.path().join("typed-path.o");
-    let build = loomc()
+    let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(project.path())
@@ -106,7 +106,7 @@ fn typed_path_closes_native_check_build_test_and_run() {
         );
     }
 
-    let tests = loomc()
+    let tests = loom()
         .args(["--no-cache", "test"])
         .arg(project.path())
         .output()
@@ -118,7 +118,7 @@ fn typed_path_closes_native_check_build_test_and_run() {
         String::from_utf8_lossy(&tests.stdout),
     );
 
-    let run = loomc()
+    let run = loom()
         .args(["--no-cache", "run"])
         .arg(project.path())
         .output()

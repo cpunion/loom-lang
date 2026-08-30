@@ -87,8 +87,15 @@ import utility.math.increment
 There are no wildcard imports, dependency-provided preludes, or runtime
 implementation activation.
 
+Packages have no implicit initialization hook. Put application startup in
+ordinary functions called explicitly from `main`. Loom 0.3 has no top-level
+constant declaration; a future form will be restricted to compile-time
+evaluation, while lazy process state belongs in future `std` abstractions such
+as `Lazy` and `Once`. Fixed GC, executor, and Runtime ABI setup performed by the
+toolchain remains internal and does not make an import execute user code.
+
 Dependency `*_test.loom` files are not part of the resolved source graph.
-`loomc test` includes and runs tests only from the selected root module.
+`loom test` includes and runs tests only from the selected root module.
 
 ## Git and fork dependencies
 
@@ -116,7 +123,7 @@ A Git dependency accepts at most one selector:
 - no selector follows the repository's default `HEAD`.
 
 Normal resolution reuses the exact commit in `loom.lock`. Only
-`loomc resolve --update` refreshes a moving branch, tag, or default `HEAD`.
+`loom resolve --update` refreshes a moving branch, tag, or default `HEAD`.
 The lock record carries the selector, exact commit, and a source checksum.
 Changing the selector makes `--locked` fail even when two selectors currently
 point at the same commit. Every cached checkout is verified against both Git
@@ -138,20 +145,20 @@ dependencies; its transitive dependencies must be Git or registry sources.
 Resolve the graph and materialize `loom.lock`:
 
 ```sh
-loomc resolve .
+loom resolve .
 ```
 
 An existing lockfile keeps compatible pins. Refresh them intentionally with:
 
 ```sh
-loomc resolve --update .
+loom resolve --update .
 ```
 
 Use the global `--locked` option in automation:
 
 ```sh
-loomc --locked check .
-loomc --locked test .
+loom --locked check .
+loom --locked test .
 ```
 
 It fails if the selected module and feature graph does not exactly match the
@@ -162,7 +169,7 @@ of an already locked source is rejected.
 validated local cache hits:
 
 ```sh
-loomc --offline --locked check .
+loom --offline --locked check .
 ```
 
 ## Optional dependencies and features
@@ -181,8 +188,8 @@ binary_codec = ["dep:codec"]
 Select root-module features with global CLI options:
 
 ```sh
-loomc --features binary_codec check .
-loomc --no-default-features check .
+loom --features binary_codec check .
+loom --no-default-features check .
 ```
 
 A dependency may request downstream features with `features = ["name"]` and
@@ -216,7 +223,7 @@ loopback addresses used by local protocol tests.
 Publish the current module only to a named network registry:
 
 ```sh
-loomc publish --registry primary .
+loom publish --registry primary .
 ```
 
 Published and downloaded bundles are deterministic JSON source bundles with
@@ -238,13 +245,13 @@ The root module may declare:
 Select a build target explicitly when more than one is applicable:
 
 ```sh
-loomc build --target app --output target/app .
-loomc test .
-loomc build --target api --output target/api.loomlib .
+loom build --target app --output target/app .
+loom test .
+loom build --target api --output target/api.loomlib .
 ```
 
 Tests are selected by the command and `_test.loom` suffix, not by a manifest
-target. `loomc test` therefore has no `--target` option. `run` rejects library
+target. `loom test` therefore has no `--target` option. `run` rejects library
 targets; a library has no executable entry. Native build artifacts and
 compiler-private runtime interfaces are not promised to remain compatible
 across Loom versions.
@@ -260,10 +267,10 @@ trusted.
 Use:
 
 ```sh
-loomc cache stat .
-loomc cache prune .
-loomc --no-cache check .
-loomc --cache-dir /absolute/cache/path check .
+loom cache stat .
+loom cache prune .
+loom --no-cache check .
+loom --cache-dir /absolute/cache/path check .
 ```
 
 Cache keys include the inputs relevant to their layer, including module and

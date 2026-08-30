@@ -486,8 +486,8 @@ fn language_specs(workspace: &Path) -> Result<Vec<LanguageSpec>, String> {
     let output_dir = workspace.join("target/benchmarks/basic/bin");
     fs::create_dir_all(&output_dir)
         .map_err(|error| format!("create {}: {error}", output_dir.display()))?;
-    let loomc = std::env::var_os("LOOM_BENCH_LOOMC").unwrap_or_else(|| {
-        executable_path(&workspace.join("target/release"), "loomc").into_os_string()
+    let loom = std::env::var_os("LOOM_BENCH_LOOM").unwrap_or_else(|| {
+        executable_path(&workspace.join("target/release"), "loom").into_os_string()
     });
     let go = ToolCommand::from_env("LOOM_BENCH_GO", "go");
     let rustc = ToolCommand::rustc();
@@ -495,7 +495,7 @@ fn language_specs(workspace: &Path) -> Result<Vec<LanguageSpec>, String> {
     let cxx = ToolCommand::from_env("LOOM_BENCH_CXX", "clang++");
 
     Ok(vec![
-        loom_spec(&source_dir, &output_dir, loomc),
+        loom_spec(&source_dir, &output_dir, loom),
         go_spec(&source_dir, &output_dir, go),
         rust_spec(&source_dir, &output_dir, rustc),
         c_spec(&source_dir, &output_dir, cc),

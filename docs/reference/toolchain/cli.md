@@ -1,16 +1,18 @@
-# `loomc` command-line interface
+# `loom` command-line interface
 
-`loomc` is the project compiler driver. Unless noted otherwise, commands accept
-a source file, a directory, a `loom.toml` path, or a directory containing that
-manifest. The default path is the current directory.
+`loom` is the user-facing project and toolchain command. It drives compilation,
+testing, execution, dependency resolution, formatting, publishing, and cache
+operations. Unless noted otherwise, commands accept a source file, a directory,
+a `loom.toml` path, or a directory containing that manifest. The default path
+is the current directory.
 
-Run `loomc --help` for the exact syntax supported by the installed binary and
-`loomc --version` for its toolchain version.
+Run `loom --help` for the exact syntax supported by the installed binary and
+`loom --version` for its toolchain version.
 
 ## Synopsis
 
 ```text
-loomc [GLOBAL_OPTIONS] <command> [COMMAND_OPTIONS] [PATH]
+loom [GLOBAL_OPTIONS] <command> [COMMAND_OPTIONS] [PATH]
 ```
 
 The commands are:
@@ -112,7 +114,7 @@ link a runtime. `--target-triple TRIPLE` is valid only for `build`.
 
 Native executable `build`, `test`, `run`, and `debug` resolve a validated
 runtime bundle in strict precedence order: `--runtime-bundle DIR`, then
-`LOOM_RUNTIME_BUNDLE`, then `runtime/` beside the canonicalized `loomc`
+`LOOM_RUNTIME_BUNDLE`, then `runtime/` beside the canonicalized `loom`
 executable. An invalid higher-precedence bundle fails closed; it does not fall
 through to another source. The host linker is selected by `--linker PROGRAM`,
 then `LOOM_CC`, then `clang`.
@@ -141,8 +143,8 @@ produce native code.
 Program arguments follow a `--` separator:
 
 ```sh
-loomc run --target app . -- first second
-loomc debug --target app --debugger lldb . -- first second
+loom run --target app . -- first second
+loom debug --target app --debugger lldb . -- first second
 ```
 
 Trailing arguments are accepted only by `run` and `debug`. On macOS, the

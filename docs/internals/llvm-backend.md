@@ -777,7 +777,7 @@ replacement. The compiler rechecks both file identity and SHA-256 after linking.
 
 The production checked-MIR backend emits source line information from stable
 project-relative paths. Linux executables retain DWARF in the ELF output. On
-macOS, `dsymutil --verify` produces a sibling `.dSYM` bundle. `loomc debug`
+macOS, `dsymutil --verify` produces a sibling `.dSYM` bundle. `loom debug`
 keeps temporary executable and debug data alive for the debugger session and
 launches in the project root. LCIR publishes compile-unit, file,
 `DISubprogram`, physical callable-signature, formal-parameter, parameter-value,
@@ -802,7 +802,7 @@ returns `{ status, value, writebacks... }` and receives an artificial trailing
 These names describe compiler implementation types, not Loom source types or a
 stable native ABI. In particular, a debugger's step-out result is the complete
 physical aggregate; it must not interpret the status field as the logical
-result. `loomc debug` uses the same atomic automatic route as build, run, and
+result. `loom debug` uses the same atomic automatic route as build, run, and
 test. Development optimization alone is not a debugger contract and does not
 disable LCIR.
 

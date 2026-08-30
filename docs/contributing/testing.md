@@ -15,13 +15,13 @@ CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' \
   cargo +1.88.0 build --locked -p loom-runtime
 cargo +1.88.0 build --locked -p loom-cli
 runtime_bundle_root="$(mktemp -d)/runtime"
-target/debug/loomc runtime pack \
+target/debug/loom runtime pack \
   --archive target/debug/libloom_runtime.a \
   --output "$runtime_bundle_root"
 export LOOM_RUNTIME_BUNDLE="$runtime_bundle_root"
 cargo +1.88.0 test --locked --workspace --all-targets
-target/debug/loomc --no-cache test library/std/tests
-target/debug/loomc --backend interpreter --no-cache test library/std/tests
+target/debug/loom --no-cache test library/std/tests
+target/debug/loom --backend interpreter --no-cache test library/std/tests
 ```
 
 Use `--locked` so dependency resolution matches CI. `clippy --all-targets`
@@ -71,11 +71,11 @@ runtime bundle:
 ```sh
 (
   ulimit -s 1024
-  target/debug/loomc --no-cache check fixtures/lcir-typed-textmap
-  target/debug/loomc --no-cache build --emit object \
+  target/debug/loom --no-cache check fixtures/lcir-typed-textmap
+  target/debug/loom --no-cache build --emit object \
     --output target/low-stack-textmap.o fixtures/lcir-typed-textmap
-  target/debug/loomc --no-cache test fixtures/lcir-typed-textmap
-  target/debug/loomc --no-cache run fixtures/lcir-typed-textmap
+  target/debug/loom --no-cache test fixtures/lcir-typed-textmap
+  target/debug/loom --no-cache run fixtures/lcir-typed-textmap
 )
 ```
 

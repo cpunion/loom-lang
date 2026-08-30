@@ -56,7 +56,7 @@ export function checkReleaseWorkflow({ release, bootstrap, argumentTest }) {
     "runner: windows-2025",
     "platform: windows-x86_64",
     "runtime_archive: target/release/loom_runtime.lib",
-    "compiler: target/release/loomc.exe",
+    "compiler: target/release/loom.exe",
     "language_server: target/release/loom-lsp.exe",
     "executable_suffix: .exe",
     "Canonical examples release check/build/test/run smoke",

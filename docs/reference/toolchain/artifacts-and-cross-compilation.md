@@ -10,7 +10,7 @@ rather than assuming every build output is executable.
 | --- | --- | --- | --- |
 | Native executable | LLVM `build` | no | yes, on its target platform |
 | Relocatable object | LLVM `build --emit object` | target-specific | no |
-| `.loomi` | Interpreter `build` | yes within its validated format/language version | via `loomc run --artifact` |
+| `.loomi` | Interpreter `build` | yes within its validated format/language version | via `loom run --artifact` |
 | Portable library (`.loomlib` convention) | `build` of a `lib` target | yes within its validated format/language version | no |
 | Runtime bundle | `runtime pack` or a release archive | target-specific | used by the linker |
 
@@ -75,13 +75,13 @@ this order:
 
 1. `--runtime-bundle DIR`;
 2. `LOOM_RUNTIME_BUNDLE`;
-3. `runtime/` beside the resolved `loomc` executable.
+3. `runtime/` beside the resolved `loom` executable.
 
 Release archives use the third form, so an installed compiler works without a
 machine-specific flag:
 
 ```sh
-loomc build --release --target app --output target/app .
+loom build --release --target app --output target/app .
 ```
 
 The host linker is selected by `--linker PROGRAM`, then `LOOM_CC`, then
@@ -94,7 +94,7 @@ Supplying any `--target-triple` selects a portable target-machine policy:
 generic CPU, no target-specific CPU features, PIC relocation.
 
 ```sh
-loomc build --emit object \
+loom build --emit object \
   --target-triple aarch64-unknown-linux-gnu \
   --output target/app.o .
 ```
@@ -122,7 +122,7 @@ A non-host executable build requires:
 3. an explicit linker capable of linking that target.
 
 ```sh
-loomc --runtime-bundle /opt/loom/runtime \
+loom --runtime-bundle /opt/loom/runtime \
   --linker aarch64-linux-gnu-clang \
   build --target-triple aarch64-unknown-linux-gnu \
   --output target/app .
@@ -135,12 +135,12 @@ archive digest, target, ABI, and linker input both before and around linking.
 The bundle must be a real directory containing bounded regular files; symlinks
 and extra entries are rejected.
 
-An implicit host bundle uses the normalized target triple that `loomc` was
+An implicit host bundle uses the normalized target triple that `loom` was
 built for, such as `aarch64-apple-darwin`. LLVM defaults which embed the current
 Darwin point version are not bundle identities. An explicitly requested triple
 remains exact and is not rewritten to the implicit host identity.
 
-`loomc runtime pack --archive FILE --output DIR` packages a separately built
+`loom runtime pack --archive FILE --output DIR` packages a separately built
 host runtime archive. The input must be one bounded regular file rather than a
 directory or symlink. Its bytes are copied to the target's canonical archive
 name, and the compiler generates and reloads the exact manifest before
@@ -169,7 +169,7 @@ It also has a configured Windows Server 2025 x86-64 matrix entry that produces
 a `.zip` rather than a `.tar.gz`. That entry is not yet runner-verified release
 evidence and must not be treated as current artifact availability.
 
-Each archive includes `loomc`, `loom-lsp`, the project README, and a matching
+Each archive includes `loom`, `loom-lsp`, the project README, and a matching
 runtime bundle. The Windows archive additionally carries the pinned
 `LLVM-C.dll` required by its compiler binaries and its LLVM license. Every
 archive is accompanied by a SHA-256 file, and tagged releases also publish an

@@ -63,8 +63,8 @@ select workloads, or override sampling with `--warmups N`, `--runs N`, and
 `--timeout-seconds N`. Standard and throughput runs reject a busy host by
 default; `--allow-busy-host` records an explicitly noisy diagnostic run.
 
-The runner normally invokes `target/release/loomc`, `go`, Rust 1.88.0, `clang`,
-and `clang++`. Override individual tools with `LOOM_BENCH_LOOMC`,
+The runner normally invokes `target/release/loom`, `go`, Rust 1.88.0, `clang`,
+and `clang++`. Override individual tools with `LOOM_BENCH_LOOM`,
 `LOOM_BENCH_GO`, `LOOM_BENCH_RUSTC`, `LOOM_BENCH_CC`, and
 `LOOM_BENCH_CXX`.
 

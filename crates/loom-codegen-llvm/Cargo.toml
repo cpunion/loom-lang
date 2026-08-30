@@ -20,7 +20,7 @@ tempfile.workspace = true
 [target.'cfg(target_env = "msvc")'.dependencies]
 # The official LLVM Windows archive is built as static component libraries but
 # also ships its supported C ABI as LLVM-C.dll. Rust uses the DLL import
-# library to avoid mixing LLVM's static MSVC runtime closure into loomc.
+# library to avoid mixing LLVM's static MSVC runtime closure into loom.
 inkwell = { workspace = true, features = [
     "llvm19-1-no-llvm-linking",
     "target-aarch64",

@@ -81,7 +81,7 @@ cargo +1.88.0 check --locked --workspace --all-targets
 CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' \
   cargo +1.88.0 build --locked -p loom-runtime
 cargo +1.88.0 build --locked -p loom-cli -p loom-lsp
-target/debug/loomc runtime pack \
+target/debug/loom runtime pack \
   --archive target/debug/libloom_runtime.a \
   --output target/debug/runtime
 cargo +1.88.0 run --locked -p loom-cli -- --help
@@ -136,13 +136,13 @@ CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' \
   cargo +1.88.0 build --locked -p loom-runtime
 cargo +1.88.0 build --locked -p loom-cli
 runtime_bundle_root="$(mktemp -d)/runtime"
-target/debug/loomc runtime pack \
+target/debug/loom runtime pack \
   --archive target/debug/libloom_runtime.a \
   --output "$runtime_bundle_root"
 export LOOM_RUNTIME_BUNDLE="$runtime_bundle_root"
 cargo +1.88.0 test --locked --workspace --all-targets
-target/debug/loomc --no-cache test library/std/tests
-target/debug/loomc --backend interpreter --no-cache test library/std/tests
+target/debug/loom --no-cache test library/std/tests
+target/debug/loom --backend interpreter --no-cache test library/std/tests
 ```
 
 The separate runtime build is intentional: compiling `loom-codegen-llvm` never

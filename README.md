@@ -79,20 +79,20 @@ cd loom-lang
 CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' \
   cargo +1.88.0 build --locked --release -p loom-runtime
 cargo +1.88.0 build --locked --release -p loom-cli -p loom-lsp
-target/release/loomc runtime pack \
+target/release/loom runtime pack \
   --archive target/release/libloom_runtime.a \
   --output target/release/runtime
 
-target/release/loomc check examples/constraints-contracts
-target/release/loomc test examples/constraints-contracts
-target/release/loomc run examples/constraints-contracts
+target/release/loom check examples/constraints-contracts
+target/release/loom test examples/constraints-contracts
+target/release/loom run examples/constraints-contracts
 ```
 
 The default backend produces a native executable through LLVM. The interpreter
 is an explicitly selected semantic oracle:
 
 ```sh
-target/release/loomc --backend interpreter test examples/constraints-contracts
+target/release/loom --backend interpreter test examples/constraints-contracts
 ```
 
 Continue with the [quick-start tutorial](docs/getting-started/quick-start.md) or
@@ -102,7 +102,7 @@ the [language tour](docs/guide/language-tour.md).
 
 The workspace provides:
 
-- `loomc` for `check`, `build`, `test`, `run`, `debug`, `fmt`, dependency
+- `loom` for `check`, `build`, `test`, `run`, `debug`, `fmt`, dependency
   resolution, publishing, runtime-bundle packing, and cache inspection;
 - `loom-lsp` for diagnostics, navigation, rename, completion, hover, and
   document/workspace symbols;

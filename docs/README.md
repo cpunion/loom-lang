@@ -8,7 +8,7 @@ and runtime interfaces may change while the project is under active research.
 ## Start here
 
 - [Installation](getting-started/installation.md) explains the supported host
-  configurations and how to build `loomc` and `loom-lsp` from source.
+  configurations and how to build `loom` and `loom-lsp` from source.
 - [Quick start](getting-started/quick-start.md) checks, builds, tests, and runs
   the executable Core fixtures with both backends.
 - [Project layout](getting-started/project-layout.md) introduces `loom.toml`,

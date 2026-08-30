@@ -73,7 +73,7 @@ Every code block should either:
 - be an invalid example followed by the expected diagnostic behavior.
 
 Prefer adapting an existing tested fixture over inventing syntax from memory.
-Tool commands should match `loomc --help` and specify the backend where the
+Tool commands should match `loom --help` and specify the backend where the
 artifact kind depends on it.
 
 ## Status and compatibility

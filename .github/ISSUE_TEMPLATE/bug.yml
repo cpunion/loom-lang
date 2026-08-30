@@ -39,7 +39,7 @@ body:
     id: loom_version
     attributes:
       label: Loom version or commit
-      placeholder: loomc 0.1.0 or a full commit SHA
+      placeholder: loom 0.1.0 or a full commit SHA
     validations:
       required: true
 

@@ -14,7 +14,7 @@ use loom_driver::{
 use loom_interpreter::TestStatus;
 use serde_json::{Value, json};
 
-const USAGE: &str = "usage: loomc [--json] [--backend llvm|interpreter] [--release] [--features A,B] [--no-default-features] [--locked] [--offline] [--no-cache | --cache-dir DIR] [--runtime-bundle DIR] [--linker PROGRAM] <resolve|publish|runtime|check|build|test|run|debug|fmt|cache> [options] [PATH]\n\
+const USAGE: &str = "usage: loom [--json] [--backend llvm|interpreter] [--release] [--features A,B] [--no-default-features] [--locked] [--offline] [--no-cache | --cache-dir DIR] [--runtime-bundle DIR] [--linker PROGRAM] <resolve|publish|runtime|check|build|test|run|debug|fmt|cache> [options] [PATH]\n\
     resolve [--update] [PATH] resolve dependencies and materialize loom.lock\n\
     publish --registry NAME [PATH] publish a package to a configured registry\n\
     runtime pack --archive FILE --output DIR pack a validated host runtime bundle\n\
@@ -476,7 +476,7 @@ pub fn main_entry() -> i32 {
     match run(arguments, &mut stdout, &mut stderr) {
         Ok(code) => code,
         Err(error) => {
-            let _ = writeln!(stderr, "loomc: {error}");
+            let _ = writeln!(stderr, "loom: {error}");
             EXIT_DEFECT
         }
     }
@@ -496,7 +496,7 @@ pub fn run(
     let parsed = match parse_arguments(arguments) {
         Ok(parsed) => parsed,
         Err(message) => {
-            writeln!(stderr, "loomc: {message}\n{USAGE}")?;
+            writeln!(stderr, "loom: {message}\n{USAGE}")?;
             return Ok(EXIT_USAGE);
         }
     };
@@ -506,7 +506,7 @@ pub fn run(
             return Ok(EXIT_SUCCESS);
         }
         ParsedArgs::Version => {
-            writeln!(stdout, "loomc {}", env!("CARGO_PKG_VERSION"))?;
+            writeln!(stdout, "loom {}", env!("CARGO_PKG_VERSION"))?;
             return Ok(EXIT_SUCCESS);
         }
         ParsedArgs::Run(options) => *options,
@@ -2882,7 +2882,7 @@ mod tests {
         );
         assert_eq!(configured_runtime_bundle_path(None, None), None);
         assert_eq!(
-            adjacent_runtime_bundle_path(Path::new("/opt/loom/bin/loomc"))
+            adjacent_runtime_bundle_path(Path::new("/opt/loom/bin/loom"))
                 .expect("adjacent runtime path"),
             PathBuf::from("/opt/loom/bin/runtime")
         );
