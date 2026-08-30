@@ -8350,13 +8350,20 @@ fn faulting_whole_receiver_calls_keep_invalid_writeback_out_of_cleanup() {
         functions: vec![observe.clone(), corrupt.clone(), with_observing_cleanup],
         ..Program::default()
     });
-    assert!(errors.iter().any(|error| {
-        error.code == MirValidationCode::InvariantShape
-            && error.path.contains("cleanup")
-            && error
-                .message
-                .contains("not established at this cleanup boundary")
-    }));
+    assert_eq!(
+        errors
+            .iter()
+            .filter(|error| {
+                error.code == MirValidationCode::InvariantShape
+                    && error.path.contains("cleanup")
+                    && error
+                        .message
+                        .contains("not established at this cleanup boundary")
+            })
+            .count(),
+        1,
+        "one cleanup observation should produce one invariant diagnostic: {errors:#?}",
+    );
 
     let normal_observation = invariant_test_mut_receiver(
         2,

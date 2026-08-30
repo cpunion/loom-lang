@@ -469,8 +469,10 @@ invariant check only on the normal function continuation. Source analysis and
 checked MIR reject external or nested invariant crossings before LCIR and make
 every invariant-bearing place affected by fault writeback unavailable to the
 fault cleanup suffix. Cleanup therefore cannot observe a partially updated
-product. An admitted leaf writeback is rebuilt into the current aggregate root
-on both exits; unsupported receiver shapes select atomic fallback. The same
+product. Checked MIR fail-closes the complete borrowed root when its type
+contains a nested invariant or is an open parameter, associated projection, or
+dynamic view. An admitted leaf writeback is rebuilt into the current aggregate
+root on both exits; unsupported receiver shapes select atomic fallback. The same
 synchronous call ABI is valid inside an async body. Its normal edge installs
 the result and writebacks before ordinary continuation. Its fault bridge
 installs every writeback before requesting the coroutine's fault target;

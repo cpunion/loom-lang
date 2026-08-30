@@ -136,7 +136,11 @@ cleanup cannot copy, move, project, borrow, or call through them. A complete
 checked replacement is the only operation that clears this fault state. State
 joins take the union, so no branch can erase an invalidated place. Successful
 mutable receiver calls keep their normal continuation clean because the callee
-has completed its normal exit invariant check.
+has completed its normal exit invariant check. This analysis is deliberately
+conservative at an erased or open boundary: if the borrowed type contains a
+nested invariant, or is a type parameter, associated projection, or dynamic
+view, the complete borrowed root is protected. A receiver-restoration marker
+cannot clear that protection; only complete checked replacement can.
 
 ### Bounded recursive type analysis
 

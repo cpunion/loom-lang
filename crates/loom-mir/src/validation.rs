@@ -9755,7 +9755,7 @@ impl<'program> Validator<'program> {
                 (!flow.diverges).then_some(state)
             }
             RegisteredCleanupAction::Scoped { local, span, .. } => {
-                self.reject_untrusted_invariant_access(
+                let _ = self.reject_untrusted_invariant_access(
                     &Place::local(*local),
                     &state,
                     *span,
@@ -10409,12 +10409,12 @@ impl<'program> Validator<'program> {
         state: &DataflowState,
         span: Span,
         path: &str,
-    ) {
-        if state
+    ) -> bool {
+        let rejected = state
             .untrusted_invariants
             .iter()
-            .any(|dirty| places_overlap(dirty, place))
-        {
+            .any(|dirty| places_overlap(dirty, place));
+        if rejected {
             self.push(
                 MirValidationCode::InvariantShape,
                 "an invariant value not established at this cleanup boundary cannot be observed",
@@ -10422,6 +10422,7 @@ impl<'program> Validator<'program> {
                 path,
             );
         }
+        rejected
     }
 
     fn replace_untrusted_invariants(
@@ -10825,8 +10826,11 @@ impl<'program> Validator<'program> {
             }
             ExprKind::Copy(place) => {
                 self.require_available(place.local, state, expression.span, path);
-                self.reject_untrusted_invariant_access(place, state, expression.span, path);
-                self.reject_dirty_receiver_value(function, place, state, expression.span, path);
+                let rejected =
+                    self.reject_untrusted_invariant_access(place, state, expression.span, path);
+                if !rejected {
+                    self.reject_dirty_receiver_value(function, place, state, expression.span, path);
+                }
                 if Self::owner_has_mutable_loan(place, state) {
                     self.push(
                         MirValidationCode::BorrowShape,
@@ -10852,8 +10856,11 @@ impl<'program> Validator<'program> {
             }
             ExprKind::Move(place) => {
                 self.require_available(place.local, state, expression.span, path);
-                self.reject_untrusted_invariant_access(place, state, expression.span, path);
-                self.reject_dirty_receiver_value(function, place, state, expression.span, path);
+                let rejected =
+                    self.reject_untrusted_invariant_access(place, state, expression.span, path);
+                if !rejected {
+                    self.reject_dirty_receiver_value(function, place, state, expression.span, path);
+                }
                 self.reject_owner_mutation_while_borrowed(place, state, expression.span, path);
                 self.validate_resource_place_use(
                     function,
@@ -11248,7 +11255,7 @@ impl<'program> Validator<'program> {
                         CallArgument::InOut(place) => {
                             self.require_available(place.local, state, expression.span, path);
                             let argument_path = format!("{path}.arguments[{index}]");
-                            self.reject_untrusted_invariant_access(
+                            let _ = self.reject_untrusted_invariant_access(
                                 place,
                                 state,
                                 expression.span,
@@ -11335,7 +11342,17 @@ impl<'program> Validator<'program> {
                         .first()
                         .and_then(Self::call_argument_place)
                         .is_some_and(|place| self.place_roots_tracked_receiver(function, place));
-                if (receiver_uses_self || fault_dirties_receiver) && state.receiver_invariant_dirty
+                let receiver_is_untrusted =
+                    self.tracked_receiver_place(function)
+                        .is_some_and(|receiver| {
+                            state
+                                .untrusted_invariants
+                                .iter()
+                                .any(|dirty| places_overlap(dirty, &receiver))
+                        });
+                if (receiver_uses_self || fault_dirties_receiver)
+                    && state.receiver_invariant_dirty
+                    && !receiver_is_untrusted
                 {
                     let argument = mutating_receiver_argument.unwrap_or(0);
                     self.push(
@@ -11444,7 +11461,7 @@ impl<'program> Validator<'program> {
         path: &str,
     ) -> ExprFlow {
         self.require_available(owner.local, state, expression.span, path);
-        self.reject_untrusted_invariant_access(owner, state, expression.span, path);
+        let _ = self.reject_untrusted_invariant_access(owner, state, expression.span, path);
         let conflicts = state.temporary_loans.has_overlapping(owner, mutable);
         if conflicts {
             self.push(
