@@ -230,22 +230,23 @@ on the normal edge and before fault propagation on the unwind edge. LLVM sees
 only `extractvalue`, `insertvalue`, direct aggregate values, and the existing
 functional return ABI; no proxy allocation, universal value, or runtime
 writeback helper is introduced. Protected or managed projections still select
-atomic whole-artifact fallback. Nongeneric refined and fully concrete
-invariant-record runtime construction instead returns the exact typed
-`Result[..., ConstraintError]`; open or unsupported-shape construction remains
-fallback.
+atomic whole-artifact fallback. Nongeneric task-free refined and fully concrete
+task-free invariant-record runtime construction instead returns the exact typed
+`Result[..., ConstraintError]`; open, affine, or unsupported-shape construction
+remains fallback.
 
 Fresh-source proven record invariants and refined predicates do not add an LLVM
 wrapper or check. LCIR retains their distinct semantic types and proof opcodes,
 while the emitter forwards the already established physical SSA value. A
 refined scalar therefore uses the base scalar ABI; a refined product uses the
 base product ABI; and an invariant record uses its field product ABI. Supported
-nongeneric refined and closed invariant-record runtime construction returns the
-exact language `Result` value on typed LCIR; open or unsupported-shape runtime
-construction remains atomic fallback. Serialized refined and concrete
-invariant-record proof rechecks retain their nominal result shape on typed LCIR,
-guard publication with the canonical `ArtifactProofRejected` runtime fault, and
-preserve concrete generic contract types without a universal value.
+nongeneric task-free refined and closed task-free invariant-record runtime
+construction returns the exact language `Result` value on typed LCIR; open,
+affine, or unsupported-shape runtime construction remains atomic fallback.
+Serialized task-free refined and concrete task-free invariant-record proof
+rechecks retain their nominal result shape on typed LCIR, guard publication with
+the canonical `ArtifactProofRejected` runtime fault, and preserve concrete
+generic contract types without a universal value.
 
 The current debug-info boundary describes that physical ABI as well. A
 transparent scalar is reported as its base scalar debug type, and transparent

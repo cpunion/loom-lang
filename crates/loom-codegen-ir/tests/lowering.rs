@@ -6949,6 +6949,83 @@ pub fn main() {
 }
 
 #[test]
+fn forged_fallible_generic_invariant_cannot_discard_an_affine_task() {
+    let mut program = compile(
+        r"record Guarded[T] {
+    value T
+    invariant true
+}
+
+async fn child() Int { 1 }
+
+fn sink(value Guarded[Task[Int]]) { sink(value) }
+
+fn sinkResult(value Result[Guarded[Task[Int]], ConstraintError]) {
+    match value {
+        Ok(guarded) => sink(guarded)
+        Err(_) => Unit
+    }
+}
+
+fn make(value Task[Int]) Result[Guarded[Task[Int]], ConstraintError] {
+    Ok(Guarded { value = value })
+}
+
+pub async fn main() {
+    sinkResult(make(child()))
+}
+",
+    )
+    .into_program();
+    let make = program
+        .functions
+        .iter_mut()
+        .find(|function| function.name.ends_with("make"))
+        .expect("make function");
+    let result = make.body.tail.take().expect("make tail");
+    let result_ty = result.ty.clone();
+    let ExprKind::Variant { mut payload, .. } = result.kind else {
+        panic!("make must initially return Ok")
+    };
+    assert_eq!(payload.len(), 1, "Ok must carry one affine transfer block");
+    let mut transfer = payload.pop().expect("checked one payload");
+    let ExprKind::Block(block) = &mut transfer.kind else {
+        panic!("Task-bearing Ok payload must use an affine transfer block")
+    };
+    let record = block.tail.as_deref_mut().expect("transfer block tail");
+    let ExprKind::Record { construction, .. } = &mut record.kind else {
+        panic!("transfer block must contain the proven Guarded value")
+    };
+    *construction = loom_mir::ConstructionMode::Runtime;
+    record.ty = result_ty.clone();
+    transfer.ty = result_ty;
+    make.body.tail = Some(Box::new(transfer));
+    make.renumber_expr_ids().expect("renumber forged make body");
+
+    let checked = program
+        .into_checked()
+        .expect("fallible affine construction is structurally valid checked MIR");
+    let outcome = lower_typed_artifact(
+        &checked,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("classify forged fallible affine construction");
+    let LoweringOutcome::Unsupported(report) = outcome else {
+        panic!("fallible invariant construction must not discard an affine Task")
+    };
+    assert!(
+        report.items().iter().any(|item| matches!(
+            item.feature(),
+            UnsupportedFeature::NominalValue | UnsupportedFeature::ExpressionType
+        )),
+        "{report:?}"
+    );
+}
+
+#[test]
 fn projection_through_a_protected_product_is_an_exact_read_only_extract_chain() {
     let LoweringOutcome::Complete(artifact) = lower_run(
         r"record Positive {

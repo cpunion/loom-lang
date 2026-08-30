@@ -413,13 +413,14 @@ record construction, whole-value copy and move, nested field read/write,
 tuple/record nesting, product block parameters, parameters, returns, and
 loop-carried products lower directly to SSA. Compile-time-proven
 refined construction, exact unrefinement, and compile-time-proven record
-invariants are representation-preserving typed operations. Unknown nongeneric
-refined predicates and fully concrete nongeneric or generic record invariants
-remain normal typed `Result[..., ConstraintError]` constructions. Open or
-unsupported-shape runtime construction selects whole-artifact fallback. A
+invariants are representation-preserving typed operations. Unknown task-free
+nongeneric refined predicates and fully concrete task-free nongeneric or generic
+record invariants remain normal typed `Result[..., ConstraintError]`
+constructions. Open, affine, or unsupported-shape runtime construction selects
+whole-artifact fallback. A
 decoded `.loomi` MIR
-proof replay (`ConstructionMode::Recheck`) for a refined type or concrete
-invariant-record instantiation re-evaluates the embedded predicate in typed
+proof replay (`ConstructionMode::Recheck`) for a task-free refined type or
+concrete task-free invariant-record instantiation re-evaluates the embedded predicate in typed
 LCIR, raises the canonical `ArtifactProofRejected` runtime fault on rejection,
 and creates the established nominal value only in the accepted block. Generic
 invariant records first apply the current function-instance substitution and then their
@@ -1018,14 +1019,15 @@ await Tasks, including through an executor-dependent callee. An active
 source-fault cleanup likewise cannot await again before `resume_fault`.
 
 Managed values outside the admitted Text, List, and TextMap graphs, open or
-recursive enums, open or unsupported-shape runtime construction,
-unsupported-shape proof replay, incomplete dynamic witness catalogs, derived
+recursive enums, open, affine, or unsupported-shape runtime construction,
+affine or unsupported-shape proof replay, incomplete dynamic witness catalogs, derived
 dynamic proof conversion, contracts over unsupported value shapes, and
 coroutine forms outside the bounded typed slice are not implemented. Nongeneric
-refined and fully concrete invariant-record runtime construction is direct typed
-CFG returning the exact `Result[..., ConstraintError]`; portable refined and
-concrete invariant-record proof replay uses a canonical runtime-fault assertion
-before nominal publication. The current CFG
+task-free refined and fully concrete task-free invariant-record runtime
+construction is direct typed CFG returning the exact
+`Result[..., ConstraintError]`; portable task-free refined and concrete
+task-free invariant-record proof replay uses a canonical runtime-fault
+assertion before nominal publication. The current CFG
 represents direct products, concrete closed sums, both direct Text modes, and
 the scalar operations and fault-state transitions which later slices use.
 
@@ -1046,7 +1048,7 @@ boundary: exact base/result types, protected construction kind, protection on
 every representation alternative, representation identity, and the usual SSA
 rules. Thus `CheckedProgram` certifies valid LCIR structure while trusting that
 fresh frontend conclusion for predicate truth. `.loomi` MIR decoding replaces
-it with `Recheck`. For supported nongeneric shapes the lowerer reconstructs the
+it with `Recheck`. For supported task-free concrete shapes the lowerer reconstructs the
 typed predicate CFG and emits an explicit runtime-fault guard before the
 crate-private established-value instruction. The raw builder still cannot mint
 that instruction, and a rejected path has no nominal SSA value. Unsupported

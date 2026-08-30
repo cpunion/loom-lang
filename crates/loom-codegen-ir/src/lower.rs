@@ -3053,9 +3053,11 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     let direct_runtime = runtime.as_ref().is_some_and(|(_, target, _)| {
                         expression_ty.as_ref() == result.as_ref()
                             && self.supported_value_type(target)
-                    }) && result
-                        .as_ref()
-                        .is_some_and(|result| self.supported_value_type(result));
+                            && task_free_type(self.program, self.dyn_concepts, target)
+                    }) && result.as_ref().is_some_and(|result| {
+                        self.supported_value_type(result)
+                            && task_free_type(self.program, self.dyn_concepts, result)
+                    });
                     let contract_supported =
                         runtime.as_ref().is_some_and(|(_, target, invariant)| {
                             self.classify_contract_expr(
@@ -3100,7 +3102,9 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 }
                 if *construction == mir::ConstructionMode::Recheck {
                     let target = semantic.as_ref().filter(|target| {
-                        expression_ty.as_ref() == Some(*target) && self.supported_value_type(target)
+                        expression_ty.as_ref() == Some(*target)
+                            && self.supported_value_type(target)
+                            && task_free_type(self.program, self.dyn_concepts, target)
                     });
                     let invariant = target.and_then(|target| {
                         concrete_invariant_record(self.program, target)
@@ -3246,9 +3250,11 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     let direct_runtime = expression_ty.as_ref() == result.as_ref()
                         && value_ty.as_ref() == runtime.as_ref().map(|(_, base, _)| base)
                         && self.supported_value_type(&target)
-                        && result
-                            .as_ref()
-                            .is_some_and(|result| self.supported_value_type(result));
+                        && task_free_type(self.program, self.dyn_concepts, &target)
+                        && result.as_ref().is_some_and(|result| {
+                            self.supported_value_type(result)
+                                && task_free_type(self.program, self.dyn_concepts, result)
+                        });
                     let contract_supported =
                         runtime.as_ref().is_some_and(|(_, base, predicate)| {
                             self.classify_contract_expr(
@@ -3306,9 +3312,10 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         });
                     let direct_recheck = expression_ty.as_ref()
                         == Some(&Type::Nominal(*ty, Vec::new()))
-                        && expression_ty
-                            .as_ref()
-                            .is_some_and(|ty| self.supported_value_type(ty));
+                        && expression_ty.as_ref().is_some_and(|ty| {
+                            self.supported_value_type(ty)
+                                && task_free_type(self.program, self.dyn_concepts, ty)
+                        });
                     let contract_supported = refined.is_some_and(|(base, predicate)| {
                         value_ty.as_ref() == Some(&base)
                             && self.classify_contract_expr(
