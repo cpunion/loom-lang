@@ -276,7 +276,8 @@ An infallible function with no inout parameters returns its source result `T`
 directly. With ordered functional writebacks `W...`, it returns `{ T, W... }`.
 A faulting function returns `{ i32 status, T, W... }` and receives one hidden
 fault-context pointer. Normal and fault exits both return the latest inout
-values; the source result is zero-filled on a fault. This is a
+values in their exact direct representations, including scalar `Bool`, `Int`,
+and `Float`; the source result is zero-filled on a fault. This is a
 compiler-private object ABI, not a native library ABI.
 
 The production automatic route uses this typed ABI for eligible build, run,

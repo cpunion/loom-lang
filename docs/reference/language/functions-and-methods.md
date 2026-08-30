@@ -72,7 +72,17 @@ impl Counter {
 
 `self` or `mut self`, when present, is the first item in the parameter list. A
 read-only `self` cannot mutate the receiver or call a mutable receiver method.
-`mut self` may assign the receiver's fields and call other mutable methods.
+`mut self` may replace the complete receiver, assign fields when its type has
+fields, and call other mutable methods. Whole-value assignment is the mutation
+form for a direct scalar receiver:
+
+```loom
+concept Step { method step(mut self) }
+
+impl Step for Int {
+    method step(mut self) { self = self + 1 }
+}
+```
 
 A `mut self` call requires a caller `var` place:
 
