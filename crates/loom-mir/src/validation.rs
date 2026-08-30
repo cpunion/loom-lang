@@ -48,6 +48,7 @@ pub enum MirValidationCode {
     ConceptShape,
     RequirementShape,
     ContractShape,
+    ParameterShape,
     ReceiverShape,
     LocalState,
     BorrowShape,
@@ -86,6 +87,7 @@ impl MirValidationCode {
             Self::ConceptShape => "MirConceptShape",
             Self::RequirementShape => "MirRequirementShape",
             Self::ContractShape => "MirContractShape",
+            Self::ParameterShape => "MirParameterShape",
             Self::ReceiverShape => "MirReceiverShape",
             Self::LocalState => "MirLocalState",
             Self::BorrowShape => "MirBorrowShape",
@@ -3273,6 +3275,7 @@ impl<'program> Validator<'program> {
         }
         self.validate_locals(function, path);
         self.validate_receiver(function, path);
+        self.validate_parameter_modes(function, path);
 
         let explicit_parameters = if function.receiver.is_some() {
             function.params.get(1..).unwrap_or_default()
@@ -3786,6 +3789,33 @@ impl<'program> Validator<'program> {
                 parameter.span,
                 format!("{path}.receiver"),
             );
+        }
+    }
+
+    fn validate_parameter_modes(&mut self, function: &Function, path: &str) {
+        if function.is_async && function.receiver == Some(Receiver::Mutable) {
+            self.push(
+                MirValidationCode::ReceiverShape,
+                "an async function cannot have a mutable receiver",
+                function.span,
+                format!("{path}.receiver"),
+            );
+        }
+        let explicit_parameter_offset = usize::from(function.receiver.is_some());
+        for (index, parameter) in function
+            .params
+            .iter()
+            .enumerate()
+            .skip(explicit_parameter_offset)
+        {
+            if parameter.mutable {
+                self.push(
+                    MirValidationCode::ParameterShape,
+                    "an ordinary function parameter cannot be mutable",
+                    parameter.span,
+                    format!("{path}.params[{index}].mutable"),
+                );
+            }
         }
     }
 

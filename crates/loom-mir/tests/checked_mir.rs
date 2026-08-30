@@ -7847,7 +7847,7 @@ fn inout_access_ends_after_the_call_returns() {
             Type::Unit,
         )
     };
-    let caller = function(
+    let mut caller = function(
         1,
         vec![local(0, Type::Int, true)],
         Vec::new(),
@@ -7867,6 +7867,7 @@ fn inout_access_ends_after_the_call_returns() {
             span: span(),
         },
     );
+    caller.receiver = Some(Receiver::Mutable);
     validate_program(&Program {
         functions: vec![target, caller],
         ..Program::default()
@@ -7961,7 +7962,7 @@ fn projected_inout_allows_sibling_nested_mutation_but_rejects_parent_reset() {
             Type::Unit,
         )
     };
-    let sibling = function(
+    let mut sibling = function(
         3,
         vec![local(0, pair.clone(), true)],
         Vec::new(),
@@ -7972,6 +7973,7 @@ fn projected_inout_allows_sibling_nested_mutation_but_rejects_parent_reset() {
             span: span(),
         },
     );
+    sibling.receiver = Some(Receiver::Mutable);
     validate_program(&Program {
         types: vec![pair_def.clone()],
         functions: vec![
@@ -7984,7 +7986,7 @@ fn projected_inout_allows_sibling_nested_mutation_but_rejects_parent_reset() {
     })
     .expect("a nested mutable call may exclusively access a sibling projection");
 
-    let exact_alias = function(
+    let mut exact_alias = function(
         3,
         vec![local(0, pair.clone(), true)],
         Vec::new(),
@@ -7995,6 +7997,7 @@ fn projected_inout_allows_sibling_nested_mutation_but_rejects_parent_reset() {
             span: span(),
         },
     );
+    exact_alias.receiver = Some(Receiver::Mutable);
     let exact_alias_errors = validation_errors(&Program {
         types: vec![pair_def.clone()],
         functions: vec![
@@ -8011,7 +8014,7 @@ fn projected_inout_allows_sibling_nested_mutation_but_rejects_parent_reset() {
             && error.path.contains("arguments[0]")
     }));
 
-    let parent_reset = function(
+    let mut parent_reset = function(
         3,
         vec![local(0, pair, true)],
         Vec::new(),
@@ -8025,6 +8028,7 @@ fn projected_inout_allows_sibling_nested_mutation_but_rejects_parent_reset() {
             span: span(),
         },
     );
+    parent_reset.receiver = Some(Receiver::Mutable);
     let errors = validation_errors(&Program {
         types: vec![pair_def],
         functions: vec![outer, mutate_field, reset_pair, parent_reset],
@@ -8311,7 +8315,7 @@ fn dynamic_calls_use_requirement_metadata_for_signature_and_result() {
     };
     let mut consume = function(
         0,
-        vec![local(0, view_ty, true)],
+        vec![local(0, view_ty, false)],
         Vec::new(),
         Type::Int,
         Block {
@@ -10180,7 +10184,7 @@ fn borrowed_view_places_use_projection_prefix_overlap() {
             Type::Unit,
         )
     };
-    let sibling_caller = function(
+    let mut sibling_caller = function(
         1,
         vec![local(0, pair.clone(), true)],
         Vec::new(),
@@ -10210,6 +10214,7 @@ fn borrowed_view_places_use_projection_prefix_overlap() {
             span: span(),
         },
     );
+    sibling_caller.receiver = Some(Receiver::Mutable);
     validate_program(&Program {
         concepts: vec![empty_dyn_concept()],
         types: vec![pair_def.clone()],
@@ -10238,7 +10243,7 @@ fn borrowed_view_places_use_projection_prefix_overlap() {
         4,
         true,
     );
-    let overlapping_caller = function(
+    let mut overlapping_caller = function(
         1,
         vec![local(0, pair.clone(), true)],
         Vec::new(),
@@ -10249,6 +10254,7 @@ fn borrowed_view_places_use_projection_prefix_overlap() {
             span: span(),
         },
     );
+    overlapping_caller.receiver = Some(Receiver::Mutable);
     assert!(
         validation_errors(&Program {
             concepts: vec![empty_dyn_concept()],
@@ -10548,6 +10554,63 @@ fn checked_mir_rejects_an_unreachable_match_arm() {
         error.code == MirValidationCode::PatternShape
             && error.message.contains("match arm is unreachable")
     }));
+}
+
+#[test]
+fn checked_mir_enforces_the_source_parameter_mutability_boundary() {
+    let empty = |id, ty, mutable| {
+        function(
+            id,
+            vec![local(0, ty, mutable)],
+            Vec::new(),
+            Type::Unit,
+            Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                span: span(),
+            },
+        )
+    };
+    for is_async in [false, true] {
+        let mut ordinary = empty(0, Type::Int, true);
+        ordinary.is_async = is_async;
+        let errors = validation_errors(&Program {
+            functions: vec![ordinary],
+            ..Program::default()
+        });
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code == MirValidationCode::ParameterShape
+                && error.path == "functions[0].params[0].mutable"
+                && error
+                    .message
+                    .contains("ordinary function parameter cannot be mutable")
+        }));
+    }
+
+    let mut asynchronous_receiver = empty(0, Type::Int, true);
+    asynchronous_receiver.receiver = Some(Receiver::Mutable);
+    asynchronous_receiver.is_async = true;
+    let errors = validation_errors(&Program {
+        functions: vec![asynchronous_receiver],
+        ..Program::default()
+    });
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code == MirValidationCode::ReceiverShape
+            && error.path == "functions[0].receiver"
+            && error.message.contains("cannot have a mutable receiver")
+    }));
+    assert!(!errors.contains(MirValidationCode::ParameterShape));
+
+    let mut synchronous_receiver = empty(0, Type::Int, true);
+    synchronous_receiver.receiver = Some(Receiver::Mutable);
+    let mut by_value_mutable_view = empty(1, view_type(true), false);
+    by_value_mutable_view.is_async = true;
+    validate_program(&Program {
+        concepts: vec![empty_dyn_concept()],
+        functions: vec![synchronous_receiver, by_value_mutable_view],
+        ..Program::default()
+    })
+    .expect("sync mutable receivers and by-value mutable async Views remain valid");
 }
 
 fn suspension_function(live_locals: Vec<LocalId>) -> Function {
