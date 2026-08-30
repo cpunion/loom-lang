@@ -9719,6 +9719,19 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     .build_load(self.backend.ptr_type, output, "format.float.result")
                     .map_err(builder_error)?)
             }
+            InstructionKind::IntToFloat { value } => one(self
+                .backend
+                .builder
+                .build_signed_int_to_float(
+                    self.int(*value)?,
+                    self.backend.context.f64_type(),
+                    "convert.int_to_float",
+                )
+                .map_err(builder_error)?
+                .into()),
+            InstructionKind::FloatToIntStatus { value } => {
+                one(self.emit_float_to_int_status(instruction, *value)?)
+            }
             InstructionKind::JsonFormat {
                 json,
                 ok_variant,
@@ -10247,6 +10260,161 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 .into_struct_value();
         }
         Ok(value.into())
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "checked Float-to-Int lowering keeps its finite/range guards and status-pair construction in one auditable sequence"
+    )]
+    fn emit_float_to_int_status(
+        &self,
+        instruction: &Instruction,
+        value: ValueId,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let result = instruction.results().first().copied().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                "Float-to-Int conversion has no status-pair result",
+            )
+        })?;
+        let result_ty = self
+            .source
+            .value(result)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", "Float-to-Int conversion result is missing")
+            })?
+            .ty();
+        let value = self.value(value)?.into_float_value();
+        let float = self.backend.context.f64_type();
+        let integer = self.backend.context.i64_type();
+
+        let finite_lower = self
+            .backend
+            .builder
+            .build_float_compare(
+                LlvmFloatPredicate::OGE,
+                value,
+                float.const_float(-f64::MAX),
+                "convert.float_to_int.finite_lower",
+            )
+            .map_err(builder_error)?;
+        let finite_upper = self
+            .backend
+            .builder
+            .build_float_compare(
+                LlvmFloatPredicate::OLE,
+                value,
+                float.const_float(f64::MAX),
+                "convert.float_to_int.finite_upper",
+            )
+            .map_err(builder_error)?;
+        let finite = self
+            .backend
+            .builder
+            .build_and(finite_lower, finite_upper, "convert.float_to_int.finite")
+            .map_err(builder_error)?;
+        let in_lower_bound = self
+            .backend
+            .builder
+            .build_float_compare(
+                LlvmFloatPredicate::OGE,
+                value,
+                float.const_float(-9_223_372_036_854_775_808.0),
+                "convert.float_to_int.lower",
+            )
+            .map_err(builder_error)?;
+        let below_upper_bound = self
+            .backend
+            .builder
+            .build_float_compare(
+                LlvmFloatPredicate::OLT,
+                value,
+                float.const_float(9_223_372_036_854_775_808.0),
+                "convert.float_to_int.upper",
+            )
+            .map_err(builder_error)?;
+        let valid = self
+            .backend
+            .builder
+            .build_and(
+                in_lower_bound,
+                below_upper_bound,
+                "convert.float_to_int.valid",
+            )
+            .map_err(builder_error)?;
+
+        let source = self.current_block()?;
+        let function = source.get_parent().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmBuilderFailed",
+                "Float-to-Int conversion has no function",
+            )
+        })?;
+        let success = self
+            .backend
+            .context
+            .append_basic_block(function, "convert.float_to_int.success");
+        let failure = self
+            .backend
+            .context
+            .append_basic_block(function, "convert.float_to_int.failure");
+        let merge = self
+            .backend
+            .context
+            .append_basic_block(function, "convert.float_to_int.merge");
+        self.backend
+            .builder
+            .build_conditional_branch(valid, success, failure)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(success);
+        let converted = self
+            .backend
+            .builder
+            .build_float_to_signed_int(value, integer, "convert.float_to_int.value")
+            .map_err(builder_error)?;
+        let success_value = self.emit_product_construct_values(
+            result_ty,
+            &[converted.into(), integer.const_zero().into()],
+            "convert.float_to_int.success_pair",
+        )?;
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(failure);
+        let failure_status = self
+            .backend
+            .builder
+            .build_select(
+                finite,
+                integer.const_int(2, false),
+                integer.const_int(1, false),
+                "convert.float_to_int.failure_status",
+            )
+            .map_err(builder_error)?;
+        let failure_value = self.emit_product_construct_values(
+            result_ty,
+            &[integer.const_zero().into(), failure_status],
+            "convert.float_to_int.failure_pair",
+        )?;
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(merge);
+        let phi = self
+            .backend
+            .builder
+            .build_phi(
+                self.backend.llvm_type(result_ty)?,
+                "convert.float_to_int.result",
+            )
+            .map_err(builder_error)?;
+        phi.add_incoming(&[(&success_value, success), (&failure_value, failure)]);
+        Ok(phi.as_basic_value())
     }
 
     fn emit_text_from_utf8_units(

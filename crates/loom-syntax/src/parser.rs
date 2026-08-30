@@ -6,11 +6,11 @@ use serde::{Deserialize, Serialize};
 use crate::ast::{
     Assignment, AssociatedBinding, AssociatedTypeBinding, AssociatedTypeRequirement, BinaryOp,
     Block, BlockItem, CallableSignature, ConceptDecl, ConceptMember, ConceptRef, ConformanceMember,
-    ConstrainedTypeDecl, Contract, ContractKind, Decl, DeclKind, ElseBranch, EnumDecl, EnumVariant,
-    ErrorNode, Expr, ExprKind, ForRange, FunctionDecl, GenericParam, Ident, ImplDecl, ImplKind,
-    ImportDecl, Literal, LocalBinding, MatchArm, MethodDecl, MethodRequirement, Parameter, Path,
-    Pattern, PatternKind, Receiver, RecordDecl, RecordField, RecordLiteralField, ReturnExpr,
-    SourceFile, TypeArgument, TypeExpr, TypeExprKind, UnaryOp, Visibility,
+    ConstantDecl, ConstrainedTypeDecl, Contract, ContractKind, Decl, DeclKind, ElseBranch,
+    EnumDecl, EnumVariant, ErrorNode, Expr, ExprKind, ForRange, FunctionDecl, GenericParam, Ident,
+    ImplDecl, ImplKind, ImportDecl, Literal, LocalBinding, MatchArm, MethodDecl, MethodRequirement,
+    Parameter, Path, Pattern, PatternKind, Receiver, RecordDecl, RecordField, RecordLiteralField,
+    ReturnExpr, SourceFile, TypeArgument, TypeExpr, TypeExprKind, UnaryOp, Visibility, While,
 };
 use crate::lexer::{Lexed, Token, TokenKind, lex};
 
@@ -290,6 +290,7 @@ impl<'a> Parser<'a> {
         };
 
         let kind = match self.kind() {
+            TokenKind::ConstKw => DeclKind::Constant(self.parse_constant()),
             TokenKind::TypeKw => DeclKind::ConstrainedType(self.parse_constrained_type()),
             TokenKind::RecordKw => DeclKind::Record(self.parse_record()),
             TokenKind::EnumKw => DeclKind::Enum(self.parse_enum()),
@@ -334,7 +335,7 @@ impl<'a> Parser<'a> {
             _ => {
                 self.error_here(
                     "UnexpectedToken",
-                    "`pub` must be followed by `type`, `record`, `enum`, `fn`, or `(dyn) concept`",
+                    "`pub` must be followed by `const`, `type`, `record`, `enum`, `fn`, or `(dyn) concept`",
                 );
                 self.recover_to_top_level();
                 DeclKind::Error(ErrorNode {
@@ -347,6 +348,15 @@ impl<'a> Parser<'a> {
             kind,
             range: self.finish(start),
         }
+    }
+
+    fn parse_constant(&mut self) -> ConstantDecl {
+        self.expect(TokenKind::ConstKw, "`const`");
+        let name = self.parse_ident("constant name");
+        let ty = self.parse_type();
+        self.expect(TokenKind::Eq, "`=` after constant type");
+        let value = self.parse_expr(true);
+        ConstantDecl { name, ty, value }
     }
 
     fn parse_constrained_type(&mut self) -> ConstrainedTypeDecl {
@@ -1774,6 +1784,17 @@ impl<'a> Parser<'a> {
                 BlockItem::Local(self.parse_local_at(nesting))
             }
             TokenKind::ForKw => BlockItem::ForRange(self.parse_for_range_at(nesting)),
+            TokenKind::WhileKw => BlockItem::While(self.parse_while_at(nesting)),
+            TokenKind::BreakKw => {
+                let start = self.start();
+                self.bump();
+                BlockItem::Break(self.finish(start))
+            }
+            TokenKind::ContinueKw => {
+                let start = self.start();
+                self.bump();
+                BlockItem::Continue(self.finish(start))
+            }
             TokenKind::DeferKw => {
                 self.bump();
                 BlockItem::Defer(self.parse_block_at(nesting))
@@ -1832,6 +1853,19 @@ impl<'a> Parser<'a> {
             binding,
             start: range_start,
             end,
+            body,
+            range: self.finish(start),
+        }
+    }
+
+    fn parse_while_at(&mut self, nesting: SyntaxNesting) -> While {
+        let start = self.start();
+        self.bump();
+        // The following `{` starts the loop body rather than a record literal.
+        let condition = self.parse_expr_at(false, nesting);
+        let body = self.parse_block_at(nesting);
+        While {
+            condition,
             body,
             range: self.finish(start),
         }
@@ -2153,7 +2187,8 @@ impl<'a> Parser<'a> {
 
     fn is_top_start(&self) -> bool {
         match self.kind() {
-            TokenKind::TypeKw
+            TokenKind::ConstKw
+            | TokenKind::TypeKw
             | TokenKind::RecordKw
             | TokenKind::EnumKw
             | TokenKind::FnKw
@@ -2167,7 +2202,8 @@ impl<'a> Parser<'a> {
                         && self.nth_kind(2) == TokenKind::FnKw)
             }
             TokenKind::PubKw => match self.nth_kind(1) {
-                TokenKind::TypeKw
+                TokenKind::ConstKw
+                | TokenKind::TypeKw
                 | TokenKind::RecordKw
                 | TokenKind::EnumKw
                 | TokenKind::FnKw
@@ -2183,7 +2219,8 @@ impl<'a> Parser<'a> {
     fn is_top_start_at(&self, index: usize) -> bool {
         let kind = self.tokens[index].kind;
         match kind {
-            TokenKind::TypeKw
+            TokenKind::ConstKw
+            | TokenKind::TypeKw
             | TokenKind::RecordKw
             | TokenKind::EnumKw
             | TokenKind::FnKw
@@ -2198,7 +2235,8 @@ impl<'a> Parser<'a> {
             }
             TokenKind::PubKw => match self.raw_same_line_nth_kind(index, 1) {
                 Some(
-                    TokenKind::TypeKw
+                    TokenKind::ConstKw
+                    | TokenKind::TypeKw
                     | TokenKind::RecordKw
                     | TokenKind::EnumKw
                     | TokenKind::FnKw

@@ -65,16 +65,15 @@ library module.
 
 Importing a package never executes user code. Loom 0.3 has no `init`
 declaration or block, no executable top-level statements, no mutable globals,
-and no user-defined top-level constant syntax. A function named `init` is an
+and no runtime-initialized package values. A function named `init` is an
 ordinary function and is never discovered or called implicitly.
 
 Applications perform runtime initialization through ordinary functions called
 explicitly from `main`. Reusable packages expose those functions without
-creating an implicit initialization order. A future constant declaration may
-be admitted only when its value can be evaluated completely at compile time;
-it must not introduce hidden runtime work. Process-wide lazy values belong in
-future standard-library abstractions such as `Lazy` and `Once`, whose use
-remains explicit in the package graph.
+creating an implicit initialization order. Top-level `const` declarations are
+evaluated completely by the compiler and introduce neither storage nor runtime
+work. Process-wide lazy values belong in future standard-library abstractions
+such as `Lazy` and `Once`, whose use remains explicit in the package graph.
 
 The compiler and runtime may establish fixed facilities such as the GC,
 executor, or Runtime ABI before invoking the program entry point. That is an
@@ -88,8 +87,8 @@ the same directory can use one another's private declarations. Any use from a
 different directory package, including another package in the same module,
 requires a public declaration and an explicit import.
 
-Public visibility is available for constrained types, records, enums,
-functions, async functions, concepts, and dynamic concepts:
+Public visibility is available for constants, constrained types, records,
+enums, functions, async functions, concepts, and dynamic concepts:
 
 ```loom
 pub record Invoice {
@@ -114,6 +113,7 @@ path. Such a use is a `NameNotVisible` error.
 After imports, an ordinary `.loom` file may contain these declaration forms:
 
 ```text
+(pub)? const name Type = expression
 (pub)? type Name = Base where predicate
 (pub)? record Name[...] { ... }
 (pub)? enum Name[...] { ... }

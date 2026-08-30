@@ -14,17 +14,19 @@ use crate::proof::{
 };
 use crate::{
     AssociatedTypeBinding, BodySemantics, Bound, BuiltinType, BuiltinValue, CallResolution,
-    CallTarget, CallableSignature, Coercion, ConceptInstance, ConstructionCheck, DefMapBuild, Goal,
-    ImplHeader, ModuleGraph, ModuleGraphBuild, Mutability, Namespace, ParamEnv, Place,
-    PlaceProjection, PlaceRoot, ReceiverPassing, RegionId, Resolution, ResolveError, RuntimeCheck,
-    ScopedDisposal, Signature, SolveFailure, Substitution, TaskIntrinsic, TyData, TyId,
-    TypedProgram, ViewResolution, ViewSource, ViewTokenId, WitnessSelection, WitnessSource,
+    CallTarget, CallableSignature, Coercion, ConceptInstance, ConstantValue, ConstructionCheck,
+    DefMapBuild, Goal, ImplHeader, ModuleGraph, ModuleGraphBuild, Mutability, Namespace, ParamEnv,
+    Place, PlaceProjection, PlaceRoot, ReceiverPassing, RegionId, Resolution, ResolveError,
+    RuntimeCheck, ScopedDisposal, Signature, SolveFailure, Substitution, TaskIntrinsic, TyData,
+    TyId, TypedProgram, ViewResolution, ViewSource, ViewTokenId, WitnessSelection, WitnessSource,
 };
 
 const RESOURCE_MODULE: &str = "std.resource";
 const DISPOSE_CONCEPT: &str = "Dispose";
 const MUST_SCOPE_CONCEPT: &str = "MustScope";
 const NO_SUSPEND_CONCEPT: &str = "NoSuspend";
+const CONSTANT_EVALUATION_DEPTH_LIMIT: usize = 256;
+const CONSTANT_EVALUATION_WORK_LIMIT: usize = 65_536;
 
 /// Complete checker output. A typed program remains available after errors for
 /// diagnostics and editor features, but only an error-free analysis is
@@ -144,6 +146,23 @@ struct Analyzer<'a> {
     impl_index: crate::ImplIndex,
     canonical_concepts: CanonicalConcepts,
     diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConstantEvaluationState {
+    Evaluating,
+    Complete,
+    Failed,
+}
+
+#[derive(Clone, Copy)]
+enum ConstantLimitFrame {
+    Expression {
+        body: BodyId,
+        expression: ExprId,
+        depth: usize,
+    },
+    Complete(DefId),
 }
 
 #[derive(Clone, Debug)]
@@ -282,6 +301,7 @@ impl Analyzer<'_> {
                     Some(Signature::Impl)
                 }
                 DefinitionKind::Error
+                | DefinitionKind::Constant(_)
                 | DefinitionKind::Field(_)
                 | DefinitionKind::Variant(_)
                 | DefinitionKind::Function(_)
@@ -297,6 +317,27 @@ impl Analyzer<'_> {
         for (definition, item) in self.program.definitions.iter() {
             let context = self.type_context(definition);
             match &item.kind {
+                DefinitionKind::Constant(constant) => {
+                    let ty = self.resolve_type_ref(constant.ty, &context);
+                    if !matches!(
+                        self.typed.types.data(ty),
+                        TyData::Builtin(
+                            BuiltinType::Bool
+                                | BuiltinType::Int
+                                | BuiltinType::Float
+                                | BuiltinType::Text
+                        )
+                    ) {
+                        self.error(
+                            "InvalidConstantType",
+                            "a constant type must be Bool, Int, Float, or Text",
+                            self.type_span(constant.ty),
+                        );
+                    }
+                    self.typed
+                        .signatures
+                        .insert(definition, Signature::Constant { ty });
+                }
                 DefinitionKind::RefinedType(refined) => {
                     self.resolve_type_ref(refined.base, &context);
                 }
@@ -1016,8 +1057,10 @@ impl Analyzer<'_> {
             DefinitionKind::AssociatedType(associated) => {
                 self.collect_generic_ids(associated.owner, output);
             }
-            DefinitionKind::Error | DefinitionKind::RefinedType(_) | DefinitionKind::Concept(_) => {
-            }
+            DefinitionKind::Error
+            | DefinitionKind::Constant(_)
+            | DefinitionKind::RefinedType(_)
+            | DefinitionKind::Concept(_) => {}
         }
     }
 
@@ -1840,7 +1883,13 @@ impl Analyzer<'_> {
             .iter()
             .map(|(id, _)| id)
             .collect::<Vec<_>>();
-        let mut bodies = bodies;
+        let (constant_bodies, mut bodies): (Vec<_>, Vec<_>) = bodies
+            .into_iter()
+            .partition(|body| self.program.bodies[*body].kind == BodyKind::Constant);
+        for body in constant_bodies {
+            self.check_body(body);
+        }
+        self.evaluate_constants();
         bodies.sort_by_key(|body| {
             let rank = match self.program.bodies[*body].kind {
                 BodyKind::RefinementPredicate => 0,
@@ -1848,6 +1897,7 @@ impl Analyzer<'_> {
                 BodyKind::Requires => 2,
                 BodyKind::Ensures => 3,
                 BodyKind::Function | BodyKind::Method => 4,
+                BodyKind::Constant => unreachable!("constant bodies were partitioned above"),
             };
             (rank, body.raw())
         });
@@ -1871,6 +1921,418 @@ impl Analyzer<'_> {
         self.typed.bodies.insert(body, semantics);
     }
 
+    fn evaluate_constants(&mut self) {
+        let definitions = self
+            .program
+            .definitions
+            .iter()
+            .filter_map(|(definition, item)| {
+                matches!(item.kind, DefinitionKind::Constant(_)).then_some(definition)
+            })
+            .collect::<Vec<_>>();
+        // Check every root from an empty local traversal. Global evaluation
+        // cache state and declaration order therefore cannot make an
+        // over-limit initializer appear cheaper than the same source checked
+        // in another order.
+        let accepted = definitions
+            .iter()
+            .copied()
+            .filter(|definition| self.constant_evaluation_within_limits(*definition))
+            .collect::<BTreeSet<_>>();
+        let mut states = BTreeMap::new();
+        for definition in definitions.iter().copied() {
+            if !accepted.contains(&definition) {
+                states.insert(definition, ConstantEvaluationState::Failed);
+            }
+        }
+        for definition in definitions {
+            self.evaluate_constant(definition, &mut states);
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keeping the iterative traversal together makes its depth and work accounting auditable"
+    )]
+    fn constant_evaluation_within_limits(&mut self, definition: DefId) -> bool {
+        let DefinitionKind::Constant(constant) = self.program.definitions[definition].kind.clone()
+        else {
+            return true;
+        };
+        let root = self.program.bodies[constant.value].root;
+        let mut active = BTreeSet::from([definition]);
+        let mut max_seen_depth = BTreeMap::from([(definition, 1_usize)]);
+        let mut work = 0_usize;
+        let mut pending = vec![
+            ConstantLimitFrame::Complete(definition),
+            ConstantLimitFrame::Expression {
+                body: constant.value,
+                expression: root,
+                depth: 1,
+            },
+        ];
+        while let Some(frame) = pending.pop() {
+            let ConstantLimitFrame::Expression {
+                body,
+                expression,
+                depth,
+            } = frame
+            else {
+                let ConstantLimitFrame::Complete(definition) = frame else {
+                    unreachable!()
+                };
+                active.remove(&definition);
+                continue;
+            };
+            if depth > CONSTANT_EVALUATION_DEPTH_LIMIT {
+                self.error(
+                    "ConstantEvaluationLimit",
+                    format!(
+                        "constant evaluation exceeds the maximum expression depth of {CONSTANT_EVALUATION_DEPTH_LIMIT}"
+                    ),
+                    self.definition_span(definition),
+                );
+                return false;
+            }
+            work = work.saturating_add(1);
+            if work > CONSTANT_EVALUATION_WORK_LIMIT {
+                self.error(
+                    "ConstantEvaluationLimit",
+                    format!(
+                        "constant evaluation exceeds the maximum work of {CONSTANT_EVALUATION_WORK_LIMIT} expressions"
+                    ),
+                    self.definition_span(definition),
+                );
+                return false;
+            }
+
+            let next_depth = depth.saturating_add(1);
+            match self.program.bodies[body].expressions[expression].clone() {
+                Expr::Path(_) => {
+                    let target = self
+                        .typed
+                        .bodies
+                        .get(body)
+                        .and_then(|semantics| semantics.expression_resolutions.get(expression))
+                        .and_then(|resolution| match resolution {
+                            Resolution::Definition(target)
+                                if matches!(
+                                    self.program.definitions[*target].kind,
+                                    DefinitionKind::Constant(_)
+                                ) =>
+                            {
+                                Some(*target)
+                            }
+                            _ => None,
+                        });
+                    let Some(target) = target else {
+                        continue;
+                    };
+                    if active.contains(&target)
+                        || max_seen_depth
+                            .get(&target)
+                            .is_some_and(|seen| *seen >= next_depth)
+                    {
+                        continue;
+                    }
+                    let DefinitionKind::Constant(target_constant) =
+                        self.program.definitions[target].kind.clone()
+                    else {
+                        unreachable!("constant resolution changed definition kind")
+                    };
+                    max_seen_depth.insert(target, next_depth);
+                    active.insert(target);
+                    pending.push(ConstantLimitFrame::Complete(target));
+                    pending.push(ConstantLimitFrame::Expression {
+                        body: target_constant.value,
+                        expression: self.program.bodies[target_constant.value].root,
+                        depth: next_depth,
+                    });
+                }
+                Expr::Unary { operand, .. } => pending.push(ConstantLimitFrame::Expression {
+                    body,
+                    expression: operand,
+                    depth: next_depth,
+                }),
+                Expr::Binary { left, right, .. } => {
+                    pending.push(ConstantLimitFrame::Expression {
+                        body,
+                        expression: right,
+                        depth: next_depth,
+                    });
+                    pending.push(ConstantLimitFrame::Expression {
+                        body,
+                        expression: left,
+                        depth: next_depth,
+                    });
+                }
+                Expr::Literal(_)
+                | Expr::Tuple(_)
+                | Expr::List(_)
+                | Expr::SelfValue
+                | Expr::ResultValue
+                | Expr::Old(_)
+                | Expr::Block { .. }
+                | Expr::If { .. }
+                | Expr::Match { .. }
+                | Expr::Call { .. }
+                | Expr::MethodCall { .. }
+                | Expr::QualifiedMethodCall { .. }
+                | Expr::Field { .. }
+                | Expr::Assign { .. }
+                | Expr::RecordLiteral { .. }
+                | Expr::Await(_)
+                | Expr::Propagate(_)
+                | Expr::Return(_)
+                | Expr::Error => {}
+            }
+        }
+        true
+    }
+
+    fn evaluate_constant(
+        &mut self,
+        definition: DefId,
+        states: &mut BTreeMap<DefId, ConstantEvaluationState>,
+    ) -> Option<ConstantValue> {
+        match states.get(&definition).copied() {
+            Some(ConstantEvaluationState::Complete) => {
+                return self.typed.constants.get(definition).cloned();
+            }
+            Some(ConstantEvaluationState::Failed) => return None,
+            Some(ConstantEvaluationState::Evaluating) => {
+                self.error(
+                    "ConstantCycle",
+                    "constant definitions form an evaluation cycle",
+                    self.definition_span(definition),
+                );
+                states.insert(definition, ConstantEvaluationState::Failed);
+                return None;
+            }
+            None => {}
+        }
+        let DefinitionKind::Constant(constant) = self.program.definitions[definition].kind.clone()
+        else {
+            return None;
+        };
+        states.insert(definition, ConstantEvaluationState::Evaluating);
+        let root = self.program.bodies[constant.value].root;
+        let value = self.evaluate_constant_expr(constant.value, root, states);
+        if let Some(value) = value {
+            self.typed.constants.insert(definition, value.clone());
+            states.insert(definition, ConstantEvaluationState::Complete);
+            Some(value)
+        } else {
+            states.insert(definition, ConstantEvaluationState::Failed);
+            None
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn evaluate_constant_expr(
+        &mut self,
+        body: BodyId,
+        expression: ExprId,
+        states: &mut BTreeMap<DefId, ConstantEvaluationState>,
+    ) -> Option<ConstantValue> {
+        let source = self.program.bodies[body].expressions[expression].clone();
+        match source {
+            Expr::Literal(Literal::Bool(value)) => Some(ConstantValue::Bool(value)),
+            Expr::Literal(Literal::Int(value)) => value
+                .parse::<i64>()
+                .ok()
+                .map(ConstantValue::Int)
+                .or_else(|| {
+                    self.constant_evaluation_error(body, expression, "invalid Int constant");
+                    None
+                }),
+            Expr::Literal(Literal::Float(value)) => value
+                .parse::<f64>()
+                .ok()
+                .map(ConstantValue::Float)
+                .or_else(|| {
+                    self.constant_evaluation_error(body, expression, "invalid Float constant");
+                    None
+                }),
+            Expr::Literal(Literal::Text(value)) => decode_constant_text(&value)
+                .ok()
+                .map(ConstantValue::Text)
+                .or_else(|| {
+                    self.constant_evaluation_error(body, expression, "invalid Text constant");
+                    None
+                }),
+            Expr::Path(_) => {
+                let resolution = self
+                    .typed
+                    .bodies
+                    .get(body)
+                    .and_then(|semantics| semantics.expression_resolutions.get(expression))
+                    .copied();
+                match resolution {
+                    Some(Resolution::Definition(target))
+                        if matches!(
+                            self.program.definitions[target].kind,
+                            DefinitionKind::Constant(_)
+                        ) =>
+                    {
+                        self.evaluate_constant(target, states)
+                    }
+                    _ => {
+                        self.invalid_constant_expression(body, expression);
+                        None
+                    }
+                }
+            }
+            Expr::Unary { op, operand } => {
+                if op == UnaryOp::Negate
+                    && matches!(
+                        &self.program.bodies[body].expressions[operand],
+                        Expr::Literal(Literal::Int(value)) if value == "9223372036854775808"
+                    )
+                {
+                    return Some(ConstantValue::Int(i64::MIN));
+                }
+                let operand = self.evaluate_constant_expr(body, operand, states)?;
+                let value = match (op, operand) {
+                    (UnaryOp::Not, ConstantValue::Bool(value)) => Some(ConstantValue::Bool(!value)),
+                    (UnaryOp::Negate, ConstantValue::Int(value)) => {
+                        value.checked_neg().map(ConstantValue::Int)
+                    }
+                    (UnaryOp::Negate, ConstantValue::Float(value)) => {
+                        Some(ConstantValue::Float(-value))
+                    }
+                    _ => None,
+                };
+                value.or_else(|| {
+                    self.constant_evaluation_error(
+                        body,
+                        expression,
+                        "constant unary operation cannot be evaluated",
+                    );
+                    None
+                })
+            }
+            Expr::Binary { op, left, right } => {
+                let left = self.evaluate_constant_expr(body, left, states)?;
+                match (op, left) {
+                    (BinaryOp::And, ConstantValue::Bool(false)) => Some(ConstantValue::Bool(false)),
+                    (BinaryOp::Or, ConstantValue::Bool(true)) => Some(ConstantValue::Bool(true)),
+                    (op, left) => {
+                        let right = self.evaluate_constant_expr(body, right, states)?;
+                        self.evaluate_constant_binary(body, expression, op, left, right)
+                    }
+                }
+            }
+            Expr::Literal(Literal::Unit)
+            | Expr::Tuple(_)
+            | Expr::List(_)
+            | Expr::SelfValue
+            | Expr::ResultValue
+            | Expr::Old(_)
+            | Expr::Block { .. }
+            | Expr::If { .. }
+            | Expr::Match { .. }
+            | Expr::Call { .. }
+            | Expr::MethodCall { .. }
+            | Expr::QualifiedMethodCall { .. }
+            | Expr::Field { .. }
+            | Expr::Assign { .. }
+            | Expr::RecordLiteral { .. }
+            | Expr::Await(_)
+            | Expr::Propagate(_)
+            | Expr::Return(_)
+            | Expr::Error => {
+                self.invalid_constant_expression(body, expression);
+                None
+            }
+        }
+    }
+
+    #[allow(clippy::float_cmp, clippy::too_many_lines)]
+    fn evaluate_constant_binary(
+        &mut self,
+        body: BodyId,
+        expression: ExprId,
+        op: BinaryOp,
+        left: ConstantValue,
+        right: ConstantValue,
+    ) -> Option<ConstantValue> {
+        let value = match (left, right) {
+            (ConstantValue::Bool(left), ConstantValue::Bool(right)) => match op {
+                BinaryOp::And => Some(ConstantValue::Bool(left && right)),
+                BinaryOp::Or => Some(ConstantValue::Bool(left || right)),
+                BinaryOp::Equal => Some(ConstantValue::Bool(left == right)),
+                BinaryOp::NotEqual => Some(ConstantValue::Bool(left != right)),
+                _ => None,
+            },
+            (ConstantValue::Int(left), ConstantValue::Int(right)) => match op {
+                BinaryOp::Add => left.checked_add(right).map(ConstantValue::Int),
+                BinaryOp::Subtract => left.checked_sub(right).map(ConstantValue::Int),
+                BinaryOp::Multiply => left.checked_mul(right).map(ConstantValue::Int),
+                BinaryOp::Divide => left.checked_div(right).map(ConstantValue::Int),
+                BinaryOp::Equal => Some(ConstantValue::Bool(left == right)),
+                BinaryOp::NotEqual => Some(ConstantValue::Bool(left != right)),
+                BinaryOp::Less => Some(ConstantValue::Bool(left < right)),
+                BinaryOp::LessEqual => Some(ConstantValue::Bool(left <= right)),
+                BinaryOp::Greater => Some(ConstantValue::Bool(left > right)),
+                BinaryOp::GreaterEqual => Some(ConstantValue::Bool(left >= right)),
+                BinaryOp::And | BinaryOp::Or => None,
+            },
+            (ConstantValue::Float(left), ConstantValue::Float(right)) => match op {
+                BinaryOp::Add => Some(ConstantValue::Float(left + right)),
+                BinaryOp::Subtract => Some(ConstantValue::Float(left - right)),
+                BinaryOp::Multiply => Some(ConstantValue::Float(left * right)),
+                BinaryOp::Divide => Some(ConstantValue::Float(left / right)),
+                BinaryOp::Equal => Some(ConstantValue::Bool(left == right)),
+                BinaryOp::NotEqual => Some(ConstantValue::Bool(left != right)),
+                BinaryOp::Less => Some(ConstantValue::Bool(left < right)),
+                BinaryOp::LessEqual => Some(ConstantValue::Bool(left <= right)),
+                BinaryOp::Greater => Some(ConstantValue::Bool(left > right)),
+                BinaryOp::GreaterEqual => Some(ConstantValue::Bool(left >= right)),
+                BinaryOp::And | BinaryOp::Or => None,
+            },
+            (ConstantValue::Text(left), ConstantValue::Text(right)) => match op {
+                BinaryOp::Equal => Some(ConstantValue::Bool(left == right)),
+                BinaryOp::NotEqual => Some(ConstantValue::Bool(left != right)),
+                _ => None,
+            },
+            _ => None,
+        };
+        value.or_else(|| {
+            self.constant_evaluation_error(
+                body,
+                expression,
+                "constant binary operation cannot be evaluated",
+            );
+            None
+        })
+    }
+
+    fn invalid_constant_expression(&mut self, body: BodyId, expression: ExprId) {
+        let span = self.program.bodies[body]
+            .source_map
+            .expr(expression)
+            .unwrap_or_default();
+        self.error(
+            "InvalidConstantExpression",
+            "a constant initializer may contain only primitive literals, constant references, and unary or binary constant operations",
+            span,
+        );
+    }
+
+    fn constant_evaluation_error(
+        &mut self,
+        body: BodyId,
+        expression: ExprId,
+        message: &'static str,
+    ) {
+        let span = self.program.bodies[body]
+            .source_map
+            .expr(expression)
+            .unwrap_or_default();
+        self.error("ConstantEvaluationFailed", message, span);
+    }
+
     #[allow(clippy::too_many_lines)]
     fn body_environment(&mut self, body: BodyId) -> BodyEnvironment {
         let source = &self.program.bodies[body];
@@ -1883,6 +2345,13 @@ impl Analyzer<'_> {
         };
         let context = self.type_context(owner);
         let (expected_root, return_ty, self_ty, receiver, result_ty, contract) = match source.kind {
+            BodyKind::Constant => {
+                let ty = match self.typed.signatures.get(owner) {
+                    Some(Signature::Constant { ty }) => *ty,
+                    _ => self.typed.types.error(),
+                };
+                (ty, ty, None, None, None, ContractMode::None)
+            }
             BodyKind::Function | BodyKind::Method => {
                 let return_ty = signature
                     .as_ref()
@@ -2058,7 +2527,7 @@ enum PlaceAccess {
     Write,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct ActiveBorrow {
     owner: Place,
     mutable: bool,
@@ -2083,9 +2552,25 @@ enum DynamicCoercionMode {
 struct FlowState {
     self_dirty: bool,
     borrows: Vec<ActiveBorrow>,
+    pending_must_scope_locals: BTreeSet<LocalId>,
+    transferred_must_scope_locals: BTreeSet<LocalId>,
+    active_no_suspend: Vec<(LocalId, RegionId, Span)>,
     proof_facts: ProofFacts,
     local_terms: BTreeMap<LocalId, ProofTerm>,
     task_obligations: BTreeMap<TaskObligationOwner, TaskObligationState>,
+}
+
+struct LoopFlowTarget {
+    cleanup_depth: u32,
+    defer_base: usize,
+    breaks: Vec<FlowState>,
+    continues: Vec<FlowState>,
+}
+
+#[derive(Clone)]
+struct DeferredFlowEffect {
+    makes_self_dirty: bool,
+    self_boundaries: BTreeSet<ExprId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -2140,6 +2625,10 @@ struct BodyChecker<'a, 'program> {
     active_no_suspend: Vec<(LocalId, RegionId, Span)>,
     task_obligations: BTreeMap<TaskObligationOwner, TaskObligationState>,
     cleanup_depth: u32,
+    active_defer_effects: Vec<DeferredFlowEffect>,
+    current_defer_self_boundaries: BTreeSet<ExprId>,
+    reported_defer_self_boundaries: BTreeSet<ExprId>,
+    loop_flows: Vec<LoopFlowTarget>,
     allow_await_here: bool,
     checking_scoped_receiver: bool,
     scoped_initializer: Option<ExprId>,
@@ -2175,6 +2664,10 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             active_no_suspend: Vec::new(),
             task_obligations: BTreeMap::new(),
             cleanup_depth: 0,
+            active_defer_effects: Vec::new(),
+            current_defer_self_boundaries: BTreeSet::new(),
+            reported_defer_self_boundaries: BTreeSet::new(),
+            loop_flows: Vec::new(),
             allow_await_here: false,
             checking_scoped_receiver: false,
             scoped_initializer: None,
@@ -2740,6 +3233,15 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             self.semantics
                 .expression_resolutions
                 .insert(expression, Resolution::Definition(definition));
+            if matches!(
+                self.analyzer.program.definitions[definition].kind,
+                DefinitionKind::Constant(_)
+            ) {
+                return match self.analyzer.typed.signatures.get(definition) {
+                    Some(Signature::Constant { ty }) => *ty,
+                    _ => self.types().error(),
+                };
+            }
             self.error_at(
                 "TypeMismatch",
                 "functions are not first-class values; call this name",
@@ -2758,6 +3260,12 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             self.error_at("UnknownName", "`self` is not available here", expression);
             return self.types().error();
         };
+        if self.cleanup_depth > 0
+            && !self.allow_dirty_self_projection
+            && !self.checking_assignment_target
+        {
+            self.current_defer_self_boundaries.insert(expression);
+        }
         if self.self_dirty && !self.allow_dirty_self_projection {
             self.error_at(
                 "InvariantIsolationViolation",
@@ -2831,8 +3339,12 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         let region = RegionId(self.next_region);
         self.next_region = self.next_region.saturating_add(1);
         self.regions.push(region);
+        let defer_base = self.active_defer_effects.len();
         let mut diverges = false;
         for statement in statements {
+            let was_diverged = diverges;
+            let unreachable_flow = was_diverged.then(|| self.flow_state());
+            let unreachable_defer_count = self.active_defer_effects.len();
             match statement {
                 Statement::Let { local, value } | Statement::Scoped { local, value } => {
                     let scoped = matches!(statement, Statement::Scoped { .. });
@@ -2976,6 +3488,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     self.semantics.expression_types.insert(*start, start_ty);
                     self.semantics.expression_types.insert(*end, end_ty);
                     self.semantics.local_types.insert(*local, int);
+                    // The body is a repeated slice. Without an induction
+                    // proof, no entry fact is stable on every iteration.
+                    self.invalidate_all_proofs();
                     let entry = self.flow_state();
 
                     // The iteration binding belongs to the loop body's lexical
@@ -2988,17 +3503,117 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                         .expect("loop is inside a block scope")
                         .insert(name.clone(), *local);
                     let unit = self.types().builtin(BuiltinType::Unit);
+                    self.loop_flows.push(LoopFlowTarget {
+                        cleanup_depth: self.cleanup_depth,
+                        defer_base: self.active_defer_effects.len(),
+                        breaks: Vec::new(),
+                        continues: Vec::new(),
+                    });
                     self.check_expr(*body, Some(unit), ExpressionContext::Value);
+                    let body_diverges = self.expression_diverges(*body);
                     let iteration = self.flow_state();
-                    // A range may execute zero or many times. Retain only
-                    // facts stable before and after an arbitrary iteration.
-                    self.join_flow_states([entry, iteration]);
+                    let loop_flow = self.loop_flows.pop().expect("range loop flow");
+                    if !body_diverges {
+                        self.check_loop_backedge_state(&entry, &iteration, *body);
+                    }
+                    for backedge in &loop_flow.continues {
+                        self.check_loop_backedge_state(&entry, backedge, *body);
+                    }
+                    let mut exits = vec![entry];
+                    exits.extend(loop_flow.breaks);
+                    self.join_flow_states(exits);
+                    self.invalidate_all_proofs();
                     let scope = self.scopes.last_mut().expect("loop block scope exists");
                     if let Some(previous) = previous {
                         scope.insert(name, previous);
                     } else {
                         scope.remove(&name);
                     }
+                }
+                Statement::While { condition, body } => {
+                    let bool_ty = self.types().builtin(BuiltinType::Bool);
+                    // The condition and body can both be revisited. Start
+                    // their single semantic pass without first-iteration-only
+                    // facts, then keep those facts invalid after the loop.
+                    self.invalidate_all_proofs();
+                    let header = self.flow_state();
+                    self.check_expr(*condition, Some(bool_ty), ExpressionContext::Value);
+                    let condition_diverges = self.expression_diverges(*condition);
+                    let condition_exit = self.flow_state();
+                    if condition_diverges {
+                        // Check the unreachable body from the pre-condition
+                        // structured state. A return in the condition audits
+                        // and consumes obligations only on its terminating
+                        // path; those mutations must not manufacture errors
+                        // inside code that can never execute.
+                        self.restore_flow(&header);
+                        self.invalidate_all_proofs();
+                    }
+                    let unit = self.types().builtin(BuiltinType::Unit);
+                    self.loop_flows.push(LoopFlowTarget {
+                        cleanup_depth: self.cleanup_depth,
+                        defer_base: self.active_defer_effects.len(),
+                        breaks: Vec::new(),
+                        continues: Vec::new(),
+                    });
+                    self.check_expr(*body, Some(unit), ExpressionContext::Value);
+                    let body_diverges = self.expression_diverges(*body);
+                    let iteration = self.flow_state();
+                    let loop_flow = self.loop_flows.pop().expect("while loop flow");
+                    if condition_diverges {
+                        // The body remains typechecked for diagnostics and
+                        // side tables, but it is unreachable and cannot alter
+                        // the terminating condition flow.
+                        self.restore_flow(&condition_exit);
+                        diverges = true;
+                    } else {
+                        if !body_diverges {
+                            self.check_loop_backedge_state(&header, &iteration, *body);
+                        }
+                        for backedge in &loop_flow.continues {
+                            self.check_loop_backedge_state(&header, backedge, *body);
+                        }
+                        let mut exits = vec![condition_exit];
+                        exits.extend(loop_flow.breaks);
+                        self.join_flow_states(exits);
+                        self.invalidate_all_proofs();
+                    }
+                }
+                Statement::Break { span } | Statement::Continue { span } => {
+                    let is_break = matches!(statement, Statement::Break { .. });
+                    let keyword = if is_break { "break" } else { "continue" };
+                    let Some((loop_cleanup_depth, defer_base)) = self
+                        .loop_flows
+                        .last()
+                        .map(|target| (target.cleanup_depth, target.defer_base))
+                    else {
+                        self.error(
+                            "LoopControlOutsideLoop",
+                            format!("`{keyword}` is only valid inside a loop"),
+                            *span,
+                        );
+                        diverges = true;
+                        continue;
+                    };
+                    let valid_target = loop_cleanup_depth == self.cleanup_depth;
+                    if !valid_target {
+                        self.error(
+                            "LoopControlFromCleanup",
+                            format!("a defer cleanup cannot `{keyword}` an enclosing loop"),
+                            *span,
+                        );
+                    }
+                    if !was_diverged && valid_target {
+                        let mut control_state = self.flow_state();
+                        self.apply_defer_effects(&mut control_state, defer_base);
+                        let target = self.loop_flows.last_mut().expect("checked loop target");
+                        if is_break {
+                            target.breaks.push(control_state);
+                        } else {
+                            target.continues.push(control_state);
+                        }
+                    }
+                    diverges = true;
                 }
                 Statement::Defer { body } => {
                     if self.cleanup_depth > 0 {
@@ -3008,11 +3623,30 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                             *body,
                         );
                     }
+                    let registration_flow = self.flow_state();
+                    let registration_defer_count = self.active_defer_effects.len();
+                    let previous_boundaries =
+                        std::mem::take(&mut self.current_defer_self_boundaries);
+                    // A cleanup is a late-read action, not an expression run
+                    // at registration. Check it without current value proofs
+                    // and restore the complete registration flow afterward.
+                    self.invalidate_all_proofs();
+                    self.self_dirty = false;
                     self.cleanup_depth = self.cleanup_depth.saturating_add(1);
                     let unit = self.types().builtin(BuiltinType::Unit);
-                    let ty = self.check_expr(*body, Some(unit), ExpressionContext::Value);
+                    self.check_expr(*body, Some(unit), ExpressionContext::Value);
                     self.cleanup_depth = self.cleanup_depth.saturating_sub(1);
-                    diverges |= self.analyzer.typed.types.data(ty) == &TyData::Never;
+                    let makes_self_dirty = self.self_dirty;
+                    let self_boundaries = std::mem::replace(
+                        &mut self.current_defer_self_boundaries,
+                        previous_boundaries,
+                    );
+                    self.restore_flow(&registration_flow);
+                    self.active_defer_effects.truncate(registration_defer_count);
+                    self.active_defer_effects.push(DeferredFlowEffect {
+                        makes_self_dirty,
+                        self_boundaries,
+                    });
                 }
                 Statement::Discard(expression) => {
                     let previous = self.checking_discard_operand;
@@ -3099,13 +3733,23 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     self.recover_receiver_invariant();
                 }
             }
+            if let Some(unreachable_flow) = unreachable_flow {
+                self.restore_flow(&unreachable_flow);
+                self.active_defer_effects.truncate(unreachable_defer_count);
+                diverges = true;
+            }
         }
+        let unreachable_tail_flow = diverges.then(|| self.flow_state());
         let tail_result = if let Some(tail) = tail {
             self.check_suspendable_expr(tail, expected, ExpressionContext::Value)
         } else {
             self.types().builtin(BuiltinType::Unit)
         };
-        if let Some(tail) = tail
+        if let Some(unreachable_tail_flow) = unreachable_tail_flow {
+            self.restore_flow(&unreachable_tail_flow);
+        }
+        if !diverges
+            && let Some(tail) = tail
             && self.may_have_task_obligation(tail_result)
         {
             // A block tail transfers its obligation to the block result even
@@ -3119,6 +3763,12 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         } else {
             tail_result
         };
+        if self.active_defer_effects.len() > defer_base {
+            let mut exit_state = self.flow_state();
+            self.apply_defer_effects(&mut exit_state, defer_base);
+            self.restore_flow(&exit_state);
+        }
+        self.active_defer_effects.truncate(defer_base);
         self.borrows.retain(|borrow| borrow.region != region);
         self.active_no_suspend
             .retain(|(_, active_region, _)| *active_region != region);
@@ -4480,7 +5130,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     }
                 }
             }
-            BodyKind::RefinementPredicate | BodyKind::RecordInvariant => {}
+            BodyKind::Constant | BodyKind::RefinementPredicate | BodyKind::RecordInvariant => {}
         }
     }
 
@@ -4705,7 +5355,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             Expr::Literal(Literal::Float(value)) => value
                 .parse::<f64>()
                 .map_or(ProofTerm::Unknown, ProofTerm::float),
-            Expr::Literal(Literal::Text(value)) => ProofTerm::text(value.clone()),
+            Expr::Literal(Literal::Text(value)) => {
+                decode_constant_text(value).map_or(ProofTerm::Unknown, ProofTerm::text)
+            }
             Expr::Literal(Literal::Unit) => ProofTerm::unit(),
             Expr::Tuple(elements) => ProofTerm::Tuple(
                 elements
@@ -4871,15 +5523,18 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 fields: Vec::new(),
             }),
             Some(Resolution::Builtin(BuiltinValue::Unit)) => ProofTerm::unit(),
-            Some(Resolution::Definition(variant)) => {
+            Some(Resolution::Definition(definition)) => {
+                if let Some(value) = self.analyzer.typed.constants.get(definition) {
+                    return constant_proof_term(value);
+                }
                 let DefinitionKind::Variant(variant_definition) =
-                    &self.analyzer.program.definitions[variant].kind
+                    &self.analyzer.program.definitions[definition].kind
                 else {
                     return ProofTerm::Unknown;
                 };
                 ProofTerm::Variant {
                     owner: variant_definition.owner,
-                    variant,
+                    variant: definition,
                     payload: Vec::new(),
                 }
             }
@@ -4936,7 +5591,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             Expr::Literal(Literal::Float(value)) => value
                 .parse::<f64>()
                 .map_or(ProofTerm::Unknown, ProofTerm::float),
-            Expr::Literal(Literal::Text(value)) => ProofTerm::text(value.clone()),
+            Expr::Literal(Literal::Text(value)) => {
+                decode_constant_text(value).map_or(ProofTerm::Unknown, ProofTerm::text)
+            }
             Expr::Literal(Literal::Unit) => ProofTerm::unit(),
             Expr::Path(_) => match semantics.expression_resolutions.get(expression).copied() {
                 Some(Resolution::Param(parameter)) => {
@@ -4955,15 +5612,18 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     bindings.get(&local).cloned().unwrap_or(ProofTerm::Unknown)
                 }
                 Some(Resolution::Builtin(BuiltinValue::Unit)) => ProofTerm::unit(),
-                Some(Resolution::Definition(variant)) => {
+                Some(Resolution::Definition(definition)) => {
+                    if let Some(value) = self.analyzer.typed.constants.get(definition) {
+                        return constant_proof_term(value);
+                    }
                     let DefinitionKind::Variant(variant_definition) =
-                        &self.analyzer.program.definitions[variant].kind
+                        &self.analyzer.program.definitions[definition].kind
                     else {
                         return ProofTerm::Unknown;
                     };
                     ProofTerm::Variant {
                         owner: variant_definition.owner,
-                        variant,
+                        variant: definition,
                         payload: Vec::new(),
                     }
                 }
@@ -5162,6 +5822,12 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             let builtin = self
                 .compiler_std_primitive_call(&path)
                 .map(|primitive| match primitive {
+                    crate::std_primitives::CompilerStdPrimitive::FloatFromInt => {
+                        BuiltinValue::IntToFloat
+                    }
+                    crate::std_primitives::CompilerStdPrimitive::FloatToInt => {
+                        BuiltinValue::FloatToIntStatus
+                    }
                     crate::std_primitives::CompilerStdPrimitive::IoWriteStdout => {
                         BuiltinValue::StdoutWrite
                     }
@@ -5369,6 +6035,8 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             BuiltinValue::ParseFloat
             | BuiltinValue::FormatFloat
             | BuiltinValue::IsFinite
+            | BuiltinValue::IntToFloat
+            | BuiltinValue::FloatToIntStatus
             | BuiltinValue::ProcessArguments
             | BuiltinValue::ProcessEnvironment
             | BuiltinValue::DurationMilliseconds
@@ -5568,6 +6236,17 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 let float = self.types().builtin(BuiltinType::Float);
                 self.check_fixed_arguments(expression, arguments, &[float]);
                 self.types().builtin(BuiltinType::Bool)
+            }
+            BuiltinValue::IntToFloat => {
+                let int = self.types().builtin(BuiltinType::Int);
+                self.check_fixed_arguments(expression, arguments, &[int]);
+                self.types().builtin(BuiltinType::Float)
+            }
+            BuiltinValue::FloatToIntStatus => {
+                let float = self.types().builtin(BuiltinType::Float);
+                self.check_fixed_arguments(expression, arguments, &[float]);
+                let int = self.types().builtin(BuiltinType::Int);
+                self.types().intern(TyData::Tuple(vec![int, int]))
             }
             BuiltinValue::ProcessArguments => {
                 self.check_fixed_arguments(expression, arguments, &[]);
@@ -5971,6 +6650,14 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 _ => None,
             })
             .is_some_and(|local| self.scoped_locals.contains(&local));
+        let receiver_is_self = self
+            .semantics
+            .expression_places
+            .get(receiver)
+            .is_some_and(|place| matches!(place.root, PlaceRoot::SelfValue));
+        if self.cleanup_depth > 0 && receiver_is_self {
+            self.current_defer_self_boundaries.insert(receiver);
+        }
         if self.has_must_scope_obligation_root(receiver_ty) && !scoped_receiver {
             self.error_at(
                 "MustScopeRequiresScoped",
@@ -5978,13 +6665,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 receiver,
             );
         }
-        if self.self_dirty
-            && self
-                .semantics
-                .expression_places
-                .get(receiver)
-                .is_some_and(|place| matches!(place.root, PlaceRoot::SelfValue))
-        {
+        if self.self_dirty && receiver_is_self {
             self.error_at(
                 "InvariantIsolationViolation",
                 "a mutated receiver cannot be used for a nested method call",
@@ -8904,9 +9585,74 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         FlowState {
             self_dirty: self.self_dirty,
             borrows: self.borrows.clone(),
+            pending_must_scope_locals: self.pending_must_scope_locals.clone(),
+            transferred_must_scope_locals: self.transferred_must_scope_locals.clone(),
+            active_no_suspend: self.active_no_suspend.clone(),
             proof_facts: self.proof_facts.clone(),
             local_terms: self.local_terms.clone(),
             task_obligations: self.task_obligations.clone(),
+        }
+    }
+
+    fn invalidate_all_proofs(&mut self) {
+        self.proof_facts = ProofFacts::default();
+        self.local_terms.clear();
+    }
+
+    fn apply_defer_effects(&mut self, state: &mut FlowState, defer_base: usize) {
+        if self.active_defer_effects.len() <= defer_base {
+            return;
+        }
+        state.proof_facts = ProofFacts::default();
+        state.local_terms.clear();
+        let effects = self.active_defer_effects[defer_base..].to_vec();
+        for effect in effects.iter().rev() {
+            if state.self_dirty {
+                for expression in &effect.self_boundaries {
+                    if self.reported_defer_self_boundaries.insert(*expression) {
+                        self.error_at(
+                            "InvariantIsolationViolation",
+                            "a defer cleanup cannot use `self` after an earlier cleanup or scope exit has invalidated its invariant",
+                            *expression,
+                        );
+                    }
+                }
+            }
+            state.self_dirty |= effect.makes_self_dirty;
+        }
+    }
+
+    fn check_loop_backedge_state(
+        &mut self,
+        header: &FlowState,
+        backedge: &FlowState,
+        expression: ExprId,
+    ) {
+        if header.self_dirty != backedge.self_dirty {
+            self.error_at(
+                "LoopReceiverInvariantNotRestored",
+                "every continuing loop path must restore the receiver invariant state before the next iteration",
+                expression,
+            );
+        }
+        if header.borrows != backedge.borrows
+            || header.active_no_suspend != backedge.active_no_suspend
+        {
+            self.error_at(
+                "LoopBorrowStateNotRestored",
+                "every continuing loop path must restore its borrow and NoSuspend state before the next iteration",
+                expression,
+            );
+        }
+        if header.task_obligations != backedge.task_obligations
+            || header.pending_must_scope_locals != backedge.pending_must_scope_locals
+            || header.transferred_must_scope_locals != backedge.transferred_must_scope_locals
+        {
+            self.error_at(
+                "LoopObligationStateNotRestored",
+                "every continuing loop path must restore its Task and MustScope obligations before the next iteration",
+                expression,
+            );
         }
     }
 
@@ -8924,6 +9670,11 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
     fn restore_flow(&mut self, state: &FlowState) {
         self.self_dirty = state.self_dirty;
         self.borrows.clone_from(&state.borrows);
+        self.pending_must_scope_locals
+            .clone_from(&state.pending_must_scope_locals);
+        self.transferred_must_scope_locals
+            .clone_from(&state.transferred_must_scope_locals);
+        self.active_no_suspend.clone_from(&state.active_no_suspend);
         self.proof_facts.clone_from(&state.proof_facts);
         self.local_terms.clone_from(&state.local_terms);
         self.task_obligations.clone_from(&state.task_obligations);
@@ -8943,6 +9694,24 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         }
         self.self_dirty = dirty;
         self.borrows = borrows.into_values().collect();
+        self.pending_must_scope_locals = states
+            .iter()
+            .flat_map(|state| state.pending_must_scope_locals.iter().copied())
+            .collect();
+        self.transferred_must_scope_locals = states
+            .iter()
+            .flat_map(|state| state.transferred_must_scope_locals.iter().copied())
+            .collect();
+        let mut no_suspend = BTreeMap::new();
+        for state in &states {
+            for (local, region, span) in &state.active_no_suspend {
+                no_suspend.entry((*local, *region)).or_insert(*span);
+            }
+        }
+        self.active_no_suspend = no_suspend
+            .into_iter()
+            .map(|((local, region), span)| (local, region, span))
+            .collect();
         self.proof_facts =
             ProofFacts::intersection(states.iter().map(|state| state.proof_facts.clone()));
         let mut terms = states
@@ -9286,6 +10055,15 @@ fn proof_binary_term(operator: BinaryOp, left: ProofTerm, right: ProofTerm) -> P
     }
 }
 
+fn constant_proof_term(value: &ConstantValue) -> ProofTerm {
+    match value {
+        ConstantValue::Bool(value) => ProofTerm::bool(*value),
+        ConstantValue::Int(value) => ProofTerm::int(*value),
+        ConstantValue::Float(value) => ProofTerm::float(*value),
+        ConstantValue::Text(value) => ProofTerm::text(value.clone()),
+    }
+}
+
 fn proof_place(place: &Place) -> ProofPlace {
     let root = match place.root {
         PlaceRoot::Param(parameter) => ProofRoot::Param(parameter.raw()),
@@ -9602,6 +10380,84 @@ fn builtin_type(name: &str) -> Option<BuiltinType> {
     }
 }
 
+fn decode_constant_text(source: &str) -> Result<String, ()> {
+    let inner = source
+        .strip_prefix('"')
+        .and_then(|source| source.strip_suffix('"'))
+        .ok_or(())?;
+    let mut result = String::with_capacity(inner.len());
+    let mut chars = inner.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character != '\\' {
+            result.push(character);
+            continue;
+        }
+        match chars.next().ok_or(())? {
+            '"' => result.push('"'),
+            '\\' => result.push('\\'),
+            '/' => result.push('/'),
+            'b' => result.push('\u{0008}'),
+            'f' => result.push('\u{000c}'),
+            'n' => result.push('\n'),
+            'r' => result.push('\r'),
+            't' => result.push('\t'),
+            '0' => result.push('\0'),
+            'u' => result.push(decode_constant_unicode_escape(&mut chars)?),
+            _ => return Err(()),
+        }
+    }
+    Ok(result)
+}
+
+fn decode_constant_unicode_escape<I>(chars: &mut std::iter::Peekable<I>) -> Result<char, ()>
+where
+    I: Iterator<Item = char>,
+{
+    if chars.next_if_eq(&'{').is_some() {
+        let mut digits = String::new();
+        loop {
+            let character = chars.next().ok_or(())?;
+            if character == '}' {
+                break;
+            }
+            digits.push(character);
+        }
+        let scalar = u32::from_str_radix(&digits, 16).map_err(|_| ())?;
+        return char::from_u32(scalar).ok_or(());
+    }
+
+    let mut first = 0_u16;
+    for _ in 0..4 {
+        let digit = chars
+            .next()
+            .and_then(|value| value.to_digit(16))
+            .ok_or(())?;
+        first = (first << 4) | u16::try_from(digit).map_err(|_| ())?;
+    }
+    if !(0xd800..=0xdfff).contains(&first) {
+        return char::from_u32(u32::from(first)).ok_or(());
+    }
+    if !(0xd800..=0xdbff).contains(&first)
+        || chars.next() != Some('\\')
+        || chars.next() != Some('u')
+    {
+        return Err(());
+    }
+    let mut second = 0_u16;
+    for _ in 0..4 {
+        let digit = chars
+            .next()
+            .and_then(|value| value.to_digit(16))
+            .ok_or(())?;
+        second = (second << 4) | u16::try_from(digit).map_err(|_| ())?;
+    }
+    if !(0xdc00..=0xdfff).contains(&second) {
+        return Err(());
+    }
+    let scalar = 0x1_0000 + ((u32::from(first) - 0xd800) << 10) + (u32::from(second) - 0xdc00);
+    char::from_u32(scalar).ok_or(())
+}
+
 fn sort_diagnostics(diagnostics: &mut [Diagnostic]) {
     diagnostics.sort_by(|left, right| {
         left.primary
@@ -9616,16 +10472,18 @@ fn sort_diagnostics(diagnostics: &mut [Diagnostic]) {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, PackageId};
     use loom_hir::{
         Expr, PackageSourceUnit, Program, SourceUnit, lower_files, lower_package_files,
     };
     use loom_syntax::parse_with_file;
 
-    use super::{Analysis, analyze};
+    use super::{Analysis, CONSTANT_EVALUATION_DEPTH_LIMIT, analyze};
     use crate::{
-        CallTarget, ConstructionCheck, Signature, TyData, ViewSource, WitnessSelection,
-        WitnessSource,
+        CallTarget, ConstantValue, ConstructionCheck, RuntimeCheck, Signature, TyData, ViewSource,
+        WitnessSelection, WitnessSource,
     };
 
     const DYNAMIC_SOURCE_FIXTURE: &str = r"
@@ -9670,6 +10528,193 @@ fn consume(source Source[Item = Int]) {
         );
         let analysis = analyze(&lowered.program);
         (lowered.program, analysis)
+    }
+
+    #[test]
+    fn constants_are_evaluated_and_expand_in_contract_proofs() {
+        let (_, analysis) = analyze_source(
+            r#"
+pub const base Int = 40
+const answer Int = base + 2
+const escaped Text = "\u{41}"
+const text_matches Bool = escaped == "A"
+const short_and Bool = false && (1 / 0 == 0)
+const short_or Bool = true || (1 / 0 == 0)
+const ratio Float = -(6.0 / 2.0)
+const minimum Float = 0.0
+const lowest Int = -9223372036854775808
+
+type Money = Float where self >= minimum
+
+fn value() Int
+    ensures result == answer
+{
+    answer
+}
+
+fn proven() {
+    assert answer == 42
+}
+
+fn money() Money { Money(1.0) }
+"#,
+        );
+        assert!(
+            analysis.diagnostics.is_empty(),
+            "{:#?}",
+            analysis.diagnostics
+        );
+        let values = analysis
+            .typed
+            .constants
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(values.contains(&ConstantValue::Int(40)));
+        assert!(values.contains(&ConstantValue::Int(42)));
+        assert!(values.contains(&ConstantValue::Text("A".into())));
+        assert!(values.contains(&ConstantValue::Bool(false)));
+        assert!(
+            values
+                .iter()
+                .filter(|value| **value == ConstantValue::Bool(true))
+                .count()
+                >= 2
+        );
+        assert!(values.contains(&ConstantValue::Float(-3.0)));
+        assert!(values.contains(&ConstantValue::Int(i64::MIN)));
+        assert!(analysis.typed.bodies.values().any(|semantics| {
+            semantics
+                .construction_checks
+                .values()
+                .any(|check| *check == ConstructionCheck::Proven)
+        }));
+        assert!(analysis.typed.bodies.values().any(|semantics| {
+            semantics
+                .assertion_checks
+                .values()
+                .any(|check| *check == RuntimeCheck::Proven)
+        }));
+    }
+
+    #[test]
+    fn constants_reject_runtime_work_cycles_and_unsupported_types() {
+        let (_, analysis) = analyze_source(
+            r"
+fn runtime_value() Int { 1 }
+const called Int = runtime_value()
+const first Int = second + 1
+const second Int = first + 1
+const divided Int = 1 / 0
+const overflowed Int = 9223372036854775807 + 1
+const allocated List[Int] = [1]
+",
+        );
+        let codes = analysis
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect::<Vec<_>>();
+        assert!(codes.contains(&"InvalidConstantExpression"), "{codes:?}");
+        assert!(codes.contains(&"ConstantCycle"), "{codes:?}");
+        assert!(codes.contains(&"ConstantEvaluationFailed"), "{codes:?}");
+        assert!(
+            codes
+                .iter()
+                .filter(|code| **code == "ConstantEvaluationFailed")
+                .count()
+                >= 2,
+            "{codes:?}"
+        );
+        assert!(codes.contains(&"InvalidConstantType"), "{codes:?}");
+    }
+
+    #[test]
+    fn constant_evaluation_limit_is_independent_of_declaration_and_cache_order() {
+        let source = |leaf_first: bool| {
+            let count = CONSTANT_EVALUATION_DEPTH_LIMIT + 2;
+            let mut declarations = (0..count).collect::<Vec<_>>();
+            if leaf_first {
+                declarations.reverse();
+            }
+            let mut source = String::new();
+            for index in declarations {
+                if index + 1 == count {
+                    writeln!(source, "const value{index} Int = 1").expect("write constant leaf");
+                } else {
+                    writeln!(source, "const value{index} Int = value{}", index + 1)
+                        .expect("write constant dependency");
+                }
+            }
+            source
+        };
+        let limit_diagnostics = |analysis: &Analysis| {
+            analysis
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.code == "ConstantEvaluationLimit")
+                .map(|diagnostic| diagnostic.message.clone())
+                .collect::<Vec<_>>()
+        };
+
+        let (_, dependency_first) = analyze_source(&source(false));
+        let (_, leaf_first) = analyze_source(&source(true));
+        let dependency_first_limits = limit_diagnostics(&dependency_first);
+        let leaf_first_limits = limit_diagnostics(&leaf_first);
+        assert_eq!(
+            dependency_first_limits.len(),
+            2,
+            "{:#?}",
+            dependency_first.diagnostics
+        );
+        assert_eq!(leaf_first_limits, dependency_first_limits);
+        for analysis in [&dependency_first, &leaf_first] {
+            assert!(analysis.has_errors());
+            assert!(
+                analysis
+                    .diagnostics
+                    .iter()
+                    .all(|diagnostic| diagnostic.code != "ConstantCycle"),
+                "{:#?}",
+                analysis.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn constant_evaluation_limit_uses_the_deepest_dag_path() {
+        let chain_length = CONSTANT_EVALUATION_DEPTH_LIMIT * 7 / 8;
+        let deep_use_depth = CONSTANT_EVALUATION_DEPTH_LIMIT / 6;
+        let mut source = String::new();
+        for index in 0..chain_length {
+            if index + 1 == chain_length {
+                writeln!(source, "const shared{index} Int = 1").expect("write constant leaf");
+            } else {
+                writeln!(source, "const shared{index} Int = shared{}", index + 1)
+                    .expect("write constant dependency");
+            }
+        }
+        let mut deep_use = "shared0".to_owned();
+        for _ in 0..deep_use_depth {
+            deep_use = format!("0 + ({deep_use})");
+        }
+        writeln!(source, "const root Int = shared0 + ({deep_use})").expect("write constant root");
+
+        let (_, analysis) = analyze_source(&source);
+        let limits = analysis
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "ConstantEvaluationLimit")
+            .count();
+        assert_eq!(limits, 1, "{:#?}", analysis.diagnostics);
+        assert!(
+            analysis
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code != "ConstantCycle"),
+            "{:#?}",
+            analysis.diagnostics
+        );
     }
 
     fn analyze_resource_module(package: PackageId) -> (Program, Analysis) {
@@ -9969,6 +11014,97 @@ impl Pair {
             .filter(|diagnostic| diagnostic.code == "InvariantIsolationViolation")
             .count();
         assert_eq!(isolation, 1, "{:#?}", analysis.diagnostics);
+    }
+
+    #[test]
+    fn defer_self_effects_follow_scope_loop_control_and_lifo_order() {
+        let (_, analysis) = analyze_source(
+            r"
+pub record Counter {
+    value Int
+    invariant self.value >= 0
+}
+
+impl Counter {
+    method observe(self) {
+    }
+
+    method nestedScope(mut self) {
+        {
+            defer {
+                self.value = -1
+            }
+        }
+        self.observe()
+    }
+
+    method breakExit(mut self) {
+        while true {
+            defer {
+                self.value = -1
+            }
+            break
+        }
+        self.observe()
+    }
+
+    method lifo(mut self) {
+        defer {
+            self.observe()
+        }
+        defer {
+            self.value = -1
+        }
+    }
+}
+",
+        );
+        let isolation = analysis
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "InvariantIsolationViolation")
+            .count();
+        assert_eq!(isolation, 3, "{:#?}", analysis.diagnostics);
+    }
+
+    #[test]
+    fn loop_backedges_must_restore_receiver_invariant_state() {
+        let (_, analysis) = analyze_source(
+            r"
+pub record Counter {
+    value Int
+    invariant self.value >= 0
+}
+
+impl Counter {
+    method observe(self) {
+    }
+
+    method rangeDirty(mut self) {
+        for index in 0..2 {
+            self.value = index
+        }
+    }
+
+    method whileDirty(mut self) {
+        var first = true
+        while {
+            self.observe()
+            first
+        } {
+            self.value = 0
+            first = false
+        }
+    }
+}
+",
+        );
+        let unrestored = analysis
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "LoopReceiverInvariantNotRestored")
+            .count();
+        assert_eq!(unrestored, 2, "{:#?}", analysis.diagnostics);
     }
 
     #[test]
@@ -10543,6 +11679,67 @@ fn make_zero() Int {
             analysis.diagnostics.is_empty(),
             "{:#?}",
             analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn loop_control_and_defer_do_not_create_first_iteration_only_proofs() {
+        let (_, analysis) = analyze_source(
+            r"
+type Positive = Int where self > 0
+
+fn afterBreak(flag Bool) Result[Positive, ConstraintError] {
+    var value = 1
+    while flag {
+        value = 0
+        break
+        value = 1
+    }
+    Positive(value)
+}
+
+fn registrationIsNotExecution(raw Int) Result[Positive, ConstraintError] {
+    var value = raw
+    defer {
+        value = 1
+    }
+    Positive(value)
+}
+
+fn cleanupReadsLate() {
+    var value = 1
+    defer {
+        discard Positive(value)
+    }
+    value = 0
+}
+
+fn repeatedBody() {
+    var value = 0
+    for index in 0..2 {
+        value = value + 1
+        discard Positive(value)
+    }
+}
+",
+        );
+        assert!(
+            analysis.diagnostics.is_empty(),
+            "{:#?}",
+            analysis.diagnostics
+        );
+        let checks = analysis
+            .typed
+            .bodies
+            .values()
+            .flat_map(|body| body.construction_checks.values().copied())
+            .collect::<Vec<_>>();
+        assert_eq!(checks.len(), 4, "{checks:?}");
+        assert!(
+            checks
+                .iter()
+                .all(|check| *check == ConstructionCheck::Runtime),
+            "{checks:?}"
         );
     }
 

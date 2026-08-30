@@ -3760,6 +3760,26 @@ pub fn main() {
 }
 
 #[test]
+fn source_constants_reach_typed_lcir_as_direct_values() {
+    let dump = complete_dump(
+        r"pub const base Int = 40
+const answer Int = base + 2
+
+fn identity(value Int) Int { value }
+
+pub fn main() {
+    discard identity(answer)
+}
+",
+    );
+    assert!(dump.contains("const int 42"), "{dump}");
+    assert!(
+        !dump.contains("global"),
+        "constants must not create runtime storage:\n{dump}"
+    );
+}
+
+#[test]
 fn implicit_unit_and_all_explicit_return_branches_are_supported() {
     let dump = complete_dump(
         r"fn implicitUnit() {}
@@ -4280,6 +4300,140 @@ fn conditional_moves_preserve_only_values_available_on_continuing_paths() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
+fn loop_exits_intersect_local_availability_after_moves() {
+    use loom_mir::Place;
+
+    let span = Span::default();
+    let unit = || Expr::new(ExprKind::Constant(Constant::Unit), Type::Unit, span);
+    let integer = |value| Expr::new(ExprKind::Constant(Constant::Int(value)), Type::Int, span);
+    let boolean = |value| Expr::new(ExprKind::Constant(Constant::Bool(value)), Type::Bool, span);
+    let moved = |local| Expr::new(ExprKind::Move(Place::local(local)), Type::Int, span);
+    let break_local = LocalId(0);
+    let condition_local = LocalId(1);
+    let mut main = Function {
+        id: FunctionId(0),
+        name: "manual.main".into(),
+        span,
+        type_parameters: 0,
+        is_async: false,
+        suspension_points: Vec::new(),
+        params: Vec::new(),
+        witness_params: Vec::new(),
+        witness_prefix_count: 0,
+        locals: vec![
+            LocalDecl {
+                id: break_local,
+                name: "break_local".into(),
+                ty: Type::Int,
+                mutable: true,
+                span,
+            },
+            LocalDecl {
+                id: condition_local,
+                name: "condition_local".into(),
+                ty: Type::Int,
+                mutable: true,
+                span,
+            },
+        ],
+        return_ty: Type::Unit,
+        receiver: None,
+        body: Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: break_local,
+                        value: integer(1),
+                    },
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::While {
+                        condition: Box::new(boolean(true)),
+                        body: Box::new(Block {
+                            statements: vec![
+                                Statement {
+                                    kind: StatementKind::Evaluate(moved(break_local)),
+                                    span,
+                                },
+                                Statement {
+                                    kind: StatementKind::Break,
+                                    span,
+                                },
+                            ],
+                            tail: None,
+                            span,
+                        }),
+                    },
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::Let {
+                        local: condition_local,
+                        value: integer(2),
+                    },
+                    span,
+                },
+                Statement {
+                    kind: StatementKind::While {
+                        condition: Box::new(Expr::new(
+                            ExprKind::Block(Block {
+                                statements: vec![Statement {
+                                    kind: StatementKind::Evaluate(moved(condition_local)),
+                                    span,
+                                }],
+                                tail: Some(Box::new(boolean(true))),
+                                span,
+                            }),
+                            Type::Bool,
+                            span,
+                        )),
+                        body: Box::new(Block {
+                            statements: vec![Statement {
+                                kind: StatementKind::Assign {
+                                    place: Place::local(condition_local),
+                                    value: integer(3),
+                                },
+                                span,
+                            }],
+                            tail: Some(Box::new(unit())),
+                            span,
+                        }),
+                    },
+                    span,
+                },
+            ],
+            tail: Some(Box::new(unit())),
+            span,
+        },
+        call_plan: CallPlan::default(),
+    };
+    main.renumber_expr_ids()
+        .expect("number loop availability MIR");
+    let mir = Program {
+        exports: BTreeMap::from([("main".into(), FunctionId(0))]),
+        functions: vec![main],
+        ..Program::default()
+    }
+    .into_checked()
+    .expect("loop exits may make moved locals unavailable");
+
+    let LoweringOutcome::Complete(artifact) = lower_typed_artifact(
+        &mir,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("lower availability-aware loop exits") else {
+        panic!("scalar loop availability MIR should be supported")
+    };
+    let dump = dump_program(artifact.program());
+    assert_eq!(dump.matches("branch ").count(), 2, "{dump}");
+}
+
+#[test]
 fn source_nested_blocks_and_if_arms_preserve_function_local_values() {
     let dump = complete_dump(
         r"fn throughBlock() Int {
@@ -4404,6 +4558,92 @@ pub fn main() {
         assert_eq!(jump.matches('%').count(), 2, "{function}");
     }
     assert!(function.contains("int.successor_below"), "{function}");
+}
+
+#[test]
+fn while_break_continue_and_range_continue_form_typed_cfg_edges() {
+    let dump = complete_dump(
+        r"fn control() Int {
+    var index = 0
+    var total = 0
+    while index < 5 {
+        index = index + 1
+        defer {
+            total = total + 10
+        }
+        if index == 2 {
+            continue
+        } else {}
+        total = total + 1
+        if index == 4 {
+            break
+        } else {}
+    }
+    for item in 0..5 {
+        if item == 2 {
+            continue
+        } else {}
+        total = total + item
+    }
+    total
+}
+
+fn conditionalBreaks(flag Bool) Int {
+    var total = 0
+    while true {
+        if flag {
+            total = 7
+            break
+        } else {
+            total = 9
+            break
+        }
+    }
+    for index in 0..2 {
+        defer {
+            total = total + 10
+        }
+        if flag {
+            total = total + 1
+            break
+        } else {
+            continue
+        }
+    }
+    total
+}
+
+pub fn main() {
+    discard control()
+    discard conditionalBreaks(true)
+}
+",
+    );
+    assert!(dump.contains("int.successor_below"), "{dump}");
+    assert!(dump.matches("int.compare.less").count() >= 2, "{dump}");
+    assert!(dump.matches("jump b").count() >= 6, "{dump}");
+}
+
+#[test]
+fn diverging_while_condition_does_not_leave_dangling_cfg_blocks() {
+    let dump = complete_dump(
+        r"fn stop() {
+    defer {
+        discard 1
+    }
+    while {
+        return
+    } {}
+}
+
+pub fn main() {
+    stop()
+}
+",
+    );
+    let stop = dump.split("fn i1").next().expect("stop function section");
+    assert!(stop.contains("return"), "{stop}");
+    assert!(!stop.contains("while"), "{stop}");
 }
 
 #[test]

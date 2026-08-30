@@ -553,6 +553,30 @@ fn prepare_and_run_checked_mir(
         .expect("run checked-MIR executable")
 }
 
+fn prepare_and_run_checked_mir_with_ir(
+    program: &CheckedProgram,
+    mut options: EmitOptions,
+    stem: &str,
+) -> NativeRun {
+    let directory = tempfile::tempdir().expect("create checked-MIR output directory");
+    let object = directory.path().join(format!("{stem}.o"));
+    let ir_path = directory.path().join(format!("{stem}.ll"));
+    let executable = directory.path().join(stem);
+    options.emit_ir = Some(ir_path.clone());
+    let prepared = prepare_native_object(program, options, NativeRoutePolicy::CheckedMirOnly)
+        .expect("prepare checked-MIR native object");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::CheckedMir);
+    emit_prepared_native_object(&prepared, &object).expect("emit checked-MIR native object");
+    link_native_object(&object, &executable).expect("link checked-MIR native object");
+    let output = Command::new(executable)
+        .output()
+        .expect("run checked-MIR executable");
+    NativeRun {
+        ir: std::fs::read_to_string(ir_path).expect("read checked-MIR LLVM IR"),
+        output,
+    }
+}
+
 fn emit_and_run_checked_mir_machine_fault(
     program: &CheckedProgram,
     entry: &str,
@@ -874,6 +898,25 @@ fn emitted_lcir_function<'ir>(ir: &'ir str, artifact: &CheckedArtifact, suffix: 
     let symbol_at = ir
         .find(&symbol)
         .unwrap_or_else(|| panic!("emitted LCIR function `{symbol}`"));
+    let start = ir[..symbol_at]
+        .rfind("\ndefine ")
+        .map_or(0, |offset| offset + 1);
+    let end = ir[symbol_at..]
+        .find("\n}")
+        .map_or(ir.len(), |offset| symbol_at + offset + 2);
+    &ir[start..end]
+}
+
+fn emitted_checked_mir_function<'ir>(
+    ir: &'ir str,
+    program: &CheckedProgram,
+    suffix: &str,
+) -> &'ir str {
+    let function = source_function(program, suffix);
+    let symbol = format!("@loom.fn.{}.", function.id.0);
+    let symbol_at = ir
+        .find(&symbol)
+        .unwrap_or_else(|| panic!("emitted checked-MIR function `{symbol}`"));
     let start = ir[..symbol_at]
         .rfind("\ndefine ")
         .map_or(0, |offset| offset + 1);
@@ -1310,6 +1353,40 @@ pub fn main() {
 }
 
 #[test]
+fn compile_time_constants_match_interpreter_typed_lcir_and_native_code() {
+    let program = compile_source(
+        r#"const base Int = 40
+const answer Int = base + 2
+const name Text = "loom"
+
+fn matches(value Int, label Text) Bool {
+    value == 42 && label == "loom"
+}
+
+pub fn main() {
+    assert answer == 42 && name == "loom"
+    discard matches(answer, name)
+}
+"#,
+    );
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("const int 42"), "{dump}");
+    assert!(dump.contains("text.literal \"loom\""), "{dump}");
+
+    let native = emit_and_run_lcir(&artifact, "source-compile-time-constants");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert!(!native.ir.contains("loom.Value"), "{}", native.ir);
+}
+
+#[test]
 fn user_task_policy_method_names_stay_on_the_pure_native_call_path() {
     let source = r"record Scheduler { base Int }
 
@@ -1372,8 +1449,11 @@ pub fn main() {
     reason = "one gate covers the source integer parser, scalar ABI status, managed Text input, target objects, and universal-surface exclusion"
 )]
 fn scalar_builtin_apis_match_interpreter_and_close_typed_targets() {
-    let source = r#"import std.float.is_finite
+    let source = r#"import std.float.FloatToIntError
+import std.float.from_int
+import std.float.is_finite
 import std.float.parse_float
+import std.float.to_int
 import std.int.ParseIntError
 import std.int.parse_int
 import std.time.milliseconds
@@ -1494,6 +1574,34 @@ pub fn main() {
     assert !finiteNaN
     assert !finiteInfinity
 
+    let roundedInteger = from_int(9007199254740993)
+    let truncatedPositive = match to_int(12.75) {
+        Ok(value) => value == 12
+        Err(_) => false
+    }
+    let truncatedNegative = match to_int(-12.75) {
+        Ok(value) => value == -12
+        Err(_) => false
+    }
+    let convertedMinimum = match to_int(-9223372036854775808.0) {
+        Ok(value) => value == -9223372036854775807 - 1
+        Err(_) => false
+    }
+    let nonFiniteConversion = match to_int(0.0 / 0.0) {
+        Err(FloatToIntError.NonFinite) => true
+        _ => false
+    }
+    let outOfRangeConversion = match to_int(9223372036854775808.0) {
+        Err(FloatToIntError.OutOfRange) => true
+        _ => false
+    }
+    assert roundedInteger == 9007199254740992.0
+    assert truncatedPositive
+    assert truncatedNegative
+    assert convertedMinimum
+    assert nonFiniteConversion
+    assert outOfRangeConversion
+
     let delay = milliseconds(42)
     let observed = delay.as_milliseconds()
     assert observed == 42
@@ -1510,6 +1618,8 @@ pub fn main() {
     let dump = dump_program(artifact.program());
     for required in [
         "parse.float",
+        "convert.int_to_float",
+        "convert.float_to_int_status",
         "text.encode_utf8",
         "bytes.length",
         "bytes.get",
@@ -1534,6 +1644,8 @@ pub fn main() {
         "parse.float.status.valid",
         "parse.float.status.failed",
         "call void @llvm.trap()",
+        "sitofp i64",
+        "fptosi double",
     ] {
         assert!(
             native.ir.contains(required),
@@ -1582,9 +1694,174 @@ pub fn main() {
         );
         let ir = std::fs::read_to_string(ir_path).expect("read scalar builtin target IR");
         assert!(!ir.contains("loom_runtime_parse_int"), "{ir}");
+        assert!(ir.contains("sitofp i64"), "{ir}");
+        assert!(ir.contains("fptosi double"), "{ir}");
         assert!(ir.contains(PARSE_FLOAT_SYMBOL), "{ir}");
         assert_stateless_direct_lcir_surface(&ir);
     }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one differential gate covers every conversion boundary and both native routes"
+)]
+fn explicit_numeric_conversions_are_pure_source_backed_typed_lcir() {
+    let source = r"import std.float.FloatToIntError
+import std.float.from_int
+import std.float.to_int
+
+fn rounded(value Int) Float {
+    from_int(value)
+}
+
+fn truncated(value Float, expected Int) Bool {
+    match to_int(value) {
+        Ok(converted) => converted == expected
+        Err(_) => false
+    }
+}
+
+pub fn main() {
+    let roundedTie = rounded(9007199254740993)
+    let roundedMinimum = rounded(-9223372036854775807 - 1)
+    let roundedMaximum = rounded(9223372036854775807)
+    let truncatedPositive = truncated(12.75, 12)
+    let truncatedNegative = truncated(-12.75, -12)
+    let truncatedNegativeZero = truncated(-0.0, 0)
+    let truncatedMaximum = truncated(9223372036854774784.0, 9223372036854774784)
+    let minimum = match to_int(-9223372036854775808.0) {
+        Ok(value) => value == -9223372036854775807 - 1
+        Err(_) => false
+    }
+    let nonFinite = match to_int(0.0 / 0.0) {
+        Err(FloatToIntError.NonFinite) => true
+        _ => false
+    }
+    let positiveInfinity = match to_int(1.0 / 0.0) {
+        Err(FloatToIntError.NonFinite) => true
+        _ => false
+    }
+    let negativeInfinity = match to_int(-1.0 / 0.0) {
+        Err(FloatToIntError.NonFinite) => true
+        _ => false
+    }
+    let outOfRange = match to_int(9223372036854775808.0) {
+        Err(FloatToIntError.OutOfRange) => true
+        _ => false
+    }
+    let belowMinimum = match to_int(-9223372036854777856.0) {
+        Err(FloatToIntError.OutOfRange) => true
+        _ => false
+    }
+    assert roundedTie == 9007199254740992.0
+    assert roundedMinimum == -9223372036854775808.0
+    assert roundedMaximum == 9223372036854775808.0
+    assert truncatedPositive
+    assert truncatedNegative
+    assert truncatedNegativeZero
+    assert truncatedMaximum
+    assert minimum
+    assert nonFinite
+    assert positiveInfinity
+    assert negativeInfinity
+    assert outOfRange
+    assert belowMinimum
+}
+";
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+
+    for policy in [NativeRoutePolicy::Automatic, NativeRoutePolicy::LcirOnly] {
+        let prepared = prepare_native_object(&program, EmitOptions::run("main"), policy)
+            .unwrap_or_else(|error| panic!("prepare numeric conversions with {policy:?}: {error}"));
+        assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    }
+
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    for required in ["convert.int_to_float", "convert.float_to_int_status"] {
+        assert!(dump.contains(required), "missing `{required}`:\n{dump}");
+    }
+    for wrapper in ["std.float.from_int", "std.float.to_int"] {
+        let function = artifact
+            .functions()
+            .iter()
+            .find(|function| function.name().ends_with(wrapper))
+            .unwrap_or_else(|| panic!("missing source wrapper `{wrapper}`:\n{dump}"));
+        assert_eq!(function.effects(), Effects::NONE, "{wrapper}: {dump}");
+    }
+
+    let native = emit_and_run_lcir(&artifact, "source-float-conversions");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert_eq!(native.output.stdout, b"Unit\n");
+    assert!(native.ir.contains("sitofp i64"), "{}", native.ir);
+    assert!(native.ir.contains("fptosi double"), "{}", native.ir);
+    let conversion = emitted_lcir_function(&native.ir, &artifact, "std.float.to_int");
+    let guarded_branch = conversion
+        .find("br i1")
+        .unwrap_or_else(|| panic!("missing conversion guard:\n{conversion}"));
+    let success = conversion
+        .find("convert.float_to_int.success:")
+        .unwrap_or_else(|| panic!("missing guarded success block:\n{conversion}"));
+    let conversion_instruction = conversion
+        .find("fptosi double")
+        .unwrap_or_else(|| panic!("missing guarded fptosi:\n{conversion}"));
+    assert!(
+        guarded_branch < success && success < conversion_instruction,
+        "fptosi escaped its checked success block:\n{conversion}"
+    );
+    for forbidden in [
+        "%loom.Value",
+        "ValueNode",
+        "loom_executor_",
+        "loom_runtime_int_to_float",
+        "loom_runtime_float_to_int",
+    ] {
+        assert!(
+            !native.ir.contains(forbidden),
+            "conversion IR retained `{forbidden}`:\n{}",
+            native.ir
+        );
+    }
+
+    let checked_mir = prepare_and_run_checked_mir_with_ir(
+        &program,
+        EmitOptions::run("main"),
+        "checked-mir-float-conversions",
+    );
+    assert!(
+        checked_mir.output.status.success(),
+        "{:?}",
+        checked_mir.output
+    );
+    assert_eq!(checked_mir.output.stdout, native.output.stdout);
+    assert!(
+        checked_mir.output.stderr.is_empty(),
+        "{:?}",
+        checked_mir.output
+    );
+    assert!(checked_mir.ir.contains("sitofp i64"), "{}", checked_mir.ir);
+    let checked_conversion =
+        emitted_checked_mir_function(&checked_mir.ir, &program, "std.float.to_int");
+    let checked_guard = checked_conversion
+        .find("br i1 %convert.float_to_int.valid")
+        .unwrap_or_else(|| panic!("missing checked-MIR conversion guard:\n{checked_conversion}"));
+    let checked_success = checked_conversion
+        .find("\nconvert.float_to_int.success.")
+        .unwrap_or_else(|| panic!("missing checked-MIR success block:\n{checked_conversion}"));
+    let checked_fptosi = checked_conversion
+        .find("fptosi double")
+        .unwrap_or_else(|| panic!("missing checked-MIR fptosi:\n{checked_conversion}"));
+    assert!(
+        checked_guard < checked_success && checked_success < checked_fptosi,
+        "checked-MIR fptosi escaped its guarded success block:\n{checked_conversion}"
+    );
 }
 
 #[test]
@@ -6048,6 +6325,331 @@ pub fn main() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one differential fixture covers both loop forms, control edges, cleanup execution, and carried mutations"
+)]
+fn loop_control_and_cleanup_agree_across_interpreter_lcir_and_checked_mir_native() {
+    let source = r"fn whileTotal() Int {
+    var index = 0
+    var total = 0
+    while index < 5 {
+        index = index + 1
+        defer {
+            total = total + 10
+        }
+        if index == 2 {
+            continue
+        } else {}
+        total = total + 1
+        if index == 4 {
+            break
+        } else {}
+    }
+    total
+}
+
+fn rangeTotal() Int {
+    var total = 0
+    for index in 0..5 {
+        if index == 2 {
+            continue
+        } else {}
+        total = total + index
+    }
+    total
+}
+
+fn conditionalWhileBreak(flag Bool) Int {
+    var observed = 0
+    while true {
+        if flag {
+            observed = 7
+            break
+        } else {
+            observed = 9
+            break
+        }
+    }
+    observed
+}
+
+fn conditionalRangeBreak(flag Bool) Int {
+    var observed = 0
+    for index in 0..2 {
+        if flag {
+            observed = 11
+            break
+        } else {
+            observed = 13
+            break
+        }
+    }
+    observed
+}
+
+fn deferredLoopExits() Int {
+    var index = 0
+    var total = 0
+    while index < 2 {
+        index = index + 1
+        defer {
+            total = total + 1
+        }
+        continue
+    }
+    while true {
+        defer {
+            total = total + 10
+        }
+        break
+    }
+    for item in 0..2 {
+        defer {
+            total = total + 100
+        }
+        Unit
+    }
+    total
+}
+
+fn mutationOnContinueBackedge() Int {
+    var total = 0
+    for index in 0..3 {
+        if index < 2 {
+            total = total + 1
+            continue
+        } else {}
+    }
+    total
+}
+
+fn divergentConditionRunsCleanupOnce() Int {
+    var cleanupRuns = 0
+    defer {
+        if cleanupRuns != 0 {
+            discard 1 / 0
+        } else {}
+        cleanupRuns = 1
+    }
+    while {
+        return 7
+    } {}
+}
+
+pub fn main() {
+    let first = whileTotal()
+    let second = rangeTotal()
+    let whileTrue = conditionalWhileBreak(true)
+    let whileFalse = conditionalWhileBreak(false)
+    let rangeTrue = conditionalRangeBreak(true)
+    let rangeFalse = conditionalRangeBreak(false)
+    let deferred = deferredLoopExits()
+    let continued = mutationOnContinueBackedge()
+    let divergent = divergentConditionRunsCleanupOnce()
+    assert first == 43
+    assert second == 8
+    assert whileTrue == 7
+    assert whileFalse == 9
+    assert rangeTrue == 11
+    assert rangeFalse == 13
+    assert deferred == 212
+    assert continued == 2
+    assert divergent == 7
+}
+";
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let lcir = emit_and_run_lcir(&artifact, "source-loop-control");
+    let checked_mir = emit_and_run_checked_mir(&program, "main", "checked-mir-loop-control");
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
+    assert_eq!(lcir.output.stdout, b"Unit\n");
+    assert_eq!(checked_mir.stdout, lcir.output.stdout);
+    assert!(lcir.ir.contains("add nsw i64"), "{}", lcir.ir);
+}
+
+#[test]
+fn await_operand_control_propagates_to_the_enclosing_function_or_loop() {
+    let source = r"async fn work() Int { 7 }
+
+async fn earlyReturn() Int {
+    discard (if true { return 5 } else { work() }).await
+    6
+}
+
+async fn control() Int {
+    while true {
+        discard (if true { break } else { work() }).await
+    }
+    var index = 0
+    while index < 1 {
+        index = index + 1
+        discard (if true { continue } else { work() }).await
+    }
+    9
+}
+
+pub async fn main() {
+    let returned = earlyReturn().await
+    assert returned == 5
+    let observed = control().await
+    assert observed == 9
+}
+";
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let native = emit_and_run_lcir(&artifact, "await-operand-loop-control");
+    let checked_mir =
+        emit_and_run_checked_mir(&program, "main", "checked-mir-await-operand-loop-control");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
+    assert_eq!(native.output.stdout, b"Unit\n");
+    assert_eq!(checked_mir.stdout, native.output.stdout);
+}
+
+#[test]
+fn loop_witness_flows_keep_conditional_break_and_continue_dispatch_reachable() {
+    let source = r"dyn concept Metric {
+    method read(self) Int
+}
+
+record Counter { value Int }
+record Offset { value Int }
+
+impl Metric for Counter {
+    method read(self) Int { self.value }
+}
+
+impl Metric for Offset {
+    method read(self) Int { self.value + 100 }
+}
+
+fn counter(value Int) dyn Metric { Counter { value = value } }
+fn offset(value Int) dyn Metric { Offset { value = value } }
+
+fn afterBreak(flag Bool) Int {
+    var metric = counter(1)
+    while true {
+        if flag {
+            metric = offset(2)
+            break
+        } else {
+            break
+        }
+    }
+    metric.read()
+}
+
+fn afterContinue() Int {
+    var index = 0
+    var metric = counter(3)
+    while index < 2 {
+        index = index + 1
+        if index == 1 {
+            metric = offset(4)
+            continue
+        } else {
+            break
+        }
+    }
+    metric.read()
+}
+
+pub fn main() {
+    let first = afterBreak(false)
+    let second = afterBreak(true)
+    let third = afterContinue()
+    assert first == 1
+    assert second == 102
+    assert third == 104
+}
+";
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    assert!(
+        artifact
+            .representations()
+            .dynamics()
+            .iter()
+            .any(|dynamic| dynamic.candidates().len() == 2),
+        "both loop-carried witnesses must remain reachable"
+    );
+    let lcir = emit_and_run_lcir(&artifact, "loop-witness-flow");
+    let checked_mir = emit_and_run_checked_mir(&program, "main", "checked-mir-loop-witness-flow");
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
+    assert_eq!(lcir.output.stdout, checked_mir.stdout);
+}
+
+#[test]
+fn mutable_dynamic_reborrow_writeback_is_carried_across_loops() {
+    let source = r"dyn concept Stepper {
+    method step(mut self) Int
+}
+
+record Counter { value Int }
+
+impl Stepper for Counter {
+    method step(mut self) Int {
+        self.value = self.value + 1
+        self.value
+    }
+}
+
+fn stepMany(value Stepper) Int {
+    var index = 0
+    while index < 3 {
+        index = index + 1
+        discard value.step()
+    }
+    value.step()
+}
+
+pub fn main() {
+    var counter = Counter { value = 0 }
+    let observed = stepMany(counter)
+    assert observed == 4
+}
+";
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    assert!(dump.matches("inout=[0]").count() >= 2, "{dump}");
+    let native = emit_and_run_lcir(&artifact, "mutable-dyn-loop-writeback");
+    let checked_mir =
+        emit_and_run_checked_mir(&program, "main", "checked-mir-mutable-dyn-loop-writeback");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
+    assert_eq!(native.output.stdout, b"Unit\n");
+    assert_eq!(checked_mir.stdout, native.output.stdout);
+}
+
+#[test]
 fn recursive_and_iterative_source_computation_agree_across_backends() {
     let source = r"fn recursive(value Int) Int {
     if value < 2 {
@@ -6187,6 +6789,103 @@ fn source_integer_faults_match_interpreter_and_checked_mir_diagnostics() {
         );
         assert_fallible_surface(&lcir.ir);
     }
+}
+
+#[test]
+fn loop_control_keeps_legacy_integer_checks_fail_closed() {
+    let source = r"fn divideAfterBreak(flag Bool) Int {
+    var denominator = 1
+    while flag {
+        denominator = 0
+        break
+        denominator = 1
+    }
+    1 / denominator
+}
+
+pub fn main() {
+    discard divideAfterBreak(true)
+}
+";
+    let program = compile_source(source);
+    let failure = interpret_run(&program, "main").expect_err("division must fault");
+    assert!(
+        matches!(failure, ExecutionFailure::Runtime { ref fault } if fault.code == "IntegerDivisionByZero"),
+        "{failure:?}"
+    );
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    assert!(
+        dump_program(artifact.program()).contains("checked_int.divide"),
+        "typed LCIR must retain the runtime division check"
+    );
+    let lcir = emit_and_run_lcir(&artifact, "loop-control-division-fault");
+    let checked_mir =
+        emit_and_run_checked_mir(&program, "main", "checked-mir-loop-control-division-fault");
+    assert!(!lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(!checked_mir.status.success(), "{checked_mir:?}");
+    assert!(
+        diagnostic_text(&lcir.output).contains("IntegerDivisionByZero"),
+        "{:?}",
+        lcir.output
+    );
+    assert!(
+        diagnostic_text(&checked_mir).contains("IntegerDivisionByZero"),
+        "{checked_mir:?}"
+    );
+}
+
+#[test]
+fn repeated_while_iterations_keep_legacy_integer_checks_fail_closed() {
+    let source = r"fn divideOnSecondIteration() Int {
+    var denominator = 2
+    var index = 0
+    while index < 2 {
+        denominator = denominator - 1
+        index = index + 1
+        discard 1 / denominator
+    }
+    0
+}
+
+pub fn main() {
+    discard divideOnSecondIteration()
+}
+";
+    let program = compile_source(source);
+    let failure = interpret_run(&program, "main").expect_err("second division must fault");
+    assert!(
+        matches!(failure, ExecutionFailure::Runtime { ref fault } if fault.code == "IntegerDivisionByZero"),
+        "{failure:?}"
+    );
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    assert!(
+        dump_program(artifact.program()).contains("checked_int.divide"),
+        "typed LCIR must retain the repeated runtime division check"
+    );
+    let lcir = emit_and_run_lcir(&artifact, "while-division-fault");
+    let checked_mir =
+        emit_and_run_checked_mir(&program, "main", "checked-mir-while-division-fault");
+    assert!(!lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(!checked_mir.status.success(), "{checked_mir:?}");
+    assert!(
+        diagnostic_text(&lcir.output).contains("IntegerDivisionByZero"),
+        "{:?}",
+        lcir.output
+    );
+    assert!(
+        diagnostic_text(&checked_mir).contains("IntegerDivisionByZero"),
+        "{checked_mir:?}"
+    );
 }
 
 #[test]

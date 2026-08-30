@@ -28,9 +28,9 @@ names.
 The reserved words are:
 
 ```text
-as associated assert async await concept defer discard dyn else ensures enum
-false fn for if impl import in invariant let match method mut old pub
-record requires result return scoped self static test true type var where
+as associated assert async await break concept const continue defer discard dyn else
+ensures enum false fn for if impl import in invariant let match method mut old
+pub record requires result return scoped self static test true type var where while
 ```
 
 `Self` and `Unit` are not keywords. They are names resolved by the type and

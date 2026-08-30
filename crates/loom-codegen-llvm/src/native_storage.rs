@@ -254,6 +254,17 @@ fn scan_stack_record_statement(
                 forbidden,
             );
         }
+        StatementKind::While { condition, body } => {
+            scan_expr!(condition);
+            scan_stack_record_block(
+                body,
+                eligible,
+                native_pod_initializers,
+                initialized,
+                forbidden,
+            );
+        }
+        StatementKind::Break | StatementKind::Continue => {}
         StatementKind::Assign { place, value } => {
             if place.projection.is_empty() && eligible.contains_key(&place.local) {
                 forbidden.insert(place.local);
@@ -823,6 +834,10 @@ fn statement_mutates_list(statement: &StatementKind, list: LocalId) -> bool {
                 || expr_mutates_list(end, list)
                 || block_mutates_list(body, list)
         }
+        StatementKind::While { condition, body } => {
+            expr_mutates_list(condition, list) || block_mutates_list(body, list)
+        }
+        StatementKind::Break | StatementKind::Continue => false,
         StatementKind::Assign { place, value } => {
             place.local == list || expr_mutates_list(value, list)
         }
@@ -967,6 +982,11 @@ impl IntListUseScanner {
                     self.scan_expr(end);
                     self.scan_block(body, false);
                 }
+                StatementKind::While { condition, body } => {
+                    self.scan_expr(condition);
+                    self.scan_block(body, false);
+                }
+                StatementKind::Break | StatementKind::Continue => {}
                 StatementKind::Assign { place, value } => {
                     if place.local == self.local {
                         self.forbid();
@@ -1187,6 +1207,10 @@ fn block_references_local(block: &Block, local: LocalId) -> bool {
                     || expr_references_local(end, local)
                     || block_references_local(body, local)
             }
+            StatementKind::While { condition, body } => {
+                expr_references_local(condition, local) || block_references_local(body, local)
+            }
+            StatementKind::Break | StatementKind::Continue => false,
             StatementKind::Assign { place, value } => {
                 place.local == local || expr_references_local(value, local)
             }

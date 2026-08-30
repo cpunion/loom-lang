@@ -25,7 +25,8 @@ library behavior.
 Source-backed packages are distributed as Loom source and compile through the
 ordinary package, type, MIR, reachability, and native pipelines. The current
 source module contains the `std.int` and `std.json` parsers, their public
-parse-error values, `std.io.write` and `write_line`, the `std.log.debug`,
+parse-error values, the `std.float` Int-conversion API and conversion error,
+`std.io.write` and `write_line`, the `std.log.debug`,
 `info`, `warn`, and `error` convenience functions, and the public `Dispose`,
 `MustScope`, and `NoSuspend` declarations in `std.resource`.
 The logging conveniences are ordinary Loom functions over the irreducible
@@ -58,12 +59,17 @@ The language behavior of `scoped`, `defer`, and `Task` is defined in the
 import std.float.parse_float
 import std.float.format_float
 import std.float.is_finite
+import std.float.FloatToIntError
+import std.float.from_int
+import std.float.to_int
 ```
 
 ```text
 parse_float(Text) Result[Float, ParseFloatError]
 format_float(Float) Text
 is_finite(Float) Bool
+from_int(Int) Float
+to_int(Float) Result[Int, FloatToIntError]
 ```
 
 `ParseFloatError` is a closed value:
@@ -94,6 +100,24 @@ point or exponent. The special spellings are `NaN`, `Infinity`, and
 
 `is_finite` is a pure contract predicate and returns false for NaN and either
 infinity.
+
+`from_int` rounds the exact signed 64-bit integer to the nearest IEEE-754
+binary64 value, with ties rounded to even. It always succeeds, but integers
+outside binary64's exact-integer range can lose precision. Round-tripping is
+therefore guaranteed only when the original Int is exactly representable; in
+particular, maximum Int rounds to `2^63`, which `to_int` reports as
+`OutOfRange`.
+
+`to_int` truncates a finite Float toward zero. It returns `NonFinite` for NaN
+or either infinity and `OutOfRange` when the truncated value cannot be
+represented by signed 64-bit `Int`. `FloatToIntError` is an ordinary public
+source enum with those two closed variants.
+
+Both conversions are explicit: there is no implicit numeric conversion,
+general cast syntax, or platform-sized numeric result. Their public functions
+and error policy are ordinary `std.float` Loom source. The private scalar
+primitives have exact compiler-owned module authority, allocate nothing, and
+require no runtime ABI.
 
 ### Int
 

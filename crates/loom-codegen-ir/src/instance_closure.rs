@@ -1171,6 +1171,20 @@ fn scan_statement(
             let _ = scan_block(function, body, &format!("{path}.body"), substitution, calls)?;
             Ok(true)
         }
+        StatementKind::While { condition, body } => {
+            if !scan_expr(
+                function,
+                condition,
+                &format!("{path}.condition"),
+                substitution,
+                calls,
+            )? {
+                return Ok(false);
+            }
+            let _ = scan_block(function, body, &format!("{path}.body"), substitution, calls)?;
+            Ok(true)
+        }
+        StatementKind::Break | StatementKind::Continue => Ok(false),
         StatementKind::Defer(cleanup) => {
             let _ = scan_block(
                 function,

@@ -201,7 +201,7 @@ root merely because storage still exists.
 The interpreted MIR envelope currently uses:
 
 - format `loom.interpreted-mir`;
-- artifact version `29`;
+- artifact version `31`;
 - Loom language version `0.3`.
 
 Generic compiler-cache envelopes carry an explicit null `entry`. Executable
@@ -225,7 +225,7 @@ checked program remains unchanged for incremental reuse and other entry
 selections.
 
 Portable library artifacts use a separate source-and-interface envelope
-(`.loomlib` version `2`). It contains the resolved non-stdlib module graph,
+(`.loomlib` version `3`). It contains the resolved non-stdlib module graph,
 exact Loom source text, and canonical public interfaces. It contains no checked
 MIR, producer-local construction dispositions, or compiler-owned
 standard-library implementation. Decoding enforces structural and byte/count

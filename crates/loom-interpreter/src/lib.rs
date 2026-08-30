@@ -525,6 +525,7 @@ enum AwaitPoll {
     Pending,
     Ready(Value),
     Failed(ExecutionFailure),
+    Control(EvalAbort),
     Cancelled,
 }
 
@@ -545,6 +546,8 @@ enum BoundArgument {
 enum EvalAbort {
     Failure(ExecutionFailure),
     Return(Box<Value>),
+    Break,
+    Continue,
     Cancelled,
 }
 
@@ -1348,6 +1351,9 @@ impl<'program> Interpreter<'program> {
                     StatementKind::Assign { .. }
                     | StatementKind::Assert { .. }
                     | StatementKind::ForRange { .. }
+                    | StatementKind::While { .. }
+                    | StatementKind::Break
+                    | StatementKind::Continue
                     | StatementKind::Return(None)
                     | StatementKind::Defer(_) => None,
                 };
@@ -1359,6 +1365,9 @@ impl<'program> Interpreter<'program> {
                         }
                         AwaitPoll::Cancelled => {
                             return Ok(self.finish_task(task_id, Err(EvalAbort::Cancelled)));
+                        }
+                        AwaitPoll::Control(control) => {
+                            return Ok(self.finish_task(task_id, Err(control)));
                         }
                         AwaitPoll::Ready(value) => {
                             match destination {
@@ -1451,6 +1460,9 @@ impl<'program> Interpreter<'program> {
                         AwaitPoll::Cancelled => {
                             return Ok(self.finish_task(task_id, Err(EvalAbort::Cancelled)));
                         }
+                        AwaitPoll::Control(control) => {
+                            return Ok(self.finish_task(task_id, Err(control)));
+                        }
                     }
                 }
                 let outcome = self.eval_expr(frame, tail);
@@ -1484,14 +1496,8 @@ impl<'program> Interpreter<'program> {
             let value = match self.eval_expr(frame, task) {
                 Ok(value) => value,
                 Err(EvalAbort::Failure(failure)) => return Ok(AwaitPoll::Failed(failure)),
-                Err(EvalAbort::Return(_)) => {
-                    return Err(self
-                        .runtime_fault(
-                            "LOOM_RUNTIME_INVALID_MIR",
-                            "Await operand attempted to return from its enclosing function",
-                            awaited.span,
-                        )
-                        .into());
+                Err(control @ (EvalAbort::Return(_) | EvalAbort::Break | EvalAbort::Continue)) => {
+                    return Ok(AwaitPoll::Control(control));
                 }
                 Err(EvalAbort::Cancelled) => return Ok(AwaitPoll::Cancelled),
             };
@@ -1721,6 +1727,7 @@ impl<'program> Interpreter<'program> {
                     return Ok(value);
                 }
                 AwaitPoll::Failed(failure) => return Err(EvalAbort::Failure(failure)),
+                AwaitPoll::Control(control) => return Err(control),
                 AwaitPoll::Cancelled => return Err(EvalAbort::Cancelled),
                 AwaitPoll::Pending => self.drive_nested_wait(task_id, awaited.span)?,
             }
@@ -1786,10 +1793,25 @@ impl<'program> Interpreter<'program> {
             (task.frame, std::mem::take(&mut task.cleanups))
         };
         let mut outcome = self.run_cleanups(frame, cleanups, outcome);
+        if matches!(&outcome, Err(EvalAbort::Break | EvalAbort::Continue)) {
+            outcome = Err(EvalAbort::Failure(
+                self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "loop control escaped its enclosing loop",
+                    Span::default(),
+                )
+                .into(),
+            ));
+        }
         let completed_value = match &outcome {
             Ok(value) => Some(value.clone()),
             Err(EvalAbort::Return(value)) => Some((**value).clone()),
-            Err(EvalAbort::Failure(_) | EvalAbort::Cancelled) => None,
+            Err(
+                EvalAbort::Failure(_)
+                | EvalAbort::Break
+                | EvalAbort::Continue
+                | EvalAbort::Cancelled,
+            ) => None,
         };
         if let Some(value) = completed_value {
             let function_id = self
@@ -1819,6 +1841,7 @@ impl<'program> Interpreter<'program> {
             Ok(value) => TaskStatus::Completed(value),
             Err(EvalAbort::Return(value)) => TaskStatus::Completed(*value),
             Err(EvalAbort::Failure(failure)) => TaskStatus::Failed(failure),
+            Err(EvalAbort::Break | EvalAbort::Continue) => unreachable!("normalized above"),
             Err(EvalAbort::Cancelled) => TaskStatus::Cancelled,
         };
         let failed = matches!(&status, TaskStatus::Failed(_) | TaskStatus::Cancelled);
@@ -2047,6 +2070,13 @@ impl<'program> Interpreter<'program> {
                                 call_site,
                             )
                             .into()),
+                        Err(EvalAbort::Break | EvalAbort::Continue) => Err(self
+                            .runtime_fault(
+                                "LOOM_RUNTIME_INVALID_MIR",
+                                "loop control escaped its enclosing loop",
+                                call_site,
+                            )
+                            .into()),
                         Err(EvalAbort::Cancelled) => Err(self
                             .runtime_fault(
                                 "LOOM_RUNTIME_INVALID_MIR",
@@ -2158,6 +2188,13 @@ impl<'program> Interpreter<'program> {
                 Ok(value) => value,
                 Err(EvalAbort::Return(value)) => *value,
                 Err(EvalAbort::Failure(failure)) => return SyncStep::fail(failure),
+                Err(EvalAbort::Break | EvalAbort::Continue) => {
+                    return SyncStep::fail(interpreter.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "loop control escaped its enclosing loop",
+                        call_site,
+                    ));
+                }
                 Err(EvalAbort::Cancelled) => {
                     return SyncStep::fail(interpreter.runtime_fault(
                         "LOOM_RUNTIME_INVALID_MIR",
@@ -2618,16 +2655,22 @@ impl<'program> Interpreter<'program> {
         match cleanup_outcome {
             Ok(_) => {}
             Err(EvalAbort::Failure(failure)) => {
-                if matches!(outcome, Ok(_) | Err(EvalAbort::Return(_))) {
+                if matches!(
+                    outcome,
+                    Ok(_) | Err(EvalAbort::Return(_) | EvalAbort::Break | EvalAbort::Continue)
+                ) {
                     *outcome = Err(EvalAbort::Failure(failure));
                 }
             }
-            Err(EvalAbort::Return(_)) => {
-                if matches!(outcome, Ok(_) | Err(EvalAbort::Return(_))) {
+            Err(EvalAbort::Return(_) | EvalAbort::Break | EvalAbort::Continue) => {
+                if matches!(
+                    outcome,
+                    Ok(_) | Err(EvalAbort::Return(_) | EvalAbort::Break | EvalAbort::Continue)
+                ) {
                     *outcome = Err(EvalAbort::Failure(
                         RuntimeFault {
                             code: "LOOM_RUNTIME_INVALID_MIR".into(),
-                            message: "defer cleanup attempted to return".into(),
+                            message: "defer cleanup attempted non-local control flow".into(),
                             span: cleanup_span,
                         }
                         .into(),
@@ -2701,6 +2744,11 @@ impl<'program> Interpreter<'program> {
                     })
                 })
             }
+            StatementKind::While { condition, body } => {
+                self.sync_eval_while(frame, condition, body, statement.span)
+            }
+            StatementKind::Break => SyncStep::Complete(Err(EvalAbort::Break)),
+            StatementKind::Continue => SyncStep::Complete(Err(EvalAbort::Continue)),
             StatementKind::Assign { place, value } => {
                 let span = statement.span;
                 let value = self.sync_eval_expr(frame, value);
@@ -2783,7 +2831,8 @@ impl<'program> Interpreter<'program> {
             let body_step = self.sync_eval_block(frame, body);
             let next = current + 1;
             match body_step {
-                SyncStep::Complete(Ok(_)) => current = next,
+                SyncStep::Complete(Ok(_) | Err(EvalAbort::Continue)) => current = next,
+                SyncStep::Complete(Err(EvalAbort::Break)) => return SyncStep::complete(()),
                 SyncStep::Complete(Err(abort)) => return SyncStep::Complete(Err(abort)),
                 SyncStep::Call { request, resume } => {
                     return SyncStep::Call {
@@ -2792,8 +2841,9 @@ impl<'program> Interpreter<'program> {
                             resume(interpreter, outcome).then(
                                 interpreter,
                                 move |interpreter, outcome| match outcome {
-                                    Ok(_) => interpreter
+                                    Ok(_) | Err(EvalAbort::Continue) => interpreter
                                         .sync_eval_for_range(frame, local, next, end, body, span),
+                                    Err(EvalAbort::Break) => SyncStep::complete(()),
                                     Err(abort) => SyncStep::Complete(Err(abort)),
                                 },
                             )
@@ -2803,6 +2853,91 @@ impl<'program> Interpreter<'program> {
             }
         }
         SyncStep::complete(())
+    }
+
+    fn sync_eval_while(
+        &mut self,
+        frame: u64,
+        condition: &'program Expr,
+        body: &'program Block,
+        span: Span,
+    ) -> SyncStep<'program, ()> {
+        loop {
+            match self.sync_eval_expr(frame, condition) {
+                SyncStep::Complete(Ok(Value::Bool { value: false })) => {
+                    return SyncStep::complete(());
+                }
+                SyncStep::Complete(Ok(Value::Bool { value: true })) => {}
+                SyncStep::Complete(Ok(_)) => {
+                    return SyncStep::fail(self.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "while condition did not produce Bool",
+                        span,
+                    ));
+                }
+                SyncStep::Complete(Err(abort)) => return SyncStep::Complete(Err(abort)),
+                SyncStep::Call { request, resume } => {
+                    return SyncStep::Call {
+                        request,
+                        resume: Box::new(move |interpreter, result| {
+                            resume(interpreter, result).then(
+                                interpreter,
+                                move |interpreter, outcome| match outcome {
+                                    Ok(Value::Bool { value: false }) => SyncStep::complete(()),
+                                    Ok(Value::Bool { value: true }) => interpreter
+                                        .sync_eval_while_body(frame, condition, body, span),
+                                    Ok(_) => SyncStep::fail(interpreter.runtime_fault(
+                                        "LOOM_RUNTIME_INVALID_MIR",
+                                        "while condition did not produce Bool",
+                                        span,
+                                    )),
+                                    Err(abort) => SyncStep::Complete(Err(abort)),
+                                },
+                            )
+                        }),
+                    };
+                }
+            }
+            match self.sync_eval_block(frame, body) {
+                SyncStep::Complete(Ok(_) | Err(EvalAbort::Continue)) => {}
+                SyncStep::Complete(Err(EvalAbort::Break)) => return SyncStep::complete(()),
+                SyncStep::Complete(Err(abort)) => return SyncStep::Complete(Err(abort)),
+                SyncStep::Call { request, resume } => {
+                    return SyncStep::Call {
+                        request,
+                        resume: Box::new(move |interpreter, result| {
+                            resume(interpreter, result).then(
+                                interpreter,
+                                move |interpreter, outcome| match outcome {
+                                    Ok(_) | Err(EvalAbort::Continue) => {
+                                        interpreter.sync_eval_while(frame, condition, body, span)
+                                    }
+                                    Err(EvalAbort::Break) => SyncStep::complete(()),
+                                    Err(abort) => SyncStep::Complete(Err(abort)),
+                                },
+                            )
+                        }),
+                    };
+                }
+            }
+        }
+    }
+
+    fn sync_eval_while_body(
+        &mut self,
+        frame: u64,
+        condition: &'program Expr,
+        body: &'program Block,
+        span: Span,
+    ) -> SyncStep<'program, ()> {
+        let body_step = self.sync_eval_block(frame, body);
+        body_step.then(self, move |interpreter, outcome| match outcome {
+            Ok(_) | Err(EvalAbort::Continue) => {
+                interpreter.sync_eval_while(frame, condition, body, span)
+            }
+            Err(EvalAbort::Break) => SyncStep::complete(()),
+            Err(abort) => SyncStep::Complete(Err(abort)),
+        })
     }
 
     fn sync_eval_scoped_disposal(
@@ -2920,15 +3055,21 @@ impl<'program> Interpreter<'program> {
             match cleanup_outcome {
                 Ok(_) => {}
                 Err(EvalAbort::Failure(failure)) => {
-                    if matches!(&outcome, Ok(_) | Err(EvalAbort::Return(_))) {
+                    if matches!(
+                        &outcome,
+                        Ok(_) | Err(EvalAbort::Return(_) | EvalAbort::Break | EvalAbort::Continue)
+                    ) {
                         outcome = Err(EvalAbort::Failure(failure));
                     }
                 }
-                Err(EvalAbort::Return(_)) => {
-                    if matches!(&outcome, Ok(_) | Err(EvalAbort::Return(_))) {
+                Err(EvalAbort::Return(_) | EvalAbort::Break | EvalAbort::Continue) => {
+                    if matches!(
+                        &outcome,
+                        Ok(_) | Err(EvalAbort::Return(_) | EvalAbort::Break | EvalAbort::Continue)
+                    ) {
                         outcome = Err(EvalAbort::from(self.runtime_fault(
                             "LOOM_RUNTIME_INVALID_MIR",
-                            "defer cleanup attempted to return",
+                            "defer cleanup attempted non-local control flow",
                             cleanup_span,
                         )));
                     }
@@ -2943,6 +3084,10 @@ impl<'program> Interpreter<'program> {
         outcome
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "statement evaluation keeps the complete MIR statement dispatch and control-flow aborts together"
+    )]
     fn eval_statement(&mut self, frame: u64, statement: &Statement) -> Result<(), EvalAbort> {
         self.tick(statement.span).map_err(EvalAbort::from)?;
         match &statement.kind {
@@ -2982,12 +3127,39 @@ impl<'program> Interpreter<'program> {
                         statement.span,
                     )
                     .map_err(EvalAbort::from)?;
-                    self.eval_block(frame, body)?;
+                    match self.eval_block(frame, body) {
+                        Ok(_) | Err(EvalAbort::Continue) => {}
+                        Err(EvalAbort::Break) => break,
+                        Err(abort) => return Err(abort),
+                    }
                     // `current < end` means current cannot be i64::MAX.
                     current += 1;
                 }
                 Ok(())
             }
+            StatementKind::While { condition, body } => {
+                loop {
+                    match self.eval_expr(frame, condition)? {
+                        Value::Bool { value: false } => break,
+                        Value::Bool { value: true } => {}
+                        _ => {
+                            return Err(EvalAbort::from(self.runtime_fault(
+                                "LOOM_RUNTIME_INVALID_MIR",
+                                "while condition did not produce Bool",
+                                statement.span,
+                            )));
+                        }
+                    }
+                    match self.eval_block(frame, body) {
+                        Ok(_) | Err(EvalAbort::Continue) => {}
+                        Err(EvalAbort::Break) => break,
+                        Err(abort) => return Err(abort),
+                    }
+                }
+                Ok(())
+            }
+            StatementKind::Break => Err(EvalAbort::Break),
+            StatementKind::Continue => Err(EvalAbort::Continue),
             StatementKind::Assign { place, value } => {
                 let value = self.eval_expr(frame, value)?;
                 let location = Location::from_place(frame, place);
@@ -4811,7 +4983,7 @@ impl<'program> Interpreter<'program> {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
     fn eval_builtin(
         &mut self,
         builtin: Builtin,
@@ -4910,6 +5082,45 @@ impl<'program> Interpreter<'program> {
             (Builtin::IsFinite, [value]) => Ok(Value::Bool {
                 value: as_float(value).is_some_and(f64::is_finite),
             }),
+            (Builtin::IntToFloat, [value]) => as_int(value).map_or_else(
+                || {
+                    Err(self
+                        .runtime_fault(
+                            "LOOM_RUNTIME_INVALID_MIR",
+                            "Int-to-Float conversion expected Int",
+                            span,
+                        )
+                        .into())
+                },
+                |value| {
+                    #[expect(
+                        clippy::cast_precision_loss,
+                        reason = "Int-to-Float is an explicit language conversion with specified binary64 rounding"
+                    )]
+                    let converted = value as f64;
+                    Ok(Value::Float { value: converted })
+                },
+            ),
+            (Builtin::FloatToIntStatus, [value]) => as_float(value).map_or_else(
+                || {
+                    Err(self
+                        .runtime_fault(
+                            "LOOM_RUNTIME_INVALID_MIR",
+                            "Float-to-Int conversion expected Float",
+                            span,
+                        )
+                        .into())
+                },
+                |value| {
+                    let (converted, status) = float_to_int_status(value);
+                    Ok(Value::Tuple {
+                        elements: vec![
+                            Value::Int { value: converted },
+                            Value::Int { value: status },
+                        ],
+                    })
+                },
+            ),
             (Builtin::ParseFloat, [Value::Text { value }]) => match parse_float(value) {
                 Ok(number) => self.result_value(true, Value::Float { value: number }, span),
                 Err(error) => {
@@ -7554,6 +7765,30 @@ fn as_float(value: &Value) -> Option<f64> {
         Value::Refined { value, .. } => as_float(value),
         _ => None,
     }
+}
+
+fn as_int(value: &Value) -> Option<i64> {
+    match value {
+        Value::Int { value } => Some(*value),
+        Value::Refined { value, .. } => as_int(value),
+        _ => None,
+    }
+}
+
+fn float_to_int_status(value: f64) -> (i64, i64) {
+    const LOWER: f64 = -9_223_372_036_854_775_808.0;
+    const UPPER_EXCLUSIVE: f64 = 9_223_372_036_854_775_808.0;
+    if !value.is_finite() {
+        return (0, 1);
+    }
+    if !(LOWER..UPPER_EXCLUSIVE).contains(&value) {
+        return (0, 2);
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "finite bounds and explicit truncation define the checked conversion contract"
+    )]
+    (value.trunc() as i64, 0)
 }
 
 #[derive(Clone, Copy)]

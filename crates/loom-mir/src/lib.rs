@@ -595,6 +595,14 @@ pub enum StatementKind {
         end: Box<Expr>,
         body: Box<Block>,
     },
+    /// Re-evaluates `condition` before each iteration and runs `body` while it
+    /// is true.
+    While {
+        condition: Box<Expr>,
+        body: Box<Block>,
+    },
+    Break,
+    Continue,
     Assign {
         place: Place,
         value: Expr,
@@ -848,6 +856,11 @@ impl<'function> ExprPreorder<'function> {
                 self.pending.push(ExprWalkNode::Expr(end));
                 self.pending.push(ExprWalkNode::Expr(start));
             }
+            StatementKind::While { condition, body } => {
+                self.pending.push(ExprWalkNode::Block(body));
+                self.pending.push(ExprWalkNode::Expr(condition));
+            }
+            StatementKind::Break | StatementKind::Continue => {}
             StatementKind::Assert { condition } => {
                 self.pending.push(ExprWalkNode::Expr(condition));
             }
@@ -991,6 +1004,11 @@ impl ExprIdAssigner {
                 self.assign_expr(end)?;
                 self.assign_block(body)
             }
+            StatementKind::While { condition, body } => {
+                self.assign_expr(condition)?;
+                self.assign_block(body)
+            }
+            StatementKind::Break | StatementKind::Continue => Ok(()),
             StatementKind::Assert { condition } => self.assign_expr(condition),
             StatementKind::Evaluate(expression) => self.assign_expr(expression),
             StatementKind::Defer(cleanup) => self.assign_block(cleanup),
@@ -1073,6 +1091,8 @@ impl ExprIdAssigner {
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Builtin {
     IsFinite,
+    IntToFloat,
+    FloatToIntStatus,
     ParseFloat,
     FormatFloat,
     TextLength,

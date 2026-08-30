@@ -30,6 +30,34 @@ Standard-library operations introduce additional closed value types such as
 aliases, and `Text` does not imply borrowing or a lifetime. Arbitrary binary
 data uses `Bytes`; conversion between the two is explicit.
 
+## Compile-time constants
+
+A top-level constant has an explicit primitive type and uses the same
+colon-free declaration style as parameters and fields:
+
+```loom
+const retry_limit Int = 3
+pub const service_name Text = "billing"
+const enabled Bool = retry_limit > 0 && service_name == "billing"
+```
+
+The declared type must be exactly `Bool`, `Int`, `Float`, or `Text`. An
+initializer may contain literals, references to other constants, and the unary
+or binary operations ordinarily valid for those primitive types. Binary
+operands must have the same type; comparisons produce `Bool`. Declaration and
+file order do not affect evaluation. `&&` and `||` short-circuit exactly as
+they do at runtime. Cycles, integer overflow, integer division by zero, and
+minimum-`Int` division by `-1` are compile-time errors.
+
+Calls, allocation, tuples, lists, records, control flow, I/O, and reads of
+runtime state are not constant expressions. A constant is substituted by value
+in executable code and contract proofs. It has no runtime storage, stable
+address, initialization, cleanup, or destructor.
+
+Constants are private to their directory package by default. Files in the same
+package share private constants; `pub const` may be imported from another
+package with the ordinary single-symbol `import` syntax.
+
 ## Numeric semantics
 
 `Int` has the range -9,223,372,036,854,775,808 through
@@ -42,9 +70,10 @@ produce infinities and NaN. Ordered comparisons with NaN are false, equality
 with NaN is false, inequality with NaN is true, and `+0.0 == -0.0` is true.
 
 There is no implicit conversion between `Int` and `Float`, and arithmetic
-operands must have the same numeric base type. Version 0.3 has no numeric cast
-syntax or Int/Float conversion function. Loom also does not expose
-platform-sized integer types.
+operands must have the same numeric base type. Loom has no numeric cast syntax
+or general conversion operator. The explicit `std.float.from_int` and
+`std.float.to_int` functions are the only Int/Float conversions. Loom also does
+not expose platform-sized integer types.
 
 ## Structural and nominal types
 

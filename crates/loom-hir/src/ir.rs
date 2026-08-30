@@ -77,6 +77,7 @@ pub struct Definition {
 #[derive(Clone, Debug)]
 pub enum DefinitionKind {
     Error,
+    Constant(ConstantDef),
     RefinedType(RefinedTypeDef),
     Record(RecordDef),
     Field(FieldDef),
@@ -96,6 +97,7 @@ impl DefinitionKind {
     pub const fn tag(&self) -> DefinitionTag {
         match self {
             Self::Error => DefinitionTag::Error,
+            Self::Constant(_) => DefinitionTag::Constant,
             Self::RefinedType(_) => DefinitionTag::RefinedType,
             Self::Record(_) => DefinitionTag::Record,
             Self::Field(_) => DefinitionTag::Field,
@@ -115,6 +117,7 @@ impl DefinitionKind {
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum DefinitionTag {
     Error,
+    Constant,
     RefinedType,
     Record,
     Field,
@@ -127,6 +130,12 @@ pub enum DefinitionTag {
     AssociatedType,
     Conformance,
     Method,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConstantDef {
+    pub ty: TypeRefId,
+    pub value: BodyId,
 }
 
 #[derive(Clone, Debug)]
@@ -291,6 +300,7 @@ pub struct Body {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BodyKind {
+    Constant,
     Function,
     Method,
     RefinementPredicate,
@@ -449,6 +459,16 @@ pub enum Statement {
         start: ExprId,
         end: ExprId,
         body: ExprId,
+    },
+    While {
+        condition: ExprId,
+        body: ExprId,
+    },
+    Break {
+        span: Span,
+    },
+    Continue {
+        span: Span,
     },
     Defer {
         body: ExprId,

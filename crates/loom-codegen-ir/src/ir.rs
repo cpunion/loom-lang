@@ -706,6 +706,18 @@ pub enum InstructionKind {
     FormatFloat {
         value: ValueId,
     },
+    /// Converts a signed 64-bit Int to IEEE-754 binary64 using
+    /// round-to-nearest, ties-to-even.
+    IntToFloat {
+        value: ValueId,
+    },
+    /// Converts a binary64 Float toward zero when it is representable and
+    /// returns `(converted, status)`. Status 0 is success, 1 is non-finite,
+    /// and 2 is outside the signed 64-bit Int range. Failed conversions return
+    /// zero in the first field; that field is compiler-private and unobservable.
+    FloatToIntStatus {
+        value: ValueId,
+    },
     /// Formats one canonical recursive `Json` sum into compact Text and
     /// constructs its exact closed `Result[Text, JsonError]`. The runtime
     /// stages the complete formatted byte sequence before the single typed
@@ -978,6 +990,8 @@ impl InstructionKind {
             | Self::BoolNot { value }
             | Self::FloatNegate { value }
             | Self::FormatFloat { value }
+            | Self::IntToFloat { value }
+            | Self::FloatToIntStatus { value }
             | Self::DynConstruct { value, .. }
             | Self::ResourceClose {
                 resource: value, ..

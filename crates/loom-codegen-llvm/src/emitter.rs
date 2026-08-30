@@ -216,6 +216,10 @@ fn block_contains_await(block: &Block) -> bool {
                     || expression_contains_await(end)
                     || block_contains_await(body)
             }
+            StatementKind::While { condition, body } => {
+                expression_contains_await(condition) || block_contains_await(body)
+            }
+            StatementKind::Break | StatementKind::Continue => false,
             StatementKind::Assert { condition } => expression_contains_await(condition),
             StatementKind::Defer(cleanup) => block_contains_await(cleanup),
             StatementKind::Return(value) => value.as_ref().is_some_and(expression_contains_await),
@@ -4362,6 +4366,7 @@ struct FunctionCompiler<'backend, 'ctx, 'program> {
     old_parameters: BTreeMap<LocalId, PointerValue<'ctx>>,
     body_done: inkwell::basic_block::BasicBlock<'ctx>,
     cleanups: RefCell<Vec<CleanupAction>>,
+    loop_controls: RefCell<Vec<NativeLoopControl<'ctx>>>,
     cancellation_block: Option<inkwell::basic_block::BasicBlock<'ctx>>,
     invalid_state_block: Option<inkwell::basic_block::BasicBlock<'ctx>>,
     cancellation_cleanups: RefCell<BTreeMap<u32, Vec<CleanupAction>>>,
@@ -4385,6 +4390,13 @@ enum CleanupAction {
         disposal: ScopedDisposal,
         span: Span,
     },
+}
+
+#[derive(Clone, Copy)]
+struct NativeLoopControl<'ctx> {
+    break_block: inkwell::basic_block::BasicBlock<'ctx>,
+    continue_block: inkwell::basic_block::BasicBlock<'ctx>,
+    cleanup_base: usize,
 }
 
 struct NativeInOutRecord<'ctx> {
@@ -4627,6 +4639,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             old_parameters,
             body_done,
             cleanups: RefCell::new(Vec::new()),
+            loop_controls: RefCell::new(Vec::new()),
             cancellation_block: None,
             invalid_state_block: None,
             cancellation_cleanups: RefCell::new(BTreeMap::new()),
@@ -4933,6 +4946,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             old_parameters,
             body_done,
             cleanups: RefCell::new(Vec::new()),
+            loop_controls: RefCell::new(Vec::new()),
             cancellation_block: None,
             invalid_state_block: None,
             cancellation_cleanups: RefCell::new(BTreeMap::new()),
@@ -5386,6 +5400,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             old_parameters,
             body_done,
             cleanups: RefCell::new(Vec::new()),
+            loop_controls: RefCell::new(Vec::new()),
             cancellation_block: Some(cancelled),
             invalid_state_block: Some(invalid),
             cancellation_cleanups: RefCell::new(BTreeMap::new()),
@@ -6379,6 +6394,23 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 self.end_gc_local_scope(local_scope);
                 result
             }
+            StatementKind::While { condition, body } => self.emit_while(condition, body),
+            StatementKind::Break | StatementKind::Continue => {
+                let control = self.loop_controls.borrow().last().copied().ok_or_else(|| {
+                    CodegenError::new(
+                        "LlvmAbiDefect",
+                        "checked loop control has no enclosing loop",
+                    )
+                })?;
+                self.emit_cleanups_from(control.cleanup_base)?;
+                let target = if matches!(&statement.kind, StatementKind::Break) {
+                    control.break_block
+                } else {
+                    control.continue_block
+                };
+                self.backend.branch(target)?;
+                Ok(false)
+            }
             StatementKind::Assign { place, value } => {
                 let temporary = self.alloc_typed_value(&value.ty, "assign");
                 if !self.emit_expr(value, temporary)? {
@@ -6495,6 +6527,7 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
 
         let header = self.append_block("range.header");
         let iteration = self.append_block("range.iteration");
+        let increment = self.append_block("range.increment");
         let exit = self.append_block("range.exit");
         self.backend.branch(header)?;
 
@@ -6520,27 +6553,68 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let outer_range_local = self.active_range_local.replace(Some(local));
         let body_root_scope = self.gc_root_scope();
         let ignored = self.alloc_typed_value(&Type::Unit, "range.body");
+        self.loop_controls.borrow_mut().push(NativeLoopControl {
+            break_block: exit,
+            continue_block: increment,
+            cleanup_base: self.cleanups.borrow().len(),
+        });
         let body_result = self.emit_block(body, ignored);
+        self.loop_controls.borrow_mut().pop();
         self.end_gc_root_scope(body_root_scope);
         self.active_range_local.set(outer_range_local);
         self.loop_depth.set(outer_loop_depth);
         if body_result? {
-            let current_scalar = self.int_scalar(current)?;
-            let next = self
-                .backend
-                .builder
-                .build_int_add(
-                    current_scalar,
-                    self.backend.i64_type.const_int(1, false),
-                    "range.next",
-                )
-                .map_err(builder_error)?;
-            self.backend.store_i64_field(
-                self.backend.value_type,
-                current,
-                VALUE_FIELD_SCALAR,
-                next,
-            )?;
+            self.backend.branch(increment)?;
+        }
+        self.backend.builder.position_at_end(increment);
+        let current_scalar = self.int_scalar(current)?;
+        let next = self
+            .backend
+            .builder
+            .build_int_add(
+                current_scalar,
+                self.backend.i64_type.const_int(1, false),
+                "range.next",
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .store_i64_field(self.backend.value_type, current, VALUE_FIELD_SCALAR, next)?;
+        self.backend.branch(header)?;
+        self.backend.builder.position_at_end(exit);
+        Ok(true)
+    }
+
+    fn emit_while(&self, condition: &Expr, body: &Block) -> Result<bool, CodegenError> {
+        let header = self.append_block("while.header");
+        self.backend.branch(header)?;
+        self.backend.builder.position_at_end(header);
+        let condition_value = self.alloc_typed_value(&condition.ty, "while.condition");
+        if !self.emit_expr(condition, condition_value)? {
+            return Ok(false);
+        }
+        let iteration = self.append_block("while.iteration");
+        let exit = self.append_block("while.exit");
+        let condition = self.bool_value(condition_value)?;
+        self.backend
+            .builder
+            .build_conditional_branch(condition, iteration, exit)
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(iteration);
+        let outer_loop_depth = self.loop_depth.get();
+        self.loop_depth
+            .set(outer_loop_depth.checked_add(1).ok_or_else(|| {
+                CodegenError::new("ProgramTooLarge", "loop nesting exceeds the compiler limit")
+            })?);
+        self.loop_controls.borrow_mut().push(NativeLoopControl {
+            break_block: exit,
+            continue_block: header,
+            cleanup_base: self.cleanups.borrow().len(),
+        });
+        let ignored = self.alloc_typed_value(&Type::Unit, "while.body");
+        let body_result = self.emit_block(body, ignored);
+        self.loop_controls.borrow_mut().pop();
+        self.loop_depth.set(outer_loop_depth);
+        if body_result? {
             self.backend.branch(header)?;
         }
         self.backend.builder.position_at_end(exit);
@@ -8538,6 +8612,156 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
             destination,
             VALUE_FIELD_SCALAR,
             bits,
+        )
+    }
+
+    fn store_int(
+        &self,
+        destination: PointerValue<'ctx>,
+        value: IntValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        self.initialize(destination, VALUE_TAG_INT)?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_SCALAR,
+            value,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the checked classification, guarded conversion, and status-pair materialization form one indivisible LLVM poison boundary"
+    )]
+    fn emit_float_to_int_status(
+        &self,
+        source: PointerValue<'ctx>,
+        destination: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let value = self.float_scalar(source)?;
+        let float = self.backend.context.f64_type();
+        let integer = self.backend.i64_type;
+
+        let finite_lower = self
+            .backend
+            .builder
+            .build_float_compare(
+                FloatPredicate::OGE,
+                value,
+                float.const_float(-f64::MAX),
+                "convert.float_to_int.finite_lower",
+            )
+            .map_err(builder_error)?;
+        let finite_upper = self
+            .backend
+            .builder
+            .build_float_compare(
+                FloatPredicate::OLE,
+                value,
+                float.const_float(f64::MAX),
+                "convert.float_to_int.finite_upper",
+            )
+            .map_err(builder_error)?;
+        let finite = self
+            .backend
+            .builder
+            .build_and(finite_lower, finite_upper, "convert.float_to_int.finite")
+            .map_err(builder_error)?;
+        let in_lower_bound = self
+            .backend
+            .builder
+            .build_float_compare(
+                FloatPredicate::OGE,
+                value,
+                float.const_float(-9_223_372_036_854_775_808.0),
+                "convert.float_to_int.lower",
+            )
+            .map_err(builder_error)?;
+        let below_upper_bound = self
+            .backend
+            .builder
+            .build_float_compare(
+                FloatPredicate::OLT,
+                value,
+                float.const_float(9_223_372_036_854_775_808.0),
+                "convert.float_to_int.upper",
+            )
+            .map_err(builder_error)?;
+        let valid = self
+            .backend
+            .builder
+            .build_and(
+                in_lower_bound,
+                below_upper_bound,
+                "convert.float_to_int.valid",
+            )
+            .map_err(builder_error)?;
+
+        let success = self.append_block("convert.float_to_int.success");
+        let failure = self.append_block("convert.float_to_int.failure");
+        let merge = self.append_block("convert.float_to_int.merge");
+        self.backend
+            .builder
+            .build_conditional_branch(valid, success, failure)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(success);
+        // LLVM makes an out-of-range or non-finite `fptosi` poison. Keep the
+        // instruction wholly inside the range-checked success block.
+        let converted = self
+            .backend
+            .builder
+            .build_float_to_signed_int(value, integer, "convert.float_to_int.value")
+            .map_err(builder_error)?;
+        self.backend.branch(merge)?;
+
+        self.backend.builder.position_at_end(failure);
+        let failure_status = self
+            .backend
+            .builder
+            .build_select(
+                finite,
+                integer.const_int(2, false),
+                integer.const_int(1, false),
+                "convert.float_to_int.failure_status",
+            )
+            .map_err(builder_error)?;
+        self.backend.branch(merge)?;
+
+        self.backend.builder.position_at_end(merge);
+        let converted_phi = self
+            .backend
+            .builder
+            .build_phi(integer, "convert.float_to_int.converted")
+            .map_err(builder_error)?;
+        converted_phi.add_incoming(&[(&converted, success), (&integer.const_zero(), failure)]);
+        let status_phi = self
+            .backend
+            .builder
+            .build_phi(integer, "convert.float_to_int.status")
+            .map_err(builder_error)?;
+        status_phi.add_incoming(&[(&integer.const_zero(), success), (&failure_status, failure)]);
+
+        let converted_value = self.alloc_typed_value(&Type::Int, "convert.float_to_int.converted");
+        self.store_int(
+            converted_value,
+            converted_phi.as_basic_value().into_int_value(),
+        )?;
+        let status_value = self.alloc_typed_value(&Type::Int, "convert.float_to_int.status");
+        self.store_int(status_value, status_phi.as_basic_value().into_int_value())?;
+        self.initialize(destination, VALUE_TAG_TUPLE)?;
+        self.backend.store_i64_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_AUX,
+            integer.const_int(2, false),
+        )?;
+        let head = self.build_value_nodes(&[converted_value, status_value])?;
+        self.backend.store_pointer_field(
+            self.backend.value_type,
+            destination,
+            VALUE_FIELD_DATA,
+            head,
         )
     }
 
@@ -10666,6 +10890,24 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                     .build_and(ordered, bounded, "finite")
                     .map_err(builder_error)?;
                 self.store_bool(destination, finite)?;
+                Ok(true)
+            }
+            (Builtin::IntToFloat, [value]) => {
+                let integer = self.int_scalar(*value)?;
+                let converted = self
+                    .backend
+                    .builder
+                    .build_signed_int_to_float(
+                        integer,
+                        self.backend.context.f64_type(),
+                        "convert.int_to_float",
+                    )
+                    .map_err(builder_error)?;
+                self.store_float(destination, converted)?;
+                Ok(true)
+            }
+            (Builtin::FloatToIntStatus, [value]) => {
+                self.emit_float_to_int_status(*value, destination)?;
                 Ok(true)
             }
             (Builtin::ParseFloat, [value]) => self.emit_parse_float(*value, destination),

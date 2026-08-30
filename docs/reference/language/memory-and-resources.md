@@ -136,8 +136,10 @@ defer {
 
 The block is not executed at registration. It reads its referenced bindings
 when cleanup runs. A deferred block must have type `Unit` and cannot contain
-`return`, `.await`, `?`, another `defer`, or a new `scoped` binding. It may call
-ordinary synchronous functions and methods.
+`return`, `.await`, `?`, another `defer`, a new `scoped` binding, or loop control
+that targets a loop outside the cleanup. A loop wholly inside the cleanup may
+use its own `break` and `continue`. The cleanup may call ordinary synchronous
+functions and methods.
 
 Explicit deferred blocks and automatic scoped disposal share one LIFO order:
 

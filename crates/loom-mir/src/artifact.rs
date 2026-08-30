@@ -10,7 +10,7 @@ use crate::{
 };
 
 pub const INTERPRETED_ARTIFACT_FORMAT: &str = "loom.interpreted-mir";
-pub const INTERPRETED_ARTIFACT_VERSION: u32 = 30;
+pub const INTERPRETED_ARTIFACT_VERSION: u32 = 31;
 pub const LOOM_LANGUAGE_VERSION: &str = loom_core::LOOM_LANGUAGE_VERSION;
 const CANONICAL_NAN_BITS: u64 = 0x7ff8_0000_0000_0000;
 const MAX_ARTIFACT_JSON_NESTING: usize = 512;
@@ -424,6 +424,11 @@ fn block_contains_nonportable_construction_proofs(block: &Block) -> bool {
                     || expr_contains_nonportable_construction_proofs(end)
                     || block_contains_nonportable_construction_proofs(body)
             }
+            StatementKind::While { condition, body } => {
+                expr_contains_nonportable_construction_proofs(condition)
+                    || block_contains_nonportable_construction_proofs(body)
+            }
+            StatementKind::Break | StatementKind::Continue => false,
             StatementKind::Defer(cleanup) => {
                 block_contains_nonportable_construction_proofs(cleanup)
             }
@@ -535,6 +540,11 @@ fn distrust_block_construction_proofs(block: &mut Block, distrusted: &mut bool) 
                 distrust_expr_construction_proofs(end, distrusted);
                 distrust_block_construction_proofs(body, distrusted);
             }
+            StatementKind::While { condition, body } => {
+                distrust_expr_construction_proofs(condition, distrusted);
+                distrust_block_construction_proofs(body, distrusted);
+            }
+            StatementKind::Break | StatementKind::Continue => {}
             StatementKind::Defer(cleanup) => {
                 distrust_block_construction_proofs(cleanup, distrusted);
             }
@@ -720,6 +730,11 @@ fn visit_block(block: &mut Block, visitor: &mut impl FnMut(&mut Constant)) {
                 visit_expr(end, visitor);
                 visit_block(body, visitor);
             }
+            StatementKind::While { condition, body } => {
+                visit_expr(condition, visitor);
+                visit_block(body, visitor);
+            }
+            StatementKind::Break | StatementKind::Continue => {}
             StatementKind::Defer(block) => visit_block(block, visitor),
             StatementKind::Return(value) => {
                 if let Some(value) = value {

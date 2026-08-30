@@ -20,9 +20,10 @@ use loom_mir::{
 };
 use loom_sema::{
     Analysis, BodySemantics, BuiltinType, BuiltinValue, CallResolution,
-    CallTarget as SemaCallTarget, Coercion, ConstructionCheck, Mutability, Place as SemaPlace,
-    PlaceProjection, PlaceRoot, Resolution, RuntimeCheck, ScopedDisposal as SemaScopedDisposal,
-    Signature, TaskIntrinsic, TyData, TyId, ViewSource, WitnessSelection, WitnessSource,
+    CallTarget as SemaCallTarget, Coercion, ConstantValue, ConstructionCheck, Mutability,
+    Place as SemaPlace, PlaceProjection, PlaceRoot, Resolution, RuntimeCheck,
+    ScopedDisposal as SemaScopedDisposal, Signature, TaskIntrinsic, TyData, TyId, ViewSource,
+    WitnessSelection, WitnessSource,
 };
 
 const OPTION_TYPE: TypeId = TypeId(0);
@@ -1702,6 +1703,20 @@ impl ContractLowerer<'_, '_> {
             Resolution::Builtin(BuiltinValue::Unit) => {
                 Ok(ContractExprKind::Constant(Constant::Unit))
             }
+            Resolution::Definition(definition) => self
+                .compiler
+                .analysis
+                .typed
+                .constants
+                .get(definition)
+                .map(lower_constant_value)
+                .map(ContractExprKind::Constant)
+                .ok_or_else(|| {
+                    defect(
+                        "contract value definition has no compile-time constant",
+                        span,
+                    )
+                }),
             Resolution::Local(local) => Ok(ContractExprKind::Binding(required(
                 bindings.get(&local).copied(),
                 "contract-local reference is outside its pattern arm",
@@ -2163,6 +2178,24 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                     span: self.expr_span(*body),
                 });
             }
+            HirStatement::While { condition, body } => {
+                let condition = self.lower_expr(*condition)?;
+                output.push(Statement {
+                    kind: StatementKind::While {
+                        condition: Box::new(condition),
+                        body: Box::new(self.lower_as_block(*body)?),
+                    },
+                    span: self.expr_span(*body),
+                });
+            }
+            HirStatement::Break { span } => output.push(Statement {
+                kind: StatementKind::Break,
+                span: *span,
+            }),
+            HirStatement::Continue { span } => output.push(Statement {
+                kind: StatementKind::Continue,
+                span: *span,
+            }),
             HirStatement::Defer { body } => output.push(Statement {
                 kind: StatementKind::Defer(self.lower_as_block(*body)?),
                 span: self.expr_span(*body),
@@ -2872,6 +2905,15 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                 variant: VariantId(0),
                 payload: Vec::new(),
             }),
+            Resolution::Definition(definition) => self
+                .compiler
+                .analysis
+                .typed
+                .constants
+                .get(definition)
+                .map(lower_constant_value)
+                .map(ExprKind::Constant)
+                .ok_or_else(|| defect("value definition is not a constant", span)),
             Resolution::Param(_) | Resolution::Local(_) | Resolution::SelfValue => {
                 self.lower_place_read(id, mode)
             }
@@ -3246,6 +3288,8 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             BuiltinValue::ParseFloat
             | BuiltinValue::FormatFloat
             | BuiltinValue::IsFinite
+            | BuiltinValue::IntToFloat
+            | BuiltinValue::FloatToIntStatus
             | BuiltinValue::TextLength
             | BuiltinValue::TextGet
             | BuiltinValue::TextConcat
@@ -3722,6 +3766,8 @@ fn executable_builtin(builtin: BuiltinValue) -> Option<Builtin> {
         BuiltinValue::ParseFloat => Builtin::ParseFloat,
         BuiltinValue::FormatFloat => Builtin::FormatFloat,
         BuiltinValue::IsFinite => Builtin::IsFinite,
+        BuiltinValue::IntToFloat => Builtin::IntToFloat,
+        BuiltinValue::FloatToIntStatus => Builtin::FloatToIntStatus,
         BuiltinValue::TextLength => Builtin::TextLength,
         BuiltinValue::TextGet => Builtin::TextGet,
         BuiltinValue::TextConcat => Builtin::TextConcat,
@@ -3830,7 +3876,8 @@ fn contract_parameter_indices(
     let signature = match &program.definitions[owner].kind {
         DefinitionKind::Function(function) | DefinitionKind::Test(function) => &function.signature,
         DefinitionKind::Method(method) => &method.signature,
-        DefinitionKind::RefinedType(_)
+        DefinitionKind::Constant(_)
+        | DefinitionKind::RefinedType(_)
         | DefinitionKind::Record(_)
         | DefinitionKind::Enum(_)
         | DefinitionKind::Field(_)
@@ -3893,7 +3940,9 @@ fn body_type_parameters(
             };
             TypeParameters::from_callable(signature)
         }
-        DefinitionKind::RefinedType(_) => Ok(TypeParameters::default()),
+        DefinitionKind::Constant(_) | DefinitionKind::RefinedType(_) => {
+            Ok(TypeParameters::default())
+        }
         _ => Err(defect(
             "contract body owner cannot provide generic parameters",
             definition_span(program, owner),
@@ -4494,6 +4543,15 @@ fn lower_literal(literal: &Literal, span: Span) -> LowerResult<Constant> {
             .map(Constant::Text)
             .map_err(|message| defect(message, span)),
         Literal::Unit => Ok(Constant::Unit),
+    }
+}
+
+fn lower_constant_value(value: &ConstantValue) -> Constant {
+    match value {
+        ConstantValue::Bool(value) => Constant::Bool(*value),
+        ConstantValue::Int(value) => Constant::Int(*value),
+        ConstantValue::Float(value) => Constant::Float(*value),
+        ConstantValue::Text(value) => Constant::Text(value.clone()),
     }
 }
 

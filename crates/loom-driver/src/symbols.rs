@@ -647,6 +647,7 @@ const fn call_target_definition(target: &CallTarget) -> Option<DefId> {
 const fn definition_kind_name(kind: DefinitionTag) -> &'static str {
     match kind {
         DefinitionTag::Error => "error",
+        DefinitionTag::Constant => "constant",
         DefinitionTag::RefinedType => "constrained type",
         DefinitionTag::Record => "record",
         DefinitionTag::Field => "field",

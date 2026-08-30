@@ -143,6 +143,12 @@ struct WitnessFlow {
     root: WitnessTrie,
 }
 
+struct WitnessLoopFlow {
+    cleanup_base: usize,
+    breaks: Vec<WitnessFlow>,
+    continues: Vec<WitnessFlow>,
+}
+
 impl WitnessFlow {
     fn get(&self, local: LocalId) -> Option<&BTreeSet<WitnessId>> {
         witness_trie_get(&self.root, local.0)
@@ -458,7 +464,13 @@ fn require_function(
 }
 
 fn scan_block(block: &Block, edges: &mut FunctionEdges) {
-    let _ = scan_block_with_flow(block, edges, &mut WitnessFlow::default(), &mut Vec::new());
+    let _ = scan_block_with_flow(
+        block,
+        edges,
+        &mut WitnessFlow::default(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+    );
 }
 
 /// Scans the executable portion of a block and returns whether control can
@@ -471,6 +483,7 @@ fn scan_block_with_flow<'mir>(
     edges: &mut FunctionEdges,
     flow: &mut WitnessFlow,
     active_cleanups: &mut Vec<&'mir Block>,
+    loops: &mut Vec<WitnessLoopFlow>,
 ) -> bool {
     let cleanup_base = active_cleanups.len();
     let mut continues = true;
@@ -478,7 +491,7 @@ fn scan_block_with_flow<'mir>(
         continues = match &statement.kind {
             StatementKind::Let { local, value } => {
                 let witnesses = expression_witnesses(value, flow);
-                if scan_expr(value, edges, flow, active_cleanups) {
+                if scan_expr(value, edges, flow, active_cleanups, loops) {
                     flow.set(*local, witnesses);
                     true
                 } else {
@@ -491,7 +504,7 @@ fn scan_block_with_flow<'mir>(
                 disposal,
             } => {
                 let witnesses = expression_witnesses(value, flow);
-                if scan_expr(value, edges, flow, active_cleanups) {
+                if scan_expr(value, edges, flow, active_cleanups, loops) {
                     flow.set(*local, witnesses);
                     match disposal {
                         loom_mir::ScopedDisposal::StaticConcept {
@@ -530,14 +543,14 @@ fn scan_block_with_flow<'mir>(
                         let mut continues = true;
                         for element in elements {
                             witnesses.push(expression_witnesses(element, flow));
-                            if !scan_expr(element, edges, flow, active_cleanups) {
+                            if !scan_expr(element, edges, flow, active_cleanups, loops) {
                                 continues = false;
                                 break;
                             }
                         }
                         (continues && value.ty != Type::Never, Some(witnesses))
                     }
-                    _ => (scan_expr(value, edges, flow, active_cleanups), None),
+                    _ => (scan_expr(value, edges, flow, active_cleanups, loops), None),
                 };
                 if continues {
                     for (index, local) in locals.iter().enumerate() {
@@ -556,7 +569,7 @@ fn scan_block_with_flow<'mir>(
             }
             StatementKind::Assign { place, value } => {
                 let witnesses = expression_witnesses(value, flow);
-                if scan_expr(value, edges, flow, active_cleanups) {
+                if scan_expr(value, edges, flow, active_cleanups, loops) {
                     if place.projection.is_empty() {
                         flow.set(place.local, witnesses);
                     } else {
@@ -568,7 +581,7 @@ fn scan_block_with_flow<'mir>(
                 }
             }
             StatementKind::Assert { condition: value } | StatementKind::Evaluate(value) => {
-                scan_expr(value, edges, flow, active_cleanups)
+                scan_expr(value, edges, flow, active_cleanups, loops)
             }
             StatementKind::ForRange {
                 local,
@@ -576,8 +589,8 @@ fn scan_block_with_flow<'mir>(
                 end,
                 body,
             } => {
-                if !scan_expr(start, edges, flow, active_cleanups)
-                    || !scan_expr(end, edges, flow, active_cleanups)
+                if !scan_expr(start, edges, flow, active_cleanups, loops)
+                    || !scan_expr(end, edges, flow, active_cleanups, loops)
                 {
                     false
                 } else {
@@ -587,25 +600,111 @@ fn scan_block_with_flow<'mir>(
                     // that can reach calls and cleanups on later iterations.
                     let entry = flow.clone();
                     let mut loop_head = entry.clone();
+                    let mut break_exit: Option<WitnessFlow> = None;
                     loop {
                         let mut body_flow = loop_head.clone();
                         body_flow.remove(*local);
-                        if !scan_block_with_flow(body, edges, &mut body_flow, active_cleanups) {
-                            break;
+                        loops.push(WitnessLoopFlow {
+                            cleanup_base: active_cleanups.len(),
+                            breaks: Vec::new(),
+                            continues: Vec::new(),
+                        });
+                        let body_continues = scan_block_with_flow(
+                            body,
+                            edges,
+                            &mut body_flow,
+                            active_cleanups,
+                            loops,
+                        );
+                        let loop_flow = loops.pop().expect("range loop flow");
+                        for exit in loop_flow.breaks {
+                            break_exit = Some(match break_exit {
+                                Some(current) => current.merge(&exit),
+                                None => exit,
+                            });
                         }
-                        let next = merge_witness_flows([&entry, &body_flow]);
+                        let mut backedges = loop_flow.continues;
+                        if body_continues {
+                            backedges.push(body_flow);
+                        }
+                        let next = merge_witness_flows(
+                            [&loop_head, &entry].into_iter().chain(backedges.iter()),
+                        );
                         if next.same_root(&loop_head) {
                             break;
                         }
                         loop_head = next;
                     }
-                    *flow = loop_head;
+                    *flow = break_exit
+                        .map_or(loop_head.clone(), |break_exit| loop_head.merge(&break_exit));
                     true
                 }
             }
+            StatementKind::While { condition, body } => {
+                let entry = flow.clone();
+                let mut loop_head = entry.clone();
+                let mut natural_exit: Option<WitnessFlow> = None;
+                let mut break_exit: Option<WitnessFlow> = None;
+                loop {
+                    let mut condition_flow = loop_head.clone();
+                    if !scan_expr(
+                        condition,
+                        edges,
+                        &mut condition_flow,
+                        active_cleanups,
+                        loops,
+                    ) {
+                        return false;
+                    }
+                    natural_exit = Some(match natural_exit {
+                        Some(current) => current.merge(&condition_flow),
+                        None => condition_flow.clone(),
+                    });
+
+                    let mut body_flow = condition_flow;
+                    loops.push(WitnessLoopFlow {
+                        cleanup_base: active_cleanups.len(),
+                        breaks: Vec::new(),
+                        continues: Vec::new(),
+                    });
+                    let body_continues =
+                        scan_block_with_flow(body, edges, &mut body_flow, active_cleanups, loops);
+                    let loop_flow = loops.pop().expect("while loop flow");
+                    for exit in loop_flow.breaks {
+                        break_exit = Some(match break_exit {
+                            Some(current) => current.merge(&exit),
+                            None => exit,
+                        });
+                    }
+                    let mut backedges = loop_flow.continues;
+                    if body_continues {
+                        backedges.push(body_flow);
+                    }
+                    let next = merge_witness_flows(
+                        [&loop_head, &entry].into_iter().chain(backedges.iter()),
+                    );
+                    if next.same_root(&loop_head) {
+                        break;
+                    }
+                    loop_head = next;
+                }
+                let natural_exit = natural_exit.expect("while condition exit flow");
+                *flow = break_exit.map_or(natural_exit.clone(), |break_exit| {
+                    natural_exit.merge(&break_exit)
+                });
+                true
+            }
+            StatementKind::Break => {
+                record_loop_flow(true, edges, flow, active_cleanups, loops);
+                false
+            }
+            StatementKind::Continue => {
+                record_loop_flow(false, edges, flow, active_cleanups, loops);
+                false
+            }
             StatementKind::Return(value) => {
                 if let Some(value) = value {
-                    let _ = scan_expr(value, edges, flow, active_cleanups);
+                    let _ = scan_expr(value, edges, flow, active_cleanups, loops);
                 }
                 // Every registered cleanup was already scanned with unknown
                 // witness state. A Return has no continuation that could use
@@ -629,7 +728,13 @@ fn scan_block_with_flow<'mir>(
                 // Older cleanups were each scanned with unknown witness state
                 // when registered. They do not need to be recursively replayed
                 // for every newer registration.
-                let _ = scan_block_with_flow(cleanup, edges, &mut cleanup_flow, &mut Vec::new());
+                let _ = scan_block_with_flow(
+                    cleanup,
+                    edges,
+                    &mut cleanup_flow,
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                );
                 active_cleanups.push(cleanup);
                 true
             }
@@ -640,13 +745,35 @@ fn scan_block_with_flow<'mir>(
     }
 
     if continues && let Some(tail) = &block.tail {
-        continues = scan_expr(tail, edges, flow, active_cleanups);
+        continues = scan_expr(tail, edges, flow, active_cleanups, loops);
     }
     if continues && active_cleanups.len() > cleanup_base {
         continues = scan_cleanup_sequence(&active_cleanups[cleanup_base..], edges, flow);
     }
     active_cleanups.truncate(cleanup_base);
     continues
+}
+
+fn record_loop_flow(
+    is_break: bool,
+    edges: &mut FunctionEdges,
+    flow: &WitnessFlow,
+    active_cleanups: &[&Block],
+    loops: &mut [WitnessLoopFlow],
+) {
+    let Some(cleanup_base) = loops.last().map(|target| target.cleanup_base) else {
+        return;
+    };
+    let mut exit_flow = flow.clone();
+    if !scan_cleanup_sequence(&active_cleanups[cleanup_base..], edges, &mut exit_flow) {
+        return;
+    }
+    let target = loops.last_mut().expect("checked loop target");
+    if is_break {
+        target.breaks.push(exit_flow);
+    } else {
+        target.continues.push(exit_flow);
+    }
 }
 
 fn scan_cleanup_sequence(
@@ -659,7 +786,7 @@ fn scan_cleanup_sequence(
         // The driver itself executes the complete LIFO sequence. Scanning a
         // cleanup with an inherited prefix would make each body recursively
         // replay every older body and turn a flat stack exponential.
-        continues &= scan_block_with_flow(cleanup, edges, flow, &mut Vec::new());
+        continues &= scan_block_with_flow(cleanup, edges, flow, &mut Vec::new(), &mut Vec::new());
     }
     continues
 }
@@ -670,22 +797,23 @@ fn scan_expr<'mir>(
     edges: &mut FunctionEdges,
     flow: &mut WitnessFlow,
     active_cleanups: &mut Vec<&'mir Block>,
+    loops: &mut Vec<WitnessLoopFlow>,
 ) -> bool {
     match &expression.kind {
         ExprKind::Tuple(elements) | ExprKind::List(elements) => {
             for element in elements {
-                if !scan_expr(element, edges, flow, active_cleanups) {
+                if !scan_expr(element, edges, flow, active_cleanups, loops) {
                     return false;
                 }
             }
         }
         ExprKind::Unary(_, value) | ExprKind::Unrefine(value) | ExprKind::Refine { value, .. } => {
-            if !scan_expr(value, edges, flow, active_cleanups) {
+            if !scan_expr(value, edges, flow, active_cleanups, loops) {
                 return false;
             }
         }
         ExprKind::Binary(operator, left, right) => {
-            if !scan_expr(left, edges, flow, active_cleanups) {
+            if !scan_expr(left, edges, flow, active_cleanups, loops) {
                 return false;
             }
             if matches!(operator, BinaryOp::And | BinaryOp::Or) {
@@ -693,16 +821,16 @@ fn scan_expr<'mir>(
                 // operand even when evaluating the right operand diverges.
                 let short_circuit_flow = flow.clone();
                 let mut right_flow = short_circuit_flow.clone();
-                if scan_expr(right, edges, &mut right_flow, active_cleanups) {
+                if scan_expr(right, edges, &mut right_flow, active_cleanups, loops) {
                     *flow = merge_witness_flows([&short_circuit_flow, &right_flow]);
                 }
-            } else if !scan_expr(right, edges, flow, active_cleanups) {
+            } else if !scan_expr(right, edges, flow, active_cleanups, loops) {
                 return false;
             }
         }
         ExprKind::Block(block) => {
             let mut block_flow = flow.clone();
-            if !scan_block_with_flow(block, edges, &mut block_flow, active_cleanups) {
+            if !scan_block_with_flow(block, edges, &mut block_flow, active_cleanups, loops) {
                 return false;
             }
             *flow = block_flow;
@@ -712,15 +840,15 @@ fn scan_expr<'mir>(
             then_branch,
             else_branch,
         } => {
-            if !scan_expr(condition, edges, flow, active_cleanups) {
+            if !scan_expr(condition, edges, flow, active_cleanups, loops) {
                 return false;
             }
             let mut then_flow = flow.clone();
             let mut else_flow = flow.clone();
             let then_continues =
-                scan_block_with_flow(then_branch, edges, &mut then_flow, active_cleanups);
+                scan_block_with_flow(then_branch, edges, &mut then_flow, active_cleanups, loops);
             let else_continues =
-                scan_block_with_flow(else_branch, edges, &mut else_flow, active_cleanups);
+                scan_block_with_flow(else_branch, edges, &mut else_flow, active_cleanups, loops);
             match (then_continues, else_continues) {
                 (true, true) => *flow = merge_witness_flows([&then_flow, &else_flow]),
                 (true, false) => *flow = then_flow,
@@ -729,14 +857,14 @@ fn scan_expr<'mir>(
             }
         }
         ExprKind::Match { scrutinee, arms } => {
-            if !scan_expr(scrutinee, edges, flow, active_cleanups) {
+            if !scan_expr(scrutinee, edges, flow, active_cleanups, loops) {
                 return false;
             }
             let entry = flow.clone();
             let mut continuing = Vec::new();
             for arm in arms {
                 let mut arm_flow = entry.clone();
-                if scan_expr(&arm.value, edges, &mut arm_flow, active_cleanups) {
+                if scan_expr(&arm.value, edges, &mut arm_flow, active_cleanups, loops) {
                     continuing.push(arm_flow);
                 }
             }
@@ -747,14 +875,14 @@ fn scan_expr<'mir>(
         }
         ExprKind::Record { fields, .. } => {
             for field in fields {
-                if !scan_expr(field, edges, flow, active_cleanups) {
+                if !scan_expr(field, edges, flow, active_cleanups, loops) {
                     return false;
                 }
             }
         }
         ExprKind::Variant { payload, .. } => {
             for value in payload {
-                if !scan_expr(value, edges, flow, active_cleanups) {
+                if !scan_expr(value, edges, flow, active_cleanups, loops) {
                     return false;
                 }
             }
@@ -780,7 +908,7 @@ fn scan_expr<'mir>(
             for argument in arguments {
                 match argument {
                     CallArgument::Value(value) => {
-                        if !scan_expr(value, edges, flow, active_cleanups) {
+                        if !scan_expr(value, edges, flow, active_cleanups, loops) {
                             return false;
                         }
                     }
@@ -823,25 +951,25 @@ fn scan_expr<'mir>(
             }
         }
         ExprKind::MakeView { value, witness, .. } => {
-            if !scan_expr(value, edges, flow, active_cleanups) {
+            if !scan_expr(value, edges, flow, active_cleanups, loops) {
                 return false;
             }
             collect_witness(witness, &mut edges.witnesses);
         }
         ExprKind::Await { task, .. } => {
-            if !scan_expr(task, edges, flow, active_cleanups) {
+            if !scan_expr(task, edges, flow, active_cleanups, loops) {
                 return false;
             }
         }
         ExprKind::TaskJoin { arguments, .. } => {
             for argument in arguments {
-                if !scan_expr(argument, edges, flow, active_cleanups) {
+                if !scan_expr(argument, edges, flow, active_cleanups, loops) {
                     return false;
                 }
             }
         }
         ExprKind::Sleep { milliseconds } => {
-            if !scan_expr(milliseconds, edges, flow, active_cleanups) {
+            if !scan_expr(milliseconds, edges, flow, active_cleanups, loops) {
                 return false;
             }
         }
@@ -1042,6 +1170,84 @@ mod tests {
     }
 
     #[test]
+    fn loop_exit_and_backedge_witness_flows_reach_later_dynamic_calls() {
+        let break_edges = scan(vec![
+            initialize(),
+            statement(StatementKind::While {
+                condition: Box::new(boolean(true)),
+                body: Box::new(block(vec![
+                    statement(StatementKind::Defer(block(vec![assign_second()]))),
+                    statement(StatementKind::Break),
+                ])),
+            }),
+            statement(StatementKind::Evaluate(dynamic_call())),
+        ]);
+        assert!(
+            break_edges
+                .concrete_methods
+                .contains(&(SECOND, REQUIREMENT)),
+            "a deferred witness assignment on break must reach the loop exit"
+        );
+
+        let continue_edges = scan(vec![
+            initialize(),
+            statement(StatementKind::ForRange {
+                local: LocalId(1),
+                start: Box::new(Expr {
+                    id: ExprId::UNASSIGNED,
+                    kind: ExprKind::Constant(loom_mir::Constant::Int(0)),
+                    ty: Type::Int,
+                    span: Default::default(),
+                }),
+                end: Box::new(Expr {
+                    id: ExprId::UNASSIGNED,
+                    kind: ExprKind::Constant(loom_mir::Constant::Int(2)),
+                    ty: Type::Int,
+                    span: Default::default(),
+                }),
+                body: Box::new(block(vec![
+                    assign_second(),
+                    statement(StatementKind::Continue),
+                ])),
+            }),
+            statement(StatementKind::Evaluate(dynamic_call())),
+        ]);
+        assert!(
+            continue_edges
+                .concrete_methods
+                .contains(&(SECOND, REQUIREMENT)),
+            "a witness assignment on continue must reach later iterations and loop exit"
+        );
+
+        let condition = Expr {
+            id: ExprId::UNASSIGNED,
+            kind: ExprKind::Block(Block {
+                statements: vec![statement(StatementKind::Evaluate(dynamic_call()))],
+                tail: Some(Box::new(boolean(true))),
+                span: Default::default(),
+            }),
+            ty: Type::Bool,
+            span: Default::default(),
+        };
+        let condition_edges = scan(vec![
+            initialize(),
+            statement(StatementKind::While {
+                condition: Box::new(condition),
+                body: Box::new(block(vec![
+                    assign_second(),
+                    statement(StatementKind::Continue),
+                ])),
+            }),
+        ]);
+        assert!(
+            condition_edges
+                .concrete_methods
+                .contains(&(SECOND, REQUIREMENT)),
+            "a continue backedge must rescan the while condition with its witness flow"
+        );
+    }
+
+    #[test]
     fn persistent_witness_flow_identity_joins_allocate_no_per_local_work() {
         const LOCAL_COUNT: u32 = 8_192;
         const IDENTITY_JOIN_COUNT: usize = 8_192;
@@ -1119,6 +1325,7 @@ mod tests {
             &population,
             &mut edges,
             &mut flow,
+            &mut Vec::new(),
             &mut Vec::new()
         ));
         let allocations_after_population = witness_node_allocations();
@@ -1126,6 +1333,7 @@ mod tests {
             &identity_branches,
             &mut edges,
             &mut flow,
+            &mut Vec::new(),
             &mut Vec::new()
         ));
 

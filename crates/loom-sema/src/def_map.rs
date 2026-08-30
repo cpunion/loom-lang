@@ -287,7 +287,9 @@ fn namespace_of(kind: &DefinitionKind) -> Option<Namespace> {
         DefinitionKind::RefinedType(_) | DefinitionKind::Record(_) | DefinitionKind::Enum(_) => {
             Some(Namespace::Type)
         }
-        DefinitionKind::Function(_) | DefinitionKind::Test(_) => Some(Namespace::Value),
+        DefinitionKind::Constant(_) | DefinitionKind::Function(_) | DefinitionKind::Test(_) => {
+            Some(Namespace::Value)
+        }
         DefinitionKind::Concept(_) => Some(Namespace::Concept),
         DefinitionKind::Field(_)
         | DefinitionKind::Variant(_)

@@ -233,7 +233,8 @@ fn project_shape_declaration(declaration: &Decl) -> Decl {
                 }
             }
         },
-        DeclKind::ConstrainedType(_)
+        DeclKind::Constant(_)
+        | DeclKind::ConstrainedType(_)
         | DeclKind::Record(_)
         | DeclKind::Enum(_)
         | DeclKind::Concept(_)
@@ -243,6 +244,13 @@ fn project_shape_declaration(declaration: &Decl) -> Decl {
 }
 
 fn project_declaration(declaration: &Decl) -> Option<Decl> {
+    // A public constant may depend on private constants in the same package.
+    // Until interface projection can fold that dependency graph, include every
+    // constant initializer in the fingerprint so consumers cannot reuse a
+    // stale substituted public value.
+    if matches!(&declaration.kind, DeclKind::Constant(_)) {
+        return Some(declaration.clone());
+    }
     if matches!(&declaration.kind, DeclKind::Impl(_)) {
         let mut projected = declaration.clone();
         let DeclKind::Impl(implementation) = &mut projected.kind else {

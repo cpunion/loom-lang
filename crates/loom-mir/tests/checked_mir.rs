@@ -463,6 +463,250 @@ fn valid_program_crosses_checked_boundary() {
 }
 
 #[test]
+fn checked_boundary_scopes_break_and_continue_to_the_nearest_loop() {
+    let loop_body = Block {
+        statements: vec![Statement {
+            kind: StatementKind::Break,
+            span: span(),
+        }],
+        tail: None,
+        span: span(),
+    };
+    let valid = Program {
+        functions: vec![function(
+            0,
+            Vec::new(),
+            Vec::new(),
+            Type::Unit,
+            Block {
+                statements: vec![Statement {
+                    kind: StatementKind::While {
+                        condition: Box::new(constant(Constant::Bool(true), Type::Bool)),
+                        body: Box::new(loop_body),
+                    },
+                    span: span(),
+                }],
+                tail: None,
+                span: span(),
+            },
+        )],
+        ..Program::default()
+    };
+    validate_program(&valid).expect("break inside while is valid checked MIR");
+
+    for kind in [StatementKind::Break, StatementKind::Continue] {
+        let invalid = Program {
+            functions: vec![function(
+                0,
+                Vec::new(),
+                Vec::new(),
+                Type::Unit,
+                Block {
+                    statements: vec![Statement { kind, span: span() }],
+                    tail: None,
+                    span: span(),
+                },
+            )],
+            ..Program::default()
+        };
+        assert!(
+            validation_errors(&invalid).contains(MirValidationCode::ExpressionShape),
+            "loop control outside a loop must fail closed"
+        );
+    }
+}
+
+#[test]
+fn cleanup_loop_control_keeps_loop_depth_through_nested_expressions() {
+    let control_block = |kind| Block {
+        statements: vec![Statement { kind, span: span() }],
+        tail: None,
+        span: span(),
+    };
+    let nested_block = expr(
+        ExprKind::Block(control_block(StatementKind::Break)),
+        Type::Never,
+    );
+    let nested_if = expr(
+        ExprKind::If {
+            condition: Box::new(constant(Constant::Bool(true), Type::Bool)),
+            then_branch: control_block(StatementKind::Continue),
+            else_branch: control_block(StatementKind::Continue),
+        },
+        Type::Never,
+    );
+    let nested_match = expr(
+        ExprKind::Match {
+            scrutinee: Box::new(constant(Constant::Bool(true), Type::Bool)),
+            arms: vec![
+                MatchArm {
+                    pattern: Pattern::Constant(Constant::Bool(true)),
+                    bindings: Vec::new(),
+                    value: expr(
+                        ExprKind::Block(control_block(StatementKind::Break)),
+                        Type::Never,
+                    ),
+                },
+                MatchArm {
+                    pattern: Pattern::Constant(Constant::Bool(false)),
+                    bindings: Vec::new(),
+                    value: expr(
+                        ExprKind::Block(control_block(StatementKind::Break)),
+                        Type::Never,
+                    ),
+                },
+            ],
+        },
+        Type::Never,
+    );
+    let loop_statement = |expression| Statement {
+        kind: StatementKind::While {
+            condition: Box::new(constant(Constant::Bool(true), Type::Bool)),
+            body: Box::new(Block {
+                statements: vec![Statement {
+                    kind: StatementKind::Evaluate(expression),
+                    span: span(),
+                }],
+                tail: None,
+                span: span(),
+            }),
+        },
+        span: span(),
+    };
+    let cleanup = Block {
+        statements: vec![
+            loop_statement(nested_block),
+            loop_statement(nested_if),
+            loop_statement(nested_match),
+        ],
+        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+        span: span(),
+    };
+    let program = Program {
+        functions: vec![function(
+            0,
+            Vec::new(),
+            Vec::new(),
+            Type::Unit,
+            Block {
+                statements: vec![Statement {
+                    kind: StatementKind::Defer(cleanup),
+                    span: span(),
+                }],
+                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                span: span(),
+            },
+        )],
+        ..Program::default()
+    };
+    validate_program(&program)
+        .expect("cleanup-local loop control remains valid through Block, If, and Match");
+}
+
+fn while_condition_that_moves(local: u32) -> Expr {
+    expr(
+        ExprKind::Block(Block {
+            statements: vec![Statement {
+                kind: StatementKind::Evaluate(expr(
+                    ExprKind::Move(Place::local(LocalId(local))),
+                    Type::Int,
+                )),
+                span: span(),
+            }],
+            tail: Some(Box::new(constant(Constant::Bool(true), Type::Bool))),
+            span: span(),
+        }),
+        Type::Bool,
+    )
+}
+
+#[test]
+fn while_backedge_must_restore_values_consumed_by_its_condition() {
+    let program = Program {
+        functions: vec![function(
+            0,
+            Vec::new(),
+            vec![local(0, Type::Int, true)],
+            Type::Unit,
+            Block {
+                statements: vec![
+                    Statement {
+                        kind: StatementKind::Let {
+                            local: LocalId(0),
+                            value: constant(Constant::Int(1), Type::Int),
+                        },
+                        span: span(),
+                    },
+                    Statement {
+                        kind: StatementKind::While {
+                            condition: Box::new(while_condition_that_moves(0)),
+                            body: Box::new(Block {
+                                statements: Vec::new(),
+                                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                                span: span(),
+                            }),
+                        },
+                        span: span(),
+                    },
+                ],
+                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                span: span(),
+            },
+        )],
+        ..Program::default()
+    };
+    let errors = validation_errors(&program);
+    assert!(errors.iter().any(|error| {
+        error.code == MirValidationCode::LocalState
+            && error.message.contains("continuing While body")
+    }));
+}
+
+#[test]
+fn while_body_may_restore_a_value_consumed_by_its_condition() {
+    let program = Program {
+        functions: vec![function(
+            0,
+            Vec::new(),
+            vec![local(0, Type::Int, true)],
+            Type::Unit,
+            Block {
+                statements: vec![
+                    Statement {
+                        kind: StatementKind::Let {
+                            local: LocalId(0),
+                            value: constant(Constant::Int(1), Type::Int),
+                        },
+                        span: span(),
+                    },
+                    Statement {
+                        kind: StatementKind::While {
+                            condition: Box::new(while_condition_that_moves(0)),
+                            body: Box::new(Block {
+                                statements: vec![Statement {
+                                    kind: StatementKind::Assign {
+                                        place: Place::local(LocalId(0)),
+                                        value: constant(Constant::Int(2), Type::Int),
+                                    },
+                                    span: span(),
+                                }],
+                                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                                span: span(),
+                            }),
+                        },
+                        span: span(),
+                    },
+                ],
+                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                span: span(),
+            },
+        )],
+        ..Program::default()
+    };
+    validate_program(&program).expect("the body restores the condition-consumed value");
+}
+
+#[test]
 fn expression_ids_are_function_local_dense_canonical_preorder() {
     let first = function(
         0,

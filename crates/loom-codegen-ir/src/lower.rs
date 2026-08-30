@@ -2457,6 +2457,14 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 self.visit_block(function, key, body, &format!("{path}.body"));
                 true
             }
+            StatementKind::While { condition, body } => {
+                if !self.visit_expr(function, key, condition, &format!("{path}.condition")) {
+                    return false;
+                }
+                self.visit_block(function, key, body, &format!("{path}.body"));
+                true
+            }
+            StatementKind::Break | StatementKind::Continue => false,
             StatementKind::Assign { place, value } => {
                 if !self.visit_expr(function, key, value, &format!("{path}.value")) {
                     return false;
@@ -3276,6 +3284,8 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         | mir::Builtin::TextMapEntryAt
                         | mir::Builtin::TextMapRemove
                         | mir::Builtin::IsFinite
+                        | mir::Builtin::IntToFloat
+                        | mir::Builtin::FloatToIntStatus
                         | mir::Builtin::ParseFloat
                         | mir::Builtin::FormatFloat
                         | mir::Builtin::JsonFormat
@@ -3874,6 +3884,14 @@ fn scan_effect_statement(
             scan_effect_block(program, body, summary);
             true
         }
+        StatementKind::While { condition, body } => {
+            if !scan_effect_expr(program, condition, summary) {
+                return false;
+            }
+            scan_effect_block(program, body, summary);
+            true
+        }
+        StatementKind::Break | StatementKind::Continue => false,
         StatementKind::Assert { condition } => {
             let continues = scan_effect_expr(program, condition, summary);
             if continues {
@@ -4157,11 +4175,6 @@ fn scan_effect_exprs(
         .all(|expression| scan_effect_expr(program, expression, summary))
 }
 
-fn continuing_mutations(block: &mir::Block) -> Option<BTreeSet<LocalId>> {
-    let mut changed = BTreeSet::new();
-    scan_mutation_block(block, &mut changed).then_some(changed)
-}
-
 fn canonical_unique_list_loop_body(block: &mir::Block, local: LocalId) -> bool {
     let mut append_count = 0_usize;
     for statement in &block.statements {
@@ -4230,6 +4243,18 @@ fn statement_mentions_local(statement: &mir::Statement, local: LocalId) -> bool 
                     .as_deref()
                     .is_some_and(|tail| expr_mentions_local(tail, local))
         }
+        StatementKind::While { condition, body } => {
+            expr_mentions_local(condition, local)
+                || body
+                    .statements
+                    .iter()
+                    .any(|statement| statement_mentions_local(statement, local))
+                || body
+                    .tail
+                    .as_deref()
+                    .is_some_and(|tail| expr_mentions_local(tail, local))
+        }
+        StatementKind::Break | StatementKind::Continue => false,
         StatementKind::Assign { place, value } => {
             place.local == local || expr_mentions_local(value, local)
         }
@@ -4328,29 +4353,32 @@ fn expr_mentions_local(expression: &mir::Expr, local: LocalId) -> bool {
     }
 }
 
-fn scan_mutation_block(block: &mir::Block, changed: &mut BTreeSet<LocalId>) -> bool {
+fn collect_loop_mutations_block(block: &mir::Block, changed: &mut BTreeSet<LocalId>) -> bool {
     for statement in &block.statements {
-        if !scan_mutation_statement(statement, changed) {
+        if !collect_loop_mutations_statement(statement, changed) {
             return false;
         }
     }
     block
         .tail
         .as_deref()
-        .is_none_or(|tail| scan_mutation_expr(tail, changed))
+        .is_none_or(|tail| collect_loop_mutations_expr(tail, changed))
 }
 
-fn scan_mutation_statement(statement: &mir::Statement, changed: &mut BTreeSet<LocalId>) -> bool {
+fn collect_loop_mutations_statement(
+    statement: &mir::Statement,
+    changed: &mut BTreeSet<LocalId>,
+) -> bool {
     match &statement.kind {
         StatementKind::Let { local, value } | StatementKind::Scoped { local, value, .. } => {
-            let continues = scan_mutation_expr(value, changed);
+            let continues = collect_loop_mutations_expr(value, changed);
             if continues {
                 changed.insert(*local);
             }
             continues
         }
         StatementKind::LetTuple { locals, value } => {
-            let continues = scan_mutation_expr(value, changed);
+            let continues = collect_loop_mutations_expr(value, changed);
             if continues {
                 changed.extend(locals.iter().copied());
             }
@@ -4362,31 +4390,42 @@ fn scan_mutation_statement(statement: &mir::Statement, changed: &mut BTreeSet<Lo
             end,
             body,
         } => {
-            if !scan_mutation_expr(start, changed) || !scan_mutation_expr(end, changed) {
+            if !collect_loop_mutations_expr(start, changed)
+                || !collect_loop_mutations_expr(end, changed)
+            {
                 return false;
             }
-            let entry = changed.clone();
-            let mut iteration = entry.clone();
-            iteration.insert(*local);
-            if scan_mutation_block(body, &mut iteration) {
-                changed.extend(iteration);
-            }
+            changed.insert(*local);
+            let _ = collect_loop_mutations_block(body, changed);
             true
         }
+        StatementKind::While { condition, body } => {
+            if !collect_loop_mutations_expr(condition, changed) {
+                return false;
+            }
+            let _ = collect_loop_mutations_block(body, changed);
+            true
+        }
+        StatementKind::Break | StatementKind::Continue => false,
         StatementKind::Assign { place, value } => {
-            let continues = scan_mutation_expr(value, changed);
+            let continues = collect_loop_mutations_expr(value, changed);
             if continues {
                 changed.insert(place.local);
             }
             continues
         }
         StatementKind::Assert { condition } | StatementKind::Evaluate(condition) => {
-            scan_mutation_expr(condition, changed)
+            collect_loop_mutations_expr(condition, changed)
         }
-        StatementKind::Defer(_) => true,
+        StatementKind::Defer(cleanup) => {
+            // A deferred cleanup runs on every path that leaves its scope,
+            // including loop break/continue and normal iteration exit.
+            let _ = collect_loop_mutations_block(cleanup, changed);
+            true
+        }
         StatementKind::Return(value) => {
             if let Some(value) = value {
-                let _ = scan_mutation_expr(value, changed);
+                let _ = collect_loop_mutations_expr(value, changed);
             }
             false
         }
@@ -4394,100 +4433,106 @@ fn scan_mutation_statement(statement: &mir::Statement, changed: &mut BTreeSet<Lo
 }
 
 #[allow(clippy::too_many_lines)]
-fn scan_mutation_expr(expression: &mir::Expr, changed: &mut BTreeSet<LocalId>) -> bool {
+fn collect_loop_mutations_expr(expression: &mir::Expr, changed: &mut BTreeSet<LocalId>) -> bool {
     let continues = match &expression.kind {
-        ExprKind::Constant(_) | ExprKind::Copy(_) | ExprKind::ReborrowView { .. } => true,
+        ExprKind::Constant(_) | ExprKind::Copy(_) => true,
+        ExprKind::ReborrowView { owner, .. } => {
+            // A reborrow can become the receiver of finite mutable dynamic
+            // dispatch. That lowering writes the updated value back through
+            // the owner place, so conservatively carry its root across loops.
+            changed.insert(owner.local);
+            true
+        }
         ExprKind::Move(place) => {
             changed.insert(place.local);
             true
         }
-        ExprKind::Tuple(values) | ExprKind::List(values) => values
-            .iter()
-            .all(|value| scan_mutation_expr(value, changed)),
-        ExprKind::Unary(_, value)
-        | ExprKind::Refine { value, .. }
-        | ExprKind::Unrefine(value)
-        | ExprKind::MakeView { value, .. } => scan_mutation_expr(value, changed),
+        ExprKind::Tuple(values) | ExprKind::List(values) => {
+            for value in values {
+                if !collect_loop_mutations_expr(value, changed) {
+                    return false;
+                }
+            }
+            true
+        }
+        ExprKind::Unary(_, value) | ExprKind::Refine { value, .. } | ExprKind::Unrefine(value) => {
+            collect_loop_mutations_expr(value, changed)
+        }
+        ExprKind::MakeView {
+            value, writeback, ..
+        } => {
+            let continues = collect_loop_mutations_expr(value, changed);
+            if continues && let Some(writeback) = writeback {
+                changed.insert(writeback.local);
+            }
+            continues
+        }
         ExprKind::Binary(operator, left, right) => {
-            if !scan_mutation_expr(left, changed) {
+            if !collect_loop_mutations_expr(left, changed) {
                 return false;
             }
             if matches!(operator, BinaryOp::And | BinaryOp::Or) {
-                let short_circuit = changed.clone();
-                let mut right_changed = short_circuit.clone();
-                if scan_mutation_expr(right, &mut right_changed) {
-                    changed.extend(right_changed);
-                } else {
-                    *changed = short_circuit;
-                }
+                let mut right_changed = changed.clone();
+                let _ = collect_loop_mutations_expr(right, &mut right_changed);
+                changed.extend(right_changed);
                 true
             } else {
-                scan_mutation_expr(right, changed)
+                collect_loop_mutations_expr(right, changed)
             }
         }
-        ExprKind::Block(block) => scan_mutation_block(block, changed),
+        ExprKind::Block(block) => collect_loop_mutations_block(block, changed),
         ExprKind::If {
             condition,
             then_branch,
             else_branch,
         } => {
-            if !scan_mutation_expr(condition, changed) {
+            if !collect_loop_mutations_expr(condition, changed) {
                 return false;
             }
-            let entry = changed.clone();
-            let mut then_changed = entry.clone();
-            let mut else_changed = entry;
-            let then_continues = scan_mutation_block(then_branch, &mut then_changed);
-            let else_continues = scan_mutation_block(else_branch, &mut else_changed);
-            match (then_continues, else_continues) {
-                (true, true) => {
-                    then_changed.extend(else_changed);
-                    *changed = then_changed;
-                    true
-                }
-                (true, false) => {
-                    *changed = then_changed;
-                    true
-                }
-                (false, true) => {
-                    *changed = else_changed;
-                    true
-                }
-                (false, false) => false,
-            }
+            let mut then_changed = changed.clone();
+            let mut else_changed = changed.clone();
+            let then_continues = collect_loop_mutations_block(then_branch, &mut then_changed);
+            let else_continues = collect_loop_mutations_block(else_branch, &mut else_changed);
+            then_changed.extend(else_changed);
+            *changed = then_changed;
+            then_continues || else_continues
         }
         ExprKind::Match { scrutinee, arms } => {
-            if !scan_mutation_expr(scrutinee, changed) {
+            if !collect_loop_mutations_expr(scrutinee, changed) {
                 return false;
             }
             let entry = changed.clone();
-            let mut continuing = Vec::new();
+            let mut merged = entry.clone();
+            let mut continues = false;
             for arm in arms {
                 let mut arm_changed = entry.clone();
-                if scan_mutation_expr(&arm.value, &mut arm_changed) {
-                    continuing.push(arm_changed);
-                }
-            }
-            let Some(mut merged) = continuing.pop() else {
-                return false;
-            };
-            for arm_changed in continuing {
+                continues |= collect_loop_mutations_expr(&arm.value, &mut arm_changed);
                 merged.extend(arm_changed);
             }
             *changed = merged;
+            continues
+        }
+        ExprKind::Record { fields, .. } => {
+            for field in fields {
+                if !collect_loop_mutations_expr(field, changed) {
+                    return false;
+                }
+            }
             true
         }
-        ExprKind::Record { fields, .. } => fields
-            .iter()
-            .all(|field| scan_mutation_expr(field, changed)),
-        ExprKind::Variant { payload, .. } => payload
-            .iter()
-            .all(|value| scan_mutation_expr(value, changed)),
+        ExprKind::Variant { payload, .. } => {
+            for value in payload {
+                if !collect_loop_mutations_expr(value, changed) {
+                    return false;
+                }
+            }
+            true
+        }
         ExprKind::Call { arguments, .. } => {
             for argument in arguments {
                 match argument {
                     CallArgument::Value(value) => {
-                        if !scan_mutation_expr(value, changed) {
+                        if !collect_loop_mutations_expr(value, changed) {
                             return false;
                         }
                     }
@@ -4498,11 +4543,16 @@ fn scan_mutation_expr(expression: &mir::Expr, changed: &mut BTreeSet<LocalId>) -
             }
             true
         }
-        ExprKind::Await { task, .. } => scan_mutation_expr(task, changed),
-        ExprKind::Sleep { milliseconds } => scan_mutation_expr(milliseconds, changed),
-        ExprKind::TaskJoin { arguments, .. } => arguments
-            .iter()
-            .all(|argument| scan_mutation_expr(argument, changed)),
+        ExprKind::Await { task, .. } => collect_loop_mutations_expr(task, changed),
+        ExprKind::Sleep { milliseconds } => collect_loop_mutations_expr(milliseconds, changed),
+        ExprKind::TaskJoin { arguments, .. } => {
+            for argument in arguments {
+                if !collect_loop_mutations_expr(argument, changed) {
+                    return false;
+                }
+            }
+            true
+        }
     };
     continues && expression.ty != Type::Never
 }
@@ -4819,6 +4869,26 @@ struct Flow {
     env: EnvironmentRoot,
 }
 
+#[derive(Clone)]
+struct LoopControl {
+    continue_target: LoopContinueTarget,
+    cleanup_base: usize,
+    carried: Box<[LocalId]>,
+    breaks: Vec<Flow>,
+}
+
+#[derive(Clone)]
+enum LoopContinueTarget {
+    Block(BlockId),
+    Range {
+        header: BlockId,
+        current: ValueId,
+        upper_bound: ValueId,
+        proof: ValueId,
+        integer: ValueTypeId,
+    },
+}
+
 #[derive(Clone, Copy)]
 enum IndexedEquality {
     List,
@@ -4931,6 +5001,7 @@ struct FunctionLowerer<'function, 'builder, 'plan> {
     environments: EnvironmentArena,
     fault_block: Option<BlockId>,
     cleanups: Vec<CleanupAction>,
+    loops: Vec<LoopControl>,
     cleanup_expansions: usize,
     old_parameters: Vec<ContractOperand>,
     unique_list_values: BTreeSet<ValueId>,
@@ -4983,6 +5054,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             environments: EnvironmentArena::new(),
             fault_block: None,
             cleanups: Vec::new(),
+            loops: Vec::new(),
             cleanup_expansions: 0,
             old_parameters: Vec::new(),
             unique_list_values: BTreeSet::new(),
@@ -7236,6 +7308,12 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 end,
                 body,
             } => self.lower_for_range(flow, *local, start, end, body, statement),
+            StatementKind::While { condition, body } => {
+                self.lower_while(flow, condition, body, statement)
+            }
+            StatementKind::Break | StatementKind::Continue => {
+                self.lower_loop_control(flow, statement)
+            }
             StatementKind::Assign { place, value } => match self.lower_expr(flow, value)? {
                 EvalFlow::Continue { flow, value } => {
                     let plan = self.place_plan(place, PlaceUse::Write)?;
@@ -7357,6 +7435,89 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 Ok(StatementFlow::Continue(flow))
             }
         }
+    }
+
+    fn lower_loop_control(
+        &mut self,
+        flow: Flow,
+        statement: &mir::Statement,
+    ) -> Result<StatementFlow, LoweringError> {
+        let loop_index = self.loops.len().checked_sub(1).ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "checked loop control has no enclosing loop",
+            )
+        })?;
+        let cleanup_base = self.loops[loop_index].cleanup_base;
+        let flow = self.lower_cleanup_suffix(flow, cleanup_base)?;
+        let origin = self.statement_origin(statement);
+        if matches!(&statement.kind, StatementKind::Break) {
+            // Keep each break environment on a single-predecessor stub until
+            // the complete set of exits is known. In particular, a valid
+            // break may have moved a local that is unavailable after the
+            // loop, so it cannot be forced through an eager common signature.
+            let target = self.create_block()?;
+            self.terminate(
+                flow.block,
+                TerminatorKind::Jump(BlockTarget::new(target, [])),
+                origin,
+            )?;
+            self.loops[loop_index].breaks.push(Flow {
+                block: target,
+                env: flow.env,
+            });
+        } else {
+            let carried = self.loops[loop_index].carried.clone();
+            let mut carried_arguments = Vec::with_capacity(carried.len());
+            for local in &carried {
+                carried_arguments.push(self.environments.get(flow.env, *local).ok_or_else(
+                    || {
+                        LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            format!("loop continue lost carried local #{}", local.0),
+                        )
+                    },
+                )?);
+            }
+            let continue_target = self.loops[loop_index].continue_target.clone();
+            let (flow, target, arguments) = match continue_target {
+                LoopContinueTarget::Block(target) => (flow, target, carried_arguments),
+                LoopContinueTarget::Range {
+                    header,
+                    current,
+                    upper_bound,
+                    proof,
+                    integer,
+                } => {
+                    let EvalFlow::Continue { flow, value: next } = self.one_instruction(
+                        flow,
+                        InstructionKind::IntSuccessorBelow {
+                            value: current,
+                            upper_bound,
+                            proof,
+                        },
+                        integer,
+                        origin,
+                    )?
+                    else {
+                        return Err(LoweringError::defect(
+                            LoweringDefectCode::Builder,
+                            "range successor instruction unexpectedly terminated",
+                        ));
+                    };
+                    let mut arguments = Vec::with_capacity(carried_arguments.len() + 1);
+                    arguments.push(next);
+                    arguments.extend(carried_arguments);
+                    (flow, header, arguments)
+                }
+            };
+            self.terminate(
+                flow.block,
+                TerminatorKind::Jump(BlockTarget::new(target, arguments)),
+                origin,
+            )?;
+        }
+        Ok(StatementFlow::Terminated)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -10013,6 +10174,44 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         Ok((merged, varying))
     }
 
+    fn merge_statement_flows(
+        &mut self,
+        base_environment: EnvironmentRoot,
+        alternatives: Vec<Flow>,
+        origin: Origin,
+    ) -> Result<StatementFlow, LoweringError> {
+        let Some(_) = alternatives.first() else {
+            return Ok(StatementFlow::Terminated);
+        };
+        if alternatives.len() == 1 {
+            return Ok(StatementFlow::Continue(alternatives[0]));
+        }
+
+        let join = self.create_block()?;
+        let incoming_environments = alternatives.iter().map(|flow| flow.env).collect::<Vec<_>>();
+        let (env, varying_locals) =
+            self.merge_environments(base_environment, &incoming_environments, join)?;
+        for flow in alternatives {
+            let arguments = varying_locals
+                .iter()
+                .map(|local| {
+                    self.environments.get(flow.env, *local).ok_or_else(|| {
+                        LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            format!("loop exit lost available local #{}", local.0),
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            self.terminate(
+                flow.block,
+                TerminatorKind::Jump(BlockTarget::new(join, arguments)),
+                origin,
+            )?;
+        }
+        Ok(StatementFlow::Continue(Flow { block: join, env }))
+    }
+
     #[allow(clippy::too_many_lines)]
     fn lower_short_circuit(
         &mut self,
@@ -10266,7 +10465,8 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         let EvalFlow::Continue { flow, value: end } = self.lower_expr(flow, end)? else {
             return Ok(StatementFlow::Terminated);
         };
-        let mutations = continuing_mutations(body).unwrap_or_default();
+        let mut mutations = BTreeSet::new();
+        let body_continues = collect_loop_mutations_block(body, &mut mutations);
         let carried = mutations
             .iter()
             .copied()
@@ -10276,13 +10476,20 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             .collect::<Vec<_>>();
         let header = self.create_block()?;
         let body_block = self.create_block()?;
-        let exit = self.create_block()?;
+        let increment = if body_continues {
+            Some(self.create_block()?)
+        } else {
+            None
+        };
+        let natural_exit = self.create_block()?;
         let integer = self.type_id(&Type::Int)?;
         let current = self
             .builder
             .append_block_parameter(header, integer)
             .map_err(LoweringError::from)?;
-        let mut header_env = self.environments.remove(flow.env, local)?;
+        let base_environment = self.environments.remove(flow.env, local)?;
+        let mut header_env = base_environment;
+        let mut increment_env = base_environment;
         let mut preheader_arguments = vec![start];
         let mut unique_carried = Vec::new();
         for outer_local in &carried {
@@ -10307,6 +10514,15 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             }
             header_env = self.environments.set(header_env, *outer_local, parameter)?;
             preheader_arguments.push(incoming);
+            if let Some(increment) = increment {
+                let increment_parameter = self
+                    .builder
+                    .append_block_parameter(increment, self.local_type(*outer_local)?)
+                    .map_err(LoweringError::from)?;
+                increment_env =
+                    self.environments
+                        .set(increment_env, *outer_local, increment_parameter)?;
+            }
         }
         let origin = self.statement_origin(statement);
         self.terminate(
@@ -10340,12 +10556,28 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             TerminatorKind::Branch {
                 condition,
                 then_target: BlockTarget::new(body_block, []),
-                else_target: BlockTarget::new(exit, []),
+                else_target: BlockTarget::new(natural_exit, []),
             },
             origin,
         )?;
 
         let body_env = self.environments.set(header_env, local, current)?;
+        let continue_target = increment.map_or(
+            LoopContinueTarget::Range {
+                header,
+                current,
+                upper_bound: end,
+                proof: condition,
+                integer,
+            },
+            LoopContinueTarget::Block,
+        );
+        self.loops.push(LoopControl {
+            continue_target,
+            cleanup_base: self.cleanups.len(),
+            carried: carried.clone().into_boxed_slice(),
+            breaks: Vec::new(),
+        });
         let lowered_body = self.lower_scoped_block(
             Flow {
                 block: body_block,
@@ -10353,12 +10585,51 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             },
             body,
         )?;
+        let loop_control = self.loops.pop().ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "range loop control disappeared during body lowering",
+            )
+        })?;
         if let EvalFlow::Continue {
             flow: body_flow, ..
         } = lowered_body
         {
-            let (next_flow, next) = match self.one_instruction(
-                body_flow,
+            let Some(increment) = increment else {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    "range body continued after its flow summary terminated",
+                ));
+            };
+            let arguments = carried
+                .iter()
+                .map(|outer_local| {
+                    self.environments
+                        .get(body_flow.env, *outer_local)
+                        .ok_or_else(|| {
+                            LoweringError::defect(
+                                LoweringDefectCode::InconsistentPlan,
+                                format!("range body lost outer local #{}", outer_local.0),
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            self.terminate(
+                body_flow.block,
+                TerminatorKind::Jump(BlockTarget::new(increment, arguments)),
+                origin,
+            )?;
+        }
+
+        if let Some(increment) = increment {
+            let EvalFlow::Continue {
+                flow: next_flow,
+                value: next,
+            } = self.one_instruction(
+                Flow {
+                    block: increment,
+                    env: increment_env,
+                },
                 InstructionKind::IntSuccessorBelow {
                     value: current,
                     upper_bound: end,
@@ -10366,14 +10637,12 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 },
                 integer,
                 origin,
-            )? {
-                EvalFlow::Continue { flow, value } => (flow, value),
-                EvalFlow::Terminated => {
-                    return Err(LoweringError::defect(
-                        LoweringDefectCode::Builder,
-                        "range successor instruction unexpectedly terminated",
-                    ));
-                }
+            )?
+            else {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::Builder,
+                    "range successor instruction unexpectedly terminated",
+                ));
             };
             let mut backedge_arguments = vec![next];
             for outer_local in &carried {
@@ -10383,7 +10652,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                         .ok_or_else(|| {
                             LoweringError::defect(
                                 LoweringDefectCode::InconsistentPlan,
-                                format!("range body lost outer local #{}", outer_local.0),
+                                format!("range increment lost outer local #{}", outer_local.0),
                             )
                         })?,
                 );
@@ -10401,11 +10670,125 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         // the CFG.  Restore the lowering fact after visiting the body so a
         // direct-local append immediately after the loop can use it.
         self.unique_list_values.extend(unique_carried);
-
-        Ok(StatementFlow::Continue(Flow {
-            block: exit,
+        let mut exits = vec![Flow {
+            block: natural_exit,
             env: header_env,
-        }))
+        }];
+        exits.extend(loop_control.breaks);
+        self.merge_statement_flows(base_environment, exits, origin)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn lower_while(
+        &mut self,
+        flow: Flow,
+        condition: &mir::Expr,
+        body: &mir::Block,
+        statement: &mir::Statement,
+    ) -> Result<StatementFlow, LoweringError> {
+        let mut mutations = BTreeSet::new();
+        let _ = collect_loop_mutations_expr(condition, &mut mutations);
+        let _ = collect_loop_mutations_block(body, &mut mutations);
+        let carried = mutations
+            .iter()
+            .copied()
+            .filter(|local| self.environments.get(flow.env, *local).is_some())
+            .collect::<Vec<_>>();
+        let header = self.create_block()?;
+        let mut header_env = flow.env;
+        let mut preheader_arguments = Vec::with_capacity(carried.len());
+        for local in &carried {
+            let incoming = self.environments.get(flow.env, *local).ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!("while loop lost outer local #{}", local.0),
+                )
+            })?;
+            let header_parameter = self
+                .builder
+                .append_block_parameter(header, self.local_type(*local)?)
+                .map_err(LoweringError::from)?;
+            header_env = self
+                .environments
+                .set(header_env, *local, header_parameter)?;
+            preheader_arguments.push(incoming);
+        }
+        let origin = self.statement_origin(statement);
+        self.terminate(
+            flow.block,
+            TerminatorKind::Jump(BlockTarget::new(header, preheader_arguments)),
+            origin,
+        )?;
+        let EvalFlow::Continue {
+            flow: condition_flow,
+            value: condition_value,
+        } = self.lower_expr(
+            Flow {
+                block: header,
+                env: header_env,
+            },
+            condition,
+        )?
+        else {
+            return Ok(StatementFlow::Terminated);
+        };
+        let body_block = self.create_block()?;
+        let natural_exit = self.create_block()?;
+        self.terminate(
+            condition_flow.block,
+            TerminatorKind::Branch {
+                condition: condition_value,
+                then_target: BlockTarget::new(body_block, []),
+                else_target: BlockTarget::new(natural_exit, []),
+            },
+            origin,
+        )?;
+        self.loops.push(LoopControl {
+            continue_target: LoopContinueTarget::Block(header),
+            cleanup_base: self.cleanups.len(),
+            carried: carried.clone().into_boxed_slice(),
+            breaks: Vec::new(),
+        });
+        let lowered_body = self.lower_scoped_block(
+            Flow {
+                block: body_block,
+                env: condition_flow.env,
+            },
+            body,
+        )?;
+        let loop_control = self.loops.pop().ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "while loop control disappeared during body lowering",
+            )
+        })?;
+        if let EvalFlow::Continue {
+            flow: body_flow, ..
+        } = lowered_body
+        {
+            let arguments = carried
+                .iter()
+                .map(|local| {
+                    self.environments.get(body_flow.env, *local).ok_or_else(|| {
+                        LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            format!("while body lost carried local #{}", local.0),
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            self.terminate(
+                body_flow.block,
+                TerminatorKind::Jump(BlockTarget::new(header, arguments)),
+                origin,
+            )?;
+        }
+        let mut exits = vec![Flow {
+            block: natural_exit,
+            env: condition_flow.env,
+        }];
+        exits.extend(loop_control.breaks);
+        self.merge_statement_flows(flow.env, exits, origin)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -11400,6 +11783,12 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             .into(),
             (mir::Builtin::FormatFloat, [value]) => {
                 InstructionKind::FormatFloat { value: *value }.into()
+            }
+            (mir::Builtin::IntToFloat, [value]) => {
+                InstructionKind::IntToFloat { value: *value }.into()
+            }
+            (mir::Builtin::FloatToIntStatus, [value]) => {
+                InstructionKind::FloatToIntStatus { value: *value }.into()
             }
             (mir::Builtin::JsonFormat, [json]) => InstructionKind::JsonFormat {
                 json: *json,

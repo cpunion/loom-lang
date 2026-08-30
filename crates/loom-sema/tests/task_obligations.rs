@@ -30,6 +30,63 @@ fn codes(diagnostics: &[loom_core::Diagnostic]) -> Vec<&str> {
 }
 
 #[test]
+fn unreachable_await_after_break_cannot_hide_a_live_task() {
+    let diagnostics = analyze_source(
+        r"
+async fn work() Int { 42 }
+
+async fn loopBreak() {
+    while true {
+        let pending = work()
+        break
+        discard pending.await
+    }
+}
+",
+    );
+    assert_eq!(codes(&diagnostics), ["UnawaitedAsyncCall"]);
+}
+
+#[test]
+fn divergent_while_condition_keeps_its_unreachable_body_isolated() {
+    let diagnostics = analyze_source(
+        r"
+async fn work() Int { 42 }
+
+async fn conditionReturn() {
+    let pending = work()
+    while {
+        return
+    } {
+        discard pending.await
+    }
+}
+",
+    );
+    assert_eq!(codes(&diagnostics), ["UnawaitedAsyncCall"]);
+}
+
+#[test]
+fn repeated_loop_path_cannot_consume_one_task_twice() {
+    let diagnostics = analyze_source(
+        r"
+async fn work() Int { 42 }
+
+async fn repeatedAwait(flag Bool) {
+    let pending = work()
+    while flag {
+        discard pending.await
+    }
+}
+",
+    );
+    assert!(
+        codes(&diagnostics).contains(&"LoopObligationStateNotRestored"),
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
 fn unused_direct_and_wrapped_task_locals_are_rejected() {
     let diagnostics = analyze_source(
         r"
