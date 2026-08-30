@@ -652,11 +652,11 @@ fn add_edge_live(
 mod tests {
     use std::collections::BTreeSet;
 
-    use loom_mir::{FunctionId as MirFunctionId, Type};
+    use loom_mir::{FunctionId as MirFunctionId, Type, TypeId};
 
     use super::{
-        MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE, managed_leaf_projections,
-        plan_managed_roots_with_work,
+        MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE, ManagedRootProjection,
+        managed_leaf_projections, plan_managed_roots_with_work,
     };
     use crate::{
         BlockTarget, Constant, Effects, InstructionKind, ManagedSafepoint, Origin, ProgramBuilder,
@@ -815,6 +815,37 @@ mod tests {
                 assert_eq!(projections.len(), width);
             }
         }
+    }
+
+    #[test]
+    fn transparent_carriers_reuse_their_managed_base_projections() {
+        let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        builder
+            .add_managed_text_type()
+            .expect("register managed Text");
+        let text_wrapper = builder
+            .add_transparent_type(Type::Nominal(TypeId(7_000), Vec::new()), &Type::Text)
+            .expect("register transparent managed pointer");
+        assert_eq!(
+            managed_leaf_projections(builder.representations(), text_wrapper)
+                .expect("transparent direct-pointer projections")
+                .as_ref(),
+            [Box::from([])]
+        );
+
+        let base = Type::Tuple(vec![Type::Text, Type::Int]);
+        builder
+            .add_tuple_type(&[Type::Text, Type::Int])
+            .expect("register managed product");
+        let wrapper = builder
+            .add_transparent_type(Type::Nominal(TypeId(7_001), Vec::new()), &base)
+            .expect("register transparent managed product");
+        let projections = managed_leaf_projections(builder.representations(), wrapper)
+            .expect("transparent managed projections");
+        assert_eq!(
+            projections.as_ref(),
+            [Box::from([ManagedRootProjection::ProductField(0)])]
+        );
     }
 
     #[test]

@@ -565,6 +565,34 @@ impl RepresentationPlan {
         Some(false)
     }
 
+    pub(crate) fn is_exact_task_list(&self, root: ValueTypeId) -> bool {
+        let mut current = root;
+        let mut visited = BTreeSet::new();
+        loop {
+            if !visited.insert(current) {
+                return false;
+            }
+            let Some(value) = self.value_type(current) else {
+                return false;
+            };
+            if let ValueTypeKind::Transparent { base } = value.kind() {
+                current = base;
+                continue;
+            }
+            let Type::List(element) = value.semantic() else {
+                return false;
+            };
+            return value.kind() == ValueTypeKind::Direct
+                && self.repr(value.repr()) == Some(&Repr::ManagedPointer)
+                && self.type_id(element).is_some_and(|element| {
+                    self.value_type(element).is_some_and(|element| {
+                        matches!(element.semantic(), Type::Task(_))
+                            && self.repr(element.repr()) == Some(&Repr::TaskHandle)
+                    })
+                });
+        }
+    }
+
     fn add_product(
         &mut self,
         semantic: Type,
@@ -844,9 +872,10 @@ impl RepresentationPlan {
         let base = self.type_id(base)?;
         let repr = self.value_type(base)?.repr;
         if matches!(self.repr(repr), Some(Repr::Uninhabited))
+            || self.is_exact_task_list(base)
             || self
                 .pointer_kinds(base)
-                .is_none_or(|(immortal, managed)| immortal || managed)
+                .is_none_or(|(immortal, _)| immortal)
         {
             return None;
         }
@@ -1623,17 +1652,30 @@ mod tests {
 
         let mut transparent = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
         transparent.add_managed_text_type().expect("managed Text");
-        let product = transparent
+        let product_semantic = Type::Tuple(vec![Type::Text]);
+        transparent
             .add_tuple_type(&[Type::Text])
             .expect("managed product");
-        let wrapper = transparent
-            .add_transparent_type(Type::Nominal(TypeId(5_001), Vec::new()), &Type::Float)
+        transparent
+            .add_transparent_type(Type::Nominal(TypeId(5_001), Vec::new()), &product_semantic)
+            .expect("managed transparent value");
+        validate_program(&transparent.finish())
+            .expect("a transparent carrier may retain exact managed roots from its base");
+
+        let mut immortal_transparent = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        let text = immortal_transparent
+            .add_immortal_text_type()
+            .expect("immortal Text");
+        let wrapper = immortal_transparent
+            .add_transparent_type(Type::Nominal(TypeId(5_002), Vec::new()), &Type::Float)
             .expect("pointer-free transparent value");
-        let mut transparent = transparent.finish();
-        transparent.representations.types[wrapper.index()].kind =
-            ValueTypeKind::Transparent { base: product };
-        let errors = validate_program(&transparent)
-            .expect_err("a managed product cannot be forged into a transparent carrier");
+        let mut immortal_transparent = immortal_transparent.finish();
+        let text_repr = immortal_transparent.representations.types[text.index()].repr;
+        immortal_transparent.representations.types[wrapper.index()].kind =
+            ValueTypeKind::Transparent { base: text };
+        immortal_transparent.representations.types[wrapper.index()].repr = text_repr;
+        let errors = validate_program(&immortal_transparent)
+            .expect_err("an immortal-only Text cannot be forged into a transparent carrier");
         assert!(errors.as_slice().iter().any(|error| {
             error.code() == ValidationCode::RepresentationPlan
                 && error.path()
@@ -1642,7 +1684,62 @@ mod tests {
                         wrapper.index()
                     )
                 && error.message()
-                    == "transparent values must retain a pointer-free base representation"
+                    == "transparent values cannot retain an immortal-only Text base representation"
+        }));
+    }
+
+    #[test]
+    fn transparent_carriers_cannot_hide_exact_task_lists() {
+        let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        let task_semantic = Type::Task(Box::new(Type::Int));
+        builder
+            .add_task_handle_type(task_semantic.clone())
+            .expect("Task[Int]");
+        let task_list = builder
+            .add_managed_list_type(Type::List(Box::new(task_semantic)))
+            .expect("List[Task[Int]]");
+        let wrapper_semantic = Type::Nominal(TypeId(5_003), Vec::new());
+        let wrapper = builder
+            .add_transparent_type(wrapper_semantic.clone(), &Type::Int)
+            .expect("pointer-free placeholder wrapper");
+        builder
+            .add_tuple_type(std::slice::from_ref(&wrapper_semantic))
+            .expect("placeholder tuple");
+        let nested_list = builder
+            .add_managed_list_type(Type::List(Box::new(wrapper_semantic)))
+            .expect("placeholder nested list");
+        let mut program = builder.finish();
+        let task_list_repr = program.representations.types[task_list.index()].repr;
+        program.representations.types[wrapper.index()].kind =
+            ValueTypeKind::Transparent { base: task_list };
+        program.representations.types[wrapper.index()].repr = task_list_repr;
+
+        let errors = validate_program(&program)
+            .expect_err("a forged transparent carrier must not hide List[Task[Int]]");
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::RepresentationPlan
+                && error.path()
+                    == format!(
+                        "representations.type[{}].kind.transparent_base",
+                        wrapper.index()
+                    )
+                && error.message()
+                    == "exact List[Task[T]] cannot be hidden behind a transparent carrier"
+        }));
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::RepresentationPlan
+                && error.path() == "representations.product[0].field[0]"
+                && error
+                    .message()
+                    .contains("top-level affine carrier and cannot be nested")
+        }));
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::RepresentationPlan
+                && error.path()
+                    == format!(
+                        "representations.type[{}].managed_pointer",
+                        nested_list.index()
+                    )
         }));
     }
 

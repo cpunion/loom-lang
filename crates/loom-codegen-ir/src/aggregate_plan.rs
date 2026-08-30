@@ -950,6 +950,7 @@ impl<'program, 'plan> AggregatePlanner<'program, 'plan> {
                         AggregateShape::Product(_)
                             | AggregateShape::InvariantProduct(_)
                             | AggregateShape::Sum(_)
+                            | AggregateShape::Transparent(_)
                     );
                 let mut children = Vec::new();
                 for field in shape.dependencies() {

@@ -5420,7 +5420,7 @@ fn generic_instances_use_direct_host_and_msvc_target_abis() {
 
 #[test]
 fn generic_products_and_proven_wrappers_execute_through_typed_lcir() {
-    let program = compile_sources(
+    let (program, debug_sources) = compile_sources_with_debug_sources(
         include_str!("../../../fixtures/lcir-generic-products/main.loom"),
         include_str!("../../../fixtures/lcir-generic-products/main_test.loom"),
     );
@@ -5447,7 +5447,9 @@ fn generic_products_and_proven_wrappers_execute_through_typed_lcir() {
     let native = emit_and_run_lcir_with_options(
         &artifact,
         "source-generic-products",
-        NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
+        NativeObjectOptions::default()
+            .with_optimization(OptimizationProfile::Release)
+            .with_debug_sources(debug_sources),
     );
     let checked_mir = emit_and_run_checked_mir(&program, "main", "checked-mir-generic-products");
     assert!(native.output.status.success(), "{:?}", native.output);
@@ -9485,7 +9487,7 @@ pub fn main() {
     reason = "one differential gate keeps typed coroutine planning, forced parent-root relocation, run/test harnesses, ABI shape, and cross-target object emission together"
 )]
 fn typed_async_state_machines_survive_forced_relocation_on_all_targets() {
-    let program = compile_sources(
+    let (program, debug_sources) = compile_sources_with_debug_sources(
         include_str!("../../../fixtures/lcir-typed-async/main.loom"),
         include_str!("../../../fixtures/lcir-typed-async/main_test.loom"),
     );
@@ -9540,7 +9542,7 @@ fn typed_async_state_machines_survive_forced_relocation_on_all_targets() {
             .iter()
             .map(loom_codegen_ir::CoroutineSuspension::state)
             .collect::<Vec<_>>(),
-        [1, 2, 3, 4]
+        [1, 2, 3, 4, 5, 6]
     );
     assert!(plan.suspensions()[0].live().iter().any(|ty| {
         artifact
@@ -9568,7 +9570,11 @@ fn typed_async_state_machines_survive_forced_relocation_on_all_targets() {
             == Some(&loom_codegen_ir::Repr::TaskHandle)
     }));
 
-    let lcir = emit_and_run_lcir(&artifact, "source-typed-async");
+    let lcir = emit_and_run_lcir_with_options(
+        &artifact,
+        "source-typed-async",
+        NativeObjectOptions::default().with_debug_sources(debug_sources),
+    );
     let checked_mir = emit_and_run_checked_mir(&program, "main", "checked-mir-typed-async");
     assert!(lcir.output.status.success(), "{:?}", lcir.output);
     assert!(checked_mir.status.success(), "{checked_mir:?}");

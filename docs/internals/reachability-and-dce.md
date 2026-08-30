@@ -47,24 +47,26 @@ the selected artifact; it never emits a universal generic body.
 
 This exact closure also selects one direct `Text` representation for the whole
 artifact. If no reachable instance concatenates/selects Text or places Text in
-a product/closed sum, `TextLiteral` is the only producer and every Text uses
-`ImmortalText`. Run and test roots accept no arguments, all LCIR source
+a product, closed sum, or transparent/refined carrier, `TextLiteral` is the
+only producer and every Text uses `ImmortalText`. Run and test roots accept no
+arguments, all LCIR source
 callables have internal linkage, and a value passed through locals, block
 parameters, direct calls, returns, or a concrete generic instance must
 therefore originate in an immortal literal in the same artifact.
 
 If any reachable instance uses `Text.concat`, `Text.get`, or a Text-bearing
-product/sum,
+product, sum, or transparent/refined carrier,
 every Text in the closed artifact instead uses `ManagedPointer`, including
 compiler-emitted literals. This is a Text provenance mode, not the product
 representation: each aggregate remains an unboxed exact SSA value. Concat/get's
 exact `MAY_COLLECT | NEEDS_RUNTIME` effect propagates through the reachable call
 graph, and generated typed root maps expand only live aggregate SSA values to
 their deterministic managed leaves. An unreachable concat or Text-bearing
-product/sum cannot change representation or route selection. Other unsupported
-dynamic Text producers, Text inside a transparent/refined carrier, and managed
-lists still change the complete reachable artifact to the checked-MIR route before
-LCIR construction.
+product, sum, or transparent/refined carrier cannot change representation or
+route selection. An established
+transparent/refined carrier reuses its base representation and root plan.
+Other unsupported dynamic Text producers still change the complete reachable
+artifact to the checked-MIR route before LCIR construction.
 
 ## Roots
 

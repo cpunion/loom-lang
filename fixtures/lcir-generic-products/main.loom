@@ -9,6 +9,8 @@ record Guarded[T] {
 }
 
 type PositiveBox = Boxed[Int] where self.value >= 0
+type Label = Text where true
+type TextBox = Boxed[Text] where true
 
 fn swap[T](left Boxed[T], right Boxed[T]) (Boxed[T], Boxed[T]) {
     (right, left)
@@ -18,14 +20,26 @@ fn unwrap(value PositiveBox) Boxed[Int] {
     value
 }
 
+fn revealLabel(value Label) Text {
+    value
+}
+
+fn revealTextBox(value TextBox) Boxed[Text] {
+    value
+}
+
 fn verify() {
     let first, second = swap(Boxed { value = 1 }, Boxed { value = 2 })
     let text = Boxed { value = "lo".concat("om") }
+    let label = Label("lo".concat("om"))
+    let textBox = TextBox(Boxed { value = "lo".concat("om") })
     let pressure = "x".concat("y")
     let guarded = Guarded { value = text, marker = 0 }
     let positive = PositiveBox(Boxed { value = 7 })
     let unwrapped = unwrap(positive)
-    if first.value == 2 && second.value == 1 && guarded.value.value == "loom" && guarded.marker == 0 && pressure == "xy" && unwrapped.value == 7 {
+    let revealedLabel = revealLabel(label)
+    let revealedTextBox = revealTextBox(textBox)
+    if first.value == 2 && second.value == 1 && guarded.value.value == "loom" && guarded.marker == 0 && pressure == "xy" && unwrapped.value == 7 && revealedLabel == "loom" && revealedTextBox.value == "loom" {
         Unit
     } else {
         discard 1 / 0

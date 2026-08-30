@@ -66,7 +66,7 @@ explicit byte or address-space layout must add its deciding facts here. The cano
 | `Int` | `Scalar(I64)` |
 | `Float` | `Scalar(F64)` |
 | literal-only `Text` on a 64-bit target | `ImmortalText`, one opaque pointer |
-| artifact containing `Text.concat` or a Text-bearing product on a 64-bit target | `ManagedPointer`, one opaque pointer for every Text |
+| artifact containing `Text.concat` or a Text-bearing aggregate/refined carrier on a 64-bit target | `ManagedPointer`, one opaque pointer for every Text |
 | canonical `Bytes` on a 64-bit target | `ManagedPointer`, one opaque pointer to immutable Text-backed or standalone byte storage |
 | canonical `Path` on a 64-bit target | invariant-protected `Product(Text)`, one field using the artifact's canonical Text representation |
 | structural tuple | `Product(element value types...)` |
@@ -86,9 +86,11 @@ explicit byte or address-space layout must add its deciding facts here. The cano
 `Uninhabited` is catalog vocabulary only. The validator rejects it in function
 signatures and SSA values. Products and sums are immutable register aggregates.
 Their fields may be primitive values or other acyclic direct aggregates, so
-tuples, records, and closed sums may contain one another. Products and sums may
-additionally contain managed Text leaves; transparent/refined carriers remain
-pointer-free.
+tuples, records, and closed sums may contain one another. Products, sums, and
+established transparent/refined carriers may additionally contain managed
+leaves. A transparent carrier has a distinct semantic `ValueTypeId` but reuses
+its base `ReprId`; `ImmortalText` and the top-level-only `List[Task[T]]`
+carrier are deliberately rejected as bases.
 Concrete instantiations of generic enums, including `Result[Unit, E]`, are
 eligible after payload substitution. Proven monomorphic refined values and
 closed records with statically proven invariants may appear as product fields
@@ -105,8 +107,9 @@ recursive `Json` sum is admitted through exactly those two indirections:
 `Object(TextMap[Json])`. No recursive direct payload is admitted, and no
 universal value or runtime type registry is introduced.
 Every TextMap also has managed Text keys. Managed Text is admitted through
-product fields, closed sum variants, List elements, and TextMap keys or values,
-but not transparent/refined carriers. `InvariantRecordProven` is the only
+product fields, closed sum variants, List elements, TextMap keys or values, and
+established transparent/refined carriers whose bases already have complete
+typed representations. `InvariantRecordProven` is the only
 construction for an invariant product; `RefineProven` and exact `Unrefine`
 preserve the physical SSA value while retaining the proof boundary.
 
@@ -123,7 +126,7 @@ identity functions. It cannot appear in products, sums, or transparent
 representations.
 
 If any reachable function uses concat or scalar selection, or places Text in a
-tuple/record product or closed sum,
+tuple, record, closed sum, or transparent/refined carrier,
 the canonical Text registration instead uses `ManagedPointer` throughout the
 artifact. Literals remain immutable process-lifetime objects in that direct
 pointer ABI, while concat results are typed moving-GC leaves. The product is
@@ -131,13 +134,13 @@ still an unboxed exact SSA aggregate; `ManagedPointer` describes only its Text
 leaf provenance. `TextConcat` and successful `TextGet` are infallible
 `MAY_COLLECT` operations; exact
 live-after SSA liveness and the typed shadow stack let the collector rewrite
-direct pointers at its safepoints. Allocation-free `TextLength`, `TextContains`,
-and `TextCompare` work in either mode, and equality compares content, never
-object addresses. `TextGet` returns the canonical closed `Option[Text]` sum;
+direct pointers at its safepoints. Transparent carriers reuse those exact root
+projections and never add a runtime box. Allocation-free `TextLength`,
+`TextContains`, and `TextCompare` work in either mode, and equality compares
+content, never object addresses. `TextGet` returns the canonical closed `Option[Text]` sum;
 negative or out-of-range indices select `None` without allocating, while a
-found Unicode scalar is allocated through the typed helper. Other dynamic Text
-producers and Text inside transparent/refined carriers still select atomic
-whole-artifact fallback.
+found Unicode scalar is allocated through the typed helper. Other unsupported
+dynamic Text producers still select atomic whole-artifact fallback.
 
 Text planning preflights every source literal before a match plan or LCIR
 instruction clones its storage. One UTF-8 literal may contain at most 1 MiB.
@@ -550,7 +553,8 @@ status fails closed. `TextGet` maps the typed helper's missing/found status to a
 zero-initialized `Option[Text]` carrier and traps on any other runtime status.
 Products and closed sums remain unboxed exact SSA aggregates. Concrete closed
 Lists and TextMaps use direct managed pointers and exact repeated descriptors.
-Text inside transparent/refined carriers and other dynamic Text producers still
+Established transparent/refined carriers reuse the base representation and
+managed-root projections. Other unsupported dynamic Text producers still
 select whole-artifact fallback.
 
 `plan_managed_roots` computes exact managed SSA liveness with a predecessor
@@ -1089,7 +1093,8 @@ not repair a malformed program. Current checks include:
   payload parameters on every `SumSwitch` edge;
 - one artifact-wide 64-bit `Text` registration, either `ImmortalText` for an
   allocation-free, aggregate-free graph or `ManagedPointer` when concat/get or
-  a Text-bearing product/sum or TextMap is present; literal budgets, concat/get
+  a Text-bearing product, sum, transparent/refined carrier, or TextMap is
+  present; literal budgets, concat/get
   operand/result types, canonical `Option[Text]` shape, collection effects, and immortal
   literal/closed-flow provenance where that narrower representation applies;
 - the exact canonical `Bytes` nominal registration as one `ManagedPointer`,
@@ -1224,9 +1229,9 @@ canonical managed `Option[Text]`, exact live-after root maps,
 linear worklist convergence on a large loop, deterministic nested-product leaf
 projections, phis, calls, dead edges, forced relocation and alias rebuilds,
 cleanup-crossing returns under forced relocation, pointer-free product frame
-omission, host execution, Linux/MSVC object
-emission, and atomic fallback for unsupported dynamic Text producers or
-transparent/refined managed carriers.
+omission, transparent/refined managed carriers in synchronous and coroutine
+frames, host execution, Linux/MSVC object emission, and atomic fallback for
+unsupported dynamic Text producers.
 Path regressions cover the canonical one-field product, exact closed error
 selectors, non-collecting construction/extraction, collecting join effects,
 stable dumps, malformed shapes, live aliases through moving-GC pressure, and

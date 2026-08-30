@@ -125,8 +125,9 @@ vocabulary is:
   text value is transitively produced by a compiler-emitted process-lifetime
   literal;
 - one opaque `ManagedPointer` for every Text in an artifact where concat or a
-  Text-bearing product is reachable; literals remain static objects and concat
-  results are typed moving-GC leaves in the same direct pointer ABI;
+  Text-bearing aggregate/refined carrier is reachable; literals remain static
+  objects and concat results are typed moving-GC leaves in the same direct
+  pointer ABI;
 - one opaque `ManagedPointer` for canonical `Bytes`; `Text.encode_utf8` shares
   the immutable Text object, while append materializes a distinct ByteObject;
 - an invariant-protected `Product(Text)` for canonical `Path`, retaining
@@ -153,10 +154,13 @@ Products and sums are immutable register aggregates. Tuples and records may
 contain one another and managed Text leaves when the resulting by-value graph is
 acyclic. `ManagedPointer` is the artifact-wide Text provenance mode; products
 and closed sums containing such leaves remain unboxed exact aggregates.
-Transparent/refined carriers remain pointer-free in this slice. Each
-representation plan has an explicit canonical
-registration key for semantic-type lookup; value-representation alternatives
-are not required to be globally unique by semantic type. General managed,
+Transparent/refined carriers reuse the exact base representation and may carry
+managed leaves when that base is already supported. They remain distinct
+semantic types and cannot wrap `ImmortalText` or the top-level-only
+`List[Task[T]]` carrier. Each representation plan has an explicit canonical
+registration key for semantic-type lookup;
+value-representation alternatives are not required to be globally unique by
+semantic type. General managed,
 dynamic-witness, erased, and additional coroutine representations are added
 only with complete lowering and validation rules. A generic or dynamic operation
 elsewhere in an artifact does not make an unrelated direct value carry a
@@ -165,14 +169,16 @@ universal tag.
 The direct text slice supports allocation-free length, containment, and
 content equality or inequality; equality is never pointer equality. It also
 supports concat and Unicode-scalar selection through specialized typed helpers.
-Any concat, selection, or Text-bearing product/sum selects `ManagedPointer` for
-every Text in the complete artifact; concat and selection add `MAY_COLLECT`.
+Any concat, selection, or Text-bearing product, sum, or transparent/refined
+carrier selects `ManagedPointer` for every Text in the complete artifact;
+concat and selection add `MAY_COLLECT`.
 Exact backwards SSA liveness expands a live aggregate to deterministic guarded
 leaf cells and a deduplicated bitmap state for every collecting site. Values
 are live after the call, so its not-yet-defined result is excluded; explicit
 edge arguments map only to live explicit destination parameters. Empty plans
-emit no frame. Other dynamic producers and Text inside transparent/refined
-carriers remain whole-artifact fallback. Concrete closed managed Lists are
+emit no frame. Established transparent/refined carriers reuse the base root
+projections without a runtime box. Other unsupported dynamic producers remain
+whole-artifact fallback. Concrete closed managed Lists are
 direct repeated allocations. Literal planning is bounded to
 1 MiB of UTF-8 for one literal and 16 MiB across one LCIR artifact.
 

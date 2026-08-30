@@ -1,6 +1,7 @@
 use loom_codegen_ir::{
-    BlockTarget, CanonicalTypeCatalog, Effects, InstructionKind, Origin, Program, ProgramBuilder,
-    Signature, SumCase, TargetLayout, Terminator, TerminatorKind, ValidationCode, validate_program,
+    BlockTarget, BuildErrorCode, CanonicalTypeCatalog, Effects, InstructionKind, Origin, Program,
+    ProgramBuilder, Signature, SumCase, TargetLayout, Terminator, TerminatorKind, ValidationCode,
+    validate_program,
 };
 use loom_mir::{FunctionId, Type, TypeId};
 
@@ -438,6 +439,13 @@ fn nested_task_lists_and_repeated_affine_aggregates_are_rejected() {
     builder
         .add_managed_list_type(task_list_semantic.clone())
         .expect("top-level List[Task[Int]] carrier");
+    assert_eq!(
+        builder
+            .add_transparent_type(Type::Nominal(TypeId(91), Vec::new()), &task_list_semantic)
+            .expect_err("a transparent carrier must not hide List[Task[Int]]")
+            .code(),
+        BuildErrorCode::InvalidValueType
+    );
     let wrapped_task_semantic = Type::Nominal(TypeId(90), Vec::new());
     builder
         .add_transparent_type(wrapped_task_semantic.clone(), &task_semantic)

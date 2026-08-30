@@ -172,11 +172,12 @@ witness instances use a separate non-moving arena because generated proof
 arguments can hold their addresses across a safepoint; unreachable instances
 are marked and swept.
 
-Typed LCIR uses two artifact-wide Text modes. A literal-only, product-free
+Typed LCIR uses two artifact-wide Text modes. A literal-only, aggregate-free
 artifact keeps its immutable compiler-emitted `TextObject` globals outside the
 managed heap, so their process-lifetime pointers need no relocation. If any
-reachable function uses concat/get or places Text in a tuple/record/closed sum,
-every Text has the direct managed-capable pointer representation.
+reachable function uses concat/get or places Text in a tuple, record, closed
+sum, or transparent/refined carrier, every Text has the direct managed-capable
+pointer representation.
 `loom_runtime_text_concat_typed_v1(left, right, output)` copies and validates
 both complete input byte sequences before its typed allocation can collect,
 then creates one pointer-free typed leaf with a 32-byte header and trailing
@@ -204,8 +205,9 @@ storage. Functional removal consumes the search key before its allocation
 boundary, roots and reloads exactly the source backing, and copies the surviving
 typed entries into new storage; missing and last-entry removals do not allocate.
 Repeated pointer offsets precisely cover every used or zeroed capacity cell.
-Text inside transparent/refined carriers and other dynamic producers remain
-outside the current typed LCIR slice.
+Established transparent/refined carriers reuse their base representation and
+the same direct or aggregate managed-root projections. Other unsupported
+dynamic producers remain outside the current typed LCIR slice.
 
 ## Source semantics
 
