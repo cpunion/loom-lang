@@ -84,6 +84,15 @@ task registry. This internal exactly-once cleanup bookkeeping is neither
 source-visible nor ownership syntax, and it does not affect standard-library
 reachability or dispatch.
 
+The current public File and Socket declarations are still compiler-owned, but
+their native implementation is not a universal compiler builtin ABI. Both the
+recoverable `Result` family and the faulting family must lower as typed LCIR;
+the checked-MIR emitter rejects their reachable operations and cleanup. If a
+different reachable feature prevents complete LCIR lowering, production
+`Automatic` preparation fails closed rather than restoring a second I/O
+implementation. This boundary is independent of the later source-library
+migration of the public wrappers.
+
 The library owns reusable policy and algorithms, including:
 
 - JSON parsing and the public formatting contract;
@@ -145,6 +154,13 @@ operation is canonical JSON formatting: generated code supplies the exact
 closed `Json` layout, the runtime stages bounded output bytes, and generated
 code constructs the checked `Result[Text, JsonError]` value from the returned
 status. No runtime registry or dynamic type switch participates.
+
+File and Socket work crosses only the `typed-io-v1` primitive request/outcome
+wire and the `typed-resource-v1` close boundary. The compiler generates the
+exact `Task[Result[T, IoError]]` or `Task[T]` frame and owns result/fault
+construction. The runtime owns scheduling, host operations, readiness, and the
+resource ledger, but exports no universal File/Socket Task wrappers, universal
+close function, or fixed source nominal IDs.
 
 ## Bootstrap primitives
 

@@ -101,8 +101,9 @@ propagates a child's `Faulted` or `Cancelled` state; it never
 converts either state into a source `Result`. Task handles may be live only as
 suspension bookkeeping.
 
-Selected async functions with explicit mutable coroutine parameters, raw
-readiness, dynamically sized or computed-List Task joins, `Task.any`,
+For reachable graphs with no LCIR-only primitive, selected async functions with
+explicit mutable coroutine parameters, raw readiness, dynamically sized or
+computed-List Task joins, `Task.any`,
 `Task.settled`, or `Task.race` whose result is stored or otherwise used
 first-class, and finite-catalog or open dynamic-concept frame values still
 select the complete checked-MIR route. Async roots with `requires` use the same
@@ -307,6 +308,32 @@ elements directly without allocating the input List. `all` and `settled`
 construct the requested output List after resume; `any` and `race` retain their
 scalar result. Empty, stored, computed, and runtime-sized Lists stay outside
 this fixed-row boundary.
+
+## Typed File and Socket tasks
+
+All native File and Socket operations use typed LCIR. The seven runtime leaves
+cover File open/create/read/write and Socket connect/read/write. LCIR records
+whether the source API returns `Task[Result[T, IoError]]` or faults as
+`Task[T]`; this mode changes only the compiler-generated frame and completion
+callback. It does not change the runtime request or outcome wire.
+
+`loom_typed_io_task_create_v1` copies every borrowed Text range and duplicates
+an input resource before retaining work. `loom_typed_io_poll_v1` reports only a
+primitive resource token, Text scratch root, Unit, or closed error kind, fault
+class, and message. The fault class preserves `InvalidPort` and
+`SocketResolveFault` separately from `SocketConnectFault`; every other host
+failure uses its operation-specific fault. Generated code then constructs the
+exact recoverable result, publishes the exact faulting-family success value, or
+records that Task fault. `loom_typed_io_cancel_v1` supplies non-suspending leaf
+cancellation, and `loom_typed_resource_close_v1` performs final kind-checked
+lexical release.
+
+The runtime retains `typed-io-v1`, `typed-resource-v1`, the worker mailbox, and
+both completion and platform-I/O `WaitSource` kinds. It no longer exports
+universal `loom_file_*`, `loom_socket_*`, or `loom_io_close` functions and no
+longer shares compiler-fixed File/Socket nominal IDs. Consequently, a reachable
+I/O graph that cannot lower completely through LCIR fails native preparation;
+the checked-MIR route cannot reinterpret it through a universal Task result.
 
 ## Blocking I/O
 

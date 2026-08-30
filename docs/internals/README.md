@@ -20,7 +20,7 @@ The workspace is split into narrow crates:
 | `loom-interpreter` | Deterministic execution of validated MIR. |
 | `loom-codegen-ir` | Checked-MIR source roots/reachability plus atomic direct MIR-to-LCIR selection for primitives, direct literal/managed text, closed products/sums, and established transparent values; typed-SSA builders, validation, artifact roots, exact managed-root planning, and insertion-order dumps. |
 | `loom-runtime-abi` | Shared compiler-private native ABI constants, universal and typed root records, and precise typed object descriptors. |
-| `loom-runtime` | Side-by-side universal/typed moving GC, values, cleanup support, scheduler, reactor, and I/O workers. |
+| `loom-runtime` | Universal compatibility values, universal and typed moving-GC support, cleanup, scheduler, reactor, and typed-only I/O workers. |
 | `loom-codegen-llvm` | Native layouts, checked-MIR and checked-LCIR object emission, linking, and runtime bundles. |
 | `loom-driver` | Projects, resolution, source snapshots, diagnostics, and persistent cache. |
 | `loom-cli` | `loom` host boundary and process execution. |
@@ -56,9 +56,10 @@ identity/emission, and portable-library encoding retain or require
 independently validated `CheckedProgram` and validated roots.
 `loom-codegen-llvm` automatically selects that typed route for a completely
 supported reachable artifact and otherwise prepares one whole checked-MIR
-route. The exact prepared target and route-specific fingerprint are
-reused by the production cache and emitter. Broader LCIR representation and
-semantic coverage remain tracked by the
+route when the graph contains no LCIR-only primitive. Reachable File or Socket
+I/O fails closed if complete LCIR lowering is unavailable. The exact prepared
+target and route-specific fingerprint are reused by the production cache and
+emitter. Broader LCIR representation and semantic coverage remain tracked by the
 [typed code generation IR RFC](../rfcs/typed-codegen-ir.md).
 
 Implementation status and platform support are maintained separately in

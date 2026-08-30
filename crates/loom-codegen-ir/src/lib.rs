@@ -62,9 +62,10 @@ pub use ir::{
     CanonicalTypeCatalog, CheckedIntBinaryOp, Constant, ContractFaultBlame, ContractFaultKind,
     ContractFaultMetadata, CoroutinePlan, CoroutineSuspension, Effects, FaultCode, FaultMetadata,
     FloatBinaryOp, FloatPredicate, Function, Instruction, InstructionKind, IntPredicate,
-    IoTaskOperation, LIST_LITERAL_MAX_ELEMENTS, Origin, Program, ResourceKind, ResultTarget,
-    Signature, SumCase, TASK_OUTCOME_CANCELLED_VARIANT, TASK_OUTCOME_COMPLETED_VARIANT,
-    TASK_OUTCOME_FAULTED_VARIANT, Terminator, TerminatorKind, UnwindTarget, Value, ValueDefinition,
+    IoTaskErrorMode, IoTaskOperation, LIST_LITERAL_MAX_ELEMENTS, Origin, Program, ResourceKind,
+    ResultTarget, Signature, SumCase, TASK_OUTCOME_CANCELLED_VARIANT,
+    TASK_OUTCOME_COMPLETED_VARIANT, TASK_OUTCOME_FAULTED_VARIANT, Terminator, TerminatorKind,
+    UnwindTarget, Value, ValueDefinition,
 };
 pub use lower::{
     InvalidRootCode, LoweringDefectCode, LoweringError, LoweringErrorCode, LoweringOutcome,

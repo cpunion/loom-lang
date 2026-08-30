@@ -36,7 +36,7 @@ use loom_codegen_ir::{
     ContractFaultBlame, ContractFaultMetadata, CoroutinePlan, CoroutineSuspension, Effects,
     FaultCode, FaultMetadata, FloatBinaryOp, FloatPredicate as LcirFloatPredicate, Function,
     InstanceId, Instruction, InstructionId, InstructionKind, IntPredicate as LcirIntPredicate,
-    IoTaskOperation, MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE, ManagedRootPlan,
+    IoTaskErrorMode, IoTaskOperation, MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE, ManagedRootPlan,
     ManagedRootProjection, ManagedRootSlot, ManagedSafepoint, Origin, Repr, ResourceKind,
     ResultTarget, ScalarRepr, SumRepr, SumTagRepr, TASK_OUTCOME_CANCELLED_VARIANT,
     TASK_OUTCOME_COMPLETED_VARIANT, TASK_OUTCOME_FAULTED_VARIANT, Terminator, TerminatorKind,
@@ -74,19 +74,21 @@ use loom_runtime_abi::{
     TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION,
     TYPED_GC_ALLOC_SYMBOL, TYPED_GC_REPEATED_ABI_VERSION, TYPED_GC_REPEATED_ALLOC_SYMBOL,
     TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_IO_ABI_VERSION,
-    TYPED_IO_CANCEL_SYMBOL, TYPED_IO_INVALID_RESOURCE_TOKEN, TYPED_IO_OPERATION_FILE_CREATE,
-    TYPED_IO_OPERATION_FILE_OPEN_READ, TYPED_IO_OPERATION_FILE_READ_TEXT,
-    TYPED_IO_OPERATION_FILE_WRITE_TEXT, TYPED_IO_OPERATION_SOCKET_CONNECT,
-    TYPED_IO_OPERATION_SOCKET_READ_TEXT, TYPED_IO_OPERATION_SOCKET_WRITE_TEXT,
-    TYPED_IO_OUTCOME_ERROR, TYPED_IO_OUTCOME_RESOURCE, TYPED_IO_OUTCOME_TEXT,
-    TYPED_IO_OUTCOME_UNIT, TYPED_IO_POLL_SYMBOL, TYPED_IO_TASK_CREATE_SYMBOL,
-    TYPED_JSON_ABI_VERSION, TYPED_JSON_FORMAT_DEPTH_LIMIT, TYPED_JSON_FORMAT_NON_FINITE_NUMBER,
-    TYPED_JSON_FORMAT_OK, TYPED_JSON_FORMAT_SYMBOL, TYPED_LOG_FIELD_ALIGNMENT,
-    TYPED_LOG_FIELD_KEY_OFFSET, TYPED_LOG_FIELD_SIZE, TYPED_LOG_FIELD_VALUE_OFFSET, TYPED_LOG_OK,
-    TYPED_LOG_WRITE_FAILED, TYPED_LOG_WRITE_SYMBOL, TYPED_RESOURCE_CLOSE_OK,
-    TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET,
-    TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION, TYPED_TASK_PUBLISH_ADOPTING_SYMBOL,
-    TYPED_TASK_TAKE_OUTCOME_SYMBOL, TYPED_TIMER_TASK_CREATE_SYMBOL,
+    TYPED_IO_CANCEL_SYMBOL, TYPED_IO_FAULT_CLASS_INVALID_PORT, TYPED_IO_FAULT_CLASS_OPERATION,
+    TYPED_IO_FAULT_CLASS_SOCKET_RESOLVE, TYPED_IO_INVALID_RESOURCE_TOKEN,
+    TYPED_IO_OPERATION_FILE_CREATE, TYPED_IO_OPERATION_FILE_OPEN_READ,
+    TYPED_IO_OPERATION_FILE_READ_TEXT, TYPED_IO_OPERATION_FILE_WRITE_TEXT,
+    TYPED_IO_OPERATION_SOCKET_CONNECT, TYPED_IO_OPERATION_SOCKET_READ_TEXT,
+    TYPED_IO_OPERATION_SOCKET_WRITE_TEXT, TYPED_IO_OUTCOME_ERROR, TYPED_IO_OUTCOME_RESOURCE,
+    TYPED_IO_OUTCOME_TEXT, TYPED_IO_OUTCOME_UNIT, TYPED_IO_POLL_SYMBOL,
+    TYPED_IO_TASK_CREATE_SYMBOL, TYPED_JSON_ABI_VERSION, TYPED_JSON_FORMAT_DEPTH_LIMIT,
+    TYPED_JSON_FORMAT_NON_FINITE_NUMBER, TYPED_JSON_FORMAT_OK, TYPED_JSON_FORMAT_SYMBOL,
+    TYPED_LOG_FIELD_ALIGNMENT, TYPED_LOG_FIELD_KEY_OFFSET, TYPED_LOG_FIELD_SIZE,
+    TYPED_LOG_FIELD_VALUE_OFFSET, TYPED_LOG_OK, TYPED_LOG_WRITE_FAILED, TYPED_LOG_WRITE_SYMBOL,
+    TYPED_RESOURCE_CLOSE_OK, TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE,
+    TYPED_RESOURCE_KIND_SOCKET, TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION,
+    TYPED_TASK_PUBLISH_ADOPTING_SYMBOL, TYPED_TASK_TAKE_OUTCOME_SYMBOL,
+    TYPED_TIMER_TASK_CREATE_SYMBOL,
 };
 
 use crate::codegen::{DebugSource, NativeObjectArtifact, NativeObjectOptions};
@@ -1833,11 +1835,12 @@ struct TaskJoinAllShape {
 #[derive(Clone)]
 struct IoTaskLayout<'ctx> {
     operation: IoTaskOperation,
+    error_mode: IoTaskErrorMode,
     frame: StructType<'ctx>,
     result_type: ValueTypeId,
     success_type: ValueTypeId,
-    error_type: ValueTypeId,
-    error_kind_type: ValueTypeId,
+    error_type: Option<ValueTypeId>,
+    error_kind_type: Option<ValueTypeId>,
     result_field: u32,
     scratch_field: u32,
     callback: FunctionValue<'ctx>,
@@ -1847,6 +1850,7 @@ struct IoTaskLayout<'ctx> {
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct IoTaskShape {
     operation: IoTaskOperation,
+    error_mode: IoTaskErrorMode,
     result_type: ValueTypeId,
 }
 
@@ -2297,7 +2301,12 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         source: &Function,
         instruction: &Instruction,
     ) -> Result<IoTaskShape, CodegenError> {
-        let InstructionKind::IoTaskCreate { operation, .. } = instruction.kind() else {
+        let InstructionKind::IoTaskCreate {
+            operation,
+            error_mode,
+            ..
+        } = instruction.kind()
+        else {
             return Err(CodegenError::new(
                 "LlvmAbiDefect",
                 format!("{} is not a typed I/O instruction", instruction.id()),
@@ -2329,6 +2338,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             })?;
         Ok(IoTaskShape {
             operation: *operation,
+            error_mode: *error_mode,
             result_type,
         })
     }
@@ -2343,50 +2353,57 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         shape_index: usize,
         callback: FunctionValue<'ctx>,
     ) -> Result<IoTaskLayout<'ctx>, CodegenError> {
-        let result_sum = self.sum_repr(shape.result_type)?;
-        let variants = result_sum.variants();
-        let [success_variant, error_variant] = variants else {
-            return Err(CodegenError::new(
-                "LlvmAbiDefect",
-                "typed I/O Result must have exact one-field success and error variants",
-            ));
+        let (success_type, error_type, error_kind_type) = match shape.error_mode {
+            IoTaskErrorMode::Result => {
+                let result_sum = self.sum_repr(shape.result_type)?;
+                let variants = result_sum.variants();
+                let [success_variant, error_variant] = variants else {
+                    return Err(CodegenError::new(
+                        "LlvmAbiDefect",
+                        "Result-mode typed I/O must have exact one-field success and error variants",
+                    ));
+                };
+                let ([success_field], [error_field]) =
+                    (success_variant.fields(), error_variant.fields())
+                else {
+                    return Err(CodegenError::new(
+                        "LlvmAbiDefect",
+                        "Result-mode typed I/O must have exact one-field success and error variants",
+                    ));
+                };
+                let success_type = *success_field;
+                let error_type = *error_field;
+                let error_fields = self.product_repr(error_type)?.fields();
+                let [error_kind_type, error_message_type] = error_fields else {
+                    return Err(CodegenError::new(
+                        "LlvmAbiDefect",
+                        "typed I/O error must have exact kind and message fields",
+                    ));
+                };
+                let error_kind_type = *error_kind_type;
+                let error_kind = self.sum_repr(error_kind_type)?;
+                if error_kind.tag() != SumTagRepr::I8
+                    || error_kind.variants().len() != 10
+                    || error_kind
+                        .variants()
+                        .iter()
+                        .any(|variant| !variant.fields().is_empty())
+                    || self
+                        .artifact
+                        .representations()
+                        .value_type(*error_message_type)
+                        .is_none_or(|value| value.semantic() != &Type::Text)
+                    || self.repr_of(*error_message_type)? != Repr::ManagedPointer
+                {
+                    return Err(CodegenError::new(
+                        "LlvmAbiDefect",
+                        "typed I/O error does not use canonical IoErrorKind and managed Text",
+                    ));
+                }
+                (success_type, Some(error_type), Some(error_kind_type))
+            }
+            IoTaskErrorMode::Fault => (shape.result_type, None, None),
         };
-        let ([success_field], [error_field]) = (success_variant.fields(), error_variant.fields())
-        else {
-            return Err(CodegenError::new(
-                "LlvmAbiDefect",
-                "typed I/O Result must have exact one-field success and error variants",
-            ));
-        };
-        let success_type = *success_field;
-        let error_type = *error_field;
-        let error_fields = self.product_repr(error_type)?.fields();
-        let [error_kind_type, error_message_type] = error_fields else {
-            return Err(CodegenError::new(
-                "LlvmAbiDefect",
-                "typed I/O error must have exact kind and message fields",
-            ));
-        };
-        let error_kind_type = *error_kind_type;
-        let error_kind = self.sum_repr(error_kind_type)?;
-        if error_kind.tag() != SumTagRepr::I8
-            || error_kind.variants().len() != 10
-            || error_kind
-                .variants()
-                .iter()
-                .any(|variant| !variant.fields().is_empty())
-            || self
-                .artifact
-                .representations()
-                .value_type(*error_message_type)
-                .is_none_or(|value| value.semantic() != &Type::Text)
-            || self.repr_of(*error_message_type)? != Repr::ManagedPointer
-        {
-            return Err(CodegenError::new(
-                "LlvmAbiDefect",
-                "typed I/O error does not use canonical IoErrorKind and managed Text",
-            ));
-        }
         let success_repr = self.repr_of(success_type)?;
         let success_valid = match shape.operation {
             IoTaskOperation::FileOpenRead
@@ -2546,6 +2563,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         descriptor.set_unnamed_address(UnnamedAddress::Global);
         Ok(IoTaskLayout {
             operation: shape.operation,
+            error_mode: shape.error_mode,
             frame,
             result_type: shape.result_type,
             success_type,
@@ -3704,42 +3722,74 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             .map_err(builder_error)?;
 
         self.builder.position_at_end(success_write);
-        let success_offset = self.sum_payload_field_offset(layout.result_type, 0, 0)?;
-        match layout.operation {
-            IoTaskOperation::FileOpenRead
-            | IoTaskOperation::FileCreate
-            | IoTaskOperation::SocketConnect => {
-                let success_physical = self.llvm_type(layout.success_type)?.into_struct_type();
-                let field_offset = self
-                    .target_data
-                    .offset_of_element(&success_physical, 0)
-                    .ok_or_else(|| {
-                        CodegenError::new("LlvmAbiDefect", "I/O resource field offset is missing")
-                    })?;
-                let pointer = self.io_frame_byte_pointer(
-                    result_pointer,
-                    success_offset.checked_add(field_offset).ok_or_else(|| {
-                        CodegenError::new("ProgramTooLarge", "I/O resource offset overflowed")
-                    })?,
-                    "io.result.resource.pointer",
-                )?;
-                self.builder
-                    .build_store(pointer, bits)
-                    .map_err(builder_error)?;
+        match layout.error_mode {
+            IoTaskErrorMode::Result => {
+                let success_offset = self.sum_payload_field_offset(layout.result_type, 0, 0)?;
+                match layout.operation {
+                    IoTaskOperation::FileOpenRead
+                    | IoTaskOperation::FileCreate
+                    | IoTaskOperation::SocketConnect => {
+                        let success_physical =
+                            self.llvm_type(layout.success_type)?.into_struct_type();
+                        let field_offset = self
+                            .target_data
+                            .offset_of_element(&success_physical, 0)
+                            .ok_or_else(|| {
+                                CodegenError::new(
+                                    "LlvmAbiDefect",
+                                    "I/O resource field offset is missing",
+                                )
+                            })?;
+                        let pointer = self.io_frame_byte_pointer(
+                            result_pointer,
+                            success_offset.checked_add(field_offset).ok_or_else(|| {
+                                CodegenError::new(
+                                    "ProgramTooLarge",
+                                    "I/O resource offset overflowed",
+                                )
+                            })?,
+                            "io.result.resource.pointer",
+                        )?;
+                        self.builder
+                            .build_store(pointer, bits)
+                            .map_err(builder_error)?;
+                    }
+                    IoTaskOperation::FileReadText | IoTaskOperation::SocketReadText => {
+                        let pointer = self.io_frame_byte_pointer(
+                            result_pointer,
+                            success_offset,
+                            "io.result.text.pointer",
+                        )?;
+                        self.builder
+                            .build_store(pointer, scratch_value)
+                            .map_err(builder_error)?;
+                    }
+                    IoTaskOperation::FileWriteText | IoTaskOperation::SocketWriteText => {}
+                }
+                self.store_io_result_tag(layout.result_type, result_pointer, 0)?;
             }
-            IoTaskOperation::FileReadText | IoTaskOperation::SocketReadText => {
-                let pointer = self.io_frame_byte_pointer(
-                    result_pointer,
-                    success_offset,
-                    "io.result.text.pointer",
-                )?;
-                self.builder
-                    .build_store(pointer, scratch_value)
-                    .map_err(builder_error)?;
-            }
-            IoTaskOperation::FileWriteText | IoTaskOperation::SocketWriteText => {}
+            IoTaskErrorMode::Fault => match layout.operation {
+                IoTaskOperation::FileOpenRead
+                | IoTaskOperation::FileCreate
+                | IoTaskOperation::SocketConnect => {
+                    let physical = self.llvm_type(layout.success_type)?.into_struct_type();
+                    let resource = self
+                        .builder
+                        .build_insert_value(physical.get_undef(), bits, 0, "io.fault_mode.resource")
+                        .map_err(builder_error)?
+                        .into_struct_value();
+                    self.builder
+                        .build_store(result_pointer, resource)
+                        .map_err(builder_error)?;
+                }
+                IoTaskOperation::FileReadText | IoTaskOperation::SocketReadText => {
+                    self.builder
+                        .build_store(result_pointer, scratch_value)
+                        .map_err(builder_error)?;
+                }
+                IoTaskOperation::FileWriteText | IoTaskOperation::SocketWriteText => {}
+            },
         }
-        self.store_io_result_tag(layout.result_type, result_pointer, 0)?;
         self.builder
             .build_store(scratch, self.ptr_type.const_null())
             .map_err(builder_error)?;
@@ -3762,6 +3812,19 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             .build_load(self.context.i32_type(), detail_pointer, "io.outcome.detail")
             .map_err(builder_error)?
             .into_int_value();
+        let fault_class_pointer = self
+            .builder
+            .build_struct_gep(outcome_type, outcome, 2, "io.outcome.fault_class.pointer")
+            .map_err(builder_error)?;
+        let fault_class = self
+            .builder
+            .build_load(
+                self.context.i64_type(),
+                fault_class_pointer,
+                "io.outcome.fault_class",
+            )
+            .map_err(builder_error)?
+            .into_int_value();
         let detail_valid = self
             .builder
             .build_int_compare(
@@ -3775,59 +3838,96 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             .builder
             .build_is_not_null(message, "io.error.message.valid")
             .map_err(builder_error)?;
+        let fault_class_limit = if layout.operation == IoTaskOperation::SocketConnect {
+            TYPED_IO_FAULT_CLASS_SOCKET_RESOLVE + 1
+        } else {
+            TYPED_IO_FAULT_CLASS_OPERATION + 1
+        };
+        let fault_class_valid = self
+            .builder
+            .build_int_compare(
+                IntPredicate::ULT,
+                fault_class,
+                self.context.i64_type().const_int(fault_class_limit, false),
+                "io.error.fault_class.valid",
+            )
+            .map_err(builder_error)?;
+        let error_shape_valid = self
+            .builder
+            .build_and(detail_valid, message_valid, "io.error.shape.valid")
+            .map_err(builder_error)?;
         let error_valid = self
             .builder
-            .build_and(detail_valid, message_valid, "io.error.valid")
+            .build_and(error_shape_valid, fault_class_valid, "io.error.valid")
             .map_err(builder_error)?;
         self.builder
             .build_conditional_branch(error_valid, error_write, invalid)
             .map_err(builder_error)?;
 
         self.builder.position_at_end(error_write);
-        let error_base = self.sum_payload_field_offset(layout.result_type, 1, 0)?;
-        let error_physical = self.llvm_type(layout.error_type)?.into_struct_type();
-        let kind_offset = self
-            .target_data
-            .offset_of_element(&error_physical, 0)
-            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "IoError.kind offset is missing"))?;
-        let message_offset = self
-            .target_data
-            .offset_of_element(&error_physical, 1)
-            .ok_or_else(|| {
-                CodegenError::new("LlvmAbiDefect", "IoError.message offset is missing")
-            })?;
-        let kind_pointer = self.io_frame_byte_pointer(
-            result_pointer,
-            error_base.checked_add(kind_offset).ok_or_else(|| {
-                CodegenError::new("ProgramTooLarge", "IoError.kind offset overflowed")
-            })?,
-            "io.result.error.kind.pointer",
-        )?;
-        let kind_type = self.llvm_type(layout.error_kind_type)?.into_int_type();
-        let detail = self
-            .builder
-            .build_int_truncate(detail, kind_type, "io.error.kind")
-            .map_err(builder_error)?;
-        self.builder
-            .build_store(kind_pointer, detail)
-            .map_err(builder_error)?;
-        let message_pointer = self.io_frame_byte_pointer(
-            result_pointer,
-            error_base.checked_add(message_offset).ok_or_else(|| {
-                CodegenError::new("ProgramTooLarge", "IoError.message offset overflowed")
-            })?,
-            "io.result.error.message.pointer",
-        )?;
-        self.builder
-            .build_store(message_pointer, message)
-            .map_err(builder_error)?;
-        self.store_io_result_tag(layout.result_type, result_pointer, 1)?;
-        self.builder
-            .build_store(scratch, self.ptr_type.const_null())
-            .map_err(builder_error)?;
-        self.builder
-            .build_unconditional_branch(publish)
-            .map_err(builder_error)?;
+        match layout.error_mode {
+            IoTaskErrorMode::Result => {
+                let error_type = layout.error_type.ok_or_else(|| {
+                    CodegenError::new("LlvmAbiDefect", "Result-mode I/O has no IoError type")
+                })?;
+                let error_kind_type = layout.error_kind_type.ok_or_else(|| {
+                    CodegenError::new("LlvmAbiDefect", "Result-mode I/O has no IoErrorKind type")
+                })?;
+                let error_base = self.sum_payload_field_offset(layout.result_type, 1, 0)?;
+                let error_physical = self.llvm_type(error_type)?.into_struct_type();
+                let kind_offset = self
+                    .target_data
+                    .offset_of_element(&error_physical, 0)
+                    .ok_or_else(|| {
+                        CodegenError::new("LlvmAbiDefect", "IoError.kind offset is missing")
+                    })?;
+                let message_offset = self
+                    .target_data
+                    .offset_of_element(&error_physical, 1)
+                    .ok_or_else(|| {
+                        CodegenError::new("LlvmAbiDefect", "IoError.message offset is missing")
+                    })?;
+                let kind_pointer = self.io_frame_byte_pointer(
+                    result_pointer,
+                    error_base.checked_add(kind_offset).ok_or_else(|| {
+                        CodegenError::new("ProgramTooLarge", "IoError.kind offset overflowed")
+                    })?,
+                    "io.result.error.kind.pointer",
+                )?;
+                let kind_type = self.llvm_type(error_kind_type)?.into_int_type();
+                let detail = self
+                    .builder
+                    .build_int_truncate(detail, kind_type, "io.error.kind")
+                    .map_err(builder_error)?;
+                self.builder
+                    .build_store(kind_pointer, detail)
+                    .map_err(builder_error)?;
+                let message_pointer = self.io_frame_byte_pointer(
+                    result_pointer,
+                    error_base.checked_add(message_offset).ok_or_else(|| {
+                        CodegenError::new("ProgramTooLarge", "IoError.message offset overflowed")
+                    })?,
+                    "io.result.error.message.pointer",
+                )?;
+                self.builder
+                    .build_store(message_pointer, message)
+                    .map_err(builder_error)?;
+                self.store_io_result_tag(layout.result_type, result_pointer, 1)?;
+                self.builder
+                    .build_store(scratch, self.ptr_type.const_null())
+                    .map_err(builder_error)?;
+                self.builder
+                    .build_unconditional_branch(publish)
+                    .map_err(builder_error)?;
+            }
+            IoTaskErrorMode::Fault => {
+                self.raise_io_fault(executor, layout.operation, fault_class, message)?;
+                self.builder
+                    .build_store(scratch, self.ptr_type.const_null())
+                    .map_err(builder_error)?;
+                self.emit_task_step_return(TASK_FAULTED)?;
+            }
+        }
 
         self.builder.position_at_end(publish);
         let published = call_int(
@@ -3847,6 +3947,131 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         self.emit_task_step_return(TASK_CANCELLED)?;
         self.builder.position_at_end(invalid);
         self.emit_task_step_return(TASK_FAULTED)
+    }
+
+    fn io_fault_literal(
+        &self,
+        code: &'static str,
+    ) -> Result<(PointerValue<'ctx>, IntValue<'ctx>), CodegenError> {
+        let data = self
+            .builder
+            .build_global_string_ptr(code, &self.unique("io.fault.code"))
+            .map_err(builder_error)?
+            .as_pointer_value();
+        Ok((
+            data,
+            self.context.i64_type().const_int(code.len() as u64, false),
+        ))
+    }
+
+    fn socket_connect_fault_literal(
+        &self,
+        fault_class: IntValue<'ctx>,
+    ) -> Result<(PointerValue<'ctx>, IntValue<'ctx>), CodegenError> {
+        let choices = [
+            self.io_fault_literal("SocketConnectFault")?,
+            self.io_fault_literal("SocketResolveFault")?,
+            self.io_fault_literal("InvalidPort")?,
+        ];
+        let is_resolution = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                fault_class,
+                self.context
+                    .i64_type()
+                    .const_int(TYPED_IO_FAULT_CLASS_SOCKET_RESOLVE, false),
+                "io.fault.is_resolve",
+            )
+            .map_err(builder_error)?;
+        let fallback_data = self
+            .builder
+            .build_select(
+                is_resolution,
+                choices[1].0,
+                choices[0].0,
+                "io.fault.resolve.data",
+            )
+            .map_err(builder_error)?
+            .into_pointer_value();
+        let fallback_length = self
+            .builder
+            .build_select(
+                is_resolution,
+                choices[1].1,
+                choices[0].1,
+                "io.fault.resolve.length",
+            )
+            .map_err(builder_error)?
+            .into_int_value();
+        let is_invalid_port = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                fault_class,
+                self.context
+                    .i64_type()
+                    .const_int(TYPED_IO_FAULT_CLASS_INVALID_PORT, false),
+                "io.fault.is_invalid_port",
+            )
+            .map_err(builder_error)?;
+        let code_data = self
+            .builder
+            .build_select(
+                is_invalid_port,
+                choices[2].0,
+                fallback_data,
+                "io.fault.code.data",
+            )
+            .map_err(builder_error)?
+            .into_pointer_value();
+        let code_length = self
+            .builder
+            .build_select(
+                is_invalid_port,
+                choices[2].1,
+                fallback_length,
+                "io.fault.code.length",
+            )
+            .map_err(builder_error)?
+            .into_int_value();
+        Ok((code_data, code_length))
+    }
+
+    fn raise_io_fault(
+        &self,
+        executor: PointerValue<'ctx>,
+        operation: IoTaskOperation,
+        fault_class: IntValue<'ctx>,
+        message: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let (code_data, code_length) = match operation {
+            IoTaskOperation::FileOpenRead => self.io_fault_literal("FileOpenFault")?,
+            IoTaskOperation::FileCreate => self.io_fault_literal("FileCreateFault")?,
+            IoTaskOperation::FileReadText => self.io_fault_literal("FileReadFault")?,
+            IoTaskOperation::FileWriteText => self.io_fault_literal("FileWriteFault")?,
+            IoTaskOperation::SocketConnect => self.socket_connect_fault_literal(fault_class)?,
+            IoTaskOperation::SocketReadText => self.io_fault_literal("SocketReadFault")?,
+            IoTaskOperation::SocketWriteText => self.io_fault_literal("SocketWriteFault")?,
+        };
+        let (message_data, message_length) = self.text_parts(message, "io.fault.message")?;
+        let status = call_int(
+            &self.builder,
+            self.context_raise_fault()?,
+            &[
+                executor.into(),
+                code_data.into(),
+                code_length.into(),
+                message_data.into(),
+                message_length.into(),
+                message_data.into(),
+                message_length.into(),
+                self.ptr_type.const_null().into(),
+                self.context.i64_type().const_zero().into(),
+            ],
+            "io.fault.raise",
+        )?;
+        self.require_zero_status(status, "io.fault.raise")
     }
 
     #[expect(
@@ -9720,9 +9945,10 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             }
             InstructionKind::IoTaskCreate {
                 operation,
+                error_mode,
                 arguments,
             } => one(self
-                .emit_io_task_create(instruction, *operation, arguments)?
+                .emit_io_task_create(instruction, *operation, *error_mode, arguments)?
                 .into()),
             InstructionKind::ResourceClose { kind, resource } => {
                 self.emit_resource_close(instruction.id(), *kind, *resource)?
@@ -14526,13 +14752,14 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         &self,
         instruction: &Instruction,
         operation: IoTaskOperation,
+        error_mode: IoTaskErrorMode,
         arguments: &[ValueId],
     ) -> Result<PointerValue<'ctx>, CodegenError> {
         let layout = self.backend.io_task_layout(instruction.id())?;
-        if layout.operation != operation {
+        if layout.operation != operation || layout.error_mode != error_mode {
             return Err(CodegenError::new(
                 "LlvmAbiDefect",
-                "typed I/O instruction operation does not match its descriptor",
+                "typed I/O instruction operation or error mode does not match its descriptor",
             ));
         }
         let invalid_resource = self

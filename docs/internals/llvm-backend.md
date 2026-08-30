@@ -50,11 +50,12 @@ optimization, and writes a relocatable object.
 Ordinary `build`, `run`, and `test` use `NativeRoutePolicy::Automatic`. Route
 preparation creates one target machine and attempts the complete direct
 lowering exactly once. `Complete` retains only the checked artifact and selects
-LCIR. Only `Unsupported` constructs and stores `SourceRoots` plus
-`ReachableSourceGraph` for a complete checked-MIR object. Unsupported unreachable
-code cannot change the route; one unsupported reachable test changes the
-whole ordered-test artifact. Invalid roots, resource limits, compiler defects,
-and LCIR emitter failures never fall back.
+LCIR. An eligible `Unsupported` result constructs and stores `SourceRoots` plus
+`ReachableSourceGraph` for a complete checked-MIR object; a graph containing an
+LCIR-only primitive is not eligible. Unsupported unreachable code cannot change
+the route; one unsupported reachable test changes the whole ordered-test
+artifact. Invalid roots, resource limits, compiler defects, and LCIR emitter
+failures never fall back.
 
 `NativeRoutePolicy::LcirOnly` uses the same target, roots, reachability, and
 whole-artifact classification, but an `Unsupported` result is a structured
@@ -66,6 +67,15 @@ input primitives are an explicit exception: they have no checked-MIR ABI, so
 `CheckedMirOnly` rejects them and `Automatic` never uses them as part of a
 checked-MIR fallback. This rejection is based on the reachable graph; a dead
 private process wrapper does not affect the selected route.
+
+File and Socket I/O follows the same stronger routing rule for both its
+recoverable and faulting families. Direct checked-MIR fingerprinting and
+emission reject every reachable operation and close builtin with
+`NativeIoRequiresLcir`. `CheckedMirOnly` and an `Automatic` preparation whose
+complete LCIR attempt is unsupported report
+`NativePreparationIoRequiresLcir`; they do not link against a removed
+universal runtime entry point. An unreachable private I/O function does not
+affect route selection.
 
 Source contracts are part of the checked direct route. LCIR carries canonical
 assertion, precondition, postcondition, and invariant fault metadata, including
@@ -109,6 +119,10 @@ Classification never depends on matching diagnostic strings. A reachable
 process primitive that cannot remain on the complete LCIR route reports
 `NativePreparationProcessRequiresLcir`, including when another reachable
 feature caused the LCIR classification to be unsupported.
+Reachable File or Socket I/O analogously reports
+`NativePreparationIoRequiresLcir`; its support report is retained when another
+reachable LCIR coverage gap caused the attempted `Automatic` route to be
+unsupported.
 
 ## Target-machine policy
 
@@ -492,6 +506,29 @@ the exact `Err(DepthLimit)` or `Err(NonFiniteNumber)` carrier without a source
 fault edge. Root liveness and relocation use the ordinary typed shadow-stack
 plan, and no executor is created.
 
+## Direct typed File and Socket I/O
+
+LCIR `IoTaskCreate` carries one of seven closed operations and an explicit
+`Result` or `Fault` error mode. LLVM derives an immutable typed-task descriptor
+from the exact direct output. Result mode stores
+`Result[T, IoError]`; fault mode stores `T`. Both frames include the one managed
+scratch Text root required while the runtime publishes an error message.
+
+Creation calls `loom_typed_io_task_create_v1` with a copied primitive request.
+The generated callback advances the leaf through `loom_typed_io_poll_v1` and
+accepts only the operation's resource, Text, Unit, or closed error outcome. On
+success it writes the exact target-native value into the frame. On an ordinary
+host error, Result mode constructs the canonical direct `Err(IoError)`, while
+fault mode records the operation-specific Task fault and returns the faulted
+step. Cancellation uses `loom_typed_io_cancel_v1`; lexical File/Socket disposal
+uses `loom_typed_resource_close_v1`.
+
+The runtime wire remains `typed-io-v1` plus `typed-resource-v1`. It transports
+no source layout, universal value, or nominal type ID. The former
+`loom_file_*`, `loom_socket_*`, and `loom_io_close` symbols are absent from the
+runtime and emitter, so checked-MIR rejection is a hard boundary rather than a
+deprecated fallback.
+
 ## Direct typed Tasks and fixed joins
 
 On the currently pinned 64-bit typed-task ABI, each `AwaitTasks` terminator
@@ -682,14 +719,17 @@ does not retry or add a second diagnostic.
 
 ## Checked-MIR native specialization
 
-The universal value path remains the complete semantic implementation. Current
+The universal value path remains the implementation for supported fallback
+artifacts that contain no LCIR-only primitive. Current
 closed-world fast paths include primitive scalar calls, eligible flat
 primitive-field records, narrowly proven checked integer recursion, and
 non-escaping local `List[Int]` shapes.
 
 Each optimization is fail-closed. Contracts, invariants, generic or managed
 shapes, escapes, suspension, unsupported expressions, or an incomplete proof
-fall back to universal lowering. These optimizations are not language ABI
+fall back to universal lowering. File and Socket operations are excluded from
+this route and fail closed during checked-MIR identity, preparation, or
+emission. These optimizations are not language ABI
 promises and should not be copied into user reference material.
 
 An exact single-append range over private `List[Int]` storage keeps its length
@@ -756,8 +796,9 @@ frame and reuse the established fault-context wire.
 
 File and Socket values carry monotonic runtime capability tokens, never raw OS
 descriptors or handles. `IoTaskCreate` uses exact task frames, immutable
-descriptors, and one compiler-generated completion callback per direct Result
-layout for the seven closed operations. The runtime copies borrowed Text,
+descriptors, and one compiler-generated completion callback per operation,
+error mode, and direct output layout for the seven closed operations. The
+runtime copies borrowed Text,
 resolves a source token only through the active Task's unique ledger entry, and
 duplicates the concrete resource before retaining an operation. Open, create,
 and connect completion insert the concrete RAII owner into the child Task
@@ -766,6 +807,16 @@ take transfers that ledger to the active owner before child retirement; close
 removes only a kind-matching token from that same active Task ledger. A
 cancelled Task can do so only inside the executor's guarded, non-suspending
 cleanup activation; resource reads, writes, and new work remain rejected there.
+The bundle exports only the versioned typed I/O and typed resource boundaries;
+there are no universal File/Socket wrappers, universal close function, or
+fixed runtime File/Socket nominal IDs.
+
+The focused I/O ABI test covers direct checked-MIR rejection, `CheckedMirOnly`
+rejection, `Automatic` no-fallback behavior, dead-I/O reachability, typed symbol
+presence, and obsolete-symbol absence. The dedicated source fixture runs real
+CLI `check/build/test/run`. The integrated standard-library native test uses
+the production preparation facade, requires `NativeRouteKind::Lcir`, and drives
+real filesystem and loopback Socket operations on its host test platform.
 
 Integer parsing is ordinary `std.int` source. Neither native emitter retains an
 integer-parser instruction, special emission path, runtime symbol, tombstone,

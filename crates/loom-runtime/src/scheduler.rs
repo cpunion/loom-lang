@@ -21,16 +21,18 @@ use loom_runtime_abi::{
     GC_MAX_OBJECT_BYTES, GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, GC_OK,
     LoomByteView, LoomTypedCoroutineDescriptor, LoomTypedIoOutcome, LoomTypedIoRequest,
     LoomTypedTaskCallback, LoomTypedTaskFaultView, LoomWitnessInstance, TYPED_IO_ABI_VERSION,
-    TYPED_IO_INVALID_RESOURCE_TOKEN, TYPED_IO_OPERATION_FILE_CREATE,
-    TYPED_IO_OPERATION_FILE_OPEN_READ, TYPED_IO_OPERATION_FILE_READ_TEXT,
-    TYPED_IO_OPERATION_FILE_WRITE_TEXT, TYPED_IO_OPERATION_SOCKET_CONNECT,
-    TYPED_IO_OPERATION_SOCKET_READ_TEXT, TYPED_IO_OPERATION_SOCKET_WRITE_TEXT,
-    TYPED_IO_OUTCOME_ERROR, TYPED_IO_OUTCOME_RESOURCE, TYPED_IO_OUTCOME_TEXT,
-    TYPED_IO_OUTCOME_UNIT, TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT, TYPED_RESOURCE_CLOSE_OK,
-    TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET, TYPED_TASK_ABI_VERSION,
-    TYPED_TASK_CLEANUP_FAULTED, TYPED_TASK_INVALID_ARGUMENT, TYPED_TASK_MAX_FAULT_TEXT_BYTES,
-    TYPED_TASK_NO_MEMORY, TYPED_TASK_OK, TYPED_TASK_STATUS_INVALID, VALUE_SLOT_WORDS,
-    VALUE_TAG_ENUM, VALUE_TAG_LIST, VALUE_TAG_RECORD, VALUE_TAG_TASK, VALUE_TAG_TUPLE,
+    TYPED_IO_FAULT_CLASS_INVALID_PORT, TYPED_IO_FAULT_CLASS_OPERATION,
+    TYPED_IO_FAULT_CLASS_SOCKET_RESOLVE, TYPED_IO_INVALID_RESOURCE_TOKEN,
+    TYPED_IO_OPERATION_FILE_CREATE, TYPED_IO_OPERATION_FILE_OPEN_READ,
+    TYPED_IO_OPERATION_FILE_READ_TEXT, TYPED_IO_OPERATION_FILE_WRITE_TEXT,
+    TYPED_IO_OPERATION_SOCKET_CONNECT, TYPED_IO_OPERATION_SOCKET_READ_TEXT,
+    TYPED_IO_OPERATION_SOCKET_WRITE_TEXT, TYPED_IO_OUTCOME_ERROR, TYPED_IO_OUTCOME_RESOURCE,
+    TYPED_IO_OUTCOME_TEXT, TYPED_IO_OUTCOME_UNIT, TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT,
+    TYPED_RESOURCE_CLOSE_OK, TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET,
+    TYPED_TASK_ABI_VERSION, TYPED_TASK_CLEANUP_FAULTED, TYPED_TASK_INVALID_ARGUMENT,
+    TYPED_TASK_MAX_FAULT_TEXT_BYTES, TYPED_TASK_NO_MEMORY, TYPED_TASK_OK,
+    TYPED_TASK_STATUS_INVALID, VALUE_SLOT_WORDS, VALUE_TAG_ENUM, VALUE_TAG_LIST, VALUE_TAG_RECORD,
+    VALUE_TAG_TASK, VALUE_TAG_TUPLE,
 };
 
 use crate::gc::{
@@ -63,24 +65,14 @@ const TASK_OUTCOME_FAULTED: u64 = 1;
 const TASK_OUTCOME_CANCELLED: u64 = 2;
 const TASK_FAULT_CODE: &str = "TaskFault";
 const TASK_FAULT_MESSAGE: &str = "task execution failed";
-const FILE_TYPE: u64 = 7;
-const SOCKET_TYPE: u64 = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum IoResourceKind {
+pub(crate) enum IoResourceKind {
     File,
     Socket,
 }
 
 impl IoResourceKind {
-    const fn from_nominal(nominal: u64) -> Option<Self> {
-        match nominal {
-            FILE_TYPE => Some(Self::File),
-            SOCKET_TYPE => Some(Self::Socket),
-            _ => None,
-        }
-    }
-
     const fn is_file(self) -> bool {
         matches!(self, Self::File)
     }
@@ -93,9 +85,6 @@ impl IoResourceKind {
         }
     }
 }
-const RESULT_TYPE: u64 = 1;
-const IO_ERROR_TYPE: u64 = 14;
-const IO_ERROR_KIND_TYPE: u64 = 15;
 
 const JOIN_RESULT_TUPLE: u32 = 1;
 const JOIN_RESULT_LIST: u32 = 2;
@@ -272,7 +261,7 @@ impl TypedTaskStorage {
     }
 
     fn has_typed_io_root_shape(&self) -> bool {
-        if self.root_offsets.len() < 2
+        if self.root_offsets.is_empty()
             || self.root_state_count != 2
             || self.completed_root_state != 1
             || self.root_bitmap_words != 1
@@ -290,7 +279,6 @@ impl TypedTaskStorage {
                     .is_some_and(|end| end <= result_end)
         };
         let mut running_roots = 0;
-        let mut completed_roots = 0;
         for (index, offset) in self.root_offsets.iter().copied().enumerate() {
             let running = self.root_is_live(0, index);
             let completed = self.root_is_live(1, index);
@@ -302,14 +290,11 @@ impl TypedTaskStorage {
                     return false;
                 }
                 running_roots += 1;
-            } else {
-                if !inside_result(offset) {
-                    return false;
-                }
-                completed_roots += 1;
+            } else if !inside_result(offset) {
+                return false;
             }
         }
-        running_roots == 1 && completed_roots != 0
+        running_roots == 1
     }
 }
 
@@ -407,19 +392,33 @@ impl TypedIoOperation {
 
 pub(crate) enum BlockingResult {
     Resource {
-        nominal: u64,
+        kind: IoResourceKind,
         resource: OwnedResource,
     },
-    Text {
-        bytes: Vec<u8>,
-        code: &'static str,
-    },
+    Text(Vec<u8>),
     Unit,
     Fault {
-        code: &'static str,
+        class: IoFaultClass,
         kind: u32,
         message: String,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum IoFaultClass {
+    Operation,
+    InvalidPort,
+    SocketResolve,
+}
+
+impl IoFaultClass {
+    const fn abi_payload(self) -> u64 {
+        match self {
+            Self::Operation => TYPED_IO_FAULT_CLASS_OPERATION,
+            Self::InvalidPort => TYPED_IO_FAULT_CLASS_INVALID_PORT,
+            Self::SocketResolve => TYPED_IO_FAULT_CLASS_SOCKET_RESOLVE,
+        }
+    }
 }
 
 enum IoProgress {
@@ -1992,49 +1991,6 @@ unsafe extern "C" fn resume_composite(task: *mut LoomTask, executor: *mut LoomEx
     }
 }
 
-unsafe extern "C" fn resume_io(task: *mut LoomTask, executor: *mut LoomExecutor) -> i32 {
-    if task.is_null() || executor.is_null() {
-        return TASK_FAULTED;
-    }
-    if unsafe { (*task).cancel_requested } {
-        return TASK_CANCELLED;
-    }
-    if let Some(result) = unsafe { (*task).blocking_result.take() } {
-        return unsafe { finish_blocking_result(task, executor, result) };
-    }
-    let Some(operation) = (unsafe { (*task).io_operation.take() }) else {
-        return unsafe {
-            fail_message(
-                task,
-                "IoCompletionFault",
-                "I/O task resumed without a result",
-            )
-        };
-    };
-    match operation {
-        IoOperation::FileOpen { path, create } => unsafe {
-            suspend_blocking(task, executor, move || blocking_file_open(path, create))
-        },
-        IoOperation::FileRead { file } => unsafe {
-            suspend_blocking(task, executor, move || blocking_file_read(file))
-        },
-        IoOperation::FileWrite { file, bytes } => unsafe {
-            suspend_blocking(task, executor, move || blocking_file_write(file, &bytes))
-        },
-        IoOperation::SocketConnect { host, port } => unsafe {
-            suspend_blocking(task, executor, move || blocking_socket_connect(&host, port))
-        },
-        IoOperation::SocketRead { socket, bytes } => unsafe {
-            resume_socket_read(task, executor, socket, bytes)
-        },
-        IoOperation::SocketWrite {
-            socket,
-            bytes,
-            offset,
-        } => unsafe { resume_socket_write(task, executor, socket, bytes, offset) },
-    }
-}
-
 fn typed_io_operation_matches(expected: TypedIoOperation, operation: &IoOperation) -> bool {
     matches!(
         (expected, operation),
@@ -2151,7 +2107,7 @@ unsafe fn finish_typed_io_resource(
     task: *mut LoomTask,
     expected: TypedIoOperation,
     outcome: *mut LoomTypedIoOutcome,
-    nominal: u64,
+    kind: IoResourceKind,
     resource: OwnedResource,
 ) -> i32 {
     let Some(expected_kind) = expected.resource_kind() else {
@@ -2163,12 +2119,9 @@ unsafe fn finish_typed_io_resource(
             )
         };
     };
-    let nominal_matches = match expected_kind {
-        IoResourceKind::File => nominal == FILE_TYPE && resource.is_file(),
-        IoResourceKind::Socket => nominal == SOCKET_TYPE && !resource.is_file(),
-    };
+    let resource_matches = expected_kind == kind && resource.is_file() == kind.is_file();
     let token = resource.token().cast_unsigned();
-    if !nominal_matches || token == TYPED_IO_INVALID_RESOURCE_TOKEN {
+    if !resource_matches || token == TYPED_IO_INVALID_RESOURCE_TOKEN {
         return unsafe {
             fail_message(
                 task,
@@ -2185,7 +2138,7 @@ unsafe fn finish_typed_io_resource(
         outcome.write(LoomTypedIoOutcome {
             kind: TYPED_IO_OUTCOME_RESOURCE,
             detail: 0,
-            resource_token: token,
+            payload: token,
         });
     }
     TASK_COMPLETED
@@ -2195,6 +2148,7 @@ unsafe fn finish_typed_io_error(
     task: *mut LoomTask,
     scratch_text: *mut *mut c_void,
     outcome: *mut LoomTypedIoOutcome,
+    class: IoFaultClass,
     kind: u32,
     message: &str,
 ) -> i32 {
@@ -2214,7 +2168,7 @@ unsafe fn finish_typed_io_error(
         outcome.write(LoomTypedIoOutcome {
             kind: TYPED_IO_OUTCOME_ERROR,
             detail: kind,
-            resource_token: 0,
+            payload: class.abi_payload(),
         });
     }
     TASK_COMPLETED
@@ -2228,10 +2182,10 @@ unsafe fn finish_typed_io_result(
     result: BlockingResult,
 ) -> i32 {
     match result {
-        BlockingResult::Resource { nominal, resource } => unsafe {
-            finish_typed_io_resource(task, expected, outcome, nominal, resource)
+        BlockingResult::Resource { kind, resource } => unsafe {
+            finish_typed_io_resource(task, expected, outcome, kind, resource)
         },
-        BlockingResult::Text { bytes, code: _ } => {
+        BlockingResult::Text(bytes) => {
             if !expected.expects_text() {
                 return unsafe {
                     fail_message(
@@ -2247,6 +2201,7 @@ unsafe fn finish_typed_io_result(
                         task,
                         scratch_text,
                         outcome,
+                        IoFaultClass::Operation,
                         3,
                         "I/O bytes are not valid UTF-8 Text",
                     )
@@ -2259,7 +2214,7 @@ unsafe fn finish_typed_io_result(
                 outcome.write(LoomTypedIoOutcome {
                     kind: TYPED_IO_OUTCOME_TEXT,
                     detail: 0,
-                    resource_token: 0,
+                    payload: 0,
                 });
             }
             TASK_COMPLETED
@@ -2278,16 +2233,16 @@ unsafe fn finish_typed_io_result(
                 outcome.write(LoomTypedIoOutcome {
                     kind: TYPED_IO_OUTCOME_UNIT,
                     detail: 0,
-                    resource_token: 0,
+                    payload: 0,
                 });
             }
             TASK_COMPLETED
         }
         BlockingResult::Fault {
-            code: _,
+            class,
             kind,
             message,
-        } => unsafe { finish_typed_io_error(task, scratch_text, outcome, kind, &message) },
+        } => unsafe { finish_typed_io_error(task, scratch_text, outcome, class, kind, &message) },
     }
 }
 
@@ -2513,15 +2468,11 @@ fn blocking_file_open(path: String, create: bool) -> BlockingResult {
     };
     match opened {
         Ok(file) => BlockingResult::Resource {
-            nominal: FILE_TYPE,
+            kind: IoResourceKind::File,
             resource: file.into(),
         },
         Err(error) => BlockingResult::Fault {
-            code: if create {
-                "FileCreateFault"
-            } else {
-                "FileOpenFault"
-            },
+            class: IoFaultClass::Operation,
             kind: io_error_kind(&error),
             message: error.to_string(),
         },
@@ -2531,12 +2482,9 @@ fn blocking_file_open(path: String, create: bool) -> BlockingResult {
 fn blocking_file_read(mut file: File) -> BlockingResult {
     let mut bytes = Vec::new();
     match file.read_to_end(&mut bytes) {
-        Ok(_) => BlockingResult::Text {
-            bytes,
-            code: "FileReadFault",
-        },
+        Ok(_) => BlockingResult::Text(bytes),
         Err(error) => BlockingResult::Fault {
-            code: "FileReadFault",
+            class: IoFaultClass::Operation,
             kind: io_error_kind(&error),
             message: error.to_string(),
         },
@@ -2547,7 +2495,7 @@ fn blocking_file_write(mut file: File, bytes: &[u8]) -> BlockingResult {
     match file.write_all(bytes) {
         Ok(()) => BlockingResult::Unit,
         Err(error) => BlockingResult::Fault {
-            code: "FileWriteFault",
+            class: IoFaultClass::Operation,
             kind: io_error_kind(&error),
             message: error.to_string(),
         },
@@ -2559,7 +2507,7 @@ fn blocking_socket_connect(host: &str, port: u16) -> BlockingResult {
         Ok(addresses) => addresses,
         Err(error) => {
             return BlockingResult::Fault {
-                code: "SocketResolveFault",
+                class: IoFaultClass::SocketResolve,
                 kind: io_error_kind(&error),
                 message: error.to_string(),
             };
@@ -2577,7 +2525,7 @@ fn blocking_socket_connect_addresses(
             Ok(socket) => match socket.set_nonblocking(true) {
                 Ok(()) => {
                     return BlockingResult::Resource {
-                        nominal: SOCKET_TYPE,
+                        kind: IoResourceKind::Socket,
                         resource: socket.into(),
                     };
                 }
@@ -2588,46 +2536,16 @@ fn blocking_socket_connect_addresses(
     }
     let Some(error) = last_error else {
         return BlockingResult::Fault {
-            code: "SocketResolveFault",
+            class: IoFaultClass::SocketResolve,
             kind: 9,
             message: "host resolved to no addresses".into(),
         };
     };
     BlockingResult::Fault {
-        code: "SocketConnectFault",
+        class: IoFaultClass::Operation,
         kind: io_error_kind(&error),
         message: error.to_string(),
     }
-}
-
-unsafe fn finish_blocking_result(
-    task: *mut LoomTask,
-    executor: *mut LoomExecutor,
-    result: BlockingResult,
-) -> i32 {
-    match result {
-        BlockingResult::Resource { nominal, resource } => unsafe {
-            store_resource_result(task, nominal, resource)
-        },
-        BlockingResult::Text { bytes, code } => unsafe {
-            store_text_result(task, executor, &bytes, code)
-        },
-        BlockingResult::Unit => unsafe { store_unit_result(task) },
-        BlockingResult::Fault {
-            code,
-            kind,
-            message,
-        } => unsafe { complete_io_error(task, kind, code, &message) },
-    }
-}
-
-unsafe fn resume_socket_read(
-    task: *mut LoomTask,
-    executor: *mut LoomExecutor,
-    socket: TcpStream,
-    bytes: Vec<u8>,
-) -> i32 {
-    unsafe { finish_universal_io_progress(task, executor, advance_socket_read(socket, bytes)) }
 }
 
 fn advance_socket_read(mut socket: TcpStream, mut bytes: Vec<u8>) -> IoProgress {
@@ -2636,10 +2554,7 @@ fn advance_socket_read(mut socket: TcpStream, mut bytes: Vec<u8>) -> IoProgress 
     loop {
         match socket.read(&mut chunk) {
             Ok(0) => {
-                return IoProgress::Ready(BlockingResult::Text {
-                    bytes,
-                    code: "SocketReadFault",
-                });
+                return IoProgress::Ready(BlockingResult::Text(bytes));
             }
             Ok(length) => bytes.extend_from_slice(&chunk[..length]),
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -2652,24 +2567,12 @@ fn advance_socket_read(mut socket: TcpStream, mut bytes: Vec<u8>) -> IoProgress 
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(error) => {
                 return IoProgress::Ready(BlockingResult::Fault {
-                    code: "SocketReadFault",
+                    class: IoFaultClass::Operation,
                     kind: io_error_kind(&error),
                     message: error.to_string(),
                 });
             }
         }
-    }
-}
-
-unsafe fn resume_socket_write(
-    task: *mut LoomTask,
-    executor: *mut LoomExecutor,
-    socket: TcpStream,
-    bytes: Vec<u8>,
-    offset: usize,
-) -> i32 {
-    unsafe {
-        finish_universal_io_progress(task, executor, advance_socket_write(socket, bytes, offset))
     }
 }
 
@@ -2685,7 +2588,7 @@ fn advance_socket_write(mut socket: TcpStream, bytes: Vec<u8>, mut offset: usize
         match socket.write(&bytes[offset..]) {
             Ok(0) => {
                 return IoProgress::Ready(BlockingResult::Fault {
-                    code: "SocketWriteFault",
+                    class: IoFaultClass::Operation,
                     kind: 9,
                     message: "socket accepted zero bytes".into(),
                 });
@@ -2710,27 +2613,12 @@ fn advance_socket_write(mut socket: TcpStream, bytes: Vec<u8>, mut offset: usize
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(error) => {
                 return IoProgress::Ready(BlockingResult::Fault {
-                    code: "SocketWriteFault",
+                    class: IoFaultClass::Operation,
                     kind: io_error_kind(&error),
                     message: error.to_string(),
                 });
             }
         }
-    }
-}
-
-unsafe fn finish_universal_io_progress(
-    task: *mut LoomTask,
-    executor: *mut LoomExecutor,
-    progress: IoProgress,
-) -> i32 {
-    match progress {
-        IoProgress::Ready(result) => unsafe { finish_blocking_result(task, executor, result) },
-        IoProgress::Suspend {
-            operation,
-            handle,
-            interests,
-        } => unsafe { suspend_io(task, executor, operation, handle, interests) },
     }
 }
 
@@ -2773,51 +2661,6 @@ fn enum_value(nominal: u64, variant: u64, payload: Vec<ValueSlot>) -> Option<Val
     build_runtime_aggregate(value, payload)
 }
 
-unsafe fn store_resource_result(task: *mut LoomTask, nominal: u64, resource: OwnedResource) -> i32 {
-    debug_assert_eq!(resource.is_file(), nominal == FILE_TYPE);
-    let mut raw = ValueSlot::default();
-    raw.words[0] = 2;
-    raw.words[3] = resource.token().cast_unsigned();
-    let Some(result) = record_value(nominal, vec![raw]) else {
-        return unsafe { fail_message(task, "OutOfMemory", "resource result allocation failed") };
-    };
-    unsafe { (*task).owned_result_resources.push(resource) };
-    unsafe { store_io_success(task, result) }
-}
-
-unsafe fn store_text_result(
-    task: *mut LoomTask,
-    _executor: *mut LoomExecutor,
-    bytes: &[u8],
-    code: &str,
-) -> i32 {
-    if std::str::from_utf8(bytes).is_err() {
-        return unsafe { complete_io_error(task, 3, code, "I/O bytes are not valid UTF-8 Text") };
-    }
-    let Some(result) = crate::gc::text_value(bytes) else {
-        return unsafe { fail_message(task, "OutOfMemory", "Text allocation failed") };
-    };
-    unsafe { store_io_success(task, result) }
-}
-
-unsafe fn store_unit_result(task: *mut LoomTask) -> i32 {
-    unsafe { store_io_success(task, ValueSlot::default()) }
-}
-
-unsafe fn store_io_success(task: *mut LoomTask, value: ValueSlot) -> i32 {
-    let result = if unsafe { (*task).io_fallible } {
-        let Some(result) = enum_value(RESULT_TYPE, 0, vec![value]) else {
-            return unsafe { fail_message(task, "OutOfMemory", "Result allocation failed") };
-        };
-        result
-    } else {
-        value
-    };
-    let slot = unsafe { &mut (*task).slots[(*task).result_slot] };
-    *slot = result;
-    TASK_COMPLETED
-}
-
 unsafe fn suspend_io(
     task: *mut LoomTask,
     executor: *mut LoomExecutor,
@@ -2856,26 +2699,6 @@ fn io_error_kind(error: &io::Error) -> u32 {
         io::ErrorKind::NotConnected => 8,
         _ => 9,
     }
-}
-
-unsafe fn complete_io_error(task: *mut LoomTask, kind: u32, code: &str, message: &str) -> i32 {
-    if task.is_null() || !unsafe { (*task).io_fallible } {
-        return unsafe { fail_message(task, code, message) };
-    }
-    let mut kind_value = ValueSlot::default();
-    kind_value.words[0] = VALUE_TAG_ENUM;
-    kind_value.words[1] = IO_ERROR_KIND_TYPE;
-    kind_value.words[2] = u64::from(kind);
-    let message = text_value(message.as_bytes());
-    let Some(error) = record_value(IO_ERROR_TYPE, vec![kind_value, message]) else {
-        return unsafe { fail_message(task, "OutOfMemory", "I/O error allocation failed") };
-    };
-    let Some(result) = enum_value(RESULT_TYPE, 1, vec![error]) else {
-        return unsafe { fail_message(task, "OutOfMemory", "Result error allocation failed") };
-    };
-    let slot = unsafe { &mut (*task).slots[(*task).result_slot] };
-    *slot = result;
-    TASK_COMPLETED
 }
 
 unsafe fn fail_message(task: *mut LoomTask, code: &str, message: &str) -> i32 {
@@ -4274,59 +4097,6 @@ pub unsafe extern "C" fn task_witness_v1(
         .unwrap_or(ptr::null())
 }
 
-unsafe fn spawn_io_task(executor: *mut LoomExecutor, operation: IoOperation) -> *mut LoomTask {
-    unsafe { spawn_io_task_with_mode(executor, operation, false) }
-}
-
-unsafe fn spawn_try_io_task(executor: *mut LoomExecutor, operation: IoOperation) -> *mut LoomTask {
-    unsafe { spawn_io_task_with_mode(executor, operation, true) }
-}
-
-unsafe fn spawn_io_task_with_mode(
-    executor: *mut LoomExecutor,
-    operation: IoOperation,
-    fallible: bool,
-) -> *mut LoomTask {
-    let task = unsafe { task_spawn(executor, Some(resume_io), 1, 0) };
-    if !task.is_null() {
-        unsafe {
-            (*task).io_operation = Some(operation);
-            (*task).io_fallible = fallible;
-        }
-    }
-    task
-}
-
-unsafe fn spawn_io_error_task(
-    executor: *mut LoomExecutor,
-    kind: u32,
-    code: &'static str,
-    message: impl Into<String>,
-) -> *mut LoomTask {
-    unsafe { spawn_io_failure_task(executor, true, kind, code, message) }
-}
-
-unsafe fn spawn_io_failure_task(
-    executor: *mut LoomExecutor,
-    fallible: bool,
-    kind: u32,
-    code: &'static str,
-    message: impl Into<String>,
-) -> *mut LoomTask {
-    let task = unsafe { task_spawn(executor, Some(resume_io), 1, 0) };
-    if !task.is_null() {
-        unsafe {
-            (*task).io_fallible = fallible;
-            (*task).blocking_result = Some(BlockingResult::Fault {
-                code,
-                kind,
-                message: message.into(),
-            });
-        }
-    }
-    task
-}
-
 #[cfg(test)]
 unsafe extern "C" fn resume_slow_blocking_fixture(
     task: *mut LoomTask,
@@ -4336,7 +4106,7 @@ unsafe extern "C" fn resume_slow_blocking_fixture(
         return TASK_CANCELLED;
     }
     if unsafe { (*task).blocking_result.take().is_some() } {
-        return unsafe { store_unit_result(task) };
+        return TASK_COMPLETED;
     }
     unsafe {
         suspend_blocking(task, executor, || {
@@ -4388,7 +4158,7 @@ unsafe extern "C" fn resume_controlled_blocking_fixture(
         return TASK_CANCELLED;
     }
     if unsafe { (*task).blocking_result.take().is_some() } {
-        return unsafe { store_unit_result(task) };
+        return TASK_COMPLETED;
     }
     unsafe {
         suspend_blocking(task, executor, || {
@@ -4430,18 +4200,14 @@ unsafe fn copy_text(data: *const u8, length: u64) -> Option<String> {
     std::str::from_utf8(bytes).ok().map(str::to_owned)
 }
 
-fn checked_resource_token(token: i64) -> Option<i64> {
-    (token != INVALID_RESOURCE_TOKEN).then_some(token)
-}
-
 enum PreparedTypedIo {
     Operation(IoOperation),
     Immediate(BlockingResult),
 }
 
-fn typed_io_failure(code: &'static str, kind: u32, message: impl Into<String>) -> PreparedTypedIo {
+fn typed_io_failure(class: IoFaultClass, kind: u32, message: impl Into<String>) -> PreparedTypedIo {
     PreparedTypedIo::Immediate(BlockingResult::Fault {
-        code,
+        class,
         kind,
         message: message.into(),
     })
@@ -4498,13 +4264,15 @@ unsafe fn prepare_typed_file_request(
                 return None;
             }
             if no_resource {
-                typed_io_failure("FileReadFault", 8, "file resource is closed")
+                typed_io_failure(IoFaultClass::Operation, 8, "file resource is closed")
             } else {
                 match unsafe { clone_active_file(executor, token) } {
                     Ok(file) => PreparedTypedIo::Operation(IoOperation::FileRead { file }),
-                    Err(ResourceAccessError::Host(error)) => {
-                        typed_io_failure("FileReadFault", io_error_kind(&error), error.to_string())
-                    }
+                    Err(ResourceAccessError::Host(error)) => typed_io_failure(
+                        IoFaultClass::Operation,
+                        io_error_kind(&error),
+                        error.to_string(),
+                    ),
                     Err(ResourceAccessError::InvalidOwnership) => return None,
                 }
             }
@@ -4515,16 +4283,18 @@ unsafe fn prepare_typed_file_request(
             }
             let text = unsafe { copy_text(request.argument.data, request.argument.length) }?;
             if no_resource {
-                typed_io_failure("FileWriteFault", 8, "file resource is closed")
+                typed_io_failure(IoFaultClass::Operation, 8, "file resource is closed")
             } else {
                 match unsafe { clone_active_file(executor, token) } {
                     Ok(file) => PreparedTypedIo::Operation(IoOperation::FileWrite {
                         file,
                         bytes: text.into_bytes(),
                     }),
-                    Err(ResourceAccessError::Host(error)) => {
-                        typed_io_failure("FileWriteFault", io_error_kind(&error), error.to_string())
-                    }
+                    Err(ResourceAccessError::Host(error)) => typed_io_failure(
+                        IoFaultClass::Operation,
+                        io_error_kind(&error),
+                        error.to_string(),
+                    ),
                     Err(ResourceAccessError::InvalidOwnership) => return None,
                 }
             }
@@ -4550,9 +4320,11 @@ unsafe fn prepare_typed_socket_request(
             let host = unsafe { copy_text(request.argument.data, request.argument.length) }?;
             match u16::try_from(request.auxiliary) {
                 Ok(port) => PreparedTypedIo::Operation(IoOperation::SocketConnect { host, port }),
-                Err(_) => {
-                    typed_io_failure("SocketConnectFault", 3, "socket port must be in 0..=65535")
-                }
+                Err(_) => typed_io_failure(
+                    IoFaultClass::InvalidPort,
+                    3,
+                    "socket port must be in 0..=65535",
+                ),
             }
         }
         TypedIoOperation::SocketReadText => {
@@ -4560,7 +4332,7 @@ unsafe fn prepare_typed_socket_request(
                 return None;
             }
             if no_resource {
-                typed_io_failure("SocketReadFault", 8, "socket resource is closed")
+                typed_io_failure(IoFaultClass::Operation, 8, "socket resource is closed")
             } else {
                 match unsafe { clone_active_socket(executor, token) } {
                     Ok(socket) => PreparedTypedIo::Operation(IoOperation::SocketRead {
@@ -4568,7 +4340,7 @@ unsafe fn prepare_typed_socket_request(
                         bytes: Vec::new(),
                     }),
                     Err(ResourceAccessError::Host(error)) => typed_io_failure(
-                        "SocketReadFault",
+                        IoFaultClass::Operation,
                         io_error_kind(&error),
                         error.to_string(),
                     ),
@@ -4582,7 +4354,7 @@ unsafe fn prepare_typed_socket_request(
             }
             let text = unsafe { copy_text(request.argument.data, request.argument.length) }?;
             if no_resource {
-                typed_io_failure("SocketWriteFault", 8, "socket resource is closed")
+                typed_io_failure(IoFaultClass::Operation, 8, "socket resource is closed")
             } else {
                 match unsafe { clone_active_socket(executor, token) } {
                     Ok(socket) => PreparedTypedIo::Operation(IoOperation::SocketWrite {
@@ -4591,7 +4363,7 @@ unsafe fn prepare_typed_socket_request(
                         offset: 0,
                     }),
                     Err(ResourceAccessError::Host(error)) => typed_io_failure(
-                        "SocketWriteFault",
+                        IoFaultClass::Operation,
                         io_error_kind(&error),
                         error.to_string(),
                     ),
@@ -4606,7 +4378,7 @@ unsafe fn prepare_typed_socket_request(
     })
 }
 
-/// Creates and publishes one typed recoverable-I/O leaf Task.
+/// Creates and publishes one typed I/O leaf Task.
 ///
 /// Every borrowed Text is copied and every input resource is duplicated before
 /// this call returns. Ordinary host and closed-resource failures are stored as
@@ -4660,449 +4432,6 @@ pub unsafe extern "C" fn typed_io_task_create_v1(
         return ptr::null_mut();
     }
     task
-}
-
-#[unsafe(export_name = "loom_file_open_read")]
-pub unsafe extern "C" fn file_open_read(
-    executor: *mut LoomExecutor,
-    path: *const u8,
-    path_length: u64,
-) -> *mut LoomTask {
-    let Some(path) = (unsafe { copy_text(path, path_length) }) else {
-        return ptr::null_mut();
-    };
-    unsafe {
-        spawn_io_task(
-            executor,
-            IoOperation::FileOpen {
-                path,
-                create: false,
-            },
-        )
-    }
-}
-
-#[unsafe(export_name = "loom_file_create")]
-pub unsafe extern "C" fn file_create(
-    executor: *mut LoomExecutor,
-    path: *const u8,
-    path_length: u64,
-) -> *mut LoomTask {
-    let Some(path) = (unsafe { copy_text(path, path_length) }) else {
-        return ptr::null_mut();
-    };
-    unsafe { spawn_io_task(executor, IoOperation::FileOpen { path, create: true }) }
-}
-
-#[unsafe(export_name = "loom_file_try_open_read")]
-pub unsafe extern "C" fn file_try_open_read(
-    executor: *mut LoomExecutor,
-    path: *const u8,
-    path_length: u64,
-) -> *mut LoomTask {
-    let Some(path) = (unsafe { copy_text(path, path_length) }) else {
-        return unsafe {
-            spawn_io_error_task(
-                executor,
-                3,
-                "FileOpenFault",
-                "file path is not valid UTF-8 Text",
-            )
-        };
-    };
-    unsafe {
-        spawn_try_io_task(
-            executor,
-            IoOperation::FileOpen {
-                path,
-                create: false,
-            },
-        )
-    }
-}
-
-#[unsafe(export_name = "loom_file_try_create")]
-pub unsafe extern "C" fn file_try_create(
-    executor: *mut LoomExecutor,
-    path: *const u8,
-    path_length: u64,
-) -> *mut LoomTask {
-    let Some(path) = (unsafe { copy_text(path, path_length) }) else {
-        return unsafe {
-            spawn_io_error_task(
-                executor,
-                3,
-                "FileCreateFault",
-                "file path is not valid UTF-8 Text",
-            )
-        };
-    };
-    unsafe { spawn_try_io_task(executor, IoOperation::FileOpen { path, create: true }) }
-}
-
-#[unsafe(export_name = "loom_file_read_text")]
-pub unsafe extern "C" fn file_read_text(executor: *mut LoomExecutor, handle: i64) -> *mut LoomTask {
-    let Some(handle) = checked_resource_token(handle) else {
-        return unsafe {
-            spawn_io_failure_task(
-                executor,
-                false,
-                8,
-                "FileReadFault",
-                "file resource is closed",
-            )
-        };
-    };
-    let file = match unsafe { clone_active_file(executor, handle) } {
-        Ok(file) => file,
-        Err(ResourceAccessError::Host(error)) => unsafe {
-            return spawn_io_failure_task(
-                executor,
-                false,
-                io_error_kind(&error),
-                "FileReadFault",
-                error.to_string(),
-            );
-        },
-        Err(ResourceAccessError::InvalidOwnership) => return ptr::null_mut(),
-    };
-    unsafe { spawn_io_task(executor, IoOperation::FileRead { file }) }
-}
-
-#[unsafe(export_name = "loom_file_try_read_text")]
-pub unsafe extern "C" fn file_try_read_text(
-    executor: *mut LoomExecutor,
-    handle: i64,
-) -> *mut LoomTask {
-    let Some(handle) = checked_resource_token(handle) else {
-        return unsafe {
-            spawn_io_error_task(executor, 8, "FileReadFault", "file resource is closed")
-        };
-    };
-    let file = match unsafe { clone_active_file(executor, handle) } {
-        Ok(file) => file,
-        Err(ResourceAccessError::Host(error)) => unsafe {
-            return spawn_io_error_task(
-                executor,
-                io_error_kind(&error),
-                "FileReadFault",
-                error.to_string(),
-            );
-        },
-        Err(ResourceAccessError::InvalidOwnership) => return ptr::null_mut(),
-    };
-    unsafe { spawn_try_io_task(executor, IoOperation::FileRead { file }) }
-}
-
-#[unsafe(export_name = "loom_file_write_text")]
-pub unsafe extern "C" fn file_write_text(
-    executor: *mut LoomExecutor,
-    handle: i64,
-    data: *const u8,
-    length: u64,
-) -> *mut LoomTask {
-    let (Some(handle), Some(text)) = (checked_resource_token(handle), unsafe {
-        copy_text(data, length)
-    }) else {
-        return ptr::null_mut();
-    };
-    let file = match unsafe { clone_active_file(executor, handle) } {
-        Ok(file) => file,
-        Err(ResourceAccessError::Host(error)) => unsafe {
-            return spawn_io_failure_task(
-                executor,
-                false,
-                io_error_kind(&error),
-                "FileWriteFault",
-                error.to_string(),
-            );
-        },
-        Err(ResourceAccessError::InvalidOwnership) => return ptr::null_mut(),
-    };
-    unsafe {
-        spawn_io_task(
-            executor,
-            IoOperation::FileWrite {
-                file,
-                bytes: text.into_bytes(),
-            },
-        )
-    }
-}
-
-#[unsafe(export_name = "loom_file_try_write_text")]
-pub unsafe extern "C" fn file_try_write_text(
-    executor: *mut LoomExecutor,
-    handle: i64,
-    data: *const u8,
-    length: u64,
-) -> *mut LoomTask {
-    let Some(handle) = checked_resource_token(handle) else {
-        return unsafe {
-            spawn_io_error_task(executor, 8, "FileWriteFault", "file resource is closed")
-        };
-    };
-    let Some(text) = (unsafe { copy_text(data, length) }) else {
-        return unsafe {
-            spawn_io_error_task(
-                executor,
-                3,
-                "FileWriteFault",
-                "file contents are not valid UTF-8 Text",
-            )
-        };
-    };
-    let file = match unsafe { clone_active_file(executor, handle) } {
-        Ok(file) => file,
-        Err(ResourceAccessError::Host(error)) => unsafe {
-            return spawn_io_error_task(
-                executor,
-                io_error_kind(&error),
-                "FileWriteFault",
-                error.to_string(),
-            );
-        },
-        Err(ResourceAccessError::InvalidOwnership) => return ptr::null_mut(),
-    };
-    unsafe {
-        spawn_try_io_task(
-            executor,
-            IoOperation::FileWrite {
-                file,
-                bytes: text.into_bytes(),
-            },
-        )
-    }
-}
-
-#[unsafe(export_name = "loom_socket_connect")]
-pub unsafe extern "C" fn socket_connect(
-    executor: *mut LoomExecutor,
-    host: *const u8,
-    host_length: u64,
-    port: i64,
-) -> *mut LoomTask {
-    let (Some(host), Ok(port)) = (unsafe { copy_text(host, host_length) }, u16::try_from(port))
-    else {
-        return ptr::null_mut();
-    };
-    unsafe { spawn_io_task(executor, IoOperation::SocketConnect { host, port }) }
-}
-
-#[unsafe(export_name = "loom_socket_try_connect")]
-pub unsafe extern "C" fn socket_try_connect(
-    executor: *mut LoomExecutor,
-    host: *const u8,
-    host_length: u64,
-    port: i64,
-) -> *mut LoomTask {
-    let Some(host) = (unsafe { copy_text(host, host_length) }) else {
-        return unsafe {
-            spawn_io_error_task(
-                executor,
-                3,
-                "SocketConnectFault",
-                "socket host is not valid UTF-8 Text",
-            )
-        };
-    };
-    let Ok(port) = u16::try_from(port) else {
-        return unsafe {
-            spawn_io_error_task(
-                executor,
-                3,
-                "SocketConnectFault",
-                "socket port must be in 0..65535",
-            )
-        };
-    };
-    unsafe { spawn_try_io_task(executor, IoOperation::SocketConnect { host, port }) }
-}
-
-#[unsafe(export_name = "loom_socket_read_text")]
-pub unsafe extern "C" fn socket_read_text(
-    executor: *mut LoomExecutor,
-    handle: i64,
-) -> *mut LoomTask {
-    let Some(handle) = checked_resource_token(handle) else {
-        return unsafe {
-            spawn_io_failure_task(
-                executor,
-                false,
-                8,
-                "SocketReadFault",
-                "socket resource is closed",
-            )
-        };
-    };
-    let socket = match unsafe { clone_active_socket(executor, handle) } {
-        Ok(socket) => socket,
-        Err(ResourceAccessError::Host(error)) => unsafe {
-            return spawn_io_failure_task(
-                executor,
-                false,
-                io_error_kind(&error),
-                "SocketReadFault",
-                error.to_string(),
-            );
-        },
-        Err(ResourceAccessError::InvalidOwnership) => return ptr::null_mut(),
-    };
-    unsafe {
-        spawn_io_task(
-            executor,
-            IoOperation::SocketRead {
-                socket,
-                bytes: Vec::new(),
-            },
-        )
-    }
-}
-
-#[unsafe(export_name = "loom_socket_try_read_text")]
-pub unsafe extern "C" fn socket_try_read_text(
-    executor: *mut LoomExecutor,
-    handle: i64,
-) -> *mut LoomTask {
-    let Some(handle) = checked_resource_token(handle) else {
-        return unsafe {
-            spawn_io_error_task(executor, 8, "SocketReadFault", "socket resource is closed")
-        };
-    };
-    let socket = match unsafe { clone_active_socket(executor, handle) } {
-        Ok(socket) => socket,
-        Err(ResourceAccessError::Host(error)) => unsafe {
-            return spawn_io_error_task(
-                executor,
-                io_error_kind(&error),
-                "SocketReadFault",
-                error.to_string(),
-            );
-        },
-        Err(ResourceAccessError::InvalidOwnership) => return ptr::null_mut(),
-    };
-    unsafe {
-        spawn_try_io_task(
-            executor,
-            IoOperation::SocketRead {
-                socket,
-                bytes: Vec::new(),
-            },
-        )
-    }
-}
-
-#[unsafe(export_name = "loom_socket_write_text")]
-pub unsafe extern "C" fn socket_write_text(
-    executor: *mut LoomExecutor,
-    handle: i64,
-    data: *const u8,
-    length: u64,
-) -> *mut LoomTask {
-    let (Some(handle), Some(text)) = (checked_resource_token(handle), unsafe {
-        copy_text(data, length)
-    }) else {
-        return ptr::null_mut();
-    };
-    let socket = match unsafe { clone_active_socket(executor, handle) } {
-        Ok(socket) => socket,
-        Err(ResourceAccessError::Host(error)) => unsafe {
-            return spawn_io_failure_task(
-                executor,
-                false,
-                io_error_kind(&error),
-                "SocketWriteFault",
-                error.to_string(),
-            );
-        },
-        Err(ResourceAccessError::InvalidOwnership) => return ptr::null_mut(),
-    };
-    unsafe {
-        spawn_io_task(
-            executor,
-            IoOperation::SocketWrite {
-                socket,
-                bytes: text.into_bytes(),
-                offset: 0,
-            },
-        )
-    }
-}
-
-#[unsafe(export_name = "loom_socket_try_write_text")]
-pub unsafe extern "C" fn socket_try_write_text(
-    executor: *mut LoomExecutor,
-    handle: i64,
-    data: *const u8,
-    length: u64,
-) -> *mut LoomTask {
-    let Some(handle) = checked_resource_token(handle) else {
-        return unsafe {
-            spawn_io_error_task(executor, 8, "SocketWriteFault", "socket resource is closed")
-        };
-    };
-    let Some(text) = (unsafe { copy_text(data, length) }) else {
-        return unsafe {
-            spawn_io_error_task(
-                executor,
-                3,
-                "SocketWriteFault",
-                "socket contents are not valid UTF-8 Text",
-            )
-        };
-    };
-    let socket = match unsafe { clone_active_socket(executor, handle) } {
-        Ok(socket) => socket,
-        Err(ResourceAccessError::Host(error)) => unsafe {
-            return spawn_io_error_task(
-                executor,
-                io_error_kind(&error),
-                "SocketWriteFault",
-                error.to_string(),
-            );
-        },
-        Err(ResourceAccessError::InvalidOwnership) => return ptr::null_mut(),
-    };
-    unsafe {
-        spawn_try_io_task(
-            executor,
-            IoOperation::SocketWrite {
-                socket,
-                bytes: text.into_bytes(),
-                offset: 0,
-            },
-        )
-    }
-}
-
-#[unsafe(export_name = "loom_io_close")]
-pub unsafe extern "C" fn io_close(executor: *mut LoomExecutor, value: *mut c_void) -> i32 {
-    let value = value.cast::<ValueSlot>();
-    if executor.is_null()
-        || value.is_null()
-        || unsafe { (*value).words[0] } != VALUE_TAG_RECORD
-        || unsafe { (*value).words[2] } != 1
-    {
-        return WAIT_INVALID_ARGUMENT;
-    }
-    let nominal = unsafe { (*value).words[1] };
-    let Some(kind) = IoResourceKind::from_nominal(nominal) else {
-        return WAIT_INVALID_ARGUMENT;
-    };
-    let node = unsafe { (*value).words[4] as *mut ValueNode };
-    if node.is_null() || unsafe { (*node).value.words[0] } != 2 {
-        return WAIT_INVALID_ARGUMENT;
-    }
-    let handle = unsafe { (*node).value.words[3].cast_signed() };
-    if handle == INVALID_RESOURCE_TOKEN {
-        return WAIT_INVALID_ARGUMENT;
-    }
-    let executor = unsafe { &mut *executor };
-    if close_resource_token(executor, handle, kind).is_err() {
-        return WAIT_INVALID_ARGUMENT;
-    }
-    unsafe { (*node).value.words[3] = INVALID_RESOURCE_TOKEN.cast_unsigned() };
-    WAIT_OK
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -7246,10 +6575,7 @@ mod typed_io_tests {
             let create = create_typed_io_task(executor, &create_request);
             let created = run_and_take(executor, create);
             assert_eq!(created.outcome.kind, TYPED_IO_OUTCOME_RESOURCE);
-            assert_ne!(
-                created.outcome.resource_token,
-                TYPED_IO_INVALID_RESOURCE_TOKEN
-            );
+            assert_ne!(created.outcome.payload, TYPED_IO_INVALID_RESOURCE_TOKEN);
             assert_eq!((*create).owned_result_resources.len(), 1);
             destroy(runtime, executor);
         }
@@ -7271,6 +6597,7 @@ mod typed_io_tests {
             source.fill(b'x');
             let written = run_and_take(executor, write);
             assert_eq!(written.outcome.kind, TYPED_IO_OUTCOME_UNIT);
+            assert_eq!(written.outcome.payload, 0);
             assert!(written.text.is_null());
 
             let file = File::open(&path).unwrap();
@@ -7285,6 +6612,7 @@ mod typed_io_tests {
             });
             let read = run_and_take(executor, read);
             assert_eq!(read.outcome.kind, TYPED_IO_OUTCOME_TEXT);
+            assert_eq!(read.outcome.payload, 0);
             assert_eq!(
                 crate::text::text_bytes(read.text).unwrap(),
                 b"snapshotted text"
@@ -7322,6 +6650,7 @@ mod typed_io_tests {
             let failed = run_and_take(executor, open);
             assert_eq!(failed.outcome.kind, TYPED_IO_OUTCOME_ERROR);
             assert_eq!(failed.outcome.detail, 0);
+            assert_eq!(failed.outcome.payload, TYPED_IO_FAULT_CLASS_OPERATION);
             assert!(!crate::text::text_bytes(failed.text).unwrap().is_empty());
 
             let closed_request = no_argument_request(
@@ -7334,6 +6663,7 @@ mod typed_io_tests {
             let closed = run_and_take(executor, closed);
             assert_eq!(closed.outcome.kind, TYPED_IO_OUTCOME_ERROR);
             assert_eq!(closed.outcome.detail, 8);
+            assert_eq!(closed.outcome.payload, TYPED_IO_FAULT_CLASS_OPERATION);
             assert_eq!(
                 crate::text::text_bytes(closed.text).unwrap(),
                 b"file resource is closed"
@@ -7436,6 +6766,44 @@ mod typed_io_tests {
             let read = run_and_take(executor, read);
             assert_eq!(read.outcome.kind, TYPED_IO_OUTCOME_TEXT);
             assert_eq!(crate::text::text_bytes(read.text).unwrap(), b"socket read");
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
+    fn typed_socket_connect_preserves_specific_fault_classes() {
+        let (runtime, executor) = runtime_and_executor();
+        unsafe {
+            let invalid_port_request = request(
+                TYPED_IO_OPERATION_SOCKET_CONNECT,
+                TYPED_IO_INVALID_RESOURCE_TOKEN,
+                b"localhost",
+                -1,
+            );
+            let invalid_port = run_and_take(
+                executor,
+                create_typed_io_task(executor, &invalid_port_request),
+            );
+            assert_eq!(invalid_port.outcome.kind, TYPED_IO_OUTCOME_ERROR);
+            assert_eq!(invalid_port.outcome.detail, 3);
+            assert_eq!(
+                invalid_port.outcome.payload,
+                TYPED_IO_FAULT_CLASS_INVALID_PORT
+            );
+
+            // An embedded NUL is valid Text but cannot cross the host resolver
+            // boundary, providing a deterministic resolution failure without
+            // depending on DNS or network availability.
+            let resolve_request = request(
+                TYPED_IO_OPERATION_SOCKET_CONNECT,
+                TYPED_IO_INVALID_RESOURCE_TOKEN,
+                b"invalid\0host",
+                80,
+            );
+            let resolve = run_and_take(executor, create_typed_io_task(executor, &resolve_request));
+            assert_eq!(resolve.outcome.kind, TYPED_IO_OUTCOME_ERROR);
+            assert_eq!(resolve.outcome.payload, TYPED_IO_FAULT_CLASS_SOCKET_RESOLVE);
+
             destroy(runtime, executor);
         }
     }
@@ -7703,6 +7071,32 @@ mod typed_io_tests {
     }
 
     #[test]
+    fn typed_io_factory_accepts_no_completed_result_roots() {
+        let (runtime, executor) = runtime_and_executor();
+        let request = no_argument_request(
+            TYPED_IO_OPERATION_FILE_READ_TEXT,
+            TYPED_IO_INVALID_RESOURCE_TOKEN,
+            0,
+        );
+        let roots = [offset_of!(TestIoFrame, scratch_text) as u64];
+        // Fault-mode Task[T] needs the running scratch Text root, while a
+        // direct File/Socket/Unit result may contain no managed pointer cells.
+        let live_bitmaps = [1_u64, 0_u64];
+        let descriptor = typed_io_descriptor(&roots, &live_bitmaps, 2, 1);
+        unsafe {
+            let task = typed_io_task_create_v1(
+                executor,
+                ptr::from_ref(&descriptor),
+                ptr::from_ref(&request),
+            );
+            assert!(!task.is_null());
+            assert_eq!(typed_task_request_cancel_v1(executor, task), TYPED_TASK_OK);
+            assert_eq!(executor_run(executor, task), TASK_CANCELLED);
+            destroy(runtime, executor);
+        }
+    }
+
+    #[test]
     fn typed_io_factory_accepts_multiple_completed_result_roots() {
         let (runtime, executor) = runtime_and_executor();
         let request = no_argument_request(
@@ -7713,7 +7107,7 @@ mod typed_io_tests {
         let roots = [
             (offset_of!(TestIoFrame, result)
                 + offset_of!(TestIoResult, outcome)
-                + offset_of!(LoomTypedIoOutcome, resource_token)) as u64,
+                + offset_of!(LoomTypedIoOutcome, payload)) as u64,
             (offset_of!(TestIoFrame, result) + offset_of!(TestIoResult, text)) as u64,
             offset_of!(TestIoFrame, scratch_text) as u64,
         ];
@@ -7792,24 +7186,6 @@ mod resource_ownership_tests {
         _executor: *mut LoomExecutor,
     ) -> i32 {
         TASK_COMPLETED
-    }
-
-    unsafe extern "C" fn pending_fixture(
-        _task: *mut LoomTask,
-        _executor: *mut LoomExecutor,
-    ) -> i32 {
-        TASK_PENDING
-    }
-
-    unsafe extern "C" fn close_socket_on_cancel_fixture(
-        task: *mut LoomTask,
-        executor: *mut LoomExecutor,
-    ) -> i32 {
-        if unsafe { io_close(executor, task_slot(task, 0)) } == WAIT_OK {
-            TASK_CANCELLED
-        } else {
-            TASK_FAULTED
-        }
     }
 
     unsafe extern "C" fn typed_pending_fixture(
@@ -7987,20 +7363,6 @@ mod resource_ownership_tests {
     }
 
     #[test]
-    fn io_close_accepts_only_file_and_socket_nominals() {
-        assert_eq!(
-            IoResourceKind::from_nominal(FILE_TYPE),
-            Some(IoResourceKind::File)
-        );
-        assert_eq!(
-            IoResourceKind::from_nominal(SOCKET_TYPE),
-            Some(IoResourceKind::Socket)
-        );
-        assert_eq!(IoResourceKind::from_nominal(0), None);
-        assert_eq!(IoResourceKind::from_nominal(u64::MAX), None);
-    }
-
-    #[test]
     fn tracked_resource_selection_rejects_duplicate_tokens_across_kinds() {
         assert_eq!(select_tracked_resource([]), Ok(None));
         assert_eq!(
@@ -8015,39 +7377,6 @@ mod resource_ownership_tests {
             select_tracked_resource([(0, 0, true), (1, 2, true)]),
             Err(CloseResourceError::InvalidOwnership)
         );
-    }
-
-    #[test]
-    fn io_close_rejects_a_hostile_nominal_before_resource_dispatch() {
-        let runtime = runtime_create_v1();
-        assert!(!runtime.is_null());
-        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
-        assert!(!executor.is_null());
-        let mut payload = ValueNode {
-            value: ValueSlot {
-                words: [2, 0, 0, INVALID_RESOURCE_TOKEN.cast_unsigned(), 0, 0],
-            },
-            next: ptr::null_mut(),
-        };
-        let mut value = ValueSlot {
-            words: [
-                VALUE_TAG_RECORD,
-                u64::MAX,
-                1,
-                0,
-                (&raw mut payload) as u64,
-                0,
-            ],
-        };
-
-        unsafe {
-            assert_eq!(
-                io_close(executor, (&raw mut value).cast()),
-                WAIT_INVALID_ARGUMENT
-            );
-            executor_destroy(executor);
-            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
-        }
     }
 
     #[test]
@@ -8095,18 +7424,29 @@ mod resource_ownership_tests {
         let refused = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0));
 
         match blocking_socket_connect_addresses([refused, live]) {
-            BlockingResult::Resource { nominal, resource } => {
-                assert_eq!(nominal, SOCKET_TYPE);
+            BlockingResult::Resource { kind, resource } => {
+                assert_eq!(kind, IoResourceKind::Socket);
                 assert!(!resource.is_file());
             }
             _ => panic!("later resolved address was not attempted"),
         }
         match blocking_socket_connect_addresses([]) {
-            BlockingResult::Fault { code, .. } => assert_eq!(code, "SocketResolveFault"),
+            BlockingResult::Fault {
+                class,
+                kind,
+                message,
+            } => {
+                assert_eq!(class, IoFaultClass::SocketResolve);
+                assert_eq!(kind, 9);
+                assert_eq!(message, "host resolved to no addresses");
+            }
             _ => panic!("empty address set did not report resolution failure"),
         }
         match blocking_socket_connect_addresses([refused]) {
-            BlockingResult::Fault { code, .. } => assert_eq!(code, "SocketConnectFault"),
+            BlockingResult::Fault { class, message, .. } => {
+                assert_eq!(class, IoFaultClass::Operation);
+                assert!(!message.is_empty());
+            }
             _ => panic!("failed address did not report connection failure"),
         }
     }
@@ -8330,50 +7670,6 @@ mod resource_ownership_tests {
             (*task).status = TaskStatus::Runnable;
             (*task).queued = true;
             (*executor).runnable.push_front(task);
-            assert_eq!(executor_run(executor, task), TASK_CANCELLED);
-            assert!((*task).owned_result_resources.is_empty());
-            assert_peer_closed(&mut peer);
-
-            executor_destroy(executor);
-            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
-        }
-    }
-
-    #[test]
-    fn whole_artifact_resource_close_runs_inside_cancellation_cleanup() {
-        let runtime = runtime_create_v1();
-        assert!(!runtime.is_null());
-        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
-        assert!(!executor.is_null());
-        let (socket, mut peer) = socket_pair().expect("create fallback cancellation socket pair");
-        peer.set_nonblocking(true).expect("make peer nonblocking");
-
-        unsafe {
-            let descriptor = LoomCoroutineDescriptor {
-                abi_version: COROUTINE_ABI_VERSION,
-                flags: 0,
-                resume: Some(pending_fixture),
-                cancel: Some(close_socket_on_cancel_fixture),
-                trace: None,
-                slot_count: 1,
-                witness_count: 0,
-                result_slot: 0,
-                state_count: 0,
-                live_bitmap_words: 0,
-                live_bitmaps: ptr::null(),
-            };
-            let task = task_spawn_descriptor(executor, &raw const descriptor);
-            assert!(!task.is_null());
-            enter_executor(executor);
-            assert_eq!(
-                store_resource_result(task, SOCKET_TYPE, socket.into()),
-                TASK_COMPLETED
-            );
-            leave_executor();
-            assert_eq!((*task).owned_result_resources.len(), 1);
-            assert_peer_still_connected(&mut peer);
-
-            assert_eq!(task_cancel(executor, task), WAIT_OK);
             assert_eq!(executor_run(executor, task), TASK_CANCELLED);
             assert!((*task).owned_result_resources.is_empty());
             assert_peer_closed(&mut peer);
@@ -9171,244 +8467,6 @@ mod resource_ownership_tests {
             }
         }
         panic!("socket peer did not observe closure before the test deadline");
-    }
-
-    #[test]
-    fn pending_io_task_owns_a_duplicate_and_cancellation_closes_it() {
-        let runtime = runtime_create_v1();
-        assert!(!runtime.is_null());
-        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
-        assert!(!executor.is_null());
-        let (socket, mut peer) = socket_pair().expect("create socket pair");
-        peer.set_nonblocking(true).expect("make peer nonblocking");
-        let text = b"not written";
-
-        unsafe {
-            let task = with_active_resource(executor, socket.into(), |_owner, token| {
-                socket_write_text(executor, token, text.as_ptr(), text.len() as u64)
-            });
-            assert!(!task.is_null());
-            assert_peer_still_connected(&mut peer);
-
-            assert_eq!(task_cancel(executor, task), WAIT_OK);
-            assert_eq!(executor_run(executor, task), TASK_CANCELLED);
-            assert_peer_closed(&mut peer);
-            executor_destroy(executor);
-            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
-        }
-    }
-
-    #[test]
-    fn join_transfers_the_winner_and_reaps_unconsumed_resources() {
-        let runtime = runtime_create_v1();
-        assert!(!runtime.is_null());
-        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
-        assert!(!executor.is_null());
-        let (winner_socket, mut winner_peer) = socket_pair().expect("create winner pair");
-        let (loser_socket, mut loser_peer) = socket_pair().expect("create loser pair");
-        winner_peer
-            .set_nonblocking(true)
-            .expect("make winner peer nonblocking");
-        loser_peer
-            .set_nonblocking(true)
-            .expect("make loser peer nonblocking");
-
-        unsafe {
-            let parent = task_spawn(executor, Some(complete_fixture), 1, 0);
-            let winner = task_spawn(executor, Some(complete_fixture), 1, 0);
-            let loser = task_spawn(executor, Some(complete_fixture), 1, 0);
-            assert!(!parent.is_null() && !winner.is_null() && !loser.is_null());
-
-            (*winner).owner = parent;
-            (*loser).owner = parent;
-            (*parent).owned_children.extend([winner, loser]);
-            (*parent).join_children.extend([winner, loser]);
-            (*parent).join_winner = 0;
-            (*winner).status = TaskStatus::Completed;
-            (*loser).status = TaskStatus::Completed;
-
-            crate::gc::enter_executor(executor);
-            assert_eq!(
-                store_resource_result(winner, SOCKET_TYPE, winner_socket.into()),
-                TASK_COMPLETED
-            );
-            assert_eq!(
-                store_resource_result(loser, SOCKET_TYPE, loser_socket.into()),
-                TASK_COMPLETED
-            );
-            crate::gc::leave_executor();
-
-            let destination = task_slot(parent, 0).cast::<ValueSlot>();
-            assert_eq!(
-                task_write_join_result(parent, destination.cast(), 0),
-                WAIT_OK
-            );
-            assert_eq!((*parent).owned_result_resources.len(), 1);
-            assert!((*winner).owned_result_resources.is_empty());
-            assert_eq!((*loser).owned_result_resources.len(), 1);
-            assert_peer_still_connected(&mut winner_peer);
-            assert_peer_still_connected(&mut loser_peer);
-
-            activate_test_task(executor, parent);
-            enter_executor(executor);
-            assert_eq!(io_close(executor, destination.cast()), WAIT_OK);
-            leave_executor();
-            assert_peer_closed(&mut winner_peer);
-
-            reap_retired_tasks(&mut *executor, parent);
-            assert_peer_closed(&mut loser_peer);
-            cancel_test_parent(executor, parent);
-            executor_destroy(executor);
-            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
-        }
-    }
-
-    #[test]
-    fn aggregate_join_transfers_every_resource_to_the_awaiting_task() {
-        let runtime = runtime_create_v1();
-        assert!(!runtime.is_null());
-        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
-        assert!(!executor.is_null());
-        let (left_socket, mut left_peer) = socket_pair().expect("create left pair");
-        let (right_socket, mut right_peer) = socket_pair().expect("create right pair");
-        left_peer
-            .set_nonblocking(true)
-            .expect("make left peer nonblocking");
-        right_peer
-            .set_nonblocking(true)
-            .expect("make right peer nonblocking");
-
-        unsafe {
-            let parent = task_spawn(executor, Some(complete_fixture), 1, 0);
-            let left = task_spawn(executor, Some(complete_fixture), 1, 0);
-            let right = task_spawn(executor, Some(complete_fixture), 1, 0);
-            assert!(!parent.is_null() && !left.is_null() && !right.is_null());
-
-            (*left).owner = parent;
-            (*right).owner = parent;
-            (*parent).owned_children.extend([left, right]);
-            (*parent).join_children.extend([left, right]);
-            (*left).status = TaskStatus::Completed;
-            (*right).status = TaskStatus::Completed;
-
-            crate::gc::enter_executor(executor);
-            assert_eq!(
-                store_resource_result(left, SOCKET_TYPE, left_socket.into()),
-                TASK_COMPLETED
-            );
-            assert_eq!(
-                store_resource_result(right, SOCKET_TYPE, right_socket.into()),
-                TASK_COMPLETED
-            );
-            crate::gc::leave_executor();
-
-            let destination = task_slot(parent, 0).cast::<ValueSlot>();
-            crate::gc::enter_executor(executor);
-            assert_eq!(
-                task_write_join_result(parent, destination.cast(), JOIN_RESULT_TUPLE),
-                WAIT_OK
-            );
-            crate::gc::leave_executor();
-            assert_eq!((*parent).owned_result_resources.len(), 2);
-            assert!((*left).owned_result_resources.is_empty());
-            assert!((*right).owned_result_resources.is_empty());
-
-            let first = (*destination).words[4] as *mut ValueNode;
-            assert!(!first.is_null());
-            let second = (*first).next;
-            assert!(!second.is_null());
-            activate_test_task(executor, parent);
-            enter_executor(executor);
-            assert_eq!(
-                io_close(executor, (&raw mut (*first).value).cast()),
-                WAIT_OK
-            );
-            assert_eq!(
-                io_close(executor, (&raw mut (*second).value).cast()),
-                WAIT_OK
-            );
-            leave_executor();
-            assert_peer_closed(&mut left_peer);
-            assert_peer_closed(&mut right_peer);
-            cancel_test_parent(executor, parent);
-            executor_destroy(executor);
-            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
-        }
-    }
-
-    #[test]
-    fn io_results_and_join_outcomes_survive_every_allocator_collection() {
-        let runtime = runtime_create_v1();
-        assert!(!runtime.is_null());
-        let executor = unsafe { executor_create_for_runtime_v1(runtime) };
-        assert!(!executor.is_null());
-
-        unsafe {
-            let parent = task_spawn(executor, Some(complete_fixture), 1, 0);
-            let success = task_spawn(executor, Some(complete_fixture), 1, 0);
-            let io_error = task_spawn(executor, Some(complete_fixture), 1, 0);
-            let fault = task_spawn(executor, Some(complete_fixture), 1, 0);
-            let cancelled = task_spawn(executor, Some(complete_fixture), 1, 0);
-            assert!(
-                !parent.is_null()
-                    && !success.is_null()
-                    && !io_error.is_null()
-                    && !fault.is_null()
-                    && !cancelled.is_null()
-            );
-            for child in [success, io_error, fault, cancelled] {
-                (*child).owner = parent;
-                (*parent).owned_children.push(child);
-                (*parent).join_children.push(child);
-            }
-            (*success).io_fallible = true;
-            (*io_error).io_fallible = true;
-            (*fault).fault_code = "FixtureFault".to_owned();
-            (*fault).fault_message = "managed failure message".to_owned();
-
-            crate::gc::enter_executor(executor);
-            (*runtime).heap.collect_before_every_allocation = true;
-            assert_eq!(
-                store_text_result(success, executor, b"managed success", "FixtureReadFault"),
-                TASK_COMPLETED,
-            );
-            (*success).status = TaskStatus::Completed;
-            assert_eq!(
-                complete_io_error(io_error, 3, "FixtureIoFault", "managed I/O error"),
-                TASK_COMPLETED,
-            );
-            (*io_error).status = TaskStatus::Completed;
-            (*fault).status = TaskStatus::Faulted;
-            (*cancelled).status = TaskStatus::Cancelled;
-
-            let destination = task_slot(parent, 0).cast::<ValueSlot>();
-            assert_eq!(
-                task_write_join_result(parent, destination.cast(), JOIN_RESULT_OUTCOME_TUPLE,),
-                WAIT_OK,
-            );
-            assert_eq!((*destination).words[0], VALUE_TAG_TUPLE);
-            assert_eq!((*destination).words[2], 4);
-            let mut node = (*destination).words[4] as *const ValueNode;
-            for variant in [
-                TASK_OUTCOME_COMPLETED,
-                TASK_OUTCOME_COMPLETED,
-                TASK_OUTCOME_FAULTED,
-                TASK_OUTCOME_CANCELLED,
-            ] {
-                assert!(!node.is_null());
-                assert_eq!((*node).value.words[0], VALUE_TAG_ENUM);
-                assert_eq!((*node).value.words[1], TASK_OUTCOME_TYPE);
-                assert_eq!((*node).value.words[2], variant);
-                node = (*node).next;
-            }
-            assert!(node.is_null());
-            assert!((*runtime).heap.collections > 10);
-            (*runtime).heap.collect_before_every_allocation = false;
-            crate::gc::leave_executor();
-
-            executor_destroy(executor);
-            assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
-        }
     }
 }
 

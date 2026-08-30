@@ -1,0 +1,5 @@
+test async fn typedIo() {
+    roundTripMain().await
+    missingMain().await
+    socketMain().await
+}

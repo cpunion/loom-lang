@@ -27,6 +27,9 @@ different subsets and zero unused words.
 The tag lets shared runtime helpers clone, compare, trace, format, and destroy
 values whose static type has been erased by the current generic/universal
 lowering. It is not language reflection or a permanent per-value type ID.
+File and Socket operations are no longer admitted at this boundary: reachable
+I/O must lower completely through typed LCIR and cannot construct a universal
+Task result or resource record.
 
 The current runtime ABI identity is versioned as a whole in
 `loom-runtime-abi`. That identity is checked in runtime bundles and object
@@ -183,10 +186,22 @@ closed capability cannot accidentally name a later resource even when the OS
 reuses its own descriptor value. File/Socket cleanup is final RAII release; a
 future durability guarantee must come from an explicit flush/sync operation.
 
+All seven File/Socket Task operations share the `typed-io-v1` request/outcome
+wire. The wire reports only an operation, copied byte views, a resource token,
+primitive outcome kind, closed error-kind index, closed fault class, and managed
+Text scratch root; it carries no source `TypeId` or physical `Result` layout.
+The fault class distinguishes invalid ports and name-resolution failures from
+connection failures without exposing a universal error value. The LCIR
+instruction records whether generated code constructs
+`Task[Result[T, IoError]]` or the faulting `Task[T]` form. The runtime therefore
+needs neither universal `loom_file_*`/`loom_socket_*` wrappers nor fixed
+File/Socket nominal IDs.
+
 The current exact runtime identity is defined in
 [Versioning and compatibility](../project/versioning.md). Typed-task ABI v1,
-typed-process ABI v1, coroutine v2, wait v1, standard-library ABI v7, Text v3,
-and GC v9 identify the corresponding current components.
+typed-I/O v1, typed-resource v1, typed-process ABI v1, coroutine v2, wait v1,
+standard-library ABI v7, Text v3, and GC v9 identify the corresponding current
+components.
 
 ## Checked-MIR primitive and aggregate specialization
 
@@ -204,6 +219,11 @@ Unsupported specialization boundaries materialize the independent universal
 representation. This preserves value-copy semantics and prevents a private
 stack address from escaping. These layouts are checked-MIR emitter decisions and
 are not reused by typed LCIR.
+
+File and Socket I/O is an explicit exception to universal fallback. Direct
+checked-MIR fingerprinting and emission reject every reachable operation and
+close builtin, and production preparation fails closed if the complete I/O
+artifact cannot remain on typed LCIR.
 
 Records, enums, refined values, tuples, and generic lists on the universal path
 use GC-managed nodes. Logical copy is independent: mutating one value cannot

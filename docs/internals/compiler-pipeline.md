@@ -149,10 +149,12 @@ for primitive values, literal or concat-produced direct `Text` on 64-bit targets
 structural tuples, closed records, and established transparent refined values,
 including eligible closed concrete enums.
 A complete result retains only the independently validated `CheckedArtifact`
-and uses the typed LCIR emitter. Only a valid `Unsupported` result selects the
-checked-MIR source graph and universal-value emitter for the complete artifact.
-Invalid roots, resource exhaustion, compiler defects, and LCIR emission
-failures never select fallback.
+and uses the typed LCIR emitter. A valid `Unsupported` result selects the
+checked-MIR source graph and universal-value emitter for the complete artifact
+only when the reachable graph contains no LCIR-only primitive. Reachable File
+or Socket I/O instead makes preparation fail closed; a dead private I/O helper
+does not affect route selection. Invalid roots, resource exhaustion, compiler
+defects, and LCIR emission failures never select fallback.
 
 Tooling can select `NativeRoutePolicy::LcirOnly` at the same preparation
 boundary. It performs the identical whole-artifact classification but returns
@@ -166,8 +168,8 @@ identity, runtime-bundle validation, optimization, and object emission reuse
 that plan instead of reconstructing target or reachability state. Ordinary
 `build`, `run`, `test`, and `debug` use automatic selection. A complete LCIR
 artifact keeps the typed route in development debug builds; an unsupported
-reachable construct selects the complete checked-MIR route exactly as it does for
-the other commands. Linking remains a separate step.
+reachable construct selects the complete checked-MIR route only when the graph
+contains no LCIR-only primitive. Linking remains a separate step.
 
 Source diagnostics exit before either backend executes. Errors discovered
 after checked MIR—missing MIR references, LLVM verifier failures, or malformed

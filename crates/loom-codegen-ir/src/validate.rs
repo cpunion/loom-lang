@@ -6,10 +6,11 @@ use loom_mir::Type;
 
 use crate::{
     AwaitMode, BlockId, Constant, Effects, Function, InstanceId, InstanceRole, Instruction,
-    InstructionId, InstructionKind, IoTaskOperation, Origin, ProductReprId, Program, Repr,
-    RepresentationPlan, ResultTarget, SumReprId, SumTagRepr, TASK_OUTCOME_CANCELLED_VARIANT,
-    TASK_OUTCOME_COMPLETED_VARIANT, TASK_OUTCOME_FAULTED_VARIANT, Terminator, TerminatorKind,
-    UnwindTarget, Value, ValueDefinition, ValueId, ValueTypeId, ValueTypeKind,
+    InstructionId, InstructionKind, IoTaskErrorMode, IoTaskOperation, Origin, ProductReprId,
+    Program, Repr, RepresentationPlan, ResultTarget, SumReprId, SumTagRepr,
+    TASK_OUTCOME_CANCELLED_VARIANT, TASK_OUTCOME_COMPLETED_VARIANT, TASK_OUTCOME_FAULTED_VARIANT,
+    Terminator, TerminatorKind, UnwindTarget, Value, ValueDefinition, ValueId, ValueTypeId,
+    ValueTypeKind,
 };
 
 fn representation_pointer_kinds(
@@ -4161,6 +4162,7 @@ impl<'a> Validator<'a> {
             }
             InstructionKind::IoTaskCreate {
                 operation,
+                error_mode,
                 arguments,
             } => {
                 let file = self.canonical_resource_type(crate::ResourceKind::File);
@@ -4273,71 +4275,101 @@ impl<'a> Validator<'a> {
                         );
                     }
                 }
-                let io_error = self.canonical_io_error_type();
-                if io_error.is_none() {
-                    self.error(
-                        ValidationCode::InstructionShape,
-                        &path,
-                        "typed I/O requires the canonical IoError and IoErrorKind representations",
-                    );
-                }
-                let result = success
-                    .zip(io_error)
-                    .zip(self.program.canonical_types.result)
-                    .and_then(|((success, io_error), result)| {
-                        let success = self
-                            .program
-                            .representations
-                            .value_type(success)?
-                            .semantic()
-                            .clone();
-                        let error = self
-                            .program
-                            .representations
-                            .value_type(io_error)?
-                            .semantic()
-                            .clone();
-                        self.program
-                            .representations
-                            .type_id(&Type::Nominal(result, vec![success, error]))
-                    });
-                if success.is_some() && io_error.is_some() && result.is_none() {
-                    self.error(
-                        ValidationCode::InstructionShape,
-                        format!("{path}.result[0]"),
-                        "typed I/O requires an exact canonical Result[success, IoError] registration",
-                    );
-                }
-                if result.is_some_and(|result| {
-                    !self.canonical_io_result_shape(result, success, io_error)
-                }) {
-                    self.error(
-                        ValidationCode::InstructionShape,
-                        format!("{path}.result[0]"),
-                        "typed I/O requires canonical Result[success, IoError] variants",
-                    );
-                }
-                let registered_task = result.and_then(|result| {
-                    let result = self
-                        .program
-                        .representations
-                        .value_type(result)?
-                        .semantic()
-                        .clone();
-                    self.program
-                        .representations
-                        .type_id(&Type::Task(Box::new(result)))
-                });
-                let task = registered_task.filter(|task| {
-                    result.is_some_and(|result| self.canonical_task_handle(*task, result))
-                });
-                if result.is_some() && task.is_none() {
-                    self.error(
-                        ValidationCode::InstructionShape,
-                        format!("{path}.result[0]"),
-                        "typed I/O requires an exact canonical Task[Result[success, IoError]] handle registration",
-                    );
-                }
+                let task = match error_mode {
+                    IoTaskErrorMode::Result => {
+                        let io_error = self.canonical_io_error_type();
+                        if io_error.is_none() {
+                            self.error(
+                                ValidationCode::InstructionShape,
+                                &path,
+                                "Result-mode typed I/O requires the canonical IoError and IoErrorKind representations",
+                            );
+                        }
+                        let result = success
+                            .zip(io_error)
+                            .zip(self.program.canonical_types.result)
+                            .and_then(|((success, io_error), result)| {
+                                let success = self
+                                    .program
+                                    .representations
+                                    .value_type(success)?
+                                    .semantic()
+                                    .clone();
+                                let error = self
+                                    .program
+                                    .representations
+                                    .value_type(io_error)?
+                                    .semantic()
+                                    .clone();
+                                self.program
+                                    .representations
+                                    .type_id(&Type::Nominal(result, vec![success, error]))
+                            });
+                        if success.is_some() && io_error.is_some() && result.is_none() {
+                            self.error(
+                                ValidationCode::InstructionShape,
+                                format!("{path}.result[0]"),
+                                "Result-mode typed I/O requires an exact canonical Result[success, IoError] registration",
+                            );
+                        }
+                        if result.is_some_and(|result| {
+                            !self.canonical_io_result_shape(result, success, io_error)
+                        }) {
+                            self.error(
+                                ValidationCode::InstructionShape,
+                                format!("{path}.result[0]"),
+                                "Result-mode typed I/O requires canonical Result[success, IoError] variants",
+                            );
+                        }
+                        let registered_task = result.and_then(|result| {
+                            let result = self
+                                .program
+                                .representations
+                                .value_type(result)?
+                                .semantic()
+                                .clone();
+                            self.program
+                                .representations
+                                .type_id(&Type::Task(Box::new(result)))
+                        });
+                        let task = registered_task.filter(|task| {
+                            result.is_some_and(|result| self.canonical_task_handle(*task, result))
+                        });
+                        if result.is_some() && task.is_none() {
+                            self.error(
+                                ValidationCode::InstructionShape,
+                                format!("{path}.result[0]"),
+                                "Result-mode typed I/O requires an exact canonical Task[Result[success, IoError]] handle registration",
+                            );
+                        }
+                        task
+                    }
+                    IoTaskErrorMode::Fault => {
+                        let registered_task = success.and_then(|success| {
+                            let output = self
+                                .program
+                                .representations
+                                .value_type(success)?
+                                .semantic()
+                                .clone();
+                            self.program
+                                .representations
+                                .type_id(&Type::Task(Box::new(output)))
+                        });
+                        let task = registered_task.filter(|task| {
+                            success
+                                .is_some_and(|success| self.canonical_task_handle(*task, success))
+                        });
+                        if success.is_some() && task.is_none() {
+                            self.error(
+                                ValidationCode::InstructionShape,
+                                format!("{path}.result[0]"),
+                                "Fault-mode typed I/O requires an exact canonical Task[success] handle registration",
+                            );
+                        }
+                        task
+                    }
+                };
                 self.require_results(function, instruction, &[task], &path);
                 if !function.effects().contains(Effects::NEEDS_EXECUTOR) {
                     self.error(

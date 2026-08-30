@@ -2,10 +2,13 @@ use std::path::Path;
 use std::process::Command;
 use std::{io::Read as _, net::TcpListener};
 
-use loom_codegen_llvm::{EmitOptions, NATIVE_RUNTIME_ABI};
+use loom_codegen_llvm::{
+    EmitOptions, NATIVE_RUNTIME_ABI, NativeRouteKind, NativeRoutePolicy,
+    emit_prepared_native_object, prepare_native_object,
+};
 
 mod support;
-use support::{emit_native, loom_text_literal, runtime_bundle_identity};
+use support::{link_native_object, loom_text_literal, runtime_bundle_identity};
 
 const CHILD_PROJECT_ENV: &str = "LOOM_STD_INTERPRETER_CHILD_PROJECT";
 const EXPECTED_LOGS: &str = concat!(
@@ -115,13 +118,16 @@ fn structured_values_match_in_interpreter_and_native_runtime() {
 
     let snapshot = snapshot(project.path());
     assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let program = snapshot.executable().expect("lower standard-library MIR");
+    let prepared =
+        prepare_native_object(program, EmitOptions::tests(), NativeRoutePolicy::Automatic)
+            .expect("prepare typed standard-library tests");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    let object = project.path().join("native-tests.o");
     let executable = project.path().join("native-tests");
-    emit_native(
-        snapshot.executable().expect("lower standard-library MIR"),
-        &executable,
-        &EmitOptions::tests(),
-    )
-    .expect("emit native standard-library tests");
+    emit_prepared_native_object(&prepared, &object)
+        .expect("emit typed standard-library test object");
+    link_native_object(&object, &executable).expect("link typed standard-library tests");
     let native = Command::new(executable)
         .output()
         .expect("run native standard-library tests");
