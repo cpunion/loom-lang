@@ -1,6 +1,9 @@
 import std.float.format_float
+import std.float.FloatToIntError
+import std.float.from_int
 import std.float.is_finite
 import std.float.parse_float
+import std.float.to_int
 import std.int.ParseIntError
 import std.int.parse_int
 import std.time.milliseconds
@@ -88,6 +91,34 @@ fn scalarBuiltins() {
     assert largeFloat
     assert finite
     assert !infinite
+
+    let roundedInteger = from_int(9007199254740993)
+    let truncatedPositive = match to_int(12.75) {
+        Ok(value) => value == 12
+        Err(_) => false
+    }
+    let truncatedNegative = match to_int(-12.75) {
+        Ok(value) => value == -12
+        Err(_) => false
+    }
+    let convertedMinimum = match to_int(-9223372036854775808.0) {
+        Ok(value) => value == -9223372036854775807 - 1
+        Err(_) => false
+    }
+    let nonFiniteConversion = match to_int(0.0 / 0.0) {
+        Err(FloatToIntError.NonFinite) => true
+        _ => false
+    }
+    let outOfRangeConversion = match to_int(9223372036854775808.0) {
+        Err(FloatToIntError.OutOfRange) => true
+        _ => false
+    }
+    assert roundedInteger == 9007199254740992.0
+    assert truncatedPositive
+    assert truncatedNegative
+    assert convertedMinimum
+    assert nonFiniteConversion
+    assert outOfRangeConversion
 
     let kept = "K".concat("eep")
     let rendered = format_float(1.25)

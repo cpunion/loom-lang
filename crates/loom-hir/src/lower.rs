@@ -7,11 +7,11 @@ use loom_syntax::ast as syntax;
 
 use crate::{
     AssociatedBindingRef, AssociatedTypeDef, BodyBuilder, BodyId, BodyKind, CallableSignature,
-    ConceptDef, ConceptRef, ConformanceDef, Contracts, DefId, DefinitionKind, EnumDef, Expr,
-    ExprId, FieldDef, FunctionDef, GenericParam, GenericParamId, ImplDef, Import, Literal, Local,
-    MatchArm, MethodDef, ModuleId, Param, Path, PathSegment, Pattern, ReceiverKind, RecordDef,
-    RecordFieldValue, RefinedTypeDef, Statement, TypeArgumentRef, TypeRef, TypeRefId, UnaryOp,
-    VariantDef, Visibility,
+    ConceptDef, ConceptRef, ConformanceDef, ConstantDef, Contracts, DefId, DefinitionKind, EnumDef,
+    Expr, ExprId, FieldDef, FunctionDef, GenericParam, GenericParamId, ImplDef, Import, Literal,
+    Local, MatchArm, MethodDef, ModuleId, Param, Path, PathSegment, Pattern, ReceiverKind,
+    RecordDef, RecordFieldValue, RefinedTypeDef, Statement, TypeArgumentRef, TypeRef, TypeRefId,
+    UnaryOp, VariantDef, Visibility,
 };
 
 /// One parsed file supplied to HIR lowering.
@@ -132,6 +132,21 @@ impl LowerContext {
         let visibility = lower_visibility(declaration.visibility);
         let declaration_span = span(file, declaration.range);
         match &declaration.kind {
+            syntax::DeclKind::Constant(source) => {
+                let owner = self.program.alloc_definition_shell(
+                    module,
+                    Some(Name::new(source.name.text.clone())),
+                    visibility,
+                    declaration_span,
+                );
+                let ty = self.lower_type(file, &source.ty);
+                let value =
+                    self.lower_expression_body(file, owner, BodyKind::Constant, &source.value);
+                self.program.replace_definition_kind(
+                    owner,
+                    DefinitionKind::Constant(ConstantDef { ty, value }),
+                );
+            }
             syntax::DeclKind::ConstrainedType(source) => {
                 let owner = self.program.alloc_definition_shell(
                     module,
@@ -625,6 +640,10 @@ impl<'a> BodyLower<'a> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "block lowering keeps every statement form and tail selection in one exhaustive source-order pass"
+    )]
     fn lower_block(&mut self, source: &syntax::Block) -> ExprId {
         let mut statements = Vec::new();
         let mut tail = None;
@@ -682,6 +701,21 @@ impl<'a> BodyLower<'a> {
                         start,
                         end,
                         body,
+                    });
+                }
+                syntax::BlockItem::While(loop_) => {
+                    let condition = self.lower_expr(&loop_.condition);
+                    let body = self.lower_block(&loop_.body);
+                    statements.push(Statement::While { condition, body });
+                }
+                syntax::BlockItem::Break(range) => {
+                    statements.push(Statement::Break {
+                        span: self.span(*range),
+                    });
+                }
+                syntax::BlockItem::Continue(range) => {
+                    statements.push(Statement::Continue {
+                        span: self.span(*range),
                     });
                 }
                 syntax::BlockItem::Defer(block) => {
@@ -1265,6 +1299,47 @@ impl C for R {
         };
         assert!(tail.is_none());
         assert!(matches!(statements.as_slice(), [Statement::Discard(_)]));
+    }
+
+    #[test]
+    fn while_break_and_continue_remain_distinct_hir_statements() {
+        let parsed = parse_with_file(
+            FileId(0),
+            "fn run(flag Bool) {\n    while flag {\n        break\n        continue\n    }\n}\n",
+        );
+        assert!(
+            parsed.diagnostics().is_empty(),
+            "{:?}",
+            parsed.diagnostics()
+        );
+        let lowered = lower_files([SourceUnit {
+            file: FileId(0),
+            syntax: parsed.ast(),
+        }]);
+        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+        let function = lowered
+            .program
+            .definitions
+            .iter()
+            .find_map(|(_, definition)| match &definition.kind {
+                DefinitionKind::Function(function) => Some(function),
+                _ => None,
+            })
+            .expect("run function");
+        let lowered_body = &lowered.program.bodies[function.body];
+        let Expr::Block { statements, .. } = &lowered_body.expressions[lowered_body.root] else {
+            panic!("expected block root");
+        };
+        let [Statement::While { body, .. }] = statements.as_slice() else {
+            panic!("expected while statement");
+        };
+        let Expr::Block { statements, .. } = &lowered_body.expressions[*body] else {
+            panic!("expected while body block");
+        };
+        assert!(matches!(
+            statements.as_slice(),
+            [Statement::Break { .. }, Statement::Continue { .. }]
+        ));
     }
 
     #[test]

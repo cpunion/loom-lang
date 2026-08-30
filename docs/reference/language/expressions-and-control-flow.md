@@ -166,7 +166,22 @@ visits the half-open range from `start` up to but excluding `end`. It performs n
 iterations when `start >= end`. The iteration binding is immutable and scoped
 to the loop body. A `for` loop has type `Unit`.
 
-There are no `break` or `continue` forms in language version 0.3.
+## Conditional loops and loop control
+
+`while condition { ... }` evaluates its `Bool` condition before every
+iteration and has type `Unit`. A false initial condition performs no
+iterations.
+
+Bare `break` exits the nearest enclosing `while` or `for` loop. Bare `continue`
+starts its next iteration: it re-evaluates a `while` condition, and advances a
+`for` induction binding before testing the range again. Neither form accepts a
+label or value, and either form is an error outside a loop.
+
+Both transfers exit intervening lexical scopes normally. Registered `defer`
+blocks and `scoped` disposals therefore run in LIFO order before control reaches
+the loop target. A deferred cleanup cannot use `break` or `continue` to control
+a loop outside that cleanup, although a loop wholly inside the cleanup may use
+its own loop control.
 
 ## Return and propagation
 

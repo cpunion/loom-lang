@@ -43,6 +43,7 @@ pub struct Decl {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum DeclKind {
+    Constant(ConstantDecl),
     ConstrainedType(ConstrainedTypeDecl),
     Record(RecordDecl),
     Enum(EnumDecl),
@@ -50,6 +51,13 @@ pub enum DeclKind {
     Impl(ImplDecl),
     Concept(ConceptDecl),
     Error(ErrorNode),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ConstantDecl {
+    pub name: Ident,
+    pub ty: TypeExpr,
+    pub value: Expr,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -419,6 +427,9 @@ pub struct Block {
 pub enum BlockItem {
     Local(LocalBinding),
     ForRange(ForRange),
+    While(While),
+    Break(TextRange),
+    Continue(TextRange),
     Defer(Block),
     Discard(Expr),
     Return(ReturnExpr),
@@ -434,6 +445,14 @@ pub struct ForRange {
     pub binding: Ident,
     pub start: Expr,
     pub end: Expr,
+    pub body: Block,
+    pub range: TextRange,
+}
+
+/// A condition-controlled loop: `while condition { ... }`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct While {
+    pub condition: Expr,
     pub body: Block,
     pub range: TextRange,
 }

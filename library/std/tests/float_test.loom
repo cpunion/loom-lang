@@ -1,0 +1,60 @@
+import std.float.FloatToIntError
+import std.float.from_int
+import std.float.to_int
+
+test fn int_to_float_is_explicit_and_uses_binary64_rounding() {
+    let zero = from_int(0)
+    let negative = from_int(-42)
+    let rounded = from_int(9007199254740993)
+    let maximum = from_int(9223372036854775807)
+    assert zero == 0.0
+    assert negative == -42.0
+    assert rounded == 9007199254740992.0
+    assert maximum == 9223372036854775808.0
+}
+
+test fn finite_float_to_int_truncates_toward_zero() {
+    let positive = match to_int(12.75) {
+        Ok(value) => value
+        Err(_) => 0
+    }
+    let negative = match to_int(-12.75) {
+        Ok(value) => value
+        Err(_) => 0
+    }
+    let minimum = match to_int(-9223372036854775808.0) {
+        Ok(value) => value
+        Err(_) => 0
+    }
+    assert positive == 12
+    assert negative == -12
+    assert minimum == -9223372036854775807 - 1
+}
+
+test fn float_to_int_reports_non_finite_and_range_errors() {
+    let infinity = match to_int(1.0 / 0.0) {
+        Err(FloatToIntError.NonFinite) => true
+        _ => false
+    }
+    let negative_infinity = match to_int(-1.0 / 0.0) {
+        Err(FloatToIntError.NonFinite) => true
+        _ => false
+    }
+    let not_a_number = match to_int(0.0 / 0.0) {
+        Err(FloatToIntError.NonFinite) => true
+        _ => false
+    }
+    let too_large = match to_int(9223372036854775808.0) {
+        Err(FloatToIntError.OutOfRange) => true
+        _ => false
+    }
+    let rounded_maximum = match to_int(from_int(9223372036854775807)) {
+        Err(FloatToIntError.OutOfRange) => true
+        _ => false
+    }
+    assert infinity
+    assert negative_infinity
+    assert not_a_number
+    assert too_large
+    assert rounded_maximum
+}

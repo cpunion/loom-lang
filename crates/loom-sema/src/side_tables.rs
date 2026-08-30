@@ -35,6 +35,8 @@ pub enum BuiltinValue {
     ParseFloat,
     FormatFloat,
     IsFinite,
+    IntToFloat,
+    FloatToIntStatus,
     TextLength,
     TextGet,
     TextConcat,
@@ -314,6 +316,7 @@ pub struct Bound {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Signature {
+    Constant { ty: TyId },
     Type { generic_params: Vec<GenericParamId> },
     Field { owner: DefId, ty: TyId },
     Variant { owner: DefId, payload: Vec<TyId> },
@@ -323,11 +326,39 @@ pub enum Signature {
     Impl,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub enum ConstantValue {
+    Bool(bool),
+    Int(i64),
+    Float(#[serde(with = "float_bits")] f64),
+    Text(String),
+}
+
+mod float_bits {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    #[allow(clippy::trivially_copy_pass_by_ref)] // Required by serde's `with` contract.
+    pub fn serialize<S>(value: &f64, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u64(value.to_bits())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<f64, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        u64::deserialize(deserializer).map(f64::from_bits)
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct TypedProgram {
     pub types: TyInterner,
     pub resolved_type_refs: ArenaMap<TypeRefId, TyId>,
     pub signatures: ArenaMap<DefId, Signature>,
+    pub constants: ArenaMap<DefId, ConstantValue>,
     pub bodies: ArenaMap<BodyId, BodySemantics>,
     pub conformances: ArenaMap<DefId, ConformanceSemantics>,
 }

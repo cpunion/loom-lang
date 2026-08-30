@@ -15,7 +15,7 @@ use loom_driver::{
 use loom_hir::{SourceUnit, lower_files};
 use loom_interpreter::{Interpreter, TestStatus, Value};
 use loom_mir::ConceptIdentity;
-use loom_sema::{CallTarget, TaskIntrinsic};
+use loom_sema::{CallTarget, ConstantValue, TaskIntrinsic};
 use loom_syntax::parse_with_file;
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -726,6 +726,61 @@ fn package_initialization_is_explicit_and_init_is_an_ordinary_function() {
         .invoke(entry, Vec::new(), Span::default())
         .expect("run main without implicit package initialization");
     assert_eq!(result, Value::Unit);
+}
+
+#[test]
+fn constants_cross_package_files_and_public_imports_as_folded_values() {
+    let project = TestProject::new();
+    project.write(
+        "loom.toml",
+        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"application\"\nversion = \"1.0.0\"\n",
+    );
+    project.write("values/base.loom", "const base Int = 40\n");
+    project.write("values/answer.loom", "pub const answer Int = base + 2\n");
+    project.write(
+        "main.loom",
+        "import application.values.answer\n\npub fn read() Int { answer }\n",
+    );
+
+    let snapshot = AnalysisHost::new(&project.root)
+        .expect("open constant project")
+        .snapshot()
+        .expect("compile constant project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let program = snapshot.executable().expect("lower constants to MIR");
+    let entry = program.exports["application.read"];
+    let value = Interpreter::new(program)
+        .invoke(entry, Vec::new(), Span::default())
+        .expect("run folded imported constant");
+    assert_eq!(value, Value::Int { value: 42 });
+}
+
+#[test]
+fn private_constants_are_not_importable_from_another_package() {
+    let project = TestProject::new();
+    project.write(
+        "loom.toml",
+        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"application\"\nversion = \"1.0.0\"\n",
+    );
+    project.write("values/hidden.loom", "const hidden Int = 42\n");
+    project.write(
+        "main.loom",
+        "import application.values.hidden\n\npub fn read() Int { hidden }\n",
+    );
+
+    let snapshot = AnalysisHost::new(&project.root)
+        .expect("open private-constant project")
+        .snapshot()
+        .expect("analyze private-constant project");
+    assert!(snapshot.has_errors());
+    assert!(
+        snapshot
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.code == "NameNotVisible"),
+        "{:#?}",
+        snapshot.diagnostics()
+    );
 }
 
 #[test]
@@ -2048,6 +2103,92 @@ fn module_interface_ignores_bodies_but_tracks_public_contracts() {
 }
 
 #[test]
+fn module_interface_tracks_public_constant_values() {
+    let project = TestProject::new();
+    project.write(
+        "main.loom",
+        "const base Int = 40\npub const answer Int = base + 1\n",
+    );
+    let first = AnalysisHost::new(&project.root)
+        .expect("open first constant interface")
+        .snapshot()
+        .expect("compile first constant interface")
+        .module_interfaces();
+
+    project.write(
+        "main.loom",
+        "const base Int = 41\npub const answer Int = base + 1\n",
+    );
+    let changed = AnalysisHost::new(&project.root)
+        .expect("open changed constant interface")
+        .snapshot()
+        .expect("compile changed constant interface")
+        .module_interfaces();
+
+    assert_ne!(first[0].fingerprint, changed[0].fingerprint);
+}
+
+#[test]
+fn non_finite_float_constants_round_trip_through_the_semantic_cache() {
+    let serialized_bits = [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.0]
+        .map(f64::to_bits)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    for bits in &serialized_bits {
+        let encoded = serde_json::to_value(ConstantValue::Float(f64::from_bits(*bits)))
+            .expect("encode Float constant bits");
+        assert_eq!(encoded["Float"], serde_json::json!(*bits));
+        let decoded: ConstantValue =
+            serde_json::from_value(encoded).expect("decode Float constant bits");
+        let ConstantValue::Float(value) = decoded else {
+            panic!("expected Float constant");
+        };
+        assert_eq!(value.to_bits(), *bits);
+    }
+
+    let project = TestProject::new();
+    project.write(
+        "main.loom",
+        "const nan Float = 0.0 / 0.0\nconst positive_infinity Float = 1.0 / 0.0\nconst negative_infinity Float = -1.0 / 0.0\nconst negative_zero Float = -0.0\n",
+    );
+    let cache = PersistentCache::new(project.root.join("target/float-constant-cache"));
+    let compile = || {
+        let host = AnalysisHost::new(&project.root).expect("open Float constant project");
+        host.snapshot_from_sources_with_parse_cache(
+            host.load_sources().expect("load Float constant source"),
+            &cache,
+            "float-constant-bits-test-v1",
+        )
+        .0
+    };
+    let bits = |snapshot: &loom_driver::AnalysisSnapshot| {
+        snapshot
+            .semantic_analysis()
+            .typed
+            .constants
+            .values()
+            .filter_map(|value| match value {
+                ConstantValue::Float(value) => Some(value.to_bits()),
+                ConstantValue::Bool(_) | ConstantValue::Int(_) | ConstantValue::Text(_) => None,
+            })
+            .collect::<BTreeSet<_>>()
+    };
+
+    let cold = compile();
+    assert!(!cold.has_errors(), "{:#?}", cold.diagnostics());
+    let cold_bits = bits(&cold);
+    assert_eq!(cold_bits.len(), 4);
+    assert!(cold_bits.iter().any(|bits| f64::from_bits(*bits).is_nan()));
+    for value in [f64::INFINITY, f64::NEG_INFINITY, -0.0] {
+        assert!(cold_bits.contains(&value.to_bits()));
+    }
+    let warm = compile();
+    assert!(!warm.has_errors(), "{:#?}", warm.diagnostics());
+    assert_eq!(warm.semantic_query_stats().modules_checked, 0);
+    assert_eq!(bits(&warm), cold_bits);
+}
+
+#[test]
 fn typed_hir_queries_reuse_unmodified_modules() {
     let project = TestProject::new();
     project.write(
@@ -2270,12 +2411,12 @@ fn overlays_and_cli_snapshots_use_the_same_source_map() {
 
 #[test]
 fn formatter_is_canonical_idempotent_and_refuses_broken_source() {
-    let source = "fn value() Int { 1 }\r\n\r\nfn main() {\r\n\tdiscard value()   \r\n}\r\n\r\n";
+    let source = "pub const answer Int = 42   \r\n\r\nfn value() Int { answer }\r\n\r\nfn main() {\r\n\tdiscard value()   \r\n}\r\n\r\n";
     let first = format_source(FileId(0), source);
     assert!(first.diagnostics.is_empty());
     assert_eq!(
         first.text,
-        "fn value() Int { 1 }\n\nfn main() {\n    discard value()\n}\n"
+        "pub const answer Int = 42\n\nfn value() Int { answer }\n\nfn main() {\n    discard value()\n}\n"
     );
     let second = format_source(FileId(0), &first.text);
     assert_eq!(second.text, first.text);

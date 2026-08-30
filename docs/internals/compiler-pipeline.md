@@ -60,7 +60,7 @@ compiler/runtime operation; parsing has no special compiler or runtime path. See
 The `std` identity is the only compiler-owned module identity in language
 version 0.3.
 
-A version 2 `.loomlib` dependency enters at this same source boundary. Its
+A version 3 `.loomlib` dependency enters at this same source boundary. Its
 decoder validates the bounded module/package/source structure and recomputes
 the stored public interfaces, then exposes the embedded files as read-only package
 sources. It does not supply checked MIR, producer proof decisions, or a

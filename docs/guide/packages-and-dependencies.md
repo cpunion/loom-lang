@@ -69,7 +69,7 @@ the dependency's declared module name differs from that alias. The declared name
 requirement, language version, and resolved module identity must agree.
 
 An artifact dependency cannot combine with `path` or `registry`, and cannot
-request source features from the packaged graph. A version 2 `.loomlib`
+request source features from the packaged graph. A version 3 `.loomlib`
 contains the resolved module graph, exact Loom sources, and canonical public
 interfaces. It contains no checked MIR, producer-local proof state, or copy of
 the compiler-distributed standard library. The consumer validates the envelope
@@ -88,11 +88,12 @@ There are no wildcard imports, dependency-provided preludes, or runtime
 implementation activation.
 
 Packages have no implicit initialization hook. Put application startup in
-ordinary functions called explicitly from `main`. Loom 0.3 has no top-level
-constant declaration; a future form will be restricted to compile-time
-evaluation, while lazy process state belongs in future `std` abstractions such
-as `Lazy` and `Once`. Fixed GC, executor, and Runtime ABI setup performed by the
-toolchain remains internal and does not make an import execute user code.
+ordinary functions called explicitly from `main`. Top-level `const` values are
+fully evaluated and substituted by the compiler; they do not create package
+storage or an initialization order. Lazy process state belongs in future `std`
+abstractions such as `Lazy` and `Once`. Fixed GC, executor, and Runtime ABI
+setup performed by the toolchain remains internal and does not make an import
+execute user code.
 
 Dependency `*_test.loom` files are not part of the resolved source graph.
 `loom test .` runs the current directory package, while `loom test ./...` runs
@@ -260,7 +261,7 @@ across Loom versions.
 
 ## Compiler cache
 
-The default project cache is `target/loom/cache/v6`. It caches versioned
+The default project cache is `target/loom/cache/v7`. It caches versioned
 parsing, interfaces, validated checked MIR, target objects, and supported
 portable final artifacts using content-derived keys. Reads validate envelopes
 and hashes; corrupt or incompatible entries degrade to misses rather than being

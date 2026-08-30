@@ -2542,6 +2542,7 @@ impl<'a> Validator<'a> {
         let boolean = self.scalar_type(&Type::Bool);
         let integer = self.scalar_type(&Type::Int);
         let float = self.scalar_type(&Type::Float);
+        let integer_pair = self.scalar_type(&Type::Tuple(vec![Type::Int, Type::Int]));
         let text = self.scalar_type(&Type::Text);
         let bytes = self.managed_bytes_type();
         let text_is_managed = text.is_some_and(|text| {
@@ -3078,6 +3079,26 @@ impl<'a> Validator<'a> {
                     &[self.scalar_type(&Type::Text)],
                     &path,
                 );
+            }
+            InstructionKind::IntToFloat { value } => {
+                self.require_known_value_type(
+                    function,
+                    *value,
+                    integer,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.value"),
+                );
+                self.require_results(function, instruction, &[float], &path);
+            }
+            InstructionKind::FloatToIntStatus { value } => {
+                self.require_known_value_type(
+                    function,
+                    *value,
+                    float,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.value"),
+                );
+                self.require_results(function, instruction, &[integer_pair], &path);
             }
             InstructionKind::JsonFormat {
                 json,

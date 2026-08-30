@@ -1,0 +1,25 @@
+import std.float.__from_int
+import std.float.__to_int
+
+/// Describes why a Float cannot be represented as an Int.
+pub enum FloatToIntError {
+    NonFinite
+    OutOfRange
+}
+
+/// Converts Int to IEEE-754 binary64 using round-to-nearest, ties-to-even.
+pub fn from_int(value Int) Float {
+    __from_int(value)
+}
+
+/// Truncates Float toward zero when the result is representable as Int.
+pub fn to_int(value Float) Result[Int, FloatToIntError] {
+    let converted, status = __to_int(value)
+    if status == 0 {
+        return Ok(converted)
+    }
+    if status == 1 {
+        return Err(FloatToIntError.NonFinite)
+    }
+    Err(FloatToIntError.OutOfRange)
+}

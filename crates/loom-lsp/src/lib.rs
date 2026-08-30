@@ -1011,7 +1011,10 @@ fn read_only_source_diagnostic(source: &SourceDocument) -> (&'static str, &'stat
 const COMPLETION_KEYWORDS: &[&str] = &[
     "async",
     "assert",
+    "break",
     "concept",
+    "const",
+    "continue",
     "defer",
     "discard",
     "dyn",
@@ -1036,6 +1039,7 @@ const COMPLETION_KEYWORDS: &[&str] = &[
     "true",
     "var",
     "where",
+    "while",
 ];
 
 struct StdSymbol {
@@ -1220,6 +1224,7 @@ fn symbol_kind(kind: &str) -> u8 {
         "record" | "constrained type" => 23,
         "enum" => 10,
         "enum variant" => 22,
+        "constant" => 14,
         "concept" | "conformance" | "impl" => 11,
         "field" => 8,
         "associated type" | "type parameter" => 26,
@@ -1234,6 +1239,7 @@ fn completion_kind(kind: &str) -> u8 {
         "record" | "constrained type" => 22,
         "enum" => 13,
         "enum variant" => 20,
+        "constant" => 21,
         "concept" | "conformance" | "impl" => 8,
         "field" => 5,
         "associated type" | "type parameter" => 25,
@@ -1479,12 +1485,24 @@ fn hex(value: u8) -> Result<u8, String> {
 mod tests {
     use std::path::Path;
 
-    use super::{file_uri_to_path, path_to_file_uri};
+    use super::{
+        COMPLETION_KEYWORDS, completion_kind, file_uri_to_path, path_to_file_uri, symbol_kind,
+    };
 
     #[test]
     fn file_uri_round_trip_handles_spaces_and_unicode() {
         let path = Path::new("/tmp/loom project/价格.loom");
         let uri = path_to_file_uri(path);
         assert_eq!(file_uri_to_path(&uri).as_deref(), Ok(path));
+    }
+
+    #[test]
+    fn constants_and_loop_control_have_keyword_support() {
+        assert!(COMPLETION_KEYWORDS.contains(&"const"));
+        for keyword in ["while", "break", "continue"] {
+            assert!(COMPLETION_KEYWORDS.contains(&keyword));
+        }
+        assert_eq!(symbol_kind("constant"), 14);
+        assert_eq!(completion_kind("constant"), 21);
     }
 }

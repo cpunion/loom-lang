@@ -226,6 +226,14 @@ struct CfgBuilder<'mir> {
     exit: NodeId,
     cleanups: Vec<Cleanup<'mir>>,
     unwind_entries: Vec<Option<NodeId>>,
+    loops: Vec<LoopTargets>,
+}
+
+#[derive(Clone, Copy)]
+struct LoopTargets {
+    break_target: NodeId,
+    continue_target: NodeId,
+    cleanup_boundary: Option<CleanupId>,
 }
 
 impl<'mir> CfgBuilder<'mir> {
@@ -242,6 +250,7 @@ impl<'mir> CfgBuilder<'mir> {
             exit: 0,
             cleanups: Vec::new(),
             unwind_entries: Vec::new(),
+            loops: Vec::new(),
         }
     }
 
@@ -321,6 +330,30 @@ impl<'mir> CfgBuilder<'mir> {
             let cleanup = self.cleanups[cleanup_id];
             entry = self.build_cleanup(cleanup, entry);
             self.unwind_entries[cleanup_id] = Some(entry);
+        }
+        entry
+    }
+
+    fn build_control_unwind(
+        &mut self,
+        active_cleanup: Option<CleanupId>,
+        boundary: Option<CleanupId>,
+        continuation: NodeId,
+    ) -> NodeId {
+        let mut pending = Vec::new();
+        let mut cursor = active_cleanup;
+        while cursor != boundary {
+            let Some(cleanup_id) = cursor else {
+                debug_assert!(false, "loop cleanup boundary must be active");
+                break;
+            };
+            let cleanup = self.cleanups[cleanup_id];
+            pending.push(cleanup);
+            cursor = cleanup.older;
+        }
+        let mut entry = continuation;
+        for cleanup in pending.into_iter().rev() {
+            entry = self.build_cleanup(cleanup, entry);
         }
         entry
     }
@@ -431,11 +464,41 @@ impl<'mir> CfgBuilder<'mir> {
                 body,
             } => {
                 let decision = self.node([], [], [continuation]);
+                self.loops.push(LoopTargets {
+                    break_target: continuation,
+                    continue_target: decision,
+                    cleanup_boundary: active_cleanup,
+                });
                 let body_entry = self.build_block(body, decision, active_cleanup);
+                self.loops.pop();
                 let iteration = self.node([], [*local], [body_entry]);
                 self.nodes[decision].successors.push(iteration);
                 let end_entry = self.build_expr(end, decision, active_cleanup);
                 self.build_expr(start, end_entry, active_cleanup)
+            }
+            StatementKind::While { condition, body } => {
+                let decision = self.node([], [], [continuation]);
+                let condition_entry = self.build_expr(condition, decision, active_cleanup);
+                self.loops.push(LoopTargets {
+                    break_target: continuation,
+                    continue_target: condition_entry,
+                    cleanup_boundary: active_cleanup,
+                });
+                let body_entry = self.build_block(body, condition_entry, active_cleanup);
+                self.loops.pop();
+                self.nodes[decision].successors.push(body_entry);
+                condition_entry
+            }
+            StatementKind::Break | StatementKind::Continue => {
+                let Some(targets) = self.loops.last().copied() else {
+                    return continuation;
+                };
+                let target = if matches!(&statement.kind, StatementKind::Break) {
+                    targets.break_target
+                } else {
+                    targets.continue_target
+                };
+                self.build_control_unwind(active_cleanup, targets.cleanup_boundary, target)
             }
             StatementKind::Assign { place, value } => {
                 let store = if place.projection.is_empty() {

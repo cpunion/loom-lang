@@ -20,19 +20,19 @@ writers for unreleased formats. Development history belongs in
 | Manifest schema | `2` |
 | Lockfile schema | `2` |
 | Registry protocol and bundle | `1` |
-| Interpreted MIR artifact | `loom.interpreted-mir`, version `29` |
-| Portable library artifact | `loom-library`, source-and-interface version `2` |
-| Persistent compiler cache | schema `5` |
-| Compilation-cache domain | `loom-compilation-cache-v5` |
+| Interpreted MIR artifact | `loom.interpreted-mir`, version `31` |
+| Portable library artifact | `loom-library`, source-and-interface version `3` |
+| Persistent compiler cache | schema `7` |
+| Compilation-cache domain | `loom-compilation-cache-v7` |
 | Interpreted final-cache layer | `final-artifact-v3` |
 | Interpreted artifact writer | `loom-interpreted-artifact-writer-v3` |
 | Portable-library final-cache layer | `portable-library-artifact-v3` |
-| LCIR textual dump | `lcir 40` |
-| LCIR artifact identity | schema `42` |
+| LCIR textual dump | `lcir 41` |
+| LCIR artifact identity | schema `43` |
 | LCIR artifact route | `typed-lcir-whole-artifact` |
-| LCIR native-object domain | `loom-lcir-native-object-v38` |
+| LCIR native-object domain | `loom-lcir-native-object-v39` |
 | Checked-MIR native-object domain | `loom-checked-mir-native-object-v1` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v43` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v44` |
 | Controlled quality evidence | schema `4` |
 | Runtime bundle manifest | schema `2` |
 | Native runtime ABI component | `31` |

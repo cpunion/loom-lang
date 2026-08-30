@@ -42,6 +42,7 @@ pub enum TokenKind {
 
     ImportKw,
     PubKw,
+    ConstKw,
     TypeKw,
     WhereKw,
     RecordKw,
@@ -79,6 +80,9 @@ pub enum TokenKind {
     AsKw,
     ForKw,
     InKw,
+    WhileKw,
+    BreakKw,
+    ContinueKw,
     LParen,
     RParen,
     LBracket,
@@ -126,6 +130,7 @@ impl TokenKind {
             self,
             Self::ImportKw
                 | Self::PubKw
+                | Self::ConstKw
                 | Self::TypeKw
                 | Self::WhereKw
                 | Self::RecordKw
@@ -162,6 +167,9 @@ impl TokenKind {
                 | Self::AsKw
                 | Self::ForKw
                 | Self::InKw
+                | Self::WhileKw
+                | Self::BreakKw
+                | Self::ContinueKw
         )
     }
 
@@ -678,6 +686,7 @@ fn keyword(text: &str) -> TokenKind {
     match text {
         "import" => TokenKind::ImportKw,
         "pub" => TokenKind::PubKw,
+        "const" => TokenKind::ConstKw,
         "type" => TokenKind::TypeKw,
         "where" => TokenKind::WhereKw,
         "record" => TokenKind::RecordKw,
@@ -714,6 +723,9 @@ fn keyword(text: &str) -> TokenKind {
         "as" => TokenKind::AsKw,
         "for" => TokenKind::ForKw,
         "in" => TokenKind::InKw,
+        "while" => TokenKind::WhileKw,
+        "break" => TokenKind::BreakKw,
+        "continue" => TokenKind::ContinueKw,
         _ => TokenKind::Ident,
     }
 }

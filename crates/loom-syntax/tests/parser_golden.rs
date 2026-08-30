@@ -22,6 +22,23 @@ fn assert_clean(source: &str) -> loom_syntax::Parse {
 }
 
 #[test]
+fn parses_typed_top_level_constants_without_colons() {
+    let parsed = assert_clean(
+        "pub const answer Int = 40 + 2\nconst enabled Bool = !false\nconst label Text = \"loom\"\n",
+    );
+    let DeclKind::Constant(answer) = &parsed.ast().declarations[0].kind else {
+        panic!("expected constant declaration");
+    };
+    assert_eq!(answer.name.text, "answer");
+    assert!(matches!(answer.ty.kind, TypeExprKind::Named { .. }));
+    assert!(matches!(answer.value.kind, ExprKind::Binary { .. }));
+    assert!(parsed.ast().declarations[0].visibility.is_public());
+
+    let colon = parse("const answer: Int = 42\n");
+    assert!(codes(&colon).contains(&"UnexpectedToken"));
+}
+
+#[test]
 fn parses_postfix_await_as_a_chainable_keyword() {
     let parsed =
         assert_clean("async fn child() Int { 1 }\nasync fn parent() Int { child().await }\n");
@@ -649,6 +666,29 @@ fn bare_return_is_syntactically_accepted() {
         panic!("expected return");
     };
     assert!(returned.value.is_none());
+}
+
+#[test]
+fn parses_while_and_value_less_loop_control() {
+    let parsed = assert_clean(
+        "fn run(flag Bool) {\n    while flag {\n        break\n        continue\n    }\n}\n",
+    );
+    let DeclKind::Function(function) = &parsed.ast().declarations[0].kind else {
+        panic!("expected function");
+    };
+    let BlockItem::While(loop_) = &function.body.items[0] else {
+        panic!("expected while statement");
+    };
+    assert!(matches!(loop_.condition.kind, ExprKind::Name(_)));
+    assert!(matches!(loop_.body.items[0], BlockItem::Break(_)));
+    assert!(matches!(loop_.body.items[1], BlockItem::Continue(_)));
+
+    for source in [
+        "fn invalid() { while true { break 1 } }\n",
+        "fn invalid() { while true { continue 1 } }\n",
+    ] {
+        assert!(codes(&parse(source)).contains(&"UnexpectedToken"));
+    }
 }
 
 #[test]

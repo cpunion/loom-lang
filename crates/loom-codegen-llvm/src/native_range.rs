@@ -503,7 +503,8 @@ impl NativeIntRangePlan {
                 record_proofs: false,
                 call_stack: BTreeSet::from([function_id]),
                 conservative_calls: block_contains_defer(&function.body)
-                    || block_contains_nested_loop(&function.body),
+                    || block_contains_nested_loop(&function.body)
+                    || block_contains_loop_control(&function.body),
             };
             analyzer.scan(function, &context);
 
@@ -555,6 +556,7 @@ impl NativeIntRangePlan {
                 || !function.witness_params.is_empty()
                 || block_contains_defer(&function.body)
                 || block_contains_nested_loop(&function.body)
+                || block_contains_loop_control(&function.body)
             {
                 continue;
             }
@@ -598,6 +600,7 @@ impl NativeIntRangePlan {
             .filter_map(|function| {
                 program
                     .function(*function)
+                    .filter(|function| !block_contains_loop_control(&function.body))
                     .and_then(analyze_assumed_int_function)
                     .map(|plan| (*function, plan))
             })
@@ -1132,6 +1135,14 @@ impl FunctionAnalyzer<'_, '_> {
                 end,
                 body,
             } => self.eval_counted_loop(*local, start, end, body, environment),
+            StatementKind::While { condition, body } => {
+                self.eval_expr(condition, environment);
+                let entry = environment.clone();
+                let mut iteration = entry.clone();
+                self.eval_block(body, &mut iteration);
+                *environment = join_environments(&entry, &iteration);
+            }
+            StatementKind::Break | StatementKind::Continue => {}
             StatementKind::Assert { condition } => {
                 self.eval_expr(condition, environment);
                 refine_condition(condition, true, environment);
@@ -2462,6 +2473,11 @@ fn collect_block_mutations(block: &Block, roots: &mut BTreeSet<LocalId>) {
                 collect_expr_mutations(end, roots);
                 collect_block_mutations(body, roots);
             }
+            StatementKind::While { condition, body } => {
+                collect_expr_mutations(condition, roots);
+                collect_block_mutations(body, roots);
+            }
+            StatementKind::Break | StatementKind::Continue => {}
             StatementKind::Let { value, .. }
             | StatementKind::LetTuple { value, .. }
             | StatementKind::Evaluate(value) => collect_expr_mutations(value, roots),
@@ -2567,6 +2583,10 @@ fn block_moves_local(block: &Block, local: LocalId) -> bool {
                     || expression_moves_local(end, local)
                     || block_moves_local(body, local)
             }
+            StatementKind::While { condition, body } => {
+                expression_moves_local(condition, local) || block_moves_local(body, local)
+            }
+            StatementKind::Break | StatementKind::Continue => false,
             StatementKind::Assert { condition } => expression_moves_local(condition, local),
             StatementKind::Defer(cleanup) => block_moves_local(cleanup, local),
             StatementKind::Return(value) => value
@@ -2832,7 +2852,8 @@ fn block_contains_loop(block: &Block) -> bool {
         .statements
         .iter()
         .any(|statement| match &statement.kind {
-            StatementKind::ForRange { .. } => true,
+            StatementKind::ForRange { .. } | StatementKind::While { .. } => true,
+            StatementKind::Break | StatementKind::Continue => false,
             StatementKind::Defer(body) => block_contains_loop(body),
             StatementKind::Let { value, .. }
             | StatementKind::LetTuple { value, .. }
@@ -2904,6 +2925,12 @@ fn block_contains_nested_loop_at(block: &Block, inside_loop: bool) -> bool {
                     || expression_contains_nested_loop_at(end, inside_loop)
                     || block_contains_nested_loop_at(body, true)
             }
+            StatementKind::While { condition, body } => {
+                inside_loop
+                    || expression_contains_nested_loop_at(condition, inside_loop)
+                    || block_contains_nested_loop_at(body, true)
+            }
+            StatementKind::Break | StatementKind::Continue => false,
             StatementKind::Defer(body) => block_contains_nested_loop_at(body, inside_loop),
             StatementKind::Let { value, .. }
             | StatementKind::LetTuple { value, .. }
@@ -2980,6 +3007,86 @@ fn expression_contains_nested_loop_at(expression: &Expr, inside_loop: bool) -> b
     }
 }
 
+fn block_contains_loop_control(block: &Block) -> bool {
+    block
+        .statements
+        .iter()
+        .any(|statement| match &statement.kind {
+            // The legacy analyzer checks a while body only once and does not
+            // establish a recurrence invariant. Disable every proof/elision
+            // for such functions, as well as functions with non-local loop
+            // control, instead of trusting first-iteration facts.
+            StatementKind::Break | StatementKind::Continue | StatementKind::While { .. } => true,
+            StatementKind::ForRange {
+                start, end, body, ..
+            } => {
+                expression_contains_loop_control(start)
+                    || expression_contains_loop_control(end)
+                    || block_contains_loop_control(body)
+            }
+            StatementKind::Defer(body) => block_contains_loop_control(body),
+            StatementKind::Let { value, .. }
+            | StatementKind::LetTuple { value, .. }
+            | StatementKind::Assign { value, .. }
+            | StatementKind::Evaluate(value)
+            | StatementKind::Scoped { value, .. } => expression_contains_loop_control(value),
+            StatementKind::Assert { condition } => expression_contains_loop_control(condition),
+            StatementKind::Return(value) => {
+                value.as_ref().is_some_and(expression_contains_loop_control)
+            }
+        })
+        || block
+            .tail
+            .as_deref()
+            .is_some_and(expression_contains_loop_control)
+}
+
+fn expression_contains_loop_control(expression: &Expr) -> bool {
+    match &expression.kind {
+        ExprKind::Block(block) => block_contains_loop_control(block),
+        ExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            expression_contains_loop_control(condition)
+                || block_contains_loop_control(then_branch)
+                || block_contains_loop_control(else_branch)
+        }
+        ExprKind::Match { scrutinee, arms } => {
+            expression_contains_loop_control(scrutinee)
+                || arms
+                    .iter()
+                    .any(|arm| expression_contains_loop_control(&arm.value))
+        }
+        ExprKind::Tuple(values) | ExprKind::List(values) => {
+            values.iter().any(expression_contains_loop_control)
+        }
+        ExprKind::Record { fields, .. } => fields.iter().any(expression_contains_loop_control),
+        ExprKind::Variant { payload, .. } => payload.iter().any(expression_contains_loop_control),
+        ExprKind::Unary(_, value)
+        | ExprKind::Refine { value, .. }
+        | ExprKind::Unrefine(value)
+        | ExprKind::MakeView { value, .. } => expression_contains_loop_control(value),
+        ExprKind::Binary(_, left, right) => {
+            expression_contains_loop_control(left) || expression_contains_loop_control(right)
+        }
+        ExprKind::Call { arguments, .. } => arguments.iter().any(|argument| match argument {
+            CallArgument::Value(value) => expression_contains_loop_control(value),
+            CallArgument::InOut(_) => false,
+        }),
+        ExprKind::Await { task, .. } => expression_contains_loop_control(task),
+        ExprKind::Sleep { milliseconds } => expression_contains_loop_control(milliseconds),
+        ExprKind::TaskJoin { arguments, .. } => {
+            arguments.iter().any(expression_contains_loop_control)
+        }
+        ExprKind::Constant(_)
+        | ExprKind::Copy(_)
+        | ExprKind::Move(_)
+        | ExprKind::ReborrowView { .. } => false,
+    }
+}
+
 fn block_contains_return(block: &Block) -> bool {
     block
         .statements
@@ -2987,6 +3094,10 @@ fn block_contains_return(block: &Block) -> bool {
         .any(|statement| match &statement.kind {
             StatementKind::Return(_) => true,
             StatementKind::ForRange { body, .. } => block_contains_return(body),
+            StatementKind::While { condition, body } => {
+                expression_contains_return(condition) || block_contains_return(body)
+            }
+            StatementKind::Break | StatementKind::Continue => false,
             StatementKind::Defer(body) => block_contains_return(body),
             StatementKind::Let { value, .. }
             | StatementKind::LetTuple { value, .. }
@@ -3052,6 +3163,10 @@ fn block_contains_defer(block: &Block) -> bool {
         .any(|statement| match &statement.kind {
             StatementKind::Defer(_) | StatementKind::Scoped { .. } => true,
             StatementKind::ForRange { body, .. } => block_contains_defer(body),
+            StatementKind::While { condition, body } => {
+                expression_contains_defer(condition) || block_contains_defer(body)
+            }
+            StatementKind::Break | StatementKind::Continue => false,
             StatementKind::Let { value, .. }
             | StatementKind::LetTuple { value, .. }
             | StatementKind::Assign { value, .. }

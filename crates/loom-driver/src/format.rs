@@ -79,3 +79,24 @@ fn trim_horizontal_end(output: &mut String) {
         output.pop();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::format_source;
+    use loom_core::FileId;
+
+    #[test]
+    fn formats_while_break_and_continue_as_block_statements() {
+        let source = "fn run() {\n while true {\n break\n continue\n }\n}\n";
+        let formatted = format_source(FileId(0), source);
+        assert!(
+            formatted.diagnostics.is_empty(),
+            "{:#?}",
+            formatted.diagnostics
+        );
+        assert_eq!(
+            formatted.text,
+            "fn run() {\n    while true {\n        break\n        continue\n    }\n}\n"
+        );
+    }
+}

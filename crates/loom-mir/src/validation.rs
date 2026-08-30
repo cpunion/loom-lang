@@ -818,6 +818,15 @@ struct Validator<'program> {
     cleanup_arena: Vec<RegisteredCleanup>,
     pending_cleanup_unwinds: BTreeMap<usize, DataflowState>,
     slot_states: SlotStateArena,
+    shape_loop_depth: u32,
+    shape_cleanup_loop_bases: Vec<u32>,
+    dataflow_loops: Vec<DataflowLoop>,
+}
+
+struct DataflowLoop {
+    cleanup_boundary: Option<usize>,
+    break_states: Vec<DataflowState>,
+    continue_states: Vec<DataflowState>,
 }
 
 impl<'program> Validator<'program> {
@@ -831,6 +840,9 @@ impl<'program> Validator<'program> {
             cleanup_arena: Vec::new(),
             pending_cleanup_unwinds: BTreeMap::new(),
             slot_states: SlotStateArena::new(),
+            shape_loop_depth: 0,
+            shape_cleanup_loop_bases: Vec::new(),
+            dataflow_loops: Vec::new(),
         }
     }
 
@@ -3789,6 +3801,7 @@ impl<'program> Validator<'program> {
                 if !types_compatible(&Type::Int, &end_ty) {
                     self.type_mismatch(&Type::Int, &end_ty, end.span, path);
                 }
+                self.shape_loop_depth = self.shape_loop_depth.saturating_add(1);
                 self.validate_block(
                     function,
                     body,
@@ -3796,6 +3809,44 @@ impl<'program> Validator<'program> {
                     &format!("{path}.body"),
                     depth + 1,
                 );
+                self.shape_loop_depth = self.shape_loop_depth.saturating_sub(1);
+            }
+            StatementKind::While { condition, body } => {
+                let condition_ty =
+                    self.validate_expr(function, condition, &format!("{path}.condition"), depth);
+                if !types_compatible(&Type::Bool, &condition_ty) {
+                    self.type_mismatch(&Type::Bool, &condition_ty, condition.span, path);
+                }
+                self.shape_loop_depth = self.shape_loop_depth.saturating_add(1);
+                self.validate_block(
+                    function,
+                    body,
+                    Some(&Type::Unit),
+                    &format!("{path}.body"),
+                    depth + 1,
+                );
+                self.shape_loop_depth = self.shape_loop_depth.saturating_sub(1);
+            }
+            StatementKind::Break | StatementKind::Continue => {
+                if self.shape_loop_depth == 0 {
+                    self.push(
+                        MirValidationCode::ExpressionShape,
+                        "loop control is only valid inside a loop",
+                        statement.span,
+                        path,
+                    );
+                } else if self
+                    .shape_cleanup_loop_bases
+                    .last()
+                    .is_some_and(|base| self.shape_loop_depth <= *base)
+                {
+                    self.push(
+                        MirValidationCode::ExpressionShape,
+                        "a defer cleanup cannot control an enclosing loop",
+                        statement.span,
+                        path,
+                    );
+                }
             }
             StatementKind::Assign { place, value } => {
                 let place_ty = self.validate_place(
@@ -3851,6 +3902,7 @@ impl<'program> Validator<'program> {
                 }
             }
             StatementKind::Defer(cleanup) => {
+                self.shape_cleanup_loop_bases.push(self.shape_loop_depth);
                 self.validate_block(
                     function,
                     cleanup,
@@ -3858,10 +3910,11 @@ impl<'program> Validator<'program> {
                     &format!("{path}.cleanup"),
                     depth + 1,
                 );
+                self.shape_cleanup_loop_bases.pop();
                 if cleanup_contains_forbidden_control(cleanup, 0) {
                     self.push(
                         MirValidationCode::ExpressionShape,
-                        "defer cleanup cannot return, await, or register another cleanup",
+                        "defer cleanup cannot return, await, control an enclosing loop, or register another cleanup",
                         statement.span,
                         format!("{path}.cleanup"),
                     );
@@ -6321,6 +6374,12 @@ impl<'program> Validator<'program> {
                 Some(Type::Nominal(option, vec![Type::Text]))
             }
             Builtin::IsFinite if self.is_float_like(types[0].as_ref()?) => Some(Type::Bool),
+            Builtin::IntToFloat if types_compatible(&Type::Int, types[0].as_ref()?) => {
+                Some(Type::Float)
+            }
+            Builtin::FloatToIntStatus if self.is_float_like(types[0].as_ref()?) => {
+                Some(Type::Tuple(vec![Type::Int, Type::Int]))
+            }
             Builtin::ParseFloat if types_compatible(&Type::Text, types[0].as_ref()?) => self
                 .expected_result_type(
                     Type::Float,
@@ -6492,6 +6551,8 @@ impl<'program> Validator<'program> {
             Builtin::TextMapInsert | Builtin::LogWrite => 3,
             Builtin::ProcessArguments | Builtin::TextMapNew => 0,
             Builtin::IsFinite
+            | Builtin::IntToFloat
+            | Builtin::FloatToIntStatus
             | Builtin::ParseFloat
             | Builtin::FormatFloat
             | Builtin::TextLength
@@ -8719,6 +8780,8 @@ impl<'program> Validator<'program> {
             | Builtin::SocketTryReadText
             | Builtin::SocketTryWriteText => false,
             Builtin::IsFinite
+            | Builtin::IntToFloat
+            | Builtin::FloatToIntStatus
             | Builtin::ParseFloat
             | Builtin::FormatFloat
             | Builtin::TextLength
@@ -8831,6 +8894,17 @@ impl<'program> Validator<'program> {
                 );
                 self.validate_borrowed_view_block(function, body, &format!("{path}.body"), depth);
             }
+            StatementKind::While { condition, body } => {
+                self.validate_borrowed_view_expr(
+                    function,
+                    condition,
+                    BorrowedViewPosition::Other,
+                    &format!("{path}.condition"),
+                    depth,
+                );
+                self.validate_borrowed_view_block(function, body, &format!("{path}.body"), depth);
+            }
+            StatementKind::Break | StatementKind::Continue => {}
             StatementKind::Assert { condition } => self.validate_borrowed_view_expr(
                 function,
                 condition,
@@ -9058,6 +9132,7 @@ impl<'program> Validator<'program> {
         self.cleanup_arena.clear();
         self.pending_cleanup_unwinds.clear();
         self.slot_states.clear();
+        self.dataflow_loops.clear();
         self.validate_borrowed_view_uses(function, path);
         if self.nesting_failed {
             return;
@@ -9100,6 +9175,7 @@ impl<'program> Validator<'program> {
         self.pending_cleanup_unwinds.clear();
         self.cleanup_arena.clear();
         self.slot_states.clear();
+        self.dataflow_loops.clear();
     }
 
     fn dataflow_block(
@@ -9173,6 +9249,9 @@ impl<'program> Validator<'program> {
                 } => locals.extend(bindings.iter().copied()),
                 StatementKind::Scoped { .. }
                 | StatementKind::ForRange { .. }
+                | StatementKind::While { .. }
+                | StatementKind::Break
+                | StatementKind::Continue
                 | StatementKind::Assign { .. }
                 | StatementKind::Assert { .. }
                 | StatementKind::Evaluate(_)
@@ -9483,6 +9562,11 @@ impl<'program> Validator<'program> {
                 }
                 let mut iteration = state.clone();
                 self.dataflow_store(induction_index, &mut iteration);
+                self.dataflow_loops.push(DataflowLoop {
+                    cleanup_boundary: entry.active_cleanup,
+                    break_states: Vec::new(),
+                    continue_states: Vec::new(),
+                });
                 let body_flow = self.dataflow_block(
                     function,
                     body,
@@ -9490,10 +9574,9 @@ impl<'program> Validator<'program> {
                     &format!("{path}.body"),
                     depth + 1,
                 );
-                if body_flow.diverges {
-                    // Only the zero-iteration path reaches the successor.
-                    *state = entry;
-                } else {
+                let loop_flow = self.dataflow_loops.pop().expect("loop dataflow exists");
+                let mut successors = vec![entry.clone()];
+                if !body_flow.diverges {
                     self.validate_for_range_backedge(
                         &entry,
                         &iteration,
@@ -9501,9 +9584,90 @@ impl<'program> Validator<'program> {
                         statement.span,
                         path,
                     );
-                    *state = self.join_dataflow_states(&[entry, iteration]);
+                    successors.push(iteration);
                 }
+                for continued in loop_flow.continue_states {
+                    self.validate_for_range_backedge(
+                        &entry,
+                        &continued,
+                        *local,
+                        statement.span,
+                        path,
+                    );
+                    successors.push(continued);
+                }
+                successors.extend(loop_flow.break_states);
+                *state = self.join_dataflow_states(&successors);
                 false
+            }
+            StatementKind::While { condition, body } => {
+                // The condition is part of the loop header and runs before
+                // every body iteration. Backedges must therefore restore the
+                // pre-condition state, not merely the state left after the
+                // first condition evaluation.
+                let header = state.clone();
+                let condition = self.dataflow_expr(
+                    function,
+                    condition,
+                    state,
+                    &format!("{path}.condition"),
+                    depth,
+                );
+                if condition.diverges {
+                    return true;
+                }
+                let condition_exit = state.clone();
+                let mut iteration = condition_exit.clone();
+                self.dataflow_loops.push(DataflowLoop {
+                    cleanup_boundary: header.active_cleanup,
+                    break_states: Vec::new(),
+                    continue_states: Vec::new(),
+                });
+                let body_flow = self.dataflow_block(
+                    function,
+                    body,
+                    &mut iteration,
+                    &format!("{path}.body"),
+                    depth + 1,
+                );
+                let loop_flow = self.dataflow_loops.pop().expect("loop dataflow exists");
+                if !body_flow.diverges {
+                    self.validate_loop_backedge(&header, &iteration, statement.span, path);
+                }
+                for continued in loop_flow.continue_states {
+                    self.validate_loop_backedge(&header, &continued, statement.span, path);
+                }
+                // A normal loop exit has evaluated the condition; break exits
+                // have not. Valid backedges reproduce `header`, so evaluating
+                // the condition once describes every eventual false edge.
+                let mut successors = vec![condition_exit];
+                successors.extend(loop_flow.break_states);
+                *state = self.join_dataflow_states(&successors);
+                false
+            }
+            StatementKind::Break | StatementKind::Continue => {
+                let Some(boundary) = self
+                    .dataflow_loops
+                    .last()
+                    .map(|loop_| loop_.cleanup_boundary)
+                else {
+                    return true;
+                };
+                if !self.dataflow_cleanup_sequence(function, state, boundary) {
+                    return true;
+                }
+                state.temporary_loans = Rc::new(TemporaryLoanSet::default());
+                let captured = state.clone();
+                let loop_ = self.dataflow_loops.last_mut().expect("checked above");
+                if matches!(&statement.kind, StatementKind::Break) {
+                    loop_.break_states.push(captured);
+                } else {
+                    loop_.continue_states.push(captured);
+                }
+                // The enclosing dataflow block treats this path as terminated.
+                // Its lexical cleanups have already run to the loop boundary.
+                state.active_cleanup = None;
+                true
             }
             StatementKind::Assign { place, value } => {
                 let value =
@@ -10511,6 +10675,38 @@ impl<'program> Validator<'program> {
         }
     }
 
+    fn validate_loop_backedge(
+        &mut self,
+        entry: &DataflowState,
+        iteration: &DataflowState,
+        span: Span,
+        path: &str,
+    ) {
+        for index in 0..entry.local_count {
+            if self.slot_state(entry, index) != Some(SlotState::Available) {
+                continue;
+            }
+            if self.slot_state(iteration, index) != Some(SlotState::Available) {
+                self.push(
+                    MirValidationCode::LocalState,
+                    format!(
+                        "continuing While body does not preserve available loop-entry local #{index}"
+                    ),
+                    span,
+                    format!("{path}.body.backedge.locals[{index}]"),
+                );
+            }
+        }
+        if entry.temporary_loans != iteration.temporary_loans {
+            self.push(
+                MirValidationCode::BorrowShape,
+                "continuing While body does not restore temporary call-scoped accesses",
+                span,
+                format!("{path}.body.backedge.temporary_loans"),
+            );
+        }
+    }
+
     fn require_available(&mut self, local: LocalId, state: &DataflowState, span: Span, path: &str) {
         if self.slot_state(state, local.0 as usize) != Some(SlotState::Available) {
             self.push(
@@ -10843,7 +11039,7 @@ fn block_definitely_diverges(block: &Block, depth: u16) -> bool {
     }
     for statement in &block.statements {
         let diverges = match &statement.kind {
-            StatementKind::Return(_) => true,
+            StatementKind::Return(_) | StatementKind::Break | StatementKind::Continue => true,
             StatementKind::Let { value, .. }
             | StatementKind::Scoped { value, .. }
             | StatementKind::LetTuple { value, .. }
@@ -10852,6 +11048,9 @@ fn block_definitely_diverges(block: &Block, depth: u16) -> bool {
             StatementKind::ForRange { start, end, .. } => {
                 expr_definitely_diverges(start, depth + 1)
                     || expr_definitely_diverges(end, depth + 1)
+            }
+            StatementKind::While { condition, .. } => {
+                expr_definitely_diverges(condition, depth + 1)
             }
             StatementKind::Assert { condition } => expr_definitely_diverges(condition, depth + 1),
             StatementKind::Defer(_) => false,
@@ -10867,6 +11066,10 @@ fn block_definitely_diverges(block: &Block, depth: u16) -> bool {
 }
 
 fn cleanup_contains_forbidden_control(block: &Block, depth: u16) -> bool {
+    cleanup_contains_forbidden_control_at(block, depth, 0)
+}
+
+fn cleanup_contains_forbidden_control_at(block: &Block, depth: u16, loop_depth: u16) -> bool {
     if depth > MAX_VALIDATION_DEPTH {
         return true;
     }
@@ -10877,26 +11080,42 @@ fn cleanup_contains_forbidden_control(block: &Block, depth: u16) -> bool {
             StatementKind::Return(_) | StatementKind::Defer(_) | StatementKind::Scoped { .. } => {
                 true
             }
+            StatementKind::Break | StatementKind::Continue => loop_depth == 0,
             StatementKind::Let { value, .. }
             | StatementKind::LetTuple { value, .. }
             | StatementKind::Assign { value, .. }
-            | StatementKind::Evaluate(value) => expr_contains_await(value, depth + 1),
+            | StatementKind::Evaluate(value) => {
+                expr_contains_forbidden_cleanup_control(value, depth + 1, loop_depth)
+            }
             StatementKind::ForRange {
                 start, end, body, ..
             } => {
-                expr_contains_await(start, depth + 1)
-                    || expr_contains_await(end, depth + 1)
-                    || cleanup_contains_forbidden_control(body, depth + 1)
+                expr_contains_forbidden_cleanup_control(start, depth + 1, loop_depth)
+                    || expr_contains_forbidden_cleanup_control(end, depth + 1, loop_depth)
+                    || cleanup_contains_forbidden_control_at(
+                        body,
+                        depth + 1,
+                        loop_depth.saturating_add(1),
+                    )
             }
-            StatementKind::Assert { condition } => expr_contains_await(condition, depth + 1),
+            StatementKind::While { condition, body } => {
+                expr_contains_forbidden_cleanup_control(condition, depth + 1, loop_depth)
+                    || cleanup_contains_forbidden_control_at(
+                        body,
+                        depth + 1,
+                        loop_depth.saturating_add(1),
+                    )
+            }
+            StatementKind::Assert { condition } => {
+                expr_contains_forbidden_cleanup_control(condition, depth + 1, loop_depth)
+            }
         })
-        || block
-            .tail
-            .as_deref()
-            .is_some_and(|tail| expr_contains_await(tail, depth + 1))
+        || block.tail.as_deref().is_some_and(|tail| {
+            expr_contains_forbidden_cleanup_control(tail, depth + 1, loop_depth)
+        })
 }
 
-fn expr_contains_await(expression: &Expr, depth: u16) -> bool {
+fn expr_contains_forbidden_cleanup_control(expression: &Expr, depth: u16, loop_depth: u16) -> bool {
     if depth > MAX_VALIDATION_DEPTH {
         return true;
     }
@@ -10904,7 +11123,9 @@ fn expr_contains_await(expression: &Expr, depth: u16) -> bool {
         ExprKind::Await { .. } => true,
         ExprKind::Tuple(elements) | ExprKind::List(elements) => elements
             .iter()
-            .any(|element| expr_contains_await(element, depth + 1)),
+            .any(|element| {
+                expr_contains_forbidden_cleanup_control(element, depth + 1, loop_depth)
+            }),
         ExprKind::Unary(_, value)
         | ExprKind::Unrefine(value)
         | ExprKind::Refine { value, .. }
@@ -10912,39 +11133,54 @@ fn expr_contains_await(expression: &Expr, depth: u16) -> bool {
         | ExprKind::Sleep {
             milliseconds: value,
         } => {
-            expr_contains_await(value, depth + 1)
+            expr_contains_forbidden_cleanup_control(value, depth + 1, loop_depth)
         }
         ExprKind::Binary(_, left, right) => {
-            expr_contains_await(left, depth + 1) || expr_contains_await(right, depth + 1)
+            expr_contains_forbidden_cleanup_control(left, depth + 1, loop_depth)
+                || expr_contains_forbidden_cleanup_control(right, depth + 1, loop_depth)
         }
-        ExprKind::Block(block) => cleanup_contains_forbidden_control(block, depth + 1),
+        ExprKind::Block(block) => {
+            cleanup_contains_forbidden_control_at(block, depth + 1, loop_depth)
+        }
         ExprKind::If {
             condition,
             then_branch,
             else_branch,
         } => {
-            expr_contains_await(condition, depth + 1)
-                || cleanup_contains_forbidden_control(then_branch, depth + 1)
-                || cleanup_contains_forbidden_control(else_branch, depth + 1)
+            expr_contains_forbidden_cleanup_control(condition, depth + 1, loop_depth)
+                || cleanup_contains_forbidden_control_at(then_branch, depth + 1, loop_depth)
+                || cleanup_contains_forbidden_control_at(else_branch, depth + 1, loop_depth)
         }
         ExprKind::Match { scrutinee, arms } => {
-            expr_contains_await(scrutinee, depth + 1)
+            expr_contains_forbidden_cleanup_control(scrutinee, depth + 1, loop_depth)
                 || arms
                     .iter()
-                    .any(|arm| expr_contains_await(&arm.value, depth + 1))
+                    .any(|arm| {
+                        expr_contains_forbidden_cleanup_control(
+                            &arm.value,
+                            depth + 1,
+                            loop_depth,
+                        )
+                    })
         }
         ExprKind::Record { fields, .. } => fields
             .iter()
-            .any(|field| expr_contains_await(field, depth + 1)),
+            .any(|field| {
+                expr_contains_forbidden_cleanup_control(field, depth + 1, loop_depth)
+            }),
         ExprKind::Variant { payload, .. } => payload
             .iter()
-            .any(|value| expr_contains_await(value, depth + 1)),
+            .any(|value| {
+                expr_contains_forbidden_cleanup_control(value, depth + 1, loop_depth)
+            }),
         ExprKind::Call { arguments, .. } => arguments.iter().any(|argument| {
-            matches!(argument, CallArgument::Value(value) if expr_contains_await(value, depth + 1))
+            matches!(argument, CallArgument::Value(value) if expr_contains_forbidden_cleanup_control(value, depth + 1, loop_depth))
         }),
         ExprKind::TaskJoin { arguments, .. } => arguments
             .iter()
-            .any(|argument| expr_contains_await(argument, depth + 1)),
+            .any(|argument| {
+                expr_contains_forbidden_cleanup_control(argument, depth + 1, loop_depth)
+            }),
         ExprKind::Constant(_)
         | ExprKind::Copy(_)
         | ExprKind::Move(_)

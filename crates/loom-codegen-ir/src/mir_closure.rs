@@ -524,6 +524,11 @@ impl SerializationClosure {
                     self.scan_expr(program, end);
                     self.scan_block(program, body);
                 }
+                StatementKind::While { condition, body } => {
+                    self.scan_expr(program, condition);
+                    self.scan_block(program, body);
+                }
+                StatementKind::Break | StatementKind::Continue => {}
                 StatementKind::Assert { condition } => self.scan_expr(program, condition),
                 StatementKind::Defer(cleanup) => self.scan_block(program, cleanup),
                 StatementKind::Return(value) => {
@@ -779,6 +784,8 @@ impl SerializationClosure {
             }
             Builtin::StdoutWrite
             | Builtin::IsFinite
+            | Builtin::IntToFloat
+            | Builtin::FloatToIntStatus
             | Builtin::FormatFloat
             | Builtin::TextLength
             | Builtin::TextConcat
@@ -1182,6 +1189,11 @@ impl IdMaps {
                     self.remap_expr(end)?;
                     self.remap_block(body)?;
                 }
+                StatementKind::While { condition, body } => {
+                    self.remap_expr(condition)?;
+                    self.remap_block(body)?;
+                }
+                StatementKind::Break | StatementKind::Continue => {}
                 StatementKind::Assert { condition } => self.remap_expr(condition)?,
                 StatementKind::Defer(cleanup) => self.remap_block(cleanup)?,
                 StatementKind::Return(value) => {

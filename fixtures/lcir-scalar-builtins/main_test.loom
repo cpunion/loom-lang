@@ -1,6 +1,9 @@
 import std.float.format_float
+import std.float.FloatToIntError
+import std.float.from_int
 import std.float.is_finite
 import std.float.parse_float
+import std.float.to_int
 import std.int.ParseIntError
 import std.int.parse_int
 import std.time.milliseconds

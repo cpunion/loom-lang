@@ -48,7 +48,7 @@ larger graph.
 
 ## Persistent layers
 
-The persistent cache schema is `5`. Current layers include source parse,
+The persistent cache schema is `7`. Current layers include source parse,
 package-interface presence, typed package state, complete checked MIR, target
 objects, and deterministic final artifacts.
 
@@ -73,13 +73,13 @@ profile, and cache reads cross both ordinary MIR validation and that profile;
 inconsistent or incomplete identity metadata is a cache miss.
 
 Task policy and timer calls currently store a resolved `TaskIntrinsic` in typed
-body facts. Cache schema `5` and the `loom-compilation-cache-v5` domain require
+body facts. Cache schema `7` and the `loom-compilation-cache-v7` domain require
 that identity. Whether a body is reused or conservatively reanalyzed, MIR
 lowering consumes only the resolved identity; it never reconstructs a policy
 from source spelling. This cache identity disappears when the temporary Task
 catalog is replaced by ordinary source definitions.
 
-Checked-MIR cache envelopes use artifact version `29` and its exact current
+Checked-MIR cache envelopes use artifact version `31` and its exact current
 MIR shape. The artifact profile requires the complete compiler-known resource
 identity trio, all matching prelude ids, the canonical six-field
 `ConstraintError`, and the current builtin set. Generic cache envelopes have a
@@ -98,7 +98,7 @@ instead of permanently replacing its process-local proof with serialized
 `.loomi` `Recheck`. Supported nongeneric replay is typed LCIR; generic or
 unsupported replay remains checked-MIR.
 
-A `.loomlib` version `2` final artifact is a separate source/interface blob, not
+A `.loomlib` version `3` final artifact is a separate source/interface blob, not
 a checked-MIR cache entry. Its `portable-library-artifact-v3` derived cache
 identity includes the complete compilation key, selected library target,
 library format, and format version. Consequently a compiler or

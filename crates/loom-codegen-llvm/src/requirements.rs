@@ -440,6 +440,11 @@ impl RequirementScanner<'_> {
                     self.scan_expr(end, output)?;
                     self.scan_block(body, output)?;
                 }
+                StatementKind::While { condition, body } => {
+                    self.scan_expr(condition, output)?;
+                    self.scan_block(body, output)?;
+                }
+                StatementKind::Break | StatementKind::Continue => {}
                 StatementKind::Assert { condition } => {
                     output.requirements.include(RuntimeRequirements::MAY_FAULT);
                     self.scan_expr(condition, output)?;
@@ -993,6 +998,8 @@ pub(crate) const fn builtin_borrows_copy_argument(builtin: Builtin, index: usize
 const fn builtin_requirements(builtin: Builtin) -> RuntimeRequirements {
     match builtin {
         Builtin::IsFinite
+        | Builtin::IntToFloat
+        | Builtin::FloatToIntStatus
         | Builtin::TextLength
         | Builtin::BytesLength
         | Builtin::PathAsText

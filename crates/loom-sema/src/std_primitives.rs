@@ -8,9 +8,12 @@ use loom_hir::{ModuleId, Path, Program};
 
 const PROCESS_MODULE: &str = "std.process";
 const IO_MODULE: &str = "std.io";
+const FLOAT_MODULE: &str = "std.float";
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum CompilerStdPrimitive {
+    FloatFromInt,
+    FloatToInt,
     IoWriteStdout,
     ProcessArguments,
     ProcessEnvironment,
@@ -20,6 +23,8 @@ impl CompilerStdPrimitive {
     #[must_use]
     pub(crate) const fn local_name(self) -> &'static str {
         match self {
+            Self::FloatFromInt => "__from_int",
+            Self::FloatToInt => "__to_int",
             Self::IoWriteStdout => "__write_stdout",
             Self::ProcessArguments => "__arguments",
             Self::ProcessEnvironment => "__environment",
@@ -53,6 +58,8 @@ pub(crate) fn resolve_import(
         namespace.name.as_str(),
         item.name.as_str(),
     ) {
+        (FLOAT_MODULE, "float", "__from_int") => Some(CompilerStdPrimitive::FloatFromInt),
+        (FLOAT_MODULE, "float", "__to_int") => Some(CompilerStdPrimitive::FloatToInt),
         (IO_MODULE, "io", "__write_stdout") => Some(CompilerStdPrimitive::IoWriteStdout),
         (PROCESS_MODULE, "process", "__arguments") => Some(CompilerStdPrimitive::ProcessArguments),
         (PROCESS_MODULE, "process", "__environment") => {
@@ -116,12 +123,25 @@ mod tests {
         let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
         let owner = module(&mut program, std_package.clone(), "std.process");
         let io_owner = module(&mut program, std_package.clone(), "std.io");
+        let float_owner = module(&mut program, std_package.clone(), "std.float");
         let wrong_owner = module(&mut program, std_package, "std.other");
         let wrong_package = module(&mut program, PackageId::standalone(), "std.process");
 
         assert_eq!(
             resolve_import(&program, owner, &path(&["std", "process", "__arguments"]),),
             Some(CompilerStdPrimitive::ProcessArguments)
+        );
+        assert_eq!(
+            resolve_import(
+                &program,
+                float_owner,
+                &path(&["std", "float", "__from_int"]),
+            ),
+            Some(CompilerStdPrimitive::FloatFromInt)
+        );
+        assert_eq!(
+            resolve_import(&program, float_owner, &path(&["std", "float", "__to_int"]),),
+            Some(CompilerStdPrimitive::FloatToInt)
         );
         assert_eq!(
             resolve_import(&program, io_owner, &path(&["std", "io", "__write_stdout"]),),
@@ -142,6 +162,10 @@ mod tests {
             (io_owner, path(&["std", "process", "__arguments"])),
             (io_owner, path(&["std.io", "__write_stdout"])),
             (io_owner, path(&["std", "io", "write"])),
+            (owner, path(&["std", "float", "__from_int"])),
+            (float_owner, path(&["std", "float", "from_int"])),
+            (float_owner, path(&["std.float", "__from_int"])),
+            (float_owner, path(&["std", "float", "__to_int", "extra"])),
         ] {
             assert_eq!(
                 resolve_import(&program, candidate_owner, &candidate_path),
