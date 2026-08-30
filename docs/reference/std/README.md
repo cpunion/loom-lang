@@ -28,7 +28,8 @@ declarations include the `std.int`, `std.float`, and `std.json` parsers and
 their public errors; the complete `std.float` public API and conversion error;
 `std.text.DecodeTextError`; `std.path.PathError`; `std.io.write` and
 `write_line`; the complete public `std.log` API, including `LogLevel` and
-`write`; and the public `Dispose`, `MustScope`, and `NoSuspend` declarations in
+`write`; all public `std.file` open/create and `std.net` connect wrappers; and
+the public `Dispose`, `MustScope`, and `NoSuspend` declarations in
 `std.resource`.
 The public logging graph is ordinary Loom source over one compiler-private
 typed output primitive. Resource declarations are source-backed, but

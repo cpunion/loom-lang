@@ -247,18 +247,7 @@ pub(crate) fn imported_name(import: &Import) -> Option<&loom_core::Name> {
 pub(crate) fn is_compiler_known_import(path: &Path) -> bool {
     matches!(
         path.as_string().as_str(),
-        "std.time.milliseconds"
-            | "std.file.open_read"
-            | "std.file.create"
-            | "std.file.open_read_path"
-            | "std.file.create_path"
-            | "std.file.try_open_read"
-            | "std.file.try_create"
-            | "std.file.try_open_read_path"
-            | "std.file.try_create_path"
-            | "std.net.connect"
-            | "std.net.try_connect"
-            | "std.json.format_json"
+        "std.time.milliseconds" | "std.json.format_json"
     )
 }
 

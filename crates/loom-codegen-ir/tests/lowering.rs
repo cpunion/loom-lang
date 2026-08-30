@@ -70,30 +70,54 @@ fn compile_with_std_module(
     std_module_name: &str,
     std_source: &str,
 ) -> loom_mir::CheckedProgram {
+    compile_with_std_modules(source, &[(std_module_name, std_source)])
+}
+
+fn compile_with_std_modules(
+    source: &str,
+    std_modules: &[(&str, &str)],
+) -> loom_mir::CheckedProgram {
     let application = parse_with_file(FileId(0), source);
-    let std_module = parse_with_file(FileId(1), std_source);
+    let std_modules = std_modules
+        .iter()
+        .enumerate()
+        .map(|(index, (name, source))| {
+            let file = FileId(u32::try_from(index + 1).expect("test source count fits FileId"));
+            (*name, file, parse_with_file(file, source))
+        })
+        .collect::<Vec<_>>();
     assert!(
-        application.diagnostics().is_empty() && std_module.diagnostics().is_empty(),
+        application.diagnostics().is_empty()
+            && std_modules
+                .iter()
+                .all(|(_, _, parsed)| parsed.diagnostics().is_empty()),
         "syntax diagnostics: application={:#?} std={:#?}",
         application.diagnostics(),
-        std_module.diagnostics()
+        std_modules
+            .iter()
+            .flat_map(|(_, _, parsed)| parsed.diagnostics())
+            .collect::<Vec<_>>()
     );
     let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("codegen-ir-test", "0");
-    let mut lowered = lower_package_files([
-        PackageSourceUnit {
+    let mut lowered = lower_package_files(
+        std::iter::once(PackageSourceUnit {
             file: FileId(0),
             package: root.clone(),
             module: ModuleName::new("codegen_ir_test"),
             syntax: application.ast(),
-        },
-        PackageSourceUnit {
-            file: FileId(1),
-            package: std_package.clone(),
-            module: ModuleName::new(std_module_name),
-            syntax: std_module.ast(),
-        },
-    ]);
+        })
+        .chain(
+            std_modules
+                .iter()
+                .map(|(name, file, parsed)| PackageSourceUnit {
+                    file: *file,
+                    package: std_package.clone(),
+                    module: ModuleName::new(*name),
+                    syntax: parsed.ast(),
+                }),
+        ),
+    );
     lowered
         .program
         .register_package(std_package.clone(), [], false);
@@ -120,6 +144,23 @@ fn compile_with_std_resource(source: &str) -> loom_mir::CheckedProgram {
         source,
         "std.resource",
         include_str!("../../../library/std/resource/resource.loom"),
+    )
+}
+
+fn compile_with_std_resource_file_net(source: &str) -> loom_mir::CheckedProgram {
+    compile_with_std_modules(
+        source,
+        &[
+            (
+                "std.resource",
+                include_str!("../../../library/std/resource/resource.loom"),
+            ),
+            (
+                "std.file",
+                include_str!("../../../library/std/file/file.loom"),
+            ),
+            ("std.net", include_str!("../../../library/std/net/net.loom")),
+        ],
     )
 }
 
@@ -245,6 +286,18 @@ fn lower_run_with_std_resource(source: &str) -> LoweringOutcome {
     .expect("lower typed artifact")
 }
 
+fn lower_run_with_std_resource_file_net(source: &str) -> LoweringOutcome {
+    let mir = compile_with_std_resource_file_net(source);
+    lower_typed_artifact(
+        &mir,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("lower typed artifact")
+}
+
 fn lower_run_with_std_text(source: &str) -> LoweringOutcome {
     let mir = compile_with_std_text(source);
     lower_typed_artifact(
@@ -303,7 +356,7 @@ fn complete_dump(source: &str) -> String {
 
 #[test]
 fn non_try_file_and_socket_calls_lower_to_fault_mode_typed_io_tasks() {
-    let outcome = lower_run_with_std_resource(
+    let outcome = lower_run_with_std_resource_file_net(
         r#"import std.file.open_read
 import std.file.create
 import std.net.connect
@@ -340,10 +393,10 @@ pub async fn main() {
             } => Some((*operation, *error_mode)),
             _ => None,
         })
-        .collect::<Vec<_>>();
+        .collect::<BTreeSet<_>>();
     assert_eq!(
         operations,
-        [
+        BTreeSet::from([
             (IoTaskOperation::FileCreate, IoTaskErrorMode::Fault),
             (IoTaskOperation::FileWriteText, IoTaskErrorMode::Fault),
             (IoTaskOperation::FileOpenRead, IoTaskErrorMode::Fault),
@@ -351,7 +404,7 @@ pub async fn main() {
             (IoTaskOperation::SocketConnect, IoTaskErrorMode::Fault),
             (IoTaskOperation::SocketWriteText, IoTaskErrorMode::Fault),
             (IoTaskOperation::SocketReadText, IoTaskErrorMode::Fault),
-        ]
+        ])
     );
     let dump = dump_program(artifact.program());
     assert_eq!(dump.matches("io.task_create.").count(), 7, "{dump}");

@@ -47,6 +47,9 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   enums, and the complete public `std.log` graph. Logging now resolves through
   ordinary source `DefId` values and has no universal-value native fallback;
   only its exact-owner private typed write primitive remains compiler-owned.
+  All public `std.file` open/create and `std.net` connect functions likewise
+  resolve through ordinary source wrappers; four Path forms reuse the Text
+  wrappers, leaving only six exact-owner typed I/O primitives below source.
   Native runtime ABI 36 (`runtime-v30`) records the removal of the former
   universal File, Socket, and close entry points and their fixed File/Socket
   nominal IDs; the complete identity also retains the earlier removal of

@@ -9,7 +9,9 @@ use loom_hir::{ModuleId, Path, Program};
 const PROCESS_MODULE: &str = "std.process";
 const IO_MODULE: &str = "std.io";
 const FLOAT_MODULE: &str = "std.float";
+const FILE_MODULE: &str = "std.file";
 const LOG_MODULE: &str = "std.log";
+const NET_MODULE: &str = "std.net";
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum CompilerStdPrimitive {
@@ -18,8 +20,14 @@ pub(crate) enum CompilerStdPrimitive {
     FloatIsFinite,
     FloatParseStatus,
     FloatToInt,
+    FileOpenRead,
+    FileCreate,
+    FileTryOpenRead,
+    FileTryCreate,
     IoWriteStdout,
     LogWrite,
+    SocketConnect,
+    SocketTryConnect,
     ProcessArgumentCount,
     ProcessArgumentAt,
     ProcessEnvironment,
@@ -34,8 +42,14 @@ impl CompilerStdPrimitive {
             Self::FloatIsFinite => "__is_finite",
             Self::FloatParseStatus => "__parse",
             Self::FloatToInt => "__to_int",
+            Self::FileOpenRead => "__open_read",
+            Self::FileCreate => "__create",
+            Self::FileTryOpenRead => "__try_open_read",
+            Self::FileTryCreate => "__try_create",
             Self::IoWriteStdout => "__write_stdout",
             Self::LogWrite => "__write",
+            Self::SocketConnect => "__connect",
+            Self::SocketTryConnect => "__try_connect",
             Self::ProcessArgumentCount => "__argument_count",
             Self::ProcessArgumentAt => "__argument_at",
             Self::ProcessEnvironment => "__environment",
@@ -74,8 +88,14 @@ pub(crate) fn resolve_import(
         (FLOAT_MODULE, "float", "__is_finite") => Some(CompilerStdPrimitive::FloatIsFinite),
         (FLOAT_MODULE, "float", "__parse") => Some(CompilerStdPrimitive::FloatParseStatus),
         (FLOAT_MODULE, "float", "__to_int") => Some(CompilerStdPrimitive::FloatToInt),
+        (FILE_MODULE, "file", "__open_read") => Some(CompilerStdPrimitive::FileOpenRead),
+        (FILE_MODULE, "file", "__create") => Some(CompilerStdPrimitive::FileCreate),
+        (FILE_MODULE, "file", "__try_open_read") => Some(CompilerStdPrimitive::FileTryOpenRead),
+        (FILE_MODULE, "file", "__try_create") => Some(CompilerStdPrimitive::FileTryCreate),
         (IO_MODULE, "io", "__write_stdout") => Some(CompilerStdPrimitive::IoWriteStdout),
         (LOG_MODULE, "log", "__write") => Some(CompilerStdPrimitive::LogWrite),
+        (NET_MODULE, "net", "__connect") => Some(CompilerStdPrimitive::SocketConnect),
+        (NET_MODULE, "net", "__try_connect") => Some(CompilerStdPrimitive::SocketTryConnect),
         (PROCESS_MODULE, "process", "__argument_count") => {
             Some(CompilerStdPrimitive::ProcessArgumentCount)
         }
@@ -138,15 +158,23 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one authority matrix covers every compiler-private std primitive owner"
+    )]
     fn primitives_require_exact_package_owner_and_segments() {
         let mut program = Program::default();
         let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
         let owner = module(&mut program, std_package.clone(), "std.process");
         let io_owner = module(&mut program, std_package.clone(), "std.io");
         let float_owner = module(&mut program, std_package.clone(), "std.float");
+        let file_owner = module(&mut program, std_package.clone(), "std.file");
         let log_owner = module(&mut program, std_package.clone(), "std.log");
-        let wrong_owner = module(&mut program, std_package, "std.other");
+        let net_owner = module(&mut program, std_package.clone(), "std.net");
+        let wrong_owner = module(&mut program, std_package.clone(), "std.other");
         let wrong_package = module(&mut program, PackageId::standalone(), "std.process");
+        let wrong_file_package = module(&mut program, PackageId::standalone(), "std.file");
+        let wrong_net_package = module(&mut program, PackageId::standalone(), "std.net");
 
         assert_eq!(
             resolve_import(
@@ -193,8 +221,40 @@ mod tests {
             Some(CompilerStdPrimitive::IoWriteStdout)
         );
         assert_eq!(
+            resolve_import(&program, file_owner, &path(&["std", "file", "__open_read"]),),
+            Some(CompilerStdPrimitive::FileOpenRead)
+        );
+        assert_eq!(
+            resolve_import(&program, file_owner, &path(&["std", "file", "__create"]),),
+            Some(CompilerStdPrimitive::FileCreate)
+        );
+        assert_eq!(
+            resolve_import(
+                &program,
+                file_owner,
+                &path(&["std", "file", "__try_open_read"]),
+            ),
+            Some(CompilerStdPrimitive::FileTryOpenRead)
+        );
+        assert_eq!(
+            resolve_import(
+                &program,
+                file_owner,
+                &path(&["std", "file", "__try_create"]),
+            ),
+            Some(CompilerStdPrimitive::FileTryCreate)
+        );
+        assert_eq!(
             resolve_import(&program, log_owner, &path(&["std", "log", "__write"]),),
             Some(CompilerStdPrimitive::LogWrite)
+        );
+        assert_eq!(
+            resolve_import(&program, net_owner, &path(&["std", "net", "__connect"]),),
+            Some(CompilerStdPrimitive::SocketConnect)
+        );
+        assert_eq!(
+            resolve_import(&program, net_owner, &path(&["std", "net", "__try_connect"]),),
+            Some(CompilerStdPrimitive::SocketTryConnect)
         );
         assert_eq!(
             resolve_import(&program, owner, &path(&["std", "process", "__environment"]),),
@@ -204,6 +264,8 @@ mod tests {
         for (candidate_owner, candidate_path) in [
             (wrong_owner, path(&["std", "process", "__argument_count"])),
             (wrong_package, path(&["std", "process", "__argument_count"])),
+            (wrong_file_package, path(&["std", "file", "__open_read"])),
+            (wrong_net_package, path(&["std", "net", "__connect"])),
             (owner, path(&["std.process", "__argument_count"])),
             (owner, path(&["std", "process", "arguments"])),
             (
@@ -220,6 +282,15 @@ mod tests {
             (log_owner, path(&["std", "log", "write"])),
             (log_owner, path(&["std", "log", "__write", "extra"])),
             (owner, path(&["std", "float", "__from_int"])),
+            (owner, path(&["std", "file", "__open_read"])),
+            (file_owner, path(&["std.file", "__open_read"])),
+            (file_owner, path(&["std", "file", "open_read"])),
+            (file_owner, path(&["std", "file", "__open_read", "extra"])),
+            (file_owner, path(&["std", "net", "__connect"])),
+            (net_owner, path(&["std.net", "__connect"])),
+            (net_owner, path(&["std", "net", "connect"])),
+            (net_owner, path(&["std", "net", "__connect", "extra"])),
+            (net_owner, path(&["std", "file", "__open_read"])),
             (float_owner, path(&["std", "float", "from_int"])),
             (float_owner, path(&["std", "float", "parse_float"])),
             (float_owner, path(&["std", "float", "format_float"])),

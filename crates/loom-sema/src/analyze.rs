@@ -5926,6 +5926,18 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     crate::std_primitives::CompilerStdPrimitive::FloatToInt => {
                         BuiltinValue::FloatToIntStatus
                     }
+                    crate::std_primitives::CompilerStdPrimitive::FileOpenRead => {
+                        BuiltinValue::FileOpenRead
+                    }
+                    crate::std_primitives::CompilerStdPrimitive::FileCreate => {
+                        BuiltinValue::FileCreate
+                    }
+                    crate::std_primitives::CompilerStdPrimitive::FileTryOpenRead => {
+                        BuiltinValue::FileTryOpenRead
+                    }
+                    crate::std_primitives::CompilerStdPrimitive::FileTryCreate => {
+                        BuiltinValue::FileTryCreate
+                    }
                     crate::std_primitives::CompilerStdPrimitive::IoWriteStdout => {
                         BuiltinValue::StdoutWrite
                     }
@@ -5939,6 +5951,12 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     crate::std_primitives::CompilerStdPrimitive::ProcessEnvironment => {
                         BuiltinValue::ProcessEnvironment
                     }
+                    crate::std_primitives::CompilerStdPrimitive::SocketConnect => {
+                        BuiltinValue::SocketConnect
+                    }
+                    crate::std_primitives::CompilerStdPrimitive::SocketTryConnect => {
+                        BuiltinValue::SocketTryConnect
+                    }
                 })
                 .or_else(|| match path.segments[0].name.as_str() {
                     "Some" => Some(BuiltinValue::Some),
@@ -5946,38 +5964,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     "Err" => Some(BuiltinValue::Err),
                     "milliseconds" if self.builtin_is_imported("std.time.milliseconds") => {
                         Some(BuiltinValue::DurationMilliseconds)
-                    }
-                    "open_read" if self.builtin_is_imported("std.file.open_read") => {
-                        Some(BuiltinValue::FileOpenRead)
-                    }
-                    "create" if self.builtin_is_imported("std.file.create") => {
-                        Some(BuiltinValue::FileCreate)
-                    }
-                    "open_read_path" if self.builtin_is_imported("std.file.open_read_path") => {
-                        Some(BuiltinValue::FileOpenReadPath)
-                    }
-                    "create_path" if self.builtin_is_imported("std.file.create_path") => {
-                        Some(BuiltinValue::FileCreatePath)
-                    }
-                    "try_open_read" if self.builtin_is_imported("std.file.try_open_read") => {
-                        Some(BuiltinValue::FileTryOpenRead)
-                    }
-                    "try_create" if self.builtin_is_imported("std.file.try_create") => {
-                        Some(BuiltinValue::FileTryCreate)
-                    }
-                    "try_open_read_path"
-                        if self.builtin_is_imported("std.file.try_open_read_path") =>
-                    {
-                        Some(BuiltinValue::FileTryOpenReadPath)
-                    }
-                    "try_create_path" if self.builtin_is_imported("std.file.try_create_path") => {
-                        Some(BuiltinValue::FileTryCreatePath)
-                    }
-                    "connect" if self.builtin_is_imported("std.net.connect") => {
-                        Some(BuiltinValue::SocketConnect)
-                    }
-                    "try_connect" if self.builtin_is_imported("std.net.try_connect") => {
-                        Some(BuiltinValue::SocketTryConnect)
                     }
                     "format_json" if self.builtin_is_imported("std.json.format_json") => {
                         Some(BuiltinValue::JsonFormat)
