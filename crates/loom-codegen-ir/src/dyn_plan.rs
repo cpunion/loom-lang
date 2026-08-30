@@ -1,9 +1,68 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use loom_mir::{self as mir, ExprKind, Type};
 
-use crate::instance_closure::InstanceSubstitution;
+use crate::instance_closure::{InstanceSubstitution, InstantiationError};
 use crate::{InstanceKey, InstanceWitnessArgument, ReachableSourceGraph};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DynConceptPlanIssueKind {
+    ProgramTooLarge,
+    InvalidInstantiation,
+    InvalidProof,
+    ConflictingProof,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DynConceptPlanIssue {
+    kind: DynConceptPlanIssueKind,
+    path: String,
+}
+
+impl DynConceptPlanIssue {
+    fn new(
+        kind: DynConceptPlanIssueKind,
+        function: mir::FunctionId,
+        expression: &mir::Expr,
+        suffix: &str,
+    ) -> Self {
+        Self {
+            kind,
+            path: format!(
+                "functions[{}].expressions[{}]{suffix}",
+                function.0, expression.id.0
+            ),
+        }
+    }
+
+    fn instantiation(
+        function: mir::FunctionId,
+        expression: &mir::Expr,
+        suffix: &str,
+        error: InstantiationError,
+    ) -> Self {
+        let kind = match error {
+            InstantiationError::StructureBudget => DynConceptPlanIssueKind::ProgramTooLarge,
+            InstantiationError::UnboundTypeParameter
+            | InstantiationError::UnboundWitnessParameter
+            | InstantiationError::UnresolvedAssociatedProjection => {
+                DynConceptPlanIssueKind::InvalidInstantiation
+            }
+            InstantiationError::InvalidCheckedWitnessMetadata => {
+                DynConceptPlanIssueKind::InvalidProof
+            }
+        };
+        Self::new(kind, function, expression, suffix)
+    }
+
+    pub(crate) const fn kind(&self) -> DynConceptPlanIssueKind {
+        self.kind
+    }
+
+    pub(crate) fn path(&self) -> &str {
+        &self.path
+    }
+}
 
 /// One closed-world dynamic interface proven to have exactly one reachable
 /// concrete conformance in this artifact.
@@ -85,9 +144,9 @@ impl DevirtualizedView {
 /// A view is admitted only when its reachable concrete producers carry exact,
 /// closed proofs whose associated bindings match the view. One candidate is
 /// erased completely; two or more candidates form a checked finite dynamic
-/// catalog. A producer that still needs an unavailable type or witness
-/// parameter remains absent and selects structured unsupported classification
-/// before LCIR construction.
+/// catalog. An unresolved producer inside an already-closed checked instance is
+/// an inconsistent compiler plan, never evidence that the source omitted a
+/// conformance.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct DynConceptPlan {
     choices: BTreeMap<Type, DynConceptChoice>,
@@ -105,9 +164,8 @@ impl DynConceptPlan {
         program: &mir::Program,
         graph: &ReachableSourceGraph,
         instances: &[InstanceKey],
-    ) -> Self {
+    ) -> Result<Self, DynConceptPlanIssue> {
         let mut candidates = BTreeMap::<Type, Vec<DynamicCandidate>>::new();
-        let mut invalid_views = BTreeSet::new();
         for key in instances {
             let Some(function) = program.function(key.source()) else {
                 continue;
@@ -123,28 +181,45 @@ impl DynConceptPlan {
                 let ExprKind::MakeView { value, witness, .. } = &expression.kind else {
                     continue;
                 };
-                let Ok(view) = substitution.instantiate_type(&expression.ty) else {
-                    continue;
-                };
-                let Ok(concrete) = substitution.instantiate_type(&value.ty) else {
-                    continue;
-                };
-                let Ok(proof) = substitution.instantiate_witness(witness) else {
-                    continue;
-                };
-                if !matches!(view, Type::View { .. })
-                    || substitution
-                        .validate_dynamic_proof(&view, &concrete, &proof)
-                        .is_err()
-                {
-                    invalid_views.insert(view);
-                    continue;
+                let view = substitution
+                    .instantiate_type(&expression.ty)
+                    .map_err(|error| {
+                        DynConceptPlanIssue::instantiation(function.id, expression, ".ty", error)
+                    })?;
+                let concrete = substitution.instantiate_type(&value.ty).map_err(|error| {
+                    DynConceptPlanIssue::instantiation(function.id, expression, ".value.ty", error)
+                })?;
+                let proof = substitution.instantiate_witness(witness).map_err(|error| {
+                    DynConceptPlanIssue::instantiation(function.id, expression, ".witness", error)
+                })?;
+                if !matches!(view, Type::View { .. }) {
+                    return Err(DynConceptPlanIssue::new(
+                        DynConceptPlanIssueKind::InvalidProof,
+                        function.id,
+                        expression,
+                        ".ty",
+                    ));
                 }
+                substitution
+                    .validate_dynamic_proof(&view, &concrete, &proof)
+                    .map_err(|error| {
+                        DynConceptPlanIssue::instantiation(
+                            function.id,
+                            expression,
+                            ".witness",
+                            error,
+                        )
+                    })?;
                 let row = candidates.entry(view.clone()).or_default();
                 if let Some(existing) = row.iter().find(|candidate| candidate.concrete == concrete)
                 {
                     if existing.proof != proof {
-                        invalid_views.insert(view);
+                        return Err(DynConceptPlanIssue::new(
+                            DynConceptPlanIssueKind::ConflictingProof,
+                            function.id,
+                            expression,
+                            ".witness",
+                        ));
                     }
                     continue;
                 }
@@ -152,9 +227,6 @@ impl DynConceptPlan {
             }
         }
 
-        for invalid in invalid_views {
-            candidates.remove(&invalid);
-        }
         let choices = candidates
             .into_iter()
             .map(|(view, mut candidates)| {
@@ -172,7 +244,7 @@ impl DynConceptPlan {
                 (view, choice)
             })
             .collect();
-        Self { choices }
+        Ok(Self { choices })
     }
 
     pub(crate) fn choice(&self, view: &Type) -> Option<&DevirtualizedView> {
@@ -380,6 +452,56 @@ mod tests {
         (program, concrete, container, view)
     }
 
+    fn root_dynamic_graph() -> ReachableSourceGraph {
+        ReachableSourceGraph {
+            functions: BTreeSet::from([FunctionId(0)]),
+            witnesses: BTreeSet::from([WitnessId(0)]),
+            dynamic_producers: BTreeMap::from([(
+                FunctionId(0),
+                BTreeSet::from([ExprId::UNASSIGNED]),
+            )]),
+            ..ReachableSourceGraph::default()
+        }
+    }
+
+    fn root_producer_witness(program: &mut Program) -> &mut WitnessRef {
+        let StatementKind::Evaluate(expression) = &mut program.functions[0].body.statements[0].kind
+        else {
+            panic!("dynamic producer statement")
+        };
+        let ExprKind::MakeView { witness, .. } = &mut expression.kind else {
+            panic!("dynamic producer expression")
+        };
+        witness
+    }
+
+    #[test]
+    fn malformed_open_producer_reports_an_invalid_instantiation() {
+        let (mut program, _, _, _) = unique_schema_program(Vec::new());
+        *root_producer_witness(&mut program) = WitnessRef::Parameter(0);
+        let issue = DynConceptPlan::from_instances(
+            &program,
+            &root_dynamic_graph(),
+            &[InstanceKey::monomorphic(FunctionId(0))],
+        )
+        .expect_err("a checked producer cannot reference an absent witness parameter");
+        assert_eq!(issue.kind(), DynConceptPlanIssueKind::InvalidInstantiation);
+        assert!(issue.path().ends_with(".witness"), "{issue:?}");
+    }
+
+    #[test]
+    fn reachable_invalid_closed_producer_reports_a_plan_defect() {
+        let (mut program, _, _, _) = unique_schema_program(Vec::new());
+        program.witnesses[0].concrete = Type::Int;
+        let issue = DynConceptPlan::from_instances(
+            &program,
+            &root_dynamic_graph(),
+            &[InstanceKey::monomorphic(FunctionId(0))],
+        )
+        .expect_err("checked witness metadata must not become a missing-witness error");
+        assert_eq!(issue.kind(), DynConceptPlanIssueKind::InvalidProof);
+    }
+
     #[test]
     fn reachable_nominal_schema_discovers_and_physicalizes_stored_views() {
         let span = Span::default();
@@ -393,20 +515,13 @@ mod tests {
             ty: stored_view,
             span,
         }]);
-        let graph = ReachableSourceGraph {
-            functions: BTreeSet::from([FunctionId(0)]),
-            witnesses: BTreeSet::from([WitnessId(0)]),
-            dynamic_producers: BTreeMap::from([(
-                FunctionId(0),
-                BTreeSet::from([ExprId::UNASSIGNED]),
-            )]),
-            ..ReachableSourceGraph::default()
-        };
+        let graph = root_dynamic_graph();
         let plan = DynConceptPlan::from_instances(
             &program,
             &graph,
             &[InstanceKey::monomorphic(FunctionId(0))],
-        );
+        )
+        .expect("closed producer plan");
         assert_eq!(plan.physical_type(&view), Some(concrete.clone()));
         assert_eq!(
             plan.physical_type(&Type::List(Box::new(view.clone()))),
@@ -449,20 +564,22 @@ mod tests {
             span,
         }]);
         program.witnesses[0].concrete = container.clone();
-        let graph = ReachableSourceGraph {
-            functions: BTreeSet::from([FunctionId(0)]),
-            witnesses: BTreeSet::from([WitnessId(0)]),
-            dynamic_producers: BTreeMap::from([(
-                FunctionId(0),
-                BTreeSet::from([ExprId::UNASSIGNED]),
-            )]),
-            ..ReachableSourceGraph::default()
+        program.functions[0].params[1].ty = container.clone();
+        let StatementKind::Evaluate(expression) = &mut program.functions[0].body.statements[0].kind
+        else {
+            panic!("dynamic producer statement")
         };
+        let ExprKind::MakeView { value, .. } = &mut expression.kind else {
+            panic!("dynamic producer expression")
+        };
+        value.ty = container.clone();
+        let graph = root_dynamic_graph();
         let plan = DynConceptPlan::from_instances(
             &program,
             &graph,
             &[InstanceKey::monomorphic(FunctionId(0))],
-        );
+        )
+        .expect("closed producer plan");
         let mut aggregates = AggregatePlanner::new(&program, &plan, true);
         assert!(!aggregates.supports_value_type(&container));
     }

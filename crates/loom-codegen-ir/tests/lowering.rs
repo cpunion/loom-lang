@@ -5,11 +5,11 @@ use std::{
 
 use loom_codegen_ir::{
     AwaitMode, CheckedIntBinaryOp, Effects, FaultCode, FaultMetadata, InstanceKey, InstanceRole,
-    InstructionKind, IntPredicate, InvalidRootCode, IoTaskErrorMode, IoTaskOperation,
-    LoweringErrorCode, LoweringOutcome, ManagedSafepoint, ResourceKind, ResourceLimitCode,
-    SourceArtifactRequest, TEXT_LITERAL_MAX_TOTAL_BYTES, TargetLayout, TerminatorKind,
-    UnsupportedFeature, ValueDefinition, artifact_identity, dump_program, lower_typed_artifact,
-    plan_managed_roots,
+    InstructionKind, IntPredicate, InvalidProgramCode, InvalidRootCode, IoTaskErrorMode,
+    IoTaskOperation, LoweringErrorCode, LoweringOutcome, ManagedSafepoint, ResourceKind,
+    ResourceLimitCode, SourceArtifactRequest, TEXT_LITERAL_MAX_TOTAL_BYTES, TargetLayout,
+    TerminatorKind, UnsupportedFeature, ValueDefinition, artifact_identity, dump_program,
+    lower_typed_artifact, plan_managed_roots,
 };
 use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId, Span};
 use loom_hir::{PackageSourceUnit, lower_package_files};
@@ -4365,8 +4365,8 @@ pub fn main() {
 }
 
 #[test]
-fn missing_dynamic_concept_witness_selects_one_atomic_fallback() {
-    let LoweringOutcome::Unsupported(report) = lower_run(
+fn missing_dynamic_concept_witness_is_a_stable_invalid_program_error() {
+    let mir = compile(
         r"dyn concept Truth { method truth(self) Bool }
 
 fn missing() dyn Truth { missing() }
@@ -4375,16 +4375,29 @@ pub fn main() {
     discard missing().truth()
 }
 ",
-    ) else {
-        panic!("a missing dynamic witness must not acquire a guessed representation")
-    };
-    assert!(
-        report
-            .items()
-            .iter()
-            .any(|item| item.feature() == UnsupportedFeature::DynamicWitnessSet),
-        "{report:?}"
     );
+    let lower = || {
+        lower_typed_artifact(
+            &mir,
+            &SourceArtifactRequest::Run {
+                entry: "main".into(),
+            },
+            TargetLayout::new(64).expect("test target"),
+        )
+        .expect_err("missing dynamic evidence is invalid, not a fallback route")
+    };
+    let first = lower();
+    let second = lower();
+    assert_eq!(first, second);
+    assert_eq!(
+        first.code(),
+        LoweringErrorCode::InvalidProgram(InvalidProgramCode::MissingDynamicConceptWitness)
+    );
+    assert!(first.message().contains("function[1].body"), "{first}");
+    assert!(first.message().contains(".target"), "{first}");
+    assert!(first.message().contains("function #"), "{first}");
+    assert!(first.message().contains("expression #"), "{first}");
+    assert!(first.message().contains("file #0"), "{first}");
 }
 
 #[test]
