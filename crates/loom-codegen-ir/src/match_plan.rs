@@ -29,14 +29,14 @@ impl MatchValueId {
 }
 
 #[derive(Debug)]
-pub(crate) enum MatchNode {
+pub(crate) enum MatchNode<'pattern> {
     Arm {
         arm: usize,
         captures: Box<[(LocalId, MatchValueId)]>,
     },
     Constant {
         value: MatchValueId,
-        constant: mir::Constant,
+        constant: &'pattern mir::Constant,
         equal: MatchNodeId,
         not_equal: MatchNodeId,
     },
@@ -54,13 +54,13 @@ pub(crate) struct MatchCase {
 }
 
 #[derive(Debug)]
-pub(crate) struct MatchPlan {
+pub(crate) struct MatchPlan<'pattern> {
     root: MatchNodeId,
     values: Box<[Type]>,
-    nodes: Box<[MatchNode]>,
+    nodes: Box<[MatchNode<'pattern>]>,
 }
 
-impl MatchPlan {
+impl<'pattern> MatchPlan<'pattern> {
     pub(crate) const fn root(&self) -> MatchNodeId {
         self.root
     }
@@ -69,11 +69,13 @@ impl MatchPlan {
         self.values.get(value.index())
     }
 
-    pub(crate) fn node(&self, node: MatchNodeId) -> Option<&MatchNode> {
+    pub(crate) fn node(&self, node: MatchNodeId) -> Option<&MatchNode<'pattern>> {
         self.nodes.get(node.index())
     }
 
-    pub(crate) fn nodes(&self) -> impl ExactSizeIterator<Item = (MatchNodeId, &MatchNode)> {
+    pub(crate) fn nodes(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (MatchNodeId, &MatchNode<'pattern>)> {
         self.nodes
             .iter()
             .enumerate()
@@ -86,38 +88,40 @@ impl MatchPlan {
 }
 
 #[derive(Clone, Debug)]
-enum PlannedPattern {
+enum PlannedPattern<'pattern> {
     Wildcard,
     Binding(LocalId),
-    Constant(mir::Constant),
+    // Row specialization may clone this enum, so constants stay borrowed from
+    // source MIR and never duplicate Text storage during planning.
+    Constant(&'pattern mir::Constant),
     Variant {
         ty: TypeId,
         variant: VariantId,
-        payload: Vec<PlannedPattern>,
+        payload: Vec<PlannedPattern<'pattern>>,
     },
 }
 
 #[derive(Clone)]
-struct Row {
+struct Row<'pattern> {
     arm: usize,
-    patterns: Vec<PlannedPattern>,
+    patterns: Vec<PlannedPattern<'pattern>>,
     captures: Vec<(LocalId, MatchValueId)>,
 }
 
-struct Planner<'program> {
+struct Planner<'program, 'pattern> {
     program: &'program mir::Program,
     values: Vec<Type>,
-    nodes: Vec<MatchNode>,
+    nodes: Vec<MatchNode<'pattern>>,
     arm_nodes: BTreeMap<(usize, Vec<(LocalId, MatchValueId)>), MatchNodeId>,
     reserved_nodes: usize,
     planning_work: usize,
 }
 
-pub(crate) fn plan_match(
+pub(crate) fn plan_match<'pattern>(
     program: &mir::Program,
     scrutinee: &Type,
-    arms: &[mir::MatchArm],
-) -> Option<MatchPlan> {
+    arms: &'pattern [mir::MatchArm],
+) -> Option<MatchPlan<'pattern>> {
     let inputs = arms
         .iter()
         .map(|arm| (&arm.pattern, arm.bindings.clone()))
@@ -129,12 +133,12 @@ pub(crate) fn plan_match(
 /// The resulting decision graph is identical to an executable match plan;
 /// lowering maps the synthetic local number back to the contract binding SSA
 /// slot and never materializes a universal environment.
-pub(crate) fn plan_contract_match(
+pub(crate) fn plan_contract_match<'pattern>(
     program: &mir::Program,
     scrutinee: &Type,
-    arms: &[ContractArm],
+    arms: &'pattern [ContractArm],
     binding_base: usize,
-) -> Option<MatchPlan> {
+) -> Option<MatchPlan<'pattern>> {
     let inputs = arms
         .iter()
         .map(|arm| {
@@ -152,11 +156,11 @@ pub(crate) fn plan_contract_match(
     plan_match_inputs(program, scrutinee, &inputs)
 }
 
-fn plan_match_inputs(
+fn plan_match_inputs<'pattern>(
     program: &mir::Program,
     scrutinee: &Type,
-    arms: &[(&Pattern, Vec<LocalId>)],
-) -> Option<MatchPlan> {
+    arms: &[(&'pattern Pattern, Vec<LocalId>)],
+) -> Option<MatchPlan<'pattern>> {
     if arms.is_empty()
         || arms.len() > DIRECT_MATCH_MAX_PATTERN_NODES
         || !patterns_fit_budget(arms.iter().map(|(pattern, _)| *pattern))
@@ -226,14 +230,14 @@ fn patterns_fit_budget<'pattern>(patterns: impl Iterator<Item = &'pattern Patter
     true
 }
 
-fn annotate_pattern(
-    pattern: &Pattern,
+fn annotate_pattern<'pattern>(
+    pattern: &'pattern Pattern,
     bindings: &mut impl Iterator<Item = LocalId>,
-) -> Option<PlannedPattern> {
+) -> Option<PlannedPattern<'pattern>> {
     Some(match pattern {
         Pattern::Wildcard => PlannedPattern::Wildcard,
         Pattern::Binding => PlannedPattern::Binding(bindings.next()?),
-        Pattern::Constant(constant) => PlannedPattern::Constant(constant.clone()),
+        Pattern::Constant(constant) => PlannedPattern::Constant(constant),
         Pattern::Variant {
             ty,
             variant,
@@ -249,12 +253,16 @@ fn annotate_pattern(
     })
 }
 
-impl Planner<'_> {
+impl<'pattern> Planner<'_, 'pattern> {
     #[expect(
         clippy::too_many_lines,
         reason = "the bounded matrix-specialization cases stay together so source order and capture propagation remain auditable"
     )]
-    fn compile(&mut self, mut rows: Vec<Row>, columns: Vec<MatchValueId>) -> Option<MatchNodeId> {
+    fn compile(
+        &mut self,
+        mut rows: Vec<Row<'pattern>>,
+        columns: Vec<MatchValueId>,
+    ) -> Option<MatchNodeId> {
         if rows.is_empty() {
             return None;
         }
@@ -287,10 +295,10 @@ impl Planner<'_> {
                 self.compile(rows, columns)
             }
             PlannedPattern::Constant(constant) => {
-                if !constant_matches_type(&constant, &ty) {
+                if !constant_matches_type(constant, &ty) {
                     return None;
                 }
-                if matches!(&constant, mir::Constant::Float(value) if value.is_nan()) {
+                if matches!(constant, mir::Constant::Float(value) if value.is_nan()) {
                     // Loom constant patterns use the same IEEE ordered equality
                     // as `==`: NaN is unequal to every value, including itself.
                     // Dropping this impossible row also guarantees progress.
@@ -315,12 +323,12 @@ impl Planner<'_> {
                             not_equal_rows.push(row);
                         }
                         PlannedPattern::Constant(candidate) => {
-                            if same_constant(candidate, &constant) {
+                            if same_constant(candidate, constant) {
                                 let mut equal = row;
                                 equal.patterns[column] = PlannedPattern::Wildcard;
                                 equal_rows.push(equal);
                             } else if matches!(
-                                (&constant, candidate),
+                                (constant, candidate),
                                 (
                                     mir::Constant::Bool(left),
                                     mir::Constant::Bool(right)
@@ -450,7 +458,7 @@ impl Planner<'_> {
         Some(node)
     }
 
-    fn push_node(&mut self, node: MatchNode) -> Option<MatchNodeId> {
+    fn push_node(&mut self, node: MatchNode<'pattern>) -> Option<MatchNodeId> {
         if self.nodes.len() >= self.reserved_nodes {
             return None;
         }
@@ -470,12 +478,12 @@ impl Planner<'_> {
     }
 }
 
-fn matrix_cost(rows: &[Row], columns: usize) -> Option<usize> {
+fn matrix_cost(rows: &[Row<'_>], columns: usize) -> Option<usize> {
     rows.iter()
         .try_fold(columns, |cost, row| cost.checked_add(row_cost(row)?))
 }
 
-fn row_cost(row: &Row) -> Option<usize> {
+fn row_cost(row: &Row<'_>) -> Option<usize> {
     let mut pending = row.patterns.iter().collect::<Vec<_>>();
     let mut nodes = row.captures.len();
     while let Some(pattern) = pending.pop() {
