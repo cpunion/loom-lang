@@ -1920,11 +1920,14 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     active.remove(&ty);
                     supported
                 }
+                // A finite closed View is already one exact managed pointer:
+                // its candidate payload layouts live in the separately
+                // validated dynamic catalog rather than inline in the frame.
+                Type::View { .. } => dyn_concepts.finite(&ty).is_some(),
                 Type::Never
                 | Type::Parameter(_)
                 | Type::AssociatedProjection { .. }
                 | Type::TaskOutcome(_)
-                | Type::View { .. }
                 | Type::Error => false,
             }
         }

@@ -314,7 +314,7 @@ fn validator_accepts_managed_list_and_text_map_coroutine_boundaries() {
 }
 
 #[test]
-fn validator_keeps_managed_dynamic_boxes_out_of_coroutine_frames() {
+fn validator_accepts_cataloged_managed_dynamic_coroutine_boundaries() {
     let origin = Origin::synthetic(FunctionId(0));
     let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
     let unit = builder.type_id(&Type::Unit).expect("Unit");
@@ -362,12 +362,8 @@ fn validator_keeps_managed_dynamic_boxes_out_of_coroutine_frames() {
             .expect("return");
     }
 
-    let errors = validate_program(&builder.finish())
-        .expect_err("a managed dynamic box cannot masquerade as a frame collection");
-    assert!(errors.as_slice().iter().any(|error| {
-        error.code() == ValidationCode::InvalidCoroutinePlan
-            && error.path().ends_with("coroutine.frame_type[0]")
-    }));
+    validate_program(&builder.finish())
+        .expect("a cataloged dynamic pointer is an exact managed coroutine-frame root");
 }
 
 #[test]

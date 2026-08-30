@@ -2141,34 +2141,162 @@ pub async fn main() {
 }
 
 #[test]
-fn async_finite_and_open_views_remain_atomic_signature_fallback() {
-    let finite = r"dyn concept Source {
-    method next(mut self) Int
+#[expect(
+    clippy::too_many_lines,
+    reason = "one fixture keeps every finite dynamic coroutine carrier and its managed roots together"
+)]
+fn async_finite_views_are_exact_managed_coroutine_frame_carriers() {
+    let source = r#"dyn concept Source {
+    method read(self) Int
 }
 
-record First { value Int }
-record Second { value Int }
+record First { values List[Int] }
+record Second { label Text }
+record Envelope { source dyn Source }
+
+enum Packet {
+    Wrapped(Envelope)
+    Many(List[dyn Source])
+}
 
 impl Source for First {
-    method next(mut self) Int { self.value }
+    method read(self) Int { self.values.length() }
 }
 
 impl Source for Second {
-    method next(mut self) Int { self.value }
+    method read(self) Int { self.label.length() }
 }
 
-async fn takeOwned(source Source) Int {
-    source.next()
+fn first() dyn Source { First { values = [1] } }
+fn second() dyn Source { Second { label = "two" } }
+
+async fn pause() {}
+
+async fn carryDirect(source Source) dyn Source {
+    pause().await
+    source
+}
+
+async fn carryRecord(envelope Envelope) Envelope {
+    pause().await
+    envelope
+}
+
+async fn carryTuple(pair (dyn Source, Envelope)) (dyn Source, Envelope) {
+    pause().await
+    pair
+}
+
+async fn carrySum(packet Packet) Packet {
+    pause().await
+    packet
+}
+
+async fn carryList(sources List[dyn Source]) List[dyn Source] {
+    pause().await
+    sources
 }
 
 pub async fn main() {
-    let first = takeOwned(First { value = 1 }).await
-    let second = takeOwned(Second { value = 2 }).await
-    assert first == 1
-    assert second == 2
+    let direct = carryDirect(first()).await
+    let observed = direct.read()
+    assert observed == 1
+    discard carryRecord(Envelope { source = second() }).await
+    discard carryTuple((first(), Envelope { source = second() })).await
+    discard carrySum(Packet.Wrapped(Envelope { source = first() })).await
+    discard carrySum(Packet.Many([first(), second()])).await
+    discard carryList([first(), second()]).await
 }
-";
-    let open = r"dyn concept Source {
+"#;
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("finite closed Views must lower through exact typed coroutine frames")
+    };
+
+    let representations = artifact.representations();
+    let [dynamic] = representations.dynamics() else {
+        panic!("the source View must have one finite managed catalog")
+    };
+    assert_eq!(dynamic.candidates().len(), 2);
+    assert_eq!(
+        representations
+            .value_type(dynamic.view())
+            .and_then(|value| representations.repr(value.repr())),
+        Some(&loom_codegen_ir::Repr::ManagedPointer)
+    );
+    assert!(dynamic.candidates().iter().all(|candidate| {
+        representations
+            .value_type(*candidate)
+            .and_then(|value| representations.repr(value.repr()))
+            .and_then(|repr| match repr {
+                loom_codegen_ir::Repr::Product(product) => representations.product(*product),
+                _ => None,
+            })
+            .is_some_and(|product| {
+                product.fields().iter().copied().any(|field| {
+                    representations
+                        .value_type(field)
+                        .and_then(|value| representations.repr(value.repr()))
+                        == Some(&loom_codegen_ir::Repr::ManagedPointer)
+                })
+            })
+    }));
+
+    for name in [
+        "carryDirect",
+        "carryRecord",
+        "carryTuple",
+        "carrySum",
+        "carryList",
+    ] {
+        let function = artifact
+            .functions()
+            .iter()
+            .find(|function| function.name().ends_with(name))
+            .unwrap_or_else(|| panic!("missing {name} coroutine"));
+        let [parameter] = function.signature().params() else {
+            panic!("{name} must have one carrier parameter")
+        };
+        assert_eq!(function.signature().result(), *parameter);
+        let plan = function.coroutine().expect("checked coroutine plan");
+        let [suspension] = plan.suspensions() else {
+            panic!("{name} must cross one real await suspension")
+        };
+        assert!(suspension.live().contains(parameter));
+        assert!(function.blocks().iter().any(|block| matches!(
+            block.terminator().map(loom_codegen_ir::Terminator::kind),
+            Some(TerminatorKind::AwaitTasks { state: 1, .. })
+        )));
+    }
+
+    let mut dynamic_allocations = 0_usize;
+    for function in artifact.functions() {
+        let roots = plan_managed_roots(artifact.program(), function.id())
+            .expect("finite dynamic lowering must retain an exact managed-root plan");
+        for instruction in function.instructions() {
+            let InstructionKind::DynConstruct { value, .. } = instruction.kind() else {
+                continue;
+            };
+            dynamic_allocations = dynamic_allocations.saturating_add(1);
+            assert!(
+                roots
+                    .state(ManagedSafepoint::Instruction(instruction.id()))
+                    .is_some(),
+                "dynamic allocation must publish its managed candidate at the safepoint"
+            );
+            assert!(
+                roots
+                    .slots()
+                    .iter()
+                    .any(|slot| { slot.value() == *value && !slot.projection().is_empty() })
+            );
+        }
+    }
+    assert!(dynamic_allocations >= 2);
+}
+
+#[test]
+fn async_open_views_remain_atomic_signature_fallback() {
+    let source = r"dyn concept Source {
     method next(mut self) Int
 }
 
@@ -2187,50 +2315,16 @@ pub async fn main() {
     assert observed == 1
 }
 ";
-    let nested_finite = r"dyn concept Source {
-    method next(mut self) Int
-}
-
-record First { value Int }
-record Second { value Int }
-record Envelope { source dyn Source }
-
-impl Source for First {
-    method next(mut self) Int { self.value }
-}
-
-impl Source for Second {
-    method next(mut self) Int { self.value }
-}
-
-async fn takeNested(envelope Envelope) Int {
-    var source = envelope.source
-    source.next()
-}
-
-pub async fn main() {
-    let first = takeNested(Envelope { source = First { value = 1 } }).await
-    let second = takeNested(Envelope { source = Second { value = 2 } }).await
-    assert first == 1
-    assert second == 2
-}
-";
-    for (label, source) in [
-        ("finite", finite),
-        ("open", open),
-        ("nested finite", nested_finite),
-    ] {
-        let LoweringOutcome::Unsupported(report) = lower_run(source) else {
-            panic!("{label} dynamic coroutine frame must remain atomic fallback")
-        };
-        assert!(
-            report
-                .items()
-                .iter()
-                .any(|item| item.feature() == UnsupportedFeature::SignatureType),
-            "{label}: {report:#?}"
-        );
-    }
+    let LoweringOutcome::Unsupported(report) = lower_run(source) else {
+        panic!("an open dynamic coroutine frame must remain atomic fallback")
+    };
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::SignatureType),
+        "{report:#?}"
+    );
 }
 
 #[test]

@@ -1907,7 +1907,7 @@ impl<'a> Validator<'a> {
                 self.error(
                     ValidationCode::InvalidCoroutinePlan,
                     format!("{base}.coroutine.frame_type[{index}]"),
-                    "typed coroutine parameter/result slots require closed direct values without task handles",
+                    "typed coroutine parameter/result slots require closed direct values or cataloged dynamic pointers without task handles",
                 );
             }
         }
@@ -1973,7 +1973,7 @@ impl<'a> Validator<'a> {
                         format!(
                             "{base}.coroutine.suspension[{index}].awaited[{awaited_index}]"
                         ),
-                        "typed coroutine awaited-result slots require closed direct values without task handles",
+                        "typed coroutine awaited-result slots require closed direct values or cataloged dynamic pointers without task handles",
                     );
                 }
             }
@@ -2389,6 +2389,10 @@ impl<'a> Validator<'a> {
                         self.program.representations.type_id(value_type.semantic()) == Some(ty);
                     let supported = match value_type.semantic() {
                         Type::Text | Type::List(_) => value_type.kind() == ValueTypeKind::Direct,
+                        Type::View { .. } => {
+                            value_type.kind() == ValueTypeKind::Direct
+                                && self.program.representations.dynamic(ty).is_some()
+                        }
                         Type::Nominal(_, arguments) => {
                             value_type.kind() == ValueTypeKind::ManagedTextMap
                                 && arguments.len() == 1
