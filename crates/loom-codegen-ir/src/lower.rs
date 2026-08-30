@@ -7024,7 +7024,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         expression: &ContractExpr,
         lowered_arms: &BTreeMap<crate::match_plan::MatchNodeId, LoweredContractArm>,
     ) -> Result<(), LoweringError> {
-        let decision = plan.node(node).cloned().ok_or_else(|| {
+        let decision = plan.node(node).ok_or_else(|| {
             LoweringError::defect(
                 LoweringDefectCode::InconsistentPlan,
                 "contract match decision references a missing node",
@@ -7076,7 +7076,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                             "contract match constant operand is unavailable",
                         )
                     })?;
-                let ty = plan.value_type(value).ok_or_else(|| {
+                let ty = plan.value_type(*value).ok_or_else(|| {
                     LoweringError::defect(
                         LoweringDefectCode::InconsistentPlan,
                         "contract match constant has no type",
@@ -7085,14 +7085,14 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 let expected = match constant {
                     mir::Constant::Text(text) => {
                         let EvalFlow::Continue { flow: next, value } =
-                            self.owned_text_literal(flow, text, origin)?
+                            self.text_literal(flow, text, origin)?
                         else {
                             return Err(self.unsupported_reached("contract Text pattern"));
                         };
                         return self.lower_contract_match_constant_branch(
                             plan,
-                            equal,
-                            not_equal,
+                            *equal,
+                            *not_equal,
                             next,
                             values,
                             expression,
@@ -7105,9 +7105,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                         );
                     }
                     mir::Constant::Unit => Constant::Unit,
-                    mir::Constant::Bool(value) => Constant::Bool(value),
-                    mir::Constant::Int(value) => Constant::Int(value),
-                    mir::Constant::Float(value) => Constant::float(value),
+                    mir::Constant::Bool(value) => Constant::Bool(*value),
+                    mir::Constant::Int(value) => Constant::Int(*value),
+                    mir::Constant::Float(value) => Constant::float(*value),
                 };
                 let EvalFlow::Continue {
                     flow,
@@ -7135,7 +7135,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     Type::Unit => {
                         return self.lower_contract_match_node(
                             plan,
-                            equal,
+                            *equal,
                             flow,
                             values,
                             expression,
@@ -7146,8 +7146,8 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 };
                 self.lower_contract_match_constant_branch(
                     plan,
-                    equal,
-                    not_equal,
+                    *equal,
+                    *not_equal,
                     flow,
                     values,
                     expression,
@@ -7168,7 +7168,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     })?;
                 let mut lowered_cases = Vec::with_capacity(cases.len());
                 let mut case_flows = Vec::with_capacity(cases.len());
-                for case in &cases {
+                for case in cases {
                     let block = self.create_block()?;
                     let mut case_values = values.to_vec();
                     for payload in case.payload.iter().copied() {
@@ -9311,10 +9311,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         else {
             return Ok(EvalFlow::Terminated);
         };
-        let plan = self
-            .match_plans
+        let match_plans = self.match_plans;
+        let plan = match_plans
             .and_then(|plans| plans.get(&expression.id))
-            .cloned()
             .ok_or_else(|| self.unsupported_reached("unplanned pattern match"))?;
         let mut values = vec![None; plan.value_count()];
         // Match-value ids have a separate bounded domain from decision nodes.
@@ -9370,7 +9369,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             );
         }
         let mut alternatives = Vec::new();
-        self.lower_match_node(&plan, plan.root(), flow, &values, expression, &lowered_arms)?;
+        self.lower_match_node(plan, plan.root(), flow, &values, expression, &lowered_arms)?;
         for lowered_arm in lowered_arms.values().cloned() {
             let source_arm = arms.get(lowered_arm.source_arm).ok_or_else(|| {
                 LoweringError::defect(
@@ -9425,7 +9424,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         expression: &mir::Expr,
         lowered_arms: &BTreeMap<crate::match_plan::MatchNodeId, LoweredMatchArm>,
     ) -> Result<(), LoweringError> {
-        let decision = plan.node(node).cloned().ok_or_else(|| {
+        let decision = plan.node(node).ok_or_else(|| {
             LoweringError::defect(
                 LoweringDefectCode::InconsistentPlan,
                 "match decision references a missing node",
@@ -9491,7 +9490,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                             "constant decision operand is unavailable",
                         )
                     })?;
-                let ty = plan.value_type(value).ok_or_else(|| {
+                let ty = plan.value_type(*value).ok_or_else(|| {
                     LoweringError::defect(
                         LoweringDefectCode::InconsistentPlan,
                         "constant decision has no planned type",
@@ -9501,7 +9500,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 let (flow, instruction) = match constant {
                     mir::Constant::Text(text) if ty == &Type::Text => {
                         let EvalFlow::Continue { flow, value } =
-                            self.owned_text_literal(flow, text, origin)?
+                            self.text_literal(flow, text, origin)?
                         else {
                             return Err(LoweringError::defect(
                                 LoweringDefectCode::Builder,
@@ -9523,9 +9522,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     constant => {
                         let constant = match constant {
                             mir::Constant::Unit => Constant::Unit,
-                            mir::Constant::Bool(value) => Constant::Bool(value),
-                            mir::Constant::Int(value) => Constant::Int(value),
-                            mir::Constant::Float(value) => Constant::float(value),
+                            mir::Constant::Bool(value) => Constant::Bool(*value),
+                            mir::Constant::Int(value) => Constant::Int(*value),
+                            mir::Constant::Float(value) => Constant::float(*value),
                             mir::Constant::Text(_) => unreachable!(),
                         };
                         let EvalFlow::Continue {
@@ -9584,7 +9583,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 )?;
                 self.lower_match_node(
                     plan,
-                    equal,
+                    *equal,
                     Flow {
                         block: equal_block,
                         env: flow.env,
@@ -9595,7 +9594,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 )?;
                 self.lower_match_node(
                     plan,
-                    not_equal,
+                    *not_equal,
                     Flow {
                         block: not_equal_block,
                         env: flow.env,
@@ -9618,7 +9617,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     })?;
                 let mut lowered_cases = Vec::with_capacity(cases.len());
                 let mut case_flows = Vec::with_capacity(cases.len());
-                for case in &cases {
+                for case in cases {
                     let block = self.create_block()?;
                     let mut case_values = values.to_vec();
                     for payload in case.payload.iter().copied() {

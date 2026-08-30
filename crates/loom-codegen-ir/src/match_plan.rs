@@ -28,7 +28,7 @@ impl MatchValueId {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) enum MatchNode {
     Arm {
         arm: usize,
@@ -46,14 +46,14 @@ pub(crate) enum MatchNode {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct MatchCase {
     pub(crate) variant: u32,
     pub(crate) payload: Box<[MatchValueId]>,
     pub(crate) next: MatchNodeId,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct MatchPlan {
     root: MatchNodeId,
     values: Box<[Type]>,

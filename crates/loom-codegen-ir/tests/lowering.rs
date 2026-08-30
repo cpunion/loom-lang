@@ -2798,7 +2798,9 @@ pub fn main() {{
         "a few expanded cleanup literals must remain supported: {small:?}"
     );
 
-    let overflowing = lower_run(&source(16));
+    // Keep expanding cleanup matches well after they cross the budget so the
+    // unsupported tail also stays on the borrowed plan.
+    let overflowing = lower_run(&source(32));
     let LoweringOutcome::Unsupported(report) = overflowing else {
         panic!("cleanup Text amplification must select atomic fallback: {overflowing:?}")
     };
