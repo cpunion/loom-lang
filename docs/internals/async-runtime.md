@@ -217,9 +217,11 @@ an exact composite frame holding state, the ordered child handles, and the
 target-laid-out result. Its immutable typed-task descriptor traces only the
 managed leaves of that completed result. The mode, ordered child-output row, and
 result type form a static shape; identical shapes share one generated descriptor
-and resume callback. That callback uses the ordinary structured join protocol,
-materializes the exact all/settled/any/race result, and publishes it without a
-universal join-result buffer or runtime type tag.
+and resume callback. `Task.any` additionally partitions by producer origin so
+the callback can record exact `TaskAnyFailed` blame. That callback uses the
+ordinary structured join protocol, materializes the exact all/settled/any/race
+result, and publishes it without a universal join-result buffer or runtime type
+tag.
 
 Construction initializes the composite while it is unpublished, then calls
 `loom_typed_task_publish_adopting_v1(executor, composite, children, count)`.
@@ -245,11 +247,12 @@ source callback consumes the resulting completion token through
 disposes completed loser results and retires every loser in static reverse-input
 order. A loser-disposal fault changes the await outcome to fault before the
 coroutine enters its static LIFO cleanup. If every child fails or is cancelled,
-generated code records the canonical `TaskAnyFailed` fault at the await's source
-origin before entering the same fault cleanup. Cancellation of the source
-coroutine bypasses normal join finalization, preserves cancellation as primary,
-and relies on ordinary terminal child retirement; an established cancellation
-continues to suppress a cleanup fault.
+generated code records the canonical `TaskAnyFailed` fault at the source
+`Task.any` expression before entering the same fault cleanup. This remains true
+whether the producer is stored or fused into its immediate await. Cancellation
+of the source coroutine bypasses normal join finalization, preserves
+cancellation as primary, and relies on ordinary terminal child retirement. An
+established cancellation continues to suppress a cleanup fault.
 
 The winner keeps its original input ordinal and remains attached until generated
 code switches over the coroutine frame's original child fields and performs the

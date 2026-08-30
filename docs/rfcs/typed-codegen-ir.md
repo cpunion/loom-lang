@@ -505,9 +505,11 @@ result. A first-class stored fixed policy lowers to `TaskJoin`: `all` and
 `race` publish one winner value/outcome. A one-child tuple mode retains its
 canonical one-field tuple. LLVM generates one target-laid-out composite frame,
 completed-result root map, immutable descriptor, and callback per distinct
-mode, child-output row, and result type. The callback uses the existing
-structured join-step protocol and publishes the exact result without a
-universal envelope.
+mode, child-output row, and result type. `Task.any` additionally partitions
+that shape by producer origin so its generated callback can record exact fault
+blame; the other modes reuse matching shapes across source sites. The callback
+uses the existing structured join-step protocol and publishes the exact result
+without a universal envelope.
 
 A nonempty, immediately awaited, fixed-arity `Task.any` also lowers directly to
 one `AwaitTasks` when every child has the same exact output type. The runtime
@@ -516,7 +518,8 @@ and retires losers exactly once when generated code consumes the valid join
 completion. LLVM selects the winner from the original static child fields in the
 coroutine frame and performs one exact typed take. A completed loser's disposal
 fault reaches the await fault edge before static coroutine cleanup. If no child
-succeeds, generated code records canonical `TaskAnyFailed` at the await origin.
+succeeds, generated code records canonical `TaskAnyFailed` at the `Task.any`
+expression origin, including when the join is fused into its immediate await.
 Cancellation uses the checked cancel edge instead and does not synthesize that
 fault.
 

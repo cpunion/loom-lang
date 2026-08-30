@@ -324,7 +324,8 @@ multi-child suspension row directly. A first-class stored fixed join uses a
 separate exact composite frame containing state, ordered child handles, and its
 target-laid-out result. `TaskJoin` still produces one opaque handle; its mode,
 child-output row, and result type form the generated callback shape, and
-identical shapes may share the immutable descriptor and callback. `all` and
+identical shapes may share the immutable descriptor and callback. `Task.any`
+also includes its producer origin in that key for exact fault blame. `all` and
 `settled` preserve heterogeneous tuple rows, while `any` and `race` require one
 homogeneous output type. A one-child fixed `all` or `settled` retains a
 one-field tuple result rather than collapsing its type. No universal

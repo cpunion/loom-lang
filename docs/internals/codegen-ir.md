@@ -674,8 +674,9 @@ winner result. The runtime finalizes and retires losers before the callback
 observes the completed step. Generated code then switches on the original winner
 ordinal, loads that exact child pointer from its static frame field, and takes
 the result. A loser-disposal fault enters the await fault edge with that fault
-active; if no child succeeds, generated code raises canonical `TaskAnyFailed` at
-the await origin before static coroutine cleanup.
+active; if no child succeeds, generated code raises canonical `TaskAnyFailed`
+at the `Task.any` expression origin before static coroutine cleanup. Immediate
+fusion therefore preserves the same producer origin as a stored `TaskJoin`.
 
 Immediately awaited fixed `Task.settled` and `Task.race` calls use the same
 `AwaitTasks` terminator. Their normal edges receive terminal affine handles,

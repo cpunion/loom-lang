@@ -7831,6 +7831,17 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                         ),
                     )
                 })?;
+                // `TaskAnyFailed` belongs to the composite operation that
+                // produces the Task, not to its eventual consumer. Keep the
+                // same origin whether the fixed join is stored as `TaskJoin`
+                // or fused into this `AwaitTasks` terminator.
+                let await_operation_origin = if await_source.mode == AwaitMode::Any
+                    && matches!(&task.kind, ExprKind::TaskJoin { .. })
+                {
+                    self.expression_origin(task)
+                } else {
+                    origin
+                };
                 let mut flow = flow;
                 let mut tasks = Vec::with_capacity(await_source.children.len());
                 for child in await_source.children {
@@ -7982,7 +7993,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                         fault: UnwindTarget::new(fault, arguments.clone()),
                         cancel: BlockTarget::new(cancel, arguments),
                     },
-                    origin,
+                    await_operation_origin,
                 )?;
                 let resumed = Flow {
                     block: normal,

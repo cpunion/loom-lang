@@ -1362,6 +1362,7 @@ fn typed_task_any_closes_real_check_build_test_and_run_commands() {
         b"loom_task_suspend_join",
         b"loom_task_join_step",
         b"loom_task_join_winner",
+        b"loom_typed_task_publish_adopting_v1",
         b"loom_typed_task_take_result_v1",
     ] {
         assert!(
@@ -1376,7 +1377,6 @@ fn typed_task_any_closes_real_check_build_test_and_run_commands() {
         b"ValueNode",
         b"loom_join_create",
         b"loom_join_add_task",
-        b"loom_typed_task_publish_adopting_v1",
         b"loom_task_write_join_result",
         b"loom_task_join_result",
     ] {
@@ -1435,6 +1435,7 @@ fn typed_task_outcomes_close_real_check_build_test_and_run_commands() {
         b"loom_task_suspend_join",
         b"loom_task_join_step",
         b"loom_task_join_winner",
+        b"loom_typed_task_publish_adopting_v1",
         b"loom_typed_task_take_outcome_v1",
     ] {
         assert!(

@@ -569,8 +569,10 @@ value tuple, `settled` its exact outcome tuple, `any` one homogeneous winner,
 and `race` one homogeneous winner outcome; one-child tuple modes still produce
 a one-field tuple. The emitter generates a target-laid-out composite frame and
 an immutable typed-task descriptor for each distinct mode, child-output row,
-and result type, reusing the descriptor and callback across matching sites. The
-callback publishes only the statically known managed leaves.
+and result type. Matching `all`, `settled`, and `race` sites reuse that shape;
+`any` also includes its producer origin so the shared callback can record exact
+`TaskAnyFailed` blame. The callback publishes only the statically known managed
+leaves.
 
 The composite is initialized while unpublished. Generated code then passes a
 temporary contiguous child-pointer array to
@@ -590,7 +592,8 @@ switches on that original ordinal and loads the winner pointer from the
 coroutine frame's corresponding static child field, so shrinking the runtime
 join list cannot change the selection. A loser-disposal fault changes the join
 step to faulted before coroutine cleanup; with no winner, LLVM raises
-`TaskAnyFailed` at the `AwaitTasks` source origin before entering that cleanup.
+`TaskAnyFailed` at the source `Task.any` expression before entering that
+cleanup. Immediate fusion writes that producer origin onto `AwaitTasks`.
 Source-coroutine cancellation dispatch bypasses this ordinary resume operation
 and cannot manufacture `TaskAnyFailed`.
 
