@@ -420,34 +420,55 @@ pub fn lower_typed_artifact(
             format!("checked-MIR reachability failed: {error}"),
         )
     })?;
-    let dyn_concepts = DynConceptPlan::from_reachable(mir.as_program(), &graph);
-    let closure = match plan_instance_closure(mir.as_program(), &selected.ordered, &dyn_concepts)
-        .map_err(instance_closure_error)?
-    {
-        InstanceClosureOutcome::Complete(closure) => closure,
-        InstanceClosureOutcome::Unsupported(issue) => {
-            reject_executor_dependent_roots_before_fallback(mir, &selected, &graph)?;
-            let feature = match issue.kind {
-                InstanceClosureUnsupportedKind::InstanceBudget => {
-                    UnsupportedFeature::GenericInstanceBudget
-                }
-                InstanceClosureUnsupportedKind::NonRegularRecursion => {
-                    UnsupportedFeature::NonRegularGenericRecursion
-                }
-                InstanceClosureUnsupportedKind::Instantiation => {
-                    UnsupportedFeature::UnresolvedGenericInstantiation
+    // Dynamic candidates and callable instances depend on each other. Start
+    // from roots plus ordinary direct/static calls, then admit producers and
+    // their exact dynamic method instances until the least fixed point is
+    // reached. Seeding this loop from the conservative source graph would let
+    // a dead witness method keep its own dynamic producer spuriously alive.
+    let mut dyn_concepts = DynConceptPlan::default();
+    let mut remaining_dyn_iterations = crate::INSTANCE_CLOSURE_MAX_INSTANCES;
+    let closure = loop {
+        let closure =
+            match plan_instance_closure(mir.as_program(), &selected.ordered, &dyn_concepts)
+                .map_err(instance_closure_error)?
+            {
+                InstanceClosureOutcome::Complete(closure) => closure,
+                InstanceClosureOutcome::Unsupported(issue) => {
+                    reject_executor_dependent_roots_before_fallback(mir, &selected, &graph)?;
+                    let feature = match issue.kind {
+                        InstanceClosureUnsupportedKind::InstanceBudget => {
+                            UnsupportedFeature::GenericInstanceBudget
+                        }
+                        InstanceClosureUnsupportedKind::NonRegularRecursion => {
+                            UnsupportedFeature::NonRegularGenericRecursion
+                        }
+                        InstanceClosureUnsupportedKind::Instantiation => {
+                            UnsupportedFeature::UnresolvedGenericInstantiation
+                        }
+                    };
+                    return Ok(LoweringOutcome::Unsupported(SupportReport {
+                        items: vec![UnsupportedItem {
+                            feature,
+                            function: issue.function,
+                            expression: issue.expression,
+                            span: issue.span,
+                            path: issue.path,
+                        }],
+                    }));
                 }
             };
-            return Ok(LoweringOutcome::Unsupported(SupportReport {
-                items: vec![UnsupportedItem {
-                    feature,
-                    function: issue.function,
-                    expression: issue.expression,
-                    span: issue.span,
-                    path: issue.path,
-                }],
-            }));
+        let exact = DynConceptPlan::from_instances(mir.as_program(), &graph, closure.entries());
+        if exact == dyn_concepts {
+            break closure;
         }
+        if remaining_dyn_iterations == 0 {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "closed dynamic instance planning did not converge",
+            ));
+        }
+        remaining_dyn_iterations -= 1;
+        dyn_concepts = exact;
     };
     let mut classifier = Classifier::new(mir.as_program(), target, &dyn_concepts);
     for key in closure.entries() {

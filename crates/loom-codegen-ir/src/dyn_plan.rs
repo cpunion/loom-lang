@@ -94,19 +94,28 @@ pub(crate) struct DynConceptPlan {
 }
 
 impl DynConceptPlan {
-    pub(crate) fn from_reachable(program: &mir::Program, graph: &ReachableSourceGraph) -> Self {
+    /// Builds a dynamic catalog from the exact source instances already proven
+    /// reachable by the instance planner.
+    ///
+    /// Callers start with an empty catalog and repeat instance closure plus
+    /// this scan to a fixed point. That computes the least closed world rooted
+    /// in executable code; a method retained only by the conservative source
+    /// graph cannot make its own dynamic producer live.
+    pub(crate) fn from_instances(
+        program: &mir::Program,
+        graph: &ReachableSourceGraph,
+        instances: &[InstanceKey],
+    ) -> Self {
         let mut candidates = BTreeMap::<Type, Vec<DynamicCandidate>>::new();
         let mut invalid_views = BTreeSet::new();
-        for function in graph
-            .functions
-            .iter()
-            .filter_map(|function| program.function(*function))
-        {
+        for key in instances {
+            let Some(function) = program.function(key.source()) else {
+                continue;
+            };
             let Some(producers) = graph.dynamic_producers.get(&function.id) else {
                 continue;
             };
-            let key = InstanceKey::monomorphic(function.id);
-            let substitution = InstanceSubstitution::new(program, &key);
+            let substitution = InstanceSubstitution::new(program, key);
             for expression in function
                 .exprs_preorder()
                 .filter(|expression| producers.contains(&expression.id))
@@ -393,7 +402,11 @@ mod tests {
             )]),
             ..ReachableSourceGraph::default()
         };
-        let plan = DynConceptPlan::from_reachable(&program, &graph);
+        let plan = DynConceptPlan::from_instances(
+            &program,
+            &graph,
+            &[InstanceKey::monomorphic(FunctionId(0))],
+        );
         assert_eq!(plan.physical_type(&view), Some(concrete.clone()));
         assert_eq!(
             plan.physical_type(&Type::List(Box::new(view.clone()))),
@@ -445,7 +458,11 @@ mod tests {
             )]),
             ..ReachableSourceGraph::default()
         };
-        let plan = DynConceptPlan::from_reachable(&program, &graph);
+        let plan = DynConceptPlan::from_instances(
+            &program,
+            &graph,
+            &[InstanceKey::monomorphic(FunctionId(0))],
+        );
         let mut aggregates = AggregatePlanner::new(&program, &plan, true);
         assert!(!aggregates.supports_value_type(&container));
     }

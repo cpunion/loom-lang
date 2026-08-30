@@ -3647,6 +3647,59 @@ pub fn main() {
 }
 
 #[test]
+fn dead_prerequisite_method_cannot_self_sustain_a_dynamic_candidate() {
+    let LoweringOutcome::Complete(artifact) = lower_run(
+        r"dyn concept C { method c(self) Int }
+dyn concept D { method d(self) Int }
+
+record DeadD { value Int }
+record LiveD { value Int }
+record Wrap[T] { value T }
+
+impl D for DeadD {
+    method d(self) Int {
+        discard deadD()
+        20
+    }
+}
+
+impl D for LiveD {
+    method d(self) Int { 10 }
+}
+
+impl[T: D] C for Wrap[T] {
+    method c(self) Int { 1 }
+}
+
+fn deadD() dyn D { DeadD { value = 20 } }
+fn liveD() dyn D { LiveD { value = 10 } }
+fn eraseWrap(value Wrap[DeadD]) dyn C { value }
+fn callC(value C) Int { value.c() }
+fn callD(value D) Int { value.d() }
+
+pub fn main() {
+    discard callC(eraseWrap(Wrap { value = DeadD { value = 0 } }))
+    discard callD(liveD())
+}
+",
+    ) else {
+        panic!("least-fixed-point dynamic planning must keep dead candidates out")
+    };
+    assert!(
+        artifact.representations().dynamics().is_empty(),
+        "both executable dynamic views have one exact producer"
+    );
+    assert!(
+        artifact
+            .functions()
+            .iter()
+            .all(|function| !function.name().ends_with(".deadD")
+                && !function.name().ends_with("DeadD.d")),
+        "a prerequisite-only witness method must not retain its own producer"
+    );
+}
+
+#[test]
 fn unreachable_dynamic_producer_does_not_expand_the_closed_catalog() {
     let LoweringOutcome::Complete(artifact) = lower_run(
         r"dyn concept Measure { method measure(self) Int }
