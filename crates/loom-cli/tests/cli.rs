@@ -1556,6 +1556,10 @@ fn typed_runtime_width_task_lists_close_real_commands_and_faults() {
     assert_eq!(run.status.code(), Some(0), "{run:?}");
     assert_eq!(run.stdout, b"Unit\n");
 
+    assert_runtime_width_task_list_faults(&project.0);
+}
+
+fn assert_runtime_width_task_list_faults(project: &Path) {
     for (entry, code, message) in [
         (
             "emptyAny",
@@ -1575,7 +1579,7 @@ fn typed_runtime_width_task_lists_close_real_commands_and_faults() {
     ] {
         let failure = loom()
             .args(["--json", "--no-cache", "run", "--entry", entry])
-            .arg(&project.0)
+            .arg(project)
             .output()
             .expect("run a runtime-width Task-list fault entry");
         assert_eq!(failure.status.code(), Some(1), "{failure:?}");
