@@ -4,18 +4,19 @@ use std::{
 };
 
 use loom_codegen_ir::{
-    AwaitMode, CheckedIntBinaryOp, Effects, InstanceKey, InstanceRole, InstructionKind,
-    InvalidRootCode, IoTaskErrorMode, IoTaskOperation, LoweringErrorCode, LoweringOutcome,
-    ManagedSafepoint, ResourceKind, ResourceLimitCode, SourceArtifactRequest,
-    TEXT_LITERAL_MAX_TOTAL_BYTES, TargetLayout, TerminatorKind, UnsupportedFeature,
-    artifact_identity, dump_program, lower_typed_artifact, plan_managed_roots,
+    AwaitMode, CheckedIntBinaryOp, Effects, FaultCode, FaultMetadata, InstanceKey, InstanceRole,
+    InstructionKind, IntPredicate, InvalidRootCode, IoTaskErrorMode, IoTaskOperation,
+    LoweringErrorCode, LoweringOutcome, ManagedSafepoint, ResourceKind, ResourceLimitCode,
+    SourceArtifactRequest, TEXT_LITERAL_MAX_TOTAL_BYTES, TargetLayout, TerminatorKind,
+    UnsupportedFeature, ValueDefinition, artifact_identity, dump_program, lower_typed_artifact,
+    plan_managed_roots,
 };
 use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId, Span};
 use loom_hir::{PackageSourceUnit, lower_package_files};
 use loom_lowering::lower_to_mir;
 use loom_mir::{
-    Block, CallPlan, Constant, Expr, ExprKind, Function, FunctionId, LocalDecl, LocalId, Program,
-    Statement, StatementKind, Type,
+    Block, CallPlan, Constant, Expr, ExprKind, Function, FunctionId, LocalDecl, LocalId, Place,
+    Program, ReceiverInvariantCheck, Statement, StatementKind, Type,
 };
 use loom_sema::analyze;
 use loom_syntax::parse_with_file;
@@ -3393,6 +3394,214 @@ pub fn main() {
         decoded_dump.contains("invariant_record.proven"),
         "{decoded_dump}"
     );
+}
+
+#[test]
+fn receiver_invariant_restore_replays_exact_current_self_without_unrelated_parameters() {
+    let source = r"record Guarded {
+    value Int
+    invariant self.value >= 0
+}
+
+impl Guarded {
+    method restore(mut self, next Int, unrelated Int) {
+        self.value = next
+        assert self.value >= 0
+    }
+}
+
+pub fn main() {
+    var guarded = Guarded { value = 1 }
+    guarded.restore(2, 9)
+}
+";
+    let fresh = compile_with_std_resource(source);
+    let fresh_restore = fresh
+        .functions
+        .iter()
+        .find(|function| function.name.ends_with(".restore"))
+        .expect("fresh restore method");
+    assert!(fresh_restore.body.statements.iter().any(|statement| {
+        matches!(
+            statement.kind,
+            StatementKind::RestoreReceiverInvariant {
+                check: ReceiverInvariantCheck::Proven
+            }
+        )
+    }));
+
+    let fresh_outcome = lower_typed_artifact(
+        &fresh,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("lower fresh receiver-invariant proof");
+    let LoweringOutcome::Complete(fresh_artifact) = fresh_outcome else {
+        panic!("fresh receiver-invariant proof must use typed LCIR")
+    };
+    let fresh_restore = fresh_artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with(".restore"))
+        .expect("fresh restore instance");
+    assert!(fresh_restore.blocks().iter().all(|block| {
+        !matches!(
+            block.terminator().map(loom_codegen_ir::Terminator::kind),
+            Some(TerminatorKind::Assert {
+                metadata: FaultMetadata::Runtime(FaultCode::ArtifactProofRejected),
+                ..
+            })
+        )
+    }));
+
+    let mut program = fresh.into_program();
+    let restore = program
+        .functions
+        .iter_mut()
+        .find(|function| function.name.ends_with(".restore"))
+        .expect("restore MIR function");
+    let receiver = restore.params[0].id;
+    let unrelated = restore.params[2].id;
+    let restore_marker = restore
+        .body
+        .statements
+        .iter()
+        .position(|statement| {
+            matches!(
+                statement.kind,
+                StatementKind::RestoreReceiverInvariant { .. }
+            )
+        })
+        .expect("receiver-invariant restore marker");
+    let marker_span = restore.body.statements[restore_marker].span;
+    restore.body.statements.splice(
+        restore_marker..restore_marker,
+        [
+            Statement {
+                kind: StatementKind::Assign {
+                    place: Place {
+                        local: receiver,
+                        projection: vec![0],
+                    },
+                    value: Expr::new(
+                        ExprKind::Constant(Constant::Int(-1)),
+                        Type::Int,
+                        marker_span,
+                    ),
+                },
+                span: marker_span,
+            },
+            Statement {
+                kind: StatementKind::Evaluate(Expr::new(
+                    ExprKind::Move(Place::local(unrelated)),
+                    Type::Int,
+                    marker_span,
+                )),
+                span: marker_span,
+            },
+        ],
+    );
+    restore
+        .renumber_expr_ids()
+        .expect("renumber forged restore MIR");
+    let forged = program
+        .into_checked()
+        .expect("forged receiver state remains structurally valid MIR");
+    let bytes = loom_mir::encode_interpreted_executable_artifact(&forged, "main")
+        .expect("encode receiver-invariant proof artifact");
+    let (decoded, entry) = loom_mir::decode_interpreted_executable_artifact(&bytes)
+        .expect("decode receiver-invariant proof artifact");
+    assert!(decoded.serialized_construction_proofs_were_distrusted());
+    let decoded_restore = decoded
+        .functions
+        .iter()
+        .find(|function| function.name.ends_with(".restore"))
+        .expect("decoded restore method");
+    assert!(decoded_restore.body.statements.iter().any(|statement| {
+        matches!(
+            statement.kind,
+            StatementKind::RestoreReceiverInvariant {
+                check: ReceiverInvariantCheck::Recheck
+            }
+        )
+    }));
+
+    let outcome = lower_typed_artifact(
+        &decoded,
+        &SourceArtifactRequest::Run { entry },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("lower decoded receiver-invariant replay after unrelated parameter move");
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("receiver-invariant replay must use typed LCIR: {outcome:?}")
+    };
+    let restore = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with(".restore"))
+        .expect("decoded restore instance");
+    let rejected_conditions = restore
+        .blocks()
+        .iter()
+        .filter_map(|block| block.terminator())
+        .filter_map(|terminator| match terminator.kind() {
+            TerminatorKind::Assert {
+                condition,
+                metadata: FaultMetadata::Runtime(FaultCode::ArtifactProofRejected),
+                ..
+            } => Some(*condition),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let [condition] = rejected_conditions.as_slice() else {
+        panic!(
+            "receiver replay must have exactly one artifact rejection guard: {}",
+            dump_program(artifact.program())
+        )
+    };
+    let defining_instruction = |value| {
+        let ValueDefinition::InstructionResult { instruction, .. } = restore
+            .value(value)
+            .expect("replay condition value")
+            .definition()
+        else {
+            panic!("replay condition operand must be an instruction result")
+        };
+        restore
+            .instruction(instruction)
+            .expect("replay condition instruction")
+    };
+    let (left, right) = match defining_instruction(*condition).kind() {
+        InstructionKind::IntCompare {
+            predicate: IntPredicate::GreaterEqual,
+            left,
+            right,
+        } => (*left, *right),
+        kind => panic!("exact declared invariant must compare self.value >= 0: {kind:?}"),
+    };
+    assert!(matches!(
+        defining_instruction(right).kind(),
+        InstructionKind::Constant(loom_codegen_ir::Constant::Int(0))
+    ));
+    let aggregate = match defining_instruction(left).kind() {
+        InstructionKind::ProductExtract {
+            aggregate,
+            field: 0,
+        } => *aggregate,
+        kind => panic!("declared invariant must read the current receiver field: {kind:?}"),
+    };
+    let poisoned = match defining_instruction(aggregate).kind() {
+        InstructionKind::InvariantReceiverInsert {
+            field: 0, value, ..
+        } => *value,
+        kind => panic!("replay must observe the receiver produced by its field update: {kind:?}"),
+    };
+    assert!(matches!(
+        defining_instruction(poisoned).kind(),
+        InstructionKind::Constant(loom_codegen_ir::Constant::Int(-1))
+    ));
 }
 
 #[test]
