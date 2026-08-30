@@ -98,9 +98,9 @@ or sum payloads. Fully concrete generic records use the same plan.
 The frontend rejects direct and mutual by-value nominal cycles because they
 have no finite value layout; LCIR never receives them and no backend inserts a
 hidden box. Runtime-checked constructions, operations that rebuild
-Task-bearing products, incomplete dynamic witness sets, and uninhabited fields
-are not selected. An ordinary direct structural tuple that contains a
-Task handle may instead be destructured by one atomic `ProductSplit`: the
+Task-bearing products, closed dynamic values in unsupported surrounding shapes,
+and uninhabited fields are not selected. An ordinary direct structural tuple
+that contains a Task handle may instead be destructured by one atomic `ProductSplit`: the
 instruction consumes the complete tuple and produces every field in source
 order. It is not a general projected move and does not admit nominal,
 transparent, invariant-protected, or resource values. A concrete List or TextMap
@@ -381,8 +381,11 @@ function instances before classifying any of them. Classification covers the
 entire instance and representation plan before allocating LCIR. It returns
 either one complete independently checked
 `CheckedArtifact` or one deterministic `SupportReport` for the whole artifact.
-Invalid roots, resource limits, source-graph defects, and invalid generated
-LCIR are structured `LoweringError` values and never select fallback.
+A reachable dynamic use without fully closed producer evidence instead returns
+`LoweringError::InvalidProgram` with the stable code
+`MissingDynamicConceptWitness`. Invalid programs, invalid roots, resource
+limits, source-graph defects, and invalid generated LCIR are structured
+`LoweringError` values and never select fallback.
 
 The current lowering coverage includes synchronous scalar, direct `Text`,
 one-field direct `Path`, structural tuple, closed-record, concrete closed-enum,
@@ -814,9 +817,10 @@ locations. A finite closed catalog uses the existing exact one-pointer managed
 dynamic representation, including when nested in products, sums, Lists, or a
 completed Task result. The recursive frame walk consumes one shared bounded
 structural budget, so cyclic or non-regular generic expansion fails closed
-instead of growing the compiler stack. Dynamic-concept frame producers with
-unresolved parameters or projections, raw readiness, and cancellation sources
-remain atomic whole-artifact fallback.
+instead of growing the compiler stack. Raw readiness and cancellation sources
+remain atomic whole-artifact fallback. A reachable dynamic-concept frame use
+with no exact producer in the closed catalog instead reports
+`MissingDynamicConceptWitness` before frame planning and cannot select fallback.
 Fixed argument joins and runtime-width homogeneous List joins are admitted both
 as first-class Tasks and when consumed later by `.await`; `any` and `race`
 additionally require one homogeneous output type.
@@ -992,9 +996,13 @@ in a completed key or physical representation. Dynamic instance closure erases
 a unique closed proof or retains only the called requirement slot for every
 member of a finite closed candidate catalog. Generic and conditional
 conformances participate when their concrete types and prerequisite proof trees
-are closed. Missing producers and proofs with unresolved parameters or
-projections still select complete checked-MIR lowering; no universal value,
-runtime registry, or witness ABI enters typed LCIR.
+are closed. A reachable concrete dynamic use with no exact producer in that
+catalog returns `LoweringError::InvalidProgram` with code
+`MissingDynamicConceptWitness`; production Automatic preparation does not turn
+that error into complete checked-MIR fallback. No universal value, runtime
+registry, or witness ABI can supply the missing evidence. The internal
+`CheckedMirOnly` backend-validation escape bypasses this LCIR artifact
+classification entirely.
 
 One public `INSTANCE_KEY_STRUCTURE_BUDGET` limits the combined nested type and
 witness structure of a key to 256 nodes. Builders report
@@ -1074,11 +1082,11 @@ source-fault cleanup likewise cannot await again before `resume_fault`.
 
 Managed values outside the admitted Text, List, and TextMap graphs, open generic
 enum instantiations, runtime constructions with open, affine, or unsupported
-shapes, affine or unsupported-shape proof replay, incomplete dynamic witness
-catalogs, derived dynamic proof conversion, contracts over unsupported value
-shapes, and coroutine forms outside the bounded typed slice are not
-implemented. Nongeneric task-free refined and fully concrete task-free
-invariant-record runtime
+shapes, affine or unsupported-shape proof replay, operations over otherwise
+closed dynamic catalogs outside the admitted flow, derived dynamic proof
+conversion, contracts over unsupported value shapes, and coroutine forms
+outside the bounded typed slice are not implemented. Nongeneric task-free
+refined and fully concrete task-free invariant-record runtime
 construction is direct typed CFG returning the exact
 `Result[..., ConstraintError]`; portable task-free refined and concrete
 task-free invariant-record proof replay uses a canonical runtime-fault

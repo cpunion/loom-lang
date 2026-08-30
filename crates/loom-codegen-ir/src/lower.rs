@@ -14,7 +14,7 @@ use crate::aggregate_plan::{
     AggregatePlanner, AggregateRegistrationError, closed_enum_variants, concrete_any_record_fields,
     concrete_invariant_record, concrete_record_fields, concrete_refined_base, is_direct_scalar,
 };
-use crate::dyn_plan::DynConceptPlan;
+use crate::dyn_plan::{DynConceptPlan, DynConceptPlanIssue, DynConceptPlanIssueKind};
 use crate::instance_closure::{
     InstanceClosureError, InstanceClosureOutcome, InstanceClosureUnsupportedKind,
     InstanceSubstitution, InstantiationError, plan_instance_closure,
@@ -76,6 +76,28 @@ pub enum SourceArtifactRequest {
 pub enum LoweringOutcome {
     Complete(CheckedArtifact),
     Unsupported(SupportReport),
+}
+
+/// Stable invalid-program categories discovered only after selecting concrete
+/// artifact roots and closing their exact generic instances.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum InvalidProgramCode {
+    MissingDynamicConceptWitness,
+}
+
+impl InvalidProgramCode {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MissingDynamicConceptWitness => "MissingDynamicConceptWitness",
+        }
+    }
+}
+
+impl fmt::Display for InvalidProgramCode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
 }
 
 /// Stable invalid-root categories. Invalid roots are errors, never fallback.
@@ -160,6 +182,7 @@ impl fmt::Display for LoweringDefectCode {
 /// Stable top-level code retaining the error class and its specific reason.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum LoweringErrorCode {
+    InvalidProgram(InvalidProgramCode),
     InvalidRoot(InvalidRootCode),
     ResourceLimit(ResourceLimitCode),
     Defect(LoweringDefectCode),
@@ -168,6 +191,7 @@ pub enum LoweringErrorCode {
 impl fmt::Display for LoweringErrorCode {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidProgram(code) => code.fmt(formatter),
             Self::InvalidRoot(code) => code.fmt(formatter),
             Self::ResourceLimit(code) => code.fmt(formatter),
             Self::Defect(code) => code.fmt(formatter),
@@ -181,6 +205,10 @@ impl fmt::Display for LoweringErrorCode {
 /// represented only by [`LoweringOutcome::Unsupported`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LoweringError {
+    InvalidProgram {
+        code: InvalidProgramCode,
+        message: String,
+    },
     InvalidRoot {
         code: InvalidRootCode,
         message: String,
@@ -199,6 +227,7 @@ impl LoweringError {
     #[must_use]
     pub const fn code(&self) -> LoweringErrorCode {
         match self {
+            Self::InvalidProgram { code, .. } => LoweringErrorCode::InvalidProgram(*code),
             Self::InvalidRoot { code, .. } => LoweringErrorCode::InvalidRoot(*code),
             Self::ResourceLimit { code, .. } => LoweringErrorCode::ResourceLimit(*code),
             Self::Defect { code, .. } => LoweringErrorCode::Defect(*code),
@@ -208,9 +237,17 @@ impl LoweringError {
     #[must_use]
     pub fn message(&self) -> &str {
         match self {
-            Self::InvalidRoot { message, .. }
+            Self::InvalidProgram { message, .. }
+            | Self::InvalidRoot { message, .. }
             | Self::ResourceLimit { message, .. }
             | Self::Defect { message, .. } => message,
+        }
+    }
+
+    fn invalid_program(code: InvalidProgramCode, message: impl Into<String>) -> Self {
+        Self::InvalidProgram {
+            code,
+            message: message.into(),
         }
     }
 
@@ -267,8 +304,6 @@ pub enum UnsupportedFeature {
     NominalValue,
     RefinedValue,
     SerializedProofRecheck,
-    DynamicDispatch,
-    DynamicWitnessSet,
     BuiltinCall,
     GenericInstanceBudget,
     NonRegularGenericRecursion,
@@ -294,8 +329,6 @@ impl UnsupportedFeature {
             Self::NominalValue => "NominalValue",
             Self::RefinedValue => "RefinedValue",
             Self::SerializedProofRecheck => "SerializedProofRecheck",
-            Self::DynamicDispatch => "DynamicDispatch",
-            Self::DynamicWitnessSet => "DynamicWitnessSet",
             Self::BuiltinCall => "BuiltinCall",
             Self::GenericInstanceBudget => "GenericInstanceBudget",
             Self::NonRegularGenericRecursion => "NonRegularGenericRecursion",
@@ -396,9 +429,10 @@ struct SelectedRoots {
 ///
 /// Classification always closes the source graph before allocating LCIR. An
 /// unsupported site therefore selects fallback for the entire run/test
-/// artifact. Invalid roots, graph defects, resource exhaustion, and invalid
-/// compiler-generated LCIR are returned as errors and can never select a
-/// fallback route.
+/// artifact. Missing dynamic evidence is an invalid program rather than an
+/// unsupported feature. Invalid programs, invalid roots, graph defects,
+/// resource exhaustion, and invalid compiler-generated LCIR are returned as
+/// errors and can never select a fallback route.
 ///
 /// # Errors
 ///
@@ -454,7 +488,16 @@ pub fn lower_typed_artifact(
                     }));
                 }
             };
-        let exact = DynConceptPlan::from_instances(mir.as_program(), &graph, closure.entries());
+        let exact =
+            match DynConceptPlan::from_instances(mir.as_program(), &graph, closure.entries()) {
+                Ok(exact) => exact,
+                Err(issue) => {
+                    if issue.kind() == DynConceptPlanIssueKind::ProgramTooLarge {
+                        reject_executor_dependent_roots_before_fallback(mir, &selected, &graph)?;
+                    }
+                    return Err(dynamic_concept_plan_error(&issue));
+                }
+            };
         if exact == dyn_concepts {
             break closure;
         }
@@ -562,6 +605,15 @@ pub fn lower_typed_artifact(
         if !function.is_async && planned.effects.contains(Effects::NEEDS_EXECUTOR) {
             return Err(executor_root_capability_error(function));
         }
+    }
+    classifier.missing_dynamic_witnesses.sort_by(|left, right| {
+        left.function
+            .cmp(&right.function)
+            .then(left.expression.cmp(&right.expression))
+            .then(left.path.cmp(&right.path))
+    });
+    if let Some(site) = classifier.missing_dynamic_witnesses.first() {
+        return Err(missing_dynamic_witness_error(site));
     }
     if !classifier.items.is_empty() {
         return Ok(LoweringOutcome::Unsupported(SupportReport {
@@ -968,6 +1020,27 @@ fn instance_closure_error(error: InstanceClosureError) -> LoweringError {
     LoweringError::defect(LoweringDefectCode::InconsistentPlan, message)
 }
 
+fn dynamic_concept_plan_error(issue: &DynConceptPlanIssue) -> LoweringError {
+    match issue.kind() {
+        DynConceptPlanIssueKind::ProgramTooLarge => LoweringError::ResourceLimit {
+            code: ResourceLimitCode::ProgramTooLarge,
+            message: format!(
+                "dynamic concept planning exceeded the bounded type structure at {}",
+                issue.path()
+            ),
+        },
+        DynConceptPlanIssueKind::InvalidInstantiation
+        | DynConceptPlanIssueKind::InvalidProof
+        | DynConceptPlanIssueKind::ConflictingProof => LoweringError::defect(
+            LoweringDefectCode::InconsistentPlan,
+            format!(
+                "checked MIR dynamic producer has invalid instance or witness metadata at {}",
+                issue.path()
+            ),
+        ),
+    }
+}
+
 fn instantiation_defect(
     function: FunctionId,
     expression: Option<ExprId>,
@@ -982,6 +1055,21 @@ fn instantiation_defect(
                 " expression #{}",
                 expression.0
             ))
+        ),
+    )
+}
+
+fn missing_dynamic_witness_error(site: &InvalidProgramSite) -> LoweringError {
+    LoweringError::invalid_program(
+        InvalidProgramCode::MissingDynamicConceptWitness,
+        format!(
+            "reachable dynamic interface has no closed concept witness at {} (function #{}, expression #{}, file #{}, bytes {}..{})",
+            site.path,
+            site.function.0,
+            site.expression.0,
+            site.span.file.0,
+            site.span.range.start,
+            site.span.range.end,
         ),
     )
 }
@@ -1872,6 +1960,7 @@ struct Classifier<'program, 'plan> {
     dyn_concepts: &'plan DynConceptPlan,
     target: TargetLayout,
     items: Vec<UnsupportedItem>,
+    missing_dynamic_witnesses: Vec<InvalidProgramSite>,
     aggregates: AggregatePlanner<'program, 'plan>,
     match_plans: BTreeMap<String, BTreeMap<ExprId, MatchPlan<'program>>>,
     concrete_invariants: BTreeMap<Type, Rc<Contract>>,
@@ -1881,6 +1970,14 @@ struct Classifier<'program, 'plan> {
     managed_text: bool,
     task_handles: BTreeSet<Type>,
     equality_dependencies: BTreeMap<Type, BTreeSet<Type>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct InvalidProgramSite {
+    function: FunctionId,
+    expression: ExprId,
+    span: Span,
+    path: String,
 }
 
 #[derive(Clone, Copy)]
@@ -1926,6 +2023,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             dyn_concepts,
             target,
             items: Vec::new(),
+            missing_dynamic_witnesses: Vec::new(),
             aggregates: AggregatePlanner::new(program, dyn_concepts, target.pointer_bits() == 64),
             match_plans: BTreeMap::new(),
             concrete_invariants: BTreeMap::new(),
@@ -2907,6 +3005,20 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
         );
     }
 
+    fn missing_dynamic_witness(
+        &mut self,
+        function: &mir::Function,
+        expression: &mir::Expr,
+        path: &str,
+    ) {
+        self.missing_dynamic_witnesses.push(InvalidProgramSite {
+            function: function.id,
+            expression: expression.id,
+            span: expression.span,
+            path: path.to_owned(),
+        });
+    }
+
     fn projected_place(
         &mut self,
         function: &mir::Function,
@@ -3675,6 +3787,26 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 arguments,
                 witnesses,
             } => {
+                let dynamic_receiver = if matches!(target, CallTarget::Dynamic { .. }) {
+                    arguments.first().and_then(|argument| {
+                        self.call_argument_type(
+                            function,
+                            key,
+                            argument,
+                            expression,
+                            &format!("{path}.arguments[0].ty"),
+                        )
+                    })
+                } else {
+                    None
+                };
+                let dynamic_choice = dynamic_receiver
+                    .as_ref()
+                    .and_then(|receiver| self.dyn_concepts.choice(receiver))
+                    .cloned();
+                let has_finite_dynamic_plan = dynamic_receiver
+                    .as_ref()
+                    .is_some_and(|receiver| self.dyn_concepts.finite(receiver).is_some());
                 let callee_key = match target {
                     CallTarget::Direct(callee) | CallTarget::Inherent(callee) => {
                         InstanceSubstitution::new(self.program, key)
@@ -3694,28 +3826,17 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                             witnesses,
                         )
                         .ok(),
-                    CallTarget::Dynamic { requirement } => arguments
-                        .first()
-                        .and_then(|argument| {
-                            self.call_argument_type(
-                                function,
-                                key,
-                                argument,
-                                expression,
-                                &format!("{path}.arguments[0].ty"),
-                            )
+                    CallTarget::Dynamic { requirement } => {
+                        dynamic_choice.as_ref().and_then(|choice| {
+                            InstanceSubstitution::new(self.program, key)
+                                .static_call_key_from_closed_proof(
+                                    *requirement,
+                                    choice.proof(),
+                                    choice.concrete(),
+                                )
+                                .ok()
                         })
-                        .and_then(|receiver| {
-                            self.dyn_concepts.choice(&receiver).and_then(|choice| {
-                                InstanceSubstitution::new(self.program, key)
-                                    .static_call_key_from_closed_proof(
-                                        *requirement,
-                                        choice.proof(),
-                                        choice.concrete(),
-                                    )
-                                    .ok()
-                            })
-                        }),
+                    }
                     CallTarget::Builtin(_) => None,
                 };
                 let mutable_receiver = callee_key.as_ref().and_then(|callee_key| {
@@ -3837,24 +3958,19 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     | CallTarget::Inherent(_)
                     | CallTarget::StaticConcept { .. }
                     | CallTarget::Builtin(mir::Builtin::StdoutWrite) => None,
-                    CallTarget::Dynamic { .. }
-                        if callee_key.is_some()
-                            || arguments.first().is_some_and(|argument| {
-                                self.call_argument_type(
-                                    function,
-                                    key,
-                                    argument,
-                                    expression,
-                                    &format!("{path}.arguments[0].ty"),
-                                )
-                                .is_some_and(|receiver| {
-                                    self.dyn_concepts.finite(&receiver).is_some()
-                                })
-                            }) =>
-                    {
+                    CallTarget::Dynamic { .. } => {
+                        if dynamic_receiver.is_some()
+                            && dynamic_choice.is_none()
+                            && !has_finite_dynamic_plan
+                        {
+                            self.missing_dynamic_witness(
+                                function,
+                                expression,
+                                &format!("{path}.target"),
+                            );
+                        }
                         None
                     }
-                    CallTarget::Dynamic { .. } => Some(UnsupportedFeature::DynamicWitnessSet),
                     CallTarget::Builtin(mir::Builtin::LogWrite) => {
                         let log_level = self
                             .program
@@ -4035,20 +4151,15 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     }
                 }
                 if !unique_valid && !finite_valid {
-                    self.expression_item(
-                        if choice.is_some()
-                            || view
-                                .as_ref()
-                                .is_some_and(|view| self.dyn_concepts.finite(view).is_some())
-                        {
-                            UnsupportedFeature::View
-                        } else {
-                            UnsupportedFeature::DynamicWitnessSet
-                        },
-                        function,
-                        expression,
-                        path,
-                    );
+                    if choice.is_some()
+                        || view
+                            .as_ref()
+                            .is_some_and(|view| self.dyn_concepts.finite(view).is_some())
+                    {
+                        self.expression_item(UnsupportedFeature::View, function, expression, path);
+                    } else if view.is_some() {
+                        self.missing_dynamic_witness(function, expression, path);
+                    }
                 }
                 expression.ty != Type::Never
             }

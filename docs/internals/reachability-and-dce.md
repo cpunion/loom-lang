@@ -132,9 +132,11 @@ proofs are closed. Two or more exact proofs form an ordered finite catalog. The
 traversal then contributes one direct method edge per candidate for each
 requirement slot that is actually called; unused slots and unrelated static
 conformances remain dead. LLVM receives a compiler-private finite tag switch,
-not an indirect call or witness table. A missing producer or a proof with an
-unresolved parameter or projection is a structured unsupported site; the
-compiler never guesses a target or consults all declared conformances.
+not an indirect call or witness table. A reachable concrete dynamic use with no
+exact producer in the closed catalog is an invalid program. Artifact closure
+reports `MissingDynamicConceptWitness`; it never emits a `SupportReport` or
+selects checked-MIR fallback. The compiler never guesses a target or consults
+all declared conformances.
 
 The compiler computes this set as a least fixed point. It starts with root,
 direct-call, and static-dispatch instances while the dynamic catalog is empty,
@@ -142,7 +144,9 @@ collects conversion producers in only those exact instances, and then adds the
 corresponding direct dynamic-method instances. Repeating those two steps admits
 producers reached by real dynamic calls without letting a conservatively seen
 or prerequisite-only witness method keep itself alive through a producer in
-its own body.
+its own body. An open producer in an unreachable function or unreachable generic
+instance is never scanned and cannot produce this diagnostic or change the
+artifact route.
 
 View discovery walks both reachable expression/signature types and their
 bounded concrete record, enum, and refined schemas. A unique candidate is

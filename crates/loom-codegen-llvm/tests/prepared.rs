@@ -135,7 +135,7 @@ pub fn main() {
     )
 }
 
-fn unsupported_dynamic_program() -> CheckedProgram {
+fn missing_dynamic_witness_program() -> CheckedProgram {
     compile_source(
         r"dyn concept Truth { method truth(self) Bool }
 
@@ -144,6 +144,19 @@ pub fn main() {
 }
 
 fn missing() dyn Truth { missing() }
+",
+    )
+}
+
+fn unsupported_nonregular_generic_program() -> CheckedProgram {
+    compile_source(
+        r"fn spiral[T](value T) {
+    spiral((value, value))
+}
+
+pub fn main() {
+    spiral(0)
+}
 ",
     )
 }
@@ -356,7 +369,7 @@ fn lcir_only_accepts_a_complete_typed_artifact() {
 
 #[test]
 fn lcir_only_preserves_a_deterministic_structured_support_report() {
-    let program = unsupported_dynamic_program();
+    let program = unsupported_nonregular_generic_program();
     let prepare = || {
         prepare_native_object(
             &program,
@@ -380,10 +393,13 @@ fn lcir_only_preserves_a_deterministic_structured_support_report() {
         report
             .items()
             .iter()
-            .any(|item| item.feature() == UnsupportedFeature::DynamicWitnessSet),
+            .any(|item| item.feature() == UnsupportedFeature::NonRegularGenericRecursion),
         "{report:#?}"
     );
-    assert!(first.message().contains("DynamicWitnessSet"), "{first}");
+    assert!(
+        first.message().contains("NonRegularGenericRecursion"),
+        "{first}"
+    );
     assert!(
         first.message().contains(report.items()[0].path()),
         "{first}"
@@ -636,6 +652,27 @@ fn prepared_target_identity_matches_the_machine_policy() {
     let expected = target_identity(Some(&host.triple), OptimizationProfile::Release)
         .expect("explicit release target");
     assert_eq!(prepared_native_target_identity(&prepared), &expected);
+}
+
+#[test]
+fn missing_dynamic_concept_witness_is_the_same_non_fallback_error_for_both_typed_policies() {
+    let program = missing_dynamic_witness_program();
+    let errors = [NativeRoutePolicy::Automatic, NativeRoutePolicy::LcirOnly].map(|policy| {
+        prepare_native_object(&program, EmitOptions::run("main"), policy)
+            .err()
+            .unwrap_or_else(|| panic!("{policy:?} must reject a missing dynamic concept witness"))
+    });
+
+    assert_eq!(errors[0], errors[1]);
+    for error in errors {
+        assert_eq!(error.kind(), NativePreparationErrorKind::InvalidProgram);
+        assert_eq!(error.code(), "MissingDynamicConceptWitness");
+        assert!(error.support_report().is_none());
+        assert!(
+            error.message().contains("closed concept witness"),
+            "{error}"
+        );
+    }
 }
 
 #[test]

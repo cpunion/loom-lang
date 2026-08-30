@@ -272,7 +272,13 @@ copy rule above even when the collector moves objects.
 
 This representation is not a stable cross-artifact ABI. It contains no witness
 pointer, universal value, runtime conformance registry, or source-visible type
-tag. A missing producer or a proof that still contains an unresolved type,
-witness parameter, or associated projection currently fails closed for typed
-LCIR and may select the complete checked-MIR native route; the compiler never
-guesses a finite catalog.
+tag. For each reachable concrete compiler instance, every executable conversion
+to or call through `dyn C` must close to at least one exact producer proof. A
+dynamic use with no producer in that closed catalog reports the stable
+invalid-program error `MissingDynamicConceptWitness` during executable artifact
+preparation. It never produces an LCIR support report or selects checked-MIR
+fallback under the production Automatic policy. `loom check` does not perform
+this root-dependent artifact closure. Open producers in unreachable functions
+or unreachable generic instances do not affect the artifact. Generic producers
+receive ordinary statically checked witness arguments when instantiated; a
+backend never guesses missing evidence or recovers it from a universal value.

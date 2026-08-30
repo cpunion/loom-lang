@@ -289,8 +289,9 @@ Source analysis and checked MIR reject mutation or moves that bypass a
 constrained-type predicate or record-invariant boundary. Shapes outside the
 current typed-LCIR SupportReport—including non-regular generic expansion,
 Task-bearing or otherwise unrepresentable projections, unsupported
-contract/cleanup forms, and open or prerequisite-dependent dynamic coroutine
-carriers—still select the complete checked-MIR route. Typed
+contract/cleanup forms—still select the complete checked-MIR route. A reachable
+dynamic coroutine carrier with no exact producer in the closed catalog instead
+reports `MissingDynamicConceptWitness` and cannot select fallback. Typed
 LCIR does not change the checked-MIR runtime ABI or make either object ABI
 public.
 
@@ -500,9 +501,13 @@ and address are not observable. A `mut self` dispatch calls the concrete method
 through its ordinary inout ABI, then allocates and writes back a fresh exact box
 on both normal and fault exits. The old box is never modified, so independently
 copied dynamic values retain logical value semantics across moving collection.
-A missing producer or a proof with an unresolved type, witness parameter, or
-associated projection still selects structured unsupported classification for
-the whole artifact.
+A reachable view with no exact producer in the closed catalog reports the
+stable invalid-program error `MissingDynamicConceptWitness` before Automatic or
+`LcirOnly` preparation selects an emitter. The universal `Value` route cannot
+recover missing conformance evidence. The internal `CheckedMirOnly`
+backend-validation escape does not run this artifact classification. Open
+producers outside the reachable concrete instance closure do not affect the
+artifact.
 
 Loom does not support runtime conversion from an untyped universal value to
 `dyn C` by searching every conformance. This keeps witness reachability

@@ -54,15 +54,17 @@ LCIR. An eligible `Unsupported` result constructs and stores `SourceRoots` plus
 `ReachableSourceGraph` for a complete checked-MIR object; a graph containing an
 LCIR-only primitive is not eligible. Unsupported unreachable code cannot change
 the route; one unsupported reachable test changes the whole ordered-test
-artifact. Invalid roots, resource limits, compiler defects, and LCIR emitter
-failures never fall back.
+artifact. Invalid programs, invalid roots, resource limits, compiler defects,
+and LCIR emitter failures never fall back.
 
 `NativeRoutePolicy::LcirOnly` uses the same target, roots, reachability, and
 whole-artifact classification, but an `Unsupported` result is a structured
 `NativePreparationUnsupportedLcir` error. The error owns the ordered
 `SupportReport`, including stable feature, function, expression, span, and path
-facts for every unsupported reachable site. `CheckedMirOnly` skips LCIR
-classification and exists for focused backend validation. Reachable process
+facts for every unsupported reachable site. An `InvalidProgram` preparation
+result instead preserves the lowerer's stable code and is reported before
+Automatic or `LcirOnly` preparation selects an emitter. `CheckedMirOnly` skips
+LCIR classification and exists only for focused backend validation. Reachable process
 input primitives are an explicit exception: they have no checked-MIR ABI, so
 `CheckedMirOnly` rejects them and `Automatic` never uses them as part of a
 checked-MIR fallback. This rejection is based on the reachable graph; a dead

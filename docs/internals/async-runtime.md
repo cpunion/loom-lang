@@ -99,8 +99,10 @@ suspension rows. Generic and conditional conformances are admitted when their
 concrete types and prerequisite proof trees are closed. A finite catalog with
 multiple exact proofs uses its one managed dynamic pointer in the same
 positions; exact frame and collection descriptors trace that pointer and its
-candidate payload. Dynamic producers with unresolved parameters or projections
-do not acquire a coroutine-frame representation.
+candidate payload. A reachable concrete dynamic use with no exact producer in
+the closed catalog reports `MissingDynamicConceptWitness` during artifact
+closure, before coroutine-frame planning. Open producers in unreachable generic
+instances do not affect the frame graph.
 
 Lexical `defer` and admitted `scoped` resources may remain active across
 suspension. The collision-free carrier gives managed sums one static union of
@@ -116,10 +118,11 @@ propagates a child's `Faulted` or `Cancelled` state; it never
 converts either state into a source `Result`. Task handles may be live only as
 suspension bookkeeping.
 
-For reachable graphs with no LCIR-only primitive, raw readiness and
-dynamic-concept frame producers with unresolved parameters or projections still
-select the complete checked-MIR route. Finite closed catalogs remain on typed
-LCIR and use the exact managed dynamic pointer described above.
+For reachable graphs with no LCIR-only primitive, raw readiness still selects
+the complete checked-MIR route. An unbound reachable dynamic-concept frame
+producer is an invalid program rather than a fallback condition. Finite closed
+catalogs remain on typed LCIR and use the exact managed dynamic pointer
+described above.
 Async roots with `requires` use the same typed state-zero check as child Tasks.
 
 ## Runtime and executor

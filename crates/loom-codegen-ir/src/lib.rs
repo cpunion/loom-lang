@@ -68,9 +68,9 @@ pub use ir::{
     UnwindTarget, Value, ValueDefinition,
 };
 pub use lower::{
-    InvalidRootCode, LoweringDefectCode, LoweringError, LoweringErrorCode, LoweringOutcome,
-    ResourceLimitCode, SourceArtifactRequest, SupportReport, UnsupportedFeature, UnsupportedItem,
-    lower_typed_artifact,
+    InvalidProgramCode, InvalidRootCode, LoweringDefectCode, LoweringError, LoweringErrorCode,
+    LoweringOutcome, ResourceLimitCode, SourceArtifactRequest, SupportReport, UnsupportedFeature,
+    UnsupportedItem, lower_typed_artifact,
 };
 pub use managed_roots::{
     MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE, ManagedRootPlan, ManagedRootProjection,
