@@ -2771,6 +2771,93 @@ pub fn main() {{
 }
 
 #[test]
+fn caller_side_generic_contract_matches_use_the_callee_instance_key() {
+    let outcome = lower_run(
+        r"fn guarded[T](value Option[T])
+    requires match value {
+        Some(item) => true
+        None => false
+    }
+{}
+
+pub fn main() {
+    guarded(Some(1))
+}
+",
+    );
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("generic contract binding schemas must close under the callee instance: {outcome:?}")
+    };
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("contract PreconditionFault"), "{dump}");
+    assert!(!dump.contains("Parameter#"), "{dump}");
+}
+
+#[test]
+fn contract_text_budget_charges_each_finite_dynamic_candidate_emission() {
+    let source = |call_count: usize| {
+        let direct = "D".repeat(TEXT_LITERAL_MAX_TOTAL_BYTES / 32);
+        let pattern = "P".repeat(TEXT_LITERAL_MAX_TOTAL_BYTES / 32);
+        let calls = "    discard value.check(\"\")\n".repeat(call_count);
+        format!(
+            r#"dyn concept Guard {{
+    method check(self, value Text)
+        requires value == "{direct}" || match value {{
+            "{pattern}" => true
+            _ => false
+        }}
+}}
+
+record First {{ marker Int }}
+record Second {{ marker Int }}
+
+impl Guard for First {{
+    method check(self, value Text) {{}}
+}}
+
+impl Guard for Second {{
+    method check(self, value Text) {{}}
+}}
+
+fn choose(first Bool) dyn Guard {{
+    if first {{ First {{ marker = 1 }} }} else {{ Second {{ marker = 2 }} }}
+}}
+
+pub fn main() {{
+    let value = choose(true)
+{calls}}}
+"#
+        )
+    };
+
+    let small = lower_run(&source(1));
+    let LoweringOutcome::Complete(artifact) = small else {
+        panic!("one finite candidate contract emission must remain supported: {small:?}")
+    };
+    assert_eq!(
+        artifact
+            .functions()
+            .iter()
+            .flat_map(loom_codegen_ir::Function::instructions)
+            .filter(|instruction| matches!(instruction.kind(), InstructionKind::TextLiteral { utf8 } if !utf8.is_empty()))
+            .count(),
+        4,
+        "two literals must be emitted independently in both candidate branches"
+    );
+
+    let overflowing = lower_run(&source(9));
+    let LoweringOutcome::Unsupported(report) = overflowing else {
+        panic!("finite candidate Text amplification must select atomic fallback: {overflowing:?}")
+    };
+    assert_eq!(report.items().len(), 1, "{report:?}");
+    assert_eq!(
+        report.items()[0].feature(),
+        UnsupportedFeature::TextConstant,
+        "{report:?}"
+    );
+}
+
+#[test]
 fn text_budget_charges_each_expanded_cleanup_match_emission() {
     let source = |return_count: usize| {
         let pattern = "C".repeat(TEXT_LITERAL_MAX_TOTAL_BYTES / 16);
@@ -3916,6 +4003,145 @@ pub fn main() {
             >= 8,
         "fresh dynamic boxes must reconstruct both projected product parents"
     );
+}
+
+fn assert_finite_mutable_contract_edges(artifact: &loom_codegen_ir::CheckedArtifact, dump: &str) {
+    let mutable = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with(".advanceOne"))
+        .expect("mutable finite caller");
+    let mut precondition_faults = BTreeSet::new();
+    let mut precondition_metadata = Vec::new();
+    let mut method_edges = Vec::new();
+    for block in mutable.blocks() {
+        match block.terminator().map(loom_codegen_ir::Terminator::kind) {
+            Some(TerminatorKind::Assert {
+                metadata: loom_codegen_ir::FaultMetadata::Contract(metadata),
+                fault,
+                ..
+            }) if metadata.kind() == loom_codegen_ir::ContractFaultKind::Precondition => {
+                precondition_faults.insert(fault.block);
+                precondition_metadata.push((metadata.contract_span(), metadata.blame_span()));
+            }
+            Some(TerminatorKind::Invoke { normal, unwind, .. }) => {
+                method_edges.push((normal.block, unwind.block));
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(precondition_faults.len(), 1, "{dump}");
+    assert_eq!(precondition_metadata.len(), 2, "{dump}");
+    assert!(
+        precondition_metadata
+            .iter()
+            .all(|metadata| *metadata == precondition_metadata[0]),
+        "each candidate must retain the same contract and caller blame: {dump}"
+    );
+    assert_ne!(
+        Some(precondition_metadata[0].0),
+        precondition_metadata[0].1,
+        "precondition blame must be the call site rather than its declaration"
+    );
+    let precondition_fault = mutable
+        .block(*precondition_faults.first().expect("precondition fault"))
+        .expect("precondition fault block");
+    assert!(precondition_fault.instructions().iter().all(|instruction| {
+        !matches!(
+            mutable
+                .instruction(*instruction)
+                .expect("fault instruction")
+                .kind(),
+            InstructionKind::DynConstruct { .. }
+        )
+    }));
+    assert_eq!(method_edges.len(), 2, "{dump}");
+    for (normal, fault) in method_edges {
+        for edge in [normal, fault] {
+            let block = mutable.block(edge).expect("method continuation");
+            assert!(block.instructions().iter().any(|instruction| matches!(
+                mutable
+                    .instruction(*instruction)
+                    .expect("continuation instruction")
+                    .kind(),
+                InstructionKind::DynConstruct { .. }
+            )));
+        }
+    }
+}
+
+#[test]
+fn finite_dynamic_requirements_lower_at_each_exact_candidate_call_site() {
+    let LoweringOutcome::Complete(artifact) = lower_run(
+        r"dyn concept Metric {
+    method read(self, minimum Int) Int
+        requires minimum > 0
+}
+
+dyn concept Advance {
+    method advance(mut self, amount Int) Int
+        requires amount > 0
+}
+
+record Counter { value Int }
+record Offset { value Int }
+
+impl Metric for Counter {
+    method read(self, minimum Int) Int { self.value + minimum }
+}
+
+impl Metric for Offset {
+    method read(self, minimum Int) Int { self.value + minimum + 100 }
+}
+
+impl Advance for Counter {
+    method advance(mut self, amount Int) Int {
+        self.value = self.value + amount
+        self.value
+    }
+}
+
+impl Advance for Offset {
+    method advance(mut self, amount Int) Int {
+        self.value = self.value + amount + 100
+        self.value
+    }
+}
+
+fn chooseMetric(first Bool) dyn Metric {
+    if first { Counter { value = 40 } } else { Offset { value = 1 } }
+}
+
+fn chooseAdvance(first Bool) dyn Advance {
+    if first { Counter { value = 40 } } else { Offset { value = 1 } }
+}
+
+fn measure(value Metric) Int { value.read(2) }
+
+fn advanceOne(value Advance) Int { value.advance(2) }
+
+pub fn main() {
+    let measured = measure(chooseMetric(true))
+    assert measured == 42
+    var value = chooseAdvance(false)
+    let advanced = advanceOne(value)
+    assert advanced == 103
+}
+",
+    ) else {
+        panic!("finite readonly and mutable requirements must lower through typed LCIR")
+    };
+    let dump = dump_program(artifact.program());
+    assert_eq!(dump.matches("dyn.switch").count(), 2, "{dump}");
+    assert_eq!(
+        dump.matches("contract PreconditionFault").count(),
+        4,
+        "every candidate branch must own one caller-side precondition:\n{dump}"
+    );
+    assert!(dump.contains("read.requires[0]"), "{dump}");
+    assert!(dump.contains("advance.requires[0]"), "{dump}");
+    assert!(dump.matches("invoke i").count() >= 4, "{dump}");
+    assert_finite_mutable_contract_edges(&artifact, &dump);
 }
 
 #[test]
@@ -6919,6 +7145,131 @@ pub async fn main() {
     for required in ["sum.construct", "call i", "sum.switch", "await_tasks"] {
         assert!(dump.contains(required), "missing `{required}`:\n{dump}");
     }
+}
+
+#[test]
+fn contracts_may_borrow_task_free_fields_from_affine_products() {
+    let source = r"record Envelope {
+    allowed Bool
+    pending Option[Task[Int]]
+}
+
+fn pending() Task[Int] { pending() }
+
+fn consume(value Envelope) { consume(value) }
+
+fn inspect(value Envelope)
+    requires value.allowed
+{
+    consume(value)
+}
+
+pub fn main() {
+    inspect(Envelope { allowed = true, pending = Some(pending()) })
+}
+";
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("a contract may borrow a task-free field without consuming its affine owner")
+    };
+    let inspect = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with(".inspect"))
+        .expect("inspect instance");
+    assert!(
+        inspect
+            .instructions()
+            .iter()
+            .any(|instruction| matches!(instruction.kind(), InstructionKind::DirectCall { .. }))
+    );
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("product.extract"), "{dump}");
+    assert!(dump.contains("contract PreconditionFault"), "{dump}");
+}
+
+#[test]
+fn task_bearing_contract_matches_select_atomic_fallback() {
+    let mut program = compile(
+        r"fn pending() Task[Int] { pending() }
+
+fn consume(value Option[Task[Int]]) { consume(value) }
+
+fn inspect(value Option[Task[Int]]) { consume(value) }
+
+pub fn main() {
+    inspect(Some(pending()))
+}
+",
+    )
+    .into_program();
+    let option = program.prelude.option.expect("canonical Option type");
+    let task = Type::Task(Box::new(Type::Int));
+    let contract_span = Span::new(FileId(0), 0, 1);
+    let inspect = program
+        .functions
+        .iter_mut()
+        .find(|function| function.name.ends_with(".inspect"))
+        .expect("inspect MIR function");
+    inspect.call_plan.requires.push(loom_mir::Contract {
+        code: "inspect.requires[0]".into(),
+        span: contract_span,
+        expression: loom_mir::ContractExpr {
+            kind: loom_mir::ContractExprKind::Match {
+                scrutinee: Box::new(loom_mir::ContractExpr {
+                    kind: loom_mir::ContractExprKind::Value(loom_mir::ContractValue::Argument(0)),
+                    span: contract_span,
+                }),
+                arms: vec![
+                    loom_mir::ContractArm {
+                        pattern: loom_mir::Pattern::Variant {
+                            ty: option,
+                            variant: loom_mir::VariantId(1),
+                            payload: vec![loom_mir::Pattern::Binding],
+                        },
+                        bindings: vec![task],
+                        value: loom_mir::ContractExpr {
+                            kind: loom_mir::ContractExprKind::Constant(Constant::Bool(true)),
+                            span: contract_span,
+                        },
+                    },
+                    loom_mir::ContractArm {
+                        pattern: loom_mir::Pattern::Variant {
+                            ty: option,
+                            variant: loom_mir::VariantId(0),
+                            payload: Vec::new(),
+                        },
+                        bindings: Vec::new(),
+                        value: loom_mir::ContractExpr {
+                            kind: loom_mir::ContractExprKind::Constant(Constant::Bool(true)),
+                            span: contract_span,
+                        },
+                    },
+                ],
+            },
+            span: contract_span,
+        },
+    });
+    let program = program
+        .into_checked()
+        .expect("forged borrowing contract remains structurally valid MIR");
+    let outcome = lower_typed_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("classify forged affine contract match");
+    let LoweringOutcome::Unsupported(report) = outcome else {
+        panic!("a borrowing contract match must not consume an affine sum in typed LCIR")
+    };
+    assert!(
+        report.items().iter().any(|item| {
+            item.feature() == UnsupportedFeature::TaskOperation
+                && item.path().contains("call_plan.requires")
+        }),
+        "{report:?}"
+    );
 }
 
 #[test]

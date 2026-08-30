@@ -3512,17 +3512,22 @@ fn typed_stdout_interpreter_child() {
 
 #[test]
 fn finite_dynamic_projected_fault_interpreter_child() {
-    if std::env::var_os(FINITE_DYN_FAULT_INTERPRETER_CHILD_ENV).is_none() {
+    let Some(mode) = std::env::var_os(FINITE_DYN_FAULT_INTERPRETER_CHILD_ENV) else {
         return;
-    }
+    };
     let program = compile_sources(
         include_str!("../../../fixtures/lcir-dyn-finite/main.loom"),
         include_str!("../../../fixtures/lcir-dyn-finite/main_test.loom"),
     );
-    let failure = interpret_run(&program, "projectedFaultMain")
+    let (entry, expected) = if mode == "precondition" {
+        ("projectedPreconditionFaultMain", "PreconditionFault")
+    } else {
+        ("projectedFaultMain", "AssertionFault")
+    };
+    let failure = interpret_run(&program, entry)
         .expect_err("projected mutable method must retain its primary fault");
     assert!(
-        matches!(failure, ExecutionFailure::Contract { ref fault } if fault.code == "AssertionFault"),
+        matches!(failure, ExecutionFailure::Contract { ref fault } if fault.code == expected),
         "{failure:#?}"
     );
 }
@@ -6501,6 +6506,61 @@ fn finite_dynamic_witnesses_use_precise_single_pointer_boxes_and_direct_dispatch
         );
     }
     assert_no_indirect_calls(&faulted.ir);
+
+    let precondition_artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "projectedPreconditionFaultMain".into(),
+        },
+    );
+    let interpreted_precondition =
+        Command::new(std::env::current_exe().expect("current LCIR test executable"))
+            .args([
+                "--exact",
+                "finite_dynamic_projected_fault_interpreter_child",
+                "--nocapture",
+            ])
+            .env(FINITE_DYN_FAULT_INTERPRETER_CHILD_ENV, "precondition")
+            .output()
+            .expect("run projected finite-dyn precondition interpreter child");
+    assert!(
+        interpreted_precondition.status.success(),
+        "{interpreted_precondition:?}"
+    );
+    let interpreted_precondition_stdout = String::from_utf8_lossy(&interpreted_precondition.stdout);
+    assert!(
+        interpreted_precondition_stdout.contains("projected precondition no writeback\n"),
+        "{interpreted_precondition:?}"
+    );
+    assert!(
+        !interpreted_precondition_stdout.contains("stale projected precondition writeback"),
+        "{interpreted_precondition:?}"
+    );
+    let precondition_faulted = emit_and_run_lcir_machine_fault(
+        &precondition_artifact,
+        "finite-dyn-projected-precondition-fault",
+    );
+    assert!(
+        !precondition_faulted.output.status.success(),
+        "{:?}",
+        precondition_faulted.output
+    );
+    assert_eq!(
+        precondition_faulted.output.stdout, b"projected precondition no writeback\n",
+        "LCIR precondition fault wrote back a mutable finite-dyn receiver"
+    );
+    assert_eq!(
+        machine_fault(&precondition_faulted.output)["fault"]["code"],
+        "PreconditionFault"
+    );
+    for forbidden in ["%loom.Value", "ValueNode", "loom_witness_", "dyn.registry"] {
+        assert!(
+            !precondition_faulted.ir.contains(forbidden),
+            "precondition fault exposed `{forbidden}`:\n{}",
+            precondition_faulted.ir
+        );
+    }
+    assert_no_indirect_calls(&precondition_faulted.ir);
 
     for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
         let directory = tempfile::tempdir().expect("create finite-dyn target output");

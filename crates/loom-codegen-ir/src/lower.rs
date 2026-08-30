@@ -1657,7 +1657,10 @@ fn is_invariant_record_type(program: &mir::Program, ty: &Type) -> bool {
     })
 }
 
-fn contract_operand(value: ContractValue, context: &ContractContext) -> Option<&ContractOperand> {
+fn contract_operand<'context>(
+    value: ContractValue,
+    context: &'context ContractContext<'_>,
+) -> Option<&'context ContractOperand> {
     match value {
         ContractValue::SelfValue => context.receiver.as_ref(),
         ContractValue::Result => context.result.as_ref(),
@@ -1670,7 +1673,7 @@ fn contract_operand(value: ContractValue, context: &ContractContext) -> Option<&
     }
 }
 
-fn contract_type_context(context: &ContractContext) -> ContractTypeContext {
+fn contract_type_context(context: &ContractContext<'_>) -> ContractTypeContext {
     ContractTypeContext {
         receiver: context
             .receiver
@@ -2677,7 +2680,36 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     context,
                     &format!("{path}.owner"),
                 )?;
-                contract_projected_type(self.program, &owner, *field)?
+                let normalized = contract_base_type(self.program, &owner)?;
+                if normalized != owner && !task_free_type(self.program, self.dyn_concepts, &owner) {
+                    // Contract operands are borrowed, but typed LCIR must
+                    // currently consume a refined value to expose its base.
+                    // Do not let that implementation detail take an affine
+                    // Task away from the later callable body.
+                    self.item(
+                        UnsupportedFeature::TaskOperation,
+                        function.id,
+                        None,
+                        expression.span,
+                        path.to_owned(),
+                    );
+                    return None;
+                }
+                let projected = contract_projected_type(self.program, &owner, *field)?;
+                if !task_free_type(self.program, self.dyn_concepts, &projected) {
+                    // ProductExtract may borrow an affine aggregate while
+                    // reading a task-free field, but splitting out the affine
+                    // field itself is not a legal ownership operation.
+                    self.item(
+                        UnsupportedFeature::TaskOperation,
+                        function.id,
+                        None,
+                        expression.span,
+                        path.to_owned(),
+                    );
+                    return None;
+                }
+                projected
             }
             ContractExprKind::Unary(UnaryOp::Not, operand) => {
                 self.classify_contract_expr(
@@ -2777,6 +2809,20 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     context,
                     &format!("{path}.scrutinee"),
                 )?;
+                if !task_free_type(self.program, self.dyn_concepts, &scrutinee_ty) {
+                    // SumSwitch owns its selected affine payload. Contract
+                    // matching is source-level borrowing, so a Task-bearing
+                    // scrutinee must stay on the atomic fallback route until
+                    // LCIR has an explicit borrowed-sum operation.
+                    self.item(
+                        UnsupportedFeature::TaskOperation,
+                        function.id,
+                        None,
+                        expression.span,
+                        path.to_owned(),
+                    );
+                    return None;
+                }
                 let planned_scrutinee = contract_base_type(self.program, &scrutinee_ty)
                     .unwrap_or_else(|| scrutinee_ty.clone());
                 let Some(plan) = plan_contract_match(
@@ -5615,7 +5661,8 @@ struct ContractRecordCandidate {
 }
 
 #[derive(Clone, Debug)]
-struct ContractContext {
+struct ContractContext<'instance> {
+    instance: &'instance InstanceKey,
     receiver: Option<ContractOperand>,
     record_candidate: Option<ContractRecordCandidate>,
     result: Option<ContractOperand>,
@@ -6257,7 +6304,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         environment: EnvironmentRoot,
         result: Option<ValueId>,
         include_old: bool,
-    ) -> Result<ContractContext, LoweringError> {
+    ) -> Result<ContractContext<'plan>, LoweringError> {
         let exit_parameters = if include_old {
             mir::exit_contract_parameter_locals(
                 &self.source.params,
@@ -6347,6 +6394,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             .transpose()
             .map_err(|error| instantiation_defect(self.source.id, None, error))?;
         Ok(ContractContext {
+            instance: self.key,
             receiver,
             record_candidate: None,
             result,
@@ -6355,6 +6403,85 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             old_arguments,
             bindings: Vec::new(),
         })
+    }
+
+    fn call_contract_context<'instance>(
+        &self,
+        instance: &'instance InstanceKey,
+        callee: &mir::Function,
+        values: &[ValueId],
+    ) -> Result<ContractContext<'instance>, LoweringError> {
+        if callee.params.len() != values.len() {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                format!(
+                    "call to function #{} has {} contract argument(s), expected {}",
+                    callee.id.0,
+                    values.len(),
+                    callee.params.len()
+                ),
+            ));
+        }
+        let parameters = callee
+            .params
+            .iter()
+            .zip(values.iter().copied())
+            .map(|(parameter, value)| {
+                InstanceSubstitution::new(self.program, instance)
+                    .instantiate_type(&parameter.ty)
+                    .map(|ty| ContractOperand { value, ty })
+                    // The open schema belongs to the callee instance. The
+                    // call ExprId is in the caller's independent namespace,
+                    // so attaching it to the callee would misidentify a
+                    // substitution defect.
+                    .map_err(|error| instantiation_defect(instance.source(), None, error))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let (receiver, arguments) = if callee.receiver.is_some() {
+            let (receiver, arguments) = parameters.split_first().ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    "contracted receiver call has no receiver argument",
+                )
+            })?;
+            (Some(receiver.clone()), arguments.to_vec())
+        } else {
+            (None, parameters)
+        };
+        Ok(ContractContext {
+            instance,
+            receiver,
+            record_candidate: None,
+            result: None,
+            arguments,
+            old_receiver: None,
+            old_arguments: Vec::new(),
+            bindings: Vec::new(),
+        })
+    }
+
+    fn lower_sync_requires(
+        &mut self,
+        mut flow: Flow,
+        instance: &InstanceKey,
+        callee: &mir::Function,
+        values: &[ValueId],
+        call: &mir::Expr,
+    ) -> Result<Flow, LoweringError> {
+        if callee.is_async || callee.call_plan.requires.is_empty() {
+            return Ok(flow);
+        }
+        let context = self.call_contract_context(instance, callee, values)?;
+        for contract in &callee.call_plan.requires {
+            flow = self.lower_contract_check(
+                flow,
+                contract,
+                ContractFaultKind::Precondition,
+                call.span,
+                &context,
+            )?;
+        }
+        Ok(flow)
     }
 
     fn lower_checked_root(&mut self, mut flow: Flow) -> Result<(), LoweringError> {
@@ -6491,7 +6618,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         contract: &Contract,
         kind: ContractFaultKind,
         blame_span: Span,
-        context: &ContractContext,
+        context: &ContractContext<'_>,
     ) -> Result<Flow, LoweringError> {
         self.lower_contract_check_with_metadata(
             flow,
@@ -6510,7 +6637,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         &mut self,
         flow: Flow,
         contract: &Contract,
-        context: &ContractContext,
+        context: &ContractContext<'_>,
     ) -> Result<Flow, LoweringError> {
         self.lower_contract_check_with_metadata(
             flow,
@@ -6528,7 +6655,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         flow: Flow,
         contract: &Contract,
         metadata: FaultMetadata,
-        context: &ContractContext,
+        context: &ContractContext<'_>,
     ) -> Result<Flow, LoweringError> {
         let EvalFlow::Continue {
             flow,
@@ -6567,7 +6694,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         &mut self,
         flow: Flow,
         expression: &ContractExpr,
-        context: &ContractContext,
+        context: &ContractContext<'_>,
     ) -> Result<EvalFlow, LoweringError> {
         let origin = self.contract_origin(expression);
         match &expression.kind {
@@ -6700,13 +6827,13 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         &mut self,
         flow: Flow,
         expression: &ContractExpr,
-        context: &ContractContext,
+        context: &ContractContext<'_>,
     ) -> Result<(Flow, ContractOperand), LoweringError> {
         let ty = contract_expr_type(self.program, expression, &contract_type_context(context))
             .ok_or_else(|| self.unsupported_reached("contract expression type"))?;
-        let ty = InstanceSubstitution::new(self.program, self.key)
+        let ty = InstanceSubstitution::new(self.program, context.instance)
             .instantiate_type(&ty)
-            .map_err(|error| instantiation_defect(self.source.id, None, error))?;
+            .map_err(|error| instantiation_defect(context.instance.source(), None, error))?;
         let EvalFlow::Continue { flow, value } =
             self.lower_contract_expr(flow, expression, context)?
         else {
@@ -6866,7 +6993,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         left: &ContractExpr,
         right: &ContractExpr,
         expression: &ContractExpr,
-        context: &ContractContext,
+        context: &ContractContext<'_>,
     ) -> Result<EvalFlow, LoweringError> {
         let EvalFlow::Continue {
             flow,
@@ -7005,7 +7132,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         scrutinee: &ContractExpr,
         arms: &[mir::ContractArm],
         expression: &ContractExpr,
-        context: &ContractContext,
+        context: &ContractContext<'_>,
     ) -> Result<EvalFlow, LoweringError> {
         let scrutinee = self.lower_contract_operand(flow, scrutinee, context)?;
         let (flow, scrutinee) =
@@ -7054,9 +7181,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         let result_ty =
             contract_expr_type(self.program, expression, &contract_type_context(context))
                 .ok_or_else(|| self.unsupported_reached("contract match result type"))?;
-        let result_ty = InstanceSubstitution::new(self.program, self.key)
+        let result_ty = InstanceSubstitution::new(self.program, context.instance)
             .instantiate_type(&result_ty)
-            .map_err(|error| instantiation_defect(self.source.id, None, error))?;
+            .map_err(|error| instantiation_defect(context.instance.source(), None, error))?;
         let join = self.create_block()?;
         let result = self
             .builder
@@ -7098,9 +7225,11 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                             "contract match capture is missing",
                         )
                     })?;
-                let ty = InstanceSubstitution::new(self.program, self.key)
+                let ty = InstanceSubstitution::new(self.program, context.instance)
                     .instantiate_type(declared)
-                    .map_err(|error| instantiation_defect(self.source.id, None, error))?;
+                    .map_err(|error| {
+                        instantiation_defect(context.instance.source(), None, error)
+                    })?;
                 nested.bindings.push(ContractOperand { value, ty });
             }
             let EvalFlow::Continue {
@@ -8936,6 +9065,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             });
         }
         let context = ContractContext {
+            instance: self.key,
             receiver: None,
             record_candidate: Some(ContractRecordCandidate {
                 ty: target.clone(),
@@ -9059,6 +9189,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             return Ok(EvalFlow::Terminated);
         };
         let context = ContractContext {
+            instance: self.key,
             receiver: Some(ContractOperand {
                 value,
                 ty: base.clone(),
@@ -9266,6 +9397,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             });
         }
         let context = ContractContext {
+            instance: self.key,
             receiver: None,
             record_candidate: Some(ContractRecordCandidate {
                 ty: target,
@@ -9326,6 +9458,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             return Ok(EvalFlow::Terminated);
         };
         let context = ContractContext {
+            instance: self.key,
             receiver: Some(ContractOperand { value, ty: base }),
             record_candidate: None,
             result: None,
@@ -11660,50 +11793,8 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 ),
             ));
         }
-        if !callee_source.is_async && !callee_source.call_plan.requires.is_empty() {
-            let parameters = callee_source
-                .params
-                .iter()
-                .zip(lowered_arguments.iter().copied())
-                .map(|(parameter, value)| {
-                    InstanceSubstitution::new(self.program, &key)
-                        .instantiate_type(&parameter.ty)
-                        .map(|ty| ContractOperand { value, ty })
-                        .map_err(|error| {
-                            instantiation_defect(self.source.id, Some(expression.id), error)
-                        })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let (receiver, arguments) = if callee_source.receiver.is_some() {
-                let (receiver, arguments) = parameters.split_first().ok_or_else(|| {
-                    LoweringError::defect(
-                        LoweringDefectCode::InconsistentPlan,
-                        "contracted receiver call has no receiver argument",
-                    )
-                })?;
-                (Some(receiver.clone()), arguments.to_vec())
-            } else {
-                (None, parameters)
-            };
-            let context = ContractContext {
-                receiver,
-                record_candidate: None,
-                result: None,
-                arguments,
-                old_receiver: None,
-                old_arguments: Vec::new(),
-                bindings: Vec::new(),
-            };
-            for contract in &callee_source.call_plan.requires {
-                flow = self.lower_contract_check(
-                    flow,
-                    contract,
-                    ContractFaultKind::Precondition,
-                    expression.span,
-                    &context,
-                )?;
-            }
-        }
+        flow =
+            self.lower_sync_requires(flow, &key, callee_source, &lowered_arguments, expression)?;
         if callee_source.is_async {
             if !inout_arguments.is_empty() {
                 return Err(self.unsupported_reached("async Task creation with inout arguments"));
@@ -11910,12 +12001,8 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     "finite dynamic method disappeared",
                 )
             })?;
-            if callee_source.receiver == Some(mir::Receiver::Mutable)
-                || !callee_source.call_plan.requires.is_empty()
-            {
-                return Err(
-                    self.unsupported_reached("mutable or preconditioned finite dynamic dispatch")
-                );
+            if callee_source.receiver == Some(mir::Receiver::Mutable) {
+                return Err(self.unsupported_reached("mutable finite dynamic readonly dispatch"));
             }
             let instance = self.instances.get(&key).ok_or_else(|| {
                 LoweringError::defect(
@@ -11932,7 +12019,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 .append_block_parameter(block, self.type_id(candidate.concrete())?)
                 .map_err(LoweringError::from)?;
             cases.push(crate::SumCase::new(variant, block, []));
-            plans.push((block, payload, instance));
+            plans.push((key, block, payload, instance));
         }
         self.terminate(
             flow.block,
@@ -11942,10 +12029,26 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             },
             origin,
         )?;
-        for (block, payload, instance) in plans {
+        for (key, block, payload, instance) in plans {
             let mut branch_arguments = Vec::with_capacity(values.len());
             branch_arguments.push(payload);
             branch_arguments.extend(values.iter().copied().skip(1));
+            let callee_source = self.program.function(key.source()).ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    "finite dynamic method disappeared before contract lowering",
+                )
+            })?;
+            let branch_flow = self.lower_sync_requires(
+                Flow {
+                    block,
+                    env: flow.env,
+                },
+                &key,
+                callee_source,
+                &branch_arguments,
+                expression,
+            )?;
             let effect = effect_for(self.effects, instance)?;
             if effect.contains(Effects::MAY_FAULT) {
                 let normal = self.create_block()?;
@@ -11953,12 +12056,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     .builder
                     .append_block_parameter(normal, result_type)
                     .map_err(LoweringError::from)?;
-                let unwind = self.fault_target(Flow {
-                    block,
-                    env: flow.env,
-                })?;
+                let unwind = self.fault_target(branch_flow)?;
                 self.terminate(
-                    block,
+                    branch_flow.block,
                     TerminatorKind::Invoke {
                         callee: instance,
                         arguments: branch_arguments.into_boxed_slice(),
@@ -11976,7 +12076,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 let value = self
                     .builder
                     .append_instruction(
-                        block,
+                        branch_flow.block,
                         InstructionKind::DirectCall {
                             callee: instance,
                             arguments: branch_arguments.into_boxed_slice(),
@@ -11986,7 +12086,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     )
                     .map_err(LoweringError::from)?[0];
                 self.terminate(
-                    block,
+                    branch_flow.block,
                     TerminatorKind::Jump(BlockTarget::new(join, [value])),
                     origin,
                 )?;
@@ -12110,17 +12210,6 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 .map_err(|error| {
                     instantiation_defect(self.source.id, Some(expression.id), error)
                 })?;
-            let callee_source = self.program.function(key.source()).ok_or_else(|| {
-                LoweringError::defect(
-                    LoweringDefectCode::InconsistentPlan,
-                    "finite mutable dynamic method disappeared",
-                )
-            })?;
-            if !callee_source.call_plan.requires.is_empty() {
-                return Err(
-                    self.unsupported_reached("preconditioned finite mutable dynamic dispatch")
-                );
-            }
             let instance = self.instances.get(&key).ok_or_else(|| {
                 LoweringError::defect(
                     LoweringDefectCode::InconsistentPlan,
@@ -12136,7 +12225,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 .append_block_parameter(block, self.type_id(candidate.concrete())?)
                 .map_err(LoweringError::from)?;
             cases.push(crate::SumCase::new(variant, block, []));
-            plans.push((variant, block, payload, instance));
+            plans.push((variant, key, block, payload, instance));
         }
         self.terminate(
             flow.block,
@@ -12149,7 +12238,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
 
         let result_type = self.type_id(&expression.ty)?;
         let mut continuations = Vec::with_capacity(plans.len());
-        for (variant, block, payload, instance) in plans {
+        for (variant, key, block, payload, instance) in plans {
             let candidate_type = self.builder.value_type(payload).ok_or_else(|| {
                 LoweringError::defect(
                     LoweringDefectCode::InconsistentPlan,
@@ -12159,6 +12248,22 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             let mut branch_arguments = Vec::with_capacity(values.len());
             branch_arguments.push(payload);
             branch_arguments.extend(values.iter().copied().skip(1));
+            let callee_source = self.program.function(key.source()).ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    "finite mutable dynamic method disappeared before contract lowering",
+                )
+            })?;
+            let branch_flow = self.lower_sync_requires(
+                Flow {
+                    block,
+                    env: base_environment,
+                },
+                &key,
+                callee_source,
+                &branch_arguments,
+                expression,
+            )?;
             let effect = effect_for(self.effects, instance)?;
             if effect.contains(Effects::MAY_FAULT) {
                 let normal = self.create_block()?;
@@ -12176,7 +12281,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     .append_block_parameter(fault, candidate_type)
                     .map_err(LoweringError::from)?;
                 self.terminate(
-                    block,
+                    branch_flow.block,
                     TerminatorKind::Invoke {
                         callee: instance,
                         arguments: branch_arguments.into_boxed_slice(),
@@ -12188,7 +12293,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
 
                 let fault_flow = Flow {
                     block: fault,
-                    env: base_environment,
+                    env: branch_flow.env,
                 };
                 let EvalFlow::Continue {
                     flow: fault_flow,
@@ -12221,7 +12326,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
 
                 let normal_flow = Flow {
                     block: normal,
-                    env: base_environment,
+                    env: branch_flow.env,
                 };
                 let EvalFlow::Continue {
                     flow: normal_flow,
@@ -12250,7 +12355,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 let results = self
                     .builder
                     .append_instruction(
-                        block,
+                        branch_flow.block,
                         InstructionKind::DirectCall {
                             callee: instance,
                             arguments: branch_arguments.into_boxed_slice(),
@@ -12264,10 +12369,6 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                         LoweringDefectCode::Builder,
                         "finite mutable call did not return result and receiver writeback",
                     ));
-                };
-                let branch_flow = Flow {
-                    block,
-                    env: base_environment,
                 };
                 let EvalFlow::Continue {
                     flow: branch_flow,

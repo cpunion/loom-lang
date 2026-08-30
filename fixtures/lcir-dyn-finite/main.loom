@@ -2,6 +2,8 @@ import std.io.write_line
 
 dyn concept Metric {
     method read(self) Int
+    method readChecked(self, minimum Int) Int
+        requires minimum >= 0
     method cold(self) Int
 }
 
@@ -9,6 +11,8 @@ dyn concept Advance {
     method advance(mut self) Int
     method store(mut self, value Int) Int
     method storeChecked(mut self, value Int) Int
+    method storeRequired(mut self, value Int) Int
+        requires value >= 0
     method storeThenFail(mut self, value Int)
     method read(self) Int
 }
@@ -24,6 +28,7 @@ record Offset {
 
 impl Metric for Counter {
     method read(self) Int { self.value }
+    method readChecked(self, minimum Int) Int { self.value + minimum }
     method cold(self) Int { 7001 }
 }
 
@@ -44,6 +49,11 @@ impl Advance for Counter {
         self.value
     }
 
+    method storeRequired(mut self, value Int) Int {
+        self.value = value
+        self.value
+    }
+
     method storeThenFail(mut self, value Int) {
         self.value = value
         assert false
@@ -54,6 +64,7 @@ impl Advance for Counter {
 
 impl Metric for Offset {
     method read(self) Int { self.value + 100 }
+    method readChecked(self, minimum Int) Int { self.value + minimum + 100 }
     method cold(self) Int { 7002 }
 }
 
@@ -71,6 +82,11 @@ impl Advance for Offset {
     method storeChecked(mut self, value Int) Int {
         self.value = value
         assert value >= 0
+        self.value
+    }
+
+    method storeRequired(mut self, value Int) Int {
+        self.value = value
         self.value
     }
 
@@ -126,6 +142,10 @@ fn measure(metric Metric) Int {
     metric.read()
 }
 
+fn measureChecked(metric Metric, minimum Int) Int {
+    metric.readChecked(minimum)
+}
+
 fn eraseCounter(value Counter) dyn Metric {
     value
 }
@@ -166,8 +186,12 @@ fn verify() {
     let second = Offset { value = 1 }
     let firstValue = measure(first)
     let secondValue = measure(second)
+    let firstChecked = measureChecked(first, 1)
+    let secondChecked = measureChecked(second, 1)
     assert firstValue == 41
     assert secondValue == 101
+    assert firstChecked == 42
+    assert secondChecked == 102
 
     let held = Holder { item = first }
     let heldValue = held.item.read()
@@ -261,6 +285,15 @@ fn verify() {
     assert checkedItem == 17
     assert checkedSibling == 17
     assert checkedGuard == 101
+
+    let requiredResult = ordered.slot.item.storeRequired(ordered.slot.sibling.set(19))
+    let requiredItem = ordered.slot.item.read()
+    let requiredSibling = ordered.slot.sibling.value
+    let requiredGuard = ordered.guard
+    assert requiredResult == 19
+    assert requiredItem == 19
+    assert requiredSibling == 19
+    assert requiredGuard == 101
 }
 
 pub fn projectedFaultMain() {
@@ -282,6 +315,27 @@ pub fn projectedFaultMain() {
         }
     }
     holder.slot.item.storeThenFail(holder.slot.sibling.set(23))
+}
+
+pub fn projectedPreconditionFaultMain() {
+    var holder = MutationHolder {
+        slot = MutationSlot {
+            item = chooseAdvance(true, 1),
+            sibling = SiblingCell { value = 2 },
+        },
+        guard = 103,
+    }
+    defer {
+        let item = holder.slot.item.read()
+        let sibling = holder.slot.sibling.value
+        let guard = holder.guard
+        if item == 1 && sibling == -23 && guard == 103 {
+            write_line("projected precondition no writeback")
+        } else {
+            write_line("stale projected precondition writeback")
+        }
+    }
+    discard holder.slot.item.storeRequired(holder.slot.sibling.set(-23))
 }
 
 pub fn main() {
