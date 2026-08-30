@@ -3497,7 +3497,8 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         {
             self.current_defer_self_boundaries.insert(expression);
         }
-        if self.self_dirty && !self.allow_dirty_self_projection {
+        if self.self_dirty && !self.allow_dirty_self_projection && !self.checking_assignment_target
+        {
             self.error_at(
                 "InvariantIsolationViolation",
                 "a mutated receiver cannot escape or cross another call before its invariant boundary",
@@ -4449,7 +4450,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         }
         let established = ProofTerm::Place(proof_place);
         self.assume_established_type(target_ty, &established);
-        if dirties_self {
+        if matches!(place.root, PlaceRoot::SelfValue) && place.projections.is_empty() {
+            self.self_dirty = false;
+        } else if dirties_self {
             self.self_dirty = true;
         }
         let unit = self.types().builtin(BuiltinType::Unit);
@@ -4893,8 +4896,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             let token = ViewTokenId(self.next_view_token);
             self.next_view_token = self.next_view_token.saturating_add(1);
             if borrowed {
+                let owner = owner.as_ref().expect("borrowed interface has an owner");
                 let _ = self.register_borrow(
-                    owner.clone().expect("borrowed interface has an owner"),
+                    owner.clone(),
                     mutability == Mutability::Mutable,
                     region,
                     BorrowIdentity::Interface(token),
@@ -5537,6 +5541,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         }
         let receiver = match &self.source().expressions[expression] {
             Expr::MethodCall { receiver, .. } => Some(*receiver),
+            Expr::QualifiedMethodCall { arguments, .. } | Expr::Call { arguments, .. } => {
+                arguments.first().copied()
+            }
             _ => None,
         };
         let Some(receiver) = receiver else {
@@ -5545,6 +5552,13 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         let Some(place) = self.semantics.expression_places.get(receiver).cloned() else {
             return;
         };
+        let Some(ty) = self.semantics.expression_types.get(receiver).copied() else {
+            return;
+        };
+        self.invalidate_mutated_place(&place, ty);
+    }
+
+    fn invalidate_mutated_place(&mut self, place: &Place, ty: TyId) {
         let proof_place = proof_place(&place);
         self.proof_facts.invalidate(&proof_place);
         self.local_terms
@@ -5552,9 +5566,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         if let PlaceRoot::Local(local) = place.root {
             self.local_terms.remove(&local);
         }
-        if let Some(ty) = self.semantics.expression_types.get(receiver).copied() {
-            self.assume_established_type(ty, &ProofTerm::Place(proof_place));
-        }
+        self.assume_established_type(ty, &ProofTerm::Place(proof_place));
     }
 
     fn checked_value_proof(&self, expression: ExprId, facts: &mut ProofFacts) -> ProofTerm {
@@ -6682,8 +6694,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             self.call_arity(expression, parameters.len() + 1, 0);
             return (self.types().error(), passing);
         };
-        self.check_expr(*receiver, Some(resource), ExpressionContext::Value);
-        self.check_receiver_isolation(*receiver);
+        self.check_call_receiver(*receiver, Some(resource));
         if passing == ReceiverPassing::InOut
             && self
                 .semantics
@@ -6799,6 +6810,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 );
             }
         }
+        let mut dynamic_mutations = Vec::new();
         for (argument, actual, parameter_ty) in actual_types {
             let expected = self.types().substitute(parameter_ty, &substitution);
             if self.has_must_scope_obligation_root(expected) {
@@ -6838,7 +6850,45 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             }
             self.coerce(argument, actual, expected);
             self.dynamic_coercion_mode = previous_mode;
+            if let Some(view) = self.semantics.views.get(argument)
+                && view.mutable
+            {
+                let owner = match &view.source {
+                    ViewSource::Concrete {
+                        writeback: Some(owner),
+                        ..
+                    }
+                    | ViewSource::Interface { owner } => Some(owner.clone()),
+                    ViewSource::Concrete {
+                        writeback: None, ..
+                    } => None,
+                };
+                if let Some(owner) = owner {
+                    dynamic_mutations.push((argument, owner, actual));
+                }
+            }
         }
+        let dirty_before_call = self.self_dirty;
+        let mut dirties_self = false;
+        let mut reported_isolation = false;
+        for (argument, owner, owner_ty) in dynamic_mutations {
+            let crosses_self = self.check_invariant_mutation_boundary(
+                argument,
+                &owner,
+                InvariantMutation::ReceiverCall,
+            );
+            if crosses_self && dirty_before_call && !reported_isolation {
+                self.error_at(
+                    "InvariantIsolationViolation",
+                    "a mutated receiver cannot enter another mutable interface call before its invariant is restored",
+                    argument,
+                );
+                reported_isolation = true;
+            }
+            self.invalidate_mutated_place(&owner, owner_ty);
+            dirties_self |= crosses_self;
+        }
+        self.self_dirty |= dirties_self;
         let return_ty = self.types().substitute(signature.return_ty, &substitution);
         (return_ty, substitution)
     }
@@ -6969,14 +7019,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 return result;
             }
         }
-        let previous = self.allow_dirty_self_projection;
-        let previous_scoped = self.checking_scoped_receiver;
-        self.allow_dirty_self_projection = true;
-        self.checking_scoped_receiver = true;
-        let receiver_ty = self.check_expr(receiver, None, ExpressionContext::Value);
-        self.allow_dirty_self_projection = previous;
-        self.checking_scoped_receiver = previous_scoped;
-        self.check_receiver_isolation(receiver);
+        let receiver_ty = self.check_call_receiver(receiver, None);
         if let TyData::List(element) = self.types().data(receiver_ty).clone()
             && let Some(result) = self.check_list_method_call(
                 expression,
@@ -8215,8 +8258,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         let (call_arguments, receiver) = if signature.receiver == Some(ReceiverKind::Static) {
             (arguments, None)
         } else if let Some((receiver, rest)) = arguments.split_first() {
-            self.check_expr(*receiver, Some(self_ty), ExpressionContext::Value);
-            self.check_receiver_isolation(*receiver);
+            self.check_call_receiver(*receiver, Some(self_ty));
             if signature.receiver == Some(ReceiverKind::Mutable)
                 && self
                     .semantics
@@ -10306,6 +10348,18 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 receiver,
             );
         }
+    }
+
+    fn check_call_receiver(&mut self, receiver: ExprId, expected: Option<TyId>) -> TyId {
+        let previous_projection = self.allow_dirty_self_projection;
+        let previous_scoped = self.checking_scoped_receiver;
+        self.allow_dirty_self_projection = true;
+        self.checking_scoped_receiver = true;
+        let ty = self.check_expr(receiver, expected, ExpressionContext::Value);
+        self.allow_dirty_self_projection = previous_projection;
+        self.checking_scoped_receiver = previous_scoped;
+        self.check_receiver_isolation(receiver);
+        ty
     }
 
     /// Rejects mutation through a record whose invariant is outside the

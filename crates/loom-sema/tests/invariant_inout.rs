@@ -98,6 +98,9 @@ record Positive {
 }
 
 impl Positive {
+    method observe(self) {
+    }
+
     method increment(mut self) {
         self.counter.increment()
         assert self.counter.value >= 0
@@ -106,6 +109,12 @@ impl Positive {
     method reset(mut self) {
         self.counter.value = 0
         assert self.counter.value >= 0
+    }
+
+    method replaceAfterMutation(mut self, value Positive) {
+        self.counter.increment()
+        self = value
+        self.observe()
     }
 }
 
@@ -133,6 +142,8 @@ fn valid() {
     positive.increment()
 
     positive.reset()
+
+    positive.replaceAfterMutation(Positive { counter = Counter { value = 0 } })
 
     var plain = Plain {
         counter = Counter { value = 0 }
@@ -174,6 +185,10 @@ concept Increment {
     method increment(mut self)
 }
 
+concept Inspect {
+    method inspect(self)
+}
+
 impl Increment for Counter {
     method increment(mut self) {
         self.value = self.value + 1
@@ -185,6 +200,11 @@ record Positive {
     other Counter
     items List[Int]
     invariant self.counter.value >= 0 && self.other.value >= 0
+}
+
+impl Inspect for Positive {
+    method inspect(self) {
+    }
 }
 
 impl Positive {
@@ -215,6 +235,17 @@ impl Positive {
         self.counter.decrement()
         <Counter as Increment>.increment(self.other)
     }
+
+    method qualifiedSelfAfterMutation(mut self) {
+        self.counter.decrement()
+        <Positive as Inspect>.inspect(self)
+    }
+
+    method qualifiedMutationCannotRecoverFromUnrelatedAssert(mut self) {
+        <Counter as Increment>.increment(self.counter)
+        assert true
+        self.observe()
+    }
 }
 ",
     );
@@ -223,7 +254,7 @@ impl Positive {
             .iter()
             .filter(|diagnostic| diagnostic.code == "InvariantIsolationViolation")
             .count(),
-        4,
+        6,
         "{diagnostics:#?}"
     );
     assert!(
@@ -232,4 +263,78 @@ impl Positive {
             .all(|diagnostic| diagnostic.code == "InvariantIsolationViolation"),
         "{diagnostics:#?}"
     );
+}
+
+#[test]
+fn mutable_dynamic_arguments_obey_invariant_boundaries() {
+    let diagnostics = diagnostics(
+        r"
+dyn concept Touch {
+    method touch(mut self)
+}
+
+record Counter {
+    value Int
+}
+
+impl Touch for Counter {
+    method touch(mut self) {
+        self.value = self.value + 1
+    }
+}
+
+fn touch(value dyn Touch) {
+    value.touch()
+}
+
+record Positive {
+    counter Counter
+    invariant self.counter.value >= 0
+}
+
+impl Positive {
+    method observe(self) {
+    }
+
+    method mutateThroughDyn(mut self) {
+        touch(self.counter)
+        assert true
+        touch(self.counter)
+        self.observe()
+    }
+}
+
+record Holder {
+    positive Positive
+}
+
+impl Holder {
+    method bypassNestedInvariant(mut self) {
+        touch(self.positive.counter)
+    }
+}
+
+fn bypassExternalInvariant() {
+    var value = Positive { counter = Counter { value = 0 } }
+    touch(value.counter)
+}
+",
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "InvariantIsolationViolation")
+            .count(),
+        2,
+        "{diagnostics:#?}"
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "InvariantInteriorMutation")
+            .count(),
+        2,
+        "{diagnostics:#?}"
+    );
+    assert_eq!(diagnostics.len(), 4, "{diagnostics:#?}");
 }
