@@ -61,10 +61,10 @@ representation: each aggregate remains an unboxed exact SSA value. Concat/get's
 exact `MAY_COLLECT | NEEDS_RUNTIME` effect propagates through the reachable call
 graph, and generated typed root maps expand only live aggregate SSA values to
 their deterministic managed leaves. An unreachable concat or Text-bearing
-product/sum cannot change representation or route selection. Other unsupported
-dynamic Text producers, Text inside a transparent/refined carrier, and managed
-lists still change the complete reachable artifact to the checked-MIR route before
-LCIR construction.
+product/sum cannot change representation or route selection. An established
+transparent/refined carrier reuses its base representation and root plan.
+Other unsupported dynamic Text producers still change the complete reachable
+artifact to the checked-MIR route before LCIR construction.
 
 ## Roots
 

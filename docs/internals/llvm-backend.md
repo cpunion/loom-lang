@@ -310,9 +310,9 @@ is an emission-time `ProgramTooLarge` error and cannot select checked-MIR fallba
 
 The harness creates only a synchronous runtime when the root's exact effects
 require one. Managed concat/get introduces no universal root chain, executor,
-scheduler, suspension, or catchable fault channel. Other dynamic Text
-producers and Text inside a transparent/refined carrier remain atomic
-whole-artifact fallback.
+scheduler, suspension, or catchable fault channel. Transparent/refined carriers
+reuse their base LLVM type and managed-root projections without a runtime box.
+Other unsupported dynamic Text producers remain atomic whole-artifact fallback.
 
 ### Direct managed Bytes
 

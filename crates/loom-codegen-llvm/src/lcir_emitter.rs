@@ -653,13 +653,20 @@ impl<'ctx> DebugState<'ctx> {
         backend: &Backend<'ctx, '_>,
         ty: ValueTypeId,
     ) -> Result<(&'static str, DIType<'ctx>), CodegenError> {
-        let value_type = backend
-            .artifact
-            .representations()
-            .value_type(ty)
-            .ok_or_else(|| {
-                CodegenError::new("LlvmDebugInfoFailed", format!("missing LCIR type {ty}"))
-            })?;
+        let mut ty = ty;
+        let value_type = loop {
+            let value_type = backend
+                .artifact
+                .representations()
+                .value_type(ty)
+                .ok_or_else(|| {
+                    CodegenError::new("LlvmDebugInfoFailed", format!("missing LCIR type {ty}"))
+                })?;
+            let ValueTypeKind::Transparent { base } = value_type.kind() else {
+                break value_type;
+            };
+            ty = base;
+        };
         if backend.artifact.representations().is_managed_bytes_type(
             backend
                 .artifact

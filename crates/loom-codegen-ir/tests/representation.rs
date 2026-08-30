@@ -255,7 +255,7 @@ fn immortal_text_is_explicit_64_bit_only_and_not_a_product_leaf() {
 }
 
 #[test]
-fn managed_text_enters_nested_products_and_sums_but_not_transparent_carriers() {
+fn managed_text_enters_nested_products_sums_and_transparent_carriers() {
     let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
     builder
         .add_managed_text_type()
@@ -289,12 +289,26 @@ fn managed_text_enters_nested_products_and_sums_but_not_transparent_carriers() {
             .and_then(|ty| builder.representations().repr(ty.repr())),
         Some(Repr::Sum(_))
     ));
+    let wrapper = builder
+        .add_transparent_type(Type::Nominal(TypeId(92), Vec::new()), &record)
+        .expect("transparent managed-product carrier");
     assert_eq!(
         builder
-            .add_transparent_type(Type::Nominal(TypeId(92), Vec::new()), &record)
-            .expect_err("transparent managed-product carriers remain unsupported")
-            .code(),
-        BuildErrorCode::InvalidValueType
+            .representations()
+            .value_type(wrapper)
+            .expect("transparent wrapper")
+            .kind(),
+        loom_codegen_ir::ValueTypeKind::Transparent { base: outer }
+    );
+    let text_wrapper = builder
+        .add_transparent_type(Type::Nominal(TypeId(93), Vec::new()), &Type::Text)
+        .expect("transparent direct managed-pointer carrier");
+    assert_eq!(
+        builder
+            .representations()
+            .value_type(text_wrapper)
+            .and_then(|ty| builder.representations().repr(ty.repr())),
+        Some(&Repr::ManagedPointer)
     );
 }
 

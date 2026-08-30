@@ -846,7 +846,7 @@ impl RepresentationPlan {
         if matches!(self.repr(repr), Some(Repr::Uninhabited))
             || self
                 .pointer_kinds(base)
-                .is_none_or(|(immortal, managed)| immortal || managed)
+                .is_none_or(|(immortal, _)| immortal)
         {
             return None;
         }
@@ -1623,17 +1623,30 @@ mod tests {
 
         let mut transparent = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
         transparent.add_managed_text_type().expect("managed Text");
-        let product = transparent
+        let product_semantic = Type::Tuple(vec![Type::Text]);
+        transparent
             .add_tuple_type(&[Type::Text])
             .expect("managed product");
-        let wrapper = transparent
-            .add_transparent_type(Type::Nominal(TypeId(5_001), Vec::new()), &Type::Float)
+        transparent
+            .add_transparent_type(Type::Nominal(TypeId(5_001), Vec::new()), &product_semantic)
+            .expect("managed transparent value");
+        validate_program(&transparent.finish())
+            .expect("a transparent carrier may retain exact managed roots from its base");
+
+        let mut immortal_transparent = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        let text = immortal_transparent
+            .add_immortal_text_type()
+            .expect("immortal Text");
+        let wrapper = immortal_transparent
+            .add_transparent_type(Type::Nominal(TypeId(5_002), Vec::new()), &Type::Float)
             .expect("pointer-free transparent value");
-        let mut transparent = transparent.finish();
-        transparent.representations.types[wrapper.index()].kind =
-            ValueTypeKind::Transparent { base: product };
-        let errors = validate_program(&transparent)
-            .expect_err("a managed product cannot be forged into a transparent carrier");
+        let mut immortal_transparent = immortal_transparent.finish();
+        let text_repr = immortal_transparent.representations.types[text.index()].repr;
+        immortal_transparent.representations.types[wrapper.index()].kind =
+            ValueTypeKind::Transparent { base: text };
+        immortal_transparent.representations.types[wrapper.index()].repr = text_repr;
+        let errors = validate_program(&immortal_transparent)
+            .expect_err("an immortal-only Text cannot be forged into a transparent carrier");
         assert!(errors.as_slice().iter().any(|error| {
             error.code() == ValidationCode::RepresentationPlan
                 && error.path()
@@ -1642,7 +1655,7 @@ mod tests {
                         wrapper.index()
                     )
                 && error.message()
-                    == "transparent values must retain a pointer-free base representation"
+                    == "transparent values cannot retain an immortal-only Text base representation"
         }));
     }
 

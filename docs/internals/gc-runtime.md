@@ -204,8 +204,9 @@ storage. Functional removal consumes the search key before its allocation
 boundary, roots and reloads exactly the source backing, and copies the surviving
 typed entries into new storage; missing and last-entry removals do not allocate.
 Repeated pointer offsets precisely cover every used or zeroed capacity cell.
-Text inside transparent/refined carriers and other dynamic producers remain
-outside the current typed LCIR slice.
+Established transparent/refined carriers reuse their base representation and
+the same direct or aggregate managed-root projections. Other unsupported
+dynamic producers remain outside the current typed LCIR slice.
 
 ## Source semantics
 

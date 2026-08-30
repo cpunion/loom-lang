@@ -3,6 +3,9 @@ record Envelope {
     flag Bool
 }
 
+type Label = Text where true
+type Packet = Bytes where true
+
 fn impossible() {
     impossible()
 }
@@ -17,6 +20,24 @@ async fn allocationPressure() Bool {
 }
 
 async fn echoText(value Text) Text {
+    value
+}
+
+async fn echoLabel(value Label) Label {
+    Task.sleep(0).await
+    value
+}
+
+async fn echoPacket(value Packet) Packet {
+    Task.sleep(0).await
+    value
+}
+
+fn revealLabel(value Label) Text {
+    value
+}
+
+fn revealPacket(value Packet) Bytes {
     value
 }
 
@@ -38,11 +59,15 @@ async fn precreatedChildren() Bool {
 
 pub async fn main() {
     let marker = "typed ".concat("root")
+    let label = Label("typed ".concat("root"))
+    let packet = Packet("loom".encode_utf8())
     let observed = allocationPressure().await
     let immediateReady = precreatedChildren().await
     let echoed = echoText(marker).await
+    let revealedLabel = revealLabel(echoLabel(label).await)
+    let packetLength = revealPacket(echoPacket(packet).await).length()
     let envelope = echoEnvelope(Envelope { text = echoed, flag = observed && immediateReady }).await
-    if envelope.flag && envelope.text == "typed root" {
+    if envelope.flag && envelope.text == "typed root" && revealedLabel == "typed root" && packetLength == 4 {
         Unit
     } else {
         impossible()

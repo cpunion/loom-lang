@@ -410,10 +410,10 @@ to deterministic candidate cells for its managed-pointer leaves; active tags
 guard sum publication, definitions and phis publish the projections, and later
 aggregate uses are rebuilt from possibly moved leaf reloads. Per-site bitmaps
 are exact and results are excluded at their defining safepoint. Functions with
-no live-across managed leaf emit no frame. Other dynamic producers, Text inside
-transparent/refined carriers, and other unsupported managed shapes remain
-complete checked-MIR fallback. Concrete closed Lists instead use direct managed
-pointers and typed repeated descriptors.
+no live-across managed leaf emit no frame. Established transparent/refined
+carriers reuse the base layout and root projections. Other unsupported dynamic
+producers and managed shapes remain complete checked-MIR fallback. Concrete
+closed Lists instead use direct managed pointers and typed repeated descriptors.
 
 All payload-bearing tagged sums use a target-data-derived byte-class plan.
 Recursive managed cells classify pointer-width ranges; scalar, aggregate, and

@@ -139,6 +139,90 @@ fn semantic_type_is_task_free(root: &Type) -> bool {
     true
 }
 
+fn managed_list_element_is_valid(representations: &RepresentationPlan, semantic: &Type) -> bool {
+    let Some(element_id) = representations.type_id(semantic) else {
+        return false;
+    };
+    let Some(element) = representations.value_type(element_id) else {
+        return false;
+    };
+    let Some(repr) = representations.repr(element.repr()) else {
+        return false;
+    };
+    element.semantic() != &Type::Never
+        && matches!(
+            repr,
+            Repr::Zst
+                | Repr::Scalar(_)
+                | Repr::ManagedPointer
+                | Repr::TaskHandle
+                | Repr::Product(_)
+                | Repr::Sum(_)
+        )
+        && ((repr == &Repr::TaskHandle
+            && element.kind() == ValueTypeKind::Direct
+            && matches!(element.semantic(), Type::Task(_)))
+            || (semantic_type_is_task_free(element.semantic())
+                && representation_contains_task_handle(representations, element_id) == Some(false)))
+        && representation_pointer_kinds(representations, element_id)
+            .is_some_and(|(immortal, _)| !immortal)
+}
+
+fn managed_text_map_value_is_valid(representations: &RepresentationPlan, semantic: &Type) -> bool {
+    let Some(value_id) = representations.type_id(semantic) else {
+        return false;
+    };
+    let Some(value) = representations.value_type(value_id) else {
+        return false;
+    };
+    value.semantic() != &Type::Never
+        && semantic_type_is_task_free(value.semantic())
+        && representation_contains_task_handle(representations, value_id) == Some(false)
+        && matches!(
+            representations.repr(value.repr()),
+            Some(
+                Repr::Zst
+                    | Repr::Scalar(_)
+                    | Repr::ManagedPointer
+                    | Repr::Product(_)
+                    | Repr::Sum(_)
+            )
+        )
+        && representation_pointer_kinds(representations, value_id)
+            .is_some_and(|(immortal, _)| !immortal)
+}
+
+fn managed_pointer_semantic_is_valid(program: &Program, ty: ValueTypeId) -> bool {
+    let representations = program.representations();
+    let Some(value_type) = representations.value_type(ty) else {
+        return false;
+    };
+    match (value_type.kind(), value_type.semantic()) {
+        (ValueTypeKind::Transparent { base }, Type::Nominal(_, _)) => representations
+            .value_type(base)
+            .is_some_and(|base| representations.repr(base.repr()) == Some(&Repr::ManagedPointer)),
+        (ValueTypeKind::Direct, Type::Text) => true,
+        (ValueTypeKind::Direct, Type::Nominal(identity, arguments))
+            if Some(*identity) == program.canonical_types().bytes && arguments.is_empty() =>
+        {
+            true
+        }
+        (ValueTypeKind::Direct, Type::List(element)) => {
+            managed_list_element_is_valid(representations, element)
+        }
+        (ValueTypeKind::ManagedTextMap, Type::Nominal(identity, arguments))
+            if Some(*identity) == program.canonical_types().text_map =>
+        {
+            let [value] = arguments.as_slice() else {
+                return false;
+            };
+            managed_text_map_value_is_valid(representations, value)
+        }
+        (ValueTypeKind::Direct, Type::View { .. }) => representations.dynamic(ty).is_some(),
+        _ => false,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ValidationCode {
     CanonicalTypeCatalog,
@@ -731,12 +815,13 @@ impl<'a> Validator<'a> {
                 );
             }
             if let ValueTypeKind::Transparent { base } = value_type.kind()
-                && representation_pointer_kinds(&representations, base) != Some((false, false))
+                && representation_pointer_kinds(&representations, base)
+                    .is_none_or(|(immortal, _)| immortal)
             {
                 self.error(
                     ValidationCode::RepresentationPlan,
                     format!("representations.type[{index}].kind.transparent_base"),
-                    "transparent values must retain a pointer-free base representation",
+                    "transparent values cannot retain an immortal-only Text base representation",
                 );
             }
             if canonical_bytes_semantic.as_ref() == Some(value_type.semantic())
@@ -821,93 +906,15 @@ impl<'a> Validator<'a> {
                     }
                 }
                 Some(Repr::ManagedPointer) => {
-                    let valid_semantic = match value_type.semantic() {
-                        Type::Text => value_type.kind() == ValueTypeKind::Direct,
-                        Type::Nominal(id, arguments)
-                            if Some(*id) == self.program.canonical_types.bytes
-                                && arguments.is_empty() =>
-                        {
-                            value_type.kind() == ValueTypeKind::Direct
-                        }
-                        Type::List(element) => {
-                            value_type.kind() == ValueTypeKind::Direct
-                                && representations.type_id(element).is_some_and(|element_id| {
-                                    representations
-                                        .value_type(element_id)
-                                        .is_some_and(|element| {
-                                            element.semantic() != &Type::Never
-                                                && matches!(
-                                                    representations.repr(element.repr()),
-                                                    Some(
-                                                        Repr::Zst
-                                                            | Repr::Scalar(_)
-                                                            | Repr::ManagedPointer
-                                                            | Repr::TaskHandle
-                                                            | Repr::Product(_)
-                                                            | Repr::Sum(_)
-                                                    )
-                                                )
-                                                && ((representations.repr(element.repr())
-                                                    == Some(&Repr::TaskHandle)
-                                                    && element.kind() == ValueTypeKind::Direct
-                                                    && matches!(element.semantic(), Type::Task(_)))
-                                                    || (semantic_type_is_task_free(
-                                                        element.semantic(),
-                                                    ) && representation_contains_task_handle(
-                                                        &representations,
-                                                        element_id,
-                                                    ) == Some(false)))
-                                                && representation_pointer_kinds(
-                                                    &representations,
-                                                    element_id,
-                                                )
-                                                .is_some_and(|(immortal, _)| !immortal)
-                                        })
-                                })
-                        }
-                        Type::Nominal(identity, arguments)
-                            if value_type.kind() == ValueTypeKind::ManagedTextMap
-                                && Some(*identity) == self.program.canonical_types.text_map =>
-                        {
-                            let [value] = arguments.as_slice() else {
-                                unreachable!("managed TextMap kind was checked above")
-                            };
-                            representations.type_id(value).is_some_and(|value_id| {
-                                representations.value_type(value_id).is_some_and(|value| {
-                                    value.semantic() != &Type::Never
-                                        && semantic_type_is_task_free(value.semantic())
-                                        && representation_contains_task_handle(
-                                            &representations,
-                                            value_id,
-                                        ) == Some(false)
-                                        && matches!(
-                                            representations.repr(value.repr()),
-                                            Some(
-                                                Repr::Zst
-                                                    | Repr::Scalar(_)
-                                                    | Repr::ManagedPointer
-                                                    | Repr::Product(_)
-                                                    | Repr::Sum(_)
-                                            )
-                                        )
-                                        && representation_pointer_kinds(&representations, value_id)
-                                            .is_some_and(|(immortal, _)| !immortal)
-                                })
-                            })
-                        }
-                        Type::View { .. } => representations
-                            .dynamic(
-                                ValueTypeId::from_index(self.program.brand, index)
-                                    .unwrap_or_else(|| unreachable!("validated table index fits")),
-                            )
-                            .is_some(),
-                        _ => false,
-                    };
-                    if !valid_semantic || representations.target().pointer_bits() != 64 {
+                    let ty = ValueTypeId::from_index(self.program.brand, index)
+                        .unwrap_or_else(|| unreachable!("validated table index fits"));
+                    if !managed_pointer_semantic_is_valid(self.program, ty)
+                        || representations.target().pointer_bits() != 64
+                    {
                         self.error(
                             ValidationCode::RepresentationPlan,
                             format!("representations.type[{index}].managed_pointer"),
-                            "managed pointers must be direct Text, canonical Bytes, concrete closed List, compiler-private closed TextMap, or cataloged closed dynamic View values on a 64-bit target",
+                            "managed pointers must be direct Text, canonical Bytes, concrete closed List, compiler-private closed TextMap, cataloged closed dynamic View, or a transparent alias of one on a 64-bit target",
                         );
                     }
                 }
@@ -2422,19 +2429,7 @@ impl<'a> Validator<'a> {
                 Some(Repr::ManagedPointer) => {
                     let canonical =
                         self.program.representations.type_id(value_type.semantic()) == Some(ty);
-                    let supported = match value_type.semantic() {
-                        Type::Text | Type::List(_) => value_type.kind() == ValueTypeKind::Direct,
-                        Type::View { .. } => {
-                            value_type.kind() == ValueTypeKind::Direct
-                                && self.program.representations.dynamic(ty).is_some()
-                        }
-                        Type::Nominal(_, arguments) => {
-                            value_type.kind() == ValueTypeKind::ManagedTextMap
-                                && arguments.len() == 1
-                        }
-                        _ => false,
-                    };
-                    if !canonical || !supported {
+                    if !canonical || !managed_pointer_semantic_is_valid(self.program, ty) {
                         return false;
                     }
                 }
