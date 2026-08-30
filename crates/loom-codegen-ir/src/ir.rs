@@ -976,10 +976,12 @@ pub enum InstructionKind {
         kind: ResourceKind,
         resource: ValueId,
     },
-    /// Allocates one exact heterogeneous composite Task. The child tasks are
-    /// consumed in source order and the result is the canonical
-    /// `Task[(T0, ..., Tn)]` handle for their exact output types.
-    TaskJoinAll {
+    /// Allocates one exact fixed-width composite Task. The child tasks are
+    /// consumed in source order and `mode` fixes the canonical result shape:
+    /// `all` and `settled` preserve the complete heterogeneous row, while
+    /// `any` and `race` require one homogeneous child output type.
+    TaskJoin {
+        mode: AwaitMode,
         tasks: Box<[ValueId]>,
     },
     /// Consumes one terminal child handle produced by a `settled` or `race`
@@ -1107,7 +1109,7 @@ impl InstructionKind {
             Self::TaskCreate { arguments, .. }
             | Self::IoTaskCreate { arguments, .. }
             | Self::DirectCall { arguments, .. } => arguments.to_vec(),
-            Self::TaskJoinAll { tasks } => tasks.to_vec(),
+            Self::TaskJoin { tasks, .. } => tasks.to_vec(),
             Self::TaskOutcomeTake { task } => vec![*task],
             Self::IntSuccessorBelow {
                 value,
@@ -1221,7 +1223,7 @@ pub enum FaultCode {
 }
 
 /// Structured join semantics for one directly awaited fixed child set.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum AwaitMode {
     /// Completes only when every child succeeds and injects every result in
     /// child order.

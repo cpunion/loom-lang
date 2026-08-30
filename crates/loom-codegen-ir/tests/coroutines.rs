@@ -553,7 +553,9 @@ fn task_sleep_requires_exact_executor_effects_and_task_unit_result() {
     clippy::too_many_lines,
     reason = "the malformed-program matrix keeps every exact join shape and independent validator defect visible in one builder"
 )]
-fn task_join_all_program(
+fn task_join_program(
+    mode: AwaitMode,
+    homogeneous: bool,
     duplicate: bool,
     empty: bool,
     wrong_result: bool,
@@ -670,13 +672,13 @@ fn task_join_all_program(
             .append_instruction(
                 entry,
                 InstructionKind::TaskCreate {
-                    coroutine: bool_child,
+                    coroutine: if homogeneous { int_child } else { bool_child },
                     arguments: Box::new([]),
                 },
-                &[task_bool],
+                &[if homogeneous { task_int } else { task_bool }],
                 origin,
             )
-            .expect("Task[Bool]")[0];
+            .expect("second child Task")[0];
         let tasks = if empty {
             Vec::new()
         } else if duplicate {
@@ -687,10 +689,21 @@ fn task_join_all_program(
         function
             .append_instruction(
                 entry,
-                InstructionKind::TaskJoinAll {
+                InstructionKind::TaskJoin {
+                    mode,
                     tasks: tasks.into_boxed_slice(),
                 },
-                &[if wrong_result { task_int } else { task_tuple }],
+                &[if wrong_result {
+                    if mode == AwaitMode::All {
+                        task_int
+                    } else {
+                        task_tuple
+                    }
+                } else if mode == AwaitMode::All {
+                    task_tuple
+                } else {
+                    task_int
+                }],
                 origin,
             )
             .expect("join result");
@@ -713,26 +726,82 @@ fn task_join_all_program(
 }
 
 #[test]
-fn task_join_all_requires_unique_exact_children_result_and_executor_context() {
+fn task_join_requires_unique_exact_children_mode_result_and_executor_context() {
     let effects = Effects::NEEDS_EXECUTOR.with_implications();
-    validate_program(&task_join_all_program(false, false, false, true, effects))
-        .expect("canonical heterogeneous task.join_all must validate");
+    validate_program(&task_join_program(
+        AwaitMode::All,
+        false,
+        false,
+        false,
+        false,
+        true,
+        effects,
+    ))
+    .expect("canonical heterogeneous task.join all must validate");
+    validate_program(&task_join_program(
+        AwaitMode::Any,
+        true,
+        false,
+        false,
+        false,
+        true,
+        effects,
+    ))
+    .expect("canonical homogeneous task.join any must validate");
 
-    let duplicate = validate_program(&task_join_all_program(true, false, false, true, effects))
-        .expect_err("one child cannot be consumed twice");
+    let heterogeneous_any = validate_program(&task_join_program(
+        AwaitMode::Any,
+        false,
+        false,
+        false,
+        false,
+        true,
+        effects,
+    ))
+    .expect_err("task.join any requires homogeneous child outputs");
+    assert!(heterogeneous_any.as_slice().iter().any(|error| {
+        error.code() == ValidationCode::TypeMismatch && error.message().contains("same output type")
+    }));
+
+    let duplicate = validate_program(&task_join_program(
+        AwaitMode::All,
+        false,
+        true,
+        false,
+        false,
+        true,
+        effects,
+    ))
+    .expect_err("one child cannot be consumed twice");
     assert!(duplicate.as_slice().iter().any(|error| {
         error.code() == ValidationCode::InstructionShape
             && error.message().contains("more than once")
     }));
 
-    let empty = validate_program(&task_join_all_program(false, true, false, true, effects))
-        .expect_err("an empty static join must fail");
+    let empty = validate_program(&task_join_program(
+        AwaitMode::All,
+        false,
+        false,
+        true,
+        false,
+        true,
+        effects,
+    ))
+    .expect_err("an empty static join must fail");
     assert!(empty.as_slice().iter().any(|error| {
         error.code() == ValidationCode::InstructionShape && error.message().contains("at least one")
     }));
 
-    let wrong_result = validate_program(&task_join_all_program(false, false, true, true, effects))
-        .expect_err("the composite output must be the exact heterogeneous tuple");
+    let wrong_result = validate_program(&task_join_program(
+        AwaitMode::All,
+        false,
+        false,
+        false,
+        true,
+        true,
+        effects,
+    ))
+    .expect_err("the composite output must be the exact heterogeneous tuple");
     assert!(
         wrong_result
             .as_slice()
@@ -740,17 +809,27 @@ fn task_join_all_requires_unique_exact_children_result_and_executor_context() {
             .any(|error| error.code() == ValidationCode::TypeMismatch)
     );
 
-    validate_program(&task_join_all_program(false, false, false, false, effects))
-        .expect("a synchronous helper may receive a checked hidden executor");
+    validate_program(&task_join_program(
+        AwaitMode::All,
+        false,
+        false,
+        false,
+        false,
+        false,
+        effects,
+    ))
+    .expect("a synchronous helper may receive a checked hidden executor");
 
-    let no_executor = validate_program(&task_join_all_program(
+    let no_executor = validate_program(&task_join_program(
+        AwaitMode::All,
+        false,
         false,
         false,
         false,
         true,
         Effects::NONE,
     ))
-    .expect_err("task.join_all requires executor effects");
+    .expect_err("task.join requires executor effects");
     assert!(no_executor.as_slice().iter().any(|error| {
         error.code() == ValidationCode::EffectMismatch && error.message().contains("NEEDS_EXECUTOR")
     }));
@@ -921,7 +1000,8 @@ fn invalid_task_ownership_program(
             function
                 .append_instruction(
                     forwarded,
-                    InstructionKind::TaskJoinAll {
+                    InstructionKind::TaskJoin {
+                        mode: AwaitMode::All,
                         tasks: Box::from([first, second]),
                     },
                     &[task_tuple],
@@ -932,7 +1012,8 @@ fn invalid_task_ownership_program(
                 function
                     .append_instruction(
                         forwarded,
-                        InstructionKind::TaskJoinAll {
+                        InstructionKind::TaskJoin {
+                            mode: AwaitMode::All,
                             tasks: Box::from([first, second]),
                         },
                         &[task_tuple],
@@ -1795,7 +1876,8 @@ fn await_tasks_program_with_mode(
             function
                 .append_instruction(
                     cancel,
-                    InstructionKind::TaskJoinAll {
+                    InstructionKind::TaskJoin {
+                        mode: AwaitMode::All,
                         tasks: Box::from([third, fourth]),
                     },
                     &[task_tuple],

@@ -1001,7 +1001,10 @@ fn static_heterogeneous_task_all_uses_direct_and_first_class_checked_shapes() {
         .instructions()
         .iter()
         .filter_map(|instruction| match instruction.kind() {
-            InstructionKind::TaskJoinAll { tasks } => Some((instruction, tasks.as_ref())),
+            InstructionKind::TaskJoin {
+                mode: AwaitMode::All,
+                tasks,
+            } => Some((instruction, tasks.as_ref())),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -1069,10 +1072,10 @@ fn static_heterogeneous_task_all_uses_direct_and_first_class_checked_shapes() {
     );
 
     let dump = dump_program(artifact.program());
-    assert!(dump.contains("task.join_all("), "{dump}");
+    assert!(dump.contains("task.join.all("), "{dump}");
     assert!(dump.contains("await_tasks all state 1, ("), "{dump}");
     assert!(dump.contains("awaited=("), "{dump}");
-    assert!(artifact_identity(&artifact).contains("task.join_all("));
+    assert!(artifact_identity(&artifact).contains("task.join.all("));
 }
 
 #[test]
@@ -1080,7 +1083,7 @@ fn static_heterogeneous_task_all_uses_direct_and_first_class_checked_shapes() {
     clippy::too_many_lines,
     reason = "one route-selection matrix pins fixed, generic, stored, dynamic, and unsupported join modes together"
 )]
-fn immediately_awaited_fixed_task_any_lowers_but_stored_and_dynamic_joins_fall_back() {
+fn immediately_awaited_fixed_task_any_and_stored_any_lower_but_dynamic_lists_fall_back() {
     let fixed = r"async fn child(value Int) Int { value }
 
 pub async fn main() {
@@ -1147,14 +1150,21 @@ pub async fn main() {
     discard pending.await
 }
 ";
-    let LoweringOutcome::Unsupported(stored) = lower_run(stored) else {
-        panic!("stored Task.any must remain one whole-artifact fallback")
+    let LoweringOutcome::Complete(stored) = lower_run(stored) else {
+        panic!("stored fixed-width Task.any must lower through typed LCIR")
     };
     assert!(
         stored
-            .items()
+            .functions()
             .iter()
-            .any(|item| { item.feature() == UnsupportedFeature::TaskOperation })
+            .flat_map(loom_codegen_ir::Function::instructions)
+            .any(|instruction| matches!(
+                instruction.kind(),
+                InstructionKind::TaskJoin {
+                    mode: AwaitMode::Any,
+                    tasks,
+                } if tasks.len() == 2
+            ))
     );
 
     let dynamic = r"async fn child(value Int) Int { value }
@@ -1203,6 +1213,101 @@ pub async fn main() {
     let dump = dump_program(terminal.program());
     assert!(dump.contains("await_tasks settled state 1"), "{dump}");
     assert!(dump.contains("await_tasks race state 2"), "{dump}");
+}
+
+#[test]
+fn first_class_fixed_task_join_modes_keep_their_exact_result_shapes() {
+    let source = r#"async fn number(value Int) Int { value }
+async fn label() Text { "label" }
+
+pub async fn main() {
+    let all = Task.all(number(1), label())
+    discard all.await
+    let any = Task.any(number(2), number(3))
+    discard any.await
+    let settled = Task.settled(number(4), label())
+    discard settled.await
+    let race = Task.race(number(5), number(6))
+    discard race.await
+}
+"#;
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("all four first-class fixed-width joins must lower through typed LCIR")
+    };
+    let main = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("main instance");
+    let outcome = artifact
+        .program()
+        .as_program()
+        .canonical_types()
+        .task_outcome
+        .expect("TaskOutcome identity");
+    let expected = [
+        (
+            AwaitMode::All,
+            Type::Task(Box::new(Type::Tuple(vec![Type::Int, Type::Text]))),
+        ),
+        (AwaitMode::Any, Type::Task(Box::new(Type::Int))),
+        (
+            AwaitMode::Settled,
+            Type::Task(Box::new(Type::Tuple(vec![
+                Type::Nominal(outcome, vec![Type::Int]),
+                Type::Nominal(outcome, vec![Type::Text]),
+            ]))),
+        ),
+        (
+            AwaitMode::Race,
+            Type::Task(Box::new(Type::Nominal(outcome, vec![Type::Int]))),
+        ),
+    ];
+    let joins = main
+        .instructions()
+        .iter()
+        .filter_map(|instruction| match instruction.kind() {
+            InstructionKind::TaskJoin { mode, tasks } => {
+                let result = instruction
+                    .results()
+                    .first()
+                    .and_then(|result| main.value(*result))
+                    .and_then(|result| artifact.representations().value_type(result.ty()))
+                    .map(loom_codegen_ir::ValueType::semantic)
+                    .cloned()
+                    .expect("join result type");
+                Some((*mode, tasks.len(), result))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        joins,
+        expected
+            .into_iter()
+            .map(|(mode, result)| (mode, 2, result))
+            .collect::<Vec<_>>()
+    );
+    assert!(main.blocks().iter().all(|block| {
+        !matches!(
+            block.terminator().map(loom_codegen_ir::Terminator::kind),
+            Some(TerminatorKind::AwaitTasks { mode, .. }) if mode != &AwaitMode::All
+        )
+    }));
+    assert!(
+        main.instructions().iter().all(|instruction| !matches!(
+            instruction.kind(),
+            InstructionKind::TaskOutcomeTake { .. }
+        )),
+        "first-class settled/race Tasks already carry canonical TaskOutcome values"
+    );
+    let dump = dump_program(artifact.program());
+    for mode in ["all", "any", "settled", "race"] {
+        assert!(dump.contains(&format!("task.join.{mode}(")), "{dump}");
+    }
+    let identity = artifact_identity(&artifact);
+    assert!(identity.contains("task.join.settled("), "{identity}");
+    assert!(identity.contains("task.join.race("), "{identity}");
 }
 
 #[test]
@@ -1294,9 +1399,9 @@ pub async fn main() {
         3
     );
     assert!(
-        main.instructions().iter().all(|instruction| {
-            !matches!(instruction.kind(), InstructionKind::TaskJoinAll { .. })
-        })
+        main.instructions()
+            .iter()
+            .all(|instruction| { !matches!(instruction.kind(), InstructionKind::TaskJoin { .. }) })
     );
     assert!(
         main.coroutine()
@@ -1437,7 +1542,7 @@ pub async fn main() {
         combined
             .instructions()
             .iter()
-            .any(|instruction| matches!(instruction.kind(), InstructionKind::TaskJoinAll { .. }))
+            .any(|instruction| matches!(instruction.kind(), InstructionKind::TaskJoin { .. }))
     );
 }
 
