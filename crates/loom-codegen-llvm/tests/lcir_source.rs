@@ -6402,6 +6402,50 @@ fn finite_dynamic_witnesses_use_precise_single_pointer_boxes_and_direct_dispatch
         "only managed leaves of the updated concrete payload should be rooted:\n{mutable_dispatch}"
     );
 
+    let fault_artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "projectedFaultMain".into(),
+        },
+    );
+    let interpreted_fault = serde_json::to_value(
+        interpret_run(&program, "projectedFaultMain")
+            .expect_err("projected mutable call must preserve its method fault"),
+    )
+    .expect("serialize projected mutable fault");
+    assert_eq!(
+        interpreted_fault["fault"]["code"], "AssertionFault",
+        "the defer assertion must observe the latest sibling and preserve the method fault"
+    );
+    let faulted =
+        emit_and_run_lcir_machine_fault(&fault_artifact, "finite-dyn-projected-writeback-fault");
+    let checked_faulted = emit_and_run_checked_mir_machine_fault(
+        &program,
+        "projectedFaultMain",
+        "checked-mir-finite-dyn-projected-writeback-fault",
+    );
+    assert!(!faulted.output.status.success(), "{:?}", faulted.output);
+    assert!(!checked_faulted.status.success(), "{checked_faulted:?}");
+    assert_eq!(faulted.output.stdout, checked_faulted.stdout);
+    assert_eq!(
+        machine_fault(&faulted.output),
+        interpreted_fault,
+        "LCIR projected writeback changed the primary fault"
+    );
+    assert_eq!(
+        machine_fault(&checked_faulted),
+        interpreted_fault,
+        "checked-MIR projected writeback changed the primary fault"
+    );
+    for forbidden in ["%loom.Value", "ValueNode", "loom_witness_", "dyn.registry"] {
+        assert!(
+            !faulted.ir.contains(forbidden),
+            "fault writeback exposed `{forbidden}`:\n{}",
+            faulted.ir
+        );
+    }
+    assert_no_indirect_calls(&faulted.ir);
+
     for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
         let directory = tempfile::tempdir().expect("create finite-dyn target output");
         let object = directory.path().join(if target.contains("windows") {

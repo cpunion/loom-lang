@@ -5,6 +5,9 @@ dyn concept Metric {
 
 dyn concept Advance {
     method advance(mut self) Int
+    method store(mut self, value Int) Int
+    method storeThenFail(mut self, value Int)
+    method read(self) Int
 }
 
 record Counter {
@@ -26,6 +29,18 @@ impl Advance for Counter {
         self.value = self.value + 1
         self.value
     }
+
+    method store(mut self, value Int) Int {
+        self.value = value
+        self.value
+    }
+
+    method storeThenFail(mut self, value Int) {
+        self.value = value
+        assert false
+    }
+
+    method read(self) Int { self.value }
 }
 
 impl Metric for Offset {
@@ -38,6 +53,18 @@ impl Advance for Offset {
         self.value = self.value + 2
         self.value
     }
+
+    method store(mut self, value Int) Int {
+        self.value = value
+        self.value
+    }
+
+    method storeThenFail(mut self, value Int) {
+        self.value = value
+        assert false
+    }
+
+    method read(self) Int { self.value }
 }
 
 record Holder {
@@ -59,6 +86,27 @@ impl AdvanceHolder {
     }
 }
 
+record SiblingCell {
+    value Int
+}
+
+record MutationSlot {
+    item dyn Advance
+    sibling SiblingCell
+}
+
+record MutationHolder {
+    slot MutationSlot
+    guard Int
+}
+
+impl SiblingCell {
+    method set(mut self, value Int) Int {
+        self.value = value
+        self.value
+    }
+}
+
 fn measure(metric Metric) Int {
     metric.read()
 }
@@ -77,6 +125,14 @@ fn eraseCounterAdvance(value Counter) dyn Advance {
 
 fn eraseOffsetAdvance(value Offset) dyn Advance {
     value
+}
+
+fn chooseAdvance(counter Bool, value Int) dyn Advance {
+    if counter {
+        Counter { value = value, label = "ordered" }
+    } else {
+        Offset { value = value }
+    }
 }
 
 fn advanceOne(value Advance) Int {
@@ -165,6 +221,39 @@ fn verify() {
     let storedOffsetGuard = storedOffset.guard
     assert storedOffsetFirst == 102
     assert storedOffsetGuard == 91
+
+    var ordered = MutationHolder {
+        slot = MutationSlot {
+            item = chooseAdvance(true, 5),
+            sibling = SiblingCell { value = 7 },
+        },
+        guard = 101,
+    }
+    let orderedResult = ordered.slot.item.store(ordered.slot.sibling.set(12))
+    let orderedItem = ordered.slot.item.read()
+    let orderedSibling = ordered.slot.sibling.value
+    let orderedGuard = ordered.guard
+    assert orderedResult == 12
+    assert orderedItem == 12
+    assert orderedSibling == 12
+    assert orderedGuard == 101
+}
+
+pub fn projectedFaultMain() {
+    var holder = MutationHolder {
+        slot = MutationSlot {
+            item = chooseAdvance(true, 1),
+            sibling = SiblingCell { value = 2 },
+        },
+        guard = 103,
+    }
+    defer {
+        let item = holder.slot.item.read()
+        let sibling = holder.slot.sibling.value
+        let guard = holder.guard
+        assert item == 23 && sibling == 23 && guard == 103
+    }
+    holder.slot.item.storeThenFail(holder.slot.sibling.set(23))
 }
 
 pub fn main() {

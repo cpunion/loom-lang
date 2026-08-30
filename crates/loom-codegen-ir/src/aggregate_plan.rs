@@ -317,7 +317,11 @@ fn push_bounded<'a>(
     Some(())
 }
 
-fn substituted_type_node_count(ty: &Type, arguments: &[Type], limit: usize) -> Option<usize> {
+pub(crate) fn substituted_type_node_count(
+    ty: &Type,
+    arguments: &[Type],
+    limit: usize,
+) -> Option<usize> {
     let mut pending = vec![ty];
     let mut nodes = 0_usize;
     while let Some(current) = pending.pop() {

@@ -11951,7 +11951,6 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 "mutable dynamic owner read unexpectedly terminated",
             ));
         };
-        let base_environment = flow.env;
         let mut values = vec![receiver];
         for argument in arguments.iter().skip(1) {
             let CallArgument::Value(argument) = argument else {
@@ -11969,6 +11968,11 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             flow = next_flow;
             values.push(value);
         }
+        // Receiver dispatch reads the owner first, but writeback must rebuild
+        // from the environment produced by every later argument. Otherwise a
+        // sibling mutation performed while evaluating an argument is silently
+        // overwritten on normal and fault edges.
+        let base_environment = flow.env;
 
         let mut cases = Vec::with_capacity(candidates.len());
         let mut plans = Vec::with_capacity(candidates.len());
