@@ -2680,7 +2680,36 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     context,
                     &format!("{path}.owner"),
                 )?;
-                contract_projected_type(self.program, &owner, *field)?
+                let normalized = contract_base_type(self.program, &owner)?;
+                if normalized != owner && !task_free_type(self.program, self.dyn_concepts, &owner) {
+                    // Contract operands are borrowed, but typed LCIR must
+                    // currently consume a refined value to expose its base.
+                    // Do not let that implementation detail take an affine
+                    // Task away from the later callable body.
+                    self.item(
+                        UnsupportedFeature::TaskOperation,
+                        function.id,
+                        None,
+                        expression.span,
+                        path.to_owned(),
+                    );
+                    return None;
+                }
+                let projected = contract_projected_type(self.program, &owner, *field)?;
+                if !task_free_type(self.program, self.dyn_concepts, &projected) {
+                    // ProductExtract may borrow an affine aggregate while
+                    // reading a task-free field, but splitting out the affine
+                    // field itself is not a legal ownership operation.
+                    self.item(
+                        UnsupportedFeature::TaskOperation,
+                        function.id,
+                        None,
+                        expression.span,
+                        path.to_owned(),
+                    );
+                    return None;
+                }
+                projected
             }
             ContractExprKind::Unary(UnaryOp::Not, operand) => {
                 self.classify_contract_expr(
@@ -2780,6 +2809,20 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     context,
                     &format!("{path}.scrutinee"),
                 )?;
+                if !task_free_type(self.program, self.dyn_concepts, &scrutinee_ty) {
+                    // SumSwitch owns its selected affine payload. Contract
+                    // matching is source-level borrowing, so a Task-bearing
+                    // scrutinee must stay on the atomic fallback route until
+                    // LCIR has an explicit borrowed-sum operation.
+                    self.item(
+                        UnsupportedFeature::TaskOperation,
+                        function.id,
+                        None,
+                        expression.span,
+                        path.to_owned(),
+                    );
+                    return None;
+                }
                 let planned_scrutinee = contract_base_type(self.program, &scrutinee_ty)
                     .unwrap_or_else(|| scrutinee_ty.clone());
                 let Some(plan) = plan_contract_match(

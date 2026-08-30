@@ -6995,6 +6995,131 @@ pub async fn main() {
 }
 
 #[test]
+fn contracts_may_borrow_task_free_fields_from_affine_products() {
+    let source = r"record Envelope {
+    allowed Bool
+    pending Option[Task[Int]]
+}
+
+fn pending() Task[Int] { pending() }
+
+fn consume(value Envelope) { consume(value) }
+
+fn inspect(value Envelope)
+    requires value.allowed
+{
+    consume(value)
+}
+
+pub fn main() {
+    inspect(Envelope { allowed = true, pending = Some(pending()) })
+}
+";
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("a contract may borrow a task-free field without consuming its affine owner")
+    };
+    let inspect = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with(".inspect"))
+        .expect("inspect instance");
+    assert!(
+        inspect
+            .instructions()
+            .iter()
+            .any(|instruction| matches!(instruction.kind(), InstructionKind::DirectCall { .. }))
+    );
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("product.extract"), "{dump}");
+    assert!(dump.contains("contract PreconditionFault"), "{dump}");
+}
+
+#[test]
+fn task_bearing_contract_matches_select_atomic_fallback() {
+    let mut program = compile(
+        r"fn pending() Task[Int] { pending() }
+
+fn consume(value Option[Task[Int]]) { consume(value) }
+
+fn inspect(value Option[Task[Int]]) { consume(value) }
+
+pub fn main() {
+    inspect(Some(pending()))
+}
+",
+    )
+    .into_program();
+    let option = program.prelude.option.expect("canonical Option type");
+    let task = Type::Task(Box::new(Type::Int));
+    let contract_span = Span::new(FileId(0), 0, 1);
+    let inspect = program
+        .functions
+        .iter_mut()
+        .find(|function| function.name.ends_with(".inspect"))
+        .expect("inspect MIR function");
+    inspect.call_plan.requires.push(loom_mir::Contract {
+        code: "inspect.requires[0]".into(),
+        span: contract_span,
+        expression: loom_mir::ContractExpr {
+            kind: loom_mir::ContractExprKind::Match {
+                scrutinee: Box::new(loom_mir::ContractExpr {
+                    kind: loom_mir::ContractExprKind::Value(loom_mir::ContractValue::Argument(0)),
+                    span: contract_span,
+                }),
+                arms: vec![
+                    loom_mir::ContractArm {
+                        pattern: loom_mir::Pattern::Variant {
+                            ty: option,
+                            variant: loom_mir::VariantId(1),
+                            payload: vec![loom_mir::Pattern::Binding],
+                        },
+                        bindings: vec![task],
+                        value: loom_mir::ContractExpr {
+                            kind: loom_mir::ContractExprKind::Constant(Constant::Bool(true)),
+                            span: contract_span,
+                        },
+                    },
+                    loom_mir::ContractArm {
+                        pattern: loom_mir::Pattern::Variant {
+                            ty: option,
+                            variant: loom_mir::VariantId(0),
+                            payload: Vec::new(),
+                        },
+                        bindings: Vec::new(),
+                        value: loom_mir::ContractExpr {
+                            kind: loom_mir::ContractExprKind::Constant(Constant::Bool(true)),
+                            span: contract_span,
+                        },
+                    },
+                ],
+            },
+            span: contract_span,
+        },
+    });
+    let program = program
+        .into_checked()
+        .expect("forged borrowing contract remains structurally valid MIR");
+    let outcome = lower_typed_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("classify forged affine contract match");
+    let LoweringOutcome::Unsupported(report) = outcome else {
+        panic!("a borrowing contract match must not consume an affine sum in typed LCIR")
+    };
+    assert!(
+        report.items().iter().any(|item| {
+            item.feature() == UnsupportedFeature::TaskOperation
+                && item.path().contains("call_plan.requires")
+        }),
+        "{report:?}"
+    );
+}
+
+#[test]
 #[expect(
     clippy::single_element_loop,
     reason = "the table form keeps unsupported affine operations easy to extend"
