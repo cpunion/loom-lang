@@ -6,9 +6,10 @@ use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallPlan, CallTarget, CheckedProgram, ConceptDef,
     ConceptId, ConceptIdentity, Constant, ConstructionMode, Contract, ContractExpr,
     ContractExprKind, ContractValue, Expr, ExprId, ExprKind, FieldDef, Function, FunctionId,
-    LocalDecl, LocalId, MirValidationCode, Place, PreludeIds, Program, Receiver, RequirementDef,
-    RequirementId, RequirementType, ScopedDisposal, Statement, StatementKind, Type, TypeDef,
-    TypeDefKind, TypeId, VariantDef, VariantId, Witness, WitnessId, WitnessRef,
+    LocalDecl, LocalId, MirValidationCode, Place, PreludeIds, Program, Receiver,
+    ReceiverInvariantCheck, RequirementDef, RequirementId, RequirementType, ScopedDisposal,
+    Statement, StatementKind, Type, TypeDef, TypeDefKind, TypeId, VariantDef, VariantId, Witness,
+    WitnessId, WitnessRef,
 };
 
 fn checked(mut program: Program) -> CheckedProgram {
@@ -586,6 +587,89 @@ fn non_negative_first_field_contract() -> Contract {
         ),
     };
     contract
+}
+
+fn invariant_restore_function(id: u32, check: ReceiverInvariantCheck) -> Function {
+    Function {
+        id: FunctionId(id),
+        name: format!("restore_{check:?}"),
+        span: span(),
+        type_parameters: 0,
+        is_async: false,
+        suspension_points: Vec::new(),
+        params: vec![local(0, "self", Type::Nominal(TypeId(0), Vec::new()), true)],
+        witness_params: Vec::new(),
+        witness_prefix_count: 0,
+        locals: Vec::new(),
+        return_ty: Type::Unit,
+        receiver: Some(Receiver::Mutable),
+        body: Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Assign {
+                        place: Place {
+                            local: LocalId(0),
+                            projection: vec![0],
+                        },
+                        value: constant(Constant::Float(-1.0), Type::Float),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::RestoreReceiverInvariant { check },
+                    span: span(),
+                },
+            ],
+            tail: None,
+            span: span(),
+        },
+        call_plan: CallPlan::default(),
+    }
+}
+
+#[test]
+fn receiver_invariant_restore_rechecks_artifact_proofs() {
+    let program = checked(Program {
+        types: vec![TypeDef {
+            id: TypeId(0),
+            name: "Guard".into(),
+            span: span(),
+            type_parameters: 0,
+            kind: TypeDefKind::Record {
+                fields: vec![FieldDef {
+                    name: "value".into(),
+                    ty: Type::Float,
+                    span: span(),
+                }],
+                invariant: Some(non_negative_first_field_contract()),
+            },
+        }],
+        functions: vec![
+            invariant_restore_function(0, ReceiverInvariantCheck::Proven),
+            invariant_restore_function(1, ReceiverInvariantCheck::Recheck),
+        ],
+        ..Program::default()
+    });
+    let valid = Value::Record {
+        ty: TypeId(0),
+        fields: vec![Value::Float { value: 1.0 }],
+    };
+    let mut interpreter = Interpreter::new(&program);
+
+    assert_eq!(
+        interpreter
+            .invoke(FunctionId(0), vec![valid.clone()], span())
+            .expect("fresh proven restoration is a no-op"),
+        Value::Unit
+    );
+    let failure = interpreter
+        .invoke(FunctionId(1), vec![valid], span())
+        .expect_err("serialized proof must replay the nominal invariant");
+    assert!(matches!(
+        failure,
+        ExecutionFailure::Runtime { fault }
+            if fault.code == "ArtifactProofRejected"
+    ));
 }
 
 #[test]

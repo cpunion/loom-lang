@@ -22,9 +22,9 @@ use loom_core::runtime_fault::{
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, CheckedProgram, Constant, ConstructionMode,
     Contract, ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, Function,
-    FunctionId, LocalId, MatchArm, Pattern, Place, Program, Receiver, RequirementId,
-    ScopedDisposal, Statement, StatementKind, TaskJoinMode, Type, TypeDefKind, TypeId, UnaryOp,
-    VariantId, WitnessId, WitnessRef, disclosure_type_summary,
+    FunctionId, LocalId, MatchArm, Pattern, Place, Program, Receiver, ReceiverInvariantCheck,
+    RequirementId, ScopedDisposal, Statement, StatementKind, TaskJoinMode, Type, TypeDefKind,
+    TypeId, UnaryOp, VariantId, WitnessId, WitnessRef, disclosure_type_summary,
 };
 use serde::{Deserialize, Serialize};
 
@@ -385,6 +385,7 @@ enum Slot {
 
 #[derive(Clone, Debug)]
 struct Frame {
+    function: Option<FunctionId>,
     slots: Vec<Slot>,
     witnesses: Vec<RuntimeWitness>,
 }
@@ -1357,6 +1358,7 @@ impl<'program> Interpreter<'program> {
                     | StatementKind::While { .. }
                     | StatementKind::Break
                     | StatementKind::Continue
+                    | StatementKind::RestoreReceiverInvariant { .. }
                     | StatementKind::Return(None)
                     | StatementKind::Defer(_) => None,
                 };
@@ -1994,6 +1996,7 @@ impl<'program> Interpreter<'program> {
         let frame_id = self.next_frame;
         self.next_frame += 1;
         let mut frame = Frame {
+            function: Some(function_id),
             slots: vec![Slot::Empty; slot_count],
             witnesses,
         };
@@ -2476,6 +2479,73 @@ impl<'program> Interpreter<'program> {
         }
     }
 
+    fn restore_receiver_invariant(
+        &mut self,
+        frame: u64,
+        check: ReceiverInvariantCheck,
+        span: Span,
+    ) -> Result<(), ExecutionFailure> {
+        if check == ReceiverInvariantCheck::Proven {
+            return Ok(());
+        }
+        let function_id = self
+            .frames
+            .get(&frame)
+            .and_then(|frame| frame.function)
+            .ok_or_else(|| {
+                ExecutionFailure::from(self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "receiver invariant restoration has no current function",
+                    span,
+                ))
+            })?;
+        let function = self.program.function(function_id).ok_or_else(|| {
+            ExecutionFailure::from(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "receiver invariant restoration references an unknown function",
+                span,
+            ))
+        })?;
+        let contract = self
+            .program
+            .instantiated_receiver_invariant(function)
+            .ok_or_else(|| {
+                ExecutionFailure::from(self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "receiver invariant restoration has no nominal invariant",
+                    span,
+                ))
+            })?;
+        let receiver = function.params.first().ok_or_else(|| {
+            ExecutionFailure::from(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "receiver invariant restoration has no receiver parameter",
+                span,
+            ))
+        })?;
+        let receiver = self.read_place(&Location::local(frame, receiver.id), span)?;
+        let context = ContractContext {
+            receiver: Some(&receiver),
+            result: None,
+            arguments: &[],
+            old_receiver: None,
+            old_arguments: &[],
+            bindings: &[],
+        };
+        let invariant = self.eval_contract(&contract.expression, &context)?;
+        if expect_bool(&invariant, span)? {
+            Ok(())
+        } else {
+            Err(self
+                .runtime_fault(
+                    ARTIFACT_PROOF_REJECTED_FAULT_CODE,
+                    ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
+                    span,
+                )
+                .into())
+        }
+    }
+
     fn sync_eval_block(&mut self, frame: u64, block: &'program Block) -> SyncStep<'program, Value> {
         if let Err(failure) = self.tick(block.span) {
             return SyncStep::fail(failure);
@@ -2790,6 +2860,12 @@ impl<'program> Interpreter<'program> {
                     )),
                     Err(abort) => SyncStep::Complete(Err(abort)),
                 })
+            }
+            StatementKind::RestoreReceiverInvariant { check } => {
+                match self.restore_receiver_invariant(frame, *check, statement.span) {
+                    Ok(()) => SyncStep::complete(()),
+                    Err(failure) => SyncStep::fail(failure),
+                }
             }
             StatementKind::Evaluate(expression) => {
                 let expression = self.sync_eval_expr(frame, expression);
@@ -3174,6 +3250,9 @@ impl<'program> Interpreter<'program> {
                     ))),
                 }
             }
+            StatementKind::RestoreReceiverInvariant { check } => self
+                .restore_receiver_invariant(frame, *check, statement.span)
+                .map_err(EvalAbort::from),
             StatementKind::Evaluate(expression) => {
                 self.eval_expr(frame, expression)?;
                 Ok(())
@@ -4067,6 +4146,7 @@ impl<'program> Interpreter<'program> {
             interpreter.frames.insert(
                 temporary_frame,
                 Frame {
+                    function: None,
                     slots: vec![Slot::Value(value)],
                     witnesses: Vec::new(),
                 },
@@ -4846,6 +4926,7 @@ impl<'program> Interpreter<'program> {
         self.frames.insert(
             temporary_frame,
             Frame {
+                function: None,
                 slots: vec![Slot::Value(value)],
                 witnesses: Vec::new(),
             },
@@ -8222,6 +8303,7 @@ mod location_projection_tests {
         interpreter.frames.insert(
             1,
             Frame {
+                function: None,
                 slots: vec![Slot::Value(Value::Record {
                     ty: TypeId(0),
                     fields: vec![
@@ -8238,6 +8320,7 @@ mod location_projection_tests {
         interpreter.frames.insert(
             2,
             Frame {
+                function: None,
                 slots: vec![Slot::Alias(Location {
                     frame: 1,
                     local: LocalId(0),
@@ -8249,6 +8332,7 @@ mod location_projection_tests {
         interpreter.frames.insert(
             3,
             Frame {
+                function: None,
                 slots: vec![Slot::Alias(Location {
                     frame: 2,
                     local: LocalId(0),
