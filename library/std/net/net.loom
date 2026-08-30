@@ -1,0 +1,12 @@
+import std.net.__connect
+import std.net.__try_connect
+
+/// Connects a TCP socket and faults its Task when the host rejects the request.
+pub fn connect(host Text, port Int) Task[Socket] {
+    __connect(host, port)
+}
+
+/// Connects a TCP socket and reports expected host rejection as IoError.
+pub fn try_connect(host Text, port Int) Task[Result[Socket, IoError]] {
+    __try_connect(host, port)
+}

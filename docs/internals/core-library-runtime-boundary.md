@@ -84,14 +84,20 @@ task registry. This internal exactly-once cleanup bookkeeping is neither
 source-visible nor ownership syntax, and it does not affect standard-library
 reachability or dispatch.
 
-The current public File and Socket declarations are still compiler-owned, but
-their native implementation is not a universal compiler builtin ABI. Both the
-recoverable `Result` family and the faulting family must lower as typed LCIR;
-the checked-MIR emitter rejects their reachable operations and cleanup. If a
-different reachable feature prevents complete LCIR lowering, production
-`Automatic` preparation fails closed rather than restoring a second I/O
-implementation. This boundary is independent of the later source-library
-migration of the public wrappers.
+The public `std.file` open/create functions and `std.net` connect functions are
+ordinary source wrappers. Only the exact compiler-owned wrapper module may
+import the narrow typed I/O primitives; Path overloads convert with
+`Path.as_text` and call the Text wrapper, so they require no duplicate platform
+primitive. Public calls therefore close through ordinary source reachability
+before the private operation enters MIR.
+
+The current `File`, `Socket`, `IoError`, and `IoErrorKind` values and resource
+methods remain compiler-owned. Their native implementation is not a universal
+compiler builtin ABI: both the recoverable `Result` family and the faulting
+family must lower as typed LCIR, and the checked-MIR emitter rejects reachable
+I/O operations and cleanup. If another reachable feature prevents complete
+LCIR lowering, production `Automatic` preparation fails closed rather than
+restoring a second I/O implementation.
 
 The library owns reusable policy and algorithms, including:
 

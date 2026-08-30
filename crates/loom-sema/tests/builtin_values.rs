@@ -3,6 +3,10 @@ use loom_hir::{DefId, DefinitionKind, PackageSourceUnit, Program, lower_package_
 use loom_sema::{Analysis, BuiltinValue, CallTarget, Resolution, TyData, analyze};
 use loom_syntax::parse_with_file;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the test helper assembles the complete canonical std graph used by builtin-value cases"
+)]
 fn analyze_source_program(source: &str) -> (Program, Analysis) {
     let root_file = FileId(0);
     let std_log_file = FileId(1);
@@ -10,6 +14,8 @@ fn analyze_source_program(source: &str) -> (Program, Analysis) {
     let std_float_file = FileId(3);
     let std_text_file = FileId(4);
     let std_path_file = FileId(5);
+    let std_file_file = FileId(6);
+    let std_net_file = FileId(7);
     let parsed = parse_with_file(root_file, source);
     let std_log = parse_with_file(
         std_log_file,
@@ -31,6 +37,14 @@ fn analyze_source_program(source: &str) -> (Program, Analysis) {
         std_path_file,
         include_str!("../../../library/std/path/path.loom"),
     );
+    let std_file = parse_with_file(
+        std_file_file,
+        include_str!("../../../library/std/file/file.loom"),
+    );
+    let std_net = parse_with_file(
+        std_net_file,
+        include_str!("../../../library/std/net/net.loom"),
+    );
     assert!(
         parsed.diagnostics().is_empty(),
         "syntax diagnostics: {:#?}",
@@ -41,13 +55,17 @@ fn analyze_source_program(source: &str) -> (Program, Analysis) {
             && std_json.diagnostics().is_empty()
             && std_float.diagnostics().is_empty()
             && std_text.diagnostics().is_empty()
-            && std_path.diagnostics().is_empty(),
-        "standard syntax diagnostics: log={:#?} json={:#?} float={:#?} text={:#?} path={:#?}",
+            && std_path.diagnostics().is_empty()
+            && std_file.diagnostics().is_empty()
+            && std_net.diagnostics().is_empty(),
+        "standard syntax diagnostics: log={:#?} json={:#?} float={:#?} text={:#?} path={:#?} file={:#?} net={:#?}",
         std_log.diagnostics(),
         std_json.diagnostics(),
         std_float.diagnostics(),
         std_text.diagnostics(),
-        std_path.diagnostics()
+        std_path.diagnostics(),
+        std_file.diagnostics(),
+        std_net.diagnostics()
     );
     let root_package = PackageId::new("sema-test", "0");
     let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
@@ -87,6 +105,18 @@ fn analyze_source_program(source: &str) -> (Program, Analysis) {
             package: std_package.clone(),
             module: ModuleName::new("std.path"),
             syntax: std_path.ast(),
+        },
+        PackageSourceUnit {
+            file: std_file_file,
+            package: std_package.clone(),
+            module: ModuleName::new("std.file"),
+            syntax: std_file.ast(),
+        },
+        PackageSourceUnit {
+            file: std_net_file,
+            package: std_package.clone(),
+            module: ModuleName::new("std.net"),
+            syntax: std_net.ast(),
         },
     ]);
     assert!(

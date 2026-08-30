@@ -44,14 +44,23 @@ fn compile_with_std_text_and_path(source: &str) -> loom_mir::CheckedProgram {
         FileId(2),
         include_str!("../../../library/std/path/path.loom"),
     );
+    let file = parse_with_file(
+        FileId(3),
+        include_str!("../../../library/std/file/file.loom"),
+    );
+    let net = parse_with_file(FileId(4), include_str!("../../../library/std/net/net.loom"));
     assert!(
         application.diagnostics().is_empty()
             && text.diagnostics().is_empty()
-            && path.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} text={:#?} path={:#?}",
+            && path.diagnostics().is_empty()
+            && file.diagnostics().is_empty()
+            && net.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} text={:#?} path={:#?} file={:#?} net={:#?}",
         application.diagnostics(),
         text.diagnostics(),
-        path.diagnostics()
+        path.diagnostics(),
+        file.diagnostics(),
+        net.diagnostics()
     );
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("lowering-test", "0");
@@ -73,6 +82,18 @@ fn compile_with_std_text_and_path(source: &str) -> loom_mir::CheckedProgram {
             package: std.clone(),
             module: ModuleName::new("std.path"),
             syntax: path.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(3),
+            package: std.clone(),
+            module: ModuleName::new("std.file"),
+            syntax: file.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(4),
+            package: std.clone(),
+            module: ModuleName::new("std.net"),
+            syntax: net.ast(),
         },
     ]);
     lowered.program.register_package(std.clone(), [], false);
@@ -200,18 +221,27 @@ fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
         FileId(4),
         include_str!("../../../library/std/text/text.loom"),
     );
+    let file = parse_with_file(
+        FileId(5),
+        include_str!("../../../library/std/file/file.loom"),
+    );
+    let net = parse_with_file(FileId(6), include_str!("../../../library/std/net/net.loom"));
     assert!(
         application.diagnostics().is_empty()
             && log.diagnostics().is_empty()
             && json.diagnostics().is_empty()
             && float.diagnostics().is_empty()
-            && text.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} log={:#?} json={:#?} float={:#?} text={:#?}",
+            && text.diagnostics().is_empty()
+            && file.diagnostics().is_empty()
+            && net.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} log={:#?} json={:#?} float={:#?} text={:#?} file={:#?} net={:#?}",
         application.diagnostics(),
         log.diagnostics(),
         json.diagnostics(),
         float.diagnostics(),
-        text.diagnostics()
+        text.diagnostics(),
+        file.diagnostics(),
+        net.diagnostics()
     );
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("lowering-test", "0");
@@ -245,6 +275,18 @@ fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
             package: std.clone(),
             module: ModuleName::new("std.text"),
             syntax: text.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(5),
+            package: std.clone(),
+            module: ModuleName::new("std.file"),
+            syntax: file.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(6),
+            package: std.clone(),
+            module: ModuleName::new("std.net"),
+            syntax: net.ast(),
         },
     ]);
     lowered.program.register_package(std.clone(), [], false);
@@ -389,6 +431,57 @@ fn analyze_with_std_resource(source: &str) -> Vec<loom_core::Diagnostic> {
 
 fn function_has_name(function: &loom_mir::Function, expected: &str) -> bool {
     function.name.rsplit('.').next() == Some(expected)
+}
+
+fn function_named<'a>(program: &'a loom_mir::CheckedProgram, name: &str) -> &'a loom_mir::Function {
+    program
+        .functions
+        .iter()
+        .find(|function| function.name == name)
+        .unwrap_or_else(|| panic!("missing function {name}: {program:#?}"))
+}
+
+fn assert_direct_call(
+    owner: &loom_mir::Function,
+    target_function: &loom_mir::Function,
+    program: &loom_mir::CheckedProgram,
+) {
+    assert!(
+        owner.exprs_preorder().any(|expression| {
+            matches!(
+                &expression.kind,
+                loom_mir::ExprKind::Call {
+                    target: loom_mir::CallTarget::Direct(target),
+                    ..
+                } if target == &target_function.id
+            )
+        }),
+        "{} must call the ordinary source definition {}: {program:#?}",
+        owner.name,
+        target_function.name
+    );
+}
+
+fn builtin_call_owners(
+    program: &loom_mir::CheckedProgram,
+    builtin: loom_mir::Builtin,
+) -> Vec<&str> {
+    program
+        .functions
+        .iter()
+        .filter(|function| {
+            function.exprs_preorder().any(|expression| {
+                matches!(
+                    &expression.kind,
+                    loom_mir::ExprKind::Call {
+                        target: loom_mir::CallTarget::Builtin(target),
+                        ..
+                    } if target == &builtin
+                )
+            })
+        })
+        .map(|function| function.name.as_str())
+        .collect()
 }
 
 fn suspension_local_names(function: &loom_mir::Function, state: u32) -> Vec<String> {
@@ -1333,6 +1426,29 @@ async fn pathFiles(path Path) {
 }
 "#,
     );
+    let path_files = function_named(&program, "lowering_test.pathFiles");
+    let open_read_path = function_named(&program, "std.file.open_read_path");
+    let create_path = function_named(&program, "std.file.create_path");
+    let open_read = function_named(&program, "std.file.open_read");
+    let create = function_named(&program, "std.file.create");
+    assert_direct_call(path_files, open_read_path, &program);
+    assert_direct_call(path_files, create_path, &program);
+    assert_direct_call(open_read_path, open_read, &program);
+    assert_direct_call(create_path, create, &program);
+    for (builtin, expected_owner) in [
+        (loom_mir::Builtin::FileOpenRead, "std.file.open_read"),
+        (loom_mir::Builtin::FileCreate, "std.file.create"),
+        (loom_mir::Builtin::FileTryOpenRead, "std.file.try_open_read"),
+        (loom_mir::Builtin::FileTryCreate, "std.file.try_create"),
+        (loom_mir::Builtin::SocketConnect, "std.net.connect"),
+        (loom_mir::Builtin::SocketTryConnect, "std.net.try_connect"),
+    ] {
+        assert_eq!(
+            builtin_call_owners(&program, builtin),
+            [expected_owner],
+            "only the exact source wrapper may own {builtin:?}"
+        );
+    }
     let debug = format!("{program:#?}");
     for builtin in [
         "TextLength",
@@ -1348,11 +1464,13 @@ async fn pathFiles(path Path) {
         "PathFromText",
         "PathAsText",
         "PathJoin",
-        "FileOpenReadPath",
-        "FileCreatePath",
+        "FileOpenRead",
+        "FileCreate",
     ] {
         assert!(debug.contains(builtin), "missing {builtin} in {debug}");
     }
+    assert!(!debug.contains("FileOpenReadPath"), "{debug}");
+    assert!(!debug.contains("FileCreatePath"), "{debug}");
     assert_eq!(debug.matches("Scoped").count(), 2, "{debug}");
     assert!(!debug.contains("Defer"), "{debug}");
 }
@@ -1464,6 +1582,30 @@ async fn network(host Text, port Int) Result[Unit, IoError] {
         .iter()
         .find(|function| function.name == "std.log.write")
         .expect("ordinary source logging entry point");
+    let files = function_named(&program, "lowering_test.files");
+    let network = function_named(&program, "lowering_test.network");
+    let try_open_read_path = function_named(&program, "std.file.try_open_read_path");
+    let try_create_path = function_named(&program, "std.file.try_create_path");
+    let try_open_read = function_named(&program, "std.file.try_open_read");
+    let try_create = function_named(&program, "std.file.try_create");
+    let try_connect = function_named(&program, "std.net.try_connect");
+    assert_direct_call(files, try_open_read_path, &program);
+    assert_direct_call(files, try_create_path, &program);
+    assert_direct_call(network, try_connect, &program);
+    assert_direct_call(try_open_read_path, try_open_read, &program);
+    assert_direct_call(try_create_path, try_create, &program);
+    assert_eq!(
+        builtin_call_owners(&program, loom_mir::Builtin::FileTryOpenRead),
+        ["std.file.try_open_read"]
+    );
+    assert_eq!(
+        builtin_call_owners(&program, loom_mir::Builtin::FileTryCreate),
+        ["std.file.try_create"]
+    );
+    assert_eq!(
+        builtin_call_owners(&program, loom_mir::Builtin::SocketTryConnect),
+        ["std.net.try_connect"]
+    );
     assert!(
         values.exprs_preorder().any(|expression| {
             matches!(
@@ -1537,8 +1679,8 @@ async fn network(host Text, port Int) Result[Unit, IoError] {
         "JsonFormat",
         "IoErrorKind",
         "IoErrorMessage",
-        "FileTryOpenReadPath",
-        "FileTryCreatePath",
+        "FileTryOpenRead",
+        "FileTryCreate",
         "FileTryReadText",
         "FileTryWriteText",
         "SocketTryConnect",

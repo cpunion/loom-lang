@@ -63,6 +63,13 @@ try_create_path(Path) Task[Result[File, IoError]]
 file for writing. Text path arguments use the host file-system boundary;
 Path-valued variants use the same stored lexical spelling.
 
+These ten public operations are ordinary Loom source functions. The Path
+forms call the corresponding Text form through a normal source definition;
+the four Text file operations and two socket operations alone call
+compiler-private typed primitives authorized only for their exact owning
+standard-library module. Unused wrappers and primitives are removed by normal
+call-graph reachability.
+
 The usual recoverable form is:
 
 ```loom

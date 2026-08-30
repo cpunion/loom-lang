@@ -250,8 +250,13 @@ fn inspect(problem IoError, value Json) {
         Some(&json!("0-parse_json-std.json")),
         "parse_json must come from the semantic source index"
     );
-    for (name, kind) in [("LogLevel", "enum"), ("write", "function")] {
-        let detail = format!("{kind} · std.log");
+    for (name, kind, module) in [
+        ("LogLevel", "enum", "std.log"),
+        ("write", "function", "std.log"),
+        ("try_open_read_path", "function", "std.file"),
+        ("try_connect", "function", "std.net"),
+    ] {
+        let detail = format!("{kind} · {module}");
         let matching = completion_items
             .iter()
             .filter(|item| {
@@ -262,7 +267,7 @@ fn inspect(problem IoError, value Json) {
         assert_eq!(matching.len(), 1, "{name}: {matching:#?}");
         assert_eq!(
             matching[0].get("sortText"),
-            Some(&json!(format!("0-{name}-std.log"))),
+            Some(&json!(format!("0-{name}-{module}"))),
             "{name} must come from the semantic source index"
         );
     }

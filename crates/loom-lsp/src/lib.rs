@@ -1087,36 +1087,6 @@ const STD_SYMBOLS: &[StdSymbol] = &[
         signature: "fn format_json(value Json) Result[Text, JsonError]",
     },
     StdSymbol {
-        name: "try_open_read",
-        kind: "function",
-        module: "std.file",
-        signature: "fn try_open_read(path Text) Task[Result[File, IoError]]",
-    },
-    StdSymbol {
-        name: "try_create",
-        kind: "function",
-        module: "std.file",
-        signature: "fn try_create(path Text) Task[Result[File, IoError]]",
-    },
-    StdSymbol {
-        name: "try_open_read_path",
-        kind: "function",
-        module: "std.file",
-        signature: "fn try_open_read_path(path Path) Task[Result[File, IoError]]",
-    },
-    StdSymbol {
-        name: "try_create_path",
-        kind: "function",
-        module: "std.file",
-        signature: "fn try_create_path(path Path) Task[Result[File, IoError]]",
-    },
-    StdSymbol {
-        name: "try_connect",
-        kind: "function",
-        module: "std.net",
-        signature: "fn try_connect(host Text, port Int) Task[Result[Socket, IoError]]",
-    },
-    StdSymbol {
         name: "length",
         kind: "method",
         module: "std.prelude.TextMap",

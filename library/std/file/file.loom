@@ -1,0 +1,44 @@
+import std.file.__create
+import std.file.__open_read
+import std.file.__try_create
+import std.file.__try_open_read
+
+/// Opens an existing file for asynchronous text reads.
+pub fn open_read(path Text) Task[File] {
+    __open_read(path)
+}
+
+/// Creates or truncates a file for asynchronous text writes.
+pub fn create(path Text) Task[File] {
+    __create(path)
+}
+
+/// Opens the stored lexical spelling of a Path for asynchronous text reads.
+pub fn open_read_path(path Path) Task[File] {
+    open_read(path.as_text())
+}
+
+/// Creates or truncates the file named by the stored lexical Path spelling.
+pub fn create_path(path Path) Task[File] {
+    create(path.as_text())
+}
+
+/// Opens an existing file and reports expected host rejection as IoError.
+pub fn try_open_read(path Text) Task[Result[File, IoError]] {
+    __try_open_read(path)
+}
+
+/// Creates or truncates a file and reports expected host rejection as IoError.
+pub fn try_create(path Text) Task[Result[File, IoError]] {
+    __try_create(path)
+}
+
+/// Tries to open the stored lexical spelling of a Path.
+pub fn try_open_read_path(path Path) Task[Result[File, IoError]] {
+    try_open_read(path.as_text())
+}
+
+/// Tries to create or truncate the file named by a Path.
+pub fn try_create_path(path Path) Task[Result[File, IoError]] {
+    try_create(path.as_text())
+}
