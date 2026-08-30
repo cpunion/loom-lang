@@ -66,7 +66,7 @@ explicit byte or address-space layout must add its deciding facts here. The cano
 | `Int` | `Scalar(I64)` |
 | `Float` | `Scalar(F64)` |
 | literal-only `Text` on a 64-bit target | `ImmortalText`, one opaque pointer |
-| artifact containing `Text.concat` or a Text-bearing product on a 64-bit target | `ManagedPointer`, one opaque pointer for every Text |
+| artifact containing `Text.concat` or a Text-bearing aggregate/refined carrier on a 64-bit target | `ManagedPointer`, one opaque pointer for every Text |
 | canonical `Bytes` on a 64-bit target | `ManagedPointer`, one opaque pointer to immutable Text-backed or standalone byte storage |
 | canonical `Path` on a 64-bit target | invariant-protected `Product(Text)`, one field using the artifact's canonical Text representation |
 | structural tuple | `Product(element value types...)` |
@@ -89,7 +89,8 @@ Their fields may be primitive values or other acyclic direct aggregates, so
 tuples, records, and closed sums may contain one another. Products, sums, and
 established transparent/refined carriers may additionally contain managed
 leaves. A transparent carrier has a distinct semantic `ValueTypeId` but reuses
-its base `ReprId`; an `ImmortalText` base is deliberately rejected.
+its base `ReprId`; `ImmortalText` and the top-level-only `List[Task[T]]`
+carrier are deliberately rejected as bases.
 Concrete instantiations of generic enums, including `Result[Unit, E]`, are
 eligible after payload substitution. Proven monomorphic refined values and
 closed records with statically proven invariants may appear as product fields
@@ -125,7 +126,7 @@ identity functions. It cannot appear in products, sums, or transparent
 representations.
 
 If any reachable function uses concat or scalar selection, or places Text in a
-tuple/record product or closed sum,
+tuple, record, closed sum, or transparent/refined carrier,
 the canonical Text registration instead uses `ManagedPointer` throughout the
 artifact. Literals remain immutable process-lifetime objects in that direct
 pointer ABI, while concat results are typed moving-GC leaves. The product is
@@ -1092,7 +1093,8 @@ not repair a malformed program. Current checks include:
   payload parameters on every `SumSwitch` edge;
 - one artifact-wide 64-bit `Text` registration, either `ImmortalText` for an
   allocation-free, aggregate-free graph or `ManagedPointer` when concat/get or
-  a Text-bearing product/sum or TextMap is present; literal budgets, concat/get
+  a Text-bearing product, sum, transparent/refined carrier, or TextMap is
+  present; literal budgets, concat/get
   operand/result types, canonical `Option[Text]` shape, collection effects, and immortal
   literal/closed-flow provenance where that narrower representation applies;
 - the exact canonical `Bytes` nominal registration as one `ManagedPointer`,

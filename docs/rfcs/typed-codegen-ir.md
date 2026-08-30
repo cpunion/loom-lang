@@ -125,8 +125,9 @@ vocabulary is:
   text value is transitively produced by a compiler-emitted process-lifetime
   literal;
 - one opaque `ManagedPointer` for every Text in an artifact where concat or a
-  Text-bearing product is reachable; literals remain static objects and concat
-  results are typed moving-GC leaves in the same direct pointer ABI;
+  Text-bearing aggregate/refined carrier is reachable; literals remain static
+  objects and concat results are typed moving-GC leaves in the same direct
+  pointer ABI;
 - one opaque `ManagedPointer` for canonical `Bytes`; `Text.encode_utf8` shares
   the immutable Text object, while append materializes a distinct ByteObject;
 - an invariant-protected `Product(Text)` for canonical `Path`, retaining
@@ -155,8 +156,9 @@ acyclic. `ManagedPointer` is the artifact-wide Text provenance mode; products
 and closed sums containing such leaves remain unboxed exact aggregates.
 Transparent/refined carriers reuse the exact base representation and may carry
 managed leaves when that base is already supported. They remain distinct
-semantic types and cannot wrap `ImmortalText`. Each representation plan has an
-explicit canonical registration key for semantic-type lookup;
+semantic types and cannot wrap `ImmortalText` or the top-level-only
+`List[Task[T]]` carrier. Each representation plan has an explicit canonical
+registration key for semantic-type lookup;
 value-representation alternatives are not required to be globally unique by
 semantic type. General managed,
 dynamic-witness, erased, and additional coroutine representations are added
@@ -167,8 +169,9 @@ universal tag.
 The direct text slice supports allocation-free length, containment, and
 content equality or inequality; equality is never pointer equality. It also
 supports concat and Unicode-scalar selection through specialized typed helpers.
-Any concat, selection, or Text-bearing product/sum selects `ManagedPointer` for
-every Text in the complete artifact; concat and selection add `MAY_COLLECT`.
+Any concat, selection, or Text-bearing product, sum, or transparent/refined
+carrier selects `ManagedPointer` for every Text in the complete artifact;
+concat and selection add `MAY_COLLECT`.
 Exact backwards SSA liveness expands a live aggregate to deterministic guarded
 leaf cells and a deduplicated bitmap state for every collecting site. Values
 are live after the call, so its not-yet-defined result is excluded; explicit

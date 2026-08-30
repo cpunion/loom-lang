@@ -263,8 +263,9 @@ byte length, and Unicode scalar length, followed by exact UTF-8 bytes. A
 literal-only artifact uses `ImmortalText`; each literal is a private,
 unnamed-address global that points at `loom_layout_text_v1` and lives for the
 process lifetime. If any reachable function concatenates Text or places Text in
-a tuple/record, the entire artifact instead uses `ManagedPointer` for every
-Text. Literals remain static, while concat results are moving typed-GC leaves
+a tuple, record, closed sum, or transparent/refined carrier, the entire
+artifact instead uses `ManagedPointer` for every Text. Literals remain static,
+while concat results are moving typed-GC leaves
 with the same language-visible object shape. Products remain unboxed exact LLVM
 structs; `ManagedPointer` is their Text-leaf provenance mode, not an aggregate
 pointer. Neither representation is a universal `loom.Value`, a tagged interface

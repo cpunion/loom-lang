@@ -56,6 +56,10 @@ fn representation_contains_task_handle(
             continue;
         }
         let value = representations.value_type(value_id)?;
+        if let ValueTypeKind::Transparent { base } = value.kind() {
+            pending.push(base);
+            continue;
+        }
         match value.semantic() {
             Type::List(element) => pending.push(representations.type_id(element)?),
             Type::Nominal(_, arguments) if value.kind() == ValueTypeKind::ManagedTextMap => {
@@ -95,26 +99,6 @@ fn representation_contains_task_handle(
         }
     }
     Some(false)
-}
-
-fn representation_is_exact_task_list(
-    representations: &RepresentationPlan,
-    root: ValueTypeId,
-) -> bool {
-    let Some(value) = representations.value_type(root) else {
-        return false;
-    };
-    let Type::List(element) = value.semantic() else {
-        return false;
-    };
-    value.kind() == ValueTypeKind::Direct
-        && representations.repr(value.repr()) == Some(&Repr::ManagedPointer)
-        && representations.type_id(element).is_some_and(|element| {
-            representations.value_type(element).is_some_and(|element| {
-                matches!(element.semantic(), Type::Task(_))
-                    && representations.repr(element.repr()) == Some(&Repr::TaskHandle)
-            })
-        })
 }
 
 fn semantic_type_is_task_free(root: &Type) -> bool {
@@ -814,15 +798,23 @@ impl<'a> Validator<'a> {
                     "every representation alternative for a semantic type must inherit its canonical construction protection and transparent base relation",
                 );
             }
-            if let ValueTypeKind::Transparent { base } = value_type.kind()
-                && representation_pointer_kinds(&representations, base)
+            if let ValueTypeKind::Transparent { base } = value_type.kind() {
+                if representation_pointer_kinds(&representations, base)
                     .is_none_or(|(immortal, _)| immortal)
-            {
-                self.error(
-                    ValidationCode::RepresentationPlan,
-                    format!("representations.type[{index}].kind.transparent_base"),
-                    "transparent values cannot retain an immortal-only Text base representation",
-                );
+                {
+                    self.error(
+                        ValidationCode::RepresentationPlan,
+                        format!("representations.type[{index}].kind.transparent_base"),
+                        "transparent values cannot retain an immortal-only Text base representation",
+                    );
+                }
+                if representations.is_exact_task_list(base) {
+                    self.error(
+                        ValidationCode::RepresentationPlan,
+                        format!("representations.type[{index}].kind.transparent_base"),
+                        "exact List[Task[T]] cannot be hidden behind a transparent carrier",
+                    );
+                }
             }
             if canonical_bytes_semantic.as_ref() == Some(value_type.semantic())
                 && (value_type.kind() != ValueTypeKind::Direct
@@ -1052,7 +1044,7 @@ impl<'a> Validator<'a> {
         let supported_product_field = |field: ValueTypeId| {
             representations.value_type(field).is_some_and(|value_type| {
                 value_type.semantic() != &Type::Never
-                    && !representation_is_exact_task_list(&representations, field)
+                    && !representations.is_exact_task_list(field)
                     && matches!(
                         representations.repr(value_type.repr()),
                         Some(
@@ -1089,7 +1081,7 @@ impl<'a> Validator<'a> {
             }
             aggregate_costs[index] = 1_usize.saturating_add(product.fields().len());
             for (field_index, field) in product.fields().iter().copied().enumerate() {
-                if representation_is_exact_task_list(&representations, field) {
+                if representations.is_exact_task_list(field) {
                     self.error(
                         ValidationCode::RepresentationPlan,
                         format!("representations.product[{index}].field[{field_index}]"),
@@ -1148,7 +1140,7 @@ impl<'a> Validator<'a> {
                 .saturating_add(payload_fields);
             for (variant_index, variant) in sum.variants().iter().enumerate() {
                 for (field_index, field) in variant.fields().iter().copied().enumerate() {
-                    if representation_is_exact_task_list(&representations, field) {
+                    if representations.is_exact_task_list(field) {
                         self.error(
                             ValidationCode::RepresentationPlan,
                             format!(
