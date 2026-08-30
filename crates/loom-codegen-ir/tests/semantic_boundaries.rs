@@ -33,6 +33,34 @@ fn transparent_nominal_values_keep_semantic_identity_and_share_only_physical_rep
 }
 
 #[test]
+fn functional_inout_does_not_admit_unit_or_transparent_scalars() {
+    let money = Type::Nominal(TypeId(104), Vec::new());
+    let mut builder = ProgramBuilder::new(target());
+    let unit = builder.type_id(&Type::Unit).expect("Unit type");
+    let money = builder
+        .add_transparent_type(money, &Type::Float)
+        .expect("transparent Money type");
+    builder
+        .declare_function(
+            Origin::synthetic(FunctionId(104)),
+            "invalid_scalar_inout",
+            Signature::with_inout_params([unit, money], unit, [0_u32, 1_u32]),
+            Effects::NONE,
+        )
+        .expect("declare invalid raw signature");
+
+    let errors = validate_program(&builder.finish()).expect_err("invalid inout types must fail");
+    let inout = errors
+        .as_slice()
+        .iter()
+        .filter(|error| error.code() == ValidationCode::InOutShape)
+        .collect::<Vec<_>>();
+    assert_eq!(inout.len(), 2, "{errors:?}");
+    assert!(inout.iter().any(|error| error.path().ends_with("inout[0]")));
+    assert!(inout.iter().any(|error| error.path().ends_with("inout[1]")));
+}
+
+#[test]
 fn public_raw_builder_cannot_mint_frontend_proof_certificates() {
     let money = Type::Nominal(TypeId(101), Vec::new());
     let protected = Type::Nominal(TypeId(102), Vec::new());

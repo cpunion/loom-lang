@@ -220,7 +220,8 @@ impl Signature {
 
     /// Constructs a signature with explicit functional inout parameters.
     /// Independent validation requires the positions to be strictly ordered,
-    /// in range, and backed by direct product values.
+    /// in range, and backed by canonical direct Bool, Int, or Float, a direct
+    /// product, or a closed dynamic value.
     #[must_use]
     pub fn with_inout_params(
         params: impl Into<Box<[ValueTypeId]>>,

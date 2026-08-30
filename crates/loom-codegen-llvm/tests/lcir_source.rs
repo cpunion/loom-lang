@@ -6955,6 +6955,96 @@ pub fn main() {
 }
 
 #[test]
+fn scalar_mutable_receivers_use_direct_functional_writeback() {
+    let source = r"concept Shift {
+    method shift(mut self) Self
+}
+
+record Metrics { count Int }
+
+impl Shift for Int {
+    method shift(mut self) Int {
+        self = self + 1
+        self
+    }
+}
+
+impl Shift for Bool {
+    method shift(mut self) Bool {
+        self = !self
+        self
+    }
+}
+
+impl Shift for Float {
+    method shift(mut self) Float {
+        self = self + 0.5
+        self
+    }
+}
+
+pub fn main() {
+    var count = 40
+    let shiftedCount = count.shift()
+    var enabled = false
+    let shiftedEnabled = enabled.shift()
+    var ratio = 1.5
+    let shiftedRatio = ratio.shift()
+    var metrics = Metrics { count = 9 }
+    let shiftedProjected = metrics.count.shift()
+    let finalCount = count
+    let finalEnabled = enabled
+    let finalRatio = ratio
+    let finalProjected = metrics.count
+    assert shiftedCount == 41
+    assert finalCount == 41
+    assert shiftedEnabled
+    assert finalEnabled
+    assert shiftedRatio == 2.0
+    assert finalRatio == 2.0
+    assert shiftedProjected == 10
+    assert finalProjected == 10
+}
+";
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+
+    for policy in [NativeRoutePolicy::Automatic, NativeRoutePolicy::LcirOnly] {
+        let prepared = prepare_native_object(&program, EmitOptions::run("main"), policy)
+            .unwrap_or_else(|error| panic!("prepare scalar mut self with {policy:?}: {error}"));
+        assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    }
+
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    assert!(dump.matches("inout=[0]").count() >= 3, "{dump}");
+    assert!(artifact.functions().iter().any(|function| {
+        function.instructions().iter().any(|instruction| {
+            matches!(instruction.kind(), InstructionKind::DirectCall { .. })
+                && instruction.results().len() == 2
+        })
+    }));
+    assert!(artifact.functions().iter().any(|function| {
+        function.blocks().iter().any(|block| {
+            matches!(
+                block.terminator().map(loom_codegen_ir::Terminator::kind),
+                Some(loom_codegen_ir::TerminatorKind::Invoke { .. })
+            )
+        })
+    }));
+
+    let native = emit_and_run_lcir(&artifact, "scalar-mutable-receivers");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert_eq!(native.output.stdout, b"Unit\n");
+    assert!(!native.ir.contains("loom.Value"), "{}", native.ir);
+}
+
+#[test]
 fn mutable_dynamic_reborrow_writeback_is_carried_across_loops() {
     let source = r"dyn concept Stepper {
     method step(mut self) Int

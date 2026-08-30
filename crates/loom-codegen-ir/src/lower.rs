@@ -2206,6 +2206,14 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             && self.aggregates.supports_value_type(ty)
     }
 
+    fn supported_mutable_receiver_type(&mut self, ty: &Type) -> bool {
+        task_free_type(self.program, self.dyn_concepts, ty)
+            && (matches!(ty, Type::Bool | Type::Int | Type::Float)
+                || self.supported_record_type(ty)
+                || (is_invariant_record_type(self.program, ty)
+                    && self.aggregates.supports_value_type(ty)))
+    }
+
     fn supported_expression_type(&mut self, ty: &Type) -> bool {
         matches!(ty, Type::Never) || self.supported_value_type(ty)
     }
@@ -2528,7 +2536,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 }
             }
         }
-        let mutable_pod_receiver = !function.is_async
+        let supported_mutable_receiver = !function.is_async
             && function.receiver == Some(mir::Receiver::Mutable)
             && function
                 .params
@@ -2543,13 +2551,8 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         &format!("{base}.params[0]"),
                     )
                 })
-                .is_some_and(|ty| {
-                    task_free_type(self.program, self.dyn_concepts, &ty)
-                        && (self.supported_record_type(&ty)
-                            || (is_invariant_record_type(self.program, &ty)
-                                && self.aggregates.supports_value_type(&ty)))
-                });
-        if function.receiver == Some(mir::Receiver::Mutable) && !mutable_pod_receiver {
+                .is_some_and(|ty| self.supported_mutable_receiver_type(&ty));
+        if function.receiver == Some(mir::Receiver::Mutable) && !supported_mutable_receiver {
             self.function_item(UnsupportedFeature::MutableReceiver, function, &base);
         }
         for (index, parameter) in function.params.iter().enumerate() {
@@ -3907,18 +3910,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                                                 .physical_type(ty)
                                                 .unwrap_or_else(|| ty.clone());
                                             mutable_receiver.as_ref() == Some(&physical)
-                                                && task_free_type(
-                                                    self.program,
-                                                    self.dyn_concepts,
-                                                    &physical,
-                                                )
-                                                && (self.supported_record_type(&physical)
-                                                    || (is_invariant_record_type(
-                                                        self.program,
-                                                        &physical,
-                                                    ) && self
-                                                        .aggregates
-                                                        .supports_value_type(&physical)))
+                                                && self.supported_mutable_receiver_type(&physical)
                                         }
                                     })
                             } else {
@@ -3932,14 +3924,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                                             .dyn_concepts
                                             .physical_type(ty)
                                             .unwrap_or_else(|| ty.clone());
-                                        task_free_type(self.program, self.dyn_concepts, &physical)
-                                            && (self.supported_record_type(&physical)
-                                                || (is_invariant_record_type(
-                                                    self.program,
-                                                    &physical,
-                                                ) && self
-                                                    .aggregates
-                                                    .supports_value_type(&physical)))
+                                        self.supported_mutable_receiver_type(&physical)
                                     })
                             };
                             if !allowed {
