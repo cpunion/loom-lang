@@ -149,7 +149,9 @@ async fn load(key Text) Loaded {
 Calling it produces `Task[Loaded]`; the body result is obtained with the
 postfix `.await` inside another async callable. An omitted async return type is
 `Unit`, so the call produces `Task[Unit]`. Async methods and async concept
-requirements have no declaration syntax in language version 0.3.
+requirements have no declaration syntax in language version 0.3. As with
+synchronous functions, ordinary parameters are immutable; a Task never aliases
+a caller parameter for later writeback.
 
 See [Async functions and tasks](async-and-tasks.md).
 

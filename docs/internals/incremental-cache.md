@@ -94,7 +94,7 @@ resource methods, and disposal witnesses use exact ordinary source definitions.
 The Task cache identity disappears when the temporary catalog is replaced by
 ordinary source definitions.
 
-Checked-MIR cache envelopes use artifact version `40` and its exact current
+Checked-MIR cache envelopes use artifact version `41` and its exact current
 MIR shape. The artifact profile requires the complete compiler-known resource
 identity trio, all matching prelude ids, the canonical six-field
 `ConstraintError`, the exact source-backed decoding/path error identities and

@@ -489,8 +489,9 @@ canonical negative-duration or overflow faults on its fault edge. A source
 `Duration` is normalized through product extraction before this terminator.
 
 A coroutine declaration has no functional inout parameters or writeback
-result. An explicit mutable coroutine parameter remains unsupported. The body
-may nevertheless invoke synchronous functional inout callees: normal and fault
+result. Checked MIR rejects mutable coroutine parameter slots and all coroutine
+receivers. The body may nevertheless invoke synchronous functional inout
+callees: normal and fault
 writebacks update its current frame-local environment, with fault writeback
 installed before coroutine cleanup. A dynamic View parameter is copied by value
 into the Task frame, and mutable dispatch changes only that copy rather than
@@ -586,10 +587,9 @@ name or maps the source `DefId` back to `TaskIntrinsic`. LCIR therefore still
 receives exact child types and explicit control flow without acquiring public
 Task policy operators.
 
-The remaining fallback boundary includes explicit mutable coroutine
-parameters, dynamic-concept frame producers with unresolved parameters or
-projections, raw readiness, and unsupported protected or managed projected
-operations. Concrete closed
+The remaining fallback boundary includes dynamic-concept frame producers with
+unresolved parameters or projections, raw readiness, and unsupported protected
+or managed projected operations. Concrete closed
 `List[T]` and compiler-private `TextMap[V]` values are canonical one-pointer
 frame carriers in parameters, results, nested products, and suspension-live
 rows. Fixed argument joins and homogeneous runtime-width List joins are

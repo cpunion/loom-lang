@@ -64,9 +64,11 @@ Task, drive it to a terminal state, take the exact result, and destroy the
 executor. Cleanup is encoded entirely in LCIR control flow: this slice adds no
 runtime cleanup stack, runtime symbol, or runtime ABI revision.
 
-Current typed coverage includes coroutines without explicit mutable parameters
-whose parameters, results, and live values use direct scalar/refined/product/Text
-shapes, closed sums over those shapes, or concrete closed `List[T]` and
+Coroutine parameters are always independent Task-frame values: checked MIR
+rejects mutable parameter slots and all async receivers rather than
+inventing an inout Task result. Current typed coverage admits parameters,
+results, and live values using direct scalar/refined/product/Text shapes,
+closed sums over those shapes, or concrete closed `List[T]` and
 compiler-private `TextMap[V]` carriers. Each collection occupies one exact
 managed-pointer frame cell; its repeated element graph remains in the ordinary
 typed allocation descriptor rather than being embedded by value in the frame.
@@ -114,11 +116,10 @@ propagates a child's `Faulted` or `Cancelled` state; it never
 converts either state into a source `Result`. Task handles may be live only as
 suspension bookkeeping.
 
-For reachable graphs with no LCIR-only primitive, selected async functions with
-explicit mutable coroutine parameters, raw readiness, and dynamic-concept frame
-producers with unresolved parameters or projections still select the complete
-checked-MIR route. Finite closed catalogs remain on typed LCIR and use the exact
-managed dynamic pointer described above.
+For reachable graphs with no LCIR-only primitive, raw readiness and
+dynamic-concept frame producers with unresolved parameters or projections still
+select the complete checked-MIR route. Finite closed catalogs remain on typed
+LCIR and use the exact managed dynamic pointer described above.
 Async roots with `requires` use the same typed state-zero check as child Tasks.
 
 ## Runtime and executor

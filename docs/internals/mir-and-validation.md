@@ -63,6 +63,9 @@ Validation covers:
 - expression and statement type equality;
 - call, receiver, generic proof, witness, record, variant, pattern, and builtin
   arity/shape;
+- parameter shape: only parameter zero of a synchronous `mut self` method may
+  be a mutable slot; ordinary parameters and all coroutine parameters are
+  immutable slots, and coroutines cannot carry receiver metadata;
 - contract schemas and the types visible to each contract arm;
 - finite by-value layouts for record, enum, refined, tuple, nominal-argument,
   `Option`, `Result`, and `TaskOutcome` graphs;
@@ -213,7 +216,7 @@ root merely because storage still exists.
 The interpreted MIR envelope currently uses:
 
 - format `loom.interpreted-mir`;
-- artifact version `40`;
+- artifact version `41`;
 - Loom language version `0.3`.
 
 Generic compiler-cache envelopes carry an explicit null `entry`. Executable

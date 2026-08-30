@@ -386,8 +386,9 @@ LCIR are structured `LoweringError` values and never select fallback.
 
 The current lowering coverage includes synchronous scalar, direct `Text`,
 one-field direct `Path`, structural tuple, closed-record, concrete closed-enum,
-and established refined signatures. Async signatures without explicit mutable parameters and their
-suspension frames may also use direct scalar/refined/product/Text shapes and
+and established refined signatures. Checked MIR admits no mutable coroutine
+parameter slots or coroutine receivers. Async signatures and their
+suspension frames may use direct scalar/refined/product/Text shapes and
 closed sums whose payload graphs contain those shapes, plus concrete closed
 `List[T]` and compiler-private `TextMap[V]` one-pointer carriers, including when
 these values are nested or lexical cleanup is active across a suspension. Their
@@ -399,9 +400,10 @@ construction. A
 source `Result[T, E]`, including a managed-Text result, is an ordinary completed
 value; Task `Faulted` and `Cancelled` states remain control outcomes. Async
 roots with `requires` use the same typed state-zero check and receive their
-declaration span as blame from the root harness. Functions declaring explicit
-mutable coroutine parameters still fail closed before LCIR creation. Coverage includes bounded
-direct generic calls whose concrete types use those representations. Concrete
+declaration span as blame from the root harness. The mutable bit on a dynamic
+View remains a by-value capability rather than an inout parameter. Coverage
+includes bounded direct generic calls whose concrete types use those
+representations. Concrete
 static concept calls use the selected witness method directly, including
 conditional proof applications and normalized associated bindings. A unique
 closed dynamic witness is erased to its concrete type, including in async
@@ -778,10 +780,10 @@ The run/test harness creates an executor for the root Task, runs it to a
 terminal state, takes the exact result, reports a root fault if one is exposed
 by a later slice, and destroys the executor.
 
-The current source boundary is deliberately smaller than the runtime ABI. A
-coroutine signature has no functional inout parameters or writeback results,
-and a declaration with an explicit mutable coroutine parameter fails closed.
-A dynamic View parameter is instead copied by value into the Task frame, so
+The checked compiler boundary is deliberately smaller than the runtime ABI. A
+coroutine signature has no functional inout parameters or writeback results;
+mutable parameter slots and all receivers are rejected before LCIR. A
+dynamic View parameter is instead copied by value into the Task frame, so
 synchronous mutable dispatch updates only that independent copy. The body may
 call a synchronous function with functional inout parameters. Its normal and
 fault writebacks update the coroutine's current SSA environment; a fault

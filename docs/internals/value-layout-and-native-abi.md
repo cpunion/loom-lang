@@ -286,8 +286,8 @@ record projections and eligible projected mutable receivers use exact typed
 extraction and functional root reconstruction on normal and fault edges.
 Shapes outside the current typed-LCIR SupportReport—including non-regular
 generic expansion, protected mutation, unsupported contract/cleanup forms,
-explicit mutable coroutine parameters, and open or prerequisite-dependent
-dynamic coroutine carriers—still select the complete universal route. Typed
+and open or prerequisite-dependent dynamic coroutine carriers—still select the
+complete universal route. Typed
 LCIR does not change the checked-MIR runtime ABI or make either object ABI
 public.
 
