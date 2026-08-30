@@ -3793,10 +3793,10 @@ impl<'program> Validator<'program> {
     }
 
     fn validate_parameter_modes(&mut self, function: &Function, path: &str) {
-        if function.is_async && function.receiver == Some(Receiver::Mutable) {
+        if function.is_async && function.receiver.is_some() {
             self.push(
                 MirValidationCode::ReceiverShape,
-                "an async function cannot have a mutable receiver",
+                "an async function cannot have a receiver",
                 function.span,
                 format!("{path}.receiver"),
             );

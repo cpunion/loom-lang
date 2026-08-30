@@ -10587,19 +10587,23 @@ fn checked_mir_enforces_the_source_parameter_mutability_boundary() {
         }));
     }
 
-    let mut asynchronous_receiver = empty(0, Type::Int, true);
-    asynchronous_receiver.receiver = Some(Receiver::Mutable);
-    asynchronous_receiver.is_async = true;
-    let errors = validation_errors(&Program {
-        functions: vec![asynchronous_receiver],
-        ..Program::default()
-    });
-    assert!(errors.as_slice().iter().any(|error| {
-        error.code == MirValidationCode::ReceiverShape
-            && error.path == "functions[0].receiver"
-            && error.message.contains("cannot have a mutable receiver")
-    }));
-    assert!(!errors.contains(MirValidationCode::ParameterShape));
+    for receiver in [Receiver::Readonly, Receiver::Mutable] {
+        let mut asynchronous_receiver = empty(0, Type::Int, receiver == Receiver::Mutable);
+        asynchronous_receiver.receiver = Some(receiver);
+        asynchronous_receiver.is_async = true;
+        let errors = validation_errors(&Program {
+            functions: vec![asynchronous_receiver],
+            ..Program::default()
+        });
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code == MirValidationCode::ReceiverShape
+                && error.path == "functions[0].receiver"
+                && error
+                    .message
+                    .contains("async function cannot have a receiver")
+        }));
+        assert!(!errors.contains(MirValidationCode::ParameterShape));
+    }
 
     let mut synchronous_receiver = empty(0, Type::Int, true);
     synchronous_receiver.receiver = Some(Receiver::Mutable);
