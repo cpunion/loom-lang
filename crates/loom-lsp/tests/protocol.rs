@@ -21,6 +21,15 @@ impl TestProject {
         Self(root)
     }
 
+    #[cfg(windows)]
+    fn new_with_name(source: &str, name: &str) -> Self {
+        let serial = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("{name}-{}-{serial}", std::process::id()));
+        fs::create_dir_all(&root).expect("create named project");
+        fs::write(root.join("main.loom"), source).expect("write named source");
+        Self(root)
+    }
+
     fn write(&self, relative: &str, text: &str) {
         let path = self.0.join(relative);
         fs::create_dir_all(path.parent().expect("test path has parent"))
@@ -117,6 +126,46 @@ fn source_position(source: &str, needle: &str) -> Value {
         .encode_utf16()
         .count();
     json!({"line": line, "character": character})
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_drive_file_uri_round_trips_through_the_protocol() {
+    let source = "pub fn main() {}\n";
+    let project = TestProject::new_with_name(source, "loom lsp 价格");
+    let root_uri = loom_lsp::path_to_file_uri(&project.0);
+    let file_path = project.0.join("main.loom");
+    let file_uri = loom_lsp::path_to_file_uri(&file_path);
+
+    assert!(root_uri.starts_with("file:///"), "{root_uri}");
+    assert!(!root_uri.contains('\\'), "{root_uri}");
+    assert!(
+        root_uri.contains("loom%20lsp%20%E4%BB%B7%E6%A0%BC"),
+        "{root_uri}"
+    );
+    assert_eq!(
+        loom_lsp::file_uri_to_path(&file_uri).as_deref(),
+        Ok(file_path.as_path())
+    );
+
+    let responses = run_framed_session(&[
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":root_uri}}),
+        json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+        json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":file_uri,"languageId":"loom","version":1,"text":source}}}),
+        json!({"jsonrpc":"2.0","id":2,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":file_uri}}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"shutdown","params":null}),
+        json!({"jsonrpc":"2.0","method":"exit","params":null}),
+    ]);
+    let symbols = response_with_id(&responses, 2)
+        .get("result")
+        .and_then(Value::as_array)
+        .expect("document symbols");
+    assert!(
+        symbols
+            .iter()
+            .any(|symbol| symbol.get("name") == Some(&json!("main"))),
+        "{symbols:#?}"
+    );
 }
 
 #[test]

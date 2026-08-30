@@ -126,6 +126,10 @@ jobs:
       - name: Build release tools
         shell: bash
         run: cargo build --locked --release -p loom-cli -p loom-lsp
+      - name: Test Windows language-server file URI handling
+        if: runner.os == 'Windows'
+        shell: bash
+        run: cargo test --locked --release -p loom-lsp --lib --test protocol
       - name: Pack release runtime sidecar
         shell: bash
         env:
