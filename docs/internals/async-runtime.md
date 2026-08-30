@@ -77,6 +77,13 @@ current SSA environment before continuing; on fault, this happens before the
 coroutine's active lexical cleanup suffix. The coroutine itself does not expose
 an inout Task result or alias the caller's storage.
 
+Suspension-live rows may also hold whole affine Task-bearing products, closed
+sums, and proven transparent wrappers. Their TaskHandle leaves remain
+scheduler-owned and are omitted from GC descriptors; managed siblings such as
+Text and List retain their exact offsets. Resuming code must transfer the whole
+carrier or consume a sum through exhaustive matching, never copy or partially
+extract a Task-bearing product field.
+
 A dynamic View parameter enters an async Task frame as an independent by-value
 copy, even when the coroutine calls one of its mutable methods. Synchronous
 mutable dispatch updates that frame-local copy, leaving the value used to create

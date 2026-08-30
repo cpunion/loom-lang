@@ -1,0 +1,3 @@
+test async fn affineTaskCarriersMoveOnce() {
+    exercise().await
+}

@@ -93,9 +93,9 @@ Concrete instantiations of generic enums, including `Result[Unit, E]`, are
 eligible after payload substitution. Proven monomorphic refined values and
 closed records with statically proven invariants may appear as product fields
 or sum payloads. Fully concrete generic records use the same plan.
-Runtime-checked constructions, general by-value recursive sums, general Task
-storage, incomplete dynamic witness sets, and uninhabited fields are not
-selected. A concrete List or TextMap
+Runtime-checked constructions, general by-value recursive sums, operations that
+split or rebuild Task-bearing products, incomplete dynamic witness sets, and
+uninhabited fields are not selected. A concrete List or TextMap
 breaks by-value aggregate recursion and may contain any registered closed
 direct scalar, Text, product, sum, List, or TextMap value. The canonical
 recursive `Json` sum is admitted through exactly those two indirections:
@@ -772,8 +772,9 @@ writeback is installed before control enters the active static cleanup suffix.
 
 Parameters, results, and live frame values admit direct
 scalar/refined/product/Text shapes, closed sums, and canonical one-pointer
-`List[T]` or compiler-private `TextMap[V]` carriers, with Task handles
-additionally allowed only in suspension-live rows. A unique closed dynamic
+`List[T]` or compiler-private `TextMap[V]` carriers. Suspension-live rows also
+admit whole affine Task-bearing products, sums, and proven transparent wrappers;
+their TaskHandle leaves are excluded from moving-GC roots. A unique closed dynamic
 witness is recursively physicalized to its concrete representation in those
 locations. A finite closed catalog uses the existing exact one-pointer managed
 dynamic representation, including when nested in products, sums, Lists, or a
