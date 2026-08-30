@@ -1830,14 +1830,15 @@ impl<'a> Validator<'a> {
                 );
                 continue;
             };
-            if self.product_fields(ty).is_none()
+            if !self.is_direct_mutable_scalar(ty)
+                && self.product_fields(ty).is_none()
                 && self.program.representations.dynamic(ty).is_none()
             {
                 self.error(
                     ValidationCode::InOutShape,
                     format!("{base}.signature.inout[{writeback_index}]"),
                     format!(
-                        "inout parameter {parameter} must use a direct product or closed dynamic value type"
+                        "inout parameter {parameter} must use canonical direct Bool, Int, or Float, a direct product, or a closed dynamic value type"
                     ),
                 );
             }
@@ -6653,6 +6654,15 @@ impl<'a> Validator<'a> {
             .representations
             .product(product)
             .map(crate::ProductRepr::fields)
+    }
+
+    fn is_direct_mutable_scalar(&self, ty: ValueTypeId) -> bool {
+        let Some(value_type) = self.program.representations.value_type(ty) else {
+            return false;
+        };
+        value_type.kind() == ValueTypeKind::Direct
+            && matches!(value_type.semantic(), Type::Bool | Type::Int | Type::Float)
+            && self.program.representations.type_id(value_type.semantic()) == Some(ty)
     }
 
     fn sum_repr(&self, ty: ValueTypeId) -> Option<SumReprId> {

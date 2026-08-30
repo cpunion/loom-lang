@@ -225,17 +225,20 @@ value, and block parameters become aggregate phi nodes. LCIR source functions
 do not allocate a universal value, tuple node, private record box, or GC object
 for this representation.
 
-A mutable inherent receiver is represented as one functional inout value. An
-infallible call with source result `T` and ordered writebacks `W...` returns
-`{ T, W... }`. A fallible call returns `{ i32 status, T, W... }` and receives
-the usual fault-context pointer. Both normal and fault exits carry the current
-receiver value, so a mutation completed before a later fault remains visible
-to the caller. An admitted projected receiver is passed as the same direct leaf
-product. Its returned leaf is inserted through the statically typed field path
-on the normal edge and before fault propagation on the unwind edge. LLVM sees
-only `extractvalue`, `insertvalue`, direct aggregate values, and the existing
-functional return ABI; no proxy allocation, universal value, or runtime
-writeback helper is introduced. The owning synchronous `mut self` body may
+A synchronous mutable receiver is represented as one exact functional inout
+value, independent of whether dispatch was inherent or selected through a
+concept witness. An infallible call with source result `T` and ordered
+writebacks `W...` returns `{ T, W... }`. A fallible call returns
+`{ i32 status, T, W... }` and receives the usual fault-context pointer. Both
+normal and fault exits carry the current receiver value, so a mutation completed
+before a later fault remains visible to the caller. Direct `Bool`, `Int`, and
+`Float` receivers remain ordinary `i1`, `i64`, and `double` SSA values. An
+admitted projected primitive or record receiver is extracted from and inserted
+back through its statically typed aggregate path on the normal edge and before
+fault propagation on the unwind edge. LLVM uses the existing scalar or
+aggregate SSA representation and functional return ABI; no receiver pointer,
+proxy allocation, universal value, or runtime writeback helper is introduced.
+The owning synchronous `mut self` body may
 reconstruct through its own top-level invariant product before its exit check;
 the frontend and checked MIR reject every external or nested invariant
 crossing. Task-bearing or otherwise unrepresentable projections still select

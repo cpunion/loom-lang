@@ -389,8 +389,11 @@ limits, source-graph defects, and invalid generated LCIR are structured
 
 The current lowering coverage includes synchronous scalar, direct `Text`,
 one-field direct `Path`, structural tuple, closed-record, concrete closed-enum,
-and established refined signatures. Checked MIR admits no mutable coroutine
-parameter slots or coroutine receivers. Async signatures and their
+and established refined signatures. Synchronous mutable methods use exact
+functional writeback for direct `Bool`, `Int`, and `Float` receivers and
+supported task-free records, including admitted local and projected places on
+normal and fault edges. Checked MIR admits no mutable coroutine parameter slots
+or coroutine receivers. Async signatures and their
 suspension frames may use direct scalar/refined/product/Text shapes and
 closed sums whose payload graphs contain those shapes, plus concrete closed
 `List[T]` and compiler-private `TextMap[V]` one-pointer carriers, including when
@@ -461,23 +464,24 @@ match and is removed from the decision plan. Pattern, decision-node, and
 abstract-value budgets are each 512, planning work is limited to 32,768 units,
 and the complete match may require at most 1,024 CFG blocks including its join.
 All limits are checked before the lowerer allocates any match LCIR; exceeding a
-limit selects whole-artifact fallback. A mutable inherent receiver is a
-functional inout parameter:
-the callee returns its current product on both normal and fault exits. A direct
-mutable inherent call may also borrow an invariant-free record at a projected
-place when the leaf has the exact receiver type. The same plan may cross the
-current function's own top-level invariant product when that root is its
-synchronous `mut self` parameter. The reconstructed receiver reaches its
-invariant check only on the normal function continuation. Source analysis and
-checked MIR reject external or nested invariant crossings before LCIR and make
-every invariant-bearing place affected by fault writeback unavailable to the
-fault cleanup suffix. Cleanup therefore cannot observe a partially updated
-product. Checked MIR fail-closes the complete borrowed root when its type
-contains a nested invariant or is an open parameter or associated projection.
-A dynamic view is opaque, and exact witness dispatch checks its hidden receiver
-invariant before method entry. An admitted leaf writeback is rebuilt into the
-current aggregate root on both exits; unsupported receiver shapes select atomic fallback. The same
-synchronous call ABI is valid inside an async body. Its normal edge installs
+limit selects whole-artifact fallback. A synchronous mutable method receiver is
+a functional inout parameter: the callee returns its current exact receiver
+value on both normal and fault exits. Direct `Bool`, `Int`, and `Float`
+receivers retain their scalar representation. A call may borrow a local or an
+admitted projected place when its leaf has the exact primitive or supported
+task-free record receiver type. A projected writeback is rebuilt into the
+current aggregate root on both exits. The same plan may cross the current
+function's own top-level invariant product when that root is its synchronous
+`mut self` parameter. The reconstructed receiver reaches its invariant check
+only on the normal function continuation. Source analysis and checked MIR
+reject external or nested invariant crossings before LCIR and make every
+invariant-bearing place affected by fault writeback unavailable to the fault
+cleanup suffix. Cleanup therefore cannot observe a partially updated product.
+Checked MIR fail-closes the complete borrowed root when its type contains a
+nested invariant or is an open parameter or associated projection. A dynamic
+view is opaque, and exact witness dispatch checks its hidden receiver invariant
+before method entry. Unsupported receiver shapes select atomic fallback. The
+same synchronous call ABI is valid inside an async body. Its normal edge installs
 the result and writebacks before ordinary continuation. Its fault bridge
 installs every writeback before requesting the coroutine's fault target;
 checked MIR has already proved that `defer` and `scoped` cleanup cannot observe
@@ -1260,7 +1264,10 @@ assertion metadata, typed scoped resource writeback, cleanup depth limits,
 recursive effect closure, stable fallible dumps, optional
 origins, malformed SSA programs, and source-to-MIR-to-LCIR classification and
 dumps for structurally different recursive and iterative Fibonacci programs,
-plus zero-cost proven refinements and invariant records. Generic regressions
+plus zero-cost proven refinements and invariant records. A source regression
+keeps `Bool`, `Int`, and `Float` whole-receiver replacement, projected scalar
+writeback, fallible and infallible calls, and native execution on typed LCIR.
+Generic regressions
 cover exact regular recursion, duplicate-instance elimination, cross-test-root
 reuse, witness-bearing identity, nonregular recursion, bounded key expansion,
 unreachable declarations, repeatable dumps and identities, and direct host and

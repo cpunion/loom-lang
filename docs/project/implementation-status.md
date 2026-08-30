@@ -154,7 +154,9 @@ direct coverage includes:
 
 - scalar, managed Text, typed Bytes, and one-field typed Path operations,
   structural tuples, concrete records, refined values, closed sums, Lists,
-  compiler-private TextMaps, and bounded concrete generic instances;
+  compiler-private TextMaps, bounded concrete generic instances, and
+  synchronous direct-primitive `mut self` bodies with exact local or projected
+  functional writeback on normal and fault exits;
 - canonical recursive Json formatting into the exact
   `Result[Text, JsonError]`, including typed Text publication and ordinary
   depth/non-finite error values;
