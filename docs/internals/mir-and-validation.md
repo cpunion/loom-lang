@@ -138,9 +138,12 @@ joins take the union, so no branch can erase an invalidated place. Successful
 mutable receiver calls keep their normal continuation clean because the callee
 has completed its normal exit invariant check. This analysis is deliberately
 conservative at an erased or open boundary: if the borrowed type contains a
-nested invariant, or is a type parameter, associated projection, or dynamic
-view, the complete borrowed root is protected. A receiver-restoration marker
-cannot clear that protection; only complete checked replacement can.
+nested invariant, or is a type parameter or associated projection, the
+complete borrowed root is protected. Dynamic views are opaque boundaries:
+hidden state can be observed only by dispatching an exact witness method, whose
+receiver invariant is checked on entry. A receiver-restoration marker cannot
+clear fault protection, and projected recovery writes retain it; only complete
+checked replacement can clear it.
 
 ### Bounded recursive type analysis
 

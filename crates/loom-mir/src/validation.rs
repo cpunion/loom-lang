@@ -10120,7 +10120,7 @@ impl<'program> Validator<'program> {
                         format!("{path}.value"),
                     );
                 }
-                self.replace_untrusted_invariants(place, state, statement.span, path);
+                Self::clear_replaced_untrusted_invariants(place, state);
                 let index = place.local.0 as usize;
                 if place.projection.is_empty() {
                     self.reject_owner_mutation_while_borrowed(place, state, statement.span, path);
@@ -10323,9 +10323,11 @@ impl<'program> Validator<'program> {
 
     /// A faulting inout call may have changed any part of the borrowed value.
     /// If its type contains a nested invariant, protect the complete borrowed
-    /// place instead of attempting path-sensitive rollback. Open generic and
-    /// erased shapes are fail-closed because their concrete payload is not
-    /// known at this validation boundary.
+    /// place instead of attempting path-sensitive rollback. Open generic
+    /// shapes are fail-closed because their concrete payload is not known at
+    /// this validation boundary. A dynamic view is an opaque boundary: hidden
+    /// record state is observable only through a witness method, whose exact
+    /// receiver invariant is checked at method entry.
     fn type_may_contain_invariant(&self, root: &Type) -> bool {
         let mut pending = vec![root.clone()];
         let mut visited = BTreeSet::new();
@@ -10380,11 +10382,16 @@ impl<'program> Validator<'program> {
                         }
                     }
                 }
-                Type::Parameter(_)
-                | Type::AssociatedProjection { .. }
-                | Type::View { .. }
-                | Type::Error => return true,
-                Type::Never | Type::Unit | Type::Bool | Type::Int | Type::Float | Type::Text => {}
+                Type::Parameter(_) | Type::AssociatedProjection { .. } | Type::Error => {
+                    return true;
+                }
+                Type::Never
+                | Type::Unit
+                | Type::Bool
+                | Type::Int
+                | Type::Float
+                | Type::Text
+                | Type::View { .. } => {}
             }
         }
         false
@@ -10425,26 +10432,10 @@ impl<'program> Validator<'program> {
         rejected
     }
 
-    fn replace_untrusted_invariants(
-        &mut self,
-        place: &Place,
-        state: &mut DataflowState,
-        span: Span,
-        path: &str,
-    ) {
-        if state.untrusted_invariants.iter().any(|dirty| {
-            dirty.local == place.local
-                && place.projection.starts_with(&dirty.projection)
-                && place.projection != dirty.projection
-        }) {
-            self.push(
-                MirValidationCode::InvariantShape,
-                "an invariant value not established for cleanup requires complete checked replacement",
-                span,
-                path,
-            );
-            return;
-        }
+    fn clear_replaced_untrusted_invariants(place: &Place, state: &mut DataflowState) {
+        // Projected assignment may participate in recovery, but it cannot
+        // prove the enclosing value. Retain that protection until a complete
+        // checked replacement covers the invalidated place.
         Rc::make_mut(&mut state.untrusted_invariants).retain(|dirty| {
             dirty.local != place.local || !dirty.projection.starts_with(&place.projection)
         });

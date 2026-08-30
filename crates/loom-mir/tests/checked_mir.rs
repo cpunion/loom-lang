@@ -8759,6 +8759,52 @@ fn normal_cleanup_cannot_observe_a_dirty_receiver_before_exit_recheck() {
 }
 
 #[test]
+fn normal_cleanup_may_write_a_dirty_receiver_before_exit_recheck() {
+    let positive = Type::Nominal(TypeId(0), Vec::new());
+    let field = Place {
+        local: LocalId(0),
+        projection: vec![0],
+    };
+    let cleanup = Block {
+        statements: vec![Statement {
+            kind: StatementKind::Assign {
+                place: field.clone(),
+                value: constant(Constant::Int(1), Type::Int),
+            },
+            span: span(),
+        }],
+        tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+        span: span(),
+    };
+    let method = invariant_test_mut_receiver(
+        0,
+        positive,
+        invariant_test_unit_block(
+            vec![
+                Statement {
+                    kind: StatementKind::Defer(cleanup),
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Assign {
+                        place: field,
+                        value: constant(Constant::Int(-1), Type::Int),
+                    },
+                    span: span(),
+                },
+            ],
+            None,
+        ),
+    );
+    validate_program(&Program {
+        types: vec![invariant_test_record(0, "Positive", vec![Type::Int], true)],
+        functions: vec![method],
+        ..Program::default()
+    })
+    .expect("cleanup may recover a dirty receiver before its checked exit invariant");
+}
+
+#[test]
 fn scoped_disposal_cannot_observe_fault_invalidated_nested_invariants() {
     let positive = Type::Nominal(TypeId(1), Vec::new());
     let resource = resource_type();
