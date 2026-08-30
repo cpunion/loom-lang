@@ -54,7 +54,7 @@ directory extends that package path. For module `application`, files directly
 beside the manifest belong to `application`, while files in `http/client/`
 belong to `application.http.client`. A file name never changes its package.
 
-Ordinary source selection excludes `*_test.loom`. `loomc test` includes those
+Ordinary source selection excludes `*_test.loom`. `loom test` includes those
 files only for the root module. Dependency test files are never selected.
 
 ## Dependencies
@@ -127,12 +127,12 @@ The supported target kinds are:
 - `bin`: an executable entry; `entry` defaults to `main`;
 - `lib`: a portable source-and-interface module artifact with no entry.
 
-An `entry` is valid only on a binary target. Tests are not targets: `loomc test`
+An `entry` is valid only on a binary target. Tests are not targets: `loom test`
 selects root-module `*_test.loom` files directly and does not accept `--target`.
 
 ## Lockfile behavior
 
-`loomc resolve` resolves the graph and writes a deterministic `loom.lock`.
+`loom resolve` resolves the graph and writes a deterministic `loom.lock`.
 Source commands also materialize an updated lockfile when ordinary resolution
 changes it. Commit the lockfile for applications and other reproducible builds.
 

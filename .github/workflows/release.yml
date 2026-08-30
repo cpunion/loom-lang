@@ -18,19 +18,19 @@ jobs:
           - runner: ubuntu-24.04
             platform: linux-x86_64
             runtime_archive: target/release/libloom_runtime.a
-            compiler: target/release/loomc
+            compiler: target/release/loom
             language_server: target/release/loom-lsp
             executable_suffix: ""
           - runner: macos-15
             platform: macos-arm64
             runtime_archive: target/release/libloom_runtime.a
-            compiler: target/release/loomc
+            compiler: target/release/loom
             language_server: target/release/loom-lsp
             executable_suffix: ""
           - runner: windows-2025
             platform: windows-x86_64
             runtime_archive: target/release/loom_runtime.lib
-            compiler: target/release/loomc.exe
+            compiler: target/release/loom.exe
             language_server: target/release/loom-lsp.exe
             executable_suffix: .exe
     runs-on: ${{ matrix.runner }}
@@ -214,7 +214,7 @@ jobs:
           archive="loom-lang-${RELEASE_NAME}-${RELEASE_PLATFORM}.tar.gz"
           staging="$RUNNER_TEMP/loom-release-$RELEASE_PLATFORM-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           mkdir -p "$staging"
-          cp target/release/loomc target/release/loom-lsp "$staging/"
+          cp target/release/loom target/release/loom-lsp "$staging/"
           cp \
             README.md LICENSE CHANGELOG.md ROADMAP.md \
             CONTRIBUTING.md CODE_OF_CONDUCT.md SECURITY.md GOVERNANCE.md SUPPORT.md \
@@ -222,7 +222,7 @@ jobs:
           cp -R docs "$staging/docs"
           cp -R "$LOOM_RUNTIME_BUNDLE" "$staging/runtime"
           env -u LOOM_RUNTIME_BUNDLE \
-            "$staging/loomc" --no-cache build --output target/release-bundle-smoke \
+            "$staging/loom" --no-cache build --output target/release-bundle-smoke \
               examples/constraints-contracts
           smoke_stdout="$RUNNER_TEMP/loom-release-bundle-smoke-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.stdout"
           target/release-bundle-smoke > "$smoke_stdout"
@@ -243,7 +243,7 @@ jobs:
           $archive = "loom-lang-$env:RELEASE_NAME-$env:RELEASE_PLATFORM.zip"
           $staging = Join-Path $env:RUNNER_TEMP "loom-release-$env:RELEASE_PLATFORM-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
           New-Item -ItemType Directory -Force -Path $staging | Out-Null
-          Copy-Item -LiteralPath target/release/loomc.exe -Destination $staging
+          Copy-Item -LiteralPath target/release/loom.exe -Destination $staging
           Copy-Item -LiteralPath target/release/loom-lsp.exe -Destination $staging
           Copy-Item -LiteralPath (Join-Path $env:LLVM_PATH "bin\LLVM-C.dll") -Destination $staging
           Copy-Item -LiteralPath (Join-Path $env:LLVM_PATH "include\llvm\Support\LICENSE.TXT") -Destination (Join-Path $staging "LLVM-LICENSE.txt")
@@ -259,7 +259,7 @@ jobs:
           Remove-Item Env:LOOM_RUNTIME_BUNDLE
           $llvmBin = Join-Path $env:LLVM_PATH "bin"
           $env:PATH = (($env:PATH -split ';') | Where-Object { $_ -ne $llvmBin }) -join ';'
-          & "$staging/loomc.exe" --no-cache build --output target/release-bundle-smoke `
+          & "$staging/loom.exe" --no-cache build --output target/release-bundle-smoke `
             examples/constraints-contracts
           if ($LASTEXITCODE -ne 0) {
             throw "the staged Windows compiler could not discover its adjacent runtime bundle"

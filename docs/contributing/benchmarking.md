@@ -18,7 +18,7 @@ Override tools when necessary:
 
 | Variable | Tool |
 | --- | --- |
-| `LOOM_BENCH_LOOMC` | Loom compiler binary |
+| `LOOM_BENCH_LOOM` | Loom compiler binary |
 | `LOOM_BENCH_GO` | Go command |
 | `LOOM_BENCH_RUSTC` | Rust compiler command |
 | `LOOM_BENCH_CC` | C compiler |

@@ -60,13 +60,13 @@ CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' \
   cargo +1.88.0 build --locked -p loom-runtime
 cargo +1.88.0 build --locked -p loom-cli
 runtime_bundle_root="$(mktemp -d)/runtime"
-target/debug/loomc runtime pack \
+target/debug/loom runtime pack \
   --archive target/debug/libloom_runtime.a \
   --output "$runtime_bundle_root"
 export LOOM_RUNTIME_BUNDLE="$runtime_bundle_root"
 cargo +1.88.0 test --locked --workspace --all-targets
-target/debug/loomc --no-cache test library/std/tests
-target/debug/loomc --backend interpreter --no-cache test library/std/tests
+target/debug/loom --no-cache test library/std/tests
+target/debug/loom --backend interpreter --no-cache test library/std/tests
 ```
 
 Do not weaken a lint, verifier, contract, overflow check, cleanup rule, or test
@@ -80,11 +80,11 @@ when changing observable semantics:
 
 ```sh
 for fixture in constraints-contracts concepts-polymorphism async-resources; do
-    target/debug/loomc --no-cache check "examples/$fixture"
-    target/debug/loomc --no-cache test "examples/$fixture"
-    target/debug/loomc --no-cache run "examples/$fixture"
-    target/debug/loomc --backend interpreter --no-cache test "examples/$fixture"
-    target/debug/loomc --backend interpreter --no-cache run "examples/$fixture"
+    target/debug/loom --no-cache check "examples/$fixture"
+    target/debug/loom --no-cache test "examples/$fixture"
+    target/debug/loom --no-cache run "examples/$fixture"
+    target/debug/loom --backend interpreter --no-cache test "examples/$fixture"
+    target/debug/loom --backend interpreter --no-cache run "examples/$fixture"
 done
 ```
 

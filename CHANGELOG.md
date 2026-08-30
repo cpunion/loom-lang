@@ -36,7 +36,7 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   Text, Bytes, Lists, TextMaps, dynamic concepts, Tasks, and typed async I/O.
   Resource close is a normal LCIR instruction, and typed I/O coroutine frames
   contain exact `Result` layouts rather than a universal runtime value.
-- `loomc check`, `build`, `test`, `run`, `fmt`, package, cache, runtime-bundle,
+- `loom check`, `build`, `test`, `run`, `fmt`, package, cache, runtime-bundle,
   and artifact workflows. Persistent inputs are bounded, version-exact, and
   rejected rather than upgraded when their current identity does not match.
 - Compiler-distributed `std` source modules compiled through the ordinary

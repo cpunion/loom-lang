@@ -64,8 +64,8 @@ report I/O failures because those commands were requested directly.
 ## Inspecting and pruning
 
 ```sh
-loomc cache stat .
-loomc cache prune .
+loom cache stat .
+loom cache prune .
 ```
 
 `cache stat` reports schema version, reference and blob counts, bytes, invalid

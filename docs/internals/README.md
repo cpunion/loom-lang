@@ -23,7 +23,7 @@ The workspace is split into narrow crates:
 | `loom-runtime` | Side-by-side universal/typed moving GC, values, cleanup support, scheduler, reactor, and I/O workers. |
 | `loom-codegen-llvm` | Native layouts, checked-MIR and checked-LCIR object emission, linking, and runtime bundles. |
 | `loom-driver` | Projects, resolution, source snapshots, diagnostics, and persistent cache. |
-| `loom-cli` | `loomc` host boundary and process execution. |
+| `loom-cli` | `loom` host boundary and process execution. |
 | `loom-lsp` | Language-server integration over driver snapshots. |
 | `loom-quality` | Controlled end-to-end evidence gates. |
 | `loom-benchmark` | Cross-language microbenchmark runner. |

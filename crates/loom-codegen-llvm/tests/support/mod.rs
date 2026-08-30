@@ -104,7 +104,7 @@ fn test_runtime() -> &'static TestRuntime {
                 || {
                     panic!(
                         "native LLVM tests require LOOM_TEST_RUNTIME_BUNDLE or \
-                     LOOM_RUNTIME_BUNDLE; prepare one with `loomc runtime pack`"
+                     LOOM_RUNTIME_BUNDLE; prepare one with `loom runtime pack`"
                     )
                 },
                 PathBuf::from,

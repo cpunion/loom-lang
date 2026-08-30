@@ -64,7 +64,7 @@ Confirm that LLVM 19 is selected before compiling:
 ## Build from source
 
 Clone the repository, build the runtime archive with the portable CPU policy,
-build the tools, and pack the runtime beside `loomc`:
+build the tools, and pack the runtime beside `loom`:
 
 ```sh
 git clone https://github.com/cpunion/loom-lang.git
@@ -72,26 +72,26 @@ cd loom-lang
 CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' \
   cargo +1.88.0 build --locked --release -p loom-runtime
 cargo +1.88.0 build --locked --release -p loom-cli -p loom-lsp
-target/release/loomc runtime pack \
+target/release/loom runtime pack \
   --archive target/release/libloom_runtime.a \
   --output target/release/runtime
 ```
 
 The binaries are written to:
 
-- `target/release/loomc`
+- `target/release/loom`
 - `target/release/loom-lsp`
 - `target/release/runtime/loom-runtime-bundle.json` and its runtime archive
 
 Verify the compiler:
 
 ```sh
-target/release/loomc --version
-target/release/loomc check examples/constraints-contracts
+target/release/loom --version
+target/release/loom check examples/constraints-contracts
 ```
 
 Loom has no installer or shell-completion command yet. Keep the `runtime/`
-directory beside the resolved `loomc` executable, then add `target/release` to
+directory beside the resolved `loom` executable, then add `target/release` to
 your `PATH` or invoke the binaries by their explicit paths. If a deployment
 stores the bundle elsewhere, set `LOOM_RUNTIME_BUNDLE` or pass
 `--runtime-bundle`; the explicit option takes precedence.
@@ -118,7 +118,7 @@ linker and system SDK are installed. The interpreter backend can still exercise
 language semantics without a native runtime bundle or LLVM linking:
 
 ```sh
-target/release/loomc --backend interpreter test examples/constraints-contracts
+target/release/loom --backend interpreter test examples/constraints-contracts
 ```
 
 This is a diagnostic alternative, not the default production path.

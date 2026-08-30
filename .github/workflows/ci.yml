@@ -57,7 +57,7 @@ jobs:
           CARGO_ENCODED_RUSTFLAGS='-Ctarget-cpu=generic' cargo build --locked -p loom-runtime
           cargo build --locked -p loom-cli
           runtime_bundle="$PWD/target/runtime-sidecar-$GITHUB_JOB-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          target/debug/loomc runtime pack \
+          target/debug/loom runtime pack \
             --archive target/debug/libloom_runtime.a \
             --output "$runtime_bundle"
           echo "LOOM_RUNTIME_BUNDLE=$runtime_bundle" >> "$GITHUB_ENV"
@@ -67,5 +67,5 @@ jobs:
 
       - name: Test the standard library with both backends
         run: |
-          target/debug/loomc --no-cache test library/std/tests
-          target/debug/loomc --backend interpreter --no-cache test library/std/tests
+          target/debug/loom --no-cache test library/std/tests
+          target/debug/loom --backend interpreter --no-cache test library/std/tests

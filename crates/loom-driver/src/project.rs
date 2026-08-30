@@ -350,7 +350,7 @@ impl ProjectGraph {
             return Err(manifest_error(
                 &lock_path,
                 format!(
-                    "{LOCK_FILE} is missing or out of date; run `loomc resolve` before using --locked"
+                    "{LOCK_FILE} is missing or out of date; run `loom resolve` before using --locked"
                 ),
             ));
         }

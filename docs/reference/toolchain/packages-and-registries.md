@@ -31,7 +31,7 @@ codec = { git = "https://github.com/my-team/codec.git", branch = "loom-fix" }
 `branch`, `tag`, and the full-commit `rev` selector are mutually exclusive.
 With no selector, Loom uses the remote default `HEAD`. `loom.lock` records the
 selector and pins the resolved commit and source checksum, so normal builds do
-not follow a moving reference. `loomc resolve --update` refreshes it
+not follow a moving reference. `loom resolve --update` refreshes it
 deliberately.
 
 The repository URL is provenance, not nominal type identity. The checked-out
@@ -87,7 +87,7 @@ The current protocol schema is `1`:
   package bundle;
 - `PUT /v1/packages/{package}/versions/{version}` publishes that bundle.
 
-`loomc publish --registry public` publishes the root module and refuses a
+`loom publish --registry public` publishes the root module and refuses a
 bundle whose declared identity does not match the manifest. The registry
 protocol requires a server to reject replacement bytes for an existing package
 version; the current client does not perform a preflight existence check before

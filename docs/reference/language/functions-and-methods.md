@@ -172,7 +172,7 @@ A test has no parameters, receiver, or generic parameters. It returns `Unit` or
 `Result[Unit, E]`. Normal `Unit` or `Ok(Unit)` completion passes. An `Err`,
 contract fault, runtime fault, or execution defect fails the test. Tests use the
 same type checker, contracts, resource rules, and task rules as other code.
-Production commands exclude test files. `loomc test` includes test files from
+Production commands exclude test files. `loom test` includes test files from
 every package in the selected root module; dependency test files are neither
-loaded nor executed. There is no manifest test target and `loomc test` does not
+loaded nor executed. There is no manifest test target and `loom test` does not
 accept `--target`.

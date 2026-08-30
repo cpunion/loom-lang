@@ -7,7 +7,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "loomc"
+name = "loom"
 path = "src/main.rs"
 
 [dependencies]

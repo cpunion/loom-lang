@@ -17,7 +17,7 @@ remains the source of truth for which artifacts a tag actually provides.
 
 Each archive contains:
 
-- `loomc` and `loom-lsp`, or `loomc.exe`, `loom-lsp.exe`, and the pinned
+- `loom` and `loom-lsp`, or `loom.exe`, `loom-lsp.exe`, and the pinned
   `LLVM-C.dll` compiler dependency on Windows;
 - `LLVM-LICENSE.txt` beside the redistributed DLL in the Windows archive;
 - the repository README, license, changelog, roadmap, and community policy
@@ -36,7 +36,7 @@ For each archive platform, the workflow:
    bootstrap and verified `LLVM-C.dll` import pair on Windows;
 2. separately builds `loom-runtime` with the generic CPU policy;
 3. builds `loom-cli` and `loom-lsp` in release mode with `--locked`;
-4. packs the explicit runtime archive into `runtime/` beside `loomc`;
+4. packs the explicit runtime archive into `runtime/` beside `loom`;
 5. runs the three semantic example check/build/test/run loops on LLVM and interpreter
    backends, including execution of each emitted artifact;
 6. runs the C3 check/build/test/run loop on both backends, including both
@@ -85,7 +85,7 @@ repository's maintainer policy. After the workflow succeeds:
 1. download every archive and checksum actually listed by the release;
 2. verify each SHA-256 independently;
 3. inspect the archive file list;
-4. run `loomc --version` and `loomc --help`;
+4. run `loom --version` and `loom --help`;
 5. use the included adjacent runtime bundle in a native smoke build;
 6. confirm the release page lists exactly the platforms produced and verified
    by that workflow run.

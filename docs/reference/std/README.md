@@ -15,7 +15,7 @@ The standard library's public behavior is tested in Loom itself. From the
 repository root, run:
 
 ```sh
-loomc test library/std/tests
+loom test library/std/tests
 ```
 
 These tests use the same compiler and runtime path as application tests. Rust

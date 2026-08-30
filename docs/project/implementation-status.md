@@ -44,7 +44,7 @@ implementation remains.
 
 The Windows release job installs LLVM 19.1.7 and Rust 1.88, builds the compiler
 and runtime, and runs representative source, standard-library, and controlled
-quality gates. It is configured to stage `loomc.exe`, `loom-lsp.exe`, the
+quality gates. It is configured to stage `loom.exe`, `loom-lsp.exe`, the
 compiler's `LLVM-C.dll`, and `loom_runtime.lib`, execute Core, C3,
 standard-library, and adjacent-runtime gates, and hash a `.zip`.
 This configuration becomes Windows toolchain and archive evidence only after

@@ -5,7 +5,7 @@ Use these terms consistently in code, diagnostics, and documentation.
 | Term | Meaning |
 | --- | --- |
 | Loom | The language and project. Use `loom-lang` for the repository only when disambiguation is needed. |
-| `loomc` | The compiler command-line driver. |
+| `loom` | The user-facing project and toolchain command. |
 | Toolchain version | The Cargo/package version of compiler tools, currently `0.1.0`. |
 | Language version | The source semantic version selected by `language` in `loom.toml`, currently `0.3`. |
 | Manifest schema | The syntax/data version of `loom.toml`, independent of language version. |

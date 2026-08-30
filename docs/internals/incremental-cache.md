@@ -3,7 +3,7 @@
 Loom has two complementary forms of reuse:
 
 - in-process query reuse inside a long-lived `AnalysisHost`;
-- a persistent content-addressed compiler cache shared by separate `loomc`
+- a persistent content-addressed compiler cache shared by separate `loom`
   processes.
 
 Both are correctness-preserving optimizations. Any incompatible or invalid

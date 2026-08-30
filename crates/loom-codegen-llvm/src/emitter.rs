@@ -480,7 +480,7 @@ impl<'ctx> DebugState<'ctx> {
             DWARFSourceLanguage::C,
             primary,
             ".",
-            concat!("loomc ", env!("CARGO_PKG_VERSION")),
+            concat!("loom ", env!("CARGO_PKG_VERSION")),
             true,
             "",
             0,
