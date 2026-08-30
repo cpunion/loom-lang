@@ -96,7 +96,16 @@ available as a prelude type. The compiler records its exact source identity
 because typed I/O constructs that enum directly, but its variants use ordinary
 source definitions rather than builtin constructors.
 
-The current `File`, `Socket`, and `IoError` values and resource methods remain
+`IoError` is an ordinary empty record declaration in `std.io`; its public
+`kind` and `message` methods are ordinary source definitions over two
+exact-owner private access primitives. The exact canonical record identity is
+representation-backed during MIR lowering with `kind IoErrorKind` and `message
+Text` fields. This hidden layout is unavailable to ordinary record
+construction, field projection, or equality, and an application declaration
+with the same name receives no authority. No opaque, ownership, or address
+syntax is added.
+
+The current `File` and `Socket` values and resource methods remain
 compiler-owned. Their native implementation is not a universal
 compiler builtin ABI: both the recoverable `Result` family and the faulting
 family must lower as typed LCIR, and the checked-MIR emitter rejects reachable

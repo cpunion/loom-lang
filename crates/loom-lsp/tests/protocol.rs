@@ -187,6 +187,18 @@ fn inspect(problem IoError, value Json) {
         .expect("source-backed std.json.parse_json hover markdown");
     assert!(parser_hover.contains("module `std.json`"), "{parser_hover}");
 
+    let io_error_hover = responses
+        .iter()
+        .find(|message| message.get("id") == Some(&json!(5)))
+        .expect("missing source-backed std.io.IoError hover response")
+        .pointer("/result/contents/value")
+        .and_then(Value::as_str)
+        .expect("source-backed std.io.IoError hover markdown");
+    assert!(
+        io_error_hover.contains("module `std.io`"),
+        "{io_error_hover}"
+    );
+
     let logging_hover = responses
         .iter()
         .find(|message| message.get("id") == Some(&json!(6)))
@@ -251,6 +263,10 @@ fn inspect(problem IoError, value Json) {
         "parse_json must come from the semantic source index"
     );
     for (name, kind, module) in [
+        ("IoError", "record", "std.io"),
+        ("IoErrorKind", "enum", "std.io"),
+        ("kind", "method", "std.io"),
+        ("message", "method", "std.io"),
         ("LogLevel", "enum", "std.log"),
         ("write", "function", "std.log"),
         ("try_open_read_path", "function", "std.file"),

@@ -24,6 +24,8 @@ pub(crate) enum CompilerStdPrimitive {
     FileCreate,
     FileTryOpenRead,
     FileTryCreate,
+    IoErrorKind,
+    IoErrorMessage,
     IoWriteStdout,
     LogWrite,
     SocketConnect,
@@ -46,6 +48,8 @@ impl CompilerStdPrimitive {
             Self::FileCreate => "__create",
             Self::FileTryOpenRead => "__try_open_read",
             Self::FileTryCreate => "__try_create",
+            Self::IoErrorKind => "__error_kind",
+            Self::IoErrorMessage => "__error_message",
             Self::IoWriteStdout => "__write_stdout",
             Self::LogWrite => "__write",
             Self::SocketConnect => "__connect",
@@ -92,6 +96,8 @@ pub(crate) fn resolve_import(
         (FILE_MODULE, "file", "__create") => Some(CompilerStdPrimitive::FileCreate),
         (FILE_MODULE, "file", "__try_open_read") => Some(CompilerStdPrimitive::FileTryOpenRead),
         (FILE_MODULE, "file", "__try_create") => Some(CompilerStdPrimitive::FileTryCreate),
+        (IO_MODULE, "io", "__error_kind") => Some(CompilerStdPrimitive::IoErrorKind),
+        (IO_MODULE, "io", "__error_message") => Some(CompilerStdPrimitive::IoErrorMessage),
         (IO_MODULE, "io", "__write_stdout") => Some(CompilerStdPrimitive::IoWriteStdout),
         (LOG_MODULE, "log", "__write") => Some(CompilerStdPrimitive::LogWrite),
         (NET_MODULE, "net", "__connect") => Some(CompilerStdPrimitive::SocketConnect),
@@ -217,6 +223,14 @@ mod tests {
             Some(CompilerStdPrimitive::FloatToInt)
         );
         assert_eq!(
+            resolve_import(&program, io_owner, &path(&["std", "io", "__error_kind"]),),
+            Some(CompilerStdPrimitive::IoErrorKind)
+        );
+        assert_eq!(
+            resolve_import(&program, io_owner, &path(&["std", "io", "__error_message"]),),
+            Some(CompilerStdPrimitive::IoErrorMessage)
+        );
+        assert_eq!(
             resolve_import(&program, io_owner, &path(&["std", "io", "__write_stdout"]),),
             Some(CompilerStdPrimitive::IoWriteStdout)
         );
@@ -277,6 +291,14 @@ mod tests {
             (io_owner, path(&["std", "process", "__argument_count"])),
             (io_owner, path(&["std.io", "__write_stdout"])),
             (io_owner, path(&["std", "io", "write"])),
+            (owner, path(&["std", "io", "__error_kind"])),
+            (io_owner, path(&["std.io", "__error_kind"])),
+            (io_owner, path(&["std", "io", "error_kind"])),
+            (io_owner, path(&["std", "io", "__error_kind", "extra"])),
+            (owner, path(&["std", "io", "__error_message"])),
+            (io_owner, path(&["std.io", "__error_message"])),
+            (io_owner, path(&["std", "io", "error_message"])),
+            (io_owner, path(&["std", "io", "__error_message", "extra"])),
             (owner, path(&["std", "log", "__write"])),
             (log_owner, path(&["std.log", "__write"])),
             (log_owner, path(&["std", "log", "write"])),

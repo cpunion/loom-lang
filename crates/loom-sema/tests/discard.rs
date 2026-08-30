@@ -104,11 +104,12 @@ fn direct(file File) {
     discard file
 }
 
-fn wrapped(value Result[Option[File], IoError]) {
+fn wrapped(value Result[Option[File], Text]) {
     discard value
 }
 ",
     );
+    assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
     assert_eq!(
         diagnostics
             .iter()

@@ -201,7 +201,7 @@ root merely because storage still exists.
 The interpreted MIR envelope currently uses:
 
 - format `loom.interpreted-mir`;
-- artifact version `37`;
+- artifact version `38`;
 - Loom language version `0.3`.
 
 Generic compiler-cache envelopes carry an explicit null `entry`. Executable

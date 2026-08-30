@@ -1335,6 +1335,14 @@ impl<'program> Validator<'program> {
                 );
             }
         }
+        if self.program.prelude.io_error.is_some() && self.program.prelude.io_error_kind.is_none() {
+            self.push(
+                MirValidationCode::InvalidTypeReference,
+                "prelude IoError requires the canonical IoErrorKind type",
+                Span::default(),
+                "prelude.io_error_kind",
+            );
+        }
         if let (Some(kind), Some(definition)) = (
             self.program.prelude.io_error_kind,
             self.program
@@ -5149,6 +5157,24 @@ impl<'program> Validator<'program> {
         None
     }
 
+    fn validate_protected_record_construction(
+        &mut self,
+        type_id: crate::TypeId,
+        span: Span,
+        path: &str,
+    ) {
+        let message = if self.program.prelude.path == Some(type_id) {
+            Some("prelude Path values may only be established by Path.from_text or Path.join")
+        } else if self.program.prelude.io_error == Some(type_id) {
+            Some("prelude IoError values may only be established by trusted I/O primitives")
+        } else {
+            None
+        };
+        if let Some(message) = message {
+            self.push(MirValidationCode::RecordShape, message, span, path);
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn validate_record_expr(
         &mut self,
@@ -5181,14 +5207,7 @@ impl<'program> Validator<'program> {
             );
             return None;
         };
-        if self.program.prelude.path == Some(type_id) {
-            self.push(
-                MirValidationCode::RecordShape,
-                "prelude Path values may only be established by Path.from_text or Path.join",
-                expression.span,
-                path,
-            );
-        }
+        self.validate_protected_record_construction(type_id, expression.span, path);
         self.validate_nominal_instantiation(
             function,
             type_id,
@@ -7993,6 +8012,15 @@ impl<'program> Validator<'program> {
                 self.push(
                     MirValidationCode::InvalidPlace,
                     "prelude Path storage is opaque; use the Path APIs",
+                    span,
+                    path,
+                );
+                return None;
+            }
+            if self.program.prelude.io_error == Some(type_id) {
+                self.push(
+                    MirValidationCode::InvalidPlace,
+                    "prelude IoError storage is protected; use the IoError accessors",
                     span,
                     path,
                 );

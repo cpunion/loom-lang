@@ -2349,6 +2349,187 @@ fn opaque_resource_prelude_shapes_are_checked() {
     validate_program(&program).expect("canonical opaque resource shape");
 }
 
+fn io_error_types() -> Vec<TypeDef> {
+    let kind = TypeId(0);
+    vec![
+        TypeDef {
+            id: kind,
+            name: "IoErrorKind".to_owned(),
+            span: span(),
+            type_parameters: 0,
+            kind: TypeDefKind::Enum {
+                variants: [
+                    "NotFound",
+                    "PermissionDenied",
+                    "AlreadyExists",
+                    "InvalidInput",
+                    "ConnectionRefused",
+                    "ConnectionReset",
+                    "TimedOut",
+                    "UnexpectedEof",
+                    "Closed",
+                    "Other",
+                ]
+                .into_iter()
+                .enumerate()
+                .map(|(index, name)| VariantDef {
+                    id: VariantId(u32::try_from(index).expect("I/O error kind index")),
+                    name: name.to_owned(),
+                    payload: Vec::new(),
+                    span: span(),
+                })
+                .collect(),
+            },
+        },
+        TypeDef {
+            id: TypeId(1),
+            name: "IoError".to_owned(),
+            span: span(),
+            type_parameters: 0,
+            kind: TypeDefKind::Record {
+                fields: vec![
+                    FieldDef {
+                        name: "kind".to_owned(),
+                        ty: Type::Nominal(kind, Vec::new()),
+                        span: span(),
+                    },
+                    FieldDef {
+                        name: "message".to_owned(),
+                        ty: Type::Text,
+                        span: span(),
+                    },
+                ],
+                invariant: None,
+            },
+        },
+    ]
+}
+
+#[test]
+fn prelude_io_error_allows_only_its_checked_accessors() {
+    let kind = TypeId(0);
+    let error = TypeId(1);
+    let error_ty = Type::Nominal(error, Vec::new());
+    let kind_ty = Type::Nominal(kind, Vec::new());
+    let accessor = |builtin, ty| {
+        expr(
+            ExprKind::Call {
+                target: CallTarget::Builtin(builtin),
+                type_arguments: Vec::new(),
+                arguments: vec![CallArgument::Value(copy(0, error_ty.clone()))],
+                witnesses: Vec::new(),
+            },
+            ty,
+        )
+    };
+    let program = Program {
+        types: io_error_types(),
+        functions: vec![function(
+            0,
+            vec![local(0, error_ty.clone(), false)],
+            Vec::new(),
+            Type::Text,
+            Block {
+                statements: vec![Statement {
+                    kind: StatementKind::Evaluate(accessor(
+                        loom_mir::Builtin::IoErrorKind,
+                        kind_ty,
+                    )),
+                    span: span(),
+                }],
+                tail: Some(Box::new(accessor(
+                    loom_mir::Builtin::IoErrorMessage,
+                    Type::Text,
+                ))),
+                span: span(),
+            },
+        )],
+        prelude: PreludeIds {
+            io_error: Some(error),
+            io_error_kind: Some(kind),
+            ..PreludeIds::default()
+        },
+        ..Program::default()
+    };
+
+    validate_program(&program).expect("IoError accessors are valid checked MIR observers");
+}
+
+#[test]
+fn prelude_io_error_cannot_be_forged_or_projected_in_checked_mir() {
+    let kind = TypeId(0);
+    let error = TypeId(1);
+    let kind_ty = Type::Nominal(kind, Vec::new());
+    let error_ty = Type::Nominal(error, Vec::new());
+    let forged = expr(
+        ExprKind::Record {
+            ty: error,
+            type_arguments: Vec::new(),
+            fields: vec![
+                expr(
+                    ExprKind::Variant {
+                        ty: kind,
+                        type_arguments: Vec::new(),
+                        variant: VariantId(9),
+                        payload: Vec::new(),
+                    },
+                    kind_ty.clone(),
+                ),
+                constant(Constant::Text("forged".to_owned()), Type::Text),
+            ],
+            construction: ConstructionMode::Plain,
+        },
+        error_ty.clone(),
+    );
+    let kind_projection = Place {
+        local: LocalId(0),
+        projection: vec![0],
+    };
+    let program = Program {
+        types: io_error_types(),
+        functions: vec![function(
+            0,
+            vec![local(0, error_ty, false)],
+            Vec::new(),
+            kind_ty.clone(),
+            Block {
+                statements: vec![Statement {
+                    kind: StatementKind::Evaluate(forged),
+                    span: span(),
+                }],
+                tail: Some(Box::new(copy_place(kind_projection, kind_ty))),
+                span: span(),
+            },
+        )],
+        prelude: PreludeIds {
+            io_error: Some(error),
+            io_error_kind: Some(kind),
+            ..PreludeIds::default()
+        },
+        ..Program::default()
+    };
+
+    let errors = validation_errors(&program);
+    for (code, message) in [
+        (
+            MirValidationCode::RecordShape,
+            "IoError values may only be established",
+        ),
+        (
+            MirValidationCode::InvalidPlace,
+            "IoError storage is protected",
+        ),
+    ] {
+        assert!(
+            errors
+                .as_slice()
+                .iter()
+                .any(|error| error.code == code && error.message.contains(message)),
+            "missing {code:?} `{message}`: {errors:#?}"
+        );
+    }
+}
+
 #[test]
 fn prelude_path_cannot_be_forged_or_projected_in_checked_mir() {
     let path = TypeId(0);
