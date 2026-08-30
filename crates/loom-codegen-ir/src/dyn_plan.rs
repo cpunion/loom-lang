@@ -424,7 +424,12 @@ mod tests {
         assert!(aggregates.supports_value_type(&container));
         assert!(aggregates.supports_value_type(&Type::List(Box::new(view.clone()))));
         let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
-        assert!(aggregates.finish().register(&mut builder).is_ok());
+        assert!(
+            aggregates
+                .finish()
+                .register(&mut builder, &BTreeSet::new())
+                .is_ok()
+        );
         assert!(builder.type_id(&concrete).is_some());
         assert!(builder.type_id(&container).is_some());
         assert!(

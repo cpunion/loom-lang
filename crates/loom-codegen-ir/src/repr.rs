@@ -142,7 +142,7 @@ pub enum Repr {
     /// One scheduler-owned structured Task handle. The pointee is stable and
     /// never belongs to the moving heap, so this representation is excluded
     /// from typed GC root maps. Values can be created only by `TaskCreate`,
-    /// `IoTaskCreate`, or a fixed-width `TaskJoin`.
+    /// `IoTaskCreate`, `TaskJoin`, or `TaskJoinList`.
     /// Ordinary handles are consumed by an async suspension terminator;
     /// terminal handles injected by `settled` or `race` are consumed by
     /// `TaskOutcomeTake` immediately after resumption.
@@ -511,11 +511,11 @@ impl RepresentationPlan {
         let mut visited = BTreeSet::new();
         let mut immortal = false;
         let mut managed = false;
-        while let Some(value) = pending.pop() {
-            if !visited.insert(value) {
+        while let Some(value_id) = pending.pop() {
+            if !visited.insert(value_id) {
                 continue;
             }
-            let value = self.value_type(value)?;
+            let value = self.value_type(value_id)?;
             match self.repr(value.repr())? {
                 Repr::ImmortalText => immortal = true,
                 Repr::ManagedPointer => managed = true,

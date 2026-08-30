@@ -28,7 +28,7 @@ writers for unreleased formats. Development history belongs in
 | Interpreted artifact writer | `loom-interpreted-artifact-writer-v3` |
 | Portable-library final-cache layer | `portable-library-artifact-v3` |
 | LCIR textual dump | `lcir 45` |
-| LCIR artifact identity | schema `47` |
+| LCIR artifact identity | schema `48` |
 | LCIR artifact route | `typed-lcir-whole-artifact` |
 | LCIR native-object domain | `loom-lcir-native-object-v43` |
 | Checked-MIR native-object domain | `loom-checked-mir-native-object-v3` |
@@ -66,6 +66,11 @@ the former universal File, Socket, and close entry points and their fixed
 source nominal IDs. The existing `typed-io-v1` request/outcome wire and
 `typed-resource-v1` close boundary did not change. An older compiler or runtime
 bundle is therefore rejected instead of crossing the removed symbol boundary.
+
+LCIR artifact identity schema 48 records the exact runtime-width
+`TaskJoinList` opcode and its mode-specific typed result contract. Older
+identities are not reused for artifacts whose checked LCIR meaning predates
+the affine `List[Task[T]]` carrier.
 
 LCIR dump 45, artifact identity schema 47, and native-object domain v43 record
 the explicit recoverable-versus-faulting error mode on `IoTaskCreate`. Existing

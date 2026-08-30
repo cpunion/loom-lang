@@ -542,6 +542,9 @@ fn write_instruction(
             write_arguments(output, tasks)?;
             write!(output, ")")
         }
+        InstructionKind::TaskJoinList { mode, tasks } => {
+            write!(output, "task.join_list.{} %{tasks}", await_mode_name(*mode))
+        }
         InstructionKind::TaskOutcomeTake { task } => {
             write!(output, "task.outcome_take %{task}")
         }

@@ -1083,7 +1083,7 @@ fn static_heterogeneous_task_all_uses_direct_and_first_class_checked_shapes() {
     clippy::too_many_lines,
     reason = "one route-selection matrix pins fixed, generic, stored, dynamic, and unsupported join modes together"
 )]
-fn immediately_awaited_fixed_task_any_and_stored_any_lower_but_dynamic_lists_fall_back() {
+fn immediately_awaited_fixed_and_dynamic_task_joins_keep_distinct_lcir_shapes() {
     let fixed = r"async fn child(value Int) Int { value }
 
 pub async fn main() {
@@ -1174,15 +1174,29 @@ pub async fn main() {
     discard Task.all(tasks).await
 }
 ";
-    let LoweringOutcome::Unsupported(dynamic) = lower_run(dynamic) else {
-        panic!("dynamic List Task.all must remain one whole-artifact fallback")
+    let LoweringOutcome::Complete(dynamic) = lower_run(dynamic) else {
+        panic!("dynamic List Task.all must lower through typed LCIR")
     };
-    assert!(
-        dynamic
-            .items()
-            .iter()
-            .any(|item| { item.feature() == UnsupportedFeature::TaskOperation })
-    );
+    let main = dynamic
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("main instance");
+    assert!(main.instructions().iter().any(|instruction| matches!(
+        instruction.kind(),
+        InstructionKind::TaskJoinList {
+            mode: AwaitMode::All,
+            ..
+        }
+    )));
+    assert!(main.blocks().iter().any(|block| matches!(
+        block.terminator().map(loom_codegen_ir::Terminator::kind),
+        Some(TerminatorKind::AwaitTasks {
+            mode: AwaitMode::All,
+            tasks,
+            ..
+        }) if tasks.len() == 1
+    )));
 
     let terminal = r#"async fn child(value Int) Int { value }
 async fn label() Text { "two" }
@@ -1413,37 +1427,99 @@ pub async fn main() {
 }
 
 #[test]
-fn empty_and_stored_task_list_joins_remain_whole_artifact_fallbacks() {
-    let empty = r"pub async fn main() {
-    discard Task.all(List[Task[Int]]()).await
-}
-";
-    let LoweringOutcome::Unsupported(empty) = lower_run(empty) else {
-        panic!("an empty Task List must not masquerade as a fixed runtime-length join")
-    };
-    assert!(empty.items().iter().any(|item| {
-        matches!(
-            item.feature(),
-            UnsupportedFeature::TaskOperation | UnsupportedFeature::Suspension
-        )
-    }));
-
-    let stored = r"async fn child(value Int) Int { value }
+fn empty_stored_and_computed_task_lists_lower_as_runtime_width_joins() {
+    let source = r"async fn child(value Int) Int { value }
 
 pub async fn main() {
-    let pending = Task.all([child(1), child(2)])
+    let stored = [child(1), child(2)]
+    let pending = Task.all(stored)
     discard pending.await
+
+    var computed = List[Task[Int]]()
+    computed.add(child(3))
+    computed.add(child(4))
+    let computedCount = computed.length()
+    discard computedCount
+    discard Task.any(computed).await
+
+    discard Task.all(List[Task[Int]]()).await
+    discard Task.any(List[Task[Int]]()).await
+    discard Task.settled(List[Task[Int]]()).await
+    discard Task.race(List[Task[Int]]()).await
 }
 ";
-    let LoweringOutcome::Unsupported(stored) = lower_run(stored) else {
-        panic!("a stored List join must remain a first-class dynamic-List fallback")
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("stored, computed, and empty Task Lists must lower through typed LCIR")
     };
-    assert!(
-        stored
-            .items()
-            .iter()
-            .any(|item| item.feature() == UnsupportedFeature::TaskOperation)
+    let main = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("main instance");
+    let joins = main
+        .instructions()
+        .iter()
+        .filter_map(|instruction| match instruction.kind() {
+            InstructionKind::TaskJoinList { mode, .. } => Some((
+                *mode,
+                instruction
+                    .results()
+                    .first()
+                    .and_then(|result| main.value(*result))
+                    .and_then(|result| artifact.representations().value_type(result.ty()))
+                    .map(loom_codegen_ir::ValueType::semantic)
+                    .cloned()
+                    .expect("dynamic join result type"),
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let outcome = artifact
+        .program()
+        .as_program()
+        .canonical_types()
+        .task_outcome
+        .expect("TaskOutcome identity");
+    let task_int = Type::Task(Box::new(Type::Int));
+    let task_int_list = Type::Task(Box::new(Type::List(Box::new(Type::Int))));
+    let outcome_int = Type::Nominal(outcome, vec![Type::Int]);
+    assert_eq!(
+        joins,
+        [
+            (AwaitMode::All, task_int_list.clone()),
+            (AwaitMode::Any, task_int.clone()),
+            (AwaitMode::All, task_int_list),
+            (AwaitMode::Any, task_int),
+            (
+                AwaitMode::Settled,
+                Type::Task(Box::new(Type::List(Box::new(outcome_int.clone())))),
+            ),
+            (AwaitMode::Race, Type::Task(Box::new(outcome_int))),
+        ]
     );
+    assert!(
+        main.instructions().iter().any(|instruction| matches!(
+            instruction.kind(),
+            InstructionKind::ListAppendUnique { .. }
+        ))
+    );
+    assert!(
+        main.instructions()
+            .iter()
+            .any(|instruction| matches!(instruction.kind(), InstructionKind::ListLength { .. }))
+    );
+    assert!(
+        main.coroutine()
+            .expect("main coroutine")
+            .suspensions()
+            .iter()
+            .all(|suspension| {
+                suspension.mode() == AwaitMode::All && suspension.awaited().len() == 1
+            })
+    );
+    let task_list = Type::List(Box::new(Type::Task(Box::new(Type::Int))));
+    assert!(artifact.representations().type_id(&task_list).is_some());
+    assert!(dump_program(artifact.program()).contains("task.join_list.settled"));
 }
 
 #[test]

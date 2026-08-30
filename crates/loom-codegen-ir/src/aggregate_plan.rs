@@ -723,6 +723,35 @@ impl<'program, 'plan> AggregatePlanner<'program, 'plan> {
         self.uses_text_aggregate_leaf
     }
 
+    /// Admits only the one managed collection shape whose elements are
+    /// scheduler-owned capabilities. Ordinary aggregate discovery continues
+    /// to reject Task handles at every other nesting position. The caller
+    /// separately proves that `T` is task-free and records the exact
+    /// `Task[T]` handle registration.
+    pub(crate) fn supports_task_list_type(&mut self, ty: &Type) -> bool {
+        let Some(ty) = self.dyn_concepts.physical_type(ty) else {
+            return false;
+        };
+        let Type::List(element) = &ty else {
+            return false;
+        };
+        let task = element.as_ref().clone();
+        let Type::Task(output) = &task else {
+            return false;
+        };
+        let output = output.as_ref().clone();
+        if !self.supports_managed_text || !self.supports_value_type(&output) {
+            return false;
+        }
+        if self.rejected_roots.contains(&ty) {
+            return false;
+        }
+        self.planned
+            .entry(ty)
+            .or_insert(AggregateShape::ManagedList(task));
+        true
+    }
+
     fn supports_nominal_schema(&mut self, id: TypeId) -> bool {
         if self.acyclic_nominals.contains(&id) {
             return true;
@@ -748,6 +777,9 @@ impl<'program, 'plan> AggregatePlanner<'program, 'plan> {
             return false;
         };
         let ty = &ty;
+        if matches!(ty, Type::List(element) if matches!(element.as_ref(), Type::Task(_))) {
+            return false;
+        }
         if is_direct_scalar(ty) {
             return true;
         }
@@ -774,6 +806,10 @@ impl<'program, 'plan> AggregatePlanner<'program, 'plan> {
         let mut uses_text_aggregate_leaf = false;
         let mut supported = true;
         while let Some(root) = semantic_roots.pop() {
+            if matches!(&root, Type::List(element) if matches!(element.as_ref(), Type::Task(_))) {
+                supported = false;
+                break;
+            }
             if is_direct_scalar(&root)
                 || self.planned.contains_key(&root)
                 || discovered.contains_key(&root)
@@ -953,6 +989,7 @@ impl AggregatePlan {
     pub(crate) fn register(
         self,
         builder: &mut ProgramBuilder,
+        task_handles: &BTreeSet<Type>,
     ) -> Result<(), AggregateRegistrationError> {
         let canonical_bytes = builder.canonical_types().bytes;
         let mut remaining_dependencies = BTreeMap::new();
@@ -970,6 +1007,7 @@ impl AggregatePlan {
             if let AggregateShape::ManagedList(element) = shape
                 && !is_direct_product_leaf(element, canonical_bytes)
                 && !self.entries.contains_key(element)
+                && !task_handles.contains(element)
             {
                 return Err(AggregateRegistrationError::Inconsistent(format!(
                     "managed List {semantic:?} has an unplanned element value type"
@@ -1199,7 +1237,7 @@ mod tests {
         );
         planner
             .finish()
-            .register(&mut builder)
+            .register(&mut builder, &BTreeSet::new())
             .unwrap_or_else(|_| panic!("register recursive List-broken plan"));
         assert!(builder.type_id(&node_type).is_some());
         assert!(builder.type_id(&list_type).is_some());
@@ -1335,7 +1373,7 @@ mod tests {
         let mut builder = ProgramBuilder::new(crate::TargetLayout::new(64).expect("target"));
         planner
             .finish()
-            .register(&mut builder)
+            .register(&mut builder, &BTreeSet::new())
             .unwrap_or_else(|_| panic!("nested Option plan must register"));
         assert!(builder.type_id(&outer).is_some());
     }
@@ -1461,7 +1499,7 @@ mod tests {
             .expect("register managed Text before products");
         planner
             .finish()
-            .register(&mut builder)
+            .register(&mut builder, &BTreeSet::new())
             .unwrap_or_else(|_| panic!("concrete generic values must register"));
         assert!(builder.type_id(&boxed_int).is_some());
         assert!(builder.type_id(&guarded_text).is_some());
