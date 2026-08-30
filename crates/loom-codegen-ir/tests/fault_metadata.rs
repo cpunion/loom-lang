@@ -149,7 +149,7 @@ fn canonical_fault_kinds_have_stable_ordered_dump_vocabulary() {
     let checked = builder.finish_checked().expect("canonical fault metadata");
     let first = dump_program(&checked);
     assert_eq!(first, dump_program(&checked));
-    assert!(first.starts_with("lcir 45\n"), "{first}");
+    assert!(first.starts_with("lcir 46\n"), "{first}");
     for expected in [
         "fault contract PreconditionFault category=precondition user_code=\"amount.positive\" message=\"contract `amount.positive` was not satisfied\" contract_span=file4:5..6 blame_span=file7:8..9",
         "fault contract PostconditionFault category=postcondition user_code=\"result.positive\" message=\"contract `result.positive` was not satisfied\" contract_span=file4:5..6 blame_span=file4:5..6",

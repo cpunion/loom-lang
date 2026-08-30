@@ -494,8 +494,9 @@ When closed-world analysis proves exactly one closed nongeneric witness for a
 dynamic concept, planning recursively replaces that View with the witness's
 concrete physical type. This admits the value in coroutine parameters, results,
 and nested product, sum, and suspension-frame shapes. A finite multi-witness
-dynamic View or an open dynamic View has no coroutine-frame representation in
-this slice.
+View keeps its exact one-pointer managed catalog representation in the same
+positions, including inside Lists. Open, generic, or prerequisite-dependent
+Views have no coroutine-frame representation.
 
 An immediately awaited fixed tuple or fixed Task-policy call evaluates its
 children left to right and lowers directly to one multi-child `AwaitTasks`, with
@@ -534,6 +535,16 @@ construct their List result after resume. The current frontend specializes
 these standard-library API calls without adding language syntax; the accepted
 end state reaches the same private substrate from ordinary source definitions.
 
+A stored, computed, empty, or runtime-sized homogeneous `List[Task[T]]`
+instead lowers to `TaskJoinList`. The instruction consumes the affine List
+carrier and produces the exact mode-specific Task type. Its generated
+composite frame roots the source List while it is needed and an exact result
+List while `all` or `settled` is being assembled; Task handles in the List are
+stable scheduler pointers, not moving-GC edges. Nonempty composites adopt the
+List's contiguous child row directly. Empty `all` and `settled` publish an
+ordinary completed composite without adoption, while empty `any` and `race`
+publish canonical `EmptyTaskJoin` at the policy expression.
+
 Successful exact result consumption transfers the completed child's
 resource-ledger entries, which back any published File or Socket capability
 tokens, to the active owner Task before child retirement. A direct take from the
@@ -568,13 +579,13 @@ receives exact child types and explicit control flow without acquiring public
 Task policy operators.
 
 The remaining fallback boundary includes explicit mutable coroutine
-parameters, finite-catalog or open dynamic-concept frame values, raw readiness,
-empty/stored/computed/runtime-sized Task List joins. Concrete closed `List[T]`
-and compiler-private `TextMap[V]` values are canonical one-pointer frame
-carriers in parameters, results, nested products, and suspension-live rows.
-Fixed argument joins are admitted both as first-class Tasks and when consumed
-immediately by `.await`; a sole List literal is admitted only for immediate
-consumption. `any` and `race` require one exact output type.
+parameters, open or prerequisite-dependent dynamic-concept frame values, raw readiness,
+and unsupported protected or managed projected operations. Concrete closed
+`List[T]` and compiler-private `TextMap[V]` values are canonical one-pointer
+frame carriers in parameters, results, nested products, and suspension-live
+rows. Fixed argument joins and homogeneous runtime-width List joins are
+admitted as first-class Tasks and may be consumed later by `.await`; `any` and
+`race` require one exact output type.
 
 Managed Text concat calls
 `loom_runtime_text_concat_typed_v1(left, right, output)`. The helper stages and

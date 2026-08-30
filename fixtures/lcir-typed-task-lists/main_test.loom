@@ -1,0 +1,3 @@
+test async fn runtimeWidthTaskListsUseTypedComposites() {
+    exerciseDynamicTaskLists().await
+}

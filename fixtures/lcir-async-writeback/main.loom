@@ -20,6 +20,11 @@ record OwnedCounter {
     label Text
 }
 
+record OwnedOffset {
+    value Int
+    label Text
+}
+
 record ManagedLabel {
     value Text
 }
@@ -60,6 +65,17 @@ impl Advance for Offset {
 impl Source for OwnedCounter {
     method next(mut self) Int {
         self.value = self.value + 1
+        self.value
+    }
+
+    method label(self) Text {
+        self.label
+    }
+}
+
+impl Source for OwnedOffset {
+    method next(mut self) Int {
+        self.value = self.value + 2
         self.value
     }
 
@@ -132,6 +148,12 @@ async fn verifyWriteback() {
     assert observedLabel == "owned source"
     assert original.value == 0
     assert original.label == "owned source"
+
+    let alternate = OwnedOffset { value = -1, label = "alternate".concat(" source") }
+    let alternateLabel = takeOwnedSource(alternate).await
+    assert alternateLabel == "alternate source"
+    assert alternate.value == -1
+    assert alternate.label == "alternate source"
 
     var returned = makeOwnedSource().await
     let returnedValue = returned.next()

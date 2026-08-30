@@ -83,9 +83,11 @@ mutable dispatch updates that frame-local copy, leaving the value used to create
 the Task unchanged. When a reachable dynamic concept has exactly one closed
 nongeneric witness, the planner erases the View recursively to its concrete
 representation in coroutine parameters, results, products, sums, and live
-suspension rows. Finite or open dynamic Views
-do not acquire a coroutine-frame representation; here finite means a catalog
-with multiple exact witnesses rather than the erased unique-witness case.
+suspension rows. A finite catalog with multiple exact witnesses uses its one
+managed dynamic pointer in the same positions; exact frame and collection
+descriptors trace that pointer and its candidate payload. Open, generic, or
+prerequisite-dependent dynamic Views do not acquire a coroutine-frame
+representation.
 
 Lexical `defer` and admitted `scoped` resources may remain active across
 suspension. The collision-free carrier gives managed sums one static union of
@@ -102,10 +104,9 @@ converts either state into a source `Result`. Task handles may be live only as
 suspension bookkeeping.
 
 For reachable graphs with no LCIR-only primitive, selected async functions with
-explicit mutable coroutine parameters, raw readiness, dynamically sized or
-computed-List Task joins, and finite-catalog or open dynamic-concept frame
-values still select the complete checked-MIR route. Async roots with `requires`
-use the same typed state-zero check as child Tasks.
+explicit mutable coroutine parameters, raw readiness, and finite-catalog or
+open dynamic-concept frame values still select the complete checked-MIR route.
+Async roots with `requires` use the same typed state-zero check as child Tasks.
 
 ## Runtime and executor
 
@@ -307,8 +308,10 @@ the complete current identity even when exported function shapes agree.
 A sole nonempty List literal is also a closed static row. Lowering consumes its
 elements directly without allocating the input List. `all` and `settled`
 construct the requested output List after resume; `any` and `race` retain their
-scalar result. Empty, stored, computed, and runtime-sized Lists stay outside
-this fixed-row boundary.
+scalar result. Other homogeneous Lists use an exact runtime-width composite:
+the source carrier owns the child row, the generated callback iterates the
+runtime count, and the result is still the policy's ordinary concrete type.
+No second executor, universal value, or runtime type dispatch is introduced.
 
 ## Typed File and Socket tasks
 
@@ -392,13 +395,12 @@ cancelled, losing, and unconsumed tasks do not transfer completed-result
 resources. Their terminal cleanup or typed result disposal releases remaining
 built-in owners before retired-task memory reclamation.
 
-The complete runtime and checked-MIR compiler route implement all of those source
-forms. The typed-LCIR route admits nonempty fixed-argument forms of all four
-APIs, both immediately awaited and stored as first-class composite Tasks, plus
-a sole nonempty List literal consumed immediately. `all` and `settled` may
-preserve heterogeneous fixed outputs; `any` and `race` require one exact output
-type. Empty, stored, computed, or runtime-sized List joins remain atomic
-whole-artifact fallback.
+The typed-LCIR route implements fixed-argument and homogeneous List forms of all
+four APIs, both immediately awaited and stored as first-class composite Tasks.
+`all` and `settled` may preserve heterogeneous fixed outputs; `any` and `race`
+require one exact output type. Runtime-width List joins retain exact result
+layout and scheduler ownership rather than entering the checked-MIR universal
+join path.
 
 ## Current limits
 

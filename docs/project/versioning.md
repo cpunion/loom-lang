@@ -27,7 +27,7 @@ writers for unreleased formats. Development history belongs in
 | Interpreted final-cache layer | `final-artifact-v3` |
 | Interpreted artifact writer | `loom-interpreted-artifact-writer-v3` |
 | Portable-library final-cache layer | `portable-library-artifact-v3` |
-| LCIR textual dump | `lcir 45` |
+| LCIR textual dump | `lcir 46` |
 | LCIR artifact identity | schema `48` |
 | LCIR artifact route | `typed-lcir-whole-artifact` |
 | LCIR native-object domain | `loom-lcir-native-object-v43` |
@@ -71,10 +71,6 @@ LCIR artifact identity schema 48 records the exact runtime-width
 `TaskJoinList` opcode and its mode-specific typed result contract. Older
 identities are not reused for artifacts whose checked LCIR meaning predates
 the affine `List[Task[T]]` carrier.
-
-LCIR dump 45, artifact identity schema 47, and native-object domain v43 record
-the explicit recoverable-versus-faulting error mode on `IoTaskCreate`. Existing
-dumps, identities, and cached route-specific objects are not reinterpreted.
 
 Interpreted MIR version 39 and persistent cache schema 15 encode `IoError`,
 `File`, and `Socket` by their exact ordinary standard-library source identities.

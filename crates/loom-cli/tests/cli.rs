@@ -1482,6 +1482,117 @@ fn typed_task_outcomes_close_real_check_build_test_and_run_commands() {
 }
 
 #[test]
+fn typed_runtime_width_task_lists_close_real_commands_and_faults() {
+    let project = fixture_project!("lcir-typed-task-lists");
+
+    let check = loom()
+        .args(["--no-cache", "check"])
+        .arg(&project.0)
+        .output()
+        .expect("check runtime-width Task lists through the production CLI");
+    assert_eq!(check.status.code(), Some(0), "{check:?}");
+
+    let object_path = project.0.join("typed-task-lists.o");
+    let build = loom()
+        .args(["--no-cache", "build", "--emit", "object", "--output"])
+        .arg(&object_path)
+        .arg(&project.0)
+        .output()
+        .expect("build runtime-width Task lists through the production CLI");
+    assert_eq!(build.status.code(), Some(0), "{build:?}");
+    let object = fs::read(object_path).expect("read runtime-width Task-list object");
+    for required in [
+        b"loom.lcir.fn".as_slice(),
+        b"loom_gc_typed_repeated_alloc_v1",
+        b"loom_typed_task_publish_v1",
+        b"loom_typed_task_publish_adopting_v1",
+        b"loom_task_prepare_join",
+        b"loom_task_add_join_child",
+        b"loom_task_suspend_join",
+        b"loom_task_join_step",
+        b"loom_task_join_winner",
+        b"loom_typed_task_take_result_v1",
+        b"loom_typed_task_take_outcome_v1",
+    ] {
+        assert!(
+            contains_bytes(&object, required),
+            "runtime-width Task-list object omitted `{}`",
+            String::from_utf8_lossy(required)
+        );
+    }
+    for forbidden in [
+        b"loom.fn.".as_slice(),
+        b"loom.Value",
+        b"ValueNode",
+        b"loom_join_create",
+        b"loom_join_add_task",
+        b"loom_task_write_join_result",
+        b"loom_task_join_result",
+    ] {
+        assert!(
+            !contains_bytes(&object, forbidden),
+            "runtime-width Task-list object exposed `{}`",
+            String::from_utf8_lossy(forbidden)
+        );
+    }
+
+    let tests = loom()
+        .args(["--no-cache", "test"])
+        .arg(&project.0)
+        .output()
+        .expect("test runtime-width Task lists through the production CLI");
+    assert_eq!(tests.status.code(), Some(0), "{tests:?}");
+    assert!(
+        String::from_utf8_lossy(&tests.stdout)
+            .contains("passed standalone.runtimeWidthTaskListsUseTypedComposites"),
+        "{tests:?}"
+    );
+
+    let run = loom()
+        .args(["--no-cache", "run"])
+        .arg(&project.0)
+        .output()
+        .expect("run runtime-width Task lists through the production CLI");
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    assert_eq!(run.stdout, b"Unit\n");
+
+    for (entry, code, message) in [
+        (
+            "emptyAny",
+            "EmptyTaskJoin",
+            "Task.any and Task.race require a non-empty task list",
+        ),
+        (
+            "emptyRace",
+            "EmptyTaskJoin",
+            "Task.any and Task.race require a non-empty task list",
+        ),
+        (
+            "failedAny",
+            "TaskAnyFailed",
+            "Task.any completed without a successful task",
+        ),
+    ] {
+        let failure = loom()
+            .args(["--json", "--no-cache", "run", "--entry", entry])
+            .arg(&project.0)
+            .output()
+            .expect("run a runtime-width Task-list fault entry");
+        assert_eq!(failure.status.code(), Some(1), "{failure:?}");
+        let record = json_record(&failure.stdout, "run_failure")
+            .unwrap_or_else(|| panic!("{entry} omitted its structured run failure: {failure:?}"));
+        assert_eq!(
+            record.pointer("/failure/fault/code"),
+            Some(&serde_json::json!(code))
+        );
+        assert_eq!(
+            record.pointer("/failure/fault/message"),
+            Some(&serde_json::json!(message))
+        );
+    }
+}
+
+#[test]
 fn typed_async_cleanup_closes_real_check_build_test_and_run_commands() {
     let project = fixture_project!("lcir-async-cleanup");
 

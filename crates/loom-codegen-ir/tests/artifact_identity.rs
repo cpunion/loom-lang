@@ -528,7 +528,7 @@ fn identity_is_brand_independent_and_repeatable() {
         "loom-checked-artifact-identity\nschema={ARTIFACT_IDENTITY_SCHEMA}\nroute={ARTIFACT_IDENTITY_ROUTE}\n"
     )));
     assert!(
-        identity.contains("payload=checked-lcir-with-origins\nlcir 45\n"),
+        identity.contains("payload=checked-lcir-with-origins\nlcir 46\n"),
         "artifact schema 48 changes checked meaning with the LCIR text wire: {identity}"
     );
     assert!(!identity.contains("ProgramBrand"));

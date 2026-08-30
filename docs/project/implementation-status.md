@@ -90,8 +90,9 @@ The following repository fixtures are run through real compiler stages:
 | `fixtures/lcir-typed-task-all` | direct multi-child awaits and stored exact heterogeneous `Task.all`, one-field and mixed Text/Int/Unit tuples, shared static-shape descriptors, atomic child adoption, moving-GC survival, interpreter/typed execution plus checked-MIR/typed child-fault and sibling-cancellation comparison, release IR, Linux/MSVC objects, and real `check/build/test/run` commands |
 | `fixtures/lcir-typed-task-any` | nonempty immediate and stored fixed homogeneous `Task.any`, exact first-class composite results, deterministic nonzero winner selection, managed Text roots, repeated loser cancellation and retirement, typed-object surface inspection, and real `check/build/test/run` commands |
 | `fixtures/lcir-typed-task-outcomes` | immediate and stored fixed plus sole-List-literal `Task.settled`/`Task.race`, exact first-class composite outcomes, canonical completed/faulted/cancelled values, fault Text roots across later capture safepoints, deterministic nonzero race winners, loser cleanup, typed-LCIR main/test native execution, and real `check/build/test/run` commands |
+| `fixtures/lcir-typed-task-lists` | empty, stored, computed, and runtime-width homogeneous `List[Task[T]]` policies through exact `TaskJoinList` composites; affine carrier transfer, borrowed length, direct atomic child adoption, source/result moving-GC roots, canonical empty/failed selection faults, and real `check/build/test/run` commands without universal join helpers |
 | `fixtures/lcir-async-cleanup` | typed-LCIR `defer` and static-concept `scoped` cleanup across suspension, exact normal/fault/cancel live rows, LIFO normal cleanup, child-fault propagation, sibling cancellation, source-callback cancellation dispatch, interpreter/checked-MIR/typed differentials, Linux/MSVC objects, and real `check/build/test/run` commands |
-| `fixtures/lcir-async-writeback` | synchronous functional inout calls inside typed coroutines, managed-Text writeback across moving collection, normal/fault/cancellation cleanup, fault writeback before lexical cleanup, by-value dynamic View parameters under mutable dispatch, recursive unique-witness `dyn` erasure across async parameters, results, and nested frames, multi-witness finite dynamic calls outside suspension rows, interpreter/typed differentials, Linux/MSVC objects, and real `check/build/test/run` commands |
+| `fixtures/lcir-async-writeback` | synchronous functional inout calls inside typed coroutines, managed-Text writeback across moving collection, normal/fault/cancellation cleanup, fault writeback before lexical cleanup, by-value dynamic View parameters under mutable dispatch, unique-witness `dyn` erasure and finite multi-witness managed catalogs across async parameters, results, and suspension frames, interpreter/typed differentials, Linux/MSVC objects, and real `check/build/test/run` commands |
 | `fixtures/lcir-typed-json` | canonical recursive `Json` construction and matching through `List[Json]`/`TextMap[Json]` cycle breakers, source-backed parsing, generated structural equality, canonical typed formatting, exact repeated tracing, immutable map aliases, forced moving-GC relocation, interpreter/MIR/LCIR differential execution, Linux/MSVC objects, and real `check/build/test/run` commands |
 | `fixtures/lcir-json-format` | direct typed formatting of all six canonical `Json` variants, canonical TextMap key order, exact string escaping and negative-zero spelling, ordinary `DepthLimit`/`NonFiniteNumber` errors for deep, NaN, and infinite inputs, and real main/test `check/build/test/run` commands without a universal value or executor |
 | `fixtures/lcir-json-parse` | ordinary source-backed iterative JSON parsing, complete-document and Unicode escape checks, numeric range errors, canonical bulk TextMap construction, and lexicographically smallest duplicate-key selection; LCIR-only real `check/build/test/run` commands and object inspection without a universal value or executor |
@@ -164,10 +165,11 @@ direct coverage includes:
   classification;
 - checked stackless coroutines, typed Task handles, exact suspension rows,
   fallible timers, and executor-owned roots;
-- nonempty static forms of the four standard-library Task policies, including
-  stored heterogeneous `Task.all`, sole-List-literal specialization, exact
-  `TaskOutcome[T]` capture, completed-result resource transfer before child
-  retirement, winner finalization, cancellation, and draining.
+- fixed and runtime-width homogeneous List forms of the four standard-library
+  Task policies, including stored heterogeneous `Task.all`, sole-List-literal
+  specialization, affine `List[Task[T]]` transfer, exact `TaskOutcome[T]`
+  capture, completed-result resource transfer before child retirement, winner
+  finalization, cancellation, and draining.
 
 Async `requires` checks run in child state zero. A created Task carries its
 creation-site blame, an async root carries its declaration span, and
@@ -182,12 +184,13 @@ scheduler primitives, and deletes the catalog and `TaskIntrinsic` rather than
 mapping source definitions back to them.
 
 Remaining atomic fallback includes open or prerequisite-dependent dynamic
-concepts, unsupported proof or contract value shapes, finite/open dynamic
-managed carriers, explicit mutable coroutine parameters, raw readiness,
-empty/stored/computed/runtime-sized Task List joins, and unsupported projected
-inout shapes. Pure reads through already-established invariant-protected
-products lower to exact typed `ProductExtract` chains; protected interior
-mutation and moves remain closed.
+concepts, unsupported proof or contract value shapes, explicit mutable
+coroutine parameters, raw readiness, and unsupported projected inout shapes.
+Finite closed dynamic catalogs are exact managed-pointer coroutine parameters,
+results, and suspension-live values, including nested aggregate and List
+carriers. Pure reads through already-established
+invariant-protected products lower to exact typed `ProductExtract` chains;
+protected interior mutation and moves remain closed.
 
 ## Automated quality evidence
 

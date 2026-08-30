@@ -60,8 +60,13 @@ Task.race(List[Task[T]])     Task[TaskOutcome[T]]
 ```
 
 `all` and `settled` accept an empty List and produce an empty List. `any` and
-`race` require a nonempty List; awaiting an empty dynamic join faults. A List
-result preserves input order, not completion order.
+`race` require a nonempty List; awaiting an empty dynamic join raises
+`EmptyTaskJoin`. A List result preserves input order, not completion order.
+
+`List[Task[T]]` is an affine carrier: construction and `add` transfer child
+handles, `length` borrows the carrier, and the join consumes it. Individual
+Task extraction, copying, and nesting the carrier in another aggregate are not
+available.
 
 A fixed List literal requests List-shaped output even when the compiler can
 specialize its elements as one static row:

@@ -623,12 +623,26 @@ join, the matching ALL/ANY result or SETTLED/RACE outcome shape, and completed
 ANY/RACE winner finalization. A hostile early or wrong-shaped call therefore
 cannot remove a child before loser disposal or reinterpret a terminal state.
 
-This direct slice is deliberately static and nonempty. A sole nonempty List
-literal is flattened into the same child row without an input List allocation;
-`all` and `settled` build their List result after resume. Empty, stored,
-computed, or runtime-sized List joins remain reachable `Unsupported` input and
-select the complete checked-MIR object. The frontend currently maps canonical,
-unshadowed Task API
+`TaskJoinList` uses a separate exact dynamic composite shape. Its frame stores
+state, the source List carrier, and the mode-specific result. Descriptor root
+states keep the source live while child handles are read, keep source and
+partial result live during collecting captures, and retain only the completed
+result after publication. Task elements are stable scheduler pointers, so the
+source List descriptor has no managed element offsets.
+
+For a nonempty List, construction passes its data pointer and runtime length
+directly to `loom_typed_task_publish_adopting_v1`; no stack copy or universal
+join object is created. Empty `all` and `settled` publish a normal completed
+composite with an empty List result. Empty `any` and `race` record canonical
+`EmptyTaskJoin` at the producer origin. The callback uses the ordinary
+prepare/add/suspend/step/winner/take protocol in a runtime-counted loop and
+reloads rooted source and result carriers after every collecting call.
+
+The fixed-row slice remains static and nonempty: a sole nonempty List literal
+is flattened into it without an input List allocation, and `all` or `settled`
+build their List result after resume. Stored, computed, empty, and
+runtime-sized homogeneous Lists use `TaskJoinList` instead of selecting the
+checked-MIR object. The frontend currently maps canonical, unshadowed Task API
 members through its temporary catalog to a compiler-private `TaskIntrinsic`
 before MIR construction; LLVM never inspects their source spelling. This enum
 is a transitional frontend bridge, not a standard-library identity or ABI.

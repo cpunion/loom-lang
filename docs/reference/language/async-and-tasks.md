@@ -133,8 +133,15 @@ The dynamic signatures are:
 
 The join consumes the complete task list. `all` and `settled` accept an empty
 list and complete with an empty list. `any` and `race` require a non-empty list;
-awaiting either operation with an empty dynamic list faults. The concrete fault
-code is not yet a cross-backend compatibility guarantee.
+awaiting either operation with an empty dynamic list raises `EmptyTaskJoin`
+with the message `Task.any and Task.race require a non-empty task list`.
+
+An exact `List[Task[T]]` is an affine task carrier. Creating the List or adding
+a child transfers that Task handle into it; passing, returning, or joining the
+List transfers the carrier. `length()` only borrows it. Copying the carrier,
+extracting an individual Task with `get`, or nesting it inside another value is
+rejected, so scheduler ownership remains statically visible without adding
+source ownership syntax.
 
 ## Join policies
 

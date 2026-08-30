@@ -94,7 +94,6 @@ Use a homogeneous list when the task count is known only at runtime:
 var tasks = List[Task[Int]]()
 for index in 0..worker_count {
     tasks.add(run_worker(index))
-    Unit
 }
 
 let values = Task.all(tasks).await
@@ -111,6 +110,10 @@ Tuples and lists do not convert implicitly. A runtime-sized collection is
 homogeneous; use an explicit enum or a common `dyn C` chosen at construction if
 different concrete result shapes must share one list. Loom does not erase them
 through a universal `any`.
+
+The task List is an affine carrier. Adding a Task transfers its handle into the
+List, `length()` borrows the List, and a join consumes it. This keeps scheduler
+ownership explicit to the compiler without introducing ownership syntax.
 
 ## Join policies
 
