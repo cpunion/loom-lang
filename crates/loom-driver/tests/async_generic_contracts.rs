@@ -13,7 +13,7 @@ fn generic_async_contracts_witnesses_and_cancellation_execute_in_interpreter() {
     let snapshot = AnalysisHost::new_with_options(
         source,
         &ProjectOptions {
-            include_tests: true,
+            tests: loom_driver::TestSelection::Recursive,
             ..ProjectOptions::default()
         },
     )

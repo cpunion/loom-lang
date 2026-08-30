@@ -86,8 +86,9 @@ test fn messageIsHello() {
 ```
 
 `test fn` and `test async fn` declarations are valid only in `*_test.loom`
-files. `loom test .` includes test files from the root module and runs their
-tests. It never includes or runs tests shipped with dependencies.
+files. `loom test .` runs the current directory package; `loom test ./...`
+runs every package below the manifest root. Neither form includes or runs
+tests shipped with dependencies.
 
 Production commands—`check`, `build`, `run`, and library creation—exclude
 `*_test.loom`, so test-only declarations cannot enter a production artifact.

@@ -1,0 +1,11 @@
+import std.io.__write_stdout
+
+/// Writes Text to the process standard-output stream without adding a delimiter.
+pub fn write(text Text) {
+    __write_stdout(text)
+}
+
+/// Writes Text followed by one line-feed to the process standard-output stream.
+pub fn write_line(text Text) {
+    __write_stdout(text.concat("\n"))
+}

@@ -6,6 +6,24 @@ File and network operations are asynchronous. `File` and `Socket` are
 `MustScope` resources: a successful handle must be bound with `scoped`, and the
 end of the innermost block closes it automatically.
 
+## Standard output
+
+```loom
+import std.io.write
+import std.io.write_line
+```
+
+```text
+write(Text)
+write_line(Text)
+```
+
+`write` synchronously writes the exact UTF-8 encoding of its argument to the
+process standard-output stream. `write_line` performs the same operation after
+appending one line-feed (`U+000A`); it does not substitute a platform-specific
+line ending. Neither function performs formatting or adds spaces. A write
+failure produces RuntimeFault code `StdoutWriteFault`.
+
 ## File creation and opening
 
 Two operation families are available. The faulting family represents host I/O

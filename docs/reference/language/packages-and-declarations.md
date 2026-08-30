@@ -133,8 +133,9 @@ test async fn name() { ... }
 ```
 
 Test declarations are rejected in every other file. Production compilation
-excludes all `*_test.loom` files. `loom test` adds only test files belonging to
-the selected root module; dependency test files are neither loaded nor run.
+excludes all `*_test.loom` files. `loom test .` or `loom test PATH` selects one
+directory package; appending `/...` selects every package below the root
+module. Dependency test files are neither loaded nor run.
 
 The bracketed parts above denote optional generic parameter lists; they are not
 literal ellipses in Loom source. Concept declarations themselves do not accept

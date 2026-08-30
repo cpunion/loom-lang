@@ -1129,6 +1129,7 @@ pub enum Builtin {
     SocketTryReadText,
     SocketTryWriteText,
     LogWrite,
+    StdoutWrite,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

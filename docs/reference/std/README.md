@@ -25,9 +25,9 @@ library behavior.
 Source-backed packages are distributed as Loom source and compile through the
 ordinary package, type, MIR, reachability, and native pipelines. The current
 source module contains the `std.int` and `std.json` parsers, their public
-parse-error values, the `std.log.debug`, `info`, `warn`, and `error`
-convenience functions, and the public `Dispose`, `MustScope`, and `NoSuspend`
-declarations in `std.resource`.
+parse-error values, `std.io.write` and `write_line`, the `std.log.debug`,
+`info`, `warn`, and `error` convenience functions, and the public `Dispose`,
+`MustScope`, and `NoSuspend` declarations in `std.resource`.
 The logging conveniences are ordinary Loom functions over the irreducible
 `std.log.write` output boundary. Resource declarations are source-backed, but
 their fixed shapes and irreducible static rules remain part of the language

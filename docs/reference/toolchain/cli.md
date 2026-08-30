@@ -24,7 +24,7 @@ The commands are:
 | `runtime pack --archive FILE --output DIR` | Pack a separately built host runtime archive into a validated bundle. |
 | `check [--target NAME]` | Parse, resolve, lower, and type-check the project. |
 | `build [--target NAME \| --entry NAME]` | Build an executable, object, interpreted artifact, or portable library. |
-| `test` | Compile and execute `test fn` declarations from root-module `*_test.loom` files. |
+| `test [PATH\|PATH/...]` | Test one directory package or every package below a module root. |
 | `run [--target NAME \| --entry NAME]` | Compile and run a selected exported entry. |
 | `run --artifact FILE` | Run an existing native or interpreted executable artifact. |
 | `debug [--target NAME \| --entry NAME]` | Build native code with source information and launch a debugger. |
@@ -90,8 +90,9 @@ standalone source file or directory, the default binary entry is `main`.
 `test --target` is an invalid invocation.
 
 `check`, `build`, `run`, `debug`, library creation, and dependency compilation
-exclude `*_test.loom`. `test` adds test files from every package in the selected
-root module. It never loads or runs dependency test files.
+exclude `*_test.loom`. `loom test .` and `loom test PATH` add tests only from
+the selected directory package. `loom test ./...` adds tests recursively from
+every package in the root module. No form loads or runs dependency test files.
 
 An executable entry must be a public export in the root module, take no value,
 receiver, type, or witness parameters, and return `Unit`. Synchronous and

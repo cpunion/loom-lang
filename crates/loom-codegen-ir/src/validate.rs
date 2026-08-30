@@ -4934,6 +4934,27 @@ impl<'a> Validator<'a> {
                 self.validate_unwind_target(function, fault, &[], &format!("{path}.fault"));
                 self.require_may_fault_effect(function, &path, "typed log write");
             }
+            TerminatorKind::StdoutWrite {
+                text,
+                normal,
+                fault,
+            } => {
+                self.require_known_value_type(
+                    function,
+                    *text,
+                    self.scalar_type(&Type::Text),
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.text"),
+                );
+                self.validate_result_target(
+                    function,
+                    normal,
+                    &[self.scalar_type(&Type::Unit)],
+                    &format!("{path}.normal"),
+                );
+                self.validate_unwind_target(function, fault, &[], &format!("{path}.fault"));
+                self.require_may_fault_effect(function, &path, "standard-output write");
+            }
             TerminatorKind::Assert {
                 condition,
                 metadata,
@@ -7047,6 +7068,7 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                 TerminatorKind::CheckedIntNegate { .. }
                 | TerminatorKind::CheckedIntBinary { .. }
                 | TerminatorKind::LogWrite { .. }
+                | TerminatorKind::StdoutWrite { .. }
                 | TerminatorKind::Assert { .. }
                 | TerminatorKind::Fault { .. }
                     if propagates_fault =>
@@ -7075,6 +7097,7 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                 TerminatorKind::CheckedIntNegate { .. }
                 | TerminatorKind::CheckedIntBinary { .. }
                 | TerminatorKind::LogWrite { .. }
+                | TerminatorKind::StdoutWrite { .. }
                 | TerminatorKind::Assert { .. }
                 | TerminatorKind::Fault { .. }
                 | TerminatorKind::Jump(_)
@@ -7754,7 +7777,8 @@ fn forwarded_list_edges(kind: &TerminatorKind) -> Vec<(BlockId, &[ValueId])> {
         TerminatorKind::CheckedIntNegate { normal, fault, .. }
         | TerminatorKind::CheckedIntBinary { normal, fault, .. }
         | TerminatorKind::TaskSleep { normal, fault, .. }
-        | TerminatorKind::LogWrite { normal, fault, .. } => vec![
+        | TerminatorKind::LogWrite { normal, fault, .. }
+        | TerminatorKind::StdoutWrite { normal, fault, .. } => vec![
             (normal.block, &normal.arguments),
             (fault.block, &fault.arguments),
         ],

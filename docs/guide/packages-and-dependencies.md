@@ -95,7 +95,8 @@ as `Lazy` and `Once`. Fixed GC, executor, and Runtime ABI setup performed by the
 toolchain remains internal and does not make an import execute user code.
 
 Dependency `*_test.loom` files are not part of the resolved source graph.
-`loom test` includes and runs tests only from the selected root module.
+`loom test .` runs the current directory package, while `loom test ./...` runs
+every package below the selected root module.
 
 ## Git and fork dependencies
 
@@ -247,6 +248,7 @@ Select a build target explicitly when more than one is applicable:
 ```sh
 loom build --target app --output target/app .
 loom test .
+loom test ./...
 loom build --target api --output target/api.loomlib .
 ```
 

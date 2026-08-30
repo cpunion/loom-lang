@@ -46,7 +46,8 @@ fn write_locked_stream(lock: &mut (impl Write + AsHandle), bytes: &[u8]) -> io::
 }
 
 #[cfg(unix)]
-fn write_process_stdout(bytes: &[u8]) -> i32 {
+/// Writes one exact byte range to standard output and flushes it.
+pub fn write_process_stdout(bytes: &[u8]) -> i32 {
     if !pipe_failures_are_reportable() {
         return STDOUT_WRITE_FAILED;
     }
@@ -59,7 +60,8 @@ fn write_process_stdout(bytes: &[u8]) -> i32 {
 }
 
 #[cfg(windows)]
-fn write_process_stdout(bytes: &[u8]) -> i32 {
+/// Writes one exact byte range to standard output and flushes it.
+pub fn write_process_stdout(bytes: &[u8]) -> i32 {
     let stdout = io::stdout();
     let mut lock = stdout.lock();
     // The owned clone lets File issue raw WriteFile-backed writes without

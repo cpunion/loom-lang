@@ -9,7 +9,8 @@ use loom_driver::{
     AnalysisHost, CacheContext, CacheLookup, DiagnosticRecord, LIBRARY_ARTIFACT_MAX_BYTES,
     LIBRARY_ARTIFACT_VERSION, LockMode, PersistentCache, PipelineStage, Position, ProjectGraph,
     ProjectOptions, RelatedDiagnostic, SourceOrigin, SpanRecord, SymbolId, TargetKind,
-    decode_library_artifact, discover_loom_files, encode_library_artifact, format_source,
+    TestSelection, decode_library_artifact, discover_loom_files, encode_library_artifact,
+    format_source,
 };
 use loom_hir::{SourceUnit, lower_files};
 use loom_interpreter::{Interpreter, TestStatus, Value};
@@ -82,7 +83,7 @@ fn portable_cache_context() -> CacheContext {
 
 fn test_project_options() -> ProjectOptions {
     ProjectOptions {
-        include_tests: true,
+        tests: loom_driver::TestSelection::Recursive,
         ..ProjectOptions::default()
     }
 }
@@ -643,6 +644,58 @@ fn manifest_resolves_directory_packages_and_targets() {
     );
     assert!(tests[0].name.ends_with("dependency_works"));
     assert_eq!(tests[0].status, TestStatus::Passed);
+}
+
+#[test]
+fn manifest_test_selection_distinguishes_one_package_from_recursive_module_tests() {
+    let project = TestProject::new();
+    project.write(
+        "loom.toml",
+        "schema = 2\n[module]\nname = \"application\"\nversion = \"1.0.0\"\n",
+    );
+    project.write("main.loom", "pub fn main() {}\n");
+    project.write(
+        "main_test.loom",
+        "test fn root_package_test() { assert true }\n",
+    );
+    project.write(
+        "math/math_test.loom",
+        "test fn math_package_test() { assert true }\n",
+    );
+
+    let package_options = ProjectOptions {
+        tests: TestSelection::Package,
+        ..ProjectOptions::default()
+    };
+    let root = AnalysisHost::new_with_options(&project.root, &package_options)
+        .expect("open root package")
+        .snapshot()
+        .expect("compile root package tests")
+        .run_tests()
+        .expect("run root package tests");
+    assert_eq!(root.len(), 1, "{root:#?}");
+    assert!(root[0].name.ends_with("root_package_test"));
+
+    let math = AnalysisHost::new_with_options(project.root.join("math"), &package_options)
+        .expect("open nested package")
+        .snapshot()
+        .expect("compile nested package tests")
+        .run_tests()
+        .expect("run nested package tests");
+    assert_eq!(math.len(), 1, "{math:#?}");
+    assert!(math[0].name.ends_with("math_package_test"));
+
+    let recursive_options = ProjectOptions {
+        tests: TestSelection::Recursive,
+        ..ProjectOptions::default()
+    };
+    let recursive = AnalysisHost::new_with_options(&project.root, &recursive_options)
+        .expect("open recursive module tests")
+        .snapshot()
+        .expect("compile recursive module tests")
+        .run_tests()
+        .expect("run recursive module tests");
+    assert_eq!(recursive.len(), 2, "{recursive:#?}");
 }
 
 #[test]

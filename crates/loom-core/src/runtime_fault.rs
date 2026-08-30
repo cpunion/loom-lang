@@ -41,6 +41,13 @@ pub const LOG_WRITE_FAULT_CODE: &str = "LogWriteFault";
 /// Stable user-facing message for a structured-log output failure.
 pub const LOG_WRITE_FAULT_MESSAGE: &str = "log write failed";
 
+/// Stable runtime-fault code emitted when Text cannot be written to the
+/// process standard-output stream.
+pub const STDOUT_WRITE_FAULT_CODE: &str = "StdoutWriteFault";
+
+/// Stable user-facing message for a standard-output failure.
+pub const STDOUT_WRITE_FAULT_MESSAGE: &str = "standard output write failed";
+
 /// Stable runtime-fault code emitted when a serialized construction proof
 /// fails independent replay at an artifact trust boundary.
 pub const ARTIFACT_PROOF_REJECTED_FAULT_CODE: &str = "ArtifactProofRejected";

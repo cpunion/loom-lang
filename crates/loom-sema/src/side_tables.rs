@@ -84,6 +84,7 @@ pub enum BuiltinValue {
     LogLevelWarn,
     LogLevelError,
     LogWrite,
+    StdoutWrite,
     ListNew,
     ListAdd,
     ListLength,

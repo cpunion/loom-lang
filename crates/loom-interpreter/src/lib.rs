@@ -17,6 +17,7 @@ use loom_core::runtime_fault::{
     INVALID_DURATION_FAULT_MESSAGE, INVALID_SLEEP_DURATION_FAULT_CODE,
     INVALID_SLEEP_DURATION_FAULT_MESSAGE, LOG_WRITE_FAULT_CODE, LOG_WRITE_FAULT_MESSAGE,
     SLEEP_DURATION_OVERFLOW_FAULT_CODE, SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE,
+    STDOUT_WRITE_FAULT_CODE, STDOUT_WRITE_FAULT_MESSAGE,
 };
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, CheckedProgram, Constant, ConstructionMode,
@@ -4902,6 +4903,9 @@ impl<'program> Interpreter<'program> {
         if builtin == Builtin::LogWrite {
             return self.eval_log_builtin(builtin, arguments, span);
         }
+        if builtin == Builtin::StdoutWrite {
+            return self.eval_stdout_builtin(arguments, span);
+        }
         match (builtin, arguments) {
             (Builtin::IsFinite, [value]) => Ok(Value::Bool {
                 value: as_float(value).is_some_and(f64::is_finite),
@@ -5301,6 +5305,23 @@ impl<'program> Interpreter<'program> {
         if loom_runtime::write_process_stderr(line.as_bytes()) != loom_runtime::TYPED_LOG_OK {
             return Err(self
                 .runtime_fault(LOG_WRITE_FAULT_CODE, LOG_WRITE_FAULT_MESSAGE, span)
+                .into());
+        }
+        Ok(Value::Unit)
+    }
+
+    fn eval_stdout_builtin(
+        &self,
+        arguments: &[Value],
+        span: Span,
+    ) -> Result<Value, ExecutionFailure> {
+        let [Value::Text { value }] = arguments else {
+            return Err(self.invalid_builtin_fault(span));
+        };
+        let status = loom_runtime::write_process_stdout(value.as_bytes());
+        if status != loom_runtime::STDOUT_WRITE_OK {
+            return Err(self
+                .runtime_fault(STDOUT_WRITE_FAULT_CODE, STDOUT_WRITE_FAULT_MESSAGE, span)
                 .into());
         }
         Ok(Value::Unit)

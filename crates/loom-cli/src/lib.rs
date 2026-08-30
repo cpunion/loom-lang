@@ -8,8 +8,8 @@ use loom_core::{FileId, Span};
 use loom_driver::{
     AnalysisHost, AnalysisSnapshot, CacheContext, CacheKey, CacheLookup, DiagnosticRecord,
     EXIT_DEFECT, EXIT_FAILURE, EXIT_SUCCESS, EXIT_USAGE, LockMode, PersistentCache, PipelineStage,
-    ProjectGraph, ProjectOptions, SourceMap, StageUnavailable, TargetKind, format_source,
-    publish_registry_package,
+    ProjectGraph, ProjectOptions, SourceMap, StageUnavailable, TargetKind, TestSelection,
+    format_source, publish_registry_package,
 };
 use loom_interpreter::TestStatus;
 use serde_json::{Value, json};
@@ -20,7 +20,7 @@ const USAGE: &str = "usage: loom [--json] [--backend llvm|interpreter] [--releas
     runtime pack --archive FILE --output DIR pack a validated host runtime bundle\n\
     check [--target NAME] [PATH] parse, lower, and type-check a project\n\
     build [--target NAME | --entry NAME] [--target-triple TRIPLE] [--runtime-bundle DIR] [--linker PROGRAM] [--emit executable|object] [--output FILE] [PATH] build an executable, object, or portable library\n\
-    test [PATH] compile and execute `test fn` declarations from `*_test.loom` files\n\
+    test [PATH|PATH/...] compile and execute package tests (`.` is one package, `./...` is recursive)\n\
     run [--target NAME | --entry NAME] [PATH] [-- ARGS...] compile and execute an exported function\n\
     run --artifact FILE [-- ARGS...] execute a previously built artifact\n\
     debug [--target NAME | --entry NAME] [--debugger PROGRAM] [PATH] [-- ARGS...] build with source info and launch LLDB/GDB\n\
@@ -2501,10 +2501,15 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Pars
     };
     strings.remove(0);
     let command = parse_command(&command_name, &mut strings, backend)?;
-    let include_tests = matches!(command, Command::Test);
-    let path = strings
-        .first()
-        .map_or_else(|| PathBuf::from("."), PathBuf::from);
+    let raw_path = strings.first().map_or(".", String::as_str);
+    let (path, tests) = if matches!(command, Command::Test) {
+        match recursive_test_root(raw_path) {
+            Some(root) => (root, TestSelection::Recursive),
+            None => (PathBuf::from(raw_path), TestSelection::Package),
+        }
+    } else {
+        (PathBuf::from(raw_path), TestSelection::None)
+    };
     let options = Options {
         command,
         path,
@@ -2522,7 +2527,7 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Pars
                 LockMode::Use
             },
             offline,
-            include_tests,
+            tests,
         },
         target_triple,
         runtime_bundle,
@@ -2532,6 +2537,21 @@ fn parse_arguments(arguments: impl IntoIterator<Item = OsString>) -> Result<Pars
     };
     validate_parsed_options(&options, &strings)?;
     Ok(ParsedArgs::Run(Box::new(options)))
+}
+
+fn recursive_test_root(path: &str) -> Option<PathBuf> {
+    if path == "..." {
+        return Some(PathBuf::from("."));
+    }
+    path.strip_suffix("/...")
+        .or_else(|| path.strip_suffix("\\..."))
+        .map(|root| {
+            if root.is_empty() {
+                PathBuf::from(".")
+            } else {
+                PathBuf::from(root)
+            }
+        })
 }
 
 fn parse_command(
@@ -2853,6 +2873,7 @@ mod tests {
     use super::{
         Backend, Command, Compilation, CompilationData, NativePipelineError, Options,
         adjacent_runtime_bundle_path, configured_runtime_bundle_path, emit_object_with_cache,
+        recursive_test_root,
     };
 
     fn valid_sha256(value: &str) -> bool {
@@ -2865,6 +2886,17 @@ mod tests {
             super::LLVM_OBJECT_CACHE_DOMAIN,
             "loom-llvm-object-cache-v43"
         );
+    }
+
+    #[test]
+    fn recursive_test_path_selects_its_module_root() {
+        assert_eq!(recursive_test_root("..."), Some(PathBuf::from(".")));
+        assert_eq!(recursive_test_root("./..."), Some(PathBuf::from(".")));
+        assert_eq!(
+            recursive_test_root("workspace/module/..."),
+            Some(PathBuf::from("workspace/module"))
+        );
+        assert_eq!(recursive_test_root("workspace/module"), None);
     }
 
     #[test]

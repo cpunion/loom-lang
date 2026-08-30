@@ -1117,6 +1117,7 @@ pub enum FaultCode {
     SleepDurationOverflow,
     TaskAnyFailed,
     LogWrite,
+    StdoutWrite,
 }
 
 /// Structured join semantics for one directly awaited fixed child set.
@@ -1526,6 +1527,15 @@ pub enum TerminatorKind {
         normal: ResultTarget,
         fault: UnwindTarget,
     },
+    /// Writes one exact Text value to the process standard-output stream.
+    /// A successful operation defines Unit only on `normal`; a device failure
+    /// activates [`FaultCode::StdoutWrite`] and enters `fault` so lexical
+    /// cleanup can run before propagation.
+    StdoutWrite {
+        text: ValueId,
+        normal: ResultTarget,
+        fault: UnwindTarget,
+    },
     /// Continues through `success` when true or activates the checked fault
     /// metadata and enters `fault` when false.
     Assert {
@@ -1666,6 +1676,18 @@ impl TerminatorKind {
                 operands.extend_from_slice(&fault.arguments);
                 operands
             }
+            Self::StdoutWrite {
+                text,
+                normal,
+                fault,
+            } => {
+                let mut operands =
+                    Vec::with_capacity(1 + normal.arguments.len() + fault.arguments.len());
+                operands.push(*text);
+                operands.extend_from_slice(&normal.arguments);
+                operands.extend_from_slice(&fault.arguments);
+                operands
+            }
             Self::Assert {
                 condition,
                 success,
@@ -1715,7 +1737,8 @@ impl TerminatorKind {
             Self::TaskSleep { normal, fault, .. }
             | Self::CheckedIntNegate { normal, fault, .. }
             | Self::CheckedIntBinary { normal, fault, .. }
-            | Self::LogWrite { normal, fault, .. } => {
+            | Self::LogWrite { normal, fault, .. }
+            | Self::StdoutWrite { normal, fault, .. } => {
                 vec![preserve(normal.block), activate(fault.block)]
             }
             Self::Invoke { normal, unwind, .. } => {

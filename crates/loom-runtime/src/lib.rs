@@ -38,7 +38,7 @@ pub use gc::{
 };
 pub use int_list::{LoomIntListStorage, int_list_drop, int_list_reserve};
 pub use logging::log_typed_v1;
-pub use output::{stdout_write_v1, write_process_stderr};
+pub use output::{stdout_write_v1, write_process_stderr, write_process_stdout};
 
 pub use float::format_float_typed_v1;
 pub use reactor::{

@@ -1318,7 +1318,7 @@ fn open_workspace_host(root: impl AsRef<Path>) -> Result<AnalysisHost, loom_driv
     AnalysisHost::new_with_options(
         root,
         &ProjectOptions {
-            include_tests: true,
+            tests: loom_driver::TestSelection::Recursive,
             ..ProjectOptions::default()
         },
     )

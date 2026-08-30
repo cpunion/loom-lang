@@ -777,7 +777,8 @@ impl SerializationClosure {
                 self.add_optional_type(prelude.log_level);
                 self.add_optional_type(prelude.text_map);
             }
-            Builtin::IsFinite
+            Builtin::StdoutWrite
+            | Builtin::IsFinite
             | Builtin::FormatFloat
             | Builtin::TextLength
             | Builtin::TextConcat

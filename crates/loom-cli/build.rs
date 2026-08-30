@@ -37,10 +37,15 @@ fn main() {
                 crate_manifest.display()
             )
         });
-        assert!(
-            !root.join("build.rs").exists(),
-            "frontend crate {name} needs a crate-owned build identity before adding build.rs"
-        );
+        let build_script = root.join("build.rs");
+        if *name == "loom-driver" {
+            inputs.push(build_script);
+        } else {
+            assert!(
+                !build_script.exists(),
+                "frontend crate {name} needs a crate-owned build identity before adding build.rs"
+            );
+        }
         inputs.push(crate_manifest);
         inputs.push(root.join("src"));
     }

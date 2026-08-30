@@ -3215,7 +3215,8 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 let target_feature = match target {
                     CallTarget::Direct(_)
                     | CallTarget::Inherent(_)
-                    | CallTarget::StaticConcept { .. } => None,
+                    | CallTarget::StaticConcept { .. }
+                    | CallTarget::Builtin(mir::Builtin::StdoutWrite) => None,
                     CallTarget::Dynamic { .. }
                         if callee_key.is_some()
                             || arguments.first().is_some_and(|argument| {
@@ -4089,7 +4090,11 @@ fn scan_effect_expr(
                 }
             } else if matches!(
                 target,
-                CallTarget::Builtin(mir::Builtin::DurationMilliseconds | mir::Builtin::LogWrite)
+                CallTarget::Builtin(
+                    mir::Builtin::DurationMilliseconds
+                        | mir::Builtin::LogWrite
+                        | mir::Builtin::StdoutWrite,
+                )
             ) {
                 summary.include(Effects::MAY_FAULT);
             }
@@ -10431,6 +10436,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     self.lower_text_map_builtin(flow, *builtin, arguments, expression)
                 }
                 mir::Builtin::LogWrite => self.lower_log_builtin(flow, arguments, expression),
+                mir::Builtin::StdoutWrite => self.lower_stdout_builtin(flow, arguments, expression),
                 _ => self.lower_builtin(flow, *builtin, arguments, expression),
             };
         }
@@ -11717,6 +11723,43 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 level: *level,
                 message: *message,
                 fields: *fields,
+                normal: ResultTarget::new(normal, []),
+                fault,
+            },
+            origin,
+        )?;
+        Ok(EvalFlow::Continue {
+            flow: Flow {
+                block: normal,
+                env: flow.env,
+            },
+            value: unit,
+        })
+    }
+
+    fn lower_stdout_builtin(
+        &mut self,
+        flow: Flow,
+        arguments: &[CallArgument],
+        expression: &mir::Expr,
+    ) -> Result<EvalFlow, LoweringError> {
+        let [CallArgument::Value(text)] = arguments else {
+            return Err(self.unsupported_reached("standard-output builtin argument shape"));
+        };
+        let EvalFlow::Continue { flow, value: text } = self.lower_expr(flow, text)? else {
+            return Ok(EvalFlow::Terminated);
+        };
+        let origin = self.expression_origin(expression);
+        let normal = self.create_block()?;
+        let unit = self
+            .builder
+            .append_block_parameter(normal, self.type_id(&Type::Unit)?)
+            .map_err(LoweringError::from)?;
+        let fault = self.fault_target(flow)?;
+        self.terminate(
+            flow.block,
+            TerminatorKind::StdoutWrite {
+                text,
                 normal: ResultTarget::new(normal, []),
                 fault,
             },
