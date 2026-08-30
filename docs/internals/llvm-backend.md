@@ -559,18 +559,18 @@ contract JSON schema with the carried blame. The ordinary dispatch enters state
 zero or the structured join step. The cancellation dispatch terminates state
 zero directly and, for a suspended state, reloads the row and enters that
 await's checked cancel target. This uses the existing typed-task cancellation
-query and callback ABI. Stored `Task.all` composites continue to use the shared
-generic cancel callback.
+query and callback ABI. Stored fixed Task-policy composites continue to use the
+shared generic cancel callback.
 
-An immediately awaited fixed tuple or fixed-argument `Task.all` lowers directly
-to multi-child `AwaitTasks`, then constructs the heterogeneous result tuple in
-the continuation. A stored fixed `Task.all` uses the `TaskJoinAll` instruction
-and produces an exact `Task[(T0, ..., Tn)]`; one child still produces a
-one-field tuple. The emitter generates a target-laid-out composite frame and an
-immutable typed-task descriptor for each distinct static result shape, reusing
-the descriptor and callback across matching sites. The callback takes the
-ordered child values into the exact tuple and publishes only its statically
-known managed leaves.
+An immediately awaited fixed tuple or fixed Task-policy call lowers directly to
+multi-child `AwaitTasks`, then constructs the exact result in the continuation.
+A stored fixed policy uses the `TaskJoin` instruction. `all` produces the exact
+value tuple, `settled` its exact outcome tuple, `any` one homogeneous winner,
+and `race` one homogeneous winner outcome; one-child tuple modes still produce
+a one-field tuple. The emitter generates a target-laid-out composite frame and
+an immutable typed-task descriptor for each distinct mode, child-output row,
+and result type, reusing the descriptor and callback across matching sites. The
+callback publishes only the statically known managed leaves.
 
 The composite is initialized while unpublished. Generated code then passes a
 temporary contiguous child-pointer array to
@@ -623,9 +623,9 @@ cannot remove a child before loser disposal or reinterpret a terminal state.
 This direct slice is deliberately static and nonempty. A sole nonempty List
 literal is flattened into the same child row without an input List allocation;
 `all` and `settled` build their List result after resume. Empty, stored,
-computed, or runtime-sized List joins and first-class `any`, `settled`, or
-`race` results remain reachable `Unsupported` input and select the complete
-checked-MIR object. The frontend currently maps canonical, unshadowed Task API
+computed, or runtime-sized List joins remain reachable `Unsupported` input and
+select the complete checked-MIR object. The frontend currently maps canonical,
+unshadowed Task API
 members through its temporary catalog to a compiler-private `TaskIntrinsic`
 before MIR construction; LLVM never inspects their source spelling. This enum
 is a transitional frontend bridge, not a standard-library identity or ABI.

@@ -88,8 +88,8 @@ The following repository fixtures are run through real compiler stages:
 | `fixtures/lcir-typed-sleep` | first-class checked `Task.sleep` with `Int` and `Duration` inputs, zero and positive deadlines, managed values live across later awaits, and typed-LCIR main/test native execution |
 | `fixtures/lcir-sync-task-helpers` | effect-derived hidden executor forwarding through direct, nested, fallible, and fixed-composite synchronous Task-producing helpers; exact debug ABI, canonical sleep faults, interpreter/typed execution, Linux/MSVC objects, and real `check/build/test/run` commands |
 | `fixtures/lcir-typed-task-all` | direct multi-child awaits and stored exact heterogeneous `Task.all`, one-field and mixed Text/Int/Unit tuples, shared static-shape descriptors, atomic child adoption, moving-GC survival, interpreter/typed execution plus checked-MIR/typed child-fault and sibling-cancellation comparison, release IR, Linux/MSVC objects, and real `check/build/test/run` commands |
-| `fixtures/lcir-typed-task-any` | nonempty immediately awaited fixed homogeneous `Task.any`, deterministic nonzero winner selection, managed Text results, repeated loser cancellation and retirement, typed-object surface inspection, and real `check/build/test/run` commands |
-| `fixtures/lcir-typed-task-outcomes` | fixed and sole-List-literal `Task.settled`/`Task.race`, canonical completed/faulted/cancelled outcomes, fault Text roots across later capture safepoints, deterministic nonzero race winners, loser cleanup, typed-LCIR main/test native execution, and real `check/build/test/run` commands |
+| `fixtures/lcir-typed-task-any` | nonempty immediate and stored fixed homogeneous `Task.any`, exact first-class composite results, deterministic nonzero winner selection, managed Text roots, repeated loser cancellation and retirement, typed-object surface inspection, and real `check/build/test/run` commands |
+| `fixtures/lcir-typed-task-outcomes` | immediate and stored fixed plus sole-List-literal `Task.settled`/`Task.race`, exact first-class composite outcomes, canonical completed/faulted/cancelled values, fault Text roots across later capture safepoints, deterministic nonzero race winners, loser cleanup, typed-LCIR main/test native execution, and real `check/build/test/run` commands |
 | `fixtures/lcir-async-cleanup` | typed-LCIR `defer` and static-concept `scoped` cleanup across suspension, exact normal/fault/cancel live rows, LIFO normal cleanup, child-fault propagation, sibling cancellation, source-callback cancellation dispatch, interpreter/checked-MIR/typed differentials, Linux/MSVC objects, and real `check/build/test/run` commands |
 | `fixtures/lcir-async-writeback` | synchronous functional inout calls inside typed coroutines, managed-Text writeback across moving collection, normal/fault/cancellation cleanup, fault writeback before lexical cleanup, by-value dynamic View parameters under mutable dispatch, recursive unique-witness `dyn` erasure across async parameters, results, and nested frames, multi-witness finite dynamic calls outside suspension rows, interpreter/typed differentials, Linux/MSVC objects, and real `check/build/test/run` commands |
 | `fixtures/lcir-typed-json` | canonical recursive `Json` construction and matching through `List[Json]`/`TextMap[Json]` cycle breakers, source-backed parsing, generated structural equality, canonical typed formatting, exact repeated tracing, immutable map aliases, forced moving-GC relocation, interpreter/MIR/LCIR differential execution, Linux/MSVC objects, and real `check/build/test/run` commands |
@@ -185,9 +185,8 @@ Remaining atomic fallback includes open or prerequisite-dependent dynamic
 concepts, unsupported proof or contract value shapes, recursive nominal
 equality through managed collections, finite/open dynamic managed carriers,
 explicit mutable coroutine parameters, raw readiness,
-empty/stored/computed/runtime-sized Task List joins, first-class
-`Task.any`/`Task.settled`/`Task.race` results, and unsupported projected inout
-shapes.
+empty/stored/computed/runtime-sized Task List joins, and unsupported projected
+inout shapes.
 
 ## Automated quality evidence
 

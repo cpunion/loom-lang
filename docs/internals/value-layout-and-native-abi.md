@@ -319,23 +319,22 @@ descriptor. Frame validation accepts only canonical direct List and
 `ManagedTextMap` registrations; a finite/open dynamic box cannot be relabeled as
 a collection carrier.
 
-An immediately awaited fixed tuple or fixed-argument `Task.all` uses that
-multi-child suspension row directly. A first-class stored `Task.all` uses a
-separate exact composite frame containing state, ordered child handles, and the
-target-laid-out heterogeneous result tuple. The `TaskJoinAll` result is still a
-single opaque handle; identical tuple shapes may share the immutable descriptor
-and callback. A one-child fixed join retains a one-field tuple result rather
-than collapsing its type. No universal `ValueSlot` or runtime-described join
-result participates in either path. A nonempty, immediately awaited,
-fixed-arity homogeneous `Task.any` also uses the suspension row directly. The
-row retains every child handle and exact output type, while the normal edge
-takes only the winner's statically known output from the original winner field.
-Fixed `Task.settled` and `Task.race` rows instead forward terminal affine child
-handles to explicit `TaskOutcomeTake` instructions. The resulting canonical
-sums use the ordinary collision-free closed-sum carrier and exact managed Text
+An immediately awaited fixed tuple or fixed Task-policy call uses that
+multi-child suspension row directly. A first-class stored fixed join uses a
+separate exact composite frame containing state, ordered child handles, and its
+target-laid-out result. `TaskJoin` still produces one opaque handle; its mode,
+child-output row, and result type form the generated callback shape, and
+identical shapes may share the immutable descriptor and callback. `all` and
+`settled` preserve heterogeneous tuple rows, while `any` and `race` require one
+homogeneous output type. A one-child fixed `all` or `settled` retains a
+one-field tuple result rather than collapsing its type. No universal
+`ValueSlot` or runtime-described join result participates in either path.
+Outcome-producing rows and callbacks consume terminal affine child handles
+through explicit `TaskOutcomeTake` operations. The resulting canonical sums
+use the ordinary collision-free closed-sum carrier and exact managed Text
 leaves for `TaskFault`. A sole nonempty List literal is flattened to the same
-static row; empty, stored, computed, and runtime-sized List joins and
-first-class `any`, `settled`, or `race` results remain complete fallback.
+static row; empty, stored, computed, and runtime-sized List joins remain
+complete fallback.
 
 The runtime separately tracks concrete typed File and Socket owners held by a
 published typed result; that ledger is not a field in `Task[T]` or in the
