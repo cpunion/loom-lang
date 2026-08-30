@@ -23,6 +23,7 @@ use crate::{
 
 const RESOURCE_MODULE: &str = "std.resource";
 const FLOAT_MODULE: &str = "std.float";
+const IO_MODULE: &str = "std.io";
 const LOG_MODULE: &str = "std.log";
 const PATH_MODULE: &str = "std.path";
 const TEXT_MODULE: &str = "std.text";
@@ -71,6 +72,7 @@ pub struct CanonicalConcepts {
 pub struct CanonicalStdItems {
     pub is_finite: Option<DefId>,
     pub decode_text_error: Option<DefId>,
+    pub io_error_kind: Option<DefId>,
     pub log_level: Option<DefId>,
     pub path_error: Option<DefId>,
 }
@@ -132,13 +134,13 @@ fn analyze_with_reused_bodies(
             canonical_std_items: CanonicalStdItems::default(),
             diagnostics,
         };
+        let canonical_std_items = analyzer.resolve_canonical_std_items();
+        analyzer.canonical_std_items = canonical_std_items;
         analyzer.collect_signatures();
         analyzer.validate_dynamic_concepts();
         analyzer.build_conformances();
         let canonical_concepts = analyzer.resolve_canonical_concepts();
         analyzer.canonical_concepts = canonical_concepts;
-        let canonical_std_items = analyzer.resolve_canonical_std_items();
-        analyzer.canonical_std_items = canonical_std_items;
         analyzer.validate_resource_concepts(canonical_concepts);
         analyzer.check_bodies(previous);
         (
@@ -198,6 +200,16 @@ struct TypeContext {
 }
 
 impl Analyzer<'_> {
+    fn canonical_prelude_type(&self, path: &Path) -> Option<DefId> {
+        let [segment] = path.segments.as_slice() else {
+            return None;
+        };
+        match segment.name.as_str() {
+            "IoErrorKind" => self.canonical_std_items.io_error_kind,
+            _ => None,
+        }
+    }
+
     fn resolve_language_concept(&self, name: &str) -> Option<DefId> {
         let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
         self.program
@@ -271,6 +283,9 @@ impl Analyzer<'_> {
                 "DecodeTextError",
                 |kind| matches!(kind, DefinitionKind::Enum(_)),
             ),
+            io_error_kind: self.resolve_compiler_std_definition(IO_MODULE, "IoErrorKind", |kind| {
+                matches!(kind, DefinitionKind::Enum(_))
+            }),
             log_level: self.resolve_compiler_std_definition(LOG_MODULE, "LogLevel", |kind| {
                 matches!(kind, DefinitionKind::Enum(_))
             }),
@@ -798,9 +813,10 @@ impl Analyzer<'_> {
                 _ => {}
             }
         }
-        let Some(definition) =
-            self.resolve_definition(constructor, Namespace::Type, context.module)
-        else {
+        let definition = self
+            .canonical_prelude_type(constructor)
+            .or_else(|| self.resolve_definition(constructor, Namespace::Type, context.module));
+        let Some(definition) = definition else {
             return self.typed.types.error();
         };
         let expected = self.type_generic_params(definition);
@@ -879,6 +895,12 @@ impl Analyzer<'_> {
             }
             if let Some(builtin) = builtin_type(name.as_str()) {
                 return self.typed.types.builtin(builtin);
+            }
+            if let Some(definition) = self.canonical_prelude_type(path) {
+                return self.typed.types.intern(TyData::Nominal {
+                    definition,
+                    arguments: Vec::new(),
+                });
             }
             if matches!(
                 name.as_str(),
@@ -4121,8 +4143,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 | BuiltinType::TaskFault
                 | BuiltinType::Duration
                 | BuiltinType::Json
-                | BuiltinType::JsonError
-                | BuiltinType::IoErrorKind,
+                | BuiltinType::JsonError,
             ) => true,
             TyData::Builtin(
                 BuiltinType::ContractFault
@@ -4972,7 +4993,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         let Some(definition) = definition else {
             self.error_at(
                 "MissingStandardLibraryItem",
-                format!("compiler-owned `{qualified_name}` is missing"),
+                format!("required canonical standard-library item `{qualified_name}` is missing"),
                 expression,
             );
             return self.types().error();
@@ -6187,16 +6208,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::JsonNumberOutOfRange
             | BuiltinValue::JsonDepthLimit
             | BuiltinValue::JsonNonFiniteNumber
-            | BuiltinValue::IoErrorNotFound
-            | BuiltinValue::IoErrorPermissionDenied
-            | BuiltinValue::IoErrorAlreadyExists
-            | BuiltinValue::IoErrorInvalidInput
-            | BuiltinValue::IoErrorConnectionRefused
-            | BuiltinValue::IoErrorConnectionReset
-            | BuiltinValue::IoErrorTimedOut
-            | BuiltinValue::IoErrorUnexpectedEof
-            | BuiltinValue::IoErrorClosed
-            | BuiltinValue::IoErrorOther
             | BuiltinValue::TaskCompleted
             | BuiltinValue::TaskFaulted
             | BuiltinValue::TaskCancelled => {
@@ -7355,35 +7366,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             ("JsonError", "NonFiniteNumber") => {
                 (BuiltinValue::JsonNonFiniteNumber, BuiltinType::JsonError)
             }
-            ("IoErrorKind", "NotFound") => {
-                (BuiltinValue::IoErrorNotFound, BuiltinType::IoErrorKind)
-            }
-            ("IoErrorKind", "PermissionDenied") => (
-                BuiltinValue::IoErrorPermissionDenied,
-                BuiltinType::IoErrorKind,
-            ),
-            ("IoErrorKind", "AlreadyExists") => {
-                (BuiltinValue::IoErrorAlreadyExists, BuiltinType::IoErrorKind)
-            }
-            ("IoErrorKind", "InvalidInput") => {
-                (BuiltinValue::IoErrorInvalidInput, BuiltinType::IoErrorKind)
-            }
-            ("IoErrorKind", "ConnectionRefused") => (
-                BuiltinValue::IoErrorConnectionRefused,
-                BuiltinType::IoErrorKind,
-            ),
-            ("IoErrorKind", "ConnectionReset") => (
-                BuiltinValue::IoErrorConnectionReset,
-                BuiltinType::IoErrorKind,
-            ),
-            ("IoErrorKind", "TimedOut") => {
-                (BuiltinValue::IoErrorTimedOut, BuiltinType::IoErrorKind)
-            }
-            ("IoErrorKind", "UnexpectedEof") => {
-                (BuiltinValue::IoErrorUnexpectedEof, BuiltinType::IoErrorKind)
-            }
-            ("IoErrorKind", "Closed") => (BuiltinValue::IoErrorClosed, BuiltinType::IoErrorKind),
-            ("IoErrorKind", "Other") => (BuiltinValue::IoErrorOther, BuiltinType::IoErrorKind),
             _ => return None,
         })
     }
@@ -7494,7 +7476,11 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     BuiltinValue::IoErrorKind,
                     ReceiverPassing::Value,
                     Vec::new(),
-                    self.types().builtin(BuiltinType::IoErrorKind),
+                    self.canonical_std_type(
+                        self.analyzer.canonical_std_items.io_error_kind,
+                        "std.io.IoErrorKind",
+                        expression,
+                    ),
                 ),
                 (BuiltinType::IoError, "message") => (
                     BuiltinValue::IoErrorMessage,
@@ -9110,8 +9096,13 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 parameter,
             );
         }
-        let Resolution::Definition(owner) = resolver.resolve_type(type_path).ok()? else {
-            return None;
+        let owner = if let Some(owner) = self.analyzer.canonical_prelude_type(type_path) {
+            owner
+        } else {
+            match resolver.resolve_type(type_path) {
+                Ok(Resolution::Definition(owner)) => owner,
+                Ok(_) | Err(_) => return None,
+            }
         };
         let DefinitionKind::Enum(enumeration) = &self.analyzer.program.definitions[owner].kind
         else {
@@ -9138,8 +9129,13 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             TyData::TaskOutcome(_) => Some("TaskOutcome"),
             TyData::Builtin(BuiltinType::Json) => Some("Json"),
             TyData::Builtin(BuiltinType::JsonError) => Some("JsonError"),
-            TyData::Builtin(BuiltinType::IoErrorKind) => Some("IoErrorKind"),
             TyData::Nominal { definition, .. } => {
+                if Some(*definition) == self.analyzer.canonical_std_items.io_error_kind
+                    && qualifier.len() == 1
+                    && qualifier[0].name.as_str() == "IoErrorKind"
+                {
+                    return true;
+                }
                 let module = self.analyzer.program.definitions[self.environment.owner].module;
                 let mut resolver =
                     crate::Resolver::new(self.analyzer.program, self.analyzer.def_maps, module);
@@ -9208,25 +9204,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 "NonFiniteNumber" if payload.is_empty() => {
                     Some(PatternVariant::JsonNonFiniteNumber)
                 }
-                _ => None,
-            },
-            TyData::Builtin(BuiltinType::IoErrorKind) => match name.as_str() {
-                "NotFound" if payload.is_empty() => Some(PatternVariant::IoErrorNotFound),
-                "PermissionDenied" if payload.is_empty() => {
-                    Some(PatternVariant::IoErrorPermissionDenied)
-                }
-                "AlreadyExists" if payload.is_empty() => Some(PatternVariant::IoErrorAlreadyExists),
-                "InvalidInput" if payload.is_empty() => Some(PatternVariant::IoErrorInvalidInput),
-                "ConnectionRefused" if payload.is_empty() => {
-                    Some(PatternVariant::IoErrorConnectionRefused)
-                }
-                "ConnectionReset" if payload.is_empty() => {
-                    Some(PatternVariant::IoErrorConnectionReset)
-                }
-                "TimedOut" if payload.is_empty() => Some(PatternVariant::IoErrorTimedOut),
-                "UnexpectedEof" if payload.is_empty() => Some(PatternVariant::IoErrorUnexpectedEof),
-                "Closed" if payload.is_empty() => Some(PatternVariant::IoErrorClosed),
-                "Other" if payload.is_empty() => Some(PatternVariant::IoErrorOther),
                 _ => None,
             },
             TyData::Nominal { definition, .. } => {
@@ -9482,21 +9459,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     self.variant_payload(variant, expected),
                 )
             })
-            .collect(),
-            TyData::Builtin(BuiltinType::IoErrorKind) => [
-                PatternVariant::IoErrorNotFound,
-                PatternVariant::IoErrorPermissionDenied,
-                PatternVariant::IoErrorAlreadyExists,
-                PatternVariant::IoErrorInvalidInput,
-                PatternVariant::IoErrorConnectionRefused,
-                PatternVariant::IoErrorConnectionReset,
-                PatternVariant::IoErrorTimedOut,
-                PatternVariant::IoErrorUnexpectedEof,
-                PatternVariant::IoErrorClosed,
-                PatternVariant::IoErrorOther,
-            ]
-            .into_iter()
-            .map(|variant| (CheckedPatternHead::Variant(variant), Vec::new()))
             .collect(),
             TyData::Nominal { definition, .. } => {
                 let DefinitionKind::Enum(enumeration) =
@@ -9962,16 +9924,6 @@ enum PatternVariant {
     JsonNumberOutOfRange,
     JsonDepthLimit,
     JsonNonFiniteNumber,
-    IoErrorNotFound,
-    IoErrorPermissionDenied,
-    IoErrorAlreadyExists,
-    IoErrorInvalidInput,
-    IoErrorConnectionRefused,
-    IoErrorConnectionReset,
-    IoErrorTimedOut,
-    IoErrorUnexpectedEof,
-    IoErrorClosed,
-    IoErrorOther,
     TaskCompleted,
     TaskFaulted,
     TaskCancelled,
@@ -10035,28 +9987,6 @@ fn pattern_variant_resolution(variant: PatternVariant) -> Resolution {
         PatternVariant::JsonNonFiniteNumber => {
             Resolution::Builtin(BuiltinValue::JsonNonFiniteNumber)
         }
-        PatternVariant::IoErrorNotFound => Resolution::Builtin(BuiltinValue::IoErrorNotFound),
-        PatternVariant::IoErrorPermissionDenied => {
-            Resolution::Builtin(BuiltinValue::IoErrorPermissionDenied)
-        }
-        PatternVariant::IoErrorAlreadyExists => {
-            Resolution::Builtin(BuiltinValue::IoErrorAlreadyExists)
-        }
-        PatternVariant::IoErrorInvalidInput => {
-            Resolution::Builtin(BuiltinValue::IoErrorInvalidInput)
-        }
-        PatternVariant::IoErrorConnectionRefused => {
-            Resolution::Builtin(BuiltinValue::IoErrorConnectionRefused)
-        }
-        PatternVariant::IoErrorConnectionReset => {
-            Resolution::Builtin(BuiltinValue::IoErrorConnectionReset)
-        }
-        PatternVariant::IoErrorTimedOut => Resolution::Builtin(BuiltinValue::IoErrorTimedOut),
-        PatternVariant::IoErrorUnexpectedEof => {
-            Resolution::Builtin(BuiltinValue::IoErrorUnexpectedEof)
-        }
-        PatternVariant::IoErrorClosed => Resolution::Builtin(BuiltinValue::IoErrorClosed),
-        PatternVariant::IoErrorOther => Resolution::Builtin(BuiltinValue::IoErrorOther),
         PatternVariant::TaskCompleted => Resolution::Builtin(BuiltinValue::TaskCompleted),
         PatternVariant::TaskFaulted => Resolution::Builtin(BuiltinValue::TaskFaulted),
         PatternVariant::TaskCancelled => Resolution::Builtin(BuiltinValue::TaskCancelled),
@@ -10411,7 +10341,6 @@ fn builtin_type(name: &str) -> Option<BuiltinType> {
         "Json" => Some(BuiltinType::Json),
         "JsonError" => Some(BuiltinType::JsonError),
         "IoError" => Some(BuiltinType::IoError),
-        "IoErrorKind" => Some(BuiltinType::IoErrorKind),
         _ => None,
     }
 }

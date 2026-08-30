@@ -1,5 +1,19 @@
 import std.io.__write_stdout
 
+/// Describes a recoverable operating-system I/O failure.
+pub enum IoErrorKind {
+    NotFound
+    PermissionDenied
+    AlreadyExists
+    InvalidInput
+    ConnectionRefused
+    ConnectionReset
+    TimedOut
+    UnexpectedEof
+    Closed
+    Other
+}
+
 /// Writes Text to the process standard-output stream without adding a delimiter.
 pub fn write(text Text) {
     __write_stdout(text)

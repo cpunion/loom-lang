@@ -1,20 +1,18 @@
 use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId};
-use loom_hir::{PackageSourceUnit, SourceUnit, lower_files, lower_package_files};
+use loom_hir::{LoweringResult, PackageSourceUnit, SourceUnit, lower_files, lower_package_files};
 use loom_lowering::lower_to_mir;
 use loom_sema::analyze;
 use loom_syntax::parse_with_file;
 
-fn compile(source: &str) -> loom_mir::CheckedProgram {
-    let parsed = parse_with_file(FileId(0), source);
-    assert!(
-        parsed.diagnostics().is_empty(),
-        "syntax diagnostics: {:#?}",
-        parsed.diagnostics()
-    );
-    let lowered = lower_files([SourceUnit {
-        file: FileId(0),
-        syntax: parsed.ast(),
-    }]);
+fn compile_lowered_package(
+    mut lowered: LoweringResult,
+    std: PackageId,
+    root: PackageId,
+) -> loom_mir::CheckedProgram {
+    lowered.program.register_package(std.clone(), [], false);
+    lowered
+        .program
+        .register_package(root, [(Name::new("std"), std)], true);
     assert!(
         lowered.diagnostics.is_empty(),
         "HIR diagnostics: {:#?}",
@@ -28,6 +26,34 @@ fn compile(source: &str) -> loom_mir::CheckedProgram {
     );
     lower_to_mir(&lowered.program, &analysis)
         .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
+}
+
+fn compile(source: &str) -> loom_mir::CheckedProgram {
+    let application = parse_with_file(FileId(0), source);
+    let io = parse_with_file(FileId(1), include_str!("../../../library/std/io/io.loom"));
+    assert!(
+        application.diagnostics().is_empty() && io.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} io={:#?}",
+        application.diagnostics(),
+        io.diagnostics()
+    );
+    let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+    let root = PackageId::new("lowering-test", "0");
+    let lowered = lower_package_files([
+        PackageSourceUnit {
+            file: FileId(0),
+            package: root.clone(),
+            module: ModuleName::new("lowering_test"),
+            syntax: application.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(1),
+            package: std.clone(),
+            module: ModuleName::new("std.io"),
+            syntax: io.ast(),
+        },
+    ]);
+    compile_lowered_package(lowered, std, root)
 }
 
 fn compile_and_validate(source: &str) -> loom_mir::CheckedProgram {
@@ -49,22 +75,25 @@ fn compile_with_std_text_and_path(source: &str) -> loom_mir::CheckedProgram {
         include_str!("../../../library/std/file/file.loom"),
     );
     let net = parse_with_file(FileId(4), include_str!("../../../library/std/net/net.loom"));
+    let io = parse_with_file(FileId(5), include_str!("../../../library/std/io/io.loom"));
     assert!(
         application.diagnostics().is_empty()
             && text.diagnostics().is_empty()
             && path.diagnostics().is_empty()
             && file.diagnostics().is_empty()
-            && net.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} text={:#?} path={:#?} file={:#?} net={:#?}",
+            && net.diagnostics().is_empty()
+            && io.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} text={:#?} path={:#?} file={:#?} net={:#?} io={:#?}",
         application.diagnostics(),
         text.diagnostics(),
         path.diagnostics(),
         file.diagnostics(),
-        net.diagnostics()
+        net.diagnostics(),
+        io.diagnostics()
     );
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("lowering-test", "0");
-    let mut lowered = lower_package_files([
+    let lowered = lower_package_files([
         PackageSourceUnit {
             file: FileId(0),
             package: root.clone(),
@@ -95,20 +124,14 @@ fn compile_with_std_text_and_path(source: &str) -> loom_mir::CheckedProgram {
             module: ModuleName::new("std.net"),
             syntax: net.ast(),
         },
+        PackageSourceUnit {
+            file: FileId(5),
+            package: std.clone(),
+            module: ModuleName::new("std.io"),
+            syntax: io.ast(),
+        },
     ]);
-    lowered.program.register_package(std.clone(), [], false);
-    lowered
-        .program
-        .register_package(root, [(Name::new("std"), std)], true);
-    assert!(lowered.diagnostics.is_empty(), "{:#?}", lowered.diagnostics);
-    let analysis = analyze(&lowered.program);
-    assert!(
-        analysis.diagnostics.is_empty(),
-        "semantic diagnostics: {:#?}",
-        analysis.diagnostics
-    );
-    lower_to_mir(&lowered.program, &analysis)
-        .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
+    compile_lowered_package(lowered, std, root)
 }
 
 fn lower_with_std_resource(source: &str) -> loom_hir::Program {
@@ -117,11 +140,15 @@ fn lower_with_std_resource(source: &str) -> loom_hir::Program {
         FileId(1),
         include_str!("../../../library/std/resource/resource.loom"),
     );
+    let io = parse_with_file(FileId(2), include_str!("../../../library/std/io/io.loom"));
     assert!(
-        application.diagnostics().is_empty() && resource.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} std={:#?}",
+        application.diagnostics().is_empty()
+            && resource.diagnostics().is_empty()
+            && io.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} resource={:#?} io={:#?}",
         application.diagnostics(),
-        resource.diagnostics()
+        resource.diagnostics(),
+        io.diagnostics()
     );
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("lowering-test", "0");
@@ -137,6 +164,12 @@ fn lower_with_std_resource(source: &str) -> loom_hir::Program {
             package: std.clone(),
             module: ModuleName::new("std.resource"),
             syntax: resource.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(2),
+            package: std.clone(),
+            module: ModuleName::new("std.io"),
+            syntax: io.ast(),
         },
     ]);
     lowered.program.register_package(std.clone(), [], false);
@@ -169,15 +202,19 @@ fn compile_with_std_float(source: &str) -> loom_mir::CheckedProgram {
         FileId(1),
         include_str!("../../../library/std/float/float.loom"),
     );
+    let io = parse_with_file(FileId(2), include_str!("../../../library/std/io/io.loom"));
     assert!(
-        application.diagnostics().is_empty() && float.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} float={:#?}",
+        application.diagnostics().is_empty()
+            && float.diagnostics().is_empty()
+            && io.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} float={:#?} io={:#?}",
         application.diagnostics(),
-        float.diagnostics()
+        float.diagnostics(),
+        io.diagnostics()
     );
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("lowering-test", "0");
-    let mut lowered = lower_package_files([
+    let lowered = lower_package_files([
         PackageSourceUnit {
             file: FileId(0),
             package: root.clone(),
@@ -190,20 +227,14 @@ fn compile_with_std_float(source: &str) -> loom_mir::CheckedProgram {
             module: ModuleName::new("std.float"),
             syntax: float.ast(),
         },
+        PackageSourceUnit {
+            file: FileId(2),
+            package: std.clone(),
+            module: ModuleName::new("std.io"),
+            syntax: io.ast(),
+        },
     ]);
-    lowered.program.register_package(std.clone(), [], false);
-    lowered
-        .program
-        .register_package(root, [(Name::new("std"), std)], true);
-    assert!(lowered.diagnostics.is_empty(), "{:#?}", lowered.diagnostics);
-    let analysis = analyze(&lowered.program);
-    assert!(
-        analysis.diagnostics.is_empty(),
-        "semantic diagnostics: {:#?}",
-        analysis.diagnostics
-    );
-    lower_to_mir(&lowered.program, &analysis)
-        .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
+    compile_lowered_package(lowered, std, root)
 }
 
 fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
@@ -226,6 +257,7 @@ fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
         include_str!("../../../library/std/file/file.loom"),
     );
     let net = parse_with_file(FileId(6), include_str!("../../../library/std/net/net.loom"));
+    let io = parse_with_file(FileId(7), include_str!("../../../library/std/io/io.loom"));
     assert!(
         application.diagnostics().is_empty()
             && log.diagnostics().is_empty()
@@ -233,19 +265,21 @@ fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
             && float.diagnostics().is_empty()
             && text.diagnostics().is_empty()
             && file.diagnostics().is_empty()
-            && net.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} log={:#?} json={:#?} float={:#?} text={:#?} file={:#?} net={:#?}",
+            && net.diagnostics().is_empty()
+            && io.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} log={:#?} json={:#?} float={:#?} text={:#?} file={:#?} net={:#?} io={:#?}",
         application.diagnostics(),
         log.diagnostics(),
         json.diagnostics(),
         float.diagnostics(),
         text.diagnostics(),
         file.diagnostics(),
-        net.diagnostics()
+        net.diagnostics(),
+        io.diagnostics()
     );
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("lowering-test", "0");
-    let mut lowered = lower_package_files([
+    let lowered = lower_package_files([
         PackageSourceUnit {
             file: FileId(0),
             package: root.clone(),
@@ -288,38 +322,32 @@ fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
             module: ModuleName::new("std.net"),
             syntax: net.ast(),
         },
+        PackageSourceUnit {
+            file: FileId(7),
+            package: std.clone(),
+            module: ModuleName::new("std.io"),
+            syntax: io.ast(),
+        },
     ]);
-    lowered.program.register_package(std.clone(), [], false);
-    lowered
-        .program
-        .register_package(root, [(Name::new("std"), std)], true);
-    assert!(
-        lowered.diagnostics.is_empty(),
-        "HIR diagnostics: {:#?}",
-        lowered.diagnostics
-    );
-    let analysis = analyze(&lowered.program);
-    assert!(
-        analysis.diagnostics.is_empty(),
-        "semantic diagnostics: {:#?}",
-        analysis.diagnostics
-    );
-    lower_to_mir(&lowered.program, &analysis)
-        .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
+    compile_lowered_package(lowered, std, root)
 }
 
 fn compile_with_std_int(source: &str) -> loom_mir::CheckedProgram {
     let application = parse_with_file(FileId(0), source);
     let int = parse_with_file(FileId(1), include_str!("../../../library/std/int/int.loom"));
+    let io = parse_with_file(FileId(2), include_str!("../../../library/std/io/io.loom"));
     assert!(
-        application.diagnostics().is_empty() && int.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} std={:#?}",
+        application.diagnostics().is_empty()
+            && int.diagnostics().is_empty()
+            && io.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} int={:#?} io={:#?}",
         application.diagnostics(),
-        int.diagnostics()
+        int.diagnostics(),
+        io.diagnostics()
     );
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("lowering-test", "0");
-    let mut lowered = lower_package_files([
+    let lowered = lower_package_files([
         PackageSourceUnit {
             file: FileId(0),
             package: root.clone(),
@@ -332,24 +360,14 @@ fn compile_with_std_int(source: &str) -> loom_mir::CheckedProgram {
             module: ModuleName::new("std.int"),
             syntax: int.ast(),
         },
+        PackageSourceUnit {
+            file: FileId(2),
+            package: std.clone(),
+            module: ModuleName::new("std.io"),
+            syntax: io.ast(),
+        },
     ]);
-    lowered.program.register_package(std.clone(), [], false);
-    lowered
-        .program
-        .register_package(root, [(Name::new("std"), std)], true);
-    assert!(
-        lowered.diagnostics.is_empty(),
-        "HIR diagnostics: {:#?}",
-        lowered.diagnostics
-    );
-    let analysis = analyze(&lowered.program);
-    assert!(
-        analysis.diagnostics.is_empty(),
-        "semantic diagnostics: {:#?}",
-        analysis.diagnostics
-    );
-    lower_to_mir(&lowered.program, &analysis)
-        .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
+    compile_lowered_package(lowered, std, root)
 }
 
 fn compile_with_std_json(source: &str) -> loom_mir::CheckedProgram {
@@ -366,20 +384,23 @@ fn compile_with_std_json(source: &str) -> loom_mir::CheckedProgram {
         FileId(3),
         include_str!("../../../library/std/text/text.loom"),
     );
+    let io = parse_with_file(FileId(4), include_str!("../../../library/std/io/io.loom"));
     assert!(
         application.diagnostics().is_empty()
             && json.diagnostics().is_empty()
             && float.diagnostics().is_empty()
-            && text.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} json={:#?} float={:#?} text={:#?}",
+            && text.diagnostics().is_empty()
+            && io.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} json={:#?} float={:#?} text={:#?} io={:#?}",
         application.diagnostics(),
         json.diagnostics(),
         float.diagnostics(),
-        text.diagnostics()
+        text.diagnostics(),
+        io.diagnostics()
     );
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("lowering-test", "0");
-    let mut lowered = lower_package_files([
+    let lowered = lower_package_files([
         PackageSourceUnit {
             file: FileId(0),
             package: root.clone(),
@@ -404,24 +425,14 @@ fn compile_with_std_json(source: &str) -> loom_mir::CheckedProgram {
             module: ModuleName::new("std.text"),
             syntax: text.ast(),
         },
+        PackageSourceUnit {
+            file: FileId(4),
+            package: std.clone(),
+            module: ModuleName::new("std.io"),
+            syntax: io.ast(),
+        },
     ]);
-    lowered.program.register_package(std.clone(), [], false);
-    lowered
-        .program
-        .register_package(root, [(Name::new("std"), std)], true);
-    assert!(
-        lowered.diagnostics.is_empty(),
-        "HIR diagnostics: {:#?}",
-        lowered.diagnostics
-    );
-    let analysis = analyze(&lowered.program);
-    assert!(
-        analysis.diagnostics.is_empty(),
-        "semantic diagnostics: {:#?}",
-        analysis.diagnostics
-    );
-    lower_to_mir(&lowered.program, &analysis)
-        .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
+    compile_lowered_package(lowered, std, root)
 }
 
 fn analyze_with_std_resource(source: &str) -> Vec<loom_core::Diagnostic> {
@@ -1672,6 +1683,45 @@ async fn network(host Text, port Int) Result[Unit, IoError] {
             .map(|variant| variant.name.as_str())
             .collect::<Vec<_>>(),
         ["Debug", "Info", "Warn", "Error"]
+    );
+    let io_error_kind = program
+        .types
+        .iter()
+        .find(|definition| definition.name == "IoErrorKind")
+        .expect("ordinary source IoErrorKind enum");
+    assert_eq!(program.prelude.io_error_kind, Some(io_error_kind.id));
+    let loom_mir::TypeDefKind::Enum { variants } = &io_error_kind.kind else {
+        panic!("IoErrorKind must be an ordinary source enum: {io_error_kind:#?}");
+    };
+    assert_eq!(
+        variants
+            .iter()
+            .map(|variant| variant.name.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "NotFound",
+            "PermissionDenied",
+            "AlreadyExists",
+            "InvalidInput",
+            "ConnectionRefused",
+            "ConnectionReset",
+            "TimedOut",
+            "UnexpectedEof",
+            "Closed",
+            "Other",
+        ]
+    );
+    let io_error = program
+        .prelude
+        .io_error
+        .and_then(|id| program.type_def(id))
+        .expect("canonical IoError record");
+    let loom_mir::TypeDefKind::Record { fields, .. } = &io_error.kind else {
+        panic!("IoError must remain a record: {io_error:#?}");
+    };
+    assert_eq!(
+        fields[0].ty,
+        loom_mir::Type::Nominal(io_error_kind.id, Vec::new())
     );
     let debug = format!("{program:#?}");
     for builtin in [

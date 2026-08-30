@@ -12,7 +12,7 @@ use loom_codegen_ir::{
     UnsupportedFeature, artifact_identity, dump_program, lower_typed_artifact, plan_managed_roots,
 };
 use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId, Span};
-use loom_hir::{PackageSourceUnit, SourceUnit, lower_files, lower_package_files};
+use loom_hir::{PackageSourceUnit, lower_package_files};
 use loom_lowering::lower_to_mir;
 use loom_mir::{
     Block, CallPlan, Constant, ConstructionMode, Expr, ExprKind, FieldDef, Function, FunctionId,
@@ -28,7 +28,7 @@ fn compile(source: &str) -> loom_mir::CheckedProgram {
 }
 
 fn compile_source_files(sources: &[&str]) -> loom_mir::CheckedProgram {
-    let parsed = sources
+    let applications = sources
         .iter()
         .enumerate()
         .map(|(index, source)| {
@@ -38,18 +38,45 @@ fn compile_source_files(sources: &[&str]) -> loom_mir::CheckedProgram {
             )
         })
         .collect::<Vec<_>>();
+    let io_file = FileId(u32::try_from(sources.len()).expect("test source count fits FileId"));
+    let io = parse_with_file(io_file, include_str!("../../../library/std/io/io.loom"));
     assert!(
-        parsed.iter().all(|parsed| parsed.diagnostics().is_empty()),
-        "syntax diagnostics: {:#?}",
-        parsed
+        applications
+            .iter()
+            .all(|parsed| parsed.diagnostics().is_empty())
+            && io.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} io={:#?}",
+        applications
             .iter()
             .flat_map(loom_syntax::Parse::diagnostics)
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>(),
+        io.diagnostics()
     );
-    let lowered = lower_files(parsed.iter().enumerate().map(|(index, parsed)| SourceUnit {
-        file: FileId(u32::try_from(index).expect("test source count fits FileId")),
-        syntax: parsed.ast(),
-    }));
+    let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+    let root = PackageId::standalone();
+    let mut lowered = lower_package_files(
+        applications
+            .iter()
+            .enumerate()
+            .map(|(index, parsed)| PackageSourceUnit {
+                file: FileId(u32::try_from(index).expect("test source count fits FileId")),
+                package: root.clone(),
+                module: ModuleName::new("standalone"),
+                syntax: parsed.ast(),
+            })
+            .chain(std::iter::once(PackageSourceUnit {
+                file: io_file,
+                package: std_package.clone(),
+                module: ModuleName::new("std.io"),
+                syntax: io.ast(),
+            })),
+    );
+    lowered
+        .program
+        .register_package(std_package.clone(), [], false);
+    lowered
+        .program
+        .register_package(root, [(Name::new("std"), std_package)], true);
     assert!(
         lowered.diagnostics.is_empty(),
         "HIR diagnostics: {:#?}",
@@ -78,12 +105,21 @@ fn compile_with_std_modules(
     std_modules: &[(&str, &str)],
 ) -> loom_mir::CheckedProgram {
     let application = parse_with_file(FileId(0), source);
+    assert!(
+        std_modules.iter().all(|(name, _)| *name != "std.io"),
+        "std.io is always loaded from the real standard-library source"
+    );
     let std_modules = std_modules
         .iter()
+        .copied()
+        .chain(std::iter::once((
+            "std.io",
+            include_str!("../../../library/std/io/io.loom"),
+        )))
         .enumerate()
         .map(|(index, (name, source))| {
             let file = FileId(u32::try_from(index + 1).expect("test source count fits FileId"));
-            (*name, file, parse_with_file(file, source))
+            (name, file, parse_with_file(file, source))
         })
         .collect::<Vec<_>>();
     assert!(
@@ -202,16 +238,19 @@ fn compile_with_std_json(source: &str) -> loom_mir::CheckedProgram {
         FileId(3),
         include_str!("../../../library/std/text/text.loom"),
     );
+    let io = parse_with_file(FileId(4), include_str!("../../../library/std/io/io.loom"));
     assert!(
         application.diagnostics().is_empty()
             && json.diagnostics().is_empty()
             && float.diagnostics().is_empty()
-            && text.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} json={:#?} float={:#?} text={:#?}",
+            && text.diagnostics().is_empty()
+            && io.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} json={:#?} float={:#?} text={:#?} io={:#?}",
         application.diagnostics(),
         json.diagnostics(),
         float.diagnostics(),
-        text.diagnostics()
+        text.diagnostics(),
+        io.diagnostics()
     );
     let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("codegen-ir-test", "0");
@@ -239,6 +278,12 @@ fn compile_with_std_json(source: &str) -> loom_mir::CheckedProgram {
             package: std_package.clone(),
             module: ModuleName::new("std.text"),
             syntax: text.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(4),
+            package: std_package.clone(),
+            module: ModuleName::new("std.io"),
+            syntax: io.ast(),
         },
     ]);
     lowered

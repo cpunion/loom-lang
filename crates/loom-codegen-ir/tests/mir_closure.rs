@@ -19,11 +19,15 @@ fn compile_with_std_resource(source: &str) -> CheckedProgram {
         FileId(1),
         include_str!("../../../library/std/resource/resource.loom"),
     );
+    let io = parse_with_file(FileId(2), include_str!("../../../library/std/io/io.loom"));
     assert!(
-        application.diagnostics().is_empty() && resource.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} std={:#?}",
+        application.diagnostics().is_empty()
+            && resource.diagnostics().is_empty()
+            && io.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} resource={:#?} io={:#?}",
         application.diagnostics(),
-        resource.diagnostics()
+        resource.diagnostics(),
+        io.diagnostics()
     );
 
     let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
@@ -40,6 +44,12 @@ fn compile_with_std_resource(source: &str) -> CheckedProgram {
             package: std_package.clone(),
             module: ModuleName::new("std.resource"),
             syntax: resource.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(2),
+            package: std_package.clone(),
+            module: ModuleName::new("std.io"),
+            syntax: io.ast(),
         },
     ]);
     lowered

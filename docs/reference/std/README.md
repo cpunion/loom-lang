@@ -5,8 +5,9 @@
 The standard library is deliberately small. Its value types follow the same
 static typing, value semantics, contracts, resource obligations, and task rules
 as user declarations. Standard functions are available only after an explicit
-import; standard value types and their built-in constructors and methods are in
-the prelude.
+import. A deliberately small set of standard value types is in the prelude;
+their constructors and methods retain their ordinary declaration identities and
+visibility.
 
 The compiler-owned source module is `std`. Source imports library APIs by
 their `std.*` path.
@@ -26,11 +27,10 @@ Source-backed packages are distributed as Loom source and compile through the
 ordinary package, type, MIR, reachability, and native pipelines. Current source
 declarations include the `std.int`, `std.float`, and `std.json` parsers and
 their public errors; the complete `std.float` public API and conversion error;
-`std.text.DecodeTextError`; `std.path.PathError`; `std.io.write` and
-`write_line`; the complete public `std.log` API, including `LogLevel` and
+`std.text.DecodeTextError`; `std.path.PathError`; `std.io.IoErrorKind`, `write`,
+and `write_line`; the complete public `std.log` API, including `LogLevel` and
 `write`; all public `std.file` open/create and `std.net` connect wrappers; and
-the public `Dispose`, `MustScope`, and `NoSuspend` declarations in
-`std.resource`.
+the public `Dispose`, `MustScope`, and `NoSuspend` declarations in `std.resource`.
 The public logging graph is ordinary Loom source over one compiler-private
 typed output primitive. Resource declarations are source-backed, but
 their fixed shapes and irreducible static rules remain part of the language

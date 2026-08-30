@@ -261,7 +261,7 @@ across Loom versions.
 
 ## Compiler cache
 
-The default project cache is `target/loom/cache/v12`. It caches versioned
+The default project cache is `target/loom/cache/v13`. It caches versioned
 parsing, interfaces, validated checked MIR, target objects, and supported
 portable final artifacts using content-derived keys. Reads validate envelopes
 and hashes; corrupt or incompatible entries degrade to misses rather than being

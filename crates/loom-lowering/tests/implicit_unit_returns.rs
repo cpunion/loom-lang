@@ -1,21 +1,41 @@
-use loom_core::FileId;
-use loom_hir::{SourceUnit, lower_files};
+use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId};
+use loom_hir::{PackageSourceUnit, lower_package_files};
 use loom_lowering::lower_to_mir;
 use loom_mir::{RequirementType, StatementKind, Type};
 use loom_sema::analyze;
 use loom_syntax::parse_with_file;
 
 fn compile_and_validate(source: &str) -> loom_mir::CheckedProgram {
-    let parsed = parse_with_file(FileId(0), source);
+    let application_file = FileId(0);
+    let io_file = FileId(1);
+    let parsed = parse_with_file(application_file, source);
+    let io = parse_with_file(io_file, include_str!("../../../library/std/io/io.loom"));
     assert!(
-        parsed.diagnostics().is_empty(),
-        "syntax diagnostics: {:#?}",
-        parsed.diagnostics()
+        parsed.diagnostics().is_empty() && io.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} io={:#?}",
+        parsed.diagnostics(),
+        io.diagnostics()
     );
-    let lowered = lower_files([SourceUnit {
-        file: FileId(0),
-        syntax: parsed.ast(),
-    }]);
+    let root = PackageId::new("implicit-unit-test", "0");
+    let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+    let mut lowered = lower_package_files([
+        PackageSourceUnit {
+            file: application_file,
+            package: root.clone(),
+            module: ModuleName::new("implicit_unit_test"),
+            syntax: parsed.ast(),
+        },
+        PackageSourceUnit {
+            file: io_file,
+            package: std.clone(),
+            module: ModuleName::new("std.io"),
+            syntax: io.ast(),
+        },
+    ]);
+    lowered.program.register_package(std.clone(), [], false);
+    lowered
+        .program
+        .register_package(root, [(Name::new("std"), std)], true);
     assert!(
         lowered.diagnostics.is_empty(),
         "HIR diagnostics: {:#?}",
@@ -61,10 +81,14 @@ impl C for R {
 ",
     );
 
-    assert_eq!(program.functions.len(), 7);
+    let functions = program
+        .functions
+        .iter()
+        .filter(|function| function.name.starts_with("implicit_unit_test."))
+        .collect::<Vec<_>>();
+    assert_eq!(functions.len(), 7);
     assert!(
-        program
-            .functions
+        functions
             .iter()
             .all(|function| function.return_ty == Type::Unit)
     );

@@ -16,6 +16,7 @@ fn analyze_source_program(source: &str) -> (Program, Analysis) {
     let std_path_file = FileId(5);
     let std_file_file = FileId(6);
     let std_net_file = FileId(7);
+    let std_io_file = FileId(8);
     let parsed = parse_with_file(root_file, source);
     let std_log = parse_with_file(
         std_log_file,
@@ -45,6 +46,7 @@ fn analyze_source_program(source: &str) -> (Program, Analysis) {
         std_net_file,
         include_str!("../../../library/std/net/net.loom"),
     );
+    let std_io = parse_with_file(std_io_file, include_str!("../../../library/std/io/io.loom"));
     assert!(
         parsed.diagnostics().is_empty(),
         "syntax diagnostics: {:#?}",
@@ -57,15 +59,17 @@ fn analyze_source_program(source: &str) -> (Program, Analysis) {
             && std_text.diagnostics().is_empty()
             && std_path.diagnostics().is_empty()
             && std_file.diagnostics().is_empty()
-            && std_net.diagnostics().is_empty(),
-        "standard syntax diagnostics: log={:#?} json={:#?} float={:#?} text={:#?} path={:#?} file={:#?} net={:#?}",
+            && std_net.diagnostics().is_empty()
+            && std_io.diagnostics().is_empty(),
+        "standard syntax diagnostics: log={:#?} json={:#?} float={:#?} text={:#?} path={:#?} file={:#?} net={:#?} io={:#?}",
         std_log.diagnostics(),
         std_json.diagnostics(),
         std_float.diagnostics(),
         std_text.diagnostics(),
         std_path.diagnostics(),
         std_file.diagnostics(),
-        std_net.diagnostics()
+        std_net.diagnostics(),
+        std_io.diagnostics()
     );
     let root_package = PackageId::new("sema-test", "0");
     let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
@@ -117,6 +121,12 @@ fn analyze_source_program(source: &str) -> (Program, Analysis) {
             package: std_package.clone(),
             module: ModuleName::new("std.net"),
             syntax: std_net.ast(),
+        },
+        PackageSourceUnit {
+            file: std_io_file,
+            package: std_package.clone(),
+            module: ModuleName::new("std.io"),
+            syntax: std_io.ast(),
         },
     ]);
     assert!(

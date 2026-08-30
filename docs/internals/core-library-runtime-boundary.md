@@ -91,8 +91,13 @@ import the narrow typed I/O primitives; Path overloads convert with
 primitive. Public calls therefore close through ordinary source reachability
 before the private operation enters MIR.
 
-The current `File`, `Socket`, `IoError`, and `IoErrorKind` values and resource
-methods remain compiler-owned. Their native implementation is not a universal
+`IoErrorKind` is an ordinary closed enum declared by `std.io` and automatically
+available as a prelude type. The compiler records its exact source identity
+because typed I/O constructs that enum directly, but its variants use ordinary
+source definitions rather than builtin constructors.
+
+The current `File`, `Socket`, and `IoError` values and resource methods remain
+compiler-owned. Their native implementation is not a universal
 compiler builtin ABI: both the recoverable `Result` family and the faulting
 family must lower as typed LCIR, and the checked-MIR emitter rejects reachable
 I/O operations and cleanup. If another reachable feature prevents complete
