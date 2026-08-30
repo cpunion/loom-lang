@@ -121,17 +121,26 @@ budgets. This rejection occurs during planning, before any partial LCIR is
 allocated. A generic function that is not reached cannot consume those budgets
 or change direct-versus-checked-MIR route selection.
 
-For a concrete `dyn C` view, LCIR additionally groups artifact-reachable
-witnesses by the exact concept and associated-type bindings. One closed
-nongeneric conformance is erased to its concrete representation and every used
-requirement contributes one ordinary direct method edge. Two or more exact
-closed nongeneric conformances form an ordered finite catalog. The traversal
-then contributes one direct method edge per candidate for each requirement
-slot that is actually called; unused slots and unrelated conformances remain
-dead. LLVM receives a compiler-private finite tag switch, not an indirect call
-or witness table. A missing, open, generic, prerequisite-dependent, or
-otherwise incomplete set is a structured unsupported site; the compiler never
-guesses a target or consults all declared conformances.
+For a concrete `dyn C` view, LCIR additionally groups executable conversion
+producers by the exact concept and associated-type bindings. One closed
+instantiated proof is erased to its concrete representation and every used
+requirement contributes one ordinary direct method edge. Generic and
+conditional conformances participate when their concrete types and prerequisite
+proofs are closed. Two or more exact proofs form an ordered finite catalog. The
+traversal then contributes one direct method edge per candidate for each
+requirement slot that is actually called; unused slots and unrelated static
+conformances remain dead. LLVM receives a compiler-private finite tag switch,
+not an indirect call or witness table. A missing producer or a proof with an
+unresolved parameter or projection is a structured unsupported site; the
+compiler never guesses a target or consults all declared conformances.
+
+The compiler computes this set as a least fixed point. It starts with root,
+direct-call, and static-dispatch instances while the dynamic catalog is empty,
+collects conversion producers in only those exact instances, and then adds the
+corresponding direct dynamic-method instances. Repeating those two steps admits
+producers reached by real dynamic calls without letting a conservatively seen
+or prerequisite-only witness method keep itself alive through a producer in
+its own body.
 
 View discovery walks both reachable expression/signature types and their
 bounded concrete record, enum, and refined schemas. A unique candidate is

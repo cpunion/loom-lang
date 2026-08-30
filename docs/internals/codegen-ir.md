@@ -779,9 +779,9 @@ locations. A finite closed catalog uses the existing exact one-pointer managed
 dynamic representation, including when nested in products, sums, Lists, or a
 completed Task result. The recursive frame walk consumes one shared bounded
 structural budget, so cyclic or non-regular generic expansion fails closed
-instead of growing the compiler stack. Open, generic, or
-prerequisite-dependent dynamic-concept frame values, raw readiness, and
-cancellation sources remain atomic whole-artifact fallback.
+instead of growing the compiler stack. Dynamic-concept frame producers with
+unresolved parameters or projections, raw readiness, and cancellation sources
+remain atomic whole-artifact fallback.
 Fixed argument joins and runtime-width homogeneous List joins are admitted both
 as first-class Tasks and when consumed later by `.await`; `any` and `race`
 additionally require one homogeneous output type.
@@ -930,10 +930,12 @@ signature. Compile-time witness arguments remain in `InstanceKey` and artifact
 identity but consume no runtime argument. Static concept-method dispatch is an
 ordinary direct call after closure, and associated projections do not survive
 in a completed key or physical representation. Dynamic instance closure erases
-a unique witness or retains only the called requirement slot for every member
-of a finite closed candidate catalog. Missing, open, generic, and
-prerequisite-dependent candidate sets still select complete checked-MIR lowering;
-no universal value, runtime registry, or witness ABI enters typed LCIR.
+a unique closed proof or retains only the called requirement slot for every
+member of a finite closed candidate catalog. Generic and conditional
+conformances participate when their concrete types and prerequisite proof trees
+are closed. Missing producers and proofs with unresolved parameters or
+projections still select complete checked-MIR lowering; no universal value,
+runtime registry, or witness ABI enters typed LCIR.
 
 One public `INSTANCE_KEY_STRUCTURE_BUDGET` limits the combined nested type and
 witness structure of a key to 256 nodes. Builders report

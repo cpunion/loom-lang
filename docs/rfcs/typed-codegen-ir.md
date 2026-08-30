@@ -40,8 +40,8 @@ gates in this record are not complete.
 The production LLVM backend still lowers artifacts outside current direct LCIR
 coverage through a universal value implementation and several closed-world
 native specializations. Unsupported managed and projected shapes,
-nonregular generic expansion, open or prerequisite-dependent dynamic concepts,
-runtime-checked generic constraints,
+nonregular generic expansion, dynamic producers whose proofs still contain
+unresolved parameters or projections, runtime-checked generic constraints,
 cleanup shapes outside the direct lexical slice, async shapes outside the
 checked coroutine slice, and private-list paths still repeat representation, proof,
 call-compatibility, and runtime-requirement decisions inside the checked-MIR target
@@ -490,13 +490,15 @@ installed before coroutine cleanup. A dynamic View parameter is copied by value
 into the Task frame, and mutable dispatch changes only that copy rather than
 aliasing the value that created the Task.
 
-When closed-world analysis proves exactly one closed nongeneric witness for a
-dynamic concept, planning recursively replaces that View with the witness's
-concrete physical type. This admits the value in coroutine parameters, results,
-and nested product, sum, and suspension-frame shapes. A finite multi-witness
-View keeps its exact one-pointer managed catalog representation in the same
-positions, including inside Lists. Open, generic, or prerequisite-dependent
-Views have no coroutine-frame representation.
+When closed-world analysis proves exactly one closed instantiated proof for a
+dynamic concept, planning recursively replaces that View with the proof's
+concrete physical type. The proof may apply a generic or conditional
+conformance, provided its concrete types and prerequisite proof tree are fully
+closed. This admits the value in coroutine parameters, results, and nested
+product, sum, and suspension-frame shapes. A finite multi-candidate View keeps
+its exact one-pointer managed catalog representation in the same positions,
+including inside Lists. A producer whose proof still contains an unresolved
+parameter or projection has no coroutine-frame representation.
 
 An immediately awaited fixed tuple or fixed Task-policy call evaluates its
 children left to right and lowers directly to one multi-child `AwaitTasks`, with
@@ -579,8 +581,9 @@ receives exact child types and explicit control flow without acquiring public
 Task policy operators.
 
 The remaining fallback boundary includes explicit mutable coroutine
-parameters, open or prerequisite-dependent dynamic-concept frame values, raw readiness,
-and unsupported protected or managed projected operations. Concrete closed
+parameters, dynamic-concept frame producers with unresolved parameters or
+projections, raw readiness, and unsupported protected or managed projected
+operations. Concrete closed
 `List[T]` and compiler-private `TextMap[V]` values are canonical one-pointer
 frame carriers in parameters, results, nested products, and suspension-live
 rows. Fixed argument joins and homogeneous runtime-width List joins are

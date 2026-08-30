@@ -463,11 +463,12 @@ requirement is selected conformance and value behavior, not a permanently
 fixed two-word fat pointer.
 
 Typed LCIR first tries the strongest closed-world form. When one exact
-concept-and-binding view has exactly one reachable closed nongeneric witness,
+concept-and-binding view has exactly one reachable closed instantiated proof,
 the view is represented by its concrete value alone and every used requirement
-becomes a direct call. Products, sums, and `List[dyn C]` use the concrete
-layout recursively, so raw and erased values share one canonical physical
-type.
+becomes a direct specialized call. The proof may apply a generic or conditional
+conformance when its concrete types and complete prerequisite proof tree are
+closed. Products, sums, and `List[dyn C]` use the concrete layout recursively,
+so raw and erased values share one canonical physical type.
 
 When the artifact instead proves a finite set of two or more such witnesses,
 the view has a compiler-private single-managed-pointer representation. Each
@@ -484,9 +485,9 @@ and address are not observable. A `mut self` dispatch calls the concrete method
 through its ordinary inout ABI, then allocates and writes back a fresh exact box
 on both normal and fault exits. The old box is never modified, so independently
 copied dynamic values retain logical value semantics across moving collection.
-Missing witnesses and open, generic, prerequisite-dependent, or otherwise
-incomplete sets still select structured unsupported classification for the
-whole artifact.
+A missing producer or a proof with an unresolved type, witness parameter, or
+associated projection still selects structured unsupported classification for
+the whole artifact.
 
 Loom does not support runtime conversion from an untyped universal value to
 `dyn C` by searching every conformance. This keeps witness reachability
