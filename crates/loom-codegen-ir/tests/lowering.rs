@@ -2724,6 +2724,94 @@ pub fn main() {{
 }
 
 #[test]
+fn contract_text_budget_charges_each_synchronous_call_emission() {
+    let source = |call_count: usize| {
+        let direct = "A".repeat(TEXT_LITERAL_MAX_TOTAL_BYTES / 32);
+        let pattern = "B".repeat(TEXT_LITERAL_MAX_TOTAL_BYTES / 32);
+        let calls = "    discard guarded(\"\")\n".repeat(call_count);
+        format!(
+            r#"fn guarded(value Text)
+    requires value == "{direct}" || match value {{
+        "{pattern}" => true
+        _ => false
+    }}
+{{}}
+
+pub fn main() {{
+{calls}}}
+"#
+        )
+    };
+
+    let small = lower_run(&source(2));
+    let LoweringOutcome::Complete(artifact) = small else {
+        panic!("a few synchronous contract emissions must remain supported: {small:?}")
+    };
+    assert_eq!(
+        artifact
+            .functions()
+            .iter()
+            .flat_map(loom_codegen_ir::Function::instructions)
+            .filter(|instruction| matches!(instruction.kind(), InstructionKind::TextLiteral { utf8 } if !utf8.is_empty()))
+            .count(),
+        4
+    );
+
+    let overflowing = lower_run(&source(17));
+    let LoweringOutcome::Unsupported(report) = overflowing else {
+        panic!("contract Text amplification must select atomic fallback: {overflowing:?}")
+    };
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::TextConstant),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn text_budget_charges_each_expanded_cleanup_match_emission() {
+    let source = |return_count: usize| {
+        let pattern = "C".repeat(TEXT_LITERAL_MAX_TOTAL_BYTES / 16);
+        let returns = "    if flag {\n        return\n    }\n".repeat(return_count);
+        format!(
+            r#"fn exercise(value Text, flag Bool) {{
+    defer {{
+        discard match value {{
+            "{pattern}" => 1
+            _ => 0
+        }}
+    }}
+{returns}}}
+
+pub fn main() {{
+    exercise("other", false)
+}}
+"#
+        )
+    };
+
+    let small = lower_run(&source(1));
+    assert!(
+        matches!(small, LoweringOutcome::Complete(_)),
+        "a few expanded cleanup literals must remain supported: {small:?}"
+    );
+
+    let overflowing = lower_run(&source(16));
+    let LoweringOutcome::Unsupported(report) = overflowing else {
+        panic!("cleanup Text amplification must select atomic fallback: {overflowing:?}")
+    };
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::TextConstant),
+        "{report:?}"
+    );
+}
+
+#[test]
 fn text_literal_bytes_participate_in_artifact_identity() {
     let identity = |literal: &str| {
         let source = format!("pub fn main() {{\n    discard \"{literal}\".length()\n}}\n");

@@ -694,6 +694,11 @@ pub fn lower_typed_artifact(
         .iter()
         .map(|entry| entry.effects)
         .collect::<Vec<_>>();
+    // This budget is deliberately fresh after source classification. Every
+    // actual LCIR TextLiteral emission, including lexical-cleanup expansion,
+    // charges it before cloning UTF-8 into the disposable builder.
+    let mut emitted_text_literals = TextLiteralBudget::default();
+    let mut text_literal_unsupported = None;
     for planned in effects.entries() {
         let function_id = planned.key.source();
         let source = mir.function(function_id).ok_or_else(|| {
@@ -720,7 +725,7 @@ pub fn lower_typed_artifact(
                     )
                 })?;
             let function_builder = builder.function(instance).map_err(LoweringError::from)?;
-            FunctionLowerer::new(
+            let lowered = FunctionLowerer::new(
                 mir.as_program(),
                 source,
                 &planned.key,
@@ -730,8 +735,16 @@ pub fn lower_typed_artifact(
                 &match_plans,
                 &dyn_concepts,
                 equality_anchor,
+                &mut emitted_text_literals,
+                &mut text_literal_unsupported,
             )
-            .lower_structural_equality_helper(&compared)?;
+            .lower_structural_equality_helper(&compared);
+            if let Some(item) = text_literal_unsupported.take() {
+                return Ok(LoweringOutcome::Unsupported(SupportReport {
+                    items: vec![item],
+                }));
+            }
+            lowered?;
             continue;
         }
         let coroutine = if source.is_async {
@@ -858,7 +871,7 @@ pub fn lower_typed_artifact(
                 .set_coroutine_plan(coroutine)
                 .map_err(LoweringError::from)?;
         }
-        FunctionLowerer::new(
+        let lowered = FunctionLowerer::new(
             mir.as_program(),
             source,
             &planned.key,
@@ -868,8 +881,16 @@ pub fn lower_typed_artifact(
             &match_plans,
             &dyn_concepts,
             equality_anchor,
+            &mut emitted_text_literals,
+            &mut text_literal_unsupported,
         )
-        .lower()?;
+        .lower();
+        if let Some(item) = text_literal_unsupported.take() {
+            return Ok(LoweringOutcome::Unsupported(SupportReport {
+                items: vec![item],
+            }));
+        }
+        lowered?;
     }
     let checked = builder.finish_checked().map_err(|errors| {
         LoweringError::defect(
@@ -1848,7 +1869,6 @@ struct Classifier<'program, 'plan> {
     aggregates: AggregatePlanner<'program, 'plan>,
     match_plans: BTreeMap<String, BTreeMap<ExprId, MatchPlan>>,
     places: PlaceBudget,
-    text_literals: TextLiteralBudget,
     immortal_text: bool,
     managed_text: bool,
     task_handles: BTreeSet<Type>,
@@ -1901,7 +1921,6 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             aggregates: AggregatePlanner::new(program, dyn_concepts, target.pointer_bits() == 64),
             match_plans: BTreeMap::new(),
             places: PlaceBudget::default(),
-            text_literals: TextLiteralBudget::default(),
             immortal_text: false,
             managed_text: false,
             task_handles: BTreeSet::new(),
@@ -2123,9 +2142,10 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
         true
     }
 
-    fn admit_generated_text_literals(&mut self, literals: &[&str]) -> bool {
-        self.text_literals
-            .admit_all(literals.iter().map(|literal| literal.len()))
+    fn preflight_generated_text_literals(literals: &[&str]) -> bool {
+        literals
+            .iter()
+            .all(|literal| literal.len() <= TEXT_LITERAL_MAX_BYTES)
     }
 
     fn local_type(function: &mir::Function, local: LocalId) -> Option<&Type> {
@@ -2471,7 +2491,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
         true
     }
 
-    fn admit_match_plan_text(
+    fn preflight_match_plan_text(
         &mut self,
         function: &mir::Function,
         expression: Option<ExprId>,
@@ -2479,30 +2499,30 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
         span: Span,
         path: &str,
     ) -> bool {
-        let literals = plan
-            .nodes()
-            .filter_map(|(_, node)| match node {
-                MatchNode::Constant {
-                    constant: mir::Constant::Text(value),
-                    ..
-                } => Some(value.len()),
-                MatchNode::Arm { .. } | MatchNode::Constant { .. } | MatchNode::Sum { .. } => None,
-            })
-            .collect::<Vec<_>>();
-        if literals.is_empty() {
-            return true;
+        let mut found = false;
+        for (_, node) in plan.nodes() {
+            let MatchNode::Constant {
+                constant: mir::Constant::Text(value),
+                ..
+            } = node
+            else {
+                continue;
+            };
+            if self.target.pointer_bits() != 64 || value.len() > TEXT_LITERAL_MAX_BYTES {
+                self.item(
+                    UnsupportedFeature::TextConstant,
+                    function.id,
+                    expression,
+                    span,
+                    path.to_owned(),
+                );
+                return false;
+            }
+            found = true;
         }
-        if self.target.pointer_bits() != 64 || !self.text_literals.admit_all(literals) {
-            self.item(
-                UnsupportedFeature::TextConstant,
-                function.id,
-                expression,
-                span,
-                path.to_owned(),
-            );
-            return false;
+        if found {
+            self.immortal_text = true;
         }
-        self.immortal_text = true;
         true
     }
 
@@ -2518,7 +2538,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
         let ty = match &expression.kind {
             ContractExprKind::Constant(constant) => {
                 if let mir::Constant::Text(value) = constant {
-                    if self.target.pointer_bits() != 64 || !self.text_literals.admit(value.len()) {
+                    if self.target.pointer_bits() != 64 || value.len() > TEXT_LITERAL_MAX_BYTES {
                         self.item(
                             UnsupportedFeature::TextConstant,
                             function.id,
@@ -2659,7 +2679,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     );
                     return None;
                 };
-                if !self.admit_match_plan_text(function, None, &plan, expression.span, path) {
+                if !self.preflight_match_plan_text(function, None, &plan, expression.span, path) {
                     return None;
                 }
                 let mut result = None;
@@ -2879,7 +2899,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
     ) -> bool {
         let continues = match &expression.kind {
             ExprKind::Constant(mir::Constant::Text(value)) => {
-                if self.target.pointer_bits() != 64 || !self.text_literals.admit(value.len()) {
+                if self.target.pointer_bits() != 64 || value.len() > TEXT_LITERAL_MAX_BYTES {
                     self.expression_item(
                         UnsupportedFeature::TextConstant,
                         function,
@@ -3035,7 +3055,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         scrutinee_ty.as_ref().expect("checked Some"),
                         arms,
                     ) {
-                        if self.admit_match_plan_text(
+                        if self.preflight_match_plan_text(
                             function,
                             Some(expression.id),
                             &plan,
@@ -3137,7 +3157,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         );
                     } else if let Some((name, target, invariant)) = runtime.as_ref() {
                         let summary = disclosure_type_summary(self.program, target);
-                        if !self.admit_generated_text_literals(&[
+                        if !Self::preflight_generated_text_literals(&[
                             name,
                             "InvariantViolation",
                             &invariant.code,
@@ -3334,7 +3354,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         );
                     } else if let Some((name, base, predicate)) = runtime.as_ref() {
                         let summary = disclosure_type_summary(self.program, base);
-                        if !self.admit_generated_text_literals(&[
+                        if !Self::preflight_generated_text_literals(&[
                             name,
                             "ConstraintViolation",
                             &predicate.code,
@@ -5487,6 +5507,8 @@ struct FunctionLowerer<'function, 'builder, 'plan> {
     effects: &'plan [Effects],
     equality_anchor: Option<FunctionId>,
     match_plans: Option<&'plan BTreeMap<ExprId, MatchPlan>>,
+    text_literals: &'builder mut TextLiteralBudget,
+    text_literal_unsupported: &'builder mut Option<UnsupportedItem>,
     local_types: BTreeMap<LocalId, Type>,
     inout_locals: Box<[LocalId]>,
     environments: EnvironmentArena,
@@ -5510,6 +5532,8 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         match_plans: &'plan BTreeMap<String, BTreeMap<ExprId, MatchPlan>>,
         dyn_concepts: &'plan DynConceptPlan,
         equality_anchor: Option<FunctionId>,
+        text_literals: &'builder mut TextLiteralBudget,
+        text_literal_unsupported: &'builder mut Option<UnsupportedItem>,
     ) -> Self {
         let local_types = source
             .params
@@ -5539,6 +5563,8 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             effects,
             equality_anchor,
             match_plans: match_plans.get(&key.canonical_identity()),
+            text_literals,
+            text_literal_unsupported,
             local_types,
             inout_locals,
             environments: EnvironmentArena::new(),
@@ -6412,14 +6438,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         let origin = self.contract_origin(expression);
         match &expression.kind {
             ContractExprKind::Constant(constant) => match constant {
-                mir::Constant::Text(value) => self.one_instruction(
-                    flow,
-                    InstructionKind::TextLiteral {
-                        utf8: value.clone().into_boxed_str(),
-                    },
-                    self.type_id(&Type::Text)?,
-                    origin,
-                ),
+                mir::Constant::Text(value) => self.text_literal(flow, value, origin),
                 mir::Constant::Unit => self.constant(flow, Constant::Unit, &Type::Unit, origin),
                 mir::Constant::Bool(value) => {
                     self.constant(flow, Constant::Bool(*value), &Type::Bool, origin)
@@ -7049,14 +7068,8 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 })?;
                 let expected = match constant {
                     mir::Constant::Text(text) => {
-                        let EvalFlow::Continue { flow: next, value } = self.one_instruction(
-                            flow,
-                            InstructionKind::TextLiteral {
-                                utf8: text.into_boxed_str(),
-                            },
-                            self.type_id(&Type::Text)?,
-                            origin,
-                        )?
+                        let EvalFlow::Continue { flow: next, value } =
+                            self.owned_text_literal(flow, text, origin)?
                         else {
                             return Err(self.unsupported_reached("contract Text pattern"));
                         };
@@ -7358,6 +7371,65 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         Ok(EvalFlow::Continue { flow, value })
     }
 
+    fn emit_text_literal(
+        &mut self,
+        flow: Flow,
+        utf8_bytes: usize,
+        materialize: impl FnOnce() -> Box<str>,
+        origin: Origin,
+    ) -> Result<EvalFlow, LoweringError> {
+        let admitted =
+            self.text_literal_unsupported.is_none() && self.text_literals.admit(utf8_bytes);
+        let utf8 = if admitted {
+            materialize()
+        } else {
+            if self.text_literal_unsupported.is_none() {
+                let path = origin.expression.map_or_else(
+                    || format!("function[{}].text_literal", origin.source_function.0),
+                    |expression| {
+                        format!(
+                            "function[{}].expression[{}].text_literal",
+                            origin.source_function.0, expression.0
+                        )
+                    },
+                );
+                *self.text_literal_unsupported = Some(UnsupportedItem {
+                    feature: UnsupportedFeature::TextConstant,
+                    function: origin.source_function,
+                    expression: origin.expression,
+                    span: origin.span,
+                    path,
+                });
+            }
+            Box::<str>::default()
+        };
+        self.one_instruction(
+            flow,
+            InstructionKind::TextLiteral { utf8 },
+            self.type_id(&Type::Text)?,
+            origin,
+        )
+    }
+
+    fn text_literal(
+        &mut self,
+        flow: Flow,
+        utf8: &str,
+        origin: Origin,
+    ) -> Result<EvalFlow, LoweringError> {
+        self.emit_text_literal(flow, utf8.len(), || utf8.into(), origin)
+    }
+
+    fn owned_text_literal(
+        &mut self,
+        flow: Flow,
+        utf8: String,
+        origin: Origin,
+    ) -> Result<EvalFlow, LoweringError> {
+        let bytes = utf8.len();
+        self.emit_text_literal(flow, bytes, || utf8.into_boxed_str(), origin)
+    }
+
     fn one_trusted_instruction(
         &mut self,
         flow: Flow,
@@ -7414,6 +7486,36 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             EvalFlow::Terminated => Err(LoweringError::defect(
                 LoweringDefectCode::Builder,
                 "one-result LCIR instruction unexpectedly terminated",
+            )),
+        }
+    }
+
+    fn required_text_literal(
+        &mut self,
+        flow: Flow,
+        utf8: &str,
+        origin: Origin,
+    ) -> Result<(Flow, ValueId), LoweringError> {
+        match self.text_literal(flow, utf8, origin)? {
+            EvalFlow::Continue { flow, value } => Ok((flow, value)),
+            EvalFlow::Terminated => Err(LoweringError::defect(
+                LoweringDefectCode::Builder,
+                "Text literal instruction unexpectedly terminated",
+            )),
+        }
+    }
+
+    fn required_owned_text_literal(
+        &mut self,
+        flow: Flow,
+        utf8: String,
+        origin: Origin,
+    ) -> Result<(Flow, ValueId), LoweringError> {
+        match self.owned_text_literal(flow, utf8, origin)? {
+            EvalFlow::Continue { flow, value } => Ok((flow, value)),
+            EvalFlow::Terminated => Err(LoweringError::defect(
+                LoweringDefectCode::Builder,
+                "Text literal instruction unexpectedly terminated",
             )),
         }
     }
@@ -7958,16 +8060,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     mir::Constant::Bool(value) => Constant::Bool(*value),
                     mir::Constant::Int(value) => Constant::Int(*value),
                     mir::Constant::Float(value) => Constant::float(*value),
-                    mir::Constant::Text(value) => {
-                        return self.one_instruction(
-                            flow,
-                            InstructionKind::TextLiteral {
-                                utf8: value.clone().into_boxed_str(),
-                            },
-                            self.type_id(&Type::Text)?,
-                            origin,
-                        );
-                    }
+                    mir::Constant::Text(value) => return self.text_literal(flow, value, origin),
                 };
                 self.constant(flow, constant, &expression.ty, origin)
             }
@@ -8933,30 +9026,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         origin: Origin,
     ) -> Result<(Flow, ValueId), LoweringError> {
         let summary = disclosure_type_summary(self.program, summary_type);
-        let (flow, target) = self.required_instruction(
-            flow,
-            InstructionKind::TextLiteral {
-                utf8: target_name.into(),
-            },
-            &Type::Text,
-            origin,
-        )?;
-        let (flow, code) = self.required_instruction(
-            flow,
-            InstructionKind::TextLiteral {
-                utf8: violation_code.into(),
-            },
-            &Type::Text,
-            origin,
-        )?;
-        let (flow, predicate) = self.required_instruction(
-            flow,
-            InstructionKind::TextLiteral {
-                utf8: contract.code.clone().into_boxed_str(),
-            },
-            &Type::Text,
-            origin,
-        )?;
+        let (flow, target) = self.required_text_literal(flow, target_name, origin)?;
+        let (flow, code) = self.required_text_literal(flow, violation_code, origin)?;
+        let (flow, predicate) = self.required_text_literal(flow, &contract.code, origin)?;
         let list_text = Type::List(Box::new(Type::Text));
         let (flow, path) = self.required_instruction(
             flow,
@@ -8966,14 +9038,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             &list_text,
             origin,
         )?;
-        let (mut flow, summary) = self.required_instruction(
-            flow,
-            InstructionKind::TextLiteral {
-                utf8: summary.into_boxed_str(),
-            },
-            &Type::Text,
-            origin,
-        )?;
+        let (mut flow, summary) = self.required_owned_text_literal(flow, summary, origin)?;
         let mut span_fields = Vec::with_capacity(3);
         for component in [
             i64::from(contract.span.file.0),
@@ -9419,14 +9484,8 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 let origin = self.expression_origin(expression);
                 let (flow, instruction) = match constant {
                     mir::Constant::Text(text) if ty == &Type::Text => {
-                        let EvalFlow::Continue { flow, value } = self.one_instruction(
-                            flow,
-                            InstructionKind::TextLiteral {
-                                utf8: text.into_boxed_str(),
-                            },
-                            self.type_id(&Type::Text)?,
-                            origin,
-                        )?
+                        let EvalFlow::Continue { flow, value } =
+                            self.owned_text_literal(flow, text, origin)?
                         else {
                             return Err(LoweringError::defect(
                                 LoweringDefectCode::Builder,

@@ -139,11 +139,13 @@ found Unicode scalar is allocated through the typed helper. Other dynamic Text
 producers and Text inside transparent/refined carriers still select atomic
 whole-artifact fallback.
 
-Text planning is bounded before LCIR allocation or source storage is cloned.
-One UTF-8 literal may contain at most 1 MiB, and all literal instructions in
-one artifact may contain at most 16 MiB in total. Crossing either bound is
-unsupported coverage and selects the complete checked-MIR route. Independent LCIR
-validation repeats both limits before LLVM constructs any constant object.
+Text planning preflights every source literal before a match plan or LCIR
+instruction clones its storage. One UTF-8 literal may contain at most 1 MiB.
+The disposable artifact builder also charges every actual `TextLiteral`
+emission, including duplicated lexical-cleanup paths, against a 16 MiB total
+before cloning its bytes. Crossing either bound atomically discards the whole
+builder and selects the complete checked-MIR route. Independent LCIR validation
+repeats both limits before LLVM constructs any constant object.
 
 Canonical `Bytes` has one tagless managed-pointer representation. The exact
 `Text.encode_utf8` instruction preserves the immutable Text object pointer, so

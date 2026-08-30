@@ -28,27 +28,6 @@ impl TextLiteralBudget {
         self.bytes = total;
         true
     }
-
-    pub(crate) fn admit_all(&mut self, literals: impl IntoIterator<Item = usize>) -> bool {
-        let mut added = 0_usize;
-        for bytes in literals {
-            if bytes > TEXT_LITERAL_MAX_BYTES {
-                return false;
-            }
-            let Some(total) = added.checked_add(bytes) else {
-                return false;
-            };
-            added = total;
-        }
-        let Some(total) = self.bytes.checked_add(added) else {
-            return false;
-        };
-        if total > TEXT_LITERAL_MAX_TOTAL_BYTES {
-            return false;
-        }
-        self.bytes = total;
-        true
-    }
 }
 
 #[cfg(test)]
@@ -63,16 +42,5 @@ mod tests {
             assert!(budget.admit(TEXT_LITERAL_MAX_BYTES));
         }
         assert!(!budget.admit(1));
-    }
-
-    #[test]
-    fn grouped_admission_is_atomic_and_keeps_individual_limits() {
-        let mut budget = TextLiteralBudget::default();
-        assert!(!budget.admit_all([1, TEXT_LITERAL_MAX_BYTES + 1]));
-        assert!(budget.admit_all([TEXT_LITERAL_MAX_BYTES, TEXT_LITERAL_MAX_BYTES]));
-        for _ in 2..(TEXT_LITERAL_MAX_TOTAL_BYTES / TEXT_LITERAL_MAX_BYTES) {
-            assert!(budget.admit(TEXT_LITERAL_MAX_BYTES));
-        }
-        assert!(!budget.admit_all([1, 1]));
     }
 }
