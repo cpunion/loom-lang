@@ -2157,8 +2157,13 @@ fn managed_bytes_close_the_typed_lcir_route_on_all_supported_targets() {
 
     let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
     let dump = dump_program(artifact.program());
+    let bytes = program.prelude.bytes.expect("canonical Bytes type");
+    let bytes_identity = format!("Nominal#{}[] =>", bytes.0);
+    assert!(
+        dump.contains(&bytes_identity),
+        "missing `{bytes_identity}`:\n{dump}"
+    );
     for required in [
-        "Nominal#9[] =>",
         "managed_ptr",
         "text.encode_utf8",
         "bytes.length",
