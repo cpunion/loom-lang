@@ -51,6 +51,11 @@ export function checkReleaseWorkflow({ release, bootstrap, argumentTest }) {
   if (release.includes("https://gitlab.gnome.org/GNOME/libxml2/")) {
     errors.push("release workflow: restores the retired static libxml2 rebuild");
   }
+  if (/\btest\s+--target(?:\s|=)/u.test(release)) {
+    errors.push(
+      "release workflow: `test --target` is invalid; tests select a directory package with PATH or recurse with PATH/...",
+    );
+  }
 
   for (const expected of [
     "runner: windows-2025",

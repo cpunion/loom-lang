@@ -37,19 +37,24 @@ fn copying_and_comparing_a_large_list_is_stack_bounded_on_both_backends() {
     let elements = std::iter::repeat_n("0", ELEMENT_COUNT)
         .collect::<Vec<_>>()
         .join(",");
-    let source = format!(
-        r"fn verify(left List[Int], right List[Int]) {{
+    std::fs::write(
+        project.path().join("main.loom"),
+        r"fn verify(left List[Int], right List[Int]) {
     assert left == right
-}}
-
-test fn copy_and_compare_large_list() {{
+}
+",
+    )
+    .expect("write regression source");
+    let test_source = format!(
+        r"test fn copy_and_compare_large_list() {{
     let values = [{elements}]
     let copied = values
     verify(values, copied)
 }}
 "
     );
-    std::fs::write(project.path().join("main.loom"), source).expect("write regression source");
+    std::fs::write(project.path().join("main_test.loom"), test_source)
+        .expect("write regression test source");
 
     let interpreter = Command::new(std::env::current_exe().expect("current test executable"))
         .args([

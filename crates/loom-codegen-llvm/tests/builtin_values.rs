@@ -140,7 +140,8 @@ test async fn path_file_round_trip() {{
 }}
 "#,
     );
-    std::fs::write(project.path().join("main.loom"), source).expect("write source");
+    std::fs::write(project.path().join("main.loom"), "").expect("write source");
+    std::fs::write(project.path().join("main_test.loom"), source).expect("write test source");
 
     let snapshot = support::analysis_host(project.path())
         .expect("load standard-value project")

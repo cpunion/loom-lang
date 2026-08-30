@@ -152,14 +152,16 @@ fn unit_output_runs_after_its_runtime_is_destroyed() {
     var values = List[Int]()
     values.add(1)
 }
-
-test fn list_result_lifetime() {
+";
+    let test_source = r"test fn list_result_lifetime() {
     var values = List[Int]()
     values.add(2)
 }
 ";
     let project = tempfile::tempdir().expect("create root lifetime project");
     std::fs::write(project.path().join("main.loom"), source).expect("write root lifetime source");
+    std::fs::write(project.path().join("main_test.loom"), test_source)
+        .expect("write root lifetime test source");
     let snapshot = support::analysis_host(project.path())
         .expect("load root lifetime project")
         .snapshot()
@@ -3358,8 +3360,8 @@ async fn asynchronous(value Int) Int
 {
     value
 }
-
-test fn a_checked_mir_first() {
+"#;
+    let test_source = r"test fn a_checked_mir_first() {
     discard checked_mir(0)
 }
 
@@ -3387,9 +3389,11 @@ test fn g_root_boundary()
     requires false
 {
 }
-"#;
+";
     let project = tempfile::tempdir().expect("create requires blame project");
     std::fs::write(project.path().join("main.loom"), source).expect("write requires blame source");
+    std::fs::write(project.path().join("main_test.loom"), test_source)
+        .expect("write requires blame test source");
     let snapshot = support::analysis_host(project.path())
         .expect("load requires blame project")
         .snapshot()
@@ -4549,8 +4553,8 @@ pub fn main() {
     let equal = same(left, right)
     assert equal
 }
-
-test fn conditional_witness() {
+";
+    let test_source = r"test fn conditional_witness() {
     let left = Boxed { value = Atom { value = 7 } }
     let right = Boxed { value = Atom { value = 7 } }
     let equal = same(left, right)
@@ -4559,6 +4563,7 @@ test fn conditional_witness() {
 ";
     let project = tempfile::tempdir().expect("create source project");
     std::fs::write(project.path().join("main.loom"), source).expect("write source");
+    std::fs::write(project.path().join("main_test.loom"), test_source).expect("write test source");
     let snapshot = support::analysis_host(project.path())
         .expect("load project")
         .snapshot()

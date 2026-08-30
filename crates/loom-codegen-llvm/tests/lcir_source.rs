@@ -65,8 +65,23 @@ fn assert_interpreted_tests_pass(program: &CheckedProgram) {
 }
 
 fn analyze_source(source: &str) -> loom_driver::AnalysisSnapshot {
+    analyze_project_sources(source, None)
+}
+
+fn analyze_sources(source: &str, test_source: &str) -> loom_driver::AnalysisSnapshot {
+    analyze_project_sources(source, Some(test_source))
+}
+
+fn analyze_project_sources(
+    source: &str,
+    test_source: Option<&str>,
+) -> loom_driver::AnalysisSnapshot {
     let project = tempfile::tempdir().expect("create source project");
     std::fs::write(project.path().join("main.loom"), source).expect("write source fixture");
+    if let Some(test_source) = test_source {
+        std::fs::write(project.path().join("main_test.loom"), test_source)
+            .expect("write test source fixture");
+    }
     let snapshot = support::analysis_host(project.path())
         .expect("load source project")
         .snapshot()
@@ -101,8 +116,25 @@ fn compile_source(source: &str) -> CheckedProgram {
         .clone()
 }
 
+fn compile_sources(source: &str, test_source: &str) -> CheckedProgram {
+    analyze_sources(source, test_source)
+        .executable()
+        .expect("lower checked MIR")
+        .clone()
+}
+
 fn compile_source_with_debug_sources(source: &str) -> (CheckedProgram, Vec<DebugSource>) {
     let snapshot = analyze_source(source);
+    let debug_sources = snapshot_debug_sources(&snapshot);
+    let program = snapshot.executable().expect("lower checked MIR").clone();
+    (program, debug_sources)
+}
+
+fn compile_sources_with_debug_sources(
+    source: &str,
+    test_source: &str,
+) -> (CheckedProgram, Vec<DebugSource>) {
+    let snapshot = analyze_sources(source, test_source);
     let debug_sources = snapshot_debug_sources(&snapshot);
     let program = snapshot.executable().expect("lower checked MIR").clone();
     (program, debug_sources)
@@ -139,11 +171,10 @@ fn lower_source_artifact_with_layout(
     reason = "one source gate keeps normal, child-fault, and sibling-cancellation cleanup plus exact callback descriptors together"
 )]
 fn typed_async_cleanup_crosses_suspension_without_a_runtime_cleanup_stack() {
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-async-cleanup/main.loom"),
-        include_str!("../../../fixtures/lcir-async-cleanup/main_test.loom")
+        include_str!("../../../fixtures/lcir-async-cleanup/main_test.loom"),
     );
-    let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
 
     let artifact = lower_source_artifact(
@@ -346,11 +377,10 @@ fn typed_async_cleanup_crosses_suspension_without_a_runtime_cleanup_stack() {
     reason = "one source gate keeps managed normal, fault, and cancellation writeback together"
 )]
 fn typed_async_callers_reuse_synchronous_functional_writeback() {
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-async-writeback/main.loom"),
-        include_str!("../../../fixtures/lcir-async-writeback/main_test.loom")
+        include_str!("../../../fixtures/lcir-async-writeback/main_test.loom"),
     );
-    let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
 
     let artifact = lower_source_artifact(
@@ -494,10 +524,10 @@ fn typed_async_callers_reuse_synchronous_functional_writeback() {
     }
 }
 
-const PROJECTED_PLACE_SOURCE: &str = concat!(
-    include_str!("../../../fixtures/lcir-projected-places/main.loom"),
-    include_str!("../../../fixtures/lcir-projected-places/main_test.loom")
-);
+const PROJECTED_PLACE_SOURCE: &str =
+    include_str!("../../../fixtures/lcir-projected-places/main.loom");
+const PROJECTED_PLACE_TEST_SOURCE: &str =
+    include_str!("../../../fixtures/lcir-projected-places/main_test.loom");
 
 fn emit_and_run_lcir(artifact: &CheckedArtifact, stem: &str) -> NativeRun {
     emit_and_run_lcir_with_options(artifact, stem, NativeObjectOptions::default())
@@ -1258,8 +1288,8 @@ const LIVE_SUM_CARRIER_SOURCE: &str = r"enum Packet {
 }
 
 enum Problem { WrongCarrier }
-
-test fn carriesAcrossLoop() Result[Unit, Problem] {
+";
+const LIVE_SUM_CARRIER_TEST_SOURCE: &str = r"test fn carriesAcrossLoop() Result[Unit, Problem] {
     var packet = Packet.Empty
     for index in 0..1000 {
         packet = match packet {
@@ -1276,7 +1306,7 @@ test fn carriesAcrossLoop() Result[Unit, Problem] {
 }
 ";
 
-const INTERLEAVED_MANAGED_SUM_RELEASE_SOURCE: &str = r#"record PointerThenScalar { label Text, number Int }
+const INTERLEAVED_MANAGED_SUM_RELEASE_SOURCE: &str = r"record PointerThenScalar { label Text, number Int }
 record ScalarThenPointer { number Int, label Text }
 
 enum Interleaved {
@@ -1302,8 +1332,8 @@ fn number(value Interleaved) Int {
         PointerSecond(payload) => payload.number
     }
 }
-
-test fn keepsManagedCarrierInRegisters() Result[Unit, Problem] {
+";
+const INTERLEAVED_MANAGED_SUM_RELEASE_TEST_SOURCE: &str = r#"test fn keepsManagedCarrierInRegisters() Result[Unit, Problem] {
     let label = "ma".concat("naged")
     var value = choose(true, label, 0, 1)
     var flag = true
@@ -2148,11 +2178,10 @@ pub fn main() {
 
 #[test]
 fn immortal_text_uses_one_pointer_and_allocation_free_runtime_abi_on_all_targets() {
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-text/main.loom"),
-        include_str!("../../../fixtures/lcir-text/main_test.loom")
+        include_str!("../../../fixtures/lcir-text/main_test.loom"),
     );
-    let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let artifact = lower_source_artifact(
         &program,
@@ -2225,11 +2254,10 @@ fn immortal_text_uses_one_pointer_and_allocation_free_runtime_abi_on_all_targets
     reason = "one differential gate keeps the complete existing Bytes API, managed roots, direct byte operations, and cross-target objects together"
 )]
 fn managed_bytes_close_the_typed_lcir_route_on_all_supported_targets() {
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-managed-bytes/main.loom"),
-        include_str!("../../../fixtures/lcir-managed-bytes/main_test.loom")
+        include_str!("../../../fixtures/lcir-managed-bytes/main_test.loom"),
     );
-    let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     assert_interpreted_tests_pass(&program);
 
@@ -2335,11 +2363,10 @@ fn managed_bytes_close_the_typed_lcir_route_on_all_supported_targets() {
 
 #[test]
 fn text_from_utf8_units_is_direct_typed_lcir_on_all_supported_targets() {
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-text-from-utf8-units/main.loom"),
-        include_str!("../../../fixtures/lcir-text-from-utf8-units/main_test.loom")
+        include_str!("../../../fixtures/lcir-text-from-utf8-units/main_test.loom"),
     );
-    let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     assert_interpreted_tests_pass(&program);
 
@@ -2424,11 +2451,10 @@ fn text_from_utf8_units_is_direct_typed_lcir_on_all_supported_targets() {
 
 #[test]
 fn lexical_path_is_direct_typed_lcir_on_all_supported_targets() {
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-typed-path/main.loom"),
-        include_str!("../../../fixtures/lcir-typed-path/main_test.loom")
+        include_str!("../../../fixtures/lcir-typed-path/main_test.loom"),
     );
-    let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     assert_interpreted_tests_pass(&program);
 
@@ -2532,16 +2558,16 @@ fn lexical_path_is_direct_typed_lcir_on_all_supported_targets() {
 )]
 fn managed_text_concat_runs_tests_reloads_roots_and_emits_on_all_supported_targets() {
     let pressure = "x".repeat(40 * 1024);
-    let source = format!(
-        r#"enum Problem {{ WrongText }}
+    let source = r#"enum Problem { WrongText }
 
-fn join(left Text, right Text) Text {{ left.concat(right) }}
+fn join(left Text, right Text) Text { left.concat(right) }
 
-pub fn main() {{
+pub fn main() {
     discard join("hello", "界").length()
-}}
-
-test fn concatMovesAndAliases() Result[Unit, Problem] {{
+}
+"#;
+    let test_source = format!(
+        r#"test fn concatMovesAndAliases() Result[Unit, Problem] {{
     let kept = join("K", "eep")
     let pressure = "{pressure}".concat("{pressure}")
     discard pressure.length()
@@ -2554,7 +2580,7 @@ test fn concatMovesAndAliases() Result[Unit, Problem] {{
 }}
 "#
     );
-    let program = compile_source(&source);
+    let program = compile_sources(source, &test_source);
     let run_artifact = lower_source_artifact(
         &program,
         &SourceArtifactRequest::Run {
@@ -2666,28 +2692,32 @@ test fn concatMovesAndAliases() Result[Unit, Problem] {{
 )]
 fn managed_text_get_returns_option_and_preserves_live_aliases_across_collection() {
     let pressure = "x".repeat(40 * 1024);
-    let source = format!(
-        r#"enum Problem {{ WrongText }}
+    let source = r#"enum Problem { WrongText }
 
-fn join(left Text, right Text) Text {{ left.concat(right) }}
+fn join(left Text, right Text) Text { left.concat(right) }
 
-fn select(text Text, index Int) Option[Text] {{ text.get(index) }}
+fn select(text Text, index Int) Option[Text] { text.get(index) }
 
-fn equals(input Option[Text], expected Text) Bool {{
-    match input {{
+fn equals(input Option[Text], expected Text) Bool {
+    match input {
         Some(value) => value == expected
         None => false
-    }}
-}}
+    }
+}
 
-fn missing(input Option[Text]) Bool {{
-    match input {{
+fn missing(input Option[Text]) Bool {
+    match input {
         Some(_) => false
         None => true
-    }}
-}}
+    }
+}
 
-test fn selectsUnicodeScalars() Result[Unit, Problem] {{
+pub fn main() {
+    discard "a界🙂z".get(1)
+}
+"#;
+    let test_source = format!(
+        r#"test fn selectsUnicodeScalars() Result[Unit, Problem] {{
     let pressure = "{pressure}".concat("{pressure}")
     discard pressure.length()
     let kept = join("a界", "🙂z")
@@ -2702,13 +2732,9 @@ test fn selectsUnicodeScalars() Result[Unit, Problem] {{
         Err(Problem.WrongText)
     }}
 }}
-
-pub fn main() {{
-    discard "a界🙂z".get(1)
-}}
 "#
     );
-    let program = compile_source(&source);
+    let program = compile_sources(source, &test_source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let interpreted = Interpreter::new(&program).run_tests();
     assert!(
@@ -2899,11 +2925,12 @@ fn verify() Result[Unit, Problem] {{
 pub fn main() {{
     discard verify()
 }}
-
-test fn managedProducts() Result[Unit, Problem] {{ verify() }}
 "#
     );
-    let program = compile_source(&source);
+    let program = compile_sources(
+        &source,
+        "test fn managedProducts() Result[Unit, Problem] { verify() }\n",
+    );
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
 
     let tests_artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
@@ -3071,15 +3098,14 @@ test fn managedProducts() Result[Unit, Problem] {{ verify() }}
 )]
 fn managed_sum_leaves_relocate_only_for_the_active_variant() {
     let pressure = "x".repeat(40 * 1024);
-    let source = concat!(
-        include_str!("../../../fixtures/lcir-managed-sums/main.loom"),
-        include_str!("../../../fixtures/lcir-managed-sums/main_test.loom")
-    )
-    .replace(
+    let source = include_str!("../../../fixtures/lcir-managed-sums/main.loom").replace(
         "fn collectPressure() Text { join(\"small\", \"pressure\") }",
         &format!("fn collectPressure() Text {{ join(\"{pressure}\", \"{pressure}\") }}"),
     );
-    let program = compile_source(&source);
+    let program = compile_sources(
+        &source,
+        include_str!("../../../fixtures/lcir-managed-sums/main_test.loom"),
+    );
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
     let dump = dump_program(artifact.program());
@@ -3268,19 +3294,19 @@ fn managed_lists_use_precise_repeated_descriptors_and_survive_forced_relocation(
     let pressure = format!(
         "record Wide {{\n    text Text\n{fields}\n}}\n\nfn forcedLists() Bool {{\n    let kept = join(\"Rel\", \"ocated\")\n    let wide = Wide {{ text = kept, {initializers} }}\n    var values = [{repeated}]\n    let alias = values\n    values.add(wide)\n    let trigger = [{repeated}]\n    (trigger.length() == 129\n        && values.length() == 130\n        && alias.length() == 129\n        && match values.get(129) {{ Some(item) => item.text == \"Relocated\", None => false }}\n        && match alias.get(0) {{ Some(item) => item.text == \"Relocated\", None => false }})\n}}\n\nfn uniqueForcedLists() Bool {{\n    let kept = join(\"Uni\", \"que\")\n    let wide = Wide {{ text = kept, {initializers} }}\n    var values = List[Wide]()\n    for index in 0..130 {{\n        values.add(wide)\n        Unit\n    }}\n    (values.length() == 130\n        && match values.get(0) {{ Some(item) => item.text == \"Unique\", None => false }}\n        && match values.get(129) {{ Some(item) => item.text == \"Unique\", None => false }})\n}}\n\n"
     );
-    let source = concat!(
-        include_str!("../../../fixtures/lcir-managed-lists/main.loom"),
-        include_str!("../../../fixtures/lcir-managed-lists/main_test.loom")
-    )
-    .replace(
-        "fn join(left Text, right Text) Text",
-        &(pressure + "fn join(left Text, right Text) Text"),
-    )
-    .replace(
-        "    verdict(\n",
-        "    verdict(\n        forcedLists()\n        && uniqueForcedLists()\n        && ",
+    let source = include_str!("../../../fixtures/lcir-managed-lists/main.loom")
+        .replace(
+            "fn join(left Text, right Text) Text",
+            &(pressure + "fn join(left Text, right Text) Text"),
+        )
+        .replace(
+            "    verdict(\n",
+            "    verdict(\n        forcedLists()\n        && uniqueForcedLists()\n        && ",
+        );
+    let program = compile_sources(
+        &source,
+        include_str!("../../../fixtures/lcir-managed-lists/main_test.loom"),
     );
-    let program = compile_source(&source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let interpreted = Interpreter::new(&program).run_tests();
     assert!(
@@ -3462,11 +3488,10 @@ fn typed_logging_interpreter_child() {
     let Some(mode) = std::env::var_os(TYPED_LOGGING_INTERPRETER_CHILD_ENV) else {
         return;
     };
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-typed-logging/main.loom"),
-        include_str!("../../../fixtures/lcir-typed-logging/main_test.loom")
+        include_str!("../../../fixtures/lcir-typed-logging/main_test.loom"),
     );
-    let program = compile_source(source);
     if mode == "unwritable" {
         let failure =
             interpret_run(&program, "main").expect_err("logging must report stderr failure");
@@ -3489,21 +3514,19 @@ fn typed_stdout_interpreter_child() {
     if std::env::var_os(TYPED_STDOUT_INTERPRETER_CHILD_ENV).is_none() {
         return;
     }
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-typed-stdout/main.loom"),
-        include_str!("../../../fixtures/lcir-typed-stdout/main_test.loom")
+        include_str!("../../../fixtures/lcir-typed-stdout/main_test.loom"),
     );
-    let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
 }
 
 #[test]
 fn source_std_io_writes_exact_text_through_typed_lcir() {
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-typed-stdout/main.loom"),
-        include_str!("../../../fixtures/lcir-typed-stdout/main_test.loom")
+        include_str!("../../../fixtures/lcir-typed-stdout/main_test.loom"),
     );
-    let program = compile_source(source);
 
     let interpreter = Command::new(std::env::current_exe().expect("current LCIR test executable"))
         .args(["--exact", "typed_stdout_interpreter_child", "--nocapture"])
@@ -3603,11 +3626,10 @@ fn source_std_io_writes_exact_text_through_typed_lcir() {
     reason = "one gate keeps five public logging calls over ordinary source wrappers, exact interpreter/typed stderr, release IR purity, and Linux/MSVC object ABIs together"
 )]
 fn typed_logging_uses_one_direct_fallible_runtime_boundary() {
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-typed-logging/main.loom"),
-        include_str!("../../../fixtures/lcir-typed-logging/main_test.loom")
+        include_str!("../../../fixtures/lcir-typed-logging/main_test.loom"),
     );
-    let program = compile_source(source);
 
     for mode in ["run", "tests"] {
         let output = Command::new(std::env::current_exe().expect("current LCIR test executable"))
@@ -3791,11 +3813,10 @@ fn typed_logging_uses_one_direct_fallible_runtime_boundary() {
     reason = "one native differential gate keeps typed TextMap value shapes, immutable aliasing, exact lookup, moving-GC roots, and cross-target descriptors together"
 )]
 fn typed_text_maps_are_direct_exact_and_survive_forced_relocation() {
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-typed-textmap/main.loom"),
-        include_str!("../../../fixtures/lcir-typed-textmap/main_test.loom")
+        include_str!("../../../fixtures/lcir-typed-textmap/main_test.loom"),
     );
-    let program = compile_source(source);
 
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let interpreted = Interpreter::new(&program).run_tests();
@@ -3984,13 +4005,13 @@ fn typed_text_maps_are_direct_exact_and_survive_forced_relocation() {
 
 #[test]
 fn std_text_map_segment_classifies_through_direct_lcir() {
-    let source = concat!(
+    let test_source = include_str!("../../../fixtures/std/main_test.loom")
+        .replace("__LOOPBACK_PORT__", "1")
+        .replace("__READ_LOOPBACK_PORT__", "1");
+    let program = compile_sources(
         include_str!("../../../fixtures/std/main.loom"),
-        include_str!("../../../fixtures/std/main_test.loom")
-    )
-    .replace("__LOOPBACK_PORT__", "1")
-    .replace("__READ_LOOPBACK_PORT__", "1");
-    let program = compile_source(&source);
+        &test_source,
+    );
     let artifact = lower_source_artifact(
         &program,
         &SourceArtifactRequest::Run {
@@ -4011,16 +4032,16 @@ fn std_text_map_segment_classifies_through_direct_lcir() {
 
 #[test]
 fn complete_std_tests_route_through_lcir() {
-    let source = concat!(
+    let test_source = include_str!("../../../fixtures/std/main_test.loom")
+        .replace("__ROUND_TRIP_PATH__", "round-trip.txt")
+        .replace("__MISSING_PATH__", "missing.txt")
+        .replace("__REUSE_PATH__", "reuse.txt")
+        .replace("__LOOPBACK_PORT__", "1")
+        .replace("__READ_LOOPBACK_PORT__", "1");
+    let program = compile_sources(
         include_str!("../../../fixtures/std/main.loom"),
-        include_str!("../../../fixtures/std/main_test.loom")
-    )
-    .replace("__ROUND_TRIP_PATH__", "round-trip.txt")
-    .replace("__MISSING_PATH__", "missing.txt")
-    .replace("__REUSE_PATH__", "reuse.txt")
-    .replace("__LOOPBACK_PORT__", "1")
-    .replace("__READ_LOOPBACK_PORT__", "1");
-    let program = compile_source(&source);
+        &test_source,
+    );
     for policy in [NativeRoutePolicy::Automatic, NativeRoutePolicy::LcirOnly] {
         let prepared = prepare_native_object(&program, EmitOptions::tests(), policy)
             .unwrap_or_else(|error| {
@@ -4254,11 +4275,10 @@ pub async fn main() {
     reason = "one gate keeps source JSON call-graph reachability, bulk construction, both harnesses, and runtime purity together"
 )]
 fn source_json_parser_is_direct_bulk_lcir_in_run_and_test_harnesses() {
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-json-parse/main.loom"),
-        include_str!("../../../fixtures/lcir-json-parse/main_test.loom")
+        include_str!("../../../fixtures/lcir-json-parse/main_test.loom"),
     );
-    let program = compile_source(source);
 
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let interpreted = Interpreter::new(&program).run_tests();
@@ -4541,11 +4561,10 @@ pub fn main() {{
     reason = "one source gate keeps the direct typed JSON boundary, run/test harnesses, runtime purity, and Linux/MSVC object ABIs together"
 )]
 fn typed_json_format_uses_one_direct_collecting_runtime_boundary() {
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-json-format/main.loom"),
-        include_str!("../../../fixtures/lcir-json-format/main_test.loom")
+        include_str!("../../../fixtures/lcir-json-format/main_test.loom"),
     );
-    let program = compile_source(source);
 
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let interpreted = Interpreter::new(&program).run_tests();
@@ -4766,11 +4785,10 @@ pub fn main() {{
     reason = "one gate keeps recursive Json carrier layout, exact tracing, forced relocation, backend differential behavior, and cross-target emission together"
 )]
 fn recursive_json_uses_one_exact_managed_cell_and_survives_forced_relocation() {
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-typed-json/main.loom"),
-        include_str!("../../../fixtures/lcir-typed-json/main_test.loom")
+        include_str!("../../../fixtures/lcir-typed-json/main_test.loom"),
     );
-    let program = compile_source(source);
 
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let interpreted = Interpreter::new(&program).run_tests();
@@ -4882,10 +4900,10 @@ fn recursive_json_uses_one_exact_managed_cell_and_survives_forced_relocation() {
 
 #[test]
 fn recursive_json_is_typed_on_64_bit_and_fails_closed_on_32_bit() {
-    let program = compile_source(concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-typed-json/main.loom"),
-        include_str!("../../../fixtures/lcir-typed-json/main_test.loom")
-    ));
+        include_str!("../../../fixtures/lcir-typed-json/main_test.loom"),
+    );
     let request = SourceArtifactRequest::Run {
         entry: "main".into(),
     };
@@ -4921,11 +4939,10 @@ fn recursive_json_is_typed_on_64_bit_and_fails_closed_on_32_bit() {
     reason = "one gate proves compact collision-free Choice/Interleaved/Outer sum bytes, exact repeated tracing, forced relocation, differential behavior, and cross-target emission together"
 )]
 fn closed_sum_byte_classes_never_alias_scalar_bytes_with_managed_pointer_cells() {
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-sum-layout-collisions/main.loom"),
-        include_str!("../../../fixtures/lcir-sum-layout-collisions/main_test.loom")
+        include_str!("../../../fixtures/lcir-sum-layout-collisions/main_test.loom"),
     );
-    let program = compile_source(source);
 
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let interpreted = Interpreter::new(&program).run_tests();
@@ -5303,11 +5320,10 @@ fn generic_instance_plan(
 
 #[test]
 fn generic_instances_use_direct_host_and_msvc_target_abis() {
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-generics/main.loom"),
-        include_str!("../../../fixtures/lcir-generics/main_test.loom")
+        include_str!("../../../fixtures/lcir-generics/main_test.loom"),
     );
-    let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let artifact = lower_source_artifact(
         &program,
@@ -5394,11 +5410,10 @@ fn generic_instances_use_direct_host_and_msvc_target_abis() {
 
 #[test]
 fn generic_products_and_proven_wrappers_execute_through_typed_lcir() {
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-generic-products/main.loom"),
-        include_str!("../../../fixtures/lcir-generic-products/main_test.loom")
+        include_str!("../../../fixtures/lcir-generic-products/main_test.loom"),
     );
-    let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let artifact = lower_source_artifact(
         &program,
@@ -5454,11 +5469,10 @@ fn generic_products_and_proven_wrappers_execute_through_typed_lcir() {
 
 #[test]
 fn structural_equality_executes_products_sums_contracts_and_lists_through_typed_lcir() {
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-structural-equality/main.loom"),
-        include_str!("../../../fixtures/lcir-structural-equality/main_test.loom")
+        include_str!("../../../fixtures/lcir-structural-equality/main_test.loom"),
     );
-    let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let artifact = lower_source_artifact(
         &program,
@@ -5537,11 +5551,10 @@ fn structural_equality_executes_products_sums_contracts_and_lists_through_typed_
 
 #[test]
 fn recursive_structural_equality_executes_typed_helper_cycles_without_runtime_type_dispatch() {
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-recursive-equality/main.loom"),
-        include_str!("../../../fixtures/lcir-recursive-equality/main_test.loom")
+        include_str!("../../../fixtures/lcir-recursive-equality/main_test.loom"),
     );
-    let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let interpreted_tests = Interpreter::new(&program).run_tests();
     assert_eq!(interpreted_tests.len(), 1, "{interpreted_tests:#?}");
@@ -5640,11 +5653,10 @@ fn recursive_structural_equality_executes_typed_helper_cycles_without_runtime_ty
 }
 
 fn static_concepts_test_artifact() -> CheckedArtifact {
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-static-concepts/main.loom"),
-        include_str!("../../../fixtures/lcir-static-concepts/main_test.loom")
+        include_str!("../../../fixtures/lcir-static-concepts/main_test.loom"),
     );
-    let program = compile_source(source);
     let interpreted = Interpreter::new(&program).run_tests();
     assert_eq!(interpreted.len(), 1, "{interpreted:#?}");
     assert_eq!(
@@ -5799,8 +5811,8 @@ fn concepts_polymorphism_tests_erase_dynamic_storage_to_concrete_layouts() {
     let repeated = std::iter::repeat_n("wide", 129)
         .collect::<Vec<_>>()
         .join(", ");
-    let pressure = format!(
-        r#"
+    let source = format!(
+        r"{}
 
 record DynWide {{
     item dyn Labeled
@@ -5808,6 +5820,11 @@ record DynWide {{
 }}
 
 fn joinDynStorage(left Text, right Text) Text {{ left.concat(right) }}
+",
+        include_str!("../../../examples/concepts-polymorphism/concepts.loom")
+    );
+    let test_source = format!(
+        r#"{}
 
 test fn dynamicStorageGcPressure() {{
     let raw = Label {{ text = joinDynStorage("Rel", "ocated") }}
@@ -5859,14 +5876,10 @@ test fn dynamicStorageGcPressure() {{
         }}
     }}
 }}
-"#
-    );
-    let source = format!(
-        "{}\n{}\n{pressure}",
-        include_str!("../../../examples/concepts-polymorphism/concepts.loom"),
+"#,
         include_str!("../../../examples/concepts-polymorphism/concepts_test.loom")
     );
-    let program = compile_source(&source);
+    let program = compile_sources(&source, &test_source);
     let interpreted = Interpreter::new(&program).run_tests();
     assert_eq!(interpreted.len(), 4, "{interpreted:#?}");
     assert!(
@@ -6054,11 +6067,10 @@ test fn dynamicStorageGcPressure() {{
 
 #[test]
 fn unique_dynamic_witness_dce_ignores_dead_conformances_and_method_slots() {
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-dyn-unique/main.loom"),
-        include_str!("../../../fixtures/lcir-dyn-unique/main_test.loom")
+        include_str!("../../../fixtures/lcir-dyn-unique/main_test.loom"),
     );
-    let program = compile_source(source);
     let interpreted = Interpreter::new(&program).run_tests();
     assert_eq!(interpreted.len(), 1, "{interpreted:#?}");
     assert_eq!(
@@ -6123,11 +6135,10 @@ fn unique_dynamic_witness_dce_ignores_dead_conformances_and_method_slots() {
     reason = "one finite-dyn gate keeps checked representation, DCE, moving-GC value semantics, differential execution, and cross-target objects together"
 )]
 fn finite_dynamic_witnesses_use_precise_single_pointer_boxes_and_direct_dispatch() {
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-dyn-finite/main.loom"),
-        include_str!("../../../fixtures/lcir-dyn-finite/main_test.loom")
+        include_str!("../../../fixtures/lcir-dyn-finite/main_test.loom"),
     );
-    let program = compile_source(source);
     let interpreted = Interpreter::new(&program).run_tests();
     assert_eq!(interpreted.len(), 1, "{interpreted:#?}");
     assert_eq!(
@@ -7635,8 +7646,8 @@ fn typed_async_precondition_blame_preserves_each_call_site_and_root_span() {
     requires value > 0
 {
 }
-
-test async fn a_first_call() {
+";
+    let test_source = r"test async fn a_first_call() {
     positive(0).await
 }
 
@@ -7649,7 +7660,7 @@ test async fn c_checked_root()
 {
 }
 ";
-    let program = compile_source(source);
+    let program = compile_sources(source, test_source);
     let interpreted = Interpreter::new(&program).run_tests();
     assert_eq!(
         interpreted
@@ -8061,7 +8072,7 @@ fn source_test_roots_preserve_declaration_order_in_one_pure_artifact() {
 test fn alpha() {}
 test fn middle() {}
 ";
-    let program = compile_source(source);
+    let program = compile_sources("", source);
     let interpreted = Interpreter::new(&program).run_tests();
     assert_eq!(interpreted.len(), 3);
     assert!(
@@ -8214,7 +8225,7 @@ pub fn main() {
 
 #[test]
 fn projected_places_preserve_sibling_updates_and_loop_product_phis() {
-    let program = compile_source(PROJECTED_PLACE_SOURCE);
+    let program = compile_sources(PROJECTED_PLACE_SOURCE, PROJECTED_PLACE_TEST_SOURCE);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let prepared = prepare_native_object(
         &program,
@@ -8329,7 +8340,7 @@ pub fn main() {
 
 #[test]
 fn projected_place_products_emit_exact_i686_and_msvc_objects() {
-    let program = compile_source(PROJECTED_PLACE_SOURCE);
+    let program = compile_sources(PROJECTED_PLACE_SOURCE, PROJECTED_PLACE_TEST_SOURCE);
     let request = SourceArtifactRequest::Run {
         entry: "crossTarget".into(),
     };
@@ -8873,7 +8884,7 @@ pub fn main() {
 
 #[test]
 fn release_keeps_a_live_sum_carrier_in_register_ssa() {
-    let program = compile_source(LIVE_SUM_CARRIER_SOURCE);
+    let program = compile_sources(LIVE_SUM_CARRIER_SOURCE, LIVE_SUM_CARRIER_TEST_SOURCE);
     let interpreted = Interpreter::new(&program).run_tests();
     assert_eq!(interpreted.len(), 1);
     assert_eq!(
@@ -8910,7 +8921,10 @@ fn release_keeps_a_live_sum_carrier_in_register_ssa() {
 
 #[test]
 fn release_keeps_oppositely_interleaved_managed_sum_carriers_in_register_ssa() {
-    let program = compile_source(INTERLEAVED_MANAGED_SUM_RELEASE_SOURCE);
+    let program = compile_sources(
+        INTERLEAVED_MANAGED_SUM_RELEASE_SOURCE,
+        INTERLEAVED_MANAGED_SUM_RELEASE_TEST_SOURCE,
+    );
     let interpreted = Interpreter::new(&program).run_tests();
     assert_eq!(interpreted.len(), 1);
     assert_eq!(
@@ -8943,7 +8957,7 @@ fn release_keeps_oppositely_interleaved_managed_sum_carriers_in_register_ssa() {
 
 #[test]
 fn closed_sum_carriers_emit_as_native_msvc_objects_without_fallback() {
-    let program = compile_source(LIVE_SUM_CARRIER_SOURCE);
+    let program = compile_sources(LIVE_SUM_CARRIER_SOURCE, LIVE_SUM_CARRIER_TEST_SOURCE);
     let artifact = lower_source_artifact(&program, &SourceArtifactRequest::Tests);
     let directory = tempfile::tempdir().expect("create MSVC sum output directory");
     let object = directory.path().join("sum.obj");
@@ -8985,13 +8999,12 @@ fn closed_sum_carriers_emit_as_native_msvc_objects_without_fallback() {
 
 #[test]
 fn result_unit_test_outcomes_drive_native_and_checked_mir_harnesses() {
-    let source = r"enum Problem { Failed(Int) }
-
-test fn succeeds() Result[Unit, Problem] { Ok(Unit) }
+    let source = "enum Problem { Failed(Int) }\n";
+    let test_source = r"test fn succeeds() Result[Unit, Problem] { Ok(Unit) }
 
 test fn fails() Result[Unit, Problem] { Err(Problem.Failed(7)) }
 ";
-    let program = compile_source(source);
+    let program = compile_sources(source, test_source);
     let interpreted = Interpreter::new(&program).run_tests();
     assert_eq!(interpreted.len(), 2);
     assert_eq!(
@@ -9028,16 +9041,15 @@ test fn fails() Result[Unit, Problem] { Err(Problem.Failed(7)) }
 
 #[test]
 fn fallible_result_test_checks_runtime_status_before_the_sum_outcome() {
-    let source = r"enum Problem { Failed }
-
-test fn passes() Result[Unit, Problem] { Ok(Unit) }
+    let source = "enum Problem { Failed }\n";
+    let test_source = r"test fn passes() Result[Unit, Problem] { Ok(Unit) }
 
 test fn faults() Result[Unit, Problem] {
     discard 1 / 0
     Ok(Unit)
 }
 ";
-    let (program, debug_sources) = compile_source_with_debug_sources(source);
+    let (program, debug_sources) = compile_sources_with_debug_sources(source, test_source);
     let interpreted = Interpreter::new(&program).run_tests();
     assert_eq!(interpreted.len(), 2);
     assert_eq!(
@@ -9166,11 +9178,10 @@ pub fn main() {
     reason = "one differential gate keeps typed coroutine planning, forced parent-root relocation, run/test harnesses, ABI shape, and cross-target object emission together"
 )]
 fn typed_async_state_machines_survive_forced_relocation_on_all_targets() {
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-typed-async/main.loom"),
-        include_str!("../../../fixtures/lcir-typed-async/main_test.loom")
+        include_str!("../../../fixtures/lcir-typed-async/main_test.loom"),
     );
-    let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let prepared = prepare_native_object(
         &program,
@@ -9335,11 +9346,10 @@ fn typed_async_state_machines_survive_forced_relocation_on_all_targets() {
     reason = "one differential gate keeps List/TextMap coroutine signatures, suspension roots, debug types, relocation pressure, and cross-target objects together"
 )]
 fn managed_collections_are_exact_typed_coroutine_frame_carriers() {
-    let source = concat!(
+    let (program, debug_sources) = compile_sources_with_debug_sources(
         include_str!("../../../fixtures/lcir-async-managed-collections/main.loom"),
-        include_str!("../../../fixtures/lcir-async-managed-collections/main_test.loom")
+        include_str!("../../../fixtures/lcir-async-managed-collections/main_test.loom"),
     );
-    let (program, debug_sources) = compile_source_with_debug_sources(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let interpreted = Interpreter::new(&program).run_tests();
     assert_eq!(interpreted.len(), 1, "{interpreted:#?}");
@@ -9509,11 +9519,10 @@ fn managed_collections_are_exact_typed_coroutine_frame_carriers() {
     reason = "one source gate proves direct, transitive, fallible, composite, debug, native, and cross-target hidden-executor ABI behavior"
 )]
 fn synchronous_task_helpers_borrow_one_checked_executor_context() {
-    let source = concat!(
+    let (program, debug_sources) = compile_sources_with_debug_sources(
         include_str!("../../../fixtures/lcir-sync-task-helpers/main.loom"),
-        include_str!("../../../fixtures/lcir-sync-task-helpers/main_test.loom")
+        include_str!("../../../fixtures/lcir-sync-task-helpers/main_test.loom"),
     );
-    let (program, debug_sources) = compile_source_with_debug_sources(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let interpreted_tests = Interpreter::new(&program).run_tests();
     assert_eq!(interpreted_tests.len(), 1, "{interpreted_tests:#?}");
@@ -9725,11 +9734,10 @@ fn synchronous_task_helpers_borrow_one_checked_executor_context() {
 
 #[test]
 fn typed_sleep_uses_checked_lcir_and_the_narrow_timer_runtime_abi() {
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-typed-sleep/main.loom"),
-        include_str!("../../../fixtures/lcir-typed-sleep/main_test.loom")
+        include_str!("../../../fixtures/lcir-typed-sleep/main_test.loom"),
     );
-    let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let prepared = prepare_native_object(
         &program,
@@ -9896,11 +9904,10 @@ pub async fn overflowMain() {
     reason = "one differential gate keeps direct and first-class heterogeneous Task.all lowering, exact moving-GC roots, shape reuse, failure propagation, and cross-target objects together"
 )]
 fn typed_static_task_all_uses_exact_direct_and_first_class_codegen() {
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-typed-task-all/main.loom"),
-        include_str!("../../../fixtures/lcir-typed-task-all/main_test.loom")
+        include_str!("../../../fixtures/lcir-typed-task-all/main_test.loom"),
     );
-    let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     let prepared = prepare_native_object(
         &program,
@@ -10165,11 +10172,10 @@ pub async fn allFailed() {
     reason = "one source gate keeps settled/race outcome capture, managed fault roots, winner selection, loser cleanup, tests, and cross-target objects together"
 )]
 fn typed_fixed_task_outcomes_capture_faults_and_race_nonzero_winners() {
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-typed-task-outcomes/main.loom"),
-        include_str!("../../../fixtures/lcir-typed-task-outcomes/main_test.loom")
+        include_str!("../../../fixtures/lcir-typed-task-outcomes/main_test.loom"),
     );
-    let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
 
     let prepared = prepare_native_object(
@@ -10347,11 +10353,10 @@ pub async fn main() {
     reason = "one differential gate keeps fallible coroutine effects, ordinary Result values, exact child-fault inheritance, root lifecycles, and cross-target objects together"
 )]
 fn fallible_typed_async_results_and_faults_close_the_native_route() {
-    let source = concat!(
+    let program = compile_sources(
         include_str!("../../../fixtures/lcir-fallible-async/main.loom"),
-        include_str!("../../../fixtures/lcir-fallible-async/main_test.loom")
+        include_str!("../../../fixtures/lcir-fallible-async/main_test.loom"),
     );
-    let program = compile_source(source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
     for policy in [NativeRoutePolicy::Automatic, NativeRoutePolicy::LcirOnly] {
         let prepared = prepare_native_object(&program, EmitOptions::run("main"), policy)

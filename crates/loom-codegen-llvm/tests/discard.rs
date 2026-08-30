@@ -44,8 +44,12 @@ pub fn main() {
     let observed = counter.value
     assert observed == 1
 }
-
-test fn synchronous_discard() {
+",
+    )
+    .expect("write discard source");
+    std::fs::write(
+        project.path().join("main_test.loom"),
+        r"test fn synchronous_discard() {
     var counter = Counter { value = 0 }
     discard counter.next()
     discard answer()
@@ -71,7 +75,7 @@ test async fn nested_control_discard() {
 }
 ",
     )
-    .expect("write discard source");
+    .expect("write discard test source");
 
     let snapshot = support::analysis_host(project.path())
         .expect("open discard project")

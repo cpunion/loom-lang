@@ -167,12 +167,12 @@ jobs:
         run: |
           "$RELEASE_COMPILER" --no-cache check --target app examples/c3/application
           "$RELEASE_COMPILER" --no-cache build --target app --output target/release-c3 examples/c3/application
-          "$RELEASE_COMPILER" --no-cache test --target unit examples/c3/application
+          "$RELEASE_COMPILER" --no-cache test examples/c3/application/...
           "$RELEASE_COMPILER" --no-cache run --target app examples/c3/application
           "$RELEASE_COMPILER" run --artifact "target/release-c3$EXECUTABLE_SUFFIX"
           "$RELEASE_COMPILER" --backend interpreter --no-cache check --target app examples/c3/application
           "$RELEASE_COMPILER" --backend interpreter --no-cache build --target app --output target/release-c3.loomi examples/c3/application
-          "$RELEASE_COMPILER" --backend interpreter --no-cache test --target unit examples/c3/application
+          "$RELEASE_COMPILER" --backend interpreter --no-cache test examples/c3/application/...
           "$RELEASE_COMPILER" --backend interpreter --no-cache run --target app examples/c3/application
           "$RELEASE_COMPILER" --backend interpreter run --artifact target/release-c3.loomi
       - name: Portable package artifact release gate
