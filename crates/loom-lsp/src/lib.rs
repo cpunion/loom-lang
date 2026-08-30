@@ -1077,7 +1077,7 @@ const STD_SYMBOLS: &[StdSymbol] = &[
     StdSymbol {
         name: "IoErrorKind",
         kind: "enum",
-        module: "std.prelude",
+        module: "std.io",
         signature: "enum IoErrorKind",
     },
     StdSymbol {

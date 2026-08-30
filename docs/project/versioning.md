@@ -20,10 +20,10 @@ writers for unreleased formats. Development history belongs in
 | Manifest schema | `2` |
 | Lockfile schema | `2` |
 | Registry protocol and bundle | `1` |
-| Interpreted MIR artifact | `loom.interpreted-mir`, version `36` |
+| Interpreted MIR artifact | `loom.interpreted-mir`, version `37` |
 | Portable library artifact | `loom-library`, source-and-interface version `3` |
-| Persistent compiler cache | schema `12` |
-| Compilation-cache domain | `loom-compilation-cache-v12` |
+| Persistent compiler cache | schema `13` |
+| Compilation-cache domain | `loom-compilation-cache-v13` |
 | Interpreted final-cache layer | `final-artifact-v3` |
 | Interpreted artifact writer | `loom-interpreted-artifact-writer-v3` |
 | Portable-library final-cache layer | `portable-library-artifact-v3` |
@@ -71,11 +71,12 @@ LCIR dump 45, artifact identity schema 47, and native-object domain v43 record
 the explicit recoverable-versus-faulting error mode on `IoTaskCreate`. Existing
 dumps, identities, and cached route-specific objects are not reinterpreted.
 
-Interpreted MIR version 36 and persistent cache schema 12 remove the four
-Path-specific file-operation builtin tags. `std.file` converts `Path` through
-its ordinary source wrapper before reaching the remaining Text primitive, so
-the LCIR instruction set and its dump, identity, and native-object domains do
-not change.
+Interpreted MIR version 37 and persistent cache schema 13 replace the synthetic
+`IoErrorKind` type and its ten semantic builtin constructors with the exact
+ordinary `std.io.IoErrorKind` source enum. The synthetic `IoError` record now
+refers to that source type through its dynamically assigned MIR identity. The
+runtime wire still carries the same closed `u32` kind index, so LCIR and native
+runtime identities do not change.
 
 ## Source language
 

@@ -167,6 +167,10 @@ Closed
 Other
 ```
 
+It is declared as an ordinary enum in `std.io` and is available without an
+import as a prelude type. Its variants have normal source identities; the
+compiler only records the exact standard definition needed by typed I/O.
+
 The kind is stable for matching. `message` is human-readable detail and is not
 a stable comparison key. Host error integers are not exposed. Runtime defects,
 allocation failure, and compiler/runtime incompatibility are not represented as

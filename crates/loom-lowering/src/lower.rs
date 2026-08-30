@@ -41,8 +41,7 @@ const TEXT_MAP_TYPE: TypeId = TypeId(11);
 const JSON_TYPE: TypeId = TypeId(12);
 const JSON_ERROR_TYPE: TypeId = TypeId(13);
 const IO_ERROR_TYPE: TypeId = TypeId(14);
-const IO_ERROR_KIND_TYPE: TypeId = TypeId(15);
-const SYNTHETIC_TYPE_COUNT: u32 = 16;
+const SYNTHETIC_TYPE_COUNT: u32 = 15;
 
 /// Failure at the trusted typed-HIR to MIR boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -284,55 +283,55 @@ impl<'a> Compiler<'a> {
             .transpose()
     }
 
-    fn run(&self) -> LowerResult<Program> {
-        let dispose = self
-            .analysis
-            .canonical_concepts
-            .dispose
+    fn canonical_concept_id(
+        &self,
+        definition: Option<DefId>,
+        missing: &'static str,
+    ) -> LowerResult<Option<ConceptId>> {
+        definition
             .map(|definition| {
                 required(
                     self.indices.concepts.get(&definition).copied(),
-                    "canonical Dispose concept has no MIR id",
+                    missing,
                     definition_span(self.hir, definition),
                 )
             })
-            .transpose()?;
-        let must_scope = self
-            .analysis
-            .canonical_concepts
-            .must_scope
-            .map(|definition| {
-                required(
-                    self.indices.concepts.get(&definition).copied(),
-                    "canonical MustScope concept has no MIR id",
-                    definition_span(self.hir, definition),
-                )
-            })
-            .transpose()?;
-        let dispose_requirement = self
-            .analysis
-            .canonical_concepts
-            .dispose_requirement
+            .transpose()
+    }
+
+    fn canonical_requirement_id(
+        &self,
+        definition: Option<DefId>,
+        missing: &'static str,
+    ) -> LowerResult<Option<RequirementId>> {
+        definition
             .map(|definition| {
                 required(
                     self.indices.requirements.get(&definition).copied(),
-                    "canonical Dispose.dispose requirement has no MIR id",
+                    missing,
                     definition_span(self.hir, definition),
                 )
             })
-            .transpose()?;
-        let no_suspend = self
-            .analysis
-            .canonical_concepts
-            .no_suspend
-            .map(|definition| {
-                required(
-                    self.indices.concepts.get(&definition).copied(),
-                    "canonical NoSuspend concept has no MIR id",
-                    definition_span(self.hir, definition),
-                )
-            })
-            .transpose()?;
+            .transpose()
+    }
+
+    fn run(&self) -> LowerResult<Program> {
+        let dispose = self.canonical_concept_id(
+            self.analysis.canonical_concepts.dispose,
+            "canonical Dispose concept has no MIR id",
+        )?;
+        let must_scope = self.canonical_concept_id(
+            self.analysis.canonical_concepts.must_scope,
+            "canonical MustScope concept has no MIR id",
+        )?;
+        let dispose_requirement = self.canonical_requirement_id(
+            self.analysis.canonical_concepts.dispose_requirement,
+            "canonical Dispose.dispose requirement has no MIR id",
+        )?;
+        let no_suspend = self.canonical_concept_id(
+            self.analysis.canonical_concepts.no_suspend,
+            "canonical NoSuspend concept has no MIR id",
+        )?;
         let decode_text_error = self.canonical_std_type_id(
             self.analysis.canonical_std_items.decode_text_error,
             "canonical DecodeTextError has no MIR type id",
@@ -345,8 +344,19 @@ impl<'a> Compiler<'a> {
             self.analysis.canonical_std_items.log_level,
             "canonical LogLevel has no MIR type id",
         )?;
+        let io_error_kind = self
+            .canonical_std_type_id(
+                self.analysis.canonical_std_items.io_error_kind,
+                "canonical IoErrorKind has no MIR type id",
+            )?
+            .ok_or_else(|| {
+                defect(
+                    "embedded std.io.IoErrorKind is required for MIR lowering",
+                    Span::default(),
+                )
+            })?;
         let mut program = Program {
-            types: self.lower_types()?,
+            types: self.lower_types(io_error_kind)?,
             concepts: self.lower_concepts()?,
             requirements: self.lower_requirements()?,
             functions: self.lower_functions()?,
@@ -370,7 +380,7 @@ impl<'a> Compiler<'a> {
                 json: Some(JSON_TYPE),
                 json_error: Some(JSON_ERROR_TYPE),
                 io_error: Some(IO_ERROR_TYPE),
-                io_error_kind: Some(IO_ERROR_KIND_TYPE),
+                io_error_kind: Some(io_error_kind),
                 log_level,
                 dispose_concept: dispose,
                 dispose_requirement,
@@ -385,8 +395,8 @@ impl<'a> Compiler<'a> {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn lower_types(&self) -> LowerResult<Vec<TypeDef>> {
-        let mut types = synthetic_types();
+    fn lower_types(&self, io_error_kind: TypeId) -> LowerResult<Vec<TypeDef>> {
+        let mut types = synthetic_types(io_error_kind);
         for (definition, source) in self.hir.definitions.iter() {
             let Some(id) = self.indices.types.get(&definition).copied() else {
                 continue;
@@ -932,9 +942,6 @@ impl<'a> Compiler<'a> {
                 BuiltinType::Json => RequirementType::Nominal(JSON_TYPE, Vec::new()),
                 BuiltinType::JsonError => RequirementType::Nominal(JSON_ERROR_TYPE, Vec::new()),
                 BuiltinType::IoError => RequirementType::Nominal(IO_ERROR_TYPE, Vec::new()),
-                BuiltinType::IoErrorKind => {
-                    RequirementType::Nominal(IO_ERROR_KIND_TYPE, Vec::new())
-                }
             }),
             TyData::Tuple(elements) => Ok(RequirementType::Tuple(
                 elements
@@ -3233,16 +3240,6 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             | BuiltinValue::JsonNumberOutOfRange
             | BuiltinValue::JsonDepthLimit
             | BuiltinValue::JsonNonFiniteNumber
-            | BuiltinValue::IoErrorNotFound
-            | BuiltinValue::IoErrorPermissionDenied
-            | BuiltinValue::IoErrorAlreadyExists
-            | BuiltinValue::IoErrorInvalidInput
-            | BuiltinValue::IoErrorConnectionRefused
-            | BuiltinValue::IoErrorConnectionReset
-            | BuiltinValue::IoErrorTimedOut
-            | BuiltinValue::IoErrorUnexpectedEof
-            | BuiltinValue::IoErrorClosed
-            | BuiltinValue::IoErrorOther
             | BuiltinValue::TaskCompleted
             | BuiltinValue::TaskFaulted
             | BuiltinValue::TaskCancelled => {
@@ -3260,16 +3257,6 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                     BuiltinValue::JsonNumberOutOfRange => (JSON_ERROR_TYPE, VariantId(1)),
                     BuiltinValue::JsonDepthLimit => (JSON_ERROR_TYPE, VariantId(2)),
                     BuiltinValue::JsonNonFiniteNumber => (JSON_ERROR_TYPE, VariantId(3)),
-                    BuiltinValue::IoErrorNotFound => (IO_ERROR_KIND_TYPE, VariantId(0)),
-                    BuiltinValue::IoErrorPermissionDenied => (IO_ERROR_KIND_TYPE, VariantId(1)),
-                    BuiltinValue::IoErrorAlreadyExists => (IO_ERROR_KIND_TYPE, VariantId(2)),
-                    BuiltinValue::IoErrorInvalidInput => (IO_ERROR_KIND_TYPE, VariantId(3)),
-                    BuiltinValue::IoErrorConnectionRefused => (IO_ERROR_KIND_TYPE, VariantId(4)),
-                    BuiltinValue::IoErrorConnectionReset => (IO_ERROR_KIND_TYPE, VariantId(5)),
-                    BuiltinValue::IoErrorTimedOut => (IO_ERROR_KIND_TYPE, VariantId(6)),
-                    BuiltinValue::IoErrorUnexpectedEof => (IO_ERROR_KIND_TYPE, VariantId(7)),
-                    BuiltinValue::IoErrorClosed => (IO_ERROR_KIND_TYPE, VariantId(8)),
-                    BuiltinValue::IoErrorOther => (IO_ERROR_KIND_TYPE, VariantId(9)),
                     BuiltinValue::TaskCompleted => (TASK_OUTCOME_TYPE, VariantId(0)),
                     BuiltinValue::TaskFaulted => (TASK_OUTCOME_TYPE, VariantId(1)),
                     BuiltinValue::TaskCancelled => (TASK_OUTCOME_TYPE, VariantId(2)),
@@ -3837,16 +3824,6 @@ fn builtin_variant_id(builtin: BuiltinValue) -> Option<(TypeId, VariantId)> {
         BuiltinValue::JsonNumberOutOfRange => (JSON_ERROR_TYPE, VariantId(1)),
         BuiltinValue::JsonDepthLimit => (JSON_ERROR_TYPE, VariantId(2)),
         BuiltinValue::JsonNonFiniteNumber => (JSON_ERROR_TYPE, VariantId(3)),
-        BuiltinValue::IoErrorNotFound => (IO_ERROR_KIND_TYPE, VariantId(0)),
-        BuiltinValue::IoErrorPermissionDenied => (IO_ERROR_KIND_TYPE, VariantId(1)),
-        BuiltinValue::IoErrorAlreadyExists => (IO_ERROR_KIND_TYPE, VariantId(2)),
-        BuiltinValue::IoErrorInvalidInput => (IO_ERROR_KIND_TYPE, VariantId(3)),
-        BuiltinValue::IoErrorConnectionRefused => (IO_ERROR_KIND_TYPE, VariantId(4)),
-        BuiltinValue::IoErrorConnectionReset => (IO_ERROR_KIND_TYPE, VariantId(5)),
-        BuiltinValue::IoErrorTimedOut => (IO_ERROR_KIND_TYPE, VariantId(6)),
-        BuiltinValue::IoErrorUnexpectedEof => (IO_ERROR_KIND_TYPE, VariantId(7)),
-        BuiltinValue::IoErrorClosed => (IO_ERROR_KIND_TYPE, VariantId(8)),
-        BuiltinValue::IoErrorOther => (IO_ERROR_KIND_TYPE, VariantId(9)),
         BuiltinValue::TaskCompleted => (TASK_OUTCOME_TYPE, VariantId(0)),
         BuiltinValue::TaskFaulted => (TASK_OUTCOME_TYPE, VariantId(1)),
         BuiltinValue::TaskCancelled => (TASK_OUTCOME_TYPE, VariantId(2)),
@@ -4016,7 +3993,7 @@ impl TypeParameters {
 }
 
 #[allow(clippy::too_many_lines)]
-fn synthetic_types() -> Vec<TypeDef> {
+fn synthetic_types(io_error_kind: TypeId) -> Vec<TypeDef> {
     let span = Span::default();
     vec![
         TypeDef {
@@ -4137,24 +4114,7 @@ fn synthetic_types() -> Vec<TypeDef> {
         },
         json_type(span),
         json_error_type(span),
-        io_error_type(span),
-        closed_error_type(
-            IO_ERROR_KIND_TYPE,
-            "IoErrorKind",
-            &[
-                "NotFound",
-                "PermissionDenied",
-                "AlreadyExists",
-                "InvalidInput",
-                "ConnectionRefused",
-                "ConnectionReset",
-                "TimedOut",
-                "UnexpectedEof",
-                "Closed",
-                "Other",
-            ],
-            span,
-        ),
+        io_error_type(io_error_kind, span),
     ]
 }
 
@@ -4236,7 +4196,7 @@ fn json_error_type(span: Span) -> TypeDef {
     }
 }
 
-fn io_error_type(span: Span) -> TypeDef {
+fn io_error_type(kind: TypeId, span: Span) -> TypeDef {
     TypeDef {
         id: IO_ERROR_TYPE,
         name: "IoError".into(),
@@ -4246,7 +4206,7 @@ fn io_error_type(span: Span) -> TypeDef {
             fields: vec![
                 FieldDef {
                     name: "kind".into(),
-                    ty: Type::Nominal(IO_ERROR_KIND_TYPE, Vec::new()),
+                    ty: Type::Nominal(kind, Vec::new()),
                     span,
                 },
                 FieldDef {
@@ -4278,28 +4238,6 @@ fn lower_builtin_type(builtin: BuiltinType) -> Type {
         BuiltinType::Json => Type::Nominal(JSON_TYPE, Vec::new()),
         BuiltinType::JsonError => Type::Nominal(JSON_ERROR_TYPE, Vec::new()),
         BuiltinType::IoError => Type::Nominal(IO_ERROR_TYPE, Vec::new()),
-        BuiltinType::IoErrorKind => Type::Nominal(IO_ERROR_KIND_TYPE, Vec::new()),
-    }
-}
-
-fn closed_error_type(id: TypeId, name: &str, variants: &[&str], span: Span) -> TypeDef {
-    TypeDef {
-        id,
-        name: name.into(),
-        span,
-        type_parameters: 0,
-        kind: TypeDefKind::Enum {
-            variants: variants
-                .iter()
-                .enumerate()
-                .map(|(index, name)| VariantDef {
-                    id: VariantId(u32::try_from(index).expect("synthetic error variant index")),
-                    name: (*name).into(),
-                    payload: Vec::new(),
-                    span,
-                })
-                .collect(),
-        },
     }
 }
 

@@ -16,7 +16,7 @@ names still recognized by semantic builtin tables.
 | Surface | Ordinary `library/std` source today | Remaining compiler-owned public surface | Status |
 | --- | --- | --- | --- |
 | `std.int` | `ParseIntError`, `minimum`, `maximum`, `parse_int`, and the complete parser helper graph | none for the current package API | source-backed |
-| `std.io` | public `write` and `write_line` wrappers | compiler-private standard-output primitive and runtime byte boundary | source-backed |
+| `std.io` | public `IoErrorKind`, `write`, and `write_line` declarations | compiler-private standard-output primitive and runtime byte boundary | source-backed |
 | `std.json` | `parse_json` and its bounded iterative parser helper graph | `Json`, `JsonError`, and `format_json` | partial |
 | `std.log` | `LogLevel`, `write`, `debug`, `info`, `warn`, `error`, and their helper graph | only the exact-owner private typed write primitive and runtime byte boundary | source-backed |
 | `std.resource` | `Dispose`, `MustScope`, and `NoSuspend` declarations | their fixed language-item meaning and static enforcement intentionally remain language core | source declarations complete |
@@ -24,7 +24,7 @@ names still recognized by semantic builtin tables.
 | `std.process` | public `arguments` and `environment` wrappers | compiler-private process snapshot primitives and their runtime OS boundary | source-backed |
 | `std.text` / `std.path` | public `DecodeTextError` and `PathError` enums | Text, Bytes, Path, and their intrinsic construction and decoding operations remain core mechanisms | partial |
 | `std.time` | none | `Duration`, construction, and conversion | not source-backed |
-| `std.file` / `std.net` | all public open/create/connect functions, including Path forwarding | exact-owner typed I/O primitives; `File`, `Socket`, `IoError`, `IoErrorKind`, and resource methods | partial |
+| `std.file` / `std.net` | all public open/create/connect functions, including Path forwarding | exact-owner typed I/O primitives; `File`, `Socket`, `IoError`, and resource methods | partial |
 | `Task.sleep/all/settled/any/race` | none | temporary public-name resolution through `TaskIntrinsic` plus the private scheduler substrate | transitional |
 
 The target boundary gives every public library declaration an ordinary source

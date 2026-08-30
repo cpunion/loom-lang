@@ -47,7 +47,10 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   enums, and the complete public `std.log` graph. Logging now resolves through
   ordinary source `DefId` values and has no universal-value native fallback;
   only its exact-owner private typed write primitive remains compiler-owned.
-  All public `std.file` open/create and `std.net` connect functions likewise
+  `IoErrorKind` is now an ordinary `std.io` source enum whose exact definition
+  is made available through the prelude; its ten compiler builtin constructors
+  and fixed MIR type slot are gone. All public `std.file` open/create and
+  `std.net` connect functions likewise
   resolve through ordinary source wrappers; four Path forms reuse the Text
   wrappers, leaving only six exact-owner typed I/O primitives below source and
   no duplicate Path-specific semantic or MIR builtin tags.
