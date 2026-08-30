@@ -2236,49 +2236,6 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         })
     }
 
-    fn native_set_arguments(&self) -> FunctionValue<'ctx> {
-        self.module
-            .get_function("loom_runtime_set_arguments")
-            .unwrap_or_else(|| {
-                let function_type = self.context.void_type().fn_type(
-                    &[self.context.i32_type().into(), self.ptr_type.into()],
-                    false,
-                );
-                self.module
-                    .add_function("loom_runtime_set_arguments", function_type, None)
-            })
-    }
-
-    fn native_process_arguments(&self) -> FunctionValue<'ctx> {
-        self.module
-            .get_function("loom_runtime_process_arguments")
-            .unwrap_or_else(|| {
-                let function_type = self
-                    .context
-                    .i32_type()
-                    .fn_type(&[self.ptr_type.into()], false);
-                self.module
-                    .add_function("loom_runtime_process_arguments", function_type, None)
-            })
-    }
-
-    fn native_process_environment(&self) -> FunctionValue<'ctx> {
-        self.module
-            .get_function("loom_runtime_process_environment")
-            .unwrap_or_else(|| {
-                let function_type = self.context.i32_type().fn_type(
-                    &[
-                        self.ptr_type.into(),
-                        self.i64_type.into(),
-                        self.ptr_type.into(),
-                    ],
-                    false,
-                );
-                self.module
-                    .add_function("loom_runtime_process_environment", function_type, None)
-            })
-    }
-
     fn native_file_open_read(&self) -> FunctionValue<'ctx> {
         self.native_io_task_text("loom_file_open_read")
     }
@@ -3585,17 +3542,6 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
         let main = self.module.add_function("main", main_type, None);
         let entry = self.context.append_basic_block(main, "entry");
         self.builder.position_at_end(entry);
-        let argument_count = parameter_int(main, 0)?;
-        let argument_vector = parameter_pointer(main, 1)?;
-        if self.reachable.builtins.contains(&Builtin::ProcessArguments) {
-            self.builder
-                .build_call(
-                    self.native_set_arguments(),
-                    &[argument_count.into(), argument_vector.into()],
-                    "process.arguments.initialize",
-                )
-                .map_err(builder_error)?;
-        }
         let result = self
             .builder
             .build_alloca(self.value_type, "result")
@@ -10745,6 +10691,17 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     ) -> Result<bool, CodegenError> {
         if matches!(
             builtin,
+            Builtin::ProcessArgumentCount
+                | Builtin::ProcessArgumentAt
+                | Builtin::ProcessEnvironment
+        ) {
+            return Err(CodegenError::new(
+                "NativeProcessRequiresLcir",
+                "std.process primitives require the typed LCIR native route",
+            ));
+        }
+        if matches!(
+            builtin,
             Builtin::ListAdd | Builtin::ListLength | Builtin::ListGet | Builtin::ListToTextMap
         ) {
             return self.emit_list_builtin(builtin, arguments, destination);
@@ -10752,16 +10709,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let Some(prepared) = self.emit_builtin_call_arguments(builtin, arguments)? else {
             return Ok(false);
         };
-        if matches!(
-            builtin,
-            Builtin::ProcessArguments | Builtin::ProcessEnvironment
-        ) {
-            let continues = self.emit_process_builtin(builtin, &prepared.values, destination)?;
-            if continues {
-                self.emit_call_writebacks(&prepared.writebacks)?;
-            }
-            return Ok(continues);
-        }
         if matches!(builtin, Builtin::TaskFaultCode | Builtin::TaskFaultMessage) {
             let continues = self.emit_task_fault_builtin(builtin, &prepared.values, destination)?;
             if continues {
@@ -12855,91 +12802,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
 
         self.backend.builder.position_at_end(merge);
         Ok(())
-    }
-
-    fn emit_process_builtin(
-        &self,
-        builtin: Builtin,
-        values: &[PointerValue<'ctx>],
-        destination: PointerValue<'ctx>,
-    ) -> Result<bool, CodegenError> {
-        match (builtin, values) {
-            (Builtin::ProcessArguments, []) => {
-                self.publish_gc_root_state()?;
-                let status = call_int(
-                    &self.backend.builder,
-                    self.backend.native_process_arguments(),
-                    &[destination.into()],
-                    "process.arguments",
-                )?;
-                let invalid = self
-                    .backend
-                    .builder
-                    .build_int_compare(
-                        IntPredicate::NE,
-                        status,
-                        self.backend.context.i32_type().const_zero(),
-                        "process.arguments.invalid",
-                    )
-                    .map_err(builder_error)?;
-                self.fail_if(invalid, "ProcessRuntimeFault")?;
-                Ok(true)
-            }
-            (Builtin::ProcessEnvironment, [name]) => {
-                let (data, length) = self.text_parts(*name, "environment.name")?;
-                let value = self.alloc_value("environment.value");
-                self.publish_gc_root_state()?;
-                let status = call_int(
-                    &self.backend.builder,
-                    self.backend.native_process_environment(),
-                    &[data.into(), length.into(), value.into()],
-                    "environment.get",
-                )?;
-                let invalid = self
-                    .backend
-                    .builder
-                    .build_int_compare(
-                        IntPredicate::SLT,
-                        status,
-                        self.backend.context.i32_type().const_zero(),
-                        "environment.invalid",
-                    )
-                    .map_err(builder_error)?;
-                self.fail_if(invalid, "ProcessRuntimeFault")?;
-                let found = self
-                    .backend
-                    .builder
-                    .build_int_compare(
-                        IntPredicate::EQ,
-                        status,
-                        self.backend.context.i32_type().const_int(1, false),
-                        "environment.found",
-                    )
-                    .map_err(builder_error)?;
-                let some = self.append_block("environment.some");
-                let none = self.append_block("environment.none");
-                let merge = self.append_block("environment.merge");
-                self.backend
-                    .builder
-                    .build_conditional_branch(found, some, none)
-                    .map_err(builder_error)?;
-
-                self.backend.builder.position_at_end(some);
-                self.emit_variant_from_pointers(TypeId(0), 1, &[value], destination)?;
-                self.backend.branch(merge)?;
-
-                self.backend.builder.position_at_end(none);
-                self.emit_variant_from_pointers(TypeId(0), 0, &[], destination)?;
-                self.backend.branch(merge)?;
-
-                self.backend.builder.position_at_end(merge);
-                Ok(true)
-            }
-            _ => Err(CodegenError::new(
-                "InvalidBuiltinCall",
-                "process builtin argument shape does not match checked MIR",
-            )),
-        }
     }
 
     #[allow(clippy::too_many_lines)]

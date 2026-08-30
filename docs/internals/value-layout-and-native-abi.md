@@ -185,8 +185,8 @@ future durability guarantee must come from an explicit flush/sync operation.
 
 The current exact runtime identity is defined in
 [Versioning and compatibility](../project/versioning.md). Typed-task ABI v1,
-coroutine v2, wait v1, standard-library ABI v6, Text v3, and GC v9 identify the
-corresponding current components.
+typed-process ABI v1, coroutine v2, wait v1, standard-library ABI v7, Text v3,
+and GC v9 identify the corresponding current components.
 
 ## Checked-MIR primitive and aggregate specialization
 
@@ -402,6 +402,24 @@ tag and does not make `Text` a dynamic type. Literal objects and typed moving
 objects reuse the existing language-visible layout prefix. The concat helper
 and generated typed-root calls use the current Text and typed-GC boundaries
 listed in [Versioning and compatibility](../project/versioning.md).
+
+## Typed process input
+
+Native process input uses the private typed-process-v1 boundary; it never
+constructs a universal `ValueSlot`. When an artifact reaches argument count or
+selection, generated `main` copies `argv[1..]` into one immutable runtime
+snapshot before creating or activating the Loom runtime. An environment-only
+artifact does not initialize that snapshot.
+
+The count operation returns an `i64`; `-1` means that the snapshot is absent
+and all negative values fail closed. Argument selection accepts an `i64` index
+and one stable direct-Text output cell, returning `0` on success and nonzero on
+an ABI defect. Environment lookup accepts a direct Text name and output cell;
+its closed status domain is `-1` invalid, `0` missing, and `1` found. Both
+allocating operations clear output first, publish the new Text last, and use
+the normal typed shadow-root protocol. Environment lookup copies the input name
+before its allocation safepoint, so a name dead after the call need not be kept
+as a spurious root.
 
 ## Dynamic concept values
 

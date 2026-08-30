@@ -2882,6 +2882,122 @@ impl<'a> Validator<'a> {
                 *invalid_utf8_variant,
                 &path,
             ),
+            InstructionKind::ProcessArgumentCount => {
+                self.require_results(function, instruction, &[integer], &path);
+            }
+            InstructionKind::ProcessArgumentAt { index } => {
+                if !text_is_managed {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.result[0]"),
+                        "process argument selection requires the canonical managed Text representation",
+                    );
+                }
+                self.require_known_value_type(
+                    function,
+                    *index,
+                    integer,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.index"),
+                );
+                self.require_results(function, instruction, &[text], &path);
+            }
+            InstructionKind::ProcessEnvironment {
+                name,
+                missing_variant,
+                found_variant,
+            } => {
+                if !text_is_managed {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.result[0]"),
+                        "process environment lookup requires the canonical managed Text representation",
+                    );
+                }
+                self.require_known_value_type(
+                    function,
+                    *name,
+                    text,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.name"),
+                );
+                self.require_results(function, instruction, &[None], &path);
+                if missing_variant == found_variant {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        format!("{path}.variants"),
+                        "process environment lookup requires distinct missing and found variants",
+                    );
+                }
+                if let Some(result) = instruction.results.first().copied()
+                    && let Some(result_ty) = function.value(result).map(Value::ty)
+                {
+                    let semantic_is_option_text = self
+                        .program
+                        .representations
+                        .value_type(result_ty)
+                        .is_some_and(|value_type| {
+                            matches!(
+                                value_type.semantic(),
+                                Type::Nominal(identity, arguments)
+                                    if Some(*identity) == self.program.canonical_types.option
+                                        && arguments.as_slice() == [Type::Text]
+                            )
+                        });
+                    if !semantic_is_option_text {
+                        self.error(
+                            ValidationCode::TypeMismatch,
+                            format!("{path}.result[0]"),
+                            "process environment result must use the cataloged canonical Option[Text] identity",
+                        );
+                    }
+                    let Some(sum) = self.sum_repr(result_ty) else {
+                        self.error(
+                            ValidationCode::TypeMismatch,
+                            format!("{path}.result[0]"),
+                            "process environment result must use a closed sum representation",
+                        );
+                        return;
+                    };
+                    if self
+                        .program
+                        .representations
+                        .sum(sum)
+                        .map_or(0, |sum| sum.variants().len())
+                        != 2
+                    {
+                        self.error(
+                            ValidationCode::InstructionShape,
+                            format!("{path}.result[0]"),
+                            "process environment Option must contain exactly two variants",
+                        );
+                    }
+                    let missing = usize::try_from(*missing_variant).ok();
+                    let found = usize::try_from(*found_variant).ok();
+                    if missing.and_then(|variant| self.sum_variant_field_count(sum, variant))
+                        != Some(0)
+                    {
+                        self.error(
+                            ValidationCode::InstructionShape,
+                            format!("{path}.missing_variant"),
+                            "process environment missing variant must exist and carry no payload",
+                        );
+                    }
+                    let found_shape = found.map(|variant| {
+                        (
+                            self.sum_variant_field_count(sum, variant),
+                            self.sum_variant_field(sum, variant, 0),
+                        )
+                    });
+                    if found_shape != Some((Some(1), text)) {
+                        self.error(
+                            ValidationCode::InstructionShape,
+                            format!("{path}.found_variant"),
+                            "process environment found variant must exist and carry exactly one Text",
+                        );
+                    }
+                }
+            }
             InstructionKind::PathFromText {
                 text,
                 ok_variant,
@@ -6952,6 +7068,8 @@ fn instruction_direct_effects(kind: &InstructionKind) -> Effects {
         InstructionKind::TextConcat { .. }
             | InstructionKind::TextGet { .. }
             | InstructionKind::TextFromUtf8Units { .. }
+            | InstructionKind::ProcessArgumentAt { .. }
+            | InstructionKind::ProcessEnvironment { .. }
             | InstructionKind::PathJoin { .. }
             | InstructionKind::BytesAppend { .. }
             | InstructionKind::BytesDecodeUtf8 { .. }
@@ -8132,6 +8250,132 @@ mod tests {
                 .expect("return");
         }
         builder.finish()
+    }
+
+    fn process_environment_program(
+        catalog_option: TypeId,
+        result_identity: TypeId,
+        variants: &[Box<[Type]>],
+        missing_variant: u32,
+        found_variant: u32,
+    ) -> Program {
+        let origin = Origin::synthetic(MirFunctionId(96));
+        let mut builder = ProgramBuilder::with_canonical_types(
+            TargetLayout::new(64).expect("target"),
+            crate::CanonicalTypeCatalog {
+                option: Some(catalog_option),
+                ..crate::CanonicalTypeCatalog::default()
+            },
+        );
+        let text = builder.add_managed_text_type().expect("managed Text type");
+        let option_text = builder
+            .add_sum_type(Type::Nominal(result_identity, vec![Type::Text]), variants)
+            .expect("Option[Text] sum");
+        let root = builder
+            .declare_function(
+                origin,
+                "process.environment",
+                Signature::new([text], option_text),
+                Effects::MAY_COLLECT.with_implications(),
+            )
+            .expect("function");
+        {
+            let mut function = builder.function(root).expect("function builder");
+            let entry = function.create_block().expect("entry");
+            function.set_entry(entry).expect("set entry");
+            let name = function
+                .append_block_parameter(entry, text)
+                .expect("name parameter");
+            let result = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::ProcessEnvironment {
+                        name,
+                        missing_variant,
+                        found_variant,
+                    },
+                    &[option_text],
+                    origin,
+                )
+                .expect("environment lookup")[0];
+            function
+                .terminate(
+                    entry,
+                    Terminator::new(TerminatorKind::Return(result), origin),
+                )
+                .expect("return");
+        }
+        builder.finish()
+    }
+
+    #[test]
+    fn process_environment_requires_canonical_option_text_and_exact_effects() {
+        let option = TypeId(120);
+        let valid = process_environment_program(
+            option,
+            option,
+            &[Box::new([]), Box::new([Type::Text])],
+            0,
+            1,
+        );
+        validate_program(&valid).expect("canonical process environment program");
+
+        let noncanonical = process_environment_program(
+            option,
+            TypeId(121),
+            &[Box::new([]), Box::new([Type::Text])],
+            0,
+            1,
+        );
+        let errors =
+            validate_program(&noncanonical).expect_err("noncanonical Option must be rejected");
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::TypeMismatch
+                && error.message().contains("canonical Option[Text]")
+        }));
+
+        let mut missing_effect = valid;
+        missing_effect.functions[0].effects = Effects::NONE;
+        let errors = validate_program(&missing_effect)
+            .expect_err("collecting process environment lookup needs exact effects");
+        assert!(
+            errors
+                .as_slice()
+                .iter()
+                .any(|error| error.code() == ValidationCode::EffectMismatch)
+        );
+    }
+
+    #[test]
+    fn process_environment_requires_distinct_canonical_variant_shapes() {
+        let option = TypeId(122);
+        let same_variant = process_environment_program(
+            option,
+            option,
+            &[Box::new([]), Box::new([Type::Text])],
+            0,
+            0,
+        );
+        let errors =
+            validate_program(&same_variant).expect_err("duplicate variants must be rejected");
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::InstructionShape
+                && error.message().contains("distinct missing and found")
+        }));
+
+        let wrong_found = process_environment_program(
+            option,
+            option,
+            &[Box::new([]), Box::new([Type::Int])],
+            0,
+            1,
+        );
+        let errors =
+            validate_program(&wrong_found).expect_err("wrong found payload must be rejected");
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::InstructionShape
+                && error.message().contains("exactly one Text")
+        }));
     }
 
     #[test]

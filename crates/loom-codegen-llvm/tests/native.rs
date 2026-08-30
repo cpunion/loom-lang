@@ -409,7 +409,6 @@ fn text_literals_are_immortal_versioned_objects_across_a_gc_safepoint() {
 #[allow(clippy::too_many_lines)]
 fn stable_output_runtime_abis_publish_roots_and_run() {
     let source = r#"import std.float.format_float
-import std.process.environment
 
 pub fn main() {
     let formatted = format_float(2.5)
@@ -450,16 +449,6 @@ pub fn main() {
         }
     }
 
-    match environment("LOOM_STABLE_OUTPUT_TEST") {
-        Some(value) => {
-            assert value == "present"
-            Unit
-        }
-        None => {
-            assert false
-            Unit
-        }
-    }
 }
 "#;
     let project = tempfile::tempdir().expect("create stable-output ABI project");
@@ -483,16 +472,6 @@ pub fn main() {
 
     let llvm = std::fs::read_to_string(ir).expect("read stable-output ABI IR");
     let main = llvm_native_function(&llvm, "standalone_main");
-    for dead_process_surface in [
-        "loom_runtime_set_arguments",
-        "loom_runtime_process_arguments",
-        "std_process_arguments",
-    ] {
-        assert!(
-            !llvm.contains(dead_process_surface),
-            "environment-only source retained dead argument surface `{dead_process_surface}`: {llvm}"
-        );
-    }
     for symbol in ["@loom_runtime_text_get", "@loom_runtime_list_get"] {
         assert!(main.contains(symbol), "missing {symbol}: {main}");
         assert_gc_state_published_before(main, symbol);
@@ -512,21 +491,6 @@ pub fn main() {
         "the std.float.format_float wrapper must own the private runtime primitive: {float_format}"
     );
     assert_gc_state_published_before(float_format, "@loom_runtime_format_float");
-    let process_environment = llvm_function(&llvm, "std_process_environment");
-    let process_environment_symbol = llvm_defined_symbol(process_environment);
-    assert!(
-        main.contains(&format!("@{process_environment_symbol}(")),
-        "application main must call the ordinary std.process.environment wrapper: {main}"
-    );
-    assert!(
-        !main.contains("@loom_runtime_process_environment"),
-        "the private process primitive must not be emitted in the application function: {main}"
-    );
-    assert!(
-        process_environment.contains("@loom_runtime_process_environment"),
-        "the std.process.environment wrapper must own the private runtime primitive: {process_environment}"
-    );
-    assert_gc_state_published_before(process_environment, "@loom_runtime_process_environment");
     assert!(
         main.lines().any(|line| {
             line.contains("call i32 @loom_runtime_list_get") && line.matches("ptr ").count() == 2
@@ -548,16 +512,7 @@ pub fn main() {
         "TextMap.get must deep-clone the selected value after its non-collecting lookup: {main}"
     );
     assert_gc_state_published_before(main, "@loom_gc_clone_value_v1");
-    assert!(
-        process_environment.lines().any(|line| {
-            line.contains("call i32 @loom_runtime_process_environment")
-                && line.matches("ptr ").count() == 2
-        }),
-        "environment did not use name/length/stable-output status ABI: {process_environment}"
-    );
-
     let output = Command::new(executable)
-        .env("LOOM_STABLE_OUTPUT_TEST", "present")
         .output()
         .expect("run stable-output ABI executable");
     assert!(

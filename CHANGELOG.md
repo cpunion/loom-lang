@@ -40,8 +40,10 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   and artifact workflows. Persistent inputs are bounded, version-exact, and
   rejected rather than upgraded when their current identity does not match.
 - Compiler-distributed `std` source modules compiled through the ordinary
-  frontend, including integer and JSON parsing, logging wrappers, and resource
-  concepts. JSON parsing has no compiler opcode or runtime entry point;
+  frontend, including integer and JSON parsing, logging wrappers, process
+  wrappers, and resource concepts. `std.process.arguments` builds its List in
+  source over typed snapshot primitives; process input has no universal-value
+  or checked-MIR runtime path. JSON parsing has no compiler opcode or runtime entry point;
   canonical JSON formatting uses an exact typed layout boundary.
 - A precise moving collector, lazy single-threaded executor, OS reactor, bounded
   blocking pool, structured cancellation, deterministic cleanup, and strict

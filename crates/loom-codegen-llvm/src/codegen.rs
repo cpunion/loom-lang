@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use loom_codegen_ir::{
     CheckedArtifact, ReachableSourceGraph, SourceRoots, analyze_source_reachability,
 };
-use loom_mir::{CheckedProgram, Type};
+use loom_mir::{Builtin, CheckedProgram, Type};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -14,7 +14,7 @@ use crate::{
     target::{NativeTargetMachine, create_target_machine},
 };
 
-const NATIVE_OBJECT_FORMAT: &str = "loom-checked-mir-native-object-v2";
+const NATIVE_OBJECT_FORMAT: &str = "loom-checked-mir-native-object-v3";
 
 /// Native executable harness selected by the CLI command.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -209,6 +209,23 @@ pub(crate) fn select_roots(
     Ok((roots, reachable))
 }
 
+fn reject_checked_mir_process(reachable: &ReachableSourceGraph) -> Result<(), CodegenError> {
+    if reachable.builtins.iter().any(|builtin| {
+        matches!(
+            builtin,
+            Builtin::ProcessArgumentCount
+                | Builtin::ProcessArgumentAt
+                | Builtin::ProcessEnvironment
+        )
+    }) {
+        return Err(CodegenError::new(
+            "NativeProcessRequiresLcir",
+            "reachable std.process primitives require the typed LCIR native route",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_checked_mir_root_signatures(
     program: &CheckedProgram,
     options: &EmitOptions,
@@ -278,6 +295,7 @@ pub fn native_object_fingerprint(
     options: &EmitOptions,
 ) -> Result<String, CodegenError> {
     let (roots, reachable) = select_roots(program, options)?;
+    reject_checked_mir_process(&reachable)?;
     let target = create_target_machine(options.target_triple.as_deref(), options.optimization)?;
     checked_mir_object_fingerprint_with_target(program, options, &roots, &reachable, &target)
 }
@@ -379,7 +397,18 @@ pub fn emit_native_object(
     options: &EmitOptions,
 ) -> Result<NativeObjectArtifact, CodegenError> {
     let (roots, reachable) = select_roots(program, options)?;
-    Emitter::emit_object(program.as_program(), &reachable, &roots, output, options)
+    reject_checked_mir_process(&reachable)?;
+    emit_checked_mir_object(program, output, options, &roots, &reachable)
+}
+
+fn emit_checked_mir_object(
+    program: &CheckedProgram,
+    output: &Path,
+    options: &EmitOptions,
+    roots: &SourceRoots,
+    reachable: &ReachableSourceGraph,
+) -> Result<NativeObjectArtifact, CodegenError> {
+    Emitter::emit_object(program.as_program(), reachable, roots, output, options)
 }
 
 /// Emits a verified, optimized target object directly from checked typed LCIR.
@@ -414,6 +443,8 @@ pub fn emit_native(
     runtime: &crate::RuntimeBundle,
     linker: &crate::RuntimeLinker,
 ) -> Result<NativeArtifact, CodegenError> {
+    let (roots, reachable) = select_roots(program, options)?;
+    reject_checked_mir_process(&reachable)?;
     let expected = crate::target_identity(options.target_triple.as_deref(), options.optimization)?;
     if runtime.target_triple() != expected.triple || runtime.data_layout() != expected.data_layout {
         return Err(CodegenError::new(
@@ -432,7 +463,7 @@ pub fn emit_native(
         .suffix(&object_suffix)
         .tempfile()
         .map_err(|error| CodegenError::new("ArtifactWriteFailed", error.to_string()))?;
-    let emitted = emit_native_object(program, object.path(), options)?;
+    let emitted = emit_checked_mir_object(program, object.path(), options, &roots, &reachable)?;
     // MSVC linkers must reopen the object and Windows temporary files do not
     // grant that access while NamedTempFile still owns its creation handle.
     // Keep deletion ownership while closing the handle before link execution.
@@ -454,7 +485,7 @@ mod tests {
     fn native_object_fingerprint_domain_is_pinned() {
         assert_eq!(
             super::NATIVE_OBJECT_FORMAT,
-            "loom-checked-mir-native-object-v2"
+            "loom-checked-mir-native-object-v3"
         );
     }
 

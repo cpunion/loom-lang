@@ -145,7 +145,11 @@ pub fn environment_value(name Text) Option[Text] {
     );
     assert_eq!(
         builtin_targets(arguments),
-        BTreeSet::from([Builtin::ProcessArguments])
+        BTreeSet::from([
+            Builtin::ListAdd,
+            Builtin::ProcessArgumentCount,
+            Builtin::ProcessArgumentAt,
+        ])
     );
     assert_eq!(
         builtin_targets(environment),
@@ -163,7 +167,8 @@ pub fn environment_value(name Text) Option[Text] {
     assert!(environment_names.contains("std.process.environment"));
     assert!(!environment_names.contains("std.process.arguments"));
     assert!(environment_builtins.contains(&Builtin::ProcessEnvironment));
-    assert!(!environment_builtins.contains(&Builtin::ProcessArguments));
+    assert!(!environment_builtins.contains(&Builtin::ProcessArgumentCount));
+    assert!(!environment_builtins.contains(&Builtin::ProcessArgumentAt));
 
     let mut interpreter = Interpreter::new(program).with_process_arguments(vec![
         "first".to_owned(),

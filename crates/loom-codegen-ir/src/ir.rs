@@ -690,6 +690,26 @@ pub enum InstructionKind {
         error_variant: u32,
         invalid_utf8_variant: u32,
     },
+    /// Reads the immutable process argument snapshot length captured by the
+    /// generated entry point. The executable name is not part of the snapshot.
+    ProcessArgumentCount,
+    /// Selects one argument from the immutable process snapshot and publishes
+    /// it as a freshly allocated canonical managed Text. Source std.process
+    /// calls this only with an index proved by its `0..count` loop; an invalid
+    /// index is therefore a compiler/runtime ABI defect rather than a language
+    /// Option result.
+    ProcessArgumentAt {
+        index: ValueId,
+    },
+    /// Looks up one Unicode process-environment value. The result is the exact
+    /// canonical `Option[Text]`; a missing or non-Unicode host value selects
+    /// `missing_variant`, while a present value is copied into managed Text and
+    /// selects `found_variant`.
+    ProcessEnvironment {
+        name: ValueId,
+        missing_variant: u32,
+        found_variant: u32,
+    },
     /// Validates one canonical managed Text as a lexical path and constructs
     /// exact `Result[Path, PathError]`. A NUL byte selects the closed
     /// `ContainsNul` error; success wraps the existing Text pointer without
@@ -1021,12 +1041,17 @@ pub enum InstructionKind {
 impl InstructionKind {
     pub(crate) fn operands(&self) -> Vec<ValueId> {
         match self {
-            Self::Constant(_) | Self::TextLiteral { .. } | Self::TextMapConstruct => Vec::new(),
+            Self::Constant(_)
+            | Self::TextLiteral { .. }
+            | Self::TextMapConstruct
+            | Self::ProcessArgumentCount => Vec::new(),
             Self::TextLength { text }
             | Self::TextEncodeUtf8 { text }
             | Self::PathFromText { text, .. }
             | Self::FloatParseStatus { text } => vec![*text],
             Self::TextFromUtf8Units { units, .. } => vec![*units],
+            Self::ProcessArgumentAt { index } => vec![*index],
+            Self::ProcessEnvironment { name, .. } => vec![*name],
             Self::PathAsText { path } => vec![*path],
             Self::TextGet { text, index, .. } => vec![*text, *index],
             Self::BytesLength { bytes } | Self::BytesDecodeUtf8 { bytes, .. } => vec![*bytes],

@@ -3313,7 +3313,8 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             | BuiltinValue::ListAdd
             | BuiltinValue::ListLength
             | BuiltinValue::ListGet
-            | BuiltinValue::ProcessArguments
+            | BuiltinValue::ProcessArgumentCount
+            | BuiltinValue::ProcessArgumentAt
             | BuiltinValue::ProcessEnvironment
             | BuiltinValue::TaskFaultCode
             | BuiltinValue::TaskFaultMessage
@@ -3791,7 +3792,8 @@ fn executable_builtin(builtin: BuiltinValue) -> Option<Builtin> {
         BuiltinValue::ListAdd => Builtin::ListAdd,
         BuiltinValue::ListLength => Builtin::ListLength,
         BuiltinValue::ListGet => Builtin::ListGet,
-        BuiltinValue::ProcessArguments => Builtin::ProcessArguments,
+        BuiltinValue::ProcessArgumentCount => Builtin::ProcessArgumentCount,
+        BuiltinValue::ProcessArgumentAt => Builtin::ProcessArgumentAt,
         BuiltinValue::ProcessEnvironment => Builtin::ProcessEnvironment,
         BuiltinValue::TaskFaultCode => Builtin::TaskFaultCode,
         BuiltinValue::TaskFaultMessage => Builtin::TaskFaultMessage,

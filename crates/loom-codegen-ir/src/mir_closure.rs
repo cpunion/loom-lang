@@ -789,7 +789,8 @@ impl SerializationClosure {
             | Builtin::TextContains
             | Builtin::ListAdd
             | Builtin::ListLength
-            | Builtin::ProcessArguments => {}
+            | Builtin::ProcessArgumentCount
+            | Builtin::ProcessArgumentAt => {}
         }
     }
 }

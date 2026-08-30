@@ -95,14 +95,17 @@ The library owns reusable policy and algorithms, including:
 
 `std.process.arguments` and `std.process.environment` demonstrate the intended
 vertical boundary. Both are ordinary source functions with normal `DefId`
-calls. Only their bodies may import the exact private argument/environment
-primitives. The driver authenticates compiler-owned source origin together with
-the exact `std` module identity; semantic analysis then rechecks that nominal
-identity and the owning `std.process` package before accepting either import.
+calls. `arguments` builds an ordinary `List[Text]` from private count and indexed
+selection primitives; `environment` maps the private lookup directly to the
+canonical `Option[Text]`. Only their bodies may import those exact primitives.
+The driver authenticates compiler-owned source origin together with the exact
+`std` module identity; semantic analysis then rechecks that nominal identity
+and the owning `std.process` package before accepting either import.
 Application imports of the private spelling follow ordinary resolution and
-fail; there is no public-name fallback to a builtin. The existing interpreter
-and native runtime operations remain the irreducible host boundary beneath
-those wrappers.
+fail; there is no public-name fallback to a builtin. The interpreter owns an
+immutable argument snapshot. Native LCIR uses the versioned typed process ABI
+and direct Text output cells; process input has no universal-value or
+checked-MIR implementation.
 
 `std.io.write` and `std.io.write_line` use the same boundary. Their public
 definitions are ordinary Loom source, while only the exact compiler-owned

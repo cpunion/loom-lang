@@ -18,7 +18,8 @@ pub(crate) enum CompilerStdPrimitive {
     FloatParseStatus,
     FloatToInt,
     IoWriteStdout,
-    ProcessArguments,
+    ProcessArgumentCount,
+    ProcessArgumentAt,
     ProcessEnvironment,
 }
 
@@ -32,7 +33,8 @@ impl CompilerStdPrimitive {
             Self::FloatParseStatus => "__parse",
             Self::FloatToInt => "__to_int",
             Self::IoWriteStdout => "__write_stdout",
-            Self::ProcessArguments => "__arguments",
+            Self::ProcessArgumentCount => "__argument_count",
+            Self::ProcessArgumentAt => "__argument_at",
             Self::ProcessEnvironment => "__environment",
         }
     }
@@ -70,7 +72,12 @@ pub(crate) fn resolve_import(
         (FLOAT_MODULE, "float", "__parse") => Some(CompilerStdPrimitive::FloatParseStatus),
         (FLOAT_MODULE, "float", "__to_int") => Some(CompilerStdPrimitive::FloatToInt),
         (IO_MODULE, "io", "__write_stdout") => Some(CompilerStdPrimitive::IoWriteStdout),
-        (PROCESS_MODULE, "process", "__arguments") => Some(CompilerStdPrimitive::ProcessArguments),
+        (PROCESS_MODULE, "process", "__argument_count") => {
+            Some(CompilerStdPrimitive::ProcessArgumentCount)
+        }
+        (PROCESS_MODULE, "process", "__argument_at") => {
+            Some(CompilerStdPrimitive::ProcessArgumentAt)
+        }
         (PROCESS_MODULE, "process", "__environment") => {
             Some(CompilerStdPrimitive::ProcessEnvironment)
         }
@@ -137,8 +144,16 @@ mod tests {
         let wrong_package = module(&mut program, PackageId::standalone(), "std.process");
 
         assert_eq!(
-            resolve_import(&program, owner, &path(&["std", "process", "__arguments"]),),
-            Some(CompilerStdPrimitive::ProcessArguments)
+            resolve_import(
+                &program,
+                owner,
+                &path(&["std", "process", "__argument_count"]),
+            ),
+            Some(CompilerStdPrimitive::ProcessArgumentCount)
+        );
+        assert_eq!(
+            resolve_import(&program, owner, &path(&["std", "process", "__argument_at"]),),
+            Some(CompilerStdPrimitive::ProcessArgumentAt)
         );
         assert_eq!(
             resolve_import(
@@ -178,13 +193,17 @@ mod tests {
         );
 
         for (candidate_owner, candidate_path) in [
-            (wrong_owner, path(&["std", "process", "__arguments"])),
-            (wrong_package, path(&["std", "process", "__arguments"])),
-            (owner, path(&["std.process", "__arguments"])),
+            (wrong_owner, path(&["std", "process", "__argument_count"])),
+            (wrong_package, path(&["std", "process", "__argument_count"])),
+            (owner, path(&["std.process", "__argument_count"])),
             (owner, path(&["std", "process", "arguments"])),
-            (owner, path(&["std", "process", "__arguments", "extra"])),
+            (
+                owner,
+                path(&["std", "process", "__argument_count", "extra"]),
+            ),
+            (owner, path(&["std", "process", "__arguments"])),
             (owner, path(&["std", "io", "__write_stdout"])),
-            (io_owner, path(&["std", "process", "__arguments"])),
+            (io_owner, path(&["std", "process", "__argument_count"])),
             (io_owner, path(&["std.io", "__write_stdout"])),
             (io_owner, path(&["std", "io", "write"])),
             (owner, path(&["std", "float", "__from_int"])),
