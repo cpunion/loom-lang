@@ -53,6 +53,7 @@ pub enum MirValidationCode {
     BorrowShape,
     BuiltinShape,
     ErrorType,
+    RecursiveValueType,
     NestingLimit,
 }
 
@@ -90,6 +91,7 @@ impl MirValidationCode {
             Self::BorrowShape => "MirBorrowShape",
             Self::BuiltinShape => "MirBuiltinShape",
             Self::ErrorType => "MirErrorType",
+            Self::RecursiveValueType => "MirRecursiveValueType",
             Self::NestingLimit => "MirNestingLimit",
         }
     }
@@ -809,6 +811,73 @@ fn must_scope_identity(program: &Program) -> ResourceConceptIdentity {
     }
 }
 
+/// Computes strongly connected components without consuming the process
+/// stack. Ordered keys and adjacency lists make component and diagnostic order
+/// stable across hosts.
+fn strongly_connected_type_components(
+    graph: &BTreeMap<crate::TypeId, Vec<crate::TypeId>>,
+) -> Vec<Vec<crate::TypeId>> {
+    let mut visited = BTreeSet::new();
+    let mut finishing_order = Vec::with_capacity(graph.len());
+    for start in graph.keys().copied() {
+        if !visited.insert(start) {
+            continue;
+        }
+        let mut stack = vec![(start, 0_usize)];
+        while let Some((node, next_index)) = stack.last_mut() {
+            let dependencies = graph.get(node).map_or(&[][..], Vec::as_slice);
+            if let Some(next) = dependencies.get(*next_index).copied() {
+                *next_index += 1;
+                if visited.insert(next) {
+                    stack.push((next, 0));
+                }
+            } else {
+                let (finished, _) = stack.pop().expect("DFS stack is not empty");
+                finishing_order.push(finished);
+            }
+        }
+    }
+
+    let mut reverse = graph
+        .keys()
+        .copied()
+        .map(|id| (id, Vec::new()))
+        .collect::<BTreeMap<_, _>>();
+    for (definition, dependencies) in graph {
+        for dependency in dependencies {
+            if let Some(incoming) = reverse.get_mut(dependency) {
+                incoming.push(*definition);
+            }
+        }
+    }
+    for incoming in reverse.values_mut() {
+        incoming.sort_unstable();
+        incoming.dedup();
+    }
+
+    let mut assigned = BTreeSet::new();
+    let mut components = Vec::new();
+    while let Some(start) = finishing_order.pop() {
+        if !assigned.insert(start) {
+            continue;
+        }
+        let mut component = Vec::new();
+        let mut pending = vec![start];
+        while let Some(node) = pending.pop() {
+            component.push(node);
+            if let Some(incoming) = reverse.get(&node) {
+                for predecessor in incoming.iter().rev().copied() {
+                    if assigned.insert(predecessor) {
+                        pending.push(predecessor);
+                    }
+                }
+            }
+        }
+        components.push(component);
+    }
+    components
+}
+
 struct Validator<'program> {
     program: &'program Program,
     must_scope_identity: ResourceConceptIdentity,
@@ -848,6 +917,7 @@ impl<'program> Validator<'program> {
 
     fn run(mut self) -> Vec<MirValidationError> {
         self.validate_definition_indices();
+        self.validate_by_value_nominal_cycles();
         for (index, definition) in self.program.types.iter().enumerate() {
             self.validate_type_definition(definition, &format!("types[{index}]"));
             if self.nesting_failed {
@@ -881,6 +951,137 @@ impl<'program> Validator<'program> {
         }
         self.validate_roots();
         self.errors
+    }
+
+    /// Rejects declaration schemas whose inline nominal graph contains a
+    /// cycle. The graph is built from borrowed schemas without substituting
+    /// generic arguments, so even non-regular recursion remains finite.
+    fn validate_by_value_nominal_cycles(&mut self) {
+        let graph = self.by_value_nominal_graph();
+        for mut component in strongly_connected_type_components(&graph) {
+            component.sort_unstable();
+            let first = component[0];
+            let is_cycle = component.len() > 1
+                || graph
+                    .get(&first)
+                    .is_some_and(|dependencies| dependencies.contains(&first));
+            if !is_cycle {
+                continue;
+            }
+
+            let names = component
+                .iter()
+                .filter_map(|id| {
+                    self.program
+                        .type_def(*id)
+                        .map(|definition| &definition.name)
+                })
+                .collect::<Vec<_>>();
+            let message = if names.len() == 1 {
+                format!(
+                    "by-value nominal type `{}` has infinite size because it contains itself",
+                    names[0]
+                )
+            } else {
+                format!(
+                    "by-value nominal types {} form an infinite-size cycle",
+                    names
+                        .iter()
+                        .map(|name| format!("`{name}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
+            let Some(definition) = self.program.type_def(first) else {
+                continue;
+            };
+            self.push(
+                MirValidationCode::RecursiveValueType,
+                message,
+                definition.span,
+                format!("types[{}]", first.0),
+            );
+        }
+    }
+
+    /// Builds the finite declaration graph used above. Tuple elements,
+    /// ordinary nominal arguments, and `TaskOutcome` payloads remain inline.
+    /// `List`, canonical `TextMap`, `Task`, and `View` are explicit indirection
+    /// boundaries. Each declaration has a fixed schema-walk budget so a
+    /// forged wide artifact fails closed before graph analysis.
+    fn by_value_nominal_graph(&mut self) -> BTreeMap<crate::TypeId, Vec<crate::TypeId>> {
+        let mut graph = self
+            .program
+            .types
+            .iter()
+            .map(|definition| (definition.id, Vec::new()))
+            .collect::<BTreeMap<_, _>>();
+
+        for (index, definition) in self.program.types.iter().enumerate() {
+            let mut pending = Vec::new();
+            match &definition.kind {
+                TypeDefKind::Record { fields, .. } => {
+                    pending.extend(fields.iter().rev().map(|field| &field.ty));
+                }
+                TypeDefKind::Enum { variants } => {
+                    pending.extend(
+                        variants
+                            .iter()
+                            .rev()
+                            .flat_map(|variant| variant.payload.iter().rev()),
+                    );
+                }
+                TypeDefKind::Refined { base, .. } => pending.push(base),
+            }
+
+            let mut dependencies = BTreeSet::new();
+            let mut remaining = MAX_VALIDATION_TYPE_NODES;
+            let mut exhausted = false;
+            while let Some(ty) = pending.pop() {
+                let Some(next_remaining) = remaining.checked_sub(1) else {
+                    exhausted = true;
+                    break;
+                };
+                remaining = next_remaining;
+                match ty {
+                    Type::Tuple(elements) => pending.extend(elements.iter().rev()),
+                    Type::Nominal(id, _) if self.program.prelude.text_map == Some(*id) => {}
+                    Type::Nominal(id, arguments) => {
+                        if self.program.type_def(*id).is_some() {
+                            dependencies.insert(*id);
+                        }
+                        // Arguments deliberately participate even for phantom
+                        // or indirectly stored parameters. This conservative
+                        // schema rule stays deterministic without substitution.
+                        pending.extend(arguments.iter().rev());
+                    }
+                    Type::TaskOutcome(output) => pending.push(output),
+                    Type::Never
+                    | Type::Unit
+                    | Type::Bool
+                    | Type::Int
+                    | Type::Float
+                    | Type::Text
+                    | Type::List(_)
+                    | Type::Parameter(_)
+                    | Type::AssociatedProjection { .. }
+                    | Type::Task(_)
+                    | Type::View { .. }
+                    | Type::Error => {}
+                }
+            }
+
+            if exhausted {
+                self.push(
+                    MirValidationCode::NestingLimit,
+                    format!("by-value type schema exceeds {MAX_VALIDATION_TYPE_NODES} nodes"),
+                    definition.span,
+                    format!("types[{index}]"),
+                );
+            }
+            graph.insert(definition.id, dependencies.into_iter().collect());
+        }
+        graph
     }
 
     fn validate_definition_indices(&mut self) {
