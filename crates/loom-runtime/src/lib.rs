@@ -79,8 +79,8 @@ pub use text::{
 pub use typed_json::json_format_typed_v1;
 pub use value_ops::{
     JSON_DEPTH_LIMIT, JsonFormatFailure, JsonNode, bytes_append, bytes_decode_utf8, bytes_get,
-    escape_json_text, format_json, json_format, log_write, path_contains_nul, path_join,
-    text_concat, text_contains, text_get, text_map_get, text_map_insert, text_map_remove,
+    escape_json_text, format_json, json_format, path_contains_nul, path_join, text_concat,
+    text_contains, text_get, text_map_get, text_map_insert, text_map_remove,
 };
 
 pub use loom_runtime_abi::{

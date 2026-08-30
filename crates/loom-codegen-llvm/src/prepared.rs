@@ -121,6 +121,15 @@ impl NativePreparationError {
         }
     }
 
+    fn log_requires_lcir(report: Option<SupportReport>) -> Self {
+        Self {
+            kind: NativePreparationErrorKind::Unsupported,
+            code: "NativePreparationLogRequiresLcir",
+            message: "reachable std.log output requires complete typed LCIR lowering".to_owned(),
+            support_report: report,
+        }
+    }
+
     fn target(error: &CodegenError) -> Self {
         Self::new(
             NativePreparationErrorKind::Target,
@@ -306,6 +315,9 @@ pub fn prepare_native_object(
                     if reachable_uses_process(&reachable) {
                         return Err(NativePreparationError::process_requires_lcir(Some(report)));
                     }
+                    if reachable_uses_log(&reachable) {
+                        return Err(NativePreparationError::log_requires_lcir(Some(report)));
+                    }
                     target
                         .validate_checked_mir_value_abi()
                         .map_err(|error| NativePreparationError::target(&error))?;
@@ -327,6 +339,9 @@ pub fn prepare_native_object(
             })?;
             if reachable_uses_process(&reachable) {
                 return Err(NativePreparationError::process_requires_lcir(None));
+            }
+            if reachable_uses_log(&reachable) {
+                return Err(NativePreparationError::log_requires_lcir(None));
             }
             target
                 .validate_checked_mir_value_abi()
@@ -355,6 +370,10 @@ fn reachable_uses_process(reachable: &ReachableSourceGraph) -> bool {
                 | Builtin::ProcessEnvironment
         )
     })
+}
+
+fn reachable_uses_log(reachable: &ReachableSourceGraph) -> bool {
+    reachable.builtins.contains(&Builtin::LogWrite)
 }
 
 /// Returns the exact target identity owned by a prepared object plan.

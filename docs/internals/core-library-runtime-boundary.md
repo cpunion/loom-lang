@@ -66,13 +66,13 @@ statically. Concept witnesses lower through the normal direct-call machinery;
 there is no source-visible runtime resource registry or name-based runtime
 dispatch.
 
-The `std.log.debug`, `info`, `warn`, and `error` functions are ordinary Loom
-source. Each constructs an empty fields map and calls the sole public library
-function backed by the compiler-private output operation, `std.log.write`.
-They therefore participate in normal direct-call reachability and disappear
-when unused; the compiler has no convenience-level logging builtins. Moving
-`std.log.write` itself behind a compiler-private primitive remains part of the
-source-library migration.
+`std.log.LogLevel`, `write`, `debug`, `info`, `warn`, and `error` are ordinary
+Loom source declarations. The public `write` wrapper alone calls an exact-owner
+private primitive, while each convenience function constructs an empty fields
+map and calls the public wrapper through a normal source `DefId`. The complete
+public graph therefore participates in ordinary reachability and disappears
+when unused. Native compilation accepts logging only through typed LCIR; the
+runtime has no universal-value logging entry point.
 
 The scheduler does maintain a compiler-private ownership ledger on each Task
 for built-in File and Socket handles published in typed results. Successful

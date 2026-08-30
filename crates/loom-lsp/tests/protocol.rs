@@ -129,6 +129,7 @@ fn structured_std_values_are_discoverable_through_completion_and_hover() {
 import std.log.debug
 import std.log.error
 import std.log.info
+import std.log.LogLevel
 import std.log.warn
 import std.log.write
 
@@ -249,6 +250,22 @@ fn inspect(problem IoError, value Json) {
         Some(&json!("0-parse_json-std.json")),
         "parse_json must come from the semantic source index"
     );
+    for (name, kind) in [("LogLevel", "enum"), ("write", "function")] {
+        let detail = format!("{kind} · std.log");
+        let matching = completion_items
+            .iter()
+            .filter(|item| {
+                item.get("label") == Some(&json!(name))
+                    && item.get("detail") == Some(&json!(detail))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(matching.len(), 1, "{name}: {matching:#?}");
+        assert_eq!(
+            matching[0].get("sortText"),
+            Some(&json!(format!("0-{name}-std.log"))),
+            "{name} must come from the semantic source index"
+        );
+    }
 }
 
 #[test]

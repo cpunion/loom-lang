@@ -4,7 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
 use loom_codegen_ir::{SourceRoots, analyze_source_reachability};
-use loom_codegen_llvm::{EmitOptions, native_object_fingerprint};
+use loom_codegen_llvm::{
+    EmitOptions, NativeRouteKind, NativeRoutePolicy, native_object_fingerprint,
+    prepare_native_object, prepared_native_object_fingerprint,
+};
 
 mod support;
 use loom_mir::{
@@ -316,7 +319,7 @@ fn dead() {
     let program = snapshot.executable().expect("lower structured graph MIR");
     let roots = SourceRoots::for_entry(program, "main").expect("main root");
     let reachable = analyze_source_reachability(program, &roots).expect("analyze graph");
-    assert_eq!(reachable.functions.len(), 4);
+    assert_eq!(reachable.functions.len(), 5);
     let reachable_names = program
         .functions
         .iter()
@@ -327,6 +330,7 @@ fn dead() {
         reachable_names,
         BTreeSet::from([
             "std.log.info",
+            "std.log.write",
             "std.log.write_without_fields",
             "standalone.main",
             "standalone.markInt",
@@ -344,7 +348,7 @@ fn dead() {
 }
 
 #[test]
-fn structured_artifact_and_native_cache_identities_respect_dce_boundary() {
+fn structured_artifact_and_typed_native_cache_identities_respect_dce_boundary() {
     let directory = tempfile::tempdir().expect("create source project");
     let source = directory.path().join("main.loom");
     fs::write(
@@ -395,7 +399,7 @@ fn dead(text Text) {
     assert!(decoded.prelude.io_error_kind.is_some());
     assert!(decoded.prelude.log_level.is_some());
 
-    let fingerprint = native_object_fingerprint(program, &options).expect("object identity");
+    let fingerprint = typed_native_fingerprint(program, &options);
     let mut dead_changed = program.clone().into_program();
     replace_direct_call_in_named_function(
         &mut dead_changed,
@@ -410,7 +414,7 @@ fn dead(text Text) {
     decode_interpreted_artifact(&dead_artifact).expect("decode valid dead mutation");
     assert_eq!(
         fingerprint,
-        native_object_fingerprint(&dead_changed, &options).expect("dead-change identity")
+        typed_native_fingerprint(&dead_changed, &options)
     );
 
     let mut live_changed = program.clone().into_program();
@@ -427,8 +431,15 @@ fn dead(text Text) {
     decode_interpreted_artifact(&live_artifact).expect("decode valid live mutation");
     assert_ne!(
         fingerprint,
-        native_object_fingerprint(&live_changed, &options).expect("live-change identity")
+        typed_native_fingerprint(&live_changed, &options)
     );
+}
+
+fn typed_native_fingerprint(program: &CheckedProgram, options: &EmitOptions) -> String {
+    let prepared = prepare_native_object(program, options.clone(), NativeRoutePolicy::Automatic)
+        .expect("prepare typed native identity");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    prepared_native_object_fingerprint(&prepared).expect("typed native identity")
 }
 
 fn root_function() -> Function {

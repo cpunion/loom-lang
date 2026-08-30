@@ -9,6 +9,7 @@ use loom_hir::{ModuleId, Path, Program};
 const PROCESS_MODULE: &str = "std.process";
 const IO_MODULE: &str = "std.io";
 const FLOAT_MODULE: &str = "std.float";
+const LOG_MODULE: &str = "std.log";
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum CompilerStdPrimitive {
@@ -18,6 +19,7 @@ pub(crate) enum CompilerStdPrimitive {
     FloatParseStatus,
     FloatToInt,
     IoWriteStdout,
+    LogWrite,
     ProcessArgumentCount,
     ProcessArgumentAt,
     ProcessEnvironment,
@@ -33,6 +35,7 @@ impl CompilerStdPrimitive {
             Self::FloatParseStatus => "__parse",
             Self::FloatToInt => "__to_int",
             Self::IoWriteStdout => "__write_stdout",
+            Self::LogWrite => "__write",
             Self::ProcessArgumentCount => "__argument_count",
             Self::ProcessArgumentAt => "__argument_at",
             Self::ProcessEnvironment => "__environment",
@@ -72,6 +75,7 @@ pub(crate) fn resolve_import(
         (FLOAT_MODULE, "float", "__parse") => Some(CompilerStdPrimitive::FloatParseStatus),
         (FLOAT_MODULE, "float", "__to_int") => Some(CompilerStdPrimitive::FloatToInt),
         (IO_MODULE, "io", "__write_stdout") => Some(CompilerStdPrimitive::IoWriteStdout),
+        (LOG_MODULE, "log", "__write") => Some(CompilerStdPrimitive::LogWrite),
         (PROCESS_MODULE, "process", "__argument_count") => {
             Some(CompilerStdPrimitive::ProcessArgumentCount)
         }
@@ -140,6 +144,7 @@ mod tests {
         let owner = module(&mut program, std_package.clone(), "std.process");
         let io_owner = module(&mut program, std_package.clone(), "std.io");
         let float_owner = module(&mut program, std_package.clone(), "std.float");
+        let log_owner = module(&mut program, std_package.clone(), "std.log");
         let wrong_owner = module(&mut program, std_package, "std.other");
         let wrong_package = module(&mut program, PackageId::standalone(), "std.process");
 
@@ -188,6 +193,10 @@ mod tests {
             Some(CompilerStdPrimitive::IoWriteStdout)
         );
         assert_eq!(
+            resolve_import(&program, log_owner, &path(&["std", "log", "__write"]),),
+            Some(CompilerStdPrimitive::LogWrite)
+        );
+        assert_eq!(
             resolve_import(&program, owner, &path(&["std", "process", "__environment"]),),
             Some(CompilerStdPrimitive::ProcessEnvironment)
         );
@@ -206,6 +215,10 @@ mod tests {
             (io_owner, path(&["std", "process", "__argument_count"])),
             (io_owner, path(&["std.io", "__write_stdout"])),
             (io_owner, path(&["std", "io", "write"])),
+            (owner, path(&["std", "log", "__write"])),
+            (log_owner, path(&["std.log", "__write"])),
+            (log_owner, path(&["std", "log", "write"])),
+            (log_owner, path(&["std", "log", "__write", "extra"])),
             (owner, path(&["std", "float", "__from_int"])),
             (float_owner, path(&["std", "float", "from_int"])),
             (float_owner, path(&["std", "float", "parse_float"])),

@@ -42,8 +42,7 @@ const JSON_TYPE: TypeId = TypeId(12);
 const JSON_ERROR_TYPE: TypeId = TypeId(13);
 const IO_ERROR_TYPE: TypeId = TypeId(14);
 const IO_ERROR_KIND_TYPE: TypeId = TypeId(15);
-const LOG_LEVEL_TYPE: TypeId = TypeId(16);
-const SYNTHETIC_TYPE_COUNT: u32 = 17;
+const SYNTHETIC_TYPE_COUNT: u32 = 16;
 
 /// Failure at the trusted typed-HIR to MIR boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -342,6 +341,10 @@ impl<'a> Compiler<'a> {
             self.analysis.canonical_std_items.path_error,
             "canonical PathError has no MIR type id",
         )?;
+        let log_level = self.canonical_std_type_id(
+            self.analysis.canonical_std_items.log_level,
+            "canonical LogLevel has no MIR type id",
+        )?;
         let mut program = Program {
             types: self.lower_types()?,
             concepts: self.lower_concepts()?,
@@ -368,7 +371,7 @@ impl<'a> Compiler<'a> {
                 json_error: Some(JSON_ERROR_TYPE),
                 io_error: Some(IO_ERROR_TYPE),
                 io_error_kind: Some(IO_ERROR_KIND_TYPE),
-                log_level: Some(LOG_LEVEL_TYPE),
+                log_level,
                 dispose_concept: dispose,
                 dispose_requirement,
                 must_scope_concept: must_scope,
@@ -932,7 +935,6 @@ impl<'a> Compiler<'a> {
                 BuiltinType::IoErrorKind => {
                     RequirementType::Nominal(IO_ERROR_KIND_TYPE, Vec::new())
                 }
-                BuiltinType::LogLevel => RequirementType::Nominal(LOG_LEVEL_TYPE, Vec::new()),
             }),
             TyData::Tuple(elements) => Ok(RequirementType::Tuple(
                 elements
@@ -3241,10 +3243,6 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             | BuiltinValue::IoErrorUnexpectedEof
             | BuiltinValue::IoErrorClosed
             | BuiltinValue::IoErrorOther
-            | BuiltinValue::LogLevelDebug
-            | BuiltinValue::LogLevelInfo
-            | BuiltinValue::LogLevelWarn
-            | BuiltinValue::LogLevelError
             | BuiltinValue::TaskCompleted
             | BuiltinValue::TaskFaulted
             | BuiltinValue::TaskCancelled => {
@@ -3272,10 +3270,6 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                     BuiltinValue::IoErrorUnexpectedEof => (IO_ERROR_KIND_TYPE, VariantId(7)),
                     BuiltinValue::IoErrorClosed => (IO_ERROR_KIND_TYPE, VariantId(8)),
                     BuiltinValue::IoErrorOther => (IO_ERROR_KIND_TYPE, VariantId(9)),
-                    BuiltinValue::LogLevelDebug => (LOG_LEVEL_TYPE, VariantId(0)),
-                    BuiltinValue::LogLevelInfo => (LOG_LEVEL_TYPE, VariantId(1)),
-                    BuiltinValue::LogLevelWarn => (LOG_LEVEL_TYPE, VariantId(2)),
-                    BuiltinValue::LogLevelError => (LOG_LEVEL_TYPE, VariantId(3)),
                     BuiltinValue::TaskCompleted => (TASK_OUTCOME_TYPE, VariantId(0)),
                     BuiltinValue::TaskFaulted => (TASK_OUTCOME_TYPE, VariantId(1)),
                     BuiltinValue::TaskCancelled => (TASK_OUTCOME_TYPE, VariantId(2)),
@@ -3861,10 +3855,6 @@ fn builtin_variant_id(builtin: BuiltinValue) -> Option<(TypeId, VariantId)> {
         BuiltinValue::IoErrorUnexpectedEof => (IO_ERROR_KIND_TYPE, VariantId(7)),
         BuiltinValue::IoErrorClosed => (IO_ERROR_KIND_TYPE, VariantId(8)),
         BuiltinValue::IoErrorOther => (IO_ERROR_KIND_TYPE, VariantId(9)),
-        BuiltinValue::LogLevelDebug => (LOG_LEVEL_TYPE, VariantId(0)),
-        BuiltinValue::LogLevelInfo => (LOG_LEVEL_TYPE, VariantId(1)),
-        BuiltinValue::LogLevelWarn => (LOG_LEVEL_TYPE, VariantId(2)),
-        BuiltinValue::LogLevelError => (LOG_LEVEL_TYPE, VariantId(3)),
         BuiltinValue::TaskCompleted => (TASK_OUTCOME_TYPE, VariantId(0)),
         BuiltinValue::TaskFaulted => (TASK_OUTCOME_TYPE, VariantId(1)),
         BuiltinValue::TaskCancelled => (TASK_OUTCOME_TYPE, VariantId(2)),
@@ -4173,12 +4163,6 @@ fn synthetic_types() -> Vec<TypeDef> {
             ],
             span,
         ),
-        closed_error_type(
-            LOG_LEVEL_TYPE,
-            "LogLevel",
-            &["Debug", "Info", "Warn", "Error"],
-            span,
-        ),
     ]
 }
 
@@ -4303,7 +4287,6 @@ fn lower_builtin_type(builtin: BuiltinType) -> Type {
         BuiltinType::JsonError => Type::Nominal(JSON_ERROR_TYPE, Vec::new()),
         BuiltinType::IoError => Type::Nominal(IO_ERROR_TYPE, Vec::new()),
         BuiltinType::IoErrorKind => Type::Nominal(IO_ERROR_KIND_TYPE, Vec::new()),
-        BuiltinType::LogLevel => Type::Nominal(LOG_LEVEL_TYPE, Vec::new()),
     }
 }
 

@@ -1,6 +1,7 @@
 import std.log.debug
 import std.log.error
 import std.log.info
+import std.log.LogLevel
 import std.log.warn
 import std.log.write
 

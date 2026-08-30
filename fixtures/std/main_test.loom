@@ -4,6 +4,7 @@ import std.net.try_connect
 import std.json.parse_json
 import std.json.format_json
 import std.log.debug
+import std.log.LogLevel
 import std.log.write
 
 test fn text_map_and_json() {

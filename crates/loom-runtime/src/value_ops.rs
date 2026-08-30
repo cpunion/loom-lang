@@ -1,11 +1,10 @@
 //! Compiler-private operations over universal Loom value slots.
 //!
 //! The boundaries cover immutable `Text`, `Bytes`, lexical `Path`, `TextMap`,
-//! canonical JSON formatting, and structured log formatting. Native `Bytes`
-//! and `Path` are nominal records whose private payload uses a managed
-//! immutable sequence object. Text and arbitrary Bytes have distinct
-//! descriptors; valid UTF-8 storage may be shared only where the type-level
-//! operation preserves the Text invariant.
+//! and canonical JSON formatting. Native `Bytes` and `Path` are nominal
+//! records whose private payload uses a managed immutable sequence object.
+//! Text and arbitrary Bytes have distinct descriptors; valid UTF-8 storage may
+//! be shared only where the type-level operation preserves the Text invariant.
 
 use std::collections::BTreeMap;
 use std::ffi::c_void;
@@ -17,7 +16,7 @@ use loom_runtime_abi::{
 
 use crate::gc::{NodeStream, RuntimeRootScope};
 use crate::scheduler::{ValueNode, ValueSlot};
-use crate::{gc, text, write_process_stderr};
+use crate::{gc, text};
 
 const VALUE_OP_INVALID_ARGUMENT: i32 = -1;
 pub const JSON_DEPTH_LIMIT: usize = 128;
@@ -671,56 +670,6 @@ pub unsafe extern "C" fn json_format(
     };
     unsafe { output.cast::<ValueSlot>().write(result) };
     0
-}
-
-#[unsafe(export_name = "loom_runtime_log")]
-pub unsafe extern "C" fn log_write(
-    level: u32,
-    message: *const c_void,
-    message_length: u64,
-    fields: *const c_void,
-) -> i32 {
-    let Some(level) = ["debug", "info", "warn", "error"].get(level as usize) else {
-        return VALUE_OP_INVALID_ARGUMENT;
-    };
-    let Some(message) = (unsafe { input_bytes(message, message_length) }) else {
-        return VALUE_OP_INVALID_ARGUMENT;
-    };
-    let Ok(message) = std::str::from_utf8(message) else {
-        return VALUE_OP_INVALID_ARGUMENT;
-    };
-    let entries = if fields.is_null() {
-        Vec::new()
-    } else {
-        let Some(entries) = (unsafe { map_entries(fields.cast::<ValueSlot>()) }) else {
-            return VALUE_OP_INVALID_ARGUMENT;
-        };
-        entries
-    };
-    let mut line = format!(
-        "{{\"level\":{},\"message\":{},\"fields\":{{",
-        escape_json_text(level),
-        escape_json_text(message)
-    );
-    for (index, (key, value)) in entries.iter().enumerate() {
-        let Some(key) = (unsafe { text_slot_bytes(key) }) else {
-            return VALUE_OP_INVALID_ARGUMENT;
-        };
-        let Some(value) = (unsafe { text_slot_bytes(value) }) else {
-            return VALUE_OP_INVALID_ARGUMENT;
-        };
-        let (Ok(key), Ok(value)) = (std::str::from_utf8(key), std::str::from_utf8(value)) else {
-            return VALUE_OP_INVALID_ARGUMENT;
-        };
-        if index > 0 {
-            line.push(',');
-        }
-        line.push_str(&escape_json_text(key));
-        line.push(':');
-        line.push_str(&escape_json_text(value));
-    }
-    line.push_str("}}\n");
-    i32::from(write_process_stderr(line.as_bytes()) != loom_runtime_abi::TYPED_LOG_OK)
 }
 
 #[cfg(test)]

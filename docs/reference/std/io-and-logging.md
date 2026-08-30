@@ -172,6 +172,7 @@ import std.log.debug
 import std.log.info
 import std.log.warn
 import std.log.error
+import std.log.LogLevel
 import std.log.write
 ```
 
@@ -183,11 +184,11 @@ error(message Text)
 write(level LogLevel, message Text, fields TextMap[Text])
 ```
 
-`LogLevel` is the closed value `Debug | Info | Warn | Error`. The four helpers
-are ordinary Loom source functions equivalent to `write` with their respective
-level and an empty fields map. Only the public `write` function is backed by
-the compiler-private output operation; an unused helper is removed by normal
-reachability.
+`LogLevel` is the ordinary source enum `Debug | Info | Warn | Error`. `write`
+and the four helpers are ordinary Loom source functions; the helpers supply
+their respective level and an empty fields map. Only `write` calls the
+compiler-private typed output primitive, and unused logging code is removed by
+normal reachability. Application code cannot import or name that primitive.
 
 Each call writes one compact UTF-8 JSON line to standard error. Keys appear in
 this order:

@@ -23,6 +23,7 @@ use crate::{
 
 const RESOURCE_MODULE: &str = "std.resource";
 const FLOAT_MODULE: &str = "std.float";
+const LOG_MODULE: &str = "std.log";
 const PATH_MODULE: &str = "std.path";
 const TEXT_MODULE: &str = "std.text";
 const DISPOSE_CONCEPT: &str = "Dispose";
@@ -70,6 +71,7 @@ pub struct CanonicalConcepts {
 pub struct CanonicalStdItems {
     pub is_finite: Option<DefId>,
     pub decode_text_error: Option<DefId>,
+    pub log_level: Option<DefId>,
     pub path_error: Option<DefId>,
 }
 
@@ -269,6 +271,9 @@ impl Analyzer<'_> {
                 "DecodeTextError",
                 |kind| matches!(kind, DefinitionKind::Enum(_)),
             ),
+            log_level: self.resolve_compiler_std_definition(LOG_MODULE, "LogLevel", |kind| {
+                matches!(kind, DefinitionKind::Enum(_))
+            }),
             path_error: self.resolve_compiler_std_definition(PATH_MODULE, "PathError", |kind| {
                 matches!(kind, DefinitionKind::Enum(_))
             }),
@@ -4117,8 +4122,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 | BuiltinType::Duration
                 | BuiltinType::Json
                 | BuiltinType::JsonError
-                | BuiltinType::IoErrorKind
-                | BuiltinType::LogLevel,
+                | BuiltinType::IoErrorKind,
             ) => true,
             TyData::Builtin(
                 BuiltinType::ContractFault
@@ -5925,6 +5929,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     crate::std_primitives::CompilerStdPrimitive::IoWriteStdout => {
                         BuiltinValue::StdoutWrite
                     }
+                    crate::std_primitives::CompilerStdPrimitive::LogWrite => BuiltinValue::LogWrite,
                     crate::std_primitives::CompilerStdPrimitive::ProcessArgumentCount => {
                         BuiltinValue::ProcessArgumentCount
                     }
@@ -5976,9 +5981,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     }
                     "format_json" if self.builtin_is_imported("std.json.format_json") => {
                         Some(BuiltinValue::JsonFormat)
-                    }
-                    "write" if self.builtin_is_imported("std.log.write") => {
-                        Some(BuiltinValue::LogWrite)
                     }
                     _ => None,
                 });
@@ -6213,10 +6215,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::IoErrorUnexpectedEof
             | BuiltinValue::IoErrorClosed
             | BuiltinValue::IoErrorOther
-            | BuiltinValue::LogLevelDebug
-            | BuiltinValue::LogLevelInfo
-            | BuiltinValue::LogLevelWarn
-            | BuiltinValue::LogLevelError
             | BuiltinValue::TaskCompleted
             | BuiltinValue::TaskFaulted
             | BuiltinValue::TaskCancelled => {
@@ -6394,7 +6392,8 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 self.types().intern(TyData::Result { ok: text, error })
             }
             BuiltinValue::LogWrite => {
-                let level = self.types().builtin(BuiltinType::LogLevel);
+                let definition = self.analyzer.canonical_std_items.log_level;
+                let level = self.canonical_std_type(definition, "std.log.LogLevel", expression);
                 let text = self.types().builtin(BuiltinType::Text);
                 let fields = self.types().intern(TyData::TextMap(text));
                 self.check_fixed_arguments(expression, arguments, &[level, text, fields]);
@@ -7414,10 +7413,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             }
             ("IoErrorKind", "Closed") => (BuiltinValue::IoErrorClosed, BuiltinType::IoErrorKind),
             ("IoErrorKind", "Other") => (BuiltinValue::IoErrorOther, BuiltinType::IoErrorKind),
-            ("LogLevel", "Debug") => (BuiltinValue::LogLevelDebug, BuiltinType::LogLevel),
-            ("LogLevel", "Info") => (BuiltinValue::LogLevelInfo, BuiltinType::LogLevel),
-            ("LogLevel", "Warn") => (BuiltinValue::LogLevelWarn, BuiltinType::LogLevel),
-            ("LogLevel", "Error") => (BuiltinValue::LogLevelError, BuiltinType::LogLevel),
             _ => return None,
         })
     }
@@ -9173,7 +9168,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             TyData::Builtin(BuiltinType::Json) => Some("Json"),
             TyData::Builtin(BuiltinType::JsonError) => Some("JsonError"),
             TyData::Builtin(BuiltinType::IoErrorKind) => Some("IoErrorKind"),
-            TyData::Builtin(BuiltinType::LogLevel) => Some("LogLevel"),
             TyData::Nominal { definition, .. } => {
                 let module = self.analyzer.program.definitions[self.environment.owner].module;
                 let mut resolver =
@@ -9262,13 +9256,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 "UnexpectedEof" if payload.is_empty() => Some(PatternVariant::IoErrorUnexpectedEof),
                 "Closed" if payload.is_empty() => Some(PatternVariant::IoErrorClosed),
                 "Other" if payload.is_empty() => Some(PatternVariant::IoErrorOther),
-                _ => None,
-            },
-            TyData::Builtin(BuiltinType::LogLevel) => match name.as_str() {
-                "Debug" if payload.is_empty() => Some(PatternVariant::LogLevelDebug),
-                "Info" if payload.is_empty() => Some(PatternVariant::LogLevelInfo),
-                "Warn" if payload.is_empty() => Some(PatternVariant::LogLevelWarn),
-                "Error" if payload.is_empty() => Some(PatternVariant::LogLevelError),
                 _ => None,
             },
             TyData::Nominal { definition, .. } => {
@@ -9536,15 +9523,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 PatternVariant::IoErrorUnexpectedEof,
                 PatternVariant::IoErrorClosed,
                 PatternVariant::IoErrorOther,
-            ]
-            .into_iter()
-            .map(|variant| (CheckedPatternHead::Variant(variant), Vec::new()))
-            .collect(),
-            TyData::Builtin(BuiltinType::LogLevel) => [
-                PatternVariant::LogLevelDebug,
-                PatternVariant::LogLevelInfo,
-                PatternVariant::LogLevelWarn,
-                PatternVariant::LogLevelError,
             ]
             .into_iter()
             .map(|variant| (CheckedPatternHead::Variant(variant), Vec::new()))
@@ -10023,10 +10001,6 @@ enum PatternVariant {
     IoErrorUnexpectedEof,
     IoErrorClosed,
     IoErrorOther,
-    LogLevelDebug,
-    LogLevelInfo,
-    LogLevelWarn,
-    LogLevelError,
     TaskCompleted,
     TaskFaulted,
     TaskCancelled,
@@ -10112,10 +10086,6 @@ fn pattern_variant_resolution(variant: PatternVariant) -> Resolution {
         }
         PatternVariant::IoErrorClosed => Resolution::Builtin(BuiltinValue::IoErrorClosed),
         PatternVariant::IoErrorOther => Resolution::Builtin(BuiltinValue::IoErrorOther),
-        PatternVariant::LogLevelDebug => Resolution::Builtin(BuiltinValue::LogLevelDebug),
-        PatternVariant::LogLevelInfo => Resolution::Builtin(BuiltinValue::LogLevelInfo),
-        PatternVariant::LogLevelWarn => Resolution::Builtin(BuiltinValue::LogLevelWarn),
-        PatternVariant::LogLevelError => Resolution::Builtin(BuiltinValue::LogLevelError),
         PatternVariant::TaskCompleted => Resolution::Builtin(BuiltinValue::TaskCompleted),
         PatternVariant::TaskFaulted => Resolution::Builtin(BuiltinValue::TaskFaulted),
         PatternVariant::TaskCancelled => Resolution::Builtin(BuiltinValue::TaskCancelled),
@@ -10471,7 +10441,6 @@ fn builtin_type(name: &str) -> Option<BuiltinType> {
         "JsonError" => Some(BuiltinType::JsonError),
         "IoError" => Some(BuiltinType::IoError),
         "IoErrorKind" => Some(BuiltinType::IoErrorKind),
-        "LogLevel" => Some(BuiltinType::LogLevel),
         _ => None,
     }
 }
