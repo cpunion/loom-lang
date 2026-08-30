@@ -6,8 +6,8 @@ use std::{
 };
 
 use loom_mir::{
-    BinaryOp, Block, Builtin, CallArgument, CallTarget, CheckedProgram, Expr, ExprKind, FunctionId,
-    LocalId, Program, RequirementId, StatementKind, Type, WitnessId, WitnessRef,
+    BinaryOp, Block, Builtin, CallArgument, CallTarget, CheckedProgram, Expr, ExprId, ExprKind,
+    FunctionId, LocalId, Program, RequirementId, StatementKind, Type, WitnessId, WitnessRef,
 };
 use serde::{Deserialize, Serialize};
 
@@ -49,6 +49,9 @@ pub struct ReachableSourceGraph {
     pub functions: BTreeSet<FunctionId>,
     pub witnesses: BTreeSet<WitnessId>,
     pub builtins: BTreeSet<Builtin>,
+    /// Executable concrete-to-dynamic producer expressions by source function.
+    #[serde(default)]
+    pub dynamic_producers: BTreeMap<FunctionId, BTreeSet<ExprId>>,
     /// Only these witness method slots are emitted as live table edges.
     pub witness_methods: BTreeMap<WitnessId, BTreeSet<RequirementId>>,
 }
@@ -120,6 +123,7 @@ struct FunctionEdges {
     direct: BTreeSet<FunctionId>,
     witnesses: BTreeSet<WitnessId>,
     builtins: BTreeSet<Builtin>,
+    dynamic_producers: BTreeSet<ExprId>,
     dynamic: BTreeSet<RequirementId>,
     concrete_methods: BTreeSet<(WitnessId, RequirementId)>,
 }
@@ -360,6 +364,13 @@ pub fn analyze_source_reachability(
             let function = require_function(program, function_id)?;
             let mut edges = FunctionEdges::default();
             scan_block(&function.body, &mut edges);
+            if !edges.dynamic_producers.is_empty() {
+                result
+                    .dynamic_producers
+                    .entry(function_id)
+                    .or_default()
+                    .extend(edges.dynamic_producers.iter().copied());
+            }
             for target in edges.direct {
                 require_function(program, target)?;
                 if result.functions.insert(target) {
@@ -945,6 +956,7 @@ fn scan_expr<'mir>(
             if !scan_expr(value, edges, flow, active_cleanups, loops) {
                 return false;
             }
+            edges.dynamic_producers.insert(expression.id);
             collect_witness(witness, &mut edges.witnesses);
         }
         ExprKind::Await { task, .. } => {

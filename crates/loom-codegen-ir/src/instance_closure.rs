@@ -115,6 +115,53 @@ impl<'program, 'key> InstanceSubstitution<'program, 'key> {
             .collect()
     }
 
+    pub(crate) fn instantiate_witness(
+        &self,
+        witness: &WitnessRef,
+    ) -> Result<InstanceWitnessArgument, InstantiationError> {
+        let mut budget = StructureBudget::default();
+        self.clone_witness(witness, &mut budget)
+    }
+
+    /// Checks that one closed proof selects exactly the conformance described
+    /// by a concrete dynamic producer, including all associated bindings.
+    pub(crate) fn validate_dynamic_proof(
+        &self,
+        view: &Type,
+        concrete: &Type,
+        proof: &InstanceWitnessArgument,
+    ) -> Result<(), InstantiationError> {
+        let mut type_budget = StructureBudget::default();
+        let view = clone_closed_type(view, &mut type_budget)?;
+        let concrete = clone_closed_type(concrete, &mut type_budget)?;
+        let mut proof_budget = StructureBudget::default();
+        let proof = clone_concrete_witness(proof, &mut proof_budget)?;
+        let Type::View {
+            concept, bindings, ..
+        } = &view
+        else {
+            return Err(InstantiationError::InvalidCheckedWitnessMetadata);
+        };
+        let resolved = self.resolve_proof(&proof, &concrete, *concept)?;
+        if resolved.definition.associated.len() != bindings.len() {
+            return Err(InstantiationError::InvalidCheckedWitnessMetadata);
+        }
+        for (name, expected) in bindings {
+            let schema = resolved
+                .definition
+                .associated
+                .get(name)
+                .ok_or(InstantiationError::InvalidCheckedWitnessMetadata)?;
+            let mut binding_budget = StructureBudget::default();
+            if clone_schema_type(schema, &resolved.type_arguments, &mut binding_budget)?
+                != *expected
+            {
+                return Err(InstantiationError::InvalidCheckedWitnessMetadata);
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn call_key(
         &self,
         callee: FunctionId,
@@ -181,8 +228,7 @@ impl<'program, 'key> InstanceSubstitution<'program, 'key> {
             .requirement(requirement)
             .ok_or(InstantiationError::InvalidCheckedWitnessMetadata)?;
         let dispatch_type = self.instantiate_type(dispatch_type)?;
-        let mut proof_budget = StructureBudget::default();
-        let proof = self.clone_witness(witness, &mut proof_budget)?;
+        let proof = self.instantiate_witness(witness)?;
         let resolved = self.resolve_proof(&proof, &dispatch_type, requirement.concept)?;
         let callee = resolved
             .definition
@@ -223,6 +269,51 @@ impl<'program, 'key> InstanceSubstitution<'program, 'key> {
                 .map(|witness| self.clone_witness(witness, &mut budget))
                 .collect::<Result<Vec<_>, _>>()?,
         );
+        Self::finish_key(callee, type_arguments, witness_arguments)
+    }
+
+    /// Resolves a dynamic candidate's already-instantiated proof into one
+    /// ordinary direct method instance. Dynamic-compatible requirements have
+    /// no method-specific generic parameters, so the candidate proof and
+    /// concrete receiver completely determine this key.
+    pub(crate) fn static_call_key_from_closed_proof(
+        &self,
+        requirement: RequirementId,
+        proof: &InstanceWitnessArgument,
+        dispatch_type: &Type,
+    ) -> Result<InstanceKey, InstantiationError> {
+        let requirement = self
+            .program
+            .requirement(requirement)
+            .ok_or(InstantiationError::InvalidCheckedWitnessMetadata)?;
+        let mut type_budget = StructureBudget::default();
+        let dispatch_type = clone_closed_type(dispatch_type, &mut type_budget)?;
+        let mut proof_budget = StructureBudget::default();
+        let proof = clone_concrete_witness(proof, &mut proof_budget)?;
+        let resolved = self.resolve_proof(&proof, &dispatch_type, requirement.concept)?;
+        let callee = resolved
+            .definition
+            .methods
+            .get(&requirement.id)
+            .copied()
+            .ok_or(InstantiationError::InvalidCheckedWitnessMetadata)?;
+
+        let mut budget = StructureBudget::default();
+        let type_arguments = resolved
+            .type_arguments
+            .iter()
+            .map(|argument| clone_closed_type(argument, &mut budget))
+            .collect::<Result<Vec<_>, _>>()?;
+        let witness_arguments = match proof {
+            InstanceWitnessArgument::Concrete(_) => Vec::new(),
+            InstanceWitnessArgument::Apply { arguments, .. } => arguments.into_vec(),
+            InstanceWitnessArgument::Parameter(_) => {
+                return Err(InstantiationError::UnboundWitnessParameter);
+            }
+        };
+        for argument in &witness_arguments {
+            budget.charge_witness_tree(argument)?;
+        }
         Self::finish_key(callee, type_arguments, witness_arguments)
     }
 
@@ -1366,12 +1457,10 @@ fn scan_expr(
                     if let Some(choice) = calls.dyn_concepts.choice(receiver_ty) {
                         vec![
                             substitution
-                                .static_call_key(
+                                .static_call_key_from_closed_proof(
                                     *requirement,
-                                    &WitnessRef::Concrete(choice.witness()),
+                                    choice.proof(),
                                     choice.concrete(),
-                                    &[],
-                                    &[],
                                 )
                                 .map_err(|error| {
                                     instantiation_issue(function, expression, path, error)
@@ -1383,12 +1472,10 @@ fn scan_expr(
                             .iter()
                             .map(|candidate| {
                                 substitution
-                                    .static_call_key(
+                                    .static_call_key_from_closed_proof(
                                         *requirement,
-                                        &WitnessRef::Concrete(candidate.witness()),
+                                        candidate.proof(),
                                         candidate.concrete(),
-                                        &[],
-                                        &[],
                                     )
                                     .map_err(|error| {
                                         instantiation_issue(function, expression, path, error)

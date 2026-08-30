@@ -5694,6 +5694,84 @@ fn concepts_polymorphism_main_devirtualizes_unique_dynamic_witnesses_to_direct_c
 }
 
 #[test]
+fn closed_conditional_dynamic_proofs_use_finite_direct_lcir_dispatch() {
+    let source = r"dyn concept Measure { method measure(self) Int }
+
+record One {}
+record Two {}
+record Boxed[T] { value T }
+
+impl Measure for One {
+    method measure(self) Int { 1 }
+}
+
+impl Measure for Two {
+    method measure(self) Int { 2 }
+}
+
+impl[T: Measure] Measure for Boxed[T] {
+    method measure(self) Int { self.value.measure() }
+}
+
+fn choose(first Bool) dyn Measure {
+    if first {
+        Boxed { value = One {} }
+    } else {
+        Boxed { value = Two {} }
+    }
+}
+
+pub fn main() {
+    let one = choose(true).measure()
+    let two = choose(false).measure()
+    assert one == 1
+    assert two == 2
+}
+";
+    let program = compile_source(source);
+    let prepared = prepare_native_object(
+        &program,
+        EmitOptions::run("main"),
+        NativeRoutePolicy::LcirOnly,
+    )
+    .expect("prepare closed conditional dynamic program");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let [dynamic] = artifact.representations().dynamics() else {
+        panic!("Boxed[One] and Boxed[Two] must form one finite catalog")
+    };
+    assert_eq!(dynamic.candidates().len(), 2);
+
+    let native = emit_and_run_lcir(&artifact, "source-closed-conditional-dyn");
+    let checked_mir = emit_and_run_checked_mir(&program, "main", "mir-closed-conditional-dyn");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
+    assert_eq!(native.output.stdout, checked_mir.stdout);
+    assert_eq!(native.output.stderr, checked_mir.stderr);
+    assert!(native.ir.contains("switch i32"), "{}", native.ir);
+    for forbidden in [
+        "%loom.Value",
+        "ValueNode",
+        "loom_witness_",
+        "WitnessInstance",
+        "dyn.registry",
+    ] {
+        assert!(
+            !native.ir.contains(forbidden),
+            "closed conditional dyn IR exposed `{forbidden}`:\n{}",
+            native.ir
+        );
+    }
+    assert_no_indirect_calls(&native.ir);
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "one Core02 gate keeps nested dyn erasure, precise repeated descriptors, copy independence, forced relocation, and cross-target objects together"

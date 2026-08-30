@@ -3275,12 +3275,10 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         .and_then(|receiver| {
                             self.dyn_concepts.choice(&receiver).and_then(|choice| {
                                 InstanceSubstitution::new(self.program, key)
-                                    .static_call_key(
+                                    .static_call_key_from_closed_proof(
                                         *requirement,
-                                        &mir::WitnessRef::Concrete(choice.witness()),
+                                        choice.proof(),
                                         choice.concrete(),
-                                        &[],
-                                        &[],
                                     )
                                     .ok()
                             })
@@ -3572,24 +3570,28 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     value.span,
                     &format!("{path}.value.ty"),
                 );
+                let proof = InstanceSubstitution::new(self.program, key)
+                    .instantiate_witness(witness)
+                    .ok();
                 let choice = view
                     .as_ref()
                     .and_then(|view| self.dyn_concepts.choice(view));
                 let unique_valid = choice.is_some_and(|choice| {
                     concrete.as_ref() == Some(choice.concrete())
-                        && witness == &mir::WitnessRef::Concrete(choice.witness())
+                        && proof.as_ref() == Some(choice.proof())
                         && matches!(view, Some(Type::View { mutable: expected, .. }) if expected == *mutable)
                 });
                 let finite_valid = view
                     .as_ref()
-                    .and_then(|view| self.dyn_concepts.finite(view))
-                    .and_then(|finite| match witness {
-                        mir::WitnessRef::Concrete(witness) => finite.candidate(*witness),
-                        mir::WitnessRef::Parameter(_) | mir::WitnessRef::Apply { .. } => None,
+                    .zip(concrete.as_ref())
+                    .zip(proof.as_ref())
+                    .and_then(|((view, concrete), proof)| {
+                        self.dyn_concepts
+                            .finite(view)?
+                            .candidate(concrete, proof)
                     })
-                    .is_some_and(|(_, candidate)| {
-                        concrete.as_ref() == Some(candidate.concrete())
-                            && matches!(view, Some(Type::View { mutable: expected, .. }) if expected == *mutable)
+                    .is_some_and(|_| {
+                        matches!(view, Some(Type::View { mutable: expected, .. }) if expected == *mutable)
                     });
                 if let Some(writeback) = writeback {
                     let writeback_ty = self.projected_place(
@@ -7900,16 +7902,24 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 )
             }
             ExprKind::MakeView { value, witness, .. } => {
-                let instantiated = InstanceSubstitution::new(self.program, self.key)
-                    .instantiate_type(&expression.ty)
-                    .map_err(|error| {
-                        instantiation_defect(self.source.id, Some(expression.id), error)
-                    })?;
+                let substitution = InstanceSubstitution::new(self.program, self.key);
+                let instantiated =
+                    substitution
+                        .instantiate_type(&expression.ty)
+                        .map_err(|error| {
+                            instantiation_defect(self.source.id, Some(expression.id), error)
+                        })?;
+                let concrete = substitution.instantiate_type(&value.ty).map_err(|error| {
+                    instantiation_defect(self.source.id, Some(expression.id), error)
+                })?;
+                let proof = substitution.instantiate_witness(witness).map_err(|error| {
+                    instantiation_defect(self.source.id, Some(expression.id), error)
+                })?;
                 let EvalFlow::Continue { flow, value } = self.lower_expr(flow, value)? else {
                     return Ok(EvalFlow::Terminated);
                 };
                 if let Some(choice) = self.dyn_concepts.choice(&instantiated) {
-                    if witness != &mir::WitnessRef::Concrete(choice.witness()) {
+                    if concrete != *choice.concrete() || proof != *choice.proof() {
                         return Err(self.unsupported_reached("dynamic witness choice mismatch"));
                     }
                     if self.builder.value_type(value) != Some(self.type_id(&expression.ty)?) {
@@ -7924,11 +7934,8 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     .dyn_concepts
                     .finite(&instantiated)
                     .ok_or_else(|| self.unsupported_reached("open dynamic witness set"))?;
-                let mir::WitnessRef::Concrete(witness) = witness else {
-                    return Err(self.unsupported_reached("non-concrete dynamic witness"));
-                };
                 let (variant, candidate) = finite
-                    .candidate(*witness)
+                    .candidate(&concrete, &proof)
                     .ok_or_else(|| self.unsupported_reached("dynamic witness choice mismatch"))?;
                 if self.builder.value_type(value) != Some(self.type_id(candidate.concrete())?) {
                     return Err(LoweringError::defect(
@@ -11079,12 +11086,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     .dyn_concepts
                     .choice(&receiver_ty)
                     .ok_or_else(|| self.unsupported_reached("non-unique dynamic witness set"))?;
-                substitution.static_call_key(
+                substitution.static_call_key_from_closed_proof(
                     *requirement,
-                    &mir::WitnessRef::Concrete(choice.witness()),
+                    choice.proof(),
                     choice.concrete(),
-                    &[],
-                    &[],
                 )
             }
             CallTarget::Builtin(_) => unreachable!("builtins return before direct-call planning"),
@@ -11405,12 +11410,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 message: "dynamic candidate set exceeds u32".to_owned(),
             })?;
             let key = substitution
-                .static_call_key(
+                .static_call_key_from_closed_proof(
                     requirement,
-                    &mir::WitnessRef::Concrete(candidate.witness()),
+                    candidate.proof(),
                     candidate.concrete(),
-                    &[],
-                    &[],
                 )
                 .map_err(|error| {
                     instantiation_defect(self.source.id, Some(expression.id), error)
@@ -11609,12 +11612,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 message: "dynamic candidate set exceeds u32".to_owned(),
             })?;
             let key = substitution
-                .static_call_key(
+                .static_call_key_from_closed_proof(
                     requirement,
-                    &mir::WitnessRef::Concrete(candidate.witness()),
+                    candidate.proof(),
                     candidate.concrete(),
-                    &[],
-                    &[],
                 )
                 .map_err(|error| {
                     instantiation_defect(self.source.id, Some(expression.id), error)
@@ -11853,7 +11854,12 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 let choice = self.dyn_concepts.choice(&view_ty).ok_or_else(|| {
                     self.unsupported_reached("non-unique mutable dynamic witness set")
                 })?;
-                if witness != &mir::WitnessRef::Concrete(choice.witness()) {
+                let proof = InstanceSubstitution::new(self.program, self.key)
+                    .instantiate_witness(witness)
+                    .map_err(|error| {
+                        instantiation_defect(self.source.id, Some(argument.id), error)
+                    })?;
+                if proof != *choice.proof() {
                     return Err(self.unsupported_reached("mutable dynamic witness mismatch"));
                 }
                 let EvalFlow::Continue { flow, value } = self.lower_expr(flow, value)? else {

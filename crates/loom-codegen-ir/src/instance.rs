@@ -16,7 +16,7 @@ pub const INSTANCE_KEY_STRUCTURE_BUDGET: usize = 256;
 ///
 /// The tree owns all of its children. It deliberately does not borrow checked
 /// MIR: an instance plan remains self-contained after source lowering.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum InstanceWitnessArgument {
     Concrete(WitnessId),
     Parameter(u32),
