@@ -32,9 +32,9 @@ use loom_core::runtime_fault::{
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, ConceptId, Constant, ConstructionMode,
     Contract, ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, Function,
-    FunctionId, LocalId, MatchArm, Pattern, Place, Program, RequirementId, ScopedDisposal,
-    Statement, StatementKind, TaskJoinMode, Type, TypeDefKind, TypeId, UnaryOp, WitnessId,
-    WitnessRef, disclosure_type_summary,
+    FunctionId, LocalId, MatchArm, Pattern, Place, Program, ReceiverInvariantCheck, RequirementId,
+    ScopedDisposal, Statement, StatementKind, TaskJoinMode, Type, TypeDefKind, TypeId, UnaryOp,
+    WitnessId, WitnessRef, disclosure_type_summary,
 };
 use loom_runtime_abi::{
     GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, PARSE_FLOAT_SYMBOL,
@@ -221,6 +221,7 @@ fn block_contains_await(block: &Block) -> bool {
             }
             StatementKind::Break | StatementKind::Continue => false,
             StatementKind::Assert { condition } => expression_contains_await(condition),
+            StatementKind::RestoreReceiverInvariant { .. } => false,
             StatementKind::Defer(cleanup) => block_contains_await(cleanup),
             StatementKind::Return(value) => value.as_ref().is_some_and(expression_contains_await),
         })
@@ -6279,6 +6280,39 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 self.backend.builder.position_at_end(pass);
                 Ok(true)
             }
+            StatementKind::RestoreReceiverInvariant { check } => match check {
+                ReceiverInvariantCheck::Proven => Ok(true),
+                ReceiverInvariantCheck::Recheck => {
+                    let invariant = self
+                        .backend
+                        .program
+                        .instantiated_receiver_invariant(self.source)
+                        .ok_or_else(|| {
+                            CodegenError::new(
+                                "LlvmAbiDefect",
+                                "receiver invariant restoration has no exact invariant",
+                            )
+                        })?;
+                    let receiver = self.source.params.first().ok_or_else(|| {
+                        CodegenError::new(
+                            "LlvmAbiDefect",
+                            "receiver invariant restoration has no receiver parameter",
+                        )
+                    })?;
+                    let context = ContractContext {
+                        receiver: Some(TypedPointer {
+                            pointer: self.local(receiver.id)?,
+                            ty: receiver.ty.clone(),
+                        }),
+                        result: None,
+                        arguments: Vec::new(),
+                        old_receiver: None,
+                        old_arguments: Vec::new(),
+                        bindings: Vec::new(),
+                    };
+                    self.emit_rechecked_construction(&invariant, &context, statement.span)
+                }
+            },
             StatementKind::Evaluate(value) => {
                 let temporary = self.alloc_typed_value(&value.ty, "evaluate");
                 self.emit_expr(value, temporary)
