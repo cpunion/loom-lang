@@ -96,8 +96,12 @@ eligible after payload substitution. Proven monomorphic refined values and
 closed records with statically proven invariants may appear as product fields
 or sum payloads. Fully concrete generic records use the same plan.
 Runtime-checked constructions, general by-value recursive sums, operations that
-split or rebuild Task-bearing products, incomplete dynamic witness sets, and
-uninhabited fields are not selected. A concrete List or TextMap
+rebuild Task-bearing products, incomplete dynamic witness sets, and uninhabited
+fields are not selected. An ordinary direct structural tuple that contains a
+Task handle may instead be destructured by one atomic `ProductSplit`: the
+instruction consumes the complete tuple and produces every field in source
+order. It is not a general projected move and does not admit nominal,
+transparent, invariant-protected, or resource values. A concrete List or TextMap
 breaks by-value aggregate recursion and may contain any registered closed
 direct scalar, Text, task-free product, task-free sum, List, or TextMap value.
 Task-bearing elements remain outside this recursive container slice. The
@@ -847,13 +851,18 @@ address, executor value, universal `Value`, or runtime callback. Independent
 LCIR validation still checks the resulting ordinary product instructions and
 their exact types.
 
-`Copy` and `Move` read a projected leaf with a forward `ProductExtract` chain.
-A projected `Move` also consumes the complete MIR root; Loom does not create a
-partially initialized aggregate. Assignment extracts the required parents and
-rebuilds them in reverse with `ProductInsert`. The reconstruction always begins
-from the latest root in the SSA environment, not the snapshot used to evaluate
-an earlier receiver. A later argument may therefore update a disjoint sibling
-without that update being overwritten when the receiver writeback returns.
+For a task-free root, `Copy` and `Move` read a projected leaf with a forward
+`ProductExtract` chain. A projected `Move` also consumes the complete MIR root;
+Loom does not create a partially initialized aggregate. A Task-bearing root
+cannot be moved, written, or passed inout through a projected place. Structural
+tuple binding handles that case separately with one `ProductSplit`, which
+consumes the whole ordinary direct tuple and publishes all fields together;
+there is no partial Task projection. Assignment extracts the required parents
+and rebuilds them in reverse with `ProductInsert`. The reconstruction always
+begins from the latest root in the SSA environment, not the snapshot used to
+evaluate an earlier receiver. A later argument may therefore update a disjoint
+sibling without that update being overwritten when the receiver writeback
+returns.
 
 Projected inout evaluation extracts the receiver at its source argument
 position. An infallible call returns the leaf writeback directly. A fallible
@@ -1003,7 +1012,8 @@ The current instruction set is deliberately small:
 - closed integer/float parsing, managed float formatting, and Duration
   construction/extraction through existing scalar, sum, product, and fault
   shapes;
-- ordinary and invariant-proven product construction, field extraction,
+- ordinary and invariant-proven product construction, borrowed field
+  extraction, atomic consuming splits of ordinary direct structural tuples,
   immutable field insertion, and checked-MIR-only transient protected-receiver
   insertion before an exit invariant check;
 - closed-sum construction and exhaustive switching, including managed Text

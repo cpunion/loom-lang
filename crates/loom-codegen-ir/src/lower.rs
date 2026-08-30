@@ -2342,7 +2342,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             return None;
         }
         if !place.projection.is_empty()
-            && matches!(usage, PlaceUse::Write | PlaceUse::InOut)
+            && matches!(usage, PlaceUse::Move | PlaceUse::Write | PlaceUse::InOut)
             && !task_free_type(self.program, self.dyn_concepts, &ty)
         {
             return None;
@@ -2969,30 +2969,10 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
         path: &str,
     ) -> bool {
         match &statement.kind {
-            StatementKind::Let { value, .. } | StatementKind::Scoped { value, .. } => {
+            StatementKind::Let { value, .. }
+            | StatementKind::LetTuple { value, .. }
+            | StatementKind::Scoped { value, .. } => {
                 self.visit_expr(function, key, value, &format!("{path}.value"))
-            }
-            StatementKind::LetTuple { value, .. } => {
-                let continues = self.visit_expr(function, key, value, &format!("{path}.value"));
-                let task_free = self
-                    .instantiated_type(
-                        function,
-                        key,
-                        Some(value),
-                        &value.ty,
-                        value.span,
-                        &format!("{path}.value.ty"),
-                    )
-                    .is_some_and(|ty| task_free_type(self.program, self.dyn_concepts, &ty));
-                if continues && !task_free {
-                    self.expression_item(
-                        UnsupportedFeature::ProjectedPlace,
-                        function,
-                        value,
-                        &format!("{path}.value"),
-                    );
-                }
-                continues
             }
             StatementKind::ForRange {
                 start, end, body, ..
@@ -8107,6 +8087,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                         ));
                     }
                     let aggregate_type = self.type_id(&value.ty)?;
+                    let mut fields = Vec::with_capacity(elements.len());
                     for (index, (local, element)) in locals.iter().zip(elements).enumerate() {
                         let field = u32::try_from(index).map_err(|_| {
                             LoweringError::defect(
@@ -8123,6 +8104,44 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                                 "checked tuple binding element type does not match its local",
                             ));
                         }
+                        fields.push((*local, field, field_type));
+                    }
+                    let contains_task = self
+                        .builder
+                        .representations()
+                        .contains_task_handle(aggregate_type)
+                        .ok_or_else(|| {
+                            LoweringError::defect(
+                                LoweringDefectCode::InconsistentPlan,
+                                "checked tuple binding has an incomplete representation graph",
+                            )
+                        })?;
+                    if contains_task {
+                        let result_types = fields
+                            .iter()
+                            .map(|(_, _, field_type)| *field_type)
+                            .collect::<Vec<_>>();
+                        let results = self
+                            .builder
+                            .append_instruction(
+                                flow.block,
+                                InstructionKind::ProductSplit { aggregate },
+                                &result_types,
+                                self.statement_origin(statement),
+                            )
+                            .map_err(LoweringError::from)?;
+                        if results.len() != fields.len() {
+                            return Err(LoweringError::defect(
+                                LoweringDefectCode::Builder,
+                                "tuple split returned the wrong number of fields",
+                            ));
+                        }
+                        for ((local, _, _), result) in fields.iter().zip(results.iter().copied()) {
+                            flow.env = self.environments.set(flow.env, *local, result)?;
+                        }
+                        return Ok(StatementFlow::Continue(flow));
+                    }
+                    for (local, field, field_type) in fields {
                         let extracted = match self.one_instruction(
                             flow,
                             InstructionKind::ProductExtract { aggregate, field },
@@ -8143,7 +8162,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                                 ));
                             }
                         };
-                        flow.env = self.environments.set(flow.env, *local, extracted)?;
+                        flow.env = self.environments.set(flow.env, local, extracted)?;
                     }
                     Ok(StatementFlow::Continue(flow))
                 }

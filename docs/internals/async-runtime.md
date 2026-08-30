@@ -81,8 +81,11 @@ Suspension-live rows may also hold whole affine Task-bearing products, closed
 sums, and proven transparent wrappers. Their TaskHandle leaves remain
 scheduler-owned and are omitted from GC descriptors; managed siblings such as
 Text and List retain their exact offsets. Resuming code must transfer the whole
-carrier or consume a sum through exhaustive matching, never copy or partially
-extract a Task-bearing product field.
+carrier, consume a sum through exhaustive matching, or atomically destructure
+an ordinary direct structural tuple into all of its fields. Tuple destruction
+is one consuming `ProductSplit`; it never copies or partially projects a Task
+field. Nominal, transparent, invariant-protected, and resource carriers do not
+acquire that split operation.
 
 A dynamic View parameter enters an async Task frame as an independent by-value
 copy, even when the coroutine calls one of its mutable methods. Synchronous

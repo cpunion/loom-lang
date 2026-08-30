@@ -3526,6 +3526,59 @@ impl<'a> Validator<'a> {
                     );
                 }
             }
+            InstructionKind::ProductSplit { aggregate } => {
+                let aggregate_type = function.value(*aggregate).map(|value| value.ty);
+                if aggregate_type.is_some_and(|ty| self.is_resource_capability_type(ty)) {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.aggregate"),
+                        "File and Socket resource capabilities cannot be split with general product instructions",
+                    );
+                }
+                let ordinary_tuple = aggregate_type
+                    .and_then(|ty| self.program.representations.value_type(ty))
+                    .is_some_and(|value_type| {
+                        value_type.kind() == ValueTypeKind::Direct
+                            && matches!(value_type.semantic(), Type::Tuple(_))
+                    });
+                if aggregate_type.is_some() && !ordinary_tuple {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.aggregate"),
+                        "product.split requires an ordinary direct structural tuple; nominal, transparent, invariant-protected, and resource values are not splittable",
+                    );
+                }
+                let fields = aggregate_type
+                    .filter(|_| ordinary_tuple)
+                    .and_then(|ty| self.product_fields(ty))
+                    .map(<[_]>::to_vec);
+                if ordinary_tuple && fields.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.aggregate"),
+                        "product.split operand must use a product representation",
+                    );
+                }
+                if fields.as_ref().is_some_and(|fields| {
+                    fields.len() > crate::repr::DIRECT_PRODUCT_MAX_STRUCTURAL_NODES
+                }) {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        format!("{path}.results"),
+                        format!(
+                            "product split exceeds the {}-field validation budget",
+                            crate::repr::DIRECT_PRODUCT_MAX_STRUCTURAL_NODES
+                        ),
+                    );
+                    return;
+                }
+                let expected = fields
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(Some)
+                    .collect::<Vec<_>>();
+                self.require_results(function, instruction, &expected, &path);
+            }
             InstructionKind::ProductInsert {
                 aggregate,
                 field,

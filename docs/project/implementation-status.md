@@ -91,7 +91,7 @@ The following repository fixtures are run through real compiler stages:
 | `fixtures/lcir-typed-task-any` | nonempty immediate and stored fixed homogeneous `Task.any`, exact first-class composite results, deterministic nonzero winner selection, managed Text roots, repeated loser cancellation and retirement, typed-object surface inspection, and real `check/build/test/run` commands |
 | `fixtures/lcir-typed-task-outcomes` | immediate and stored fixed plus sole-List-literal `Task.settled`/`Task.race`, exact first-class composite outcomes, canonical completed/faulted/cancelled values, fault Text roots across later capture safepoints, deterministic nonzero race winners, loser cleanup, typed-LCIR main/test native execution, and real `check/build/test/run` commands |
 | `fixtures/lcir-typed-task-lists` | empty, stored, computed, and runtime-width homogeneous `List[Task[T]]` policies through exact `TaskJoinList` composites; affine carrier transfer, borrowed length, direct atomic child adoption, source/result moving-GC roots, canonical empty/failed selection faults, and real `check/build/test/run` commands without universal join helpers |
-| `fixtures/lcir-affine-task-carriers` | direct and proven transparent Task handles moved inside closed sums and Options across synchronous calls, returns, suspension, and exhaustive matches; exact managed-sibling frame roots and real `check/build/test/run` commands without universal values |
+| `fixtures/lcir-affine-task-carriers` | direct and proven transparent Task handles moved inside structural tuples, closed sums, and Options across synchronous calls, returns, suspension, atomic tuple splitting, and exhaustive matches; exact managed-sibling frame roots and real `check/build/test/run` commands without universal values |
 | `fixtures/lcir-async-cleanup` | typed-LCIR `defer` and static-concept `scoped` cleanup across suspension, exact normal/fault/cancel live rows, LIFO normal cleanup, child-fault propagation, sibling cancellation, source-callback cancellation dispatch, interpreter/checked-MIR/typed differentials, Linux/MSVC objects, and real `check/build/test/run` commands |
 | `fixtures/lcir-async-writeback` | synchronous functional inout calls inside typed coroutines, managed-Text writeback across moving collection, normal/fault/cancellation cleanup, fault writeback before lexical cleanup, by-value dynamic View parameters under mutable dispatch, unique-witness `dyn` erasure and finite multi-witness managed catalogs across async parameters, results, and suspension frames, interpreter/typed differentials, Linux/MSVC objects, and real `check/build/test/run` commands |
 | `fixtures/lcir-typed-json` | canonical recursive `Json` construction and matching through `List[Json]`/`TextMap[Json]` cycle breakers, source-backed parsing, generated structural equality, canonical typed formatting, exact repeated tracing, immutable map aliases, forced moving-GC relocation, interpreter/MIR/LCIR differential execution, Linux/MSVC objects, and real `check/build/test/run` commands |
@@ -167,7 +167,8 @@ direct coverage includes:
   classification;
 - checked stackless coroutines, typed Task handles, exact suspension rows,
   fallible timers, executor-owned roots, and whole-value affine Task-bearing
-  products, sums, and proven transparent wrappers;
+  products, sums, and proven transparent wrappers, including atomic consuming
+  splits of ordinary direct structural tuples into all fields;
 - fixed and runtime-width homogeneous List forms of the four standard-library
   Task policies, including stored heterogeneous `Task.all`, sole-List-literal
   specialization, affine `List[Task[T]]` transfer, exact `TaskOutcome[T]`

@@ -19,6 +19,10 @@ fn wrap(value Task[Int]) PendingTask {
     PendingTask(value)
 }
 
+fn makePair(value Int) (Task[Int], Text) {
+    (child(value), "tuple carrier")
+}
+
 fn unwrap(value PendingTask) Task[Int] {
     value
 }
@@ -32,6 +36,7 @@ fn forwardOption(value Option[Task[Int]]) Option[Task[Int]] {
 }
 
 async fn exercise() {
+    let pair = makePair(11)
     let work = forward(Work.Queued(
         wrap(child(7)),
         Payload { label = "queued", values = [1, 2] }
@@ -40,6 +45,11 @@ async fn exercise() {
     // The complete affine carrier crosses suspension. Task handles are owned
     // by the scheduler; only the Text and List leaves are GC roots.
     discard Task.sleep(0).await
+
+    let pairedTask, pairedLabel = pair
+    assert pairedLabel == "tuple carrier"
+    let pairedValue = pairedTask.await
+    assert pairedValue == 11
 
     match work {
         Queued(pending, payload) => {

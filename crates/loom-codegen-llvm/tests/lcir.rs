@@ -160,6 +160,114 @@ fn assert_no_universal_value_ir(ir: &str) {
 }
 
 #[test]
+fn product_split_emits_one_extractvalue_per_checked_result() {
+    let mut program = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let unit_ty = program.type_id(&Type::Unit).expect("Unit type");
+    let bool_ty = program.type_id(&Type::Bool).expect("Bool type");
+    let int_ty = program.type_id(&Type::Int).expect("Int type");
+    let tuple_ty = program
+        .add_tuple_type(&[Type::Int, Type::Bool])
+        .expect("tuple type");
+    let split = program
+        .declare_function(
+            origin(90),
+            "tuple.first",
+            Signature::new([tuple_ty], int_ty),
+            Effects::NONE,
+        )
+        .expect("split declaration");
+    let root = program
+        .declare_function(
+            origin(91),
+            "main",
+            Signature::new(Vec::new(), unit_ty),
+            Effects::NONE,
+        )
+        .expect("root declaration");
+    {
+        let mut function = program.function(split).expect("split builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("set entry");
+        let aggregate = function
+            .append_block_parameter(entry, tuple_ty)
+            .expect("tuple parameter");
+        let fields = function
+            .append_instruction(
+                entry,
+                InstructionKind::ProductSplit { aggregate },
+                &[int_ty, bool_ty],
+                origin(90),
+            )
+            .expect("split tuple");
+        function
+            .terminate(entry, terminator(90, TerminatorKind::Return(fields[0])))
+            .expect("return first field");
+    }
+    {
+        let mut function = program.function(root).expect("root builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("set entry");
+        let integer = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Int(7)),
+                &[int_ty],
+                origin(91),
+            )
+            .expect("integer")[0];
+        let boolean = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Bool(true)),
+                &[bool_ty],
+                origin(91),
+            )
+            .expect("boolean")[0];
+        let tuple = function
+            .append_instruction(
+                entry,
+                InstructionKind::ProductConstruct {
+                    fields: Box::from([integer, boolean]),
+                },
+                &[tuple_ty],
+                origin(91),
+            )
+            .expect("tuple")[0];
+        function
+            .append_instruction(
+                entry,
+                InstructionKind::DirectCall {
+                    callee: split,
+                    arguments: Box::from([tuple]),
+                },
+                &[int_ty],
+                origin(91),
+            )
+            .expect("call split");
+        let unit = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Unit),
+                &[unit_ty],
+                origin(91),
+            )
+            .expect("Unit")[0];
+        function
+            .terminate(entry, terminator(91, TerminatorKind::Return(unit)))
+            .expect("return Unit");
+    }
+    let artifact = program
+        .finish_checked()
+        .expect("checked product split")
+        .into_artifact(ArtifactRootRequest::Run(root))
+        .expect("product split artifact");
+    let directory = tempfile::tempdir().expect("temp directory");
+    let ir = emit_ir(&artifact, &directory, "product-split");
+    assert_eq!(ir.matches("extractvalue { i64, i1 }").count(), 2, "{ir}");
+    assert_no_universal_value_ir(&ir);
+}
+
+#[test]
 fn pure_run_has_the_zst_abi_and_only_the_stateless_output_runtime_surface() {
     let artifact = unit_run(64);
     let directory = tempfile::tempdir().expect("temp directory");

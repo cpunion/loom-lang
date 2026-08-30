@@ -53,7 +53,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 46")?;
+    writeln!(output, "lcir 47")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -396,6 +396,9 @@ fn write_instruction(
         }
         InstructionKind::ProductExtract { aggregate, field } => {
             write!(output, "product.extract %{aggregate}, field {field}")
+        }
+        InstructionKind::ProductSplit { aggregate } => {
+            write!(output, "product.split %{aggregate}")
         }
         InstructionKind::ProductInsert {
             aggregate,

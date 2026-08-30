@@ -84,7 +84,9 @@ let number, text = Task.all(child(), label()).await
 The task expressions are evaluated from left to right and all children are
 created before the parent waits. Results remain in input order, not completion
 order. Parallel binding is ordinary tuple destructuring; it is not a second
-multiple-return ABI.
+multiple-return ABI. A tuple containing a Task is affine: destructuring consumes
+the whole tuple and binds every field atomically. Loom does not permit partial
+projection of its Task field.
 
 ## Dynamic standard-library joins return lists
 
