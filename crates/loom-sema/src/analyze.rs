@@ -23,8 +23,10 @@ use crate::{
 
 const RESOURCE_MODULE: &str = "std.resource";
 const FLOAT_MODULE: &str = "std.float";
+const FILE_MODULE: &str = "std.file";
 const IO_MODULE: &str = "std.io";
 const LOG_MODULE: &str = "std.log";
+const NET_MODULE: &str = "std.net";
 const PATH_MODULE: &str = "std.path";
 const TEXT_MODULE: &str = "std.text";
 const DISPOSE_CONCEPT: &str = "Dispose";
@@ -72,10 +74,12 @@ pub struct CanonicalConcepts {
 pub struct CanonicalStdItems {
     pub is_finite: Option<DefId>,
     pub decode_text_error: Option<DefId>,
+    pub file: Option<DefId>,
     pub io_error: Option<DefId>,
     pub io_error_kind: Option<DefId>,
     pub log_level: Option<DefId>,
     pub path_error: Option<DefId>,
+    pub socket: Option<DefId>,
 }
 
 impl Analysis {
@@ -206,8 +210,10 @@ impl Analyzer<'_> {
             return None;
         };
         match segment.name.as_str() {
+            "File" => self.canonical_std_items.file,
             "IoError" => self.canonical_std_items.io_error,
             "IoErrorKind" => self.canonical_std_items.io_error_kind,
+            "Socket" => self.canonical_std_items.socket,
             _ => None,
         }
     }
@@ -285,6 +291,9 @@ impl Analyzer<'_> {
                 "DecodeTextError",
                 |kind| matches!(kind, DefinitionKind::Enum(_)),
             ),
+            file: self.resolve_compiler_std_definition(FILE_MODULE, "File", |kind| {
+                matches!(kind, DefinitionKind::Record(_))
+            }),
             io_error: self.resolve_compiler_std_definition(IO_MODULE, "IoError", |kind| {
                 matches!(kind, DefinitionKind::Record(_))
             }),
@@ -296,6 +305,9 @@ impl Analyzer<'_> {
             }),
             path_error: self.resolve_compiler_std_definition(PATH_MODULE, "PathError", |kind| {
                 matches!(kind, DefinitionKind::Enum(_))
+            }),
+            socket: self.resolve_compiler_std_definition(NET_MODULE, "Socket", |kind| {
+                matches!(kind, DefinitionKind::Record(_))
             }),
         }
     }
@@ -3878,18 +3890,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         ty: TyId,
         region: RegionId,
     ) {
-        let intrinsic = match self.types().data(ty) {
-            TyData::Builtin(BuiltinType::File) => Some(BuiltinValue::FileClose),
-            TyData::Builtin(BuiltinType::Socket) => Some(BuiltinValue::SocketClose),
-            _ => None,
-        };
-        if let Some(dispose) = intrinsic {
-            self.semantics
-                .scoped_disposals
-                .insert(local, ScopedDisposal::Builtin(dispose));
-            self.scoped_locals.insert(local);
-            return;
-        }
         let Some(dispose) = self.analyzer.canonical_concepts.dispose else {
             self.error(
                 "MissingDisposeConcept",
@@ -4150,9 +4150,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 | BuiltinType::Json
                 | BuiltinType::JsonError,
             ) => true,
-            TyData::Builtin(
-                BuiltinType::ContractFault | BuiltinType::File | BuiltinType::Socket,
-            )
+            TyData::Builtin(BuiltinType::ContractFault)
             | TyData::Param(_)
             | TyData::DynTarget(_)
             | TyData::View { .. }
@@ -4177,7 +4175,13 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 definition,
                 arguments,
             } => {
-                if Some(definition) == self.analyzer.canonical_std_items.io_error {
+                if [
+                    self.analyzer.canonical_std_items.file,
+                    self.analyzer.canonical_std_items.io_error,
+                    self.analyzer.canonical_std_items.socket,
+                ]
+                .contains(&Some(definition))
+                {
                     return false;
                 }
                 if !active.insert(ty) {
@@ -5012,6 +5016,28 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
     fn canonical_io_error_type(&mut self, expression: ExprId) -> TyId {
         let definition = self.analyzer.canonical_std_items.io_error;
         self.canonical_std_type(definition, "std.io.IoError", expression)
+    }
+
+    fn canonical_file_type(&mut self, expression: ExprId) -> TyId {
+        let definition = self.analyzer.canonical_std_items.file;
+        self.canonical_std_type(definition, "std.file.File", expression)
+    }
+
+    fn canonical_socket_type(&mut self, expression: ExprId) -> TyId {
+        let definition = self.analyzer.canonical_std_items.socket;
+        self.canonical_std_type(definition, "std.net.Socket", expression)
+    }
+
+    fn is_canonical_resource_type(&self, ty: TyId) -> bool {
+        matches!(
+            self.analyzer.typed.types.data(ty),
+            TyData::Nominal {
+                definition,
+                arguments,
+            } if arguments.is_empty()
+                && (Some(*definition) == self.analyzer.canonical_std_items.file
+                    || Some(*definition) == self.analyzer.canonical_std_items.socket)
+        )
     }
 
     fn expr_span(&self, expression: ExprId) -> Span {
@@ -5969,6 +5995,21 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     crate::std_primitives::CompilerStdPrimitive::FileTryCreate => {
                         BuiltinValue::FileTryCreate
                     }
+                    crate::std_primitives::CompilerStdPrimitive::FileReadText => {
+                        BuiltinValue::FileReadText
+                    }
+                    crate::std_primitives::CompilerStdPrimitive::FileWriteText => {
+                        BuiltinValue::FileWriteText
+                    }
+                    crate::std_primitives::CompilerStdPrimitive::FileTryReadText => {
+                        BuiltinValue::FileTryReadText
+                    }
+                    crate::std_primitives::CompilerStdPrimitive::FileTryWriteText => {
+                        BuiltinValue::FileTryWriteText
+                    }
+                    crate::std_primitives::CompilerStdPrimitive::FileClose => {
+                        BuiltinValue::FileClose
+                    }
                     crate::std_primitives::CompilerStdPrimitive::IoErrorKind => {
                         BuiltinValue::IoErrorKind
                     }
@@ -5993,6 +6034,21 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     }
                     crate::std_primitives::CompilerStdPrimitive::SocketTryConnect => {
                         BuiltinValue::SocketTryConnect
+                    }
+                    crate::std_primitives::CompilerStdPrimitive::SocketReadText => {
+                        BuiltinValue::SocketReadText
+                    }
+                    crate::std_primitives::CompilerStdPrimitive::SocketWriteText => {
+                        BuiltinValue::SocketWriteText
+                    }
+                    crate::std_primitives::CompilerStdPrimitive::SocketTryReadText => {
+                        BuiltinValue::SocketTryReadText
+                    }
+                    crate::std_primitives::CompilerStdPrimitive::SocketTryWriteText => {
+                        BuiltinValue::SocketTryWriteText
+                    }
+                    crate::std_primitives::CompilerStdPrimitive::SocketClose => {
+                        BuiltinValue::SocketClose
                     }
                 })
                 .or_else(|| match path.segments[0].name.as_str() {
@@ -6140,6 +6196,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         arguments: &[ExprId],
         expected: Option<TyId>,
     ) -> TyId {
+        let mut receiver = None;
         let result = match builtin {
             BuiltinValue::Some => self.check_some_call(expression, arguments, expected),
             BuiltinValue::Ok | BuiltinValue::Err => {
@@ -6166,6 +6223,21 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::LogWrite
             | BuiltinValue::StdoutWrite => {
                 self.check_builtin_function_call(expression, builtin, arguments)
+            }
+            BuiltinValue::FileReadText
+            | BuiltinValue::FileWriteText
+            | BuiltinValue::FileTryReadText
+            | BuiltinValue::FileTryWriteText
+            | BuiltinValue::FileClose
+            | BuiltinValue::SocketReadText
+            | BuiltinValue::SocketWriteText
+            | BuiltinValue::SocketTryReadText
+            | BuiltinValue::SocketTryWriteText
+            | BuiltinValue::SocketClose => {
+                let (result, passing) =
+                    self.check_resource_primitive_call(expression, builtin, arguments);
+                receiver = Some(passing);
+                result
             }
             BuiltinValue::ListNew
             | BuiltinValue::TextMapNew
@@ -6194,17 +6266,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::BytesDecodeUtf8
             | BuiltinValue::PathFromText
             | BuiltinValue::PathAsText
-            | BuiltinValue::PathJoin
-            | BuiltinValue::FileReadText
-            | BuiltinValue::FileWriteText
-            | BuiltinValue::FileTryReadText
-            | BuiltinValue::FileTryWriteText
-            | BuiltinValue::FileClose
-            | BuiltinValue::SocketReadText
-            | BuiltinValue::SocketWriteText
-            | BuiltinValue::SocketTryReadText
-            | BuiltinValue::SocketTryWriteText
-            | BuiltinValue::SocketClose => {
+            | BuiltinValue::PathJoin => {
                 self.error_at(
                     "TypeMismatch",
                     "List builtin is only available through List construction or methods",
@@ -6242,7 +6304,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 substitution: Substitution::default(),
                 dispatch_witness: None,
                 witnesses: Vec::new(),
-                receiver: None,
+                receiver,
             },
         );
         self.finish_call_arguments(arguments);
@@ -6361,13 +6423,14 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             BuiltinValue::FileOpenRead | BuiltinValue::FileCreate => {
                 let text = self.types().builtin(BuiltinType::Text);
                 self.check_fixed_arguments(expression, arguments, &[text]);
-                let file = self.types().builtin(BuiltinType::File);
+                let file = self.canonical_file_type(expression);
                 self.types().intern(TyData::Task(file))
             }
             BuiltinValue::FileTryOpenRead | BuiltinValue::FileTryCreate => {
                 let text = self.types().builtin(BuiltinType::Text);
                 self.check_fixed_arguments(expression, arguments, &[text]);
-                self.try_resource_task(BuiltinType::File, expression)
+                let file = self.canonical_file_type(expression);
+                self.try_resource_task(file, expression)
             }
             BuiltinValue::IoErrorKind => {
                 let error = self.canonical_io_error_type(expression);
@@ -6384,14 +6447,15 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 let text = self.types().builtin(BuiltinType::Text);
                 let int = self.types().builtin(BuiltinType::Int);
                 self.check_fixed_arguments(expression, arguments, &[text, int]);
-                let socket = self.types().builtin(BuiltinType::Socket);
+                let socket = self.canonical_socket_type(expression);
                 self.types().intern(TyData::Task(socket))
             }
             BuiltinValue::SocketTryConnect => {
                 let text = self.types().builtin(BuiltinType::Text);
                 let int = self.types().builtin(BuiltinType::Int);
                 self.check_fixed_arguments(expression, arguments, &[text, int]);
-                self.try_resource_task(BuiltinType::Socket, expression)
+                let socket = self.canonical_socket_type(expression);
+                self.try_resource_task(socket, expression)
             }
             BuiltinValue::JsonFormat => {
                 let json = self.types().builtin(BuiltinType::Json);
@@ -6417,8 +6481,77 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         }
     }
 
-    fn try_resource_task(&mut self, resource: BuiltinType, expression: ExprId) -> TyId {
-        let resource = self.types().builtin(resource);
+    fn check_resource_primitive_call(
+        &mut self,
+        expression: ExprId,
+        builtin: BuiltinValue,
+        arguments: &[ExprId],
+    ) -> (TyId, ReceiverPassing) {
+        let file = matches!(
+            builtin,
+            BuiltinValue::FileReadText
+                | BuiltinValue::FileWriteText
+                | BuiltinValue::FileTryReadText
+                | BuiltinValue::FileTryWriteText
+                | BuiltinValue::FileClose
+        );
+        let resource = if file {
+            self.canonical_file_type(expression)
+        } else {
+            self.canonical_socket_type(expression)
+        };
+        let text = self.types().builtin(BuiltinType::Text);
+        let unit = self.types().builtin(BuiltinType::Unit);
+        let passing = if matches!(builtin, BuiltinValue::FileClose | BuiltinValue::SocketClose) {
+            ReceiverPassing::InOut
+        } else {
+            ReceiverPassing::Value
+        };
+        let (parameters, result) = match builtin {
+            BuiltinValue::FileReadText | BuiltinValue::SocketReadText => {
+                (Vec::new(), self.types().intern(TyData::Task(text)))
+            }
+            BuiltinValue::FileWriteText | BuiltinValue::SocketWriteText => {
+                (vec![text], self.types().intern(TyData::Task(unit)))
+            }
+            BuiltinValue::FileTryReadText | BuiltinValue::SocketTryReadText => {
+                let error = self.canonical_io_error_type(expression);
+                let result = self.types().intern(TyData::Result { ok: text, error });
+                (Vec::new(), self.types().intern(TyData::Task(result)))
+            }
+            BuiltinValue::FileTryWriteText | BuiltinValue::SocketTryWriteText => {
+                let error = self.canonical_io_error_type(expression);
+                let result = self.types().intern(TyData::Result { ok: unit, error });
+                (vec![text], self.types().intern(TyData::Task(result)))
+            }
+            BuiltinValue::FileClose | BuiltinValue::SocketClose => (Vec::new(), unit),
+            _ => unreachable!("caller filters private resource primitives"),
+        };
+        let Some((receiver, call_arguments)) = arguments.split_first() else {
+            self.call_arity(expression, parameters.len() + 1, 0);
+            return (self.types().error(), passing);
+        };
+        self.check_expr(*receiver, Some(resource), ExpressionContext::Value);
+        if passing == ReceiverPassing::InOut
+            && self
+                .semantics
+                .expression_places
+                .get(*receiver)
+                .is_none_or(|place| place.mutability != Mutability::Mutable)
+        {
+            self.error_at(
+                "MutReceiverRequiresVar",
+                "the compiler-private close primitive requires a mutable self receiver",
+                *receiver,
+            );
+        }
+        self.with_inout_argument_scope(*receiver, passing == ReceiverPassing::InOut, |checker| {
+            checker.check_fixed_arguments(expression, call_arguments, &parameters);
+        });
+        (result, passing)
+    }
+
+    fn try_resource_task(&mut self, resource: TyId, expression: ExprId) -> TyId {
         let error = self.canonical_io_error_type(expression);
         let result = self.types().intern(TyData::Result {
             ok: resource,
@@ -6746,6 +6879,34 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 _ => None,
             })
             .is_some_and(|local| self.scoped_locals.contains(&local));
+        if self.is_canonical_resource_type(receiver_ty) && method_name.as_str() == "close" {
+            if !type_arguments.is_empty() {
+                self.error_at(
+                    "TypeMismatch",
+                    "resource cleanup does not accept explicit type arguments",
+                    expression,
+                );
+            }
+            self.check_fixed_arguments(expression, arguments, &[]);
+            self.finish_call_arguments(arguments);
+            if scoped_receiver {
+                self.error_at(
+                    "ManualDisposeOfScopedValue",
+                    "a scoped resource is disposed automatically and cannot be closed manually",
+                    receiver,
+                );
+            } else {
+                self.error_at(
+                    "MustScopeRequiresScoped",
+                    "methods on a MustScope value require a receiver already bound with `scoped`",
+                    receiver,
+                );
+            }
+            // `close` is deliberately diagnostic-only. Resource cleanup lowers
+            // through the canonical Dispose witness, so no executable call
+            // target may be recorded for this rejected spelling.
+            return self.types().builtin(BuiltinType::Unit);
+        }
         let receiver_is_self = self
             .semantics
             .expression_places
@@ -6831,7 +6992,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             return self.types().error();
         }
         if let Some((requirement, concept, witness)) = concept_candidates.pop() {
-            self.reject_manual_scoped_dispose(requirement, receiver);
+            self.reject_explicit_dispose_call(requirement, receiver);
             let Some(signature) =
                 self.instantiate_concept_signature(requirement, receiver_ty, &concept)
             else {
@@ -7407,7 +7568,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         type_arguments: &[TypeRefId],
         arguments: &[ExprId],
     ) -> Option<TyId> {
-        let unit = self.types().builtin(BuiltinType::Unit);
         let text = self.types().builtin(BuiltinType::Text);
         let int = self.types().builtin(BuiltinType::Int);
         let bool_ty = self.types().builtin(BuiltinType::Bool);
@@ -7499,101 +7659,8 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     Vec::new(),
                     self.types().builtin(BuiltinType::Int),
                 ),
-                (BuiltinType::File, "read_text") => (
-                    BuiltinValue::FileReadText,
-                    ReceiverPassing::Value,
-                    Vec::new(),
-                    self.types().intern(TyData::Task(text)),
-                ),
-                (BuiltinType::File, "write_text") => (
-                    BuiltinValue::FileWriteText,
-                    ReceiverPassing::Value,
-                    vec![text],
-                    self.types().intern(TyData::Task(unit)),
-                ),
-                (BuiltinType::File, "try_read_text") => {
-                    let error = self.canonical_io_error_type(expression);
-                    let result = self.types().intern(TyData::Result { ok: text, error });
-                    (
-                        BuiltinValue::FileTryReadText,
-                        ReceiverPassing::Value,
-                        Vec::new(),
-                        self.types().intern(TyData::Task(result)),
-                    )
-                }
-                (BuiltinType::File, "try_write_text") => {
-                    let error = self.canonical_io_error_type(expression);
-                    let result = self.types().intern(TyData::Result { ok: unit, error });
-                    (
-                        BuiltinValue::FileTryWriteText,
-                        ReceiverPassing::Value,
-                        vec![text],
-                        self.types().intern(TyData::Task(result)),
-                    )
-                }
-                (BuiltinType::File, "close") => (
-                    BuiltinValue::FileClose,
-                    ReceiverPassing::InOut,
-                    Vec::new(),
-                    unit,
-                ),
-                (BuiltinType::Socket, "read_text") => (
-                    BuiltinValue::SocketReadText,
-                    ReceiverPassing::Value,
-                    Vec::new(),
-                    self.types().intern(TyData::Task(text)),
-                ),
-                (BuiltinType::Socket, "write_text") => (
-                    BuiltinValue::SocketWriteText,
-                    ReceiverPassing::Value,
-                    vec![text],
-                    self.types().intern(TyData::Task(unit)),
-                ),
-                (BuiltinType::Socket, "try_read_text") => {
-                    let error = self.canonical_io_error_type(expression);
-                    let result = self.types().intern(TyData::Result { ok: text, error });
-                    (
-                        BuiltinValue::SocketTryReadText,
-                        ReceiverPassing::Value,
-                        Vec::new(),
-                        self.types().intern(TyData::Task(result)),
-                    )
-                }
-                (BuiltinType::Socket, "try_write_text") => {
-                    let error = self.canonical_io_error_type(expression);
-                    let result = self.types().intern(TyData::Result { ok: unit, error });
-                    (
-                        BuiltinValue::SocketTryWriteText,
-                        ReceiverPassing::Value,
-                        vec![text],
-                        self.types().intern(TyData::Task(result)),
-                    )
-                }
-                (BuiltinType::Socket, "close") => (
-                    BuiltinValue::SocketClose,
-                    ReceiverPassing::InOut,
-                    Vec::new(),
-                    unit,
-                ),
                 _ => return None,
             };
-        if matches!(receiver_type, BuiltinType::File | BuiltinType::Socket)
-            && !self
-                .semantics
-                .expression_places
-                .get(receiver)
-                .and_then(|place| match place.root {
-                    PlaceRoot::Local(local) if place.projections.is_empty() => Some(local),
-                    _ => None,
-                })
-                .is_some_and(|local| self.scoped_locals.contains(&local))
-        {
-            self.error_at(
-                "MustScopeRequiresScoped",
-                "File and Socket methods require a receiver already bound with `scoped`",
-                receiver,
-            );
-        }
         if !type_arguments.is_empty() {
             self.error_at(
                 "TypeMismatch",
@@ -7606,36 +7673,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             receiver_passing == ReceiverPassing::InOut,
             |checker| checker.check_fixed_arguments(expression, arguments, &parameters),
         );
-        if receiver_passing == ReceiverPassing::InOut {
-            let mutable = self
-                .semantics
-                .expression_places
-                .get(receiver)
-                .is_some_and(|place| place.mutability == Mutability::Mutable);
-            if !mutable {
-                self.error_at(
-                    "MutReceiverRequiresVar",
-                    "close requires a mutable receiver place",
-                    receiver,
-                );
-            }
-            if self
-                .semantics
-                .expression_places
-                .get(receiver)
-                .and_then(|place| match place.root {
-                    PlaceRoot::Local(local) if place.projections.is_empty() => Some(local),
-                    _ => None,
-                })
-                .is_some_and(|local| self.scoped_locals.contains(&local))
-            {
-                self.error_at(
-                    "ManualDisposeOfScopedValue",
-                    "a scoped resource is closed automatically and cannot be closed manually",
-                    receiver,
-                );
-            }
-        }
         self.finish_call_arguments(arguments);
         self.semantics.calls.insert(
             expression,
@@ -8060,7 +8097,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             return self.types().error();
         };
         if let Some(receiver) = receiver {
-            self.reject_manual_scoped_dispose(requirement, receiver);
+            self.reject_explicit_dispose_call(requirement, receiver);
             let declared_task_carrier = self.witness_declares_task_receiver(&witness);
             self.transfer_task_receiver(
                 receiver,
@@ -8106,23 +8143,15 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         return_ty
     }
 
-    fn reject_manual_scoped_dispose(&mut self, requirement: DefId, receiver: ExprId) {
+    fn reject_explicit_dispose_call(&mut self, requirement: DefId, receiver: ExprId) {
         if self.analyzer.canonical_concepts.dispose_requirement != Some(requirement) {
             return;
         }
-        let Some(place) = self.semantics.expression_places.get(receiver) else {
-            return;
-        };
-        let PlaceRoot::Local(local) = place.root else {
-            return;
-        };
-        if place.projections.is_empty() && self.scoped_locals.contains(&local) {
-            self.error_at(
-                "ManualDisposeOfScopedValue",
-                "a scoped resource is disposed automatically and cannot be disposed manually",
-                receiver,
-            );
-        }
+        self.error_at(
+            "ManualDisposeOfScopedValue",
+            "Dispose is reserved for automatic scoped cleanup and cannot be invoked directly",
+            receiver,
+        );
     }
 
     fn check_variant_constructor(
@@ -8228,10 +8257,17 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             self.error_at("TypeMismatch", "literal target is not a record", expression);
             return self.types().error();
         };
-        if Some(definition) == self.analyzer.canonical_std_items.io_error {
+        let protected = [
+            (self.analyzer.canonical_std_items.file, "std.file.File"),
+            (self.analyzer.canonical_std_items.io_error, "std.io.IoError"),
+            (self.analyzer.canonical_std_items.socket, "std.net.Socket"),
+        ]
+        .into_iter()
+        .find_map(|(candidate, name)| (candidate == Some(definition)).then_some(name));
+        if let Some(name) = protected {
             self.error_at(
                 "TypeMismatch",
-                "std.io.IoError values cannot be constructed directly",
+                format!("{name} values cannot be constructed directly"),
                 expression,
             );
             return self.types().error();
@@ -8465,10 +8501,8 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             // Fail closed for a type shape beyond the checker nesting budget.
             return true;
         }
-        match self.types().data(ty) {
-            TyData::Task(_) => return false,
-            TyData::Builtin(BuiltinType::File | BuiltinType::Socket) => return true,
-            _ => {}
+        if matches!(self.types().data(ty), TyData::Task(_)) {
+            return false;
         }
         let must_scope = self.analyzer.canonical_concepts.must_scope;
         if self.has_resource_conformance(ty, must_scope).is_some() {
@@ -9628,41 +9662,117 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         let module = self.analyzer.program.definitions[self.environment.owner].module;
         let primitive =
             crate::std_primitives::resolve_local_call(self.analyzer.program, module, path)?;
-        if matches!(
-            primitive,
-            crate::std_primitives::CompilerStdPrimitive::IoErrorKind
-                | crate::std_primitives::CompilerStdPrimitive::IoErrorMessage
-        ) && !self.is_canonical_io_error_accessor(primitive)
-        {
-            return None;
-        }
-        Some(primitive)
+        self.compiler_std_primitive_owner_is_authorized(primitive)
+            .then_some(primitive)
     }
 
-    fn is_canonical_io_error_accessor(
+    fn compiler_std_primitive_owner_is_authorized(
         &self,
         primitive: crate::std_primitives::CompilerStdPrimitive,
     ) -> bool {
-        let expected_name = match primitive {
-            crate::std_primitives::CompilerStdPrimitive::IoErrorKind => "kind",
-            crate::std_primitives::CompilerStdPrimitive::IoErrorMessage => "message",
-            _ => return false,
-        };
-        let Some(io_error) = self.analyzer.canonical_std_items.io_error else {
-            return false;
-        };
-        let io_module = self.analyzer.program.definitions[io_error].module;
+        use crate::std_primitives::CompilerStdPrimitive as Primitive;
+
+        match primitive {
+            Primitive::FileOpenRead => {
+                self.is_unique_compiler_std_function(FILE_MODULE, "open_read")
+            }
+            Primitive::FileCreate => self.is_unique_compiler_std_function(FILE_MODULE, "create"),
+            Primitive::FileTryOpenRead => {
+                self.is_unique_compiler_std_function(FILE_MODULE, "try_open_read")
+            }
+            Primitive::FileTryCreate => {
+                self.is_unique_compiler_std_function(FILE_MODULE, "try_create")
+            }
+            Primitive::FileReadText => self
+                .is_canonical_inherent_method(self.analyzer.canonical_std_items.file, "read_text"),
+            Primitive::FileWriteText => self
+                .is_canonical_inherent_method(self.analyzer.canonical_std_items.file, "write_text"),
+            Primitive::FileTryReadText => self.is_canonical_inherent_method(
+                self.analyzer.canonical_std_items.file,
+                "try_read_text",
+            ),
+            Primitive::FileTryWriteText => self.is_canonical_inherent_method(
+                self.analyzer.canonical_std_items.file,
+                "try_write_text",
+            ),
+            Primitive::FileClose => {
+                self.is_canonical_dispose_method(self.analyzer.canonical_std_items.file)
+            }
+            Primitive::SocketConnect => self.is_unique_compiler_std_function(NET_MODULE, "connect"),
+            Primitive::SocketTryConnect => {
+                self.is_unique_compiler_std_function(NET_MODULE, "try_connect")
+            }
+            Primitive::SocketReadText => self.is_canonical_inherent_method(
+                self.analyzer.canonical_std_items.socket,
+                "read_text",
+            ),
+            Primitive::SocketWriteText => self.is_canonical_inherent_method(
+                self.analyzer.canonical_std_items.socket,
+                "write_text",
+            ),
+            Primitive::SocketTryReadText => self.is_canonical_inherent_method(
+                self.analyzer.canonical_std_items.socket,
+                "try_read_text",
+            ),
+            Primitive::SocketTryWriteText => self.is_canonical_inherent_method(
+                self.analyzer.canonical_std_items.socket,
+                "try_write_text",
+            ),
+            Primitive::SocketClose => {
+                self.is_canonical_dispose_method(self.analyzer.canonical_std_items.socket)
+            }
+            Primitive::IoErrorKind => self
+                .is_canonical_inherent_method(self.analyzer.canonical_std_items.io_error, "kind"),
+            Primitive::IoErrorMessage => self.is_canonical_inherent_method(
+                self.analyzer.canonical_std_items.io_error,
+                "message",
+            ),
+            _ => true,
+        }
+    }
+
+    fn is_unique_compiler_std_function(&self, module_name: &str, name: &str) -> bool {
         let mut candidates =
             self.analyzer
                 .program
                 .definitions
                 .iter()
                 .filter_map(|(definition, item)| {
-                    if item.module != io_module
+                    let module = &self.analyzer.program.modules[item.module];
+                    if module.package != PackageId::compiler_std(LOOM_LANGUAGE_VERSION)
+                        || module.name.as_str() != module_name
                         || item
                             .name
                             .as_ref()
-                            .is_none_or(|name| name.as_str() != expected_name)
+                            .is_none_or(|candidate| candidate.as_str() != name)
+                        || !matches!(item.kind, DefinitionKind::Function(_))
+                    {
+                        return None;
+                    }
+                    Some(definition)
+                });
+        matches!(
+            (candidates.next(), candidates.next()),
+            (Some(definition), None) if definition == self.environment.owner
+        )
+    }
+
+    fn is_canonical_inherent_method(&self, target: Option<DefId>, name: &str) -> bool {
+        let Some(target) = target else {
+            return false;
+        };
+        let target_module = self.analyzer.program.definitions[target].module;
+        let mut candidates =
+            self.analyzer
+                .program
+                .definitions
+                .iter()
+                .filter_map(|(definition, item)| {
+                    if item.module != target_module
+                        || item
+                            .name
+                            .as_ref()
+                            .is_none_or(|candidate| candidate.as_str() != name)
                     {
                         return None;
                     }
@@ -9683,7 +9793,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                         Some(TyData::Nominal {
                             definition,
                             arguments,
-                        }) if *definition == io_error && arguments.is_empty()
+                        }) if *definition == target && arguments.is_empty()
                     )
                     .then_some(definition)
                 });
@@ -9691,6 +9801,39 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             (candidates.next(), candidates.next()),
             (Some(definition), None) if definition == self.environment.owner
         )
+    }
+
+    fn is_canonical_dispose_method(&self, target: Option<DefId>) -> bool {
+        let (Some(target), Some(dispose), Some(requirement)) = (
+            target,
+            self.analyzer.canonical_concepts.dispose,
+            self.analyzer.canonical_concepts.dispose_requirement,
+        ) else {
+            return false;
+        };
+        let definition = &self.analyzer.program.definitions[self.environment.owner];
+        if definition.module != self.analyzer.program.definitions[target].module {
+            return false;
+        }
+        let DefinitionKind::Method(method) = &definition.kind else {
+            return false;
+        };
+        let DefinitionKind::Conformance(_) = &self.analyzer.program.definitions[method.owner].kind
+        else {
+            return false;
+        };
+        let Some(conformance) = self.analyzer.typed.conformances.get(method.owner) else {
+            return false;
+        };
+        conformance.concept.concept == dispose
+            && matches!(
+                self.analyzer.typed.types.data(conformance.target),
+                TyData::Nominal {
+                    definition,
+                    arguments,
+                } if *definition == target && arguments.is_empty()
+            )
+            && conformance.methods.get(&requirement) == Some(&self.environment.owner)
     }
 
     fn flow_state(&self) -> FlowState {
@@ -10423,8 +10566,6 @@ fn builtin_type(name: &str) -> Option<BuiltinType> {
         "ContractFault" => Some(BuiltinType::ContractFault),
         "TaskFault" => Some(BuiltinType::TaskFault),
         "Duration" => Some(BuiltinType::Duration),
-        "File" => Some(BuiltinType::File),
-        "Socket" => Some(BuiltinType::Socket),
         "Json" => Some(BuiltinType::Json),
         "JsonError" => Some(BuiltinType::JsonError),
         _ => None,
@@ -11366,22 +11507,6 @@ fn same[T](left Boxed[T], right Boxed[T]) Bool {
                 .any(|diagnostic| diagnostic.code == "InvalidGenericOperation"),
             "{:#?}",
             aggregate.diagnostics
-        );
-
-        let (_, resources) = analyze_source(
-            r"
-fn same_file(left File, right File) Bool {
-    left == right
-}
-",
-        );
-        assert!(
-            resources
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.code == "InvalidGenericOperation"),
-            "{:#?}",
-            resources.diagnostics
         );
 
         let (_, dynamic) = analyze_source(

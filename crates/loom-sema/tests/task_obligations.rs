@@ -3,6 +3,51 @@ use loom_hir::{SourceUnit, lower_files};
 use loom_sema::analyze;
 use loom_syntax::parse_with_file;
 
+fn analyze_resource_source(source: &str) -> Vec<loom_core::Diagnostic> {
+    use loom_core::{LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId};
+    use loom_hir::{PackageSourceUnit, lower_package_files};
+
+    let parsed = parse_with_file(FileId(0), source);
+    let resource = parse_with_file(
+        FileId(1),
+        include_str!("../../../library/std/resource/resource.loom"),
+    );
+    assert!(
+        parsed.diagnostics().is_empty() && resource.diagnostics().is_empty(),
+        "syntax diagnostics: source={:#?}, resource={:#?}",
+        parsed.diagnostics(),
+        resource.diagnostics()
+    );
+    let root_package = PackageId::new("task-obligations-test", "0");
+    let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+    let mut lowered = lower_package_files([
+        PackageSourceUnit {
+            file: FileId(0),
+            package: root_package.clone(),
+            module: ModuleName::new("task_obligations_test"),
+            syntax: parsed.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(1),
+            package: std_package.clone(),
+            module: ModuleName::new("std.resource"),
+            syntax: resource.ast(),
+        },
+    ]);
+    assert!(
+        lowered.diagnostics.is_empty(),
+        "HIR diagnostics: {:#?}",
+        lowered.diagnostics
+    );
+    lowered
+        .program
+        .register_package(std_package.clone(), [], false);
+    lowered
+        .program
+        .register_package(root_package, [(Name::new("std"), std_package)], true);
+    analyze(&lowered.program).diagnostics
+}
+
 fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
     let parsed = parse_with_file(FileId(0), source);
     assert!(
@@ -606,15 +651,50 @@ fn compound(flag Bool, value Option[Int]) {
 
 #[test]
 fn discarding_a_scoped_resource_has_one_primary_diagnostic() {
-    let diagnostics = analyze_source(
+    let diagnostics = analyze_resource_source(
         r"
-fn invalid(file File) {
-    scoped resource = file
+import std.resource.Dispose
+import std.resource.MustScope
+
+record Resource {}
+impl Dispose for Resource {
+    method dispose(mut self) {}
+}
+impl MustScope for Resource {}
+
+fn invalid(value Resource) {
+    scoped resource = value
     discard resource
 }
 ",
     );
     assert_eq!(codes(&diagnostics), ["MustScopeRequiresScoped"]);
+}
+
+#[test]
+fn qualified_dispose_on_self_is_rejected_during_semantic_analysis() {
+    let diagnostics = analyze_resource_source(
+        r"
+import std.resource.Dispose
+import std.resource.MustScope
+
+record Resource {}
+impl Dispose for Resource {
+    method dispose(mut self) {}
+}
+impl MustScope for Resource {}
+
+concept Trigger {
+    method trigger(mut self)
+}
+impl Trigger for Resource {
+    method trigger(mut self) {
+        <Resource as Dispose>.dispose(self)
+    }
+}
+",
+    );
+    assert_eq!(codes(&diagnostics), ["ManualDisposeOfScopedValue"]);
 }
 
 #[test]

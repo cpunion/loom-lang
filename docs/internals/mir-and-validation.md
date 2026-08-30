@@ -33,10 +33,11 @@ Expression IDs form a dense, deterministic preorder within each function.
 They are not source AST identities.
 
 `StatementKind::Scoped` preserves resource lifetime intent as a first-class MIR
-operation. It contains the initializer and either a statically resolved
-`Dispose.dispose` proof or the canonical File/Socket close action. The cleanup
-is registered only after initialization succeeds, belongs to the current
-lexical block, and shares one LIFO stack with `defer`.
+operation. It contains the initializer and a statically resolved
+`Dispose.dispose` proof. The cleanup is registered only after initialization
+succeeds, belongs to the current lexical block, and shares one LIFO stack with
+`defer`. Canonical File and Socket disposal uses the same source witness path as
+every other resource.
 
 ## Validation boundary
 
@@ -201,7 +202,7 @@ root merely because storage still exists.
 The interpreted MIR envelope currently uses:
 
 - format `loom.interpreted-mir`;
-- artifact version `38`;
+- artifact version `39`;
 - Loom language version `0.3`.
 
 Generic compiler-cache envelopes carry an explicit null `entry`. Executable

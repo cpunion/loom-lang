@@ -43,11 +43,18 @@ fn compile(source: &str) -> loom_mir::CheckedProgram {
 fn lower_with_std_io(source: &str) -> loom_hir::Program {
     let application = parse_with_file(FileId(0), source);
     let io = parse_with_file(FileId(1), include_str!("../../../library/std/io/io.loom"));
+    let file = parse_with_file(FileId(2), "pub record File {}\n");
+    let socket = parse_with_file(FileId(3), "pub record Socket {}\n");
     assert!(
-        application.diagnostics().is_empty() && io.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} io={:#?}",
+        application.diagnostics().is_empty()
+            && io.diagnostics().is_empty()
+            && file.diagnostics().is_empty()
+            && socket.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} io={:#?} file={:#?} socket={:#?}",
         application.diagnostics(),
-        io.diagnostics()
+        io.diagnostics(),
+        file.diagnostics(),
+        socket.diagnostics()
     );
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("lowering-test", "0");
@@ -63,6 +70,18 @@ fn lower_with_std_io(source: &str) -> loom_hir::Program {
             package: std.clone(),
             module: ModuleName::new("std.io"),
             syntax: io.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(2),
+            package: std.clone(),
+            module: ModuleName::new("std.file"),
+            syntax: file.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(3),
+            package: std.clone(),
+            module: ModuleName::new("std.net"),
+            syntax: socket.ast(),
         },
     ]);
     lowered.program.register_package(std.clone(), [], false);
@@ -97,20 +116,26 @@ fn compile_with_std_text_and_path(source: &str) -> loom_mir::CheckedProgram {
     );
     let net = parse_with_file(FileId(4), include_str!("../../../library/std/net/net.loom"));
     let io = parse_with_file(FileId(5), include_str!("../../../library/std/io/io.loom"));
+    let resource = parse_with_file(
+        FileId(6),
+        include_str!("../../../library/std/resource/resource.loom"),
+    );
     assert!(
         application.diagnostics().is_empty()
             && text.diagnostics().is_empty()
             && path.diagnostics().is_empty()
             && file.diagnostics().is_empty()
             && net.diagnostics().is_empty()
-            && io.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} text={:#?} path={:#?} file={:#?} net={:#?} io={:#?}",
+            && io.diagnostics().is_empty()
+            && resource.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} text={:#?} path={:#?} file={:#?} net={:#?} io={:#?} resource={:#?}",
         application.diagnostics(),
         text.diagnostics(),
         path.diagnostics(),
         file.diagnostics(),
         net.diagnostics(),
-        io.diagnostics()
+        io.diagnostics(),
+        resource.diagnostics()
     );
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("lowering-test", "0");
@@ -151,6 +176,12 @@ fn compile_with_std_text_and_path(source: &str) -> loom_mir::CheckedProgram {
             module: ModuleName::new("std.io"),
             syntax: io.ast(),
         },
+        PackageSourceUnit {
+            file: FileId(6),
+            package: std.clone(),
+            module: ModuleName::new("std.resource"),
+            syntax: resource.ast(),
+        },
     ]);
     compile_lowered_package(lowered, std, root)
 }
@@ -162,14 +193,20 @@ fn lower_with_std_resource(source: &str) -> loom_hir::Program {
         include_str!("../../../library/std/resource/resource.loom"),
     );
     let io = parse_with_file(FileId(2), include_str!("../../../library/std/io/io.loom"));
+    let file = parse_with_file(FileId(3), "pub record File {}\n");
+    let socket = parse_with_file(FileId(4), "pub record Socket {}\n");
     assert!(
         application.diagnostics().is_empty()
             && resource.diagnostics().is_empty()
-            && io.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} resource={:#?} io={:#?}",
+            && io.diagnostics().is_empty()
+            && file.diagnostics().is_empty()
+            && socket.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} resource={:#?} io={:#?} file={:#?} socket={:#?}",
         application.diagnostics(),
         resource.diagnostics(),
-        io.diagnostics()
+        io.diagnostics(),
+        file.diagnostics(),
+        socket.diagnostics()
     );
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("lowering-test", "0");
@@ -191,6 +228,18 @@ fn lower_with_std_resource(source: &str) -> loom_hir::Program {
             package: std.clone(),
             module: ModuleName::new("std.io"),
             syntax: io.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(3),
+            package: std.clone(),
+            module: ModuleName::new("std.file"),
+            syntax: file.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(4),
+            package: std.clone(),
+            module: ModuleName::new("std.net"),
+            syntax: socket.ast(),
         },
     ]);
     lowered.program.register_package(std.clone(), [], false);
@@ -224,14 +273,20 @@ fn compile_with_std_float(source: &str) -> loom_mir::CheckedProgram {
         include_str!("../../../library/std/float/float.loom"),
     );
     let io = parse_with_file(FileId(2), include_str!("../../../library/std/io/io.loom"));
+    let file = parse_with_file(FileId(3), "pub record File {}\n");
+    let socket = parse_with_file(FileId(4), "pub record Socket {}\n");
     assert!(
         application.diagnostics().is_empty()
             && float.diagnostics().is_empty()
-            && io.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} float={:#?} io={:#?}",
+            && io.diagnostics().is_empty()
+            && file.diagnostics().is_empty()
+            && socket.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} float={:#?} io={:#?} file={:#?} socket={:#?}",
         application.diagnostics(),
         float.diagnostics(),
-        io.diagnostics()
+        io.diagnostics(),
+        file.diagnostics(),
+        socket.diagnostics()
     );
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("lowering-test", "0");
@@ -254,10 +309,26 @@ fn compile_with_std_float(source: &str) -> loom_mir::CheckedProgram {
             module: ModuleName::new("std.io"),
             syntax: io.ast(),
         },
+        PackageSourceUnit {
+            file: FileId(3),
+            package: std.clone(),
+            module: ModuleName::new("std.file"),
+            syntax: file.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(4),
+            package: std.clone(),
+            module: ModuleName::new("std.net"),
+            syntax: socket.ast(),
+        },
     ]);
     compile_lowered_package(lowered, std, root)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the fixture keeps each canonical std source module and package identity explicit"
+)]
 fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
     let application = parse_with_file(FileId(0), source);
     let log = parse_with_file(FileId(1), include_str!("../../../library/std/log/log.loom"));
@@ -279,6 +350,10 @@ fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
     );
     let net = parse_with_file(FileId(6), include_str!("../../../library/std/net/net.loom"));
     let io = parse_with_file(FileId(7), include_str!("../../../library/std/io/io.loom"));
+    let resource = parse_with_file(
+        FileId(8),
+        include_str!("../../../library/std/resource/resource.loom"),
+    );
     assert!(
         application.diagnostics().is_empty()
             && log.diagnostics().is_empty()
@@ -287,8 +362,9 @@ fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
             && text.diagnostics().is_empty()
             && file.diagnostics().is_empty()
             && net.diagnostics().is_empty()
-            && io.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} log={:#?} json={:#?} float={:#?} text={:#?} file={:#?} net={:#?} io={:#?}",
+            && io.diagnostics().is_empty()
+            && resource.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} log={:#?} json={:#?} float={:#?} text={:#?} file={:#?} net={:#?} io={:#?} resource={:#?}",
         application.diagnostics(),
         log.diagnostics(),
         json.diagnostics(),
@@ -296,7 +372,8 @@ fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
         text.diagnostics(),
         file.diagnostics(),
         net.diagnostics(),
-        io.diagnostics()
+        io.diagnostics(),
+        resource.diagnostics()
     );
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("lowering-test", "0");
@@ -349,6 +426,12 @@ fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
             module: ModuleName::new("std.io"),
             syntax: io.ast(),
         },
+        PackageSourceUnit {
+            file: FileId(8),
+            package: std.clone(),
+            module: ModuleName::new("std.resource"),
+            syntax: resource.ast(),
+        },
     ]);
     compile_lowered_package(lowered, std, root)
 }
@@ -357,14 +440,20 @@ fn compile_with_std_int(source: &str) -> loom_mir::CheckedProgram {
     let application = parse_with_file(FileId(0), source);
     let int = parse_with_file(FileId(1), include_str!("../../../library/std/int/int.loom"));
     let io = parse_with_file(FileId(2), include_str!("../../../library/std/io/io.loom"));
+    let file = parse_with_file(FileId(3), "pub record File {}\n");
+    let socket = parse_with_file(FileId(4), "pub record Socket {}\n");
     assert!(
         application.diagnostics().is_empty()
             && int.diagnostics().is_empty()
-            && io.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} int={:#?} io={:#?}",
+            && io.diagnostics().is_empty()
+            && file.diagnostics().is_empty()
+            && socket.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} int={:#?} io={:#?} file={:#?} socket={:#?}",
         application.diagnostics(),
         int.diagnostics(),
-        io.diagnostics()
+        io.diagnostics(),
+        file.diagnostics(),
+        socket.diagnostics()
     );
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("lowering-test", "0");
@@ -387,6 +476,18 @@ fn compile_with_std_int(source: &str) -> loom_mir::CheckedProgram {
             module: ModuleName::new("std.io"),
             syntax: io.ast(),
         },
+        PackageSourceUnit {
+            file: FileId(3),
+            package: std.clone(),
+            module: ModuleName::new("std.file"),
+            syntax: file.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(4),
+            package: std.clone(),
+            module: ModuleName::new("std.net"),
+            syntax: socket.ast(),
+        },
     ]);
     compile_lowered_package(lowered, std, root)
 }
@@ -406,18 +507,24 @@ fn compile_with_std_json(source: &str) -> loom_mir::CheckedProgram {
         include_str!("../../../library/std/text/text.loom"),
     );
     let io = parse_with_file(FileId(4), include_str!("../../../library/std/io/io.loom"));
+    let file = parse_with_file(FileId(5), "pub record File {}\n");
+    let socket = parse_with_file(FileId(6), "pub record Socket {}\n");
     assert!(
         application.diagnostics().is_empty()
             && json.diagnostics().is_empty()
             && float.diagnostics().is_empty()
             && text.diagnostics().is_empty()
-            && io.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} json={:#?} float={:#?} text={:#?} io={:#?}",
+            && io.diagnostics().is_empty()
+            && file.diagnostics().is_empty()
+            && socket.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} json={:#?} float={:#?} text={:#?} io={:#?} file={:#?} socket={:#?}",
         application.diagnostics(),
         json.diagnostics(),
         float.diagnostics(),
         text.diagnostics(),
-        io.diagnostics()
+        io.diagnostics(),
+        file.diagnostics(),
+        socket.diagnostics()
     );
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("lowering-test", "0");
@@ -451,6 +558,18 @@ fn compile_with_std_json(source: &str) -> loom_mir::CheckedProgram {
             package: std.clone(),
             module: ModuleName::new("std.io"),
             syntax: io.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(5),
+            package: std.clone(),
+            module: ModuleName::new("std.file"),
+            syntax: file.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(6),
+            package: std.clone(),
+            module: ModuleName::new("std.net"),
+            syntax: socket.ast(),
         },
     ]);
     compile_lowered_package(lowered, std, root)
@@ -1088,6 +1207,54 @@ fn errored_analysis_returns_only_structured_compiler_defects() {
 }
 
 #[test]
+fn canonical_source_resources_receive_dynamic_hidden_mir_storage() {
+    let source = lower_with_std_io("fn idle() {}\n");
+    let analysis = analyze(&source);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "semantic diagnostics: {:#?}",
+        analysis.diagnostics
+    );
+    let program = lower_to_mir(&source, &analysis)
+        .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()));
+    let resource_ids = [
+        program.prelude.file.expect("MIR File identity"),
+        program.prelude.socket.expect("MIR Socket identity"),
+    ];
+    for (name, id) in ["File", "Socket"].into_iter().zip(resource_ids) {
+        let definition = program.type_def(id).expect("MIR resource definition");
+        let loom_mir::TypeDefKind::Record { fields, invariant } = &definition.kind else {
+            panic!("canonical {name} must use hidden record storage: {definition:#?}");
+        };
+        assert!(invariant.is_none());
+        assert_eq!(definition.name, name);
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].name, "raw");
+        assert_eq!(fields[0].ty, loom_mir::Type::Int);
+    }
+
+    let shifted = compile("record Prefix {}\n\nfn idle() {}\n");
+    assert_eq!(
+        shifted.prelude.file.expect("shifted File").0,
+        resource_ids[0].0 + 1
+    );
+    assert_eq!(
+        shifted.prelude.socket.expect("shifted Socket").0,
+        resource_ids[1].0 + 1
+    );
+
+    let mut missing_file = analyze(&source);
+    missing_file.canonical_std_items.file = None;
+    let failure = lower_to_mir(&source, &missing_file).expect_err("missing File must fail closed");
+    assert!(failure.diagnostics()[0].message.contains("std.file.File"));
+    let mut missing_socket = analyze(&source);
+    missing_socket.canonical_std_items.socket = None;
+    let failure =
+        lower_to_mir(&source, &missing_socket).expect_err("missing Socket must fail closed");
+    assert!(failure.diagnostics()[0].message.contains("std.net.Socket"));
+}
+
+#[test]
 fn canonical_source_io_error_receives_dynamic_hidden_mir_storage() {
     let source = lower_with_std_io("fn message(error IoError) Text { error.message() }\n");
     let analysis = analyze(&source);
@@ -1515,6 +1682,10 @@ async fn returns(flag Bool, first Int, second Int) Int {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one integration case verifies the connected Text, Bytes, Path, and File source graph"
+)]
 fn text_bytes_path_and_path_file_calls_lower_to_checked_mir() {
     let program = compile_with_std_text_and_path(
         r#"
@@ -1580,8 +1751,10 @@ async fn pathFiles(path Path) {
         (loom_mir::Builtin::FileCreate, "std.file.create"),
         (loom_mir::Builtin::FileTryOpenRead, "std.file.try_open_read"),
         (loom_mir::Builtin::FileTryCreate, "std.file.try_create"),
+        (loom_mir::Builtin::FileClose, "std.file.dispose"),
         (loom_mir::Builtin::SocketConnect, "std.net.connect"),
         (loom_mir::Builtin::SocketTryConnect, "std.net.try_connect"),
+        (loom_mir::Builtin::SocketClose, "std.net.dispose"),
     ] {
         assert_eq!(
             builtin_call_owners(&program, builtin),

@@ -3188,10 +3188,24 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                                 PlaceSite::expression(expression),
                                 &format!("{path}.arguments[{index}].place"),
                             );
-                            let allowed = if matches!(
-                                target,
-                                CallTarget::Builtin(mir::Builtin::ListAdd)
-                            ) {
+                            let allowed = if let CallTarget::Builtin(
+                                builtin @ (mir::Builtin::FileClose | mir::Builtin::SocketClose),
+                            ) = target
+                            {
+                                let expected = match builtin {
+                                    mir::Builtin::FileClose => self.program.prelude.file,
+                                    mir::Builtin::SocketClose => self.program.prelude.socket,
+                                    _ => unreachable!(),
+                                };
+                                index == 0
+                                    && place_type.as_ref().is_some_and(|ty| {
+                                        matches!(
+                                            ty,
+                                            Type::Nominal(actual, arguments)
+                                                if Some(*actual) == expected && arguments.is_empty()
+                                        ) && self.supported_record_type(ty)
+                                    })
+                            } else if matches!(target, CallTarget::Builtin(mir::Builtin::ListAdd)) {
                                 index == 0
                                     && place_type.as_ref().is_some_and(|ty| {
                                         matches!(ty, Type::List(_)) && self.supported_value_type(ty)
@@ -3327,12 +3341,14 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         | mir::Builtin::FileWriteText
                         | mir::Builtin::FileTryReadText
                         | mir::Builtin::FileTryWriteText
+                        | mir::Builtin::FileClose
                         | mir::Builtin::SocketConnect
                         | mir::Builtin::SocketTryConnect
                         | mir::Builtin::SocketReadText
                         | mir::Builtin::SocketWriteText
                         | mir::Builtin::SocketTryReadText
                         | mir::Builtin::SocketTryWriteText
+                        | mir::Builtin::SocketClose
                         | mir::Builtin::TaskFaultCode
                         | mir::Builtin::TaskFaultMessage
                         | mir::Builtin::DurationMilliseconds
@@ -3377,7 +3393,6 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         }
                         None
                     }
-                    CallTarget::Builtin(_) => Some(UnsupportedFeature::BuiltinCall),
                 };
                 if let Some(feature) = target_feature {
                     self.expression_item(feature, function, expression, &format!("{path}.target"));
@@ -3897,21 +3912,8 @@ fn scan_effect_statement(
         StatementKind::Let { value, .. }
         | StatementKind::LetTuple { value, .. }
         | StatementKind::Assign { value, .. }
+        | StatementKind::Scoped { value, .. }
         | StatementKind::Evaluate(value) => scan_effect_expr(program, value, summary),
-        StatementKind::Scoped {
-            value, disposal, ..
-        } => {
-            let continues = scan_effect_expr(program, value, summary);
-            if continues
-                && matches!(
-                    disposal,
-                    mir::ScopedDisposal::FileClose | mir::ScopedDisposal::SocketClose
-                )
-            {
-                summary.include(Effects::NEEDS_EXECUTOR);
-            }
-            continues
-        }
         StatementKind::ForRange {
             start, end, body, ..
         } => {
@@ -4101,6 +4103,11 @@ fn scan_effect_expr(
                 {
                     summary.include(Effects::NEEDS_EXECUTOR);
                 }
+            } else if matches!(
+                target,
+                CallTarget::Builtin(mir::Builtin::FileClose | mir::Builtin::SocketClose)
+            ) {
+                summary.include(Effects::NEEDS_EXECUTOR);
             } else if matches!(
                 target,
                 CallTarget::Builtin(
@@ -7106,70 +7113,12 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         disposal: &mir::ScopedDisposal,
         span: Span,
     ) -> Result<Flow, LoweringError> {
-        match disposal {
-            mir::ScopedDisposal::StaticConcept {
-                requirement,
-                witness,
-                dispatch_type,
-            } => self.lower_static_scoped_disposal(
-                flow,
-                local,
-                *requirement,
-                witness,
-                dispatch_type,
-                span,
-            ),
-            mir::ScopedDisposal::FileClose => {
-                self.lower_builtin_scoped_disposal(flow, local, ResourceKind::File, span)
-            }
-            mir::ScopedDisposal::SocketClose => {
-                self.lower_builtin_scoped_disposal(flow, local, ResourceKind::Socket, span)
-            }
-        }
-    }
-
-    fn lower_builtin_scoped_disposal(
-        &mut self,
-        mut flow: Flow,
-        local: LocalId,
-        kind: ResourceKind,
-        span: Span,
-    ) -> Result<Flow, LoweringError> {
-        let origin = Origin {
-            source_function: self.source.id,
-            expression: None,
-            span,
-        };
-        let place = self.place_plan(&mir::Place::local(local), PlaceUse::Read)?;
-        let EvalFlow::Continue {
-            flow: next_flow,
-            value: resource,
-        } = self.read_place(flow, &place, origin)?
-        else {
-            return Err(LoweringError::defect(
-                LoweringDefectCode::Builder,
-                "built-in scoped resource read unexpectedly terminated",
-            ));
-        };
-        flow = next_flow;
-        let resource_type = place.leaf_type();
-        let unit_type = self.type_id(&Type::Unit)?;
-        let results = self
-            .builder
-            .append_instruction(
-                flow.block,
-                InstructionKind::ResourceClose { kind, resource },
-                &[unit_type, resource_type],
-                origin,
-            )
-            .map_err(LoweringError::from)?;
-        let closed_resource = results.get(1).copied().ok_or_else(|| {
-            LoweringError::defect(
-                LoweringDefectCode::Builder,
-                "built-in scoped resource close produced no resource writeback",
-            )
-        })?;
-        self.write_place(flow, &place, closed_resource, origin)
+        let mir::ScopedDisposal::StaticConcept {
+            requirement,
+            witness,
+            dispatch_type,
+        } = disposal;
+        self.lower_static_scoped_disposal(flow, local, *requirement, witness, dispatch_type, span)
     }
 
     #[expect(
@@ -10870,6 +10819,18 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 }
                 mir::Builtin::LogWrite => self.lower_log_builtin(flow, arguments, expression),
                 mir::Builtin::StdoutWrite => self.lower_stdout_builtin(flow, arguments, expression),
+                mir::Builtin::FileClose => self.lower_resource_close_builtin(
+                    flow,
+                    ResourceKind::File,
+                    arguments,
+                    expression,
+                ),
+                mir::Builtin::SocketClose => self.lower_resource_close_builtin(
+                    flow,
+                    ResourceKind::Socket,
+                    arguments,
+                    expression,
+                ),
                 _ => self.lower_builtin(flow, *builtin, arguments, expression),
             };
         }
@@ -11724,6 +11685,48 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 "mutable interface argument without an exact writeback place",
             )),
         }
+    }
+
+    fn lower_resource_close_builtin(
+        &mut self,
+        flow: Flow,
+        kind: ResourceKind,
+        arguments: &[CallArgument],
+        expression: &mir::Expr,
+    ) -> Result<EvalFlow, LoweringError> {
+        let [CallArgument::InOut(resource)] = arguments else {
+            return Err(self.unsupported_reached("resource close argument shape"));
+        };
+        let origin = self.expression_origin(expression);
+        let place = self.place_plan(resource, PlaceUse::InOut)?;
+        let EvalFlow::Continue {
+            flow,
+            value: resource,
+        } = self.read_place(flow, &place, origin)?
+        else {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::Builder,
+                "typed resource close place read unexpectedly terminated",
+            ));
+        };
+        let unit_type = self.type_id(&Type::Unit)?;
+        let results = self
+            .builder
+            .append_instruction(
+                flow.block,
+                InstructionKind::ResourceClose { kind, resource },
+                &[unit_type, place.leaf_type()],
+                origin,
+            )
+            .map_err(LoweringError::from)?;
+        let [unit, closed_resource] = results.as_ref() else {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::Builder,
+                "typed resource close did not produce Unit and resource writeback",
+            ));
+        };
+        let flow = self.write_place(flow, &place, *closed_resource, origin)?;
+        Ok(EvalFlow::Continue { flow, value: *unit })
     }
 
     #[expect(

@@ -33,14 +33,12 @@ const CONTRACT_FAULT_TYPE: TypeId = TypeId(3);
 const TASK_FAULT_TYPE: TypeId = TypeId(4);
 const TASK_OUTCOME_TYPE: TypeId = TypeId(5);
 const DURATION_TYPE: TypeId = TypeId(6);
-const FILE_TYPE: TypeId = TypeId(7);
-const SOCKET_TYPE: TypeId = TypeId(8);
-const BYTES_TYPE: TypeId = TypeId(9);
-const PATH_TYPE: TypeId = TypeId(10);
-const TEXT_MAP_TYPE: TypeId = TypeId(11);
-const JSON_TYPE: TypeId = TypeId(12);
-const JSON_ERROR_TYPE: TypeId = TypeId(13);
-const SYNTHETIC_TYPE_COUNT: u32 = 14;
+const BYTES_TYPE: TypeId = TypeId(7);
+const PATH_TYPE: TypeId = TypeId(8);
+const TEXT_MAP_TYPE: TypeId = TypeId(9);
+const JSON_TYPE: TypeId = TypeId(10);
+const JSON_ERROR_TYPE: TypeId = TypeId(11);
+const SYNTHETIC_TYPE_COUNT: u32 = 12;
 
 /// Failure at the trusted typed-HIR to MIR boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -140,9 +138,13 @@ struct Compiler<'a> {
     hir: &'a HirProgram,
     analysis: &'a Analysis,
     indices: Indices,
+    file_definition: DefId,
+    file_type: TypeId,
     io_error_definition: DefId,
     io_error_type: TypeId,
     io_error_kind_type: TypeId,
+    socket_definition: DefId,
+    socket_type: TypeId,
 }
 
 impl<'a> Compiler<'a> {
@@ -262,6 +264,12 @@ impl<'a> Compiler<'a> {
             }
         }
 
+        let (file_definition, file_type) = canonical_resource_type(
+            hir,
+            &indices,
+            analysis.canonical_std_items.file,
+            "std.file.File",
+        )?;
         let io_error_definition = required(
             analysis.canonical_std_items.io_error,
             "embedded std.io.IoError is required for MIR lowering",
@@ -300,14 +308,24 @@ impl<'a> Compiler<'a> {
             "canonical IoErrorKind has no MIR type id",
             definition_span(hir, io_error_kind_definition),
         )?;
+        let (socket_definition, socket_type) = canonical_resource_type(
+            hir,
+            &indices,
+            analysis.canonical_std_items.socket,
+            "std.net.Socket",
+        )?;
 
         Ok(Self {
             hir,
             analysis,
             indices,
+            file_definition,
+            file_type,
             io_error_definition,
             io_error_type,
             io_error_kind_type,
+            socket_definition,
+            socket_type,
         })
     }
 
@@ -403,8 +421,8 @@ impl<'a> Compiler<'a> {
                 task_fault: Some(TASK_FAULT_TYPE),
                 task_outcome: Some(TASK_OUTCOME_TYPE),
                 duration: Some(DURATION_TYPE),
-                file: Some(FILE_TYPE),
-                socket: Some(SOCKET_TYPE),
+                file: Some(self.file_type),
+                socket: Some(self.socket_type),
                 bytes: Some(BYTES_TYPE),
                 path: Some(PATH_TYPE),
                 decode_text_error,
@@ -434,6 +452,21 @@ impl<'a> Compiler<'a> {
             let Some(id) = self.indices.types.get(&definition).copied() else {
                 continue;
             };
+            if definition == self.file_definition {
+                if id.0 as usize != types.len() {
+                    return Err(defect(
+                        "MIR type id allocation is not dense",
+                        definition_span(self.hir, definition),
+                    ));
+                }
+                types.push(opaque_record_type(
+                    id,
+                    "File",
+                    Type::Int,
+                    definition_span(self.hir, definition),
+                ));
+                continue;
+            }
             if definition == self.io_error_definition {
                 if id.0 as usize != types.len() {
                     return Err(defect(
@@ -444,6 +477,21 @@ impl<'a> Compiler<'a> {
                 types.push(io_error_type(
                     id,
                     self.io_error_kind_type,
+                    definition_span(self.hir, definition),
+                ));
+                continue;
+            }
+            if definition == self.socket_definition {
+                if id.0 as usize != types.len() {
+                    return Err(defect(
+                        "MIR type id allocation is not dense",
+                        definition_span(self.hir, definition),
+                    ));
+                }
+                types.push(opaque_record_type(
+                    id,
+                    "Socket",
+                    Type::Int,
                     definition_span(self.hir, definition),
                 ));
                 continue;
@@ -984,8 +1032,6 @@ impl<'a> Compiler<'a> {
                 }
                 BuiltinType::TaskFault => RequirementType::Nominal(TASK_FAULT_TYPE, Vec::new()),
                 BuiltinType::Duration => RequirementType::Nominal(DURATION_TYPE, Vec::new()),
-                BuiltinType::File => RequirementType::Nominal(FILE_TYPE, Vec::new()),
-                BuiltinType::Socket => RequirementType::Nominal(SOCKET_TYPE, Vec::new()),
                 BuiltinType::Json => RequirementType::Nominal(JSON_TYPE, Vec::new()),
                 BuiltinType::JsonError => RequirementType::Nominal(JSON_ERROR_TYPE, Vec::new()),
             }),
@@ -2187,15 +2233,6 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                             dispatch_type,
                         }
                     }
-                    SemaScopedDisposal::Builtin(BuiltinValue::FileClose) => {
-                        MirScopedDisposal::FileClose
-                    }
-                    SemaScopedDisposal::Builtin(BuiltinValue::SocketClose) => {
-                        MirScopedDisposal::SocketClose
-                    }
-                    SemaScopedDisposal::Builtin(_) => {
-                        return Err(defect("invalid intrinsic scoped disposal", span));
-                    }
                 };
                 output.push(Statement {
                     kind: StatementKind::Scoped {
@@ -3058,8 +3095,23 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                 });
             }
             SemaCallTarget::Builtin(builtin) => {
-                let receiver = resolution.receiver.and(receiver);
-                return self.lower_builtin_call(id, builtin, receiver, source_arguments);
+                let (receiver, arguments) = match (resolution.receiver, receiver) {
+                    (Some(_), Some(receiver)) => (Some(receiver), source_arguments),
+                    (Some(_), None) => {
+                        let Some((receiver, arguments)) = source_arguments.split_first() else {
+                            return Err(defect(
+                                "authenticated builtin receiver call has no source receiver",
+                                span,
+                            ));
+                        };
+                        (Some(*receiver), arguments)
+                    }
+                    // Static builtin members retain a syntactic qualifier in
+                    // HIR, but semantic analysis intentionally grants them no
+                    // runtime receiver.
+                    (None, None | Some(_)) => (None, source_arguments),
+                };
+                return self.lower_builtin_call(id, builtin, receiver, arguments);
             }
             SemaCallTarget::TaskIntrinsic(intrinsic) => {
                 if resolution.receiver.is_some() {
@@ -4140,8 +4192,6 @@ fn synthetic_types() -> Vec<TypeDef> {
         task_fault_type(span),
         task_outcome_type(span),
         opaque_record_type(DURATION_TYPE, "Duration", Type::Int, span),
-        opaque_record_type(FILE_TYPE, "File", Type::Int, span),
-        opaque_record_type(SOCKET_TYPE, "Socket", Type::Int, span),
         opaque_record_type(BYTES_TYPE, "Bytes", Type::Text, span),
         opaque_record_type(PATH_TYPE, "Path", Type::Text, span),
         TypeDef {
@@ -4241,6 +4291,45 @@ fn json_error_type(span: Span) -> TypeDef {
     }
 }
 
+fn canonical_resource_type(
+    hir: &HirProgram,
+    indices: &Indices,
+    definition: Option<DefId>,
+    qualified_name: &'static str,
+) -> LowerResult<(DefId, TypeId)> {
+    let definition = required(
+        definition,
+        format!("embedded {qualified_name} is required for MIR lowering"),
+        Span::default(),
+    )?;
+    let span = definition_span(hir, definition);
+    let source = &hir.definitions[definition];
+    let DefinitionKind::Record(record) = &source.kind else {
+        return Err(defect(
+            format!("canonical {qualified_name} must be an empty source record"),
+            span,
+        ));
+    };
+    if source.visibility != Visibility::Public
+        || !record.generic_params.is_empty()
+        || !record.fields.is_empty()
+        || record.invariant.is_some()
+    {
+        return Err(defect(
+            format!(
+                "canonical {qualified_name} must be a public empty non-generic record without an invariant"
+            ),
+            span,
+        ));
+    }
+    let ty = required(
+        indices.types.get(&definition).copied(),
+        format!("canonical {qualified_name} has no MIR type id"),
+        span,
+    )?;
+    Ok((definition, ty))
+}
+
 fn io_error_type(id: TypeId, kind: TypeId, span: Span) -> TypeDef {
     TypeDef {
         id,
@@ -4278,8 +4367,6 @@ fn lower_builtin_type(builtin: BuiltinType) -> Type {
         BuiltinType::ContractFault => Type::Nominal(CONTRACT_FAULT_TYPE, Vec::new()),
         BuiltinType::TaskFault => Type::Nominal(TASK_FAULT_TYPE, Vec::new()),
         BuiltinType::Duration => Type::Nominal(DURATION_TYPE, Vec::new()),
-        BuiltinType::File => Type::Nominal(FILE_TYPE, Vec::new()),
-        BuiltinType::Socket => Type::Nominal(SOCKET_TYPE, Vec::new()),
         BuiltinType::Json => Type::Nominal(JSON_TYPE, Vec::new()),
         BuiltinType::JsonError => Type::Nominal(JSON_ERROR_TYPE, Vec::new()),
     }

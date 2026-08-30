@@ -20,14 +20,20 @@ fn compile_with_std_resource(source: &str) -> CheckedProgram {
         include_str!("../../../library/std/resource/resource.loom"),
     );
     let io = parse_with_file(FileId(2), include_str!("../../../library/std/io/io.loom"));
+    let file = parse_with_file(FileId(3), "pub record File {}\n");
+    let net = parse_with_file(FileId(4), "pub record Socket {}\n");
     assert!(
         application.diagnostics().is_empty()
             && resource.diagnostics().is_empty()
-            && io.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} resource={:#?} io={:#?}",
+            && io.diagnostics().is_empty()
+            && file.diagnostics().is_empty()
+            && net.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} resource={:#?} io={:#?} file={:#?} net={:#?}",
         application.diagnostics(),
         resource.diagnostics(),
-        io.diagnostics()
+        io.diagnostics(),
+        file.diagnostics(),
+        net.diagnostics()
     );
 
     let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
@@ -50,6 +56,18 @@ fn compile_with_std_resource(source: &str) -> CheckedProgram {
             package: std_package.clone(),
             module: ModuleName::new("std.io"),
             syntax: io.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(3),
+            package: std_package.clone(),
+            module: ModuleName::new("std.file"),
+            syntax: file.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(4),
+            package: std_package.clone(),
+            module: ModuleName::new("std.net"),
+            syntax: net.ast(),
         },
     ]);
     lowered

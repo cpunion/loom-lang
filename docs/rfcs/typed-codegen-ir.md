@@ -341,9 +341,10 @@ a runtime cleanup stack. Registration happens at statement reachability, and a
 scoped initializer must complete before its disposer becomes active. Each
 lexical block expands its suffix newest-first on normal completion, return, and
 fault. A first fault remains primary; faults raised by cleanup are suppressed
-while every older cleanup still runs. Static-concept disposal uses a closed
-typed call with receiver writeback. File and Socket use the typed
-`resource_close` instruction.
+while every older cleanup still runs. Every disposal uses a closed selected
+source-witness call with receiver writeback. The canonical File and Socket
+witness bodies call private leaves that lower to the typed `resource_close`
+instruction.
 Each `AwaitTasks` terminator has explicit
 normal, fault, and cancellation targets that carry one identical exact live
 row; only normal receives leading child results. The lowerer expands the active suffix
@@ -588,9 +589,10 @@ nonempty frame is popped on all source exits. Root-map ABI-limit excess is
 `ProgramTooLarge`, not fallback. No universal root chain or executor
 participates in this path.
 
-Typed File and Socket cleanup calls
-`loom_typed_resource_close_v1(executor, kind, token_cell)` directly. The token
-cell is a fixed LLVM entry allocation, not a runtime cleanup node. The helper
+The authenticated private close leaves in the source File and Socket disposal
+witnesses call `loom_typed_resource_close_v1(executor, kind, token_cell)`
+directly. The token cell is a fixed LLVM entry allocation, not a runtime cleanup
+node. The helper
 accepts a live token only when the active Task owns its unique, kind-matching
 resource-ledger entry, closes that concrete RAII owner, and writes the
 invalid-token sentinel; an invalid or already-closed sentinel is rejected. It

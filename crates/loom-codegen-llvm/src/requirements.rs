@@ -385,43 +385,29 @@ impl RequirementScanner<'_> {
                     value, disposal, ..
                 } => {
                     self.scan_expr(value, output)?;
-                    match disposal {
-                        ScopedDisposal::StaticConcept {
-                            requirement,
-                            witness,
-                            ..
-                        } => {
-                            if let Some(witness) = concrete_witness(witness) {
-                                let method = self
-                                    .program
-                                    .witness(witness)
-                                    .and_then(|witness| witness.methods.get(requirement))
-                                    .copied()
-                                    .ok_or_else(|| {
-                                        CodegenError::new(
-                                            "InvalidWitnessTable",
-                                            format!(
-                                                "witness #{} has no requirement #{}",
-                                                witness.0, requirement.0
-                                            ),
-                                        )
-                                    })?;
-                                output.callees.insert(RequirementCallee::Universal(method));
-                            } else {
-                                add_dynamic_callees(
-                                    self.program,
-                                    self.reachable,
-                                    *requirement,
-                                    output,
-                                )?;
-                            }
-                        }
-                        ScopedDisposal::FileClose => output
-                            .requirements
-                            .include(builtin_requirements(Builtin::FileClose)?),
-                        ScopedDisposal::SocketClose => output
-                            .requirements
-                            .include(builtin_requirements(Builtin::SocketClose)?),
+                    let ScopedDisposal::StaticConcept {
+                        requirement,
+                        witness,
+                        ..
+                    } = disposal;
+                    if let Some(witness) = concrete_witness(witness) {
+                        let method = self
+                            .program
+                            .witness(witness)
+                            .and_then(|witness| witness.methods.get(requirement))
+                            .copied()
+                            .ok_or_else(|| {
+                                CodegenError::new(
+                                    "InvalidWitnessTable",
+                                    format!(
+                                        "witness #{} has no requirement #{}",
+                                        witness.0, requirement.0
+                                    ),
+                                )
+                            })?;
+                        output.callees.insert(RequirementCallee::Universal(method));
+                    } else {
+                        add_dynamic_callees(self.program, self.reachable, *requirement, output)?;
                     }
                 }
                 StatementKind::Assign { value, .. } | StatementKind::Evaluate(value) => {

@@ -8,16 +8,16 @@ use std::{
 use loom_codegen_ir::{
     AwaitMode, CheckedIntBinaryOp, Effects, InstanceKey, InstanceRole, InstructionKind,
     InvalidRootCode, IoTaskErrorMode, IoTaskOperation, LoweringErrorCode, LoweringOutcome,
-    ManagedSafepoint, ResourceLimitCode, SourceArtifactRequest, TargetLayout, TerminatorKind,
-    UnsupportedFeature, artifact_identity, dump_program, lower_typed_artifact, plan_managed_roots,
+    ManagedSafepoint, ResourceKind, ResourceLimitCode, SourceArtifactRequest, TargetLayout,
+    TerminatorKind, UnsupportedFeature, artifact_identity, dump_program, lower_typed_artifact,
+    plan_managed_roots,
 };
 use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId, Span};
 use loom_hir::{PackageSourceUnit, lower_package_files};
 use loom_lowering::lower_to_mir;
 use loom_mir::{
-    Block, CallPlan, Constant, ConstructionMode, Expr, ExprKind, FieldDef, Function, FunctionId,
-    LocalDecl, LocalId, PreludeIds, Program, ScopedDisposal, Statement, StatementKind, Type,
-    TypeDef, TypeDefKind, TypeId,
+    Block, CallPlan, Constant, Expr, ExprKind, Function, FunctionId, LocalDecl, LocalId, Program,
+    Statement, StatementKind, Type,
 };
 use loom_sema::analyze;
 use loom_syntax::parse_with_file;
@@ -39,18 +39,26 @@ fn compile_source_files(sources: &[&str]) -> loom_mir::CheckedProgram {
         })
         .collect::<Vec<_>>();
     let io_file = FileId(u32::try_from(sources.len()).expect("test source count fits FileId"));
+    let file_file = FileId(io_file.0 + 1);
+    let net_file = FileId(io_file.0 + 2);
     let io = parse_with_file(io_file, include_str!("../../../library/std/io/io.loom"));
+    let file = parse_with_file(file_file, "pub record File {}\n");
+    let net = parse_with_file(net_file, "pub record Socket {}\n");
     assert!(
         applications
             .iter()
             .all(|parsed| parsed.diagnostics().is_empty())
-            && io.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} io={:#?}",
+            && io.diagnostics().is_empty()
+            && file.diagnostics().is_empty()
+            && net.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} io={:#?} file={:#?} net={:#?}",
         applications
             .iter()
             .flat_map(loom_syntax::Parse::diagnostics)
             .collect::<Vec<_>>(),
-        io.diagnostics()
+        io.diagnostics(),
+        file.diagnostics(),
+        net.diagnostics()
     );
     let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::standalone();
@@ -64,12 +72,26 @@ fn compile_source_files(sources: &[&str]) -> loom_mir::CheckedProgram {
                 module: ModuleName::new("standalone"),
                 syntax: parsed.ast(),
             })
-            .chain(std::iter::once(PackageSourceUnit {
-                file: io_file,
-                package: std_package.clone(),
-                module: ModuleName::new("std.io"),
-                syntax: io.ast(),
-            })),
+            .chain([
+                PackageSourceUnit {
+                    file: io_file,
+                    package: std_package.clone(),
+                    module: ModuleName::new("std.io"),
+                    syntax: io.ast(),
+                },
+                PackageSourceUnit {
+                    file: file_file,
+                    package: std_package.clone(),
+                    module: ModuleName::new("std.file"),
+                    syntax: file.ast(),
+                },
+                PackageSourceUnit {
+                    file: net_file,
+                    package: std_package.clone(),
+                    module: ModuleName::new("std.net"),
+                    syntax: net.ast(),
+                },
+            ]),
     );
     lowered
         .program
@@ -112,6 +134,14 @@ fn compile_with_std_modules(
     let std_modules = std_modules
         .iter()
         .copied()
+        .chain(
+            (!std_modules.iter().any(|(name, _)| *name == "std.file"))
+                .then_some(("std.file", "pub record File {}\n")),
+        )
+        .chain(
+            (!std_modules.iter().any(|(name, _)| *name == "std.net"))
+                .then_some(("std.net", "pub record Socket {}\n")),
+        )
         .chain(std::iter::once((
             "std.io",
             include_str!("../../../library/std/io/io.loom"),
@@ -225,86 +255,23 @@ fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
 }
 
 fn compile_with_std_json(source: &str) -> loom_mir::CheckedProgram {
-    let application = parse_with_file(FileId(0), source);
-    let json = parse_with_file(
-        FileId(1),
-        include_str!("../../../library/std/json/json.loom"),
-    );
-    let float = parse_with_file(
-        FileId(2),
-        include_str!("../../../library/std/float/float.loom"),
-    );
-    let text = parse_with_file(
-        FileId(3),
-        include_str!("../../../library/std/text/text.loom"),
-    );
-    let io = parse_with_file(FileId(4), include_str!("../../../library/std/io/io.loom"));
-    assert!(
-        application.diagnostics().is_empty()
-            && json.diagnostics().is_empty()
-            && float.diagnostics().is_empty()
-            && text.diagnostics().is_empty()
-            && io.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} json={:#?} float={:#?} text={:#?} io={:#?}",
-        application.diagnostics(),
-        json.diagnostics(),
-        float.diagnostics(),
-        text.diagnostics(),
-        io.diagnostics()
-    );
-    let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
-    let root = PackageId::new("codegen-ir-test", "0");
-    let mut lowered = lower_package_files([
-        PackageSourceUnit {
-            file: FileId(0),
-            package: root.clone(),
-            module: ModuleName::new("codegen_ir_test"),
-            syntax: application.ast(),
-        },
-        PackageSourceUnit {
-            file: FileId(1),
-            package: std_package.clone(),
-            module: ModuleName::new("std.json"),
-            syntax: json.ast(),
-        },
-        PackageSourceUnit {
-            file: FileId(2),
-            package: std_package.clone(),
-            module: ModuleName::new("std.float"),
-            syntax: float.ast(),
-        },
-        PackageSourceUnit {
-            file: FileId(3),
-            package: std_package.clone(),
-            module: ModuleName::new("std.text"),
-            syntax: text.ast(),
-        },
-        PackageSourceUnit {
-            file: FileId(4),
-            package: std_package.clone(),
-            module: ModuleName::new("std.io"),
-            syntax: io.ast(),
-        },
-    ]);
-    lowered
-        .program
-        .register_package(std_package.clone(), [], false);
-    lowered
-        .program
-        .register_package(root, [(Name::new("std"), std_package)], true);
-    assert!(
-        lowered.diagnostics.is_empty(),
-        "HIR diagnostics: {:#?}",
-        lowered.diagnostics
-    );
-    let analysis = analyze(&lowered.program);
-    assert!(
-        analysis.diagnostics.is_empty(),
-        "semantic diagnostics: {:#?}",
-        analysis.diagnostics
-    );
-    lower_to_mir(&lowered.program, &analysis)
-        .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
+    compile_with_std_modules(
+        source,
+        &[
+            (
+                "std.json",
+                include_str!("../../../library/std/json/json.loom"),
+            ),
+            (
+                "std.float",
+                include_str!("../../../library/std/float/float.loom"),
+            ),
+            (
+                "std.text",
+                include_str!("../../../library/std/text/text.loom"),
+            ),
+        ],
+    )
 }
 
 fn lower_run(source: &str) -> LoweringOutcome {
@@ -458,6 +425,45 @@ pub async fn main() {
         !dump.contains("io.task_create.file_create.result"),
         "{dump}"
     );
+    let closes = artifact
+        .functions()
+        .iter()
+        .flat_map(|function| {
+            function
+                .instructions()
+                .iter()
+                .filter_map(move |instruction| match instruction.kind() {
+                    InstructionKind::ResourceClose { kind, .. } => {
+                        Some((function, *kind, instruction.results().len()))
+                    }
+                    _ => None,
+                })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(closes.len(), 2, "{dump}");
+    assert!(
+        closes
+            .iter()
+            .any(|(_, kind, _)| *kind == ResourceKind::File),
+        "{dump}"
+    );
+    assert!(
+        closes
+            .iter()
+            .any(|(_, kind, _)| *kind == ResourceKind::Socket),
+        "{dump}"
+    );
+    for (function, _, results) in closes {
+        assert_eq!(results, 2, "{}", function.name());
+        assert_eq!(
+            function.signature().inout_params(),
+            &[0],
+            "{}",
+            function.name()
+        );
+        assert!(function.effects().contains(Effects::NEEDS_EXECUTOR));
+        assert!(!function.effects().contains(Effects::MAY_FAULT));
+    }
 }
 
 #[test]
@@ -2258,124 +2264,6 @@ pub async fn main() {
             expected_sleep
         );
     }
-}
-
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the hand-built canonical File fixture keeps MIR identity and cleanup-edge evidence local"
-)]
-fn builtin_scoped_file_cleanup_rejects_a_synchronous_executor_root() {
-    let span = Span::default();
-    let file_id = TypeId(7);
-    let file = Type::Nominal(file_id, Vec::new());
-    let mut types = (0_u32..7)
-        .map(|id| TypeDef {
-            id: TypeId(id),
-            name: format!("Placeholder{id}"),
-            span,
-            type_parameters: 0,
-            kind: TypeDefKind::Record {
-                fields: Vec::new(),
-                invariant: None,
-            },
-        })
-        .collect::<Vec<_>>();
-    types.push(TypeDef {
-        id: file_id,
-        name: "File".into(),
-        span,
-        type_parameters: 0,
-        kind: TypeDefKind::Record {
-            fields: vec![FieldDef {
-                name: "raw".into(),
-                ty: Type::Int,
-                span,
-            }],
-            invariant: None,
-        },
-    });
-    let mut program = Program {
-        exports: BTreeMap::from([("main".into(), FunctionId(0))]),
-        types,
-        functions: vec![Function {
-            id: FunctionId(0),
-            name: "manual.main".into(),
-            span,
-            type_parameters: 0,
-            is_async: false,
-            suspension_points: Vec::new(),
-            params: Vec::new(),
-            witness_params: Vec::new(),
-            witness_prefix_count: 0,
-            locals: vec![LocalDecl {
-                id: LocalId(0),
-                name: "file".into(),
-                ty: file.clone(),
-                mutable: true,
-                span,
-            }],
-            return_ty: Type::Unit,
-            receiver: None,
-            body: Block {
-                statements: vec![Statement {
-                    kind: StatementKind::Scoped {
-                        local: LocalId(0),
-                        value: Expr::new(
-                            ExprKind::Record {
-                                ty: file_id,
-                                type_arguments: Vec::new(),
-                                fields: vec![Expr::new(
-                                    ExprKind::Constant(Constant::Int(-1)),
-                                    Type::Int,
-                                    span,
-                                )],
-                                construction: ConstructionMode::Plain,
-                            },
-                            file,
-                            span,
-                        ),
-                        disposal: ScopedDisposal::FileClose,
-                    },
-                    span,
-                }],
-                tail: Some(Box::new(Expr::new(
-                    ExprKind::Constant(Constant::Unit),
-                    Type::Unit,
-                    span,
-                ))),
-                span,
-            },
-            call_plan: CallPlan::default(),
-        }],
-        prelude: PreludeIds {
-            file: Some(file_id),
-            ..PreludeIds::default()
-        },
-        ..Program::default()
-    };
-    program
-        .renumber_expr_ids()
-        .expect("number resource fixture");
-    let program = program
-        .into_checked()
-        .expect("resource fixture is valid checked MIR");
-    let error = lower_typed_artifact(
-        &program,
-        &SourceArtifactRequest::Run {
-            entry: "main".into(),
-        },
-        TargetLayout::new(64).expect("test target"),
-    )
-    .expect_err("a synchronous ResourceClose root must not manufacture an executor");
-    assert_eq!(
-        error.code(),
-        LoweringErrorCode::InvalidRoot(InvalidRootCode::RootCapability)
-    );
-    assert!(
-        error.message().contains("cannot require an executor"),
-        "{error}"
-    );
 }
 
 #[test]

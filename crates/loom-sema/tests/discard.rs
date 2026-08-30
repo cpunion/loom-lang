@@ -1,7 +1,49 @@
-use loom_core::FileId;
-use loom_hir::{SourceUnit, lower_files};
+use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId};
+use loom_hir::{PackageSourceUnit, lower_package_files};
 use loom_sema::analyze;
 use loom_syntax::parse_with_file;
+
+fn analyze_source_with_resource(source: &str) -> Vec<loom_core::Diagnostic> {
+    let parsed = parse_with_file(FileId(0), source);
+    let resource = parse_with_file(
+        FileId(1),
+        include_str!("../../../library/std/resource/resource.loom"),
+    );
+    assert!(
+        parsed.diagnostics().is_empty() && resource.diagnostics().is_empty(),
+        "syntax diagnostics: source={:#?}, resource={:#?}",
+        parsed.diagnostics(),
+        resource.diagnostics()
+    );
+    let root_package = PackageId::new("discard-test", "0");
+    let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+    let mut lowered = lower_package_files([
+        PackageSourceUnit {
+            file: FileId(0),
+            package: root_package.clone(),
+            module: ModuleName::new("discard_test"),
+            syntax: parsed.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(1),
+            package: std_package.clone(),
+            module: ModuleName::new("std.resource"),
+            syntax: resource.ast(),
+        },
+    ]);
+    assert!(
+        lowered.diagnostics.is_empty(),
+        "HIR diagnostics: {:#?}",
+        lowered.diagnostics
+    );
+    lowered
+        .program
+        .register_package(std_package.clone(), [], false);
+    lowered
+        .program
+        .register_package(root_package, [(Name::new("std"), std_package)], true);
+    analyze(&lowered.program).diagnostics
+}
 
 fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
     let parsed = parse_with_file(FileId(0), source);
@@ -10,7 +52,7 @@ fn analyze_source(source: &str) -> Vec<loom_core::Diagnostic> {
         "syntax diagnostics: {:#?}",
         parsed.diagnostics()
     );
-    let lowered = lower_files([SourceUnit {
+    let lowered = loom_hir::lower_files([loom_hir::SourceUnit {
         file: FileId(0),
         syntax: parsed.ast(),
     }]);
@@ -98,13 +140,18 @@ fn bareValues() {
 
 #[test]
 fn must_scope_obligations_cannot_be_discarded_through_wrappers() {
-    let diagnostics = analyze_source(
+    let diagnostics = analyze_source_with_resource(
         r"
-fn direct(file File) {
-    discard file
+import std.resource.MustScope
+
+record Resource {}
+impl MustScope for Resource {}
+
+fn direct(resource Resource) {
+    discard resource
 }
 
-fn wrapped(value Result[Option[File], Text]) {
+fn wrapped(value Result[Option[Resource], Text]) {
     discard value
 }
 ",
@@ -174,14 +221,19 @@ fn ignore[T](value T) {
 
 #[test]
 fn bare_resource_and_task_statements_report_their_stronger_obligations() {
-    let diagnostics = analyze_source(
+    let diagnostics = analyze_source_with_resource(
         r"
+import std.resource.MustScope
+
+record Resource {}
+impl MustScope for Resource {}
+
 async fn work() Int {
     42
 }
 
-fn bare(file File) {
-    file
+fn bare(resource Resource) {
+    resource
     work()
     return
 }
@@ -197,28 +249,34 @@ fn bare(file File) {
 
 #[test]
 fn dyn_erasure_rejects_hidden_resource_task_and_unknown_obligations() {
-    let diagnostics = analyze_source(
+    let diagnostics = analyze_source_with_resource(
         r#"
+import std.resource.MustScope
+
 dyn concept Label {
     method label(self) Text
 }
 
 record Plain {}
 
+record Resource {}
+
+impl MustScope for Resource {}
+
 record TaskBox {
     task Task[Int]
 }
 
 record ResourceBox {
-    resource File
+    resource Resource
 }
 
 impl Label for Plain {
     method label(self) Text { "plain" }
 }
 
-impl Label for File {
-    method label(self) Text { "file" }
+impl Label for Resource {
+    method label(self) Text { "resource" }
 }
 
 impl Label for ResourceBox {
@@ -233,7 +291,7 @@ fn eraseTask(value Task[Int]) dyn Label {
     value
 }
 
-fn eraseFile(value File) dyn Label {
+fn eraseResource(value Resource) dyn Label {
     value
 }
 

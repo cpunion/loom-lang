@@ -6,28 +6,24 @@ use std::process::{Command, Output, Stdio};
 
 use loom_codegen_ir::{
     CheckedArtifact, Effects, InstanceId, InstanceRole, InstanceWitnessArgument, InstructionKind,
-    InvalidRootCode, LoweringErrorCode, LoweringOutcome, Repr, SourceArtifactRequest, TargetLayout,
-    UnsupportedFeature, dump_program, lower_typed_artifact,
+    LoweringOutcome, Repr, ResourceKind, SourceArtifactRequest, TargetLayout, UnsupportedFeature,
+    dump_program, lower_typed_artifact,
 };
 use loom_codegen_llvm::{
-    DebugSource, EmitOptions, NativeObjectOptions, NativePreparationErrorKind, NativeRouteKind,
-    NativeRoutePolicy, OptimizationProfile, emit_lcir_native_object, emit_prepared_native_object,
+    DebugSource, EmitOptions, NativeObjectOptions, NativeRouteKind, NativeRoutePolicy,
+    OptimizationProfile, emit_lcir_native_object, emit_prepared_native_object,
     prepare_native_object,
 };
-use loom_core::{
-    Span,
-    runtime_fault::{
-        INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE,
-        INVALID_SLEEP_DURATION_FAULT_CODE, INVALID_SLEEP_DURATION_FAULT_MESSAGE,
-        SLEEP_DURATION_OVERFLOW_FAULT_CODE, SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE,
-        TASK_ANY_FAILED_FAULT_CODE, TASK_ANY_FAILED_FAULT_MESSAGE,
-    },
+use loom_core::runtime_fault::{
+    INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE, INVALID_SLEEP_DURATION_FAULT_CODE,
+    INVALID_SLEEP_DURATION_FAULT_MESSAGE, SLEEP_DURATION_OVERFLOW_FAULT_CODE,
+    SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE, TASK_ANY_FAILED_FAULT_CODE,
+    TASK_ANY_FAILED_FAULT_MESSAGE,
 };
 use loom_interpreter::{ExecutionFailure, Interpreter, TestStatus, Value};
 use loom_mir::{
-    Block, CallPlan, CheckedProgram, Constant as MirConstant, ConstructionMode, ContractExprKind,
-    Expr, ExprKind, FieldDef, Function, FunctionId, LocalDecl, LocalId, Pattern, PreludeIds,
-    Program, ScopedDisposal, Statement, StatementKind, Type, TypeDef, TypeDefKind, TypeId, UnaryOp,
+    CheckedProgram, Constant as MirConstant, ContractExprKind, ExprKind, Function, Pattern,
+    StatementKind, Type, UnaryOp,
 };
 use loom_runtime_abi::{
     FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX, FORMAT_FLOAT_TYPED_SYMBOL,
@@ -935,6 +931,10 @@ fn emitted_lcir_function<'ir>(ir: &'ir str, artifact: &CheckedArtifact, suffix: 
         .iter()
         .find(|function| function.name().ends_with(suffix))
         .unwrap_or_else(|| panic!("LCIR function ending in `{suffix}`"));
+    emitted_lcir_instance(ir, function)
+}
+
+fn emitted_lcir_instance<'ir>(ir: &'ir str, function: &loom_codegen_ir::Function) -> &'ir str {
     let symbol = if function.coroutine().is_some() {
         format!("@loom.lcir.coroutine.resume.{}(", function.id().raw())
     } else {
@@ -974,10 +974,25 @@ fn emitted_checked_mir_function<'ir>(
 fn assert_typed_resource_close_guard(
     ir: &str,
     artifact: &CheckedArtifact,
-    suffix: &str,
+    kind: ResourceKind,
     resource_kind: u32,
 ) {
-    let function = emitted_lcir_function(ir, artifact, suffix);
+    let mut candidates = artifact.functions().iter().filter(|function| {
+        function.instructions().iter().any(|instruction| {
+            matches!(
+                instruction.kind(),
+                InstructionKind::ResourceClose { kind: actual, .. } if *actual == kind
+            )
+        })
+    });
+    let source = candidates
+        .next()
+        .unwrap_or_else(|| panic!("missing {kind:?} ResourceClose function"));
+    assert!(
+        candidates.next().is_none(),
+        "multiple {kind:?} ResourceClose functions"
+    );
+    let function = emitted_lcir_instance(ir, source);
     for required in [
         "resource.close.status.ok = icmp eq i32",
         ", 0",
@@ -1078,127 +1093,6 @@ pub fn main() {
         *value = replacement;
     }
     CheckedProgram::new(program).expect("manually edited IEEE-pattern MIR must validate")
-}
-
-fn builtin_resource_cleanup_parts(
-    file: bool,
-) -> (TypeId, &'static str, ScopedDisposal, PreludeIds) {
-    let resource = TypeId(if file { 8 } else { 9 });
-    if file {
-        (
-            resource,
-            "File",
-            ScopedDisposal::FileClose,
-            PreludeIds {
-                file: Some(resource),
-                ..PreludeIds::default()
-            },
-        )
-    } else {
-        (
-            resource,
-            "Socket",
-            ScopedDisposal::SocketClose,
-            PreludeIds {
-                socket: Some(resource),
-                ..PreludeIds::default()
-            },
-        )
-    }
-}
-
-fn checked_builtin_resource_cleanup_fixture(file: bool) -> CheckedProgram {
-    let span = Span::default();
-    let (resource_id, resource_name, disposal, prelude) = builtin_resource_cleanup_parts(file);
-    let resource = Type::Nominal(resource_id, Vec::new());
-    let mut types = (0_u32..resource_id.0)
-        .map(|id| TypeDef {
-            id: TypeId(id),
-            name: format!("Placeholder{id}"),
-            span,
-            type_parameters: 0,
-            kind: TypeDefKind::Record {
-                fields: Vec::new(),
-                invariant: None,
-            },
-        })
-        .collect::<Vec<_>>();
-    types.push(TypeDef {
-        id: resource_id,
-        name: resource_name.into(),
-        span,
-        type_parameters: 0,
-        kind: TypeDefKind::Record {
-            fields: vec![FieldDef {
-                name: "raw".into(),
-                ty: Type::Int,
-                span,
-            }],
-            invariant: None,
-        },
-    });
-    let mut program = Program {
-        exports: BTreeMap::from([("main".into(), FunctionId(0))]),
-        types,
-        functions: vec![Function {
-            id: FunctionId(0),
-            name: "manual.main".into(),
-            span,
-            type_parameters: 0,
-            is_async: false,
-            suspension_points: Vec::new(),
-            params: Vec::new(),
-            witness_params: Vec::new(),
-            witness_prefix_count: 0,
-            locals: vec![LocalDecl {
-                id: LocalId(0),
-                name: "resource".into(),
-                ty: resource.clone(),
-                mutable: true,
-                span,
-            }],
-            return_ty: Type::Unit,
-            receiver: None,
-            body: Block {
-                statements: vec![Statement {
-                    kind: StatementKind::Scoped {
-                        local: LocalId(0),
-                        value: Expr::new(
-                            ExprKind::Record {
-                                ty: resource_id,
-                                type_arguments: Vec::new(),
-                                fields: vec![Expr::new(
-                                    ExprKind::Constant(MirConstant::Int(-1)),
-                                    Type::Int,
-                                    span,
-                                )],
-                                construction: ConstructionMode::Plain,
-                            },
-                            resource,
-                            span,
-                        ),
-                        disposal,
-                    },
-                    span,
-                }],
-                tail: Some(Box::new(Expr::new(
-                    ExprKind::Constant(MirConstant::Unit),
-                    Type::Unit,
-                    span,
-                ))),
-                span,
-            },
-            call_plan: CallPlan::default(),
-        }],
-        prelude,
-        ..Program::default()
-    };
-    program
-        .renumber_expr_ids()
-        .expect("number resource fixture");
-    program
-        .into_checked()
-        .expect("canonical built-in cleanup fixture must validate")
 }
 
 fn assert_typed_lcir_surface(ir: &str) {
@@ -4095,7 +3989,7 @@ pub async fn main() {
     assert!(directory.path().join("scoped-close.txt").is_file());
 
     let ir = std::fs::read_to_string(ir_path).expect("read async scoped-close LLVM IR");
-    assert_typed_resource_close_guard(&ir, &artifact, "main", 1);
+    assert_typed_resource_close_guard(&ir, &artifact, ResourceKind::File, 1);
     assert_typed_lcir_surface(&ir);
 }
 
@@ -4166,9 +4060,8 @@ fn typed_io_tasks_use_direct_result_frames_and_real_scheduler_io() {
             "checked-MIR backend token `{forbidden}` remained:\n{ir}"
         );
     }
-    for (function, kind) in [("round_trip", 1), ("missingMain", 1), ("socketMain", 2)] {
-        assert_typed_resource_close_guard(&ir, &artifact, function, kind);
-    }
+    assert_typed_resource_close_guard(&ir, &artifact, ResourceKind::File, 1);
+    assert_typed_resource_close_guard(&ir, &artifact, ResourceKind::Socket, 2);
     assert!(
         ir.lines()
             .filter(|line| line.contains("call i32 @loom_typed_resource_close_v1"))
@@ -7214,37 +7107,6 @@ pub fn initializerFaultMain() {
         }
         assert_fallible_surface(&lcir.ir);
         assert_no_indirect_calls(&lcir.ir);
-    }
-}
-
-#[test]
-fn synchronous_builtin_scoped_cleanup_is_an_invalid_executor_root() {
-    for file in [true, false] {
-        let program = checked_builtin_resource_cleanup_fixture(file);
-        assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
-        let request = SourceArtifactRequest::Run {
-            entry: "main".into(),
-        };
-        let error = lower_typed_artifact(
-            &program,
-            &request,
-            TargetLayout::new(64).expect("test target"),
-        )
-        .expect_err("a synchronous ResourceClose root must not manufacture an executor");
-        assert_eq!(
-            error.code(),
-            LoweringErrorCode::InvalidRoot(InvalidRootCode::RootCapability)
-        );
-
-        for policy in [NativeRoutePolicy::Automatic, NativeRoutePolicy::LcirOnly] {
-            let error = prepare_native_object(&program, EmitOptions::run("main"), policy)
-                .err()
-                .unwrap_or_else(|| {
-                    panic!("invalid executor root must never select a native fallback")
-                });
-            assert_eq!(error.kind(), NativePreparationErrorKind::InvalidRoot);
-            assert_eq!(error.code(), "NativePreparationRootCapability");
-        }
     }
 }
 

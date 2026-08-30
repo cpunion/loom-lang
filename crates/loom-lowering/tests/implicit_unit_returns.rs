@@ -8,13 +8,22 @@ use loom_syntax::parse_with_file;
 fn compile_and_validate(source: &str) -> loom_mir::CheckedProgram {
     let application_file = FileId(0);
     let io_file = FileId(1);
+    let file_file = FileId(2);
+    let socket_file = FileId(3);
     let parsed = parse_with_file(application_file, source);
     let io = parse_with_file(io_file, include_str!("../../../library/std/io/io.loom"));
+    let file = parse_with_file(file_file, "pub record File {}\n");
+    let socket = parse_with_file(socket_file, "pub record Socket {}\n");
     assert!(
-        parsed.diagnostics().is_empty() && io.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} io={:#?}",
+        parsed.diagnostics().is_empty()
+            && io.diagnostics().is_empty()
+            && file.diagnostics().is_empty()
+            && socket.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} io={:#?} file={:#?} socket={:#?}",
         parsed.diagnostics(),
-        io.diagnostics()
+        io.diagnostics(),
+        file.diagnostics(),
+        socket.diagnostics()
     );
     let root = PackageId::new("implicit-unit-test", "0");
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
@@ -30,6 +39,18 @@ fn compile_and_validate(source: &str) -> loom_mir::CheckedProgram {
             package: std.clone(),
             module: ModuleName::new("std.io"),
             syntax: io.ast(),
+        },
+        PackageSourceUnit {
+            file: file_file,
+            package: std.clone(),
+            module: ModuleName::new("std.file"),
+            syntax: file.ast(),
+        },
+        PackageSourceUnit {
+            file: socket_file,
+            package: std.clone(),
+            module: ModuleName::new("std.net"),
+            syntax: socket.ast(),
         },
     ]);
     lowered.program.register_package(std.clone(), [], false);

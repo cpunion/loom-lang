@@ -24,12 +24,22 @@ pub(crate) enum CompilerStdPrimitive {
     FileCreate,
     FileTryOpenRead,
     FileTryCreate,
+    FileReadText,
+    FileWriteText,
+    FileTryReadText,
+    FileTryWriteText,
+    FileClose,
     IoErrorKind,
     IoErrorMessage,
     IoWriteStdout,
     LogWrite,
     SocketConnect,
     SocketTryConnect,
+    SocketReadText,
+    SocketWriteText,
+    SocketTryReadText,
+    SocketTryWriteText,
+    SocketClose,
     ProcessArgumentCount,
     ProcessArgumentAt,
     ProcessEnvironment,
@@ -48,6 +58,11 @@ impl CompilerStdPrimitive {
             Self::FileCreate => "__create",
             Self::FileTryOpenRead => "__try_open_read",
             Self::FileTryCreate => "__try_create",
+            Self::FileReadText | Self::SocketReadText => "__read_text",
+            Self::FileWriteText | Self::SocketWriteText => "__write_text",
+            Self::FileTryReadText | Self::SocketTryReadText => "__try_read_text",
+            Self::FileTryWriteText | Self::SocketTryWriteText => "__try_write_text",
+            Self::FileClose | Self::SocketClose => "__close",
             Self::IoErrorKind => "__error_kind",
             Self::IoErrorMessage => "__error_message",
             Self::IoWriteStdout => "__write_stdout",
@@ -96,12 +111,22 @@ pub(crate) fn resolve_import(
         (FILE_MODULE, "file", "__create") => Some(CompilerStdPrimitive::FileCreate),
         (FILE_MODULE, "file", "__try_open_read") => Some(CompilerStdPrimitive::FileTryOpenRead),
         (FILE_MODULE, "file", "__try_create") => Some(CompilerStdPrimitive::FileTryCreate),
+        (FILE_MODULE, "file", "__read_text") => Some(CompilerStdPrimitive::FileReadText),
+        (FILE_MODULE, "file", "__write_text") => Some(CompilerStdPrimitive::FileWriteText),
+        (FILE_MODULE, "file", "__try_read_text") => Some(CompilerStdPrimitive::FileTryReadText),
+        (FILE_MODULE, "file", "__try_write_text") => Some(CompilerStdPrimitive::FileTryWriteText),
+        (FILE_MODULE, "file", "__close") => Some(CompilerStdPrimitive::FileClose),
         (IO_MODULE, "io", "__error_kind") => Some(CompilerStdPrimitive::IoErrorKind),
         (IO_MODULE, "io", "__error_message") => Some(CompilerStdPrimitive::IoErrorMessage),
         (IO_MODULE, "io", "__write_stdout") => Some(CompilerStdPrimitive::IoWriteStdout),
         (LOG_MODULE, "log", "__write") => Some(CompilerStdPrimitive::LogWrite),
         (NET_MODULE, "net", "__connect") => Some(CompilerStdPrimitive::SocketConnect),
         (NET_MODULE, "net", "__try_connect") => Some(CompilerStdPrimitive::SocketTryConnect),
+        (NET_MODULE, "net", "__read_text") => Some(CompilerStdPrimitive::SocketReadText),
+        (NET_MODULE, "net", "__write_text") => Some(CompilerStdPrimitive::SocketWriteText),
+        (NET_MODULE, "net", "__try_read_text") => Some(CompilerStdPrimitive::SocketTryReadText),
+        (NET_MODULE, "net", "__try_write_text") => Some(CompilerStdPrimitive::SocketTryWriteText),
+        (NET_MODULE, "net", "__close") => Some(CompilerStdPrimitive::SocketClose),
         (PROCESS_MODULE, "process", "__argument_count") => {
             Some(CompilerStdPrimitive::ProcessArgumentCount)
         }
@@ -258,6 +283,18 @@ mod tests {
             ),
             Some(CompilerStdPrimitive::FileTryCreate)
         );
+        for (name, primitive) in [
+            ("__read_text", CompilerStdPrimitive::FileReadText),
+            ("__write_text", CompilerStdPrimitive::FileWriteText),
+            ("__try_read_text", CompilerStdPrimitive::FileTryReadText),
+            ("__try_write_text", CompilerStdPrimitive::FileTryWriteText),
+            ("__close", CompilerStdPrimitive::FileClose),
+        ] {
+            assert_eq!(
+                resolve_import(&program, file_owner, &path(&["std", "file", name])),
+                Some(primitive)
+            );
+        }
         assert_eq!(
             resolve_import(&program, log_owner, &path(&["std", "log", "__write"]),),
             Some(CompilerStdPrimitive::LogWrite)
@@ -270,6 +307,18 @@ mod tests {
             resolve_import(&program, net_owner, &path(&["std", "net", "__try_connect"]),),
             Some(CompilerStdPrimitive::SocketTryConnect)
         );
+        for (name, primitive) in [
+            ("__read_text", CompilerStdPrimitive::SocketReadText),
+            ("__write_text", CompilerStdPrimitive::SocketWriteText),
+            ("__try_read_text", CompilerStdPrimitive::SocketTryReadText),
+            ("__try_write_text", CompilerStdPrimitive::SocketTryWriteText),
+            ("__close", CompilerStdPrimitive::SocketClose),
+        ] {
+            assert_eq!(
+                resolve_import(&program, net_owner, &path(&["std", "net", name])),
+                Some(primitive)
+            );
+        }
         assert_eq!(
             resolve_import(&program, owner, &path(&["std", "process", "__environment"]),),
             Some(CompilerStdPrimitive::ProcessEnvironment)
@@ -308,10 +357,14 @@ mod tests {
             (file_owner, path(&["std.file", "__open_read"])),
             (file_owner, path(&["std", "file", "open_read"])),
             (file_owner, path(&["std", "file", "__open_read", "extra"])),
+            (owner, path(&["std", "file", "__close"])),
+            (file_owner, path(&["std", "net", "__close"])),
             (file_owner, path(&["std", "net", "__connect"])),
             (net_owner, path(&["std.net", "__connect"])),
             (net_owner, path(&["std", "net", "connect"])),
             (net_owner, path(&["std", "net", "__connect", "extra"])),
+            (owner, path(&["std", "net", "__read_text"])),
+            (net_owner, path(&["std", "file", "__read_text"])),
             (net_owner, path(&["std", "file", "__open_read"])),
             (float_owner, path(&["std", "float", "from_int"])),
             (float_owner, path(&["std", "float", "parse_float"])),

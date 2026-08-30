@@ -5723,9 +5723,7 @@ impl<'a> Validator<'a> {
                         Some("consume a terminal Task outcome")
                     }
                     InstructionKind::DirectCall { callee, .. }
-                        if self
-                            .exact_effect(*callee)
-                            .is_some_and(|effects| effects.contains(Effects::NEEDS_EXECUTOR)) =>
+                        if self.cancellation_call_changes_scheduler_topology(*callee) =>
                     {
                         Some("call an executor-dependent function")
                     }
@@ -5772,9 +5770,7 @@ impl<'a> Validator<'a> {
             }
             TerminatorKind::Invoke { callee, .. }
                 if state.contains(CancellationStateSet::ACTIVE)
-                    && self
-                        .exact_effect(*callee)
-                        .is_some_and(|effects| effects.contains(Effects::NEEDS_EXECUTOR)) =>
+                    && self.cancellation_call_changes_scheduler_topology(*callee) =>
             {
                 self.error(
                     ValidationCode::InvalidCoroutinePlan,
@@ -5784,6 +5780,81 @@ impl<'a> Validator<'a> {
             }
             _ => {}
         }
+    }
+
+    fn cancellation_call_changes_scheduler_topology(&self, function: InstanceId) -> bool {
+        match self.exact_effect(function) {
+            None => true,
+            Some(effects) => {
+                effects.contains(Effects::NEEDS_EXECUTOR)
+                    && !self.executor_dependencies_are_resource_close_only(function)
+            }
+        }
+    }
+
+    /// Resource release needs executor access without changing its Task graph.
+    /// Walk the complete synchronous call closure so a wrapper cannot hide a
+    /// Task operation. Visiting each instance once handles recursive SCCs while
+    /// still inspecting every member; unresolved callees remain conservatively
+    /// unsafe.
+    fn executor_dependencies_are_resource_close_only(&self, root: InstanceId) -> bool {
+        let Some(root) = canonical_function_index(self.program, root) else {
+            return false;
+        };
+        let mut pending = vec![root];
+        let mut visited = vec![false; self.program.functions.len()];
+        while let Some(index) = pending.pop() {
+            let Some(was_visited) = visited.get_mut(index) else {
+                return false;
+            };
+            if *was_visited {
+                continue;
+            }
+            *was_visited = true;
+
+            let Some(function) = self.program.functions.get(index) else {
+                return false;
+            };
+            if function.entry.is_none() || function.coroutine().is_some() {
+                return false;
+            }
+            for block in &function.blocks {
+                for instruction_id in block.instructions() {
+                    let Some(instruction) = function.instruction(*instruction_id) else {
+                        return false;
+                    };
+                    if instruction_direct_effects(instruction.kind())
+                        .contains(Effects::NEEDS_EXECUTOR)
+                        && !matches!(instruction.kind(), InstructionKind::ResourceClose { .. })
+                    {
+                        return false;
+                    }
+                    if let InstructionKind::DirectCall { callee, .. } = instruction.kind() {
+                        let Some(callee) = canonical_function_index(self.program, *callee) else {
+                            return false;
+                        };
+                        pending.push(callee);
+                    }
+                }
+
+                let Some(terminator) = block.terminator() else {
+                    return false;
+                };
+                match terminator.kind() {
+                    TerminatorKind::TaskSleep { .. } | TerminatorKind::AwaitTasks { .. } => {
+                        return false;
+                    }
+                    TerminatorKind::Invoke { callee, .. } => {
+                        let Some(callee) = canonical_function_index(self.program, *callee) else {
+                            return false;
+                        };
+                        pending.push(callee);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        true
     }
 
     fn exact_effect(&self, function: InstanceId) -> Option<Effects> {

@@ -1,7 +1,48 @@
 import std.file.__create
+import std.file.__close
 import std.file.__open_read
+import std.file.__read_text
 import std.file.__try_create
 import std.file.__try_open_read
+import std.file.__try_read_text
+import std.file.__try_write_text
+import std.file.__write_text
+import std.resource.Dispose
+import std.resource.MustScope
+
+/// An open file capability whose lifetime is bound to a lexical `scoped` binding.
+/// Its runtime representation is protected by the compiler.
+pub record File {}
+
+impl File {
+    /// Reads text from this file asynchronously.
+    pub method read_text(self) Task[Text] {
+        __read_text(self)
+    }
+
+    /// Writes text to this file asynchronously.
+    pub method write_text(self, text Text) Task[Unit] {
+        __write_text(self, text)
+    }
+
+    /// Reads text and reports expected host rejection as IoError.
+    pub method try_read_text(self) Task[Result[Text, IoError]] {
+        __try_read_text(self)
+    }
+
+    /// Writes text and reports expected host rejection as IoError.
+    pub method try_write_text(self, text Text) Task[Result[Unit, IoError]] {
+        __try_write_text(self, text)
+    }
+}
+
+impl Dispose for File {
+    method dispose(mut self) {
+        __close(self)
+    }
+}
+
+impl MustScope for File {}
 
 /// Opens an existing file for asynchronous text reads.
 pub fn open_read(path Text) Task[File] {

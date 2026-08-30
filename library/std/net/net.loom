@@ -1,5 +1,46 @@
+import std.net.__close
 import std.net.__connect
+import std.net.__read_text
 import std.net.__try_connect
+import std.net.__try_read_text
+import std.net.__try_write_text
+import std.net.__write_text
+import std.resource.Dispose
+import std.resource.MustScope
+
+/// An open TCP socket capability whose lifetime is bound to a lexical `scoped` binding.
+/// Its runtime representation is protected by the compiler.
+pub record Socket {}
+
+impl Socket {
+    /// Reads text from this socket asynchronously.
+    pub method read_text(self) Task[Text] {
+        __read_text(self)
+    }
+
+    /// Writes text to this socket asynchronously.
+    pub method write_text(self, text Text) Task[Unit] {
+        __write_text(self, text)
+    }
+
+    /// Reads text and reports expected host rejection as IoError.
+    pub method try_read_text(self) Task[Result[Text, IoError]] {
+        __try_read_text(self)
+    }
+
+    /// Writes text and reports expected host rejection as IoError.
+    pub method try_write_text(self, text Text) Task[Result[Unit, IoError]] {
+        __try_write_text(self, text)
+    }
+}
+
+impl Dispose for Socket {
+    method dispose(mut self) {
+        __close(self)
+    }
+}
+
+impl MustScope for Socket {}
 
 /// Connects a TCP socket and faults its Task when the host rejects the request.
 pub fn connect(host Text, port Int) Task[Socket] {

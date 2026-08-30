@@ -521,7 +521,8 @@ success it writes the exact target-native value into the frame. On an ordinary
 host error, Result mode constructs the canonical direct `Err(IoError)`, while
 fault mode records the operation-specific Task fault and returns the faulted
 step. Cancellation uses `loom_typed_io_cancel_v1`; lexical File/Socket disposal
-uses `loom_typed_resource_close_v1`.
+calls the selected source witness, whose private leaf uses
+`loom_typed_resource_close_v1`.
 
 The runtime wire remains `typed-io-v1` plus `typed-resource-v1`. It transports
 no source layout, universal value, or nominal type ID. The former
@@ -656,16 +657,17 @@ cancellation remains primary, suppresses the cleanup fault, and continues older
 actions. The emitter therefore needs neither dynamic cleanup registration nor a
 second resource representation for suspended scopes.
 
-Static-concept disposal is an ordinary monomorphic direct call or fallible
-invoke with functional receiver writeback. Canonical File and Socket disposal
-uses `loom_typed_resource_close_v1(executor, kind, token_cell)`. The token cell
-is allocated once in the LLVM entry block for each syntactic close, so a
-cleanup edge executed by a loop cannot grow the stack. The helper resolves the
-capability against the active Task's unique runtime owner, closes it, writes the
+Scoped disposal is an ordinary monomorphic source-witness call or fallible
+invoke with functional receiver writeback. Canonical File and Socket witness
+bodies call their authenticated private close leaves, which emit
+`loom_typed_resource_close_v1(executor, kind, token_cell)`. The token cell is
+allocated once in the LLVM entry block for each leaf call, so a cleanup edge
+executed by a loop cannot grow the stack. The helper resolves the capability
+against the active Task's unique runtime owner, closes it, writes the
 invalid-token sentinel, and does not schedule, enqueue, suspend, or drive an
 executor. An invalid or already-closed sentinel is rejected. The instruction
-rebuilds the exact closed resource value before the next cleanup action. There is no
-universal `loom.Value`, indirect witness call, source close fault, or
+rebuilds the exact closed resource value before the next cleanup action. There
+is no universal `loom.Value`, indirect witness call, source close fault, or
 synchronous executor route.
 
 Emission follows the validator's exact cataloged canonical `File`/`Socket` kind

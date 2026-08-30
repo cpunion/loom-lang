@@ -69,9 +69,12 @@ The binding is stable and cannot be reassigned. In the current language,
 call an ordinary `mut self` method through it. The compiler can still invoke
 the statically selected disposal operation exactly once on scope exit.
 
-Built-in `File` and `Socket` values have compiler-known close operations. A
-custom resource imports the canonical concepts from the compiler-distributed
-`std.resource` source package:
+The standard `File` and `Socket` records implement the same source `Dispose`
+and `MustScope` concepts as other resources. Their exact standard-library
+identities receive compiler-private capability storage, and lexical cleanup
+calls their ordinary source `Dispose.dispose` witnesses. A custom resource
+imports the canonical concepts from the compiler-distributed `std.resource`
+source package:
 
 ```loom
 import std.resource.Dispose
@@ -150,7 +153,6 @@ async fn round_trip(path Text) Result[Text, IoError] {
     {
         scoped output = try_create(path).await?
         output.try_write_text("typed I/O").await?
-        Unit
     }
     scoped input = try_open_read(path).await?
     input.try_read_text().await
@@ -165,16 +167,16 @@ a `Socket`. `try_read_text` and `try_write_text` return tasks carrying
 takes a snapshot of the required host handle when the method is called. That
 task can then be structurally awaited after the original resource block exits,
 without capturing the Loom scoped value or allowing handle reuse to retarget
-the operation. This rule is specific to the built-in I/O boundary and does not
+the operation. This rule is specific to the typed I/O boundary and does not
 enable arbitrary scoped-resource capture.
 
 When an acquisition task completes with a File or Socket, the runtime moves
 that handle from the child to its owner Task, which may itself be the root
 Task, before the child is retired. Faulted, cancelled, losing, and unconsumed
 tasks do not transfer handles; terminal cleanup or typed result disposal closes
-their remaining built-in handles before retired-task memory reclamation. Source
-code sees no ownership token: the delivered value still must enter `scoped`
-immediately, as in the examples above.
+their remaining typed resource handles before retired-task memory reclamation.
+Source code sees no ownership token: the delivered value still must enter
+`scoped` immediately, as in the examples above.
 
 ## Faults during cleanup
 

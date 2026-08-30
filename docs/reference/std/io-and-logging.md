@@ -66,9 +66,9 @@ Path-valued variants use the same stored lexical spelling.
 These ten public operations are ordinary Loom source functions. The Path
 forms call the corresponding Text form through a normal source definition;
 the four Text file operations and two socket operations alone call
-compiler-private typed primitives authorized only for their exact owning
-standard-library module. Unused wrappers and primitives are removed by normal
-call-graph reachability.
+compiler-private typed primitives authorized only for their exact owning source
+functions. Unused wrappers and primitives are removed by normal call-graph
+reachability.
 
 The usual recoverable form is:
 
@@ -98,14 +98,20 @@ The non-`try_` methods turn host rejection into task-local RuntimeFault values,
 such as `FileReadFault` or `FileWriteFault`. The `try_` methods return
 `Err(IoError)` for the corresponding expected failure.
 
+`File` is a protected empty record declared in `std.file`; these four methods
+and its `Dispose`/`MustScope` conformances are ordinary source definitions. Its
+exact canonical identity alone receives hidden capability-token storage, and
+each method alone may call its matching compiler-private typed I/O leaf.
+
 File cleanup is lexical. A manual `file.close()` call on the required scoped
 receiver is rejected as `ManualDisposeOfScopedValue`; there is no valid
 double-close or function-exit-only cleanup pattern.
-The lexical destructor performs a final RAII close. It does not expose or retry
-the host close syscall's completion status, because a reported error can occur
-after the numeric handle has already been released. The current Core slice does
-not promise durable storage; a future durability guarantee requires an explicit
-flush/sync API rather than destructor status.
+The source `Dispose.dispose` implementation invokes an authenticated private
+close leaf, which lowers to typed LCIR `ResourceClose`. It does not expose or
+retry the host close syscall's completion status, because a reported error can
+occur after the numeric handle has already been released. The current Core
+slice does not promise durable storage; a future durability guarantee requires
+an explicit flush/sync API rather than destructor status.
 
 ## TCP sockets
 
@@ -138,10 +144,15 @@ socket.try_write_text(Text) Task[Result[Unit, IoError]]
 peer reaches end of stream and then validates the complete response as UTF-8.
 Recoverable invalid UTF-8 maps to `InvalidInput`.
 
+`Socket` is a protected empty record declared in `std.net`; these four methods
+and its `Dispose`/`MustScope` conformances are ordinary source definitions. Its
+exact canonical identity receives hidden capability-token storage, and only
+the matching wrapper or disposal method may call each private leaf.
+
 Socket methods create structured child tasks and preserve cancellation and
 cleanup behavior. Manual `socket.close()` is rejected for the same reason as
-File close. Socket destruction follows the same final, non-retryable RAII close
-rule.
+File close. Socket disposal follows the same final, non-retryable close rule
+through the selected source witness.
 
 ## `IoError`
 

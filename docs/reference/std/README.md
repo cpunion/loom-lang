@@ -30,8 +30,10 @@ their public errors; the complete `std.float` public API and conversion error;
 `std.text.DecodeTextError`; `std.path.PathError`; `std.io.IoError`,
 `IoErrorKind`, their accessors, `write`, and `write_line`; the complete public
 `std.log` API, including `LogLevel` and `write`; all public `std.file`
-open/create and `std.net` connect wrappers; and the public `Dispose`,
-`MustScope`, and `NoSuspend` declarations in `std.resource`.
+open/create APIs, `File`, its I/O methods and resource conformances; all public
+`std.net` connect APIs, `Socket`, its I/O methods and resource conformances; and
+the public `Dispose`, `MustScope`, and `NoSuspend` declarations in
+`std.resource`.
 The public logging graph is ordinary Loom source over one compiler-private
 typed output primitive. Resource declarations are source-backed, but
 their fixed shapes and irreducible static rules remain part of the language

@@ -44,8 +44,6 @@ pub enum BuiltinType {
     ContractFault,
     TaskFault,
     Duration,
-    File,
-    Socket,
     Json,
     JsonError,
 }

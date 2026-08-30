@@ -2349,6 +2349,57 @@ fn opaque_resource_prelude_shapes_are_checked() {
     validate_program(&program).expect("canonical opaque resource shape");
 }
 
+#[test]
+fn canonical_prelude_type_roles_must_have_distinct_identities() {
+    let int_backed = TypeId(0);
+    let text_backed = TypeId(1);
+    let program = Program {
+        types: vec![
+            raw_handle_type(int_backed.0, "IntBacked"),
+            TypeDef {
+                id: text_backed,
+                name: "TextBacked".to_owned(),
+                span: span(),
+                type_parameters: 0,
+                kind: TypeDefKind::Record {
+                    fields: vec![FieldDef {
+                        name: "raw".to_owned(),
+                        ty: Type::Text,
+                        span: span(),
+                    }],
+                    invariant: None,
+                },
+            },
+        ],
+        prelude: PreludeIds {
+            duration: Some(int_backed),
+            file: Some(int_backed),
+            socket: Some(int_backed),
+            bytes: Some(text_backed),
+            path: Some(text_backed),
+            ..PreludeIds::default()
+        },
+        ..Program::default()
+    };
+
+    let errors = validation_errors(&program);
+    for (path, first) in [
+        ("prelude.file", "duration"),
+        ("prelude.socket", "duration"),
+        ("prelude.path", "bytes"),
+    ] {
+        assert!(
+            errors.as_slice().iter().any(|error| {
+                error.code == MirValidationCode::InvalidTypeReference
+                    && error.path == path
+                    && error.message.contains(first)
+                    && error.message.contains("distinct type identity")
+            }),
+            "missing alias rejection for {path}: {errors:#?}"
+        );
+    }
+}
+
 fn io_error_types() -> Vec<TypeDef> {
     let kind = TypeId(0);
     vec![
@@ -2605,6 +2656,75 @@ fn prelude_path_cannot_be_forged_or_projected_in_checked_mir() {
 }
 
 #[test]
+fn canonical_resources_cannot_be_forged_or_projected_in_checked_mir() {
+    for (name, file) in [("File", true), ("Socket", false)] {
+        let resource = TypeId(0);
+        let resource_ty = Type::Nominal(resource, Vec::new());
+        let forged = expr(
+            ExprKind::Record {
+                ty: resource,
+                type_arguments: Vec::new(),
+                fields: vec![constant(Constant::Int(41), Type::Int)],
+                construction: ConstructionMode::Plain,
+            },
+            resource_ty.clone(),
+        );
+        let raw = Place {
+            local: LocalId(0),
+            projection: vec![0],
+        };
+        let mut prelude = PreludeIds::default();
+        if file {
+            prelude.file = Some(resource);
+        } else {
+            prelude.socket = Some(resource);
+        }
+        let program = Program {
+            types: vec![raw_handle_type(resource.0, name)],
+            functions: vec![function(
+                0,
+                vec![local(0, resource_ty.clone(), false)],
+                vec![local(1, resource_ty, false)],
+                Type::Int,
+                Block {
+                    statements: vec![Statement {
+                        kind: StatementKind::Let {
+                            local: LocalId(1),
+                            value: forged,
+                        },
+                        span: span(),
+                    }],
+                    tail: Some(Box::new(copy_place(raw, Type::Int))),
+                    span: span(),
+                },
+            )],
+            prelude,
+            ..Program::default()
+        };
+
+        let errors = validation_errors(&program);
+        for (code, message) in [
+            (
+                MirValidationCode::RecordShape,
+                format!("{name} values may only be established"),
+            ),
+            (
+                MirValidationCode::InvalidPlace,
+                format!("{name} storage is protected"),
+            ),
+        ] {
+            assert!(
+                errors
+                    .as_slice()
+                    .iter()
+                    .any(|error| error.code == code && error.message.contains(&message)),
+                "missing {code:?} `{message}`: {errors:#?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn resource_close_requires_an_inout_place() {
     let file = TypeId(0);
     let file_ty = Type::Nominal(file, Vec::new());
@@ -2660,6 +2780,92 @@ fn resource_close_requires_an_inout_place() {
     arguments[0] = CallArgument::InOut(Place::local(LocalId(0)));
     let errors = validation_errors(&program);
     assert!(errors.contains(MirValidationCode::ObligationShape));
+}
+
+#[test]
+fn only_the_exact_canonical_dispose_witness_may_close_a_resource() {
+    for (name, builtin, file) in [
+        ("File", loom_mir::Builtin::FileClose, true),
+        ("Socket", loom_mir::Builtin::SocketClose, false),
+    ] {
+        let main = function(
+            1,
+            Vec::new(),
+            Vec::new(),
+            Type::Unit,
+            Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+                span: span(),
+            },
+        );
+        let mut program = resource_program(main, Vec::new(), false);
+        program.types[0].name = name.to_owned();
+        if file {
+            program.prelude.file = Some(TypeId(0));
+        } else {
+            program.prelude.socket = Some(TypeId(0));
+        }
+        program.functions[0].body.tail = Some(Box::new(expr(
+            ExprKind::Call {
+                target: CallTarget::Builtin(builtin),
+                type_arguments: Vec::new(),
+                arguments: vec![CallArgument::InOut(Place::local(LocalId(0)))],
+                witnesses: Vec::new(),
+            },
+            Type::Unit,
+        )));
+        program.functions[0]
+            .renumber_expr_ids()
+            .expect("dispose expression ids");
+        validate_program(&program).unwrap_or_else(|errors| {
+            panic!("canonical {name} Dispose witness must own close authority: {errors:#?}")
+        });
+
+        let mut mismatched = program.clone();
+        let (other_name, other_builtin) = if file {
+            mismatched.prelude.socket = Some(TypeId(1));
+            ("Socket", loom_mir::Builtin::SocketClose)
+        } else {
+            mismatched.prelude.file = Some(TypeId(1));
+            ("File", loom_mir::Builtin::FileClose)
+        };
+        mismatched.types.push(raw_handle_type(1, other_name));
+        let Some(tail) = &mut mismatched.functions[0].body.tail else {
+            unreachable!();
+        };
+        let ExprKind::Call { target, .. } = &mut tail.kind else {
+            unreachable!();
+        };
+        *target = CallTarget::Builtin(other_builtin);
+        let errors = validation_errors(&mismatched);
+        assert!(
+            errors.as_slice().iter().any(|error| {
+                error.code == MirValidationCode::ObligationShape
+                    && error.path == "functions[0].body.tail.target"
+                    && error
+                        .message
+                        .contains("matching canonical Dispose implementation")
+            }),
+            "a canonical {name} Dispose witness must not close {other_name}: {errors:#?}"
+        );
+
+        let mut helper = program.functions[0].clone();
+        helper.id = FunctionId(2);
+        helper.name = format!("unauthorized_{name}_close");
+        program.functions.push(helper);
+        let errors = validation_errors(&program);
+        assert!(
+            errors.as_slice().iter().any(|error| {
+                error.code == MirValidationCode::ObligationShape
+                    && error.path == "functions[2].body.tail.target"
+                    && error
+                        .message
+                        .contains("matching canonical Dispose implementation")
+            }),
+            "a same-signature helper must not inherit {name} close authority: {errors:#?}"
+        );
+    }
 }
 
 #[test]
@@ -3929,100 +4135,6 @@ fn portable_mir_rejects_scoping_a_non_owning_resource_receiver() {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
-fn canonical_file_cannot_be_rescoped_through_a_non_owning_receiver_without_markers() {
-    let file = TypeId(0);
-    let file_ty = Type::Nominal(file, Vec::new());
-    let file_value = || {
-        expr(
-            ExprKind::Record {
-                ty: file,
-                type_arguments: Vec::new(),
-                fields: vec![constant(Constant::Int(41), Type::Int)],
-                construction: ConstructionMode::Plain,
-            },
-            file_ty.clone(),
-        )
-    };
-    let scoped_file = |local: u32, value: Expr| Statement {
-        kind: StatementKind::Scoped {
-            local: LocalId(local),
-            value,
-            disposal: ScopedDisposal::FileClose,
-        },
-        span: span(),
-    };
-
-    for receiver in [Receiver::Readonly, Receiver::Mutable] {
-        let mutable = receiver == Receiver::Mutable;
-        let mut receiver_method = function(
-            1,
-            vec![local(0, file_ty.clone(), mutable)],
-            vec![local(1, file_ty.clone(), true)],
-            Type::Unit,
-            Block {
-                statements: vec![scoped_file(1, copy(0, file_ty.clone()))],
-                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
-                span: span(),
-            },
-        );
-        receiver_method.receiver = Some(receiver);
-        let receiver_argument = if mutable {
-            CallArgument::InOut(Place::local(LocalId(0)))
-        } else {
-            CallArgument::Value(copy(0, file_ty.clone()))
-        };
-        let main = function(
-            0,
-            Vec::new(),
-            vec![local(0, file_ty.clone(), true)],
-            Type::Unit,
-            Block {
-                statements: vec![
-                    scoped_file(0, file_value()),
-                    Statement {
-                        kind: StatementKind::Evaluate(expr(
-                            ExprKind::Call {
-                                target: CallTarget::Inherent(FunctionId(1)),
-                                type_arguments: Vec::new(),
-                                arguments: vec![receiver_argument],
-                                witnesses: Vec::new(),
-                            },
-                            Type::Unit,
-                        )),
-                        span: span(),
-                    },
-                ],
-                tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
-                span: span(),
-            },
-        );
-        let program = Program {
-            types: vec![raw_handle_type(file.0, "File")],
-            functions: vec![main, receiver_method],
-            exports: BTreeMap::from([("main".to_owned(), FunctionId(0))]),
-            prelude: PreludeIds {
-                file: Some(file),
-                ..PreludeIds::default()
-            },
-            ..Program::default()
-        };
-        assert!(program.prelude.must_scope_concept.is_none());
-        let errors = program
-            .into_checked()
-            .expect_err("a borrowed File receiver cannot acquire a second FileClose cleanup");
-        assert!(
-            errors.iter().any(|error| {
-                error.code == MirValidationCode::ObligationShape
-                    && error.path == "functions[1].body.statements[0].value"
-                    && error.message.contains("non-owning method receiver")
-            }),
-            "{receiver:?}: {errors:?}"
-        );
-    }
-}
-
-#[test]
 fn canonical_file_owning_parameter_may_transfer_into_scoped() {
     let file = TypeId(0);
     let file_ty = Type::Nominal(file, Vec::new());
@@ -4036,7 +4148,11 @@ fn canonical_file_owning_parameter_may_transfer_into_scoped() {
                 kind: StatementKind::Scoped {
                     local: LocalId(1),
                     value: copy(0, file_ty),
-                    disposal: ScopedDisposal::FileClose,
+                    disposal: ScopedDisposal::StaticConcept {
+                        requirement: RequirementId(0),
+                        witness: WitnessRef::Concrete(WitnessId(0)),
+                        dispatch_type: Type::Nominal(file, Vec::new()),
+                    },
                 },
                 span: span(),
             }],
@@ -4044,16 +4160,11 @@ fn canonical_file_owning_parameter_may_transfer_into_scoped() {
             span: span(),
         },
     );
-    validate_program(&Program {
-        types: vec![raw_handle_type(file.0, "File")],
-        functions: vec![owner],
-        prelude: PreludeIds {
-            file: Some(file),
-            ..PreludeIds::default()
-        },
-        ..Program::default()
-    })
-    .expect("an ordinary parameter owns its File and may transfer it into Scoped");
+    let mut program = resource_program(owner, Vec::new(), false);
+    program.types[0].name = "File".to_owned();
+    program.prelude.file = Some(file);
+    validate_program(&program)
+        .expect("an ordinary parameter owns its File and may transfer it into Scoped");
 }
 
 #[test]
