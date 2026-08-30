@@ -835,38 +835,56 @@ fn mutable_receiver_is_an_inout_place_and_exit_invariant_wins() {
         is_async: false,
         suspension_points: Vec::new(),
         params: vec![
-            local(0, "order", Type::Nominal(TypeId(0), vec![]), true),
+            local(0, "order", Type::Nominal(TypeId(0), vec![]), false),
             local(1, "value", Type::Float, false),
         ],
         witness_params: Vec::new(),
         witness_prefix_count: 0,
-        locals: vec![local(2, "ignored", Type::Unit, false)],
+        locals: vec![
+            local(2, "ignored", Type::Unit, false),
+            local(3, "working", Type::Nominal(TypeId(0), Vec::new()), true),
+        ],
         return_ty: Type::Float,
         receiver: None,
         body: Block {
-            statements: vec![Statement {
-                kind: StatementKind::Let {
-                    local: LocalId(2),
-                    value: Expr {
-                        id: ExprId::UNASSIGNED,
-                        kind: ExprKind::Call {
-                            target: CallTarget::Inherent(FunctionId(0)),
-                            type_arguments: Vec::new(),
-                            arguments: vec![
-                                CallArgument::InOut(Place::local(LocalId(0))),
-                                CallArgument::Value(copy(Place::local(LocalId(1)), Type::Float)),
-                            ],
-                            witnesses: Vec::new(),
-                        },
-                        ty: Type::Unit,
-                        span: span(),
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(3),
+                        value: copy(
+                            Place::local(LocalId(0)),
+                            Type::Nominal(TypeId(0), Vec::new()),
+                        ),
                     },
+                    span: span(),
                 },
-                span: span(),
-            }],
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(2),
+                        value: Expr {
+                            id: ExprId::UNASSIGNED,
+                            kind: ExprKind::Call {
+                                target: CallTarget::Inherent(FunctionId(0)),
+                                type_arguments: Vec::new(),
+                                arguments: vec![
+                                    CallArgument::InOut(Place::local(LocalId(3))),
+                                    CallArgument::Value(copy(
+                                        Place::local(LocalId(1)),
+                                        Type::Float,
+                                    )),
+                                ],
+                                witnesses: Vec::new(),
+                            },
+                            ty: Type::Unit,
+                            span: span(),
+                        },
+                    },
+                    span: span(),
+                },
+            ],
             tail: Some(Box::new(copy(
                 Place {
-                    local: LocalId(0),
+                    local: LocalId(3),
                     projection: vec![0],
                 },
                 Type::Float,
@@ -1528,7 +1546,7 @@ fn method_contract_arguments_exclude_the_receiver() {
 }
 
 #[test]
-fn entry_contract_order_distinguishes_sync_functions_methods_and_async_methods() {
+fn entry_contract_order_covers_sync_functions_methods_and_async_functions() {
     let record_invariant = rejected_contract("record.invariant");
     let ordinary = unit_contract_function(
         0,
@@ -1554,14 +1572,16 @@ fn entry_contract_order_distinguishes_sync_functions_methods_and_async_methods()
             ..CallPlan::default()
         },
     );
-    let async_method = unit_contract_function(
+    let async_function = unit_contract_function(
         2,
-        "sample.R.async_method",
+        "async_function",
         true,
-        Some(Receiver::Readonly),
+        None,
         CallPlan {
-            receiver_invariant: Some(record_invariant.clone()),
-            requires: vec![rejected_contract("async.method.requires")],
+            requires: vec![
+                rejected_contract("async.first"),
+                rejected_contract("async.second"),
+            ],
             ..CallPlan::default()
         },
     );
@@ -1576,7 +1596,7 @@ fn entry_contract_order_distinguishes_sync_functions_methods_and_async_methods()
                 invariant: Some(record_invariant),
             },
         }],
-        functions: vec![ordinary, sync_method, async_method],
+        functions: vec![ordinary, sync_method, async_function],
         ..Program::default()
     });
     let mut interpreter = Interpreter::new(&program);
@@ -1605,14 +1625,14 @@ fn entry_contract_order_distinguishes_sync_functions_methods_and_async_methods()
     assert!(fault.message.contains("sync.method.requires"), "{fault:?}");
 
     let failure = interpreter
-        .invoke(FunctionId(2), vec![receiver()], span())
-        .expect_err("the async entry invariant must remain first");
+        .invoke(FunctionId(2), Vec::new(), span())
+        .expect_err("the first async precondition must fail the task");
     let ExecutionFailure::Contract { fault } = failure else {
-        panic!("async invariant must produce a contract fault");
+        panic!("async precondition must produce a contract fault");
     };
-    assert_eq!(fault.category, ContractFaultKind::Invariant);
-    assert_eq!(fault.code, "InvariantFault");
-    assert!(fault.message.contains("record.invariant"), "{fault:?}");
+    assert_eq!(fault.category, ContractFaultKind::Precondition);
+    assert_eq!(fault.code, "PreconditionFault");
+    assert!(fault.message.contains("async.first"), "{fault:?}");
 }
 
 #[test]
