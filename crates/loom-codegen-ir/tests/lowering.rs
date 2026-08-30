@@ -2295,7 +2295,7 @@ pub async fn main() {
 }
 
 #[test]
-fn async_open_views_remain_atomic_signature_fallback() {
+fn async_closed_generic_views_use_exact_coroutine_frames() {
     let source = r"dyn concept Source {
     method next(mut self) Int
 }
@@ -2315,15 +2315,24 @@ pub async fn main() {
     assert observed == 1
 }
 ";
-    let LoweringOutcome::Unsupported(report) = lower_run(source) else {
-        panic!("an open dynamic coroutine frame must remain atomic fallback")
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("a closed generic dynamic producer must use an exact coroutine frame")
     };
     assert!(
-        report
-            .items()
+        artifact.representations().dynamics().is_empty(),
+        "one closed generic candidate must devirtualize without a managed catalog"
+    );
+    let take_owned = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("takeOwned"))
+        .expect("owned-View coroutine");
+    assert!(take_owned.coroutine().is_some());
+    assert!(
+        take_owned
+            .instructions()
             .iter()
-            .any(|item| item.feature() == UnsupportedFeature::SignatureType),
-        "{report:#?}"
+            .any(|instruction| matches!(instruction.kind(), InstructionKind::DirectCall { .. }))
     );
 }
 
@@ -3499,8 +3508,8 @@ pub fn main() {
 }
 
 #[test]
-fn generic_conditional_dynamic_witness_set_selects_one_atomic_fallback() {
-    let LoweringOutcome::Unsupported(report) = lower_run(
+fn closed_generic_conditional_dynamic_witness_devirtualizes() {
+    let LoweringOutcome::Complete(artifact) = lower_run(
         r"dyn concept Truth { method truth(self) Bool }
 record Atom { value Bool }
 record Wrapped[T] { value T }
@@ -3520,15 +3529,256 @@ pub fn main() {
 }
 ",
     ) else {
-        panic!("a generic prerequisite-dependent dynamic catalog must fail closed")
+        panic!("a closed conditional proof must devirtualize in typed LCIR")
     };
     assert!(
-        report
-            .items()
-            .iter()
-            .any(|item| item.feature() == UnsupportedFeature::DynamicWitnessSet),
-        "{report:?}"
+        artifact.representations().dynamics().is_empty(),
+        "one closed proof must not allocate a dynamic catalog"
     );
+    assert!(artifact.functions().iter().any(|function| {
+        function
+            .instructions()
+            .iter()
+            .any(|instruction| matches!(instruction.kind(), InstructionKind::DirectCall { .. }))
+    }));
+    assert!(
+        artifact
+            .program()
+            .as_program()
+            .instances()
+            .entries()
+            .iter()
+            .any(|instance| matches!(
+                instance.key().witness_arguments(),
+                [loom_codegen_ir::InstanceWitnessArgument::Concrete(_)]
+            ))
+    );
+}
+
+#[test]
+fn two_applications_of_one_generic_dynamic_witness_form_a_finite_catalog() {
+    let LoweringOutcome::Complete(artifact) = lower_run(
+        r"dyn concept Measure { method measure(self) Int }
+record Boxed[T] { value T }
+
+impl[T] Measure for Boxed[T] {
+    method measure(self) Int { 1 }
+}
+
+fn choose(first Bool) dyn Measure {
+    if first {
+        Boxed { value = 1 }
+    } else {
+        Boxed { value = false }
+    }
+}
+
+pub fn main() {
+    discard choose(true).measure()
+}
+",
+    ) else {
+        panic!("two closed applications of one generic witness must form a finite catalog")
+    };
+    let [dynamic] = artifact.representations().dynamics() else {
+        panic!("one source View must have one managed dynamic catalog")
+    };
+    assert_eq!(dynamic.candidates().len(), 2);
+    assert!(artifact.functions().iter().any(|function| {
+        function
+            .instructions()
+            .iter()
+            .any(|instruction| matches!(instruction.kind(), InstructionKind::DynConstruct { .. }))
+    }));
+    assert!(artifact.functions().iter().any(|function| {
+        function.blocks().iter().any(|block| {
+            matches!(
+                block.terminator().map(loom_codegen_ir::Terminator::kind),
+                Some(TerminatorKind::DynSwitch { cases, .. }) if cases.len() == 2
+            )
+        })
+    }));
+    let instances = artifact.program().as_program().instances().entries();
+    assert!(
+        instances
+            .iter()
+            .any(|instance| instance.key().type_arguments() == [loom_mir::Type::Int])
+    );
+    assert!(
+        instances
+            .iter()
+            .any(|instance| instance.key().type_arguments() == [loom_mir::Type::Bool])
+    );
+    let identity = artifact_identity(&artifact);
+    assert!(identity.contains("types=[Int]"), "{identity}");
+    assert!(identity.contains("types=[Bool]"), "{identity}");
+}
+
+#[test]
+fn static_generic_witness_does_not_pollute_a_dynamic_producer_catalog() {
+    let LoweringOutcome::Complete(artifact) = lower_run(
+        r"dyn concept Truth { method truth(self) Bool }
+record Atom { value Bool }
+record Wrapped[T] { value T }
+
+impl Truth for Atom {
+    method truth(self) Bool { self.value }
+}
+
+impl[T: Truth] Truth for Wrapped[T] {
+    method truth(self) Bool { self.value.truth() }
+}
+
+fn readWrapped(value Wrapped[Atom]) Bool { value.truth() }
+fn eraseAtom(value Atom) dyn Truth { value }
+
+pub fn main() {
+    discard readWrapped(Wrapped { value = Atom { value = true } })
+    discard eraseAtom(Atom { value = true }).truth()
+}
+",
+    ) else {
+        panic!("a static generic proof must not make an unrelated dyn producer open")
+    };
+    assert!(
+        artifact.representations().dynamics().is_empty(),
+        "the sole erased Atom witness must stay uniquely devirtualized"
+    );
+}
+
+#[test]
+fn dead_prerequisite_method_cannot_self_sustain_a_dynamic_candidate() {
+    let LoweringOutcome::Complete(artifact) = lower_run(
+        r"dyn concept C { method c(self) Int }
+dyn concept D { method d(self) Int }
+
+record DeadD { value Int }
+record LiveD { value Int }
+record Wrap[T] { value T }
+
+impl D for DeadD {
+    method d(self) Int {
+        discard deadD()
+        20
+    }
+}
+
+impl D for LiveD {
+    method d(self) Int { 10 }
+}
+
+impl[T: D] C for Wrap[T] {
+    method c(self) Int { 1 }
+}
+
+fn deadD() dyn D { DeadD { value = 20 } }
+fn liveD() dyn D { LiveD { value = 10 } }
+fn eraseWrap(value Wrap[DeadD]) dyn C { value }
+fn callC(value C) Int { value.c() }
+fn callD(value D) Int { value.d() }
+
+pub fn main() {
+    discard callC(eraseWrap(Wrap { value = DeadD { value = 0 } }))
+    discard callD(liveD())
+}
+",
+    ) else {
+        panic!("least-fixed-point dynamic planning must keep dead candidates out")
+    };
+    assert!(
+        artifact.representations().dynamics().is_empty(),
+        "both executable dynamic views have one exact producer"
+    );
+    assert!(
+        artifact
+            .functions()
+            .iter()
+            .all(|function| !function.name().ends_with(".deadD")
+                && !function.name().ends_with("DeadD.d")),
+        "a prerequisite-only witness method must not retain its own producer"
+    );
+}
+
+#[test]
+fn unreachable_dynamic_producer_does_not_expand_the_closed_catalog() {
+    let LoweringOutcome::Complete(artifact) = lower_run(
+        r"dyn concept Measure { method measure(self) Int }
+record Live { value Int }
+record Dead { value Int }
+
+impl Measure for Live { method measure(self) Int { 1 } }
+impl Measure for Dead { method measure(self) Int { 2 } }
+
+fn choose() dyn Measure {
+    return Live { value = 1 }
+    Dead { value = 2 }
+}
+
+pub fn main() {
+    discard choose().measure()
+}
+",
+    ) else {
+        panic!("an unreachable erasure must not alter the executable dynamic catalog")
+    };
+    assert!(
+        artifact.representations().dynamics().is_empty(),
+        "the sole executable producer must be uniquely devirtualized"
+    );
+    assert_eq!(
+        artifact
+            .functions()
+            .iter()
+            .filter(|function| function.name().ends_with(".measure"))
+            .count(),
+        1,
+        "the unreachable candidate method must stay absent"
+    );
+}
+
+#[test]
+fn two_level_closed_prerequisite_proof_devirtualizes() {
+    let LoweringOutcome::Complete(artifact) = lower_run(
+        r"dyn concept Truth { method truth(self) Bool }
+record Atom { value Bool }
+record Inner[T] { value T }
+record Outer[T] { value T }
+
+impl Truth for Atom {
+    method truth(self) Bool { self.value }
+}
+
+impl[T: Truth] Truth for Inner[T] {
+    method truth(self) Bool { self.value.truth() }
+}
+
+impl[T: Truth] Truth for Outer[T] {
+    method truth(self) Bool { self.value.truth() }
+}
+
+fn erase(value Outer[Inner[Atom]]) dyn Truth { value }
+
+pub fn main() {
+    discard erase(Outer { value = Inner { value = Atom { value = true } } }).truth()
+}
+",
+    ) else {
+        panic!("a finite closed prerequisite tree must devirtualize")
+    };
+    assert!(artifact.representations().dynamics().is_empty());
+    assert!(artifact
+        .program()
+        .as_program()
+        .instances()
+        .entries()
+        .iter()
+        .any(|instance| matches!(
+            instance.key().witness_arguments(),
+            [loom_codegen_ir::InstanceWitnessArgument::Apply { arguments, .. }]
+                if matches!(arguments.as_ref(), [loom_codegen_ir::InstanceWitnessArgument::Concrete(_)])
+        )));
+    let identity = artifact_identity(&artifact);
+    assert!(identity.contains("witnesses=[Apply#"), "{identity}");
 }
 
 #[test]

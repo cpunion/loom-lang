@@ -183,8 +183,8 @@ ordinary `std` source `DefId`, lets reachability follow its body into private
 scheduler primitives, and deletes the catalog and `TaskIntrinsic` rather than
 mapping source definitions back to them.
 
-Remaining atomic fallback includes open or prerequisite-dependent dynamic
-concepts, unsupported proof or contract value shapes, explicit mutable
+Remaining atomic fallback includes dynamic producers with unresolved parameters
+or projections, unsupported proof or contract value shapes, explicit mutable
 coroutine parameters, raw readiness, and unsupported projected inout shapes.
 Finite closed dynamic catalogs are exact managed-pointer coroutine parameters,
 results, and suspension-live values, including nested aggregate and List

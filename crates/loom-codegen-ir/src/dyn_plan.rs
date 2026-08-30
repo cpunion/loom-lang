@@ -1,11 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use loom_mir::{self as mir, Type, WitnessId};
+use loom_mir::{self as mir, ExprKind, Type};
 
-use crate::ReachableSourceGraph;
-use crate::aggregate_plan::{
-    closed_enum_variants, concrete_any_record_fields, concrete_refined_base,
-};
+use crate::instance_closure::InstanceSubstitution;
+use crate::{InstanceKey, InstanceWitnessArgument, ReachableSourceGraph};
 
 /// One closed-world dynamic interface proven to have exactly one reachable
 /// concrete conformance in this artifact.
@@ -15,22 +13,24 @@ use crate::aggregate_plan::{
 /// tag nor a witness pointer survives into generated code.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DevirtualizedView {
-    witness: WitnessId,
+    proof: InstanceWitnessArgument,
     concrete: Type,
 }
 
 /// One member of an artifact-closed competing dynamic witness set. Candidate
-/// order is deterministic witness-id order and becomes the private tag order
-/// recorded in checked LCIR.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// order is deterministic closed-target/proof order and becomes the private
+/// tag order recorded in checked LCIR. The proof itself is consumed while
+/// forming each direct method [`InstanceKey`], whose canonical dump preserves
+/// the specialized target identity.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct DynamicCandidate {
-    witness: WitnessId,
     concrete: Type,
+    proof: InstanceWitnessArgument,
 }
 
 impl DynamicCandidate {
-    pub(crate) const fn witness(&self) -> WitnessId {
-        self.witness
+    pub(crate) const fn proof(&self) -> &InstanceWitnessArgument {
+        &self.proof
     }
 
     pub(crate) const fn concrete(&self) -> &Type {
@@ -48,11 +48,15 @@ impl FiniteDynamicView {
         &self.candidates
     }
 
-    pub(crate) fn candidate(&self, witness: WitnessId) -> Option<(u32, &DynamicCandidate)> {
+    pub(crate) fn candidate(
+        &self,
+        concrete: &Type,
+        proof: &InstanceWitnessArgument,
+    ) -> Option<(u32, &DynamicCandidate)> {
         self.candidates
             .iter()
             .enumerate()
-            .find(|(_, candidate)| candidate.witness == witness)
+            .find(|(_, candidate)| candidate.concrete == *concrete && candidate.proof == *proof)
             .and_then(|(index, candidate)| {
                 u32::try_from(index).ok().map(|index| (index, candidate))
             })
@@ -66,8 +70,8 @@ enum DynConceptChoice {
 }
 
 impl DevirtualizedView {
-    pub(crate) const fn witness(&self) -> WitnessId {
-        self.witness
+    pub(crate) const fn proof(&self) -> &InstanceWitnessArgument {
+        &self.proof
     }
 
     pub(crate) const fn concrete(&self) -> &Type {
@@ -78,70 +82,86 @@ impl DevirtualizedView {
 /// Artifact-wide checked representation choices for the first `dyn` LCIR
 /// slice.
 ///
-/// A view is admitted only when the artifact-closed reachable witness set
-/// contains exact, non-generic conformances whose associated bindings match
-/// the view. One candidate is erased completely; two or more candidates form
-/// a checked finite dynamic catalog. Missing, open, generic, or
-/// prerequisite-dependent proof sets remain absent and select structured
-/// unsupported classification before LCIR construction.
+/// A view is admitted only when its reachable concrete producers carry exact,
+/// closed proofs whose associated bindings match the view. One candidate is
+/// erased completely; two or more candidates form a checked finite dynamic
+/// catalog. A producer that still needs an unavailable type or witness
+/// parameter remains absent and selects structured unsupported classification
+/// before LCIR construction.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct DynConceptPlan {
     choices: BTreeMap<Type, DynConceptChoice>,
 }
 
 impl DynConceptPlan {
-    pub(crate) fn from_reachable(program: &mir::Program, graph: &ReachableSourceGraph) -> Self {
-        let mut views = BTreeSet::new();
-        for function in graph
-            .functions
-            .iter()
-            .filter_map(|function| program.function(*function))
-        {
-            for parameter in &function.params {
-                collect_views(program, &parameter.ty, &mut views);
-            }
-            collect_views(program, &function.return_ty, &mut views);
-            for expression in function.exprs_preorder() {
-                collect_views(program, &expression.ty, &mut views);
+    /// Builds a dynamic catalog from the exact source instances already proven
+    /// reachable by the instance planner.
+    ///
+    /// Callers start with an empty catalog and repeat instance closure plus
+    /// this scan to a fixed point. That computes the least closed world rooted
+    /// in executable code; a method retained only by the conservative source
+    /// graph cannot make its own dynamic producer live.
+    pub(crate) fn from_instances(
+        program: &mir::Program,
+        graph: &ReachableSourceGraph,
+        instances: &[InstanceKey],
+    ) -> Self {
+        let mut candidates = BTreeMap::<Type, Vec<DynamicCandidate>>::new();
+        let mut invalid_views = BTreeSet::new();
+        for key in instances {
+            let Some(function) = program.function(key.source()) else {
+                continue;
+            };
+            let Some(producers) = graph.dynamic_producers.get(&function.id) else {
+                continue;
+            };
+            let substitution = InstanceSubstitution::new(program, key);
+            for expression in function
+                .exprs_preorder()
+                .filter(|expression| producers.contains(&expression.id))
+            {
+                let ExprKind::MakeView { value, witness, .. } = &expression.kind else {
+                    continue;
+                };
+                let Ok(view) = substitution.instantiate_type(&expression.ty) else {
+                    continue;
+                };
+                let Ok(concrete) = substitution.instantiate_type(&value.ty) else {
+                    continue;
+                };
+                let Ok(proof) = substitution.instantiate_witness(witness) else {
+                    continue;
+                };
+                if !matches!(view, Type::View { .. })
+                    || substitution
+                        .validate_dynamic_proof(&view, &concrete, &proof)
+                        .is_err()
+                {
+                    invalid_views.insert(view);
+                    continue;
+                }
+                let row = candidates.entry(view.clone()).or_default();
+                if let Some(existing) = row.iter().find(|candidate| candidate.concrete == concrete)
+                {
+                    if existing.proof != proof {
+                        invalid_views.insert(view);
+                    }
+                    continue;
+                }
+                row.push(DynamicCandidate { concrete, proof });
             }
         }
 
-        let choices = views
+        for invalid in invalid_views {
+            candidates.remove(&invalid);
+        }
+        let choices = candidates
             .into_iter()
-            .filter_map(|view| {
-                let Type::View {
-                    concept, bindings, ..
-                } = &view
-                else {
-                    return None;
-                };
-                let matches = graph
-                    .witnesses
-                    .iter()
-                    .filter_map(|witness| program.witness(*witness))
-                    .filter(|witness| {
-                        witness.concept == *concept && witness.associated == *bindings
-                    })
-                    .collect::<Vec<_>>();
-                if matches.is_empty()
-                    || matches.iter().any(|selected| {
-                        selected.type_parameters != 0
-                            || !selected.prerequisites.is_empty()
-                            || !is_closed_type(&selected.concrete)
-                    })
-                {
-                    return None;
-                }
-                let candidates = matches
-                    .into_iter()
-                    .map(|selected| DynamicCandidate {
-                        witness: selected.id,
-                        concrete: selected.concrete.clone(),
-                    })
-                    .collect::<Vec<_>>();
+            .map(|(view, mut candidates)| {
+                candidates.sort();
                 let choice = if let [selected] = candidates.as_slice() {
                     DynConceptChoice::Unique(DevirtualizedView {
-                        witness: selected.witness,
+                        proof: selected.proof.clone(),
                         concrete: selected.concrete.clone(),
                     })
                 } else {
@@ -149,7 +169,7 @@ impl DynConceptPlan {
                         candidates: candidates.into_boxed_slice(),
                     })
                 };
-                Some((view, choice))
+                (view, choice)
             })
             .collect();
         Self { choices }
@@ -230,86 +250,22 @@ impl DynConceptPlan {
     }
 }
 
-fn collect_views(program: &mir::Program, root: &Type, output: &mut BTreeSet<Type>) {
-    let mut pending = vec![root.clone()];
-    let mut expanded = BTreeSet::new();
-    let mut visited = 0_usize;
-    while let Some(ty) = pending.pop() {
-        visited = visited.saturating_add(1);
-        if visited > crate::repr::DIRECT_PRODUCT_MAX_STRUCTURAL_NODES {
-            return;
-        }
-        match &ty {
-            Type::View { bindings, .. } => {
-                output.insert(ty.clone());
-                pending.extend(bindings.values().cloned());
-            }
-            Type::Tuple(elements) => pending.extend(elements.iter().cloned()),
-            Type::Nominal(_, arguments) => {
-                pending.extend(arguments.iter().cloned());
-                if !expanded.insert(ty.clone()) {
-                    continue;
-                }
-                if let Some(fields) = concrete_any_record_fields(program, &ty) {
-                    pending.extend(fields.into_vec());
-                } else if let Some(variants) = closed_enum_variants(program, &ty) {
-                    pending.extend(variants.into_vec().into_iter().flat_map(<[Type]>::into_vec));
-                } else if let Some(base) = concrete_refined_base(program, &ty) {
-                    pending.push(base);
-                }
-            }
-            Type::List(element) | Type::Task(element) | Type::TaskOutcome(element) => {
-                pending.push((**element).clone());
-            }
-            Type::Never
-            | Type::Unit
-            | Type::Bool
-            | Type::Int
-            | Type::Float
-            | Type::Text
-            | Type::Parameter(_)
-            | Type::AssociatedProjection { .. }
-            | Type::Error => {}
-        }
-    }
-}
-
-fn is_closed_type(root: &Type) -> bool {
-    let mut pending = vec![root];
-    let mut visited = 0_usize;
-    while let Some(ty) = pending.pop() {
-        visited = visited.saturating_add(1);
-        if visited > crate::repr::DIRECT_PRODUCT_MAX_STRUCTURAL_NODES {
-            return false;
-        }
-        match ty {
-            Type::Tuple(elements) | Type::Nominal(_, elements) => pending.extend(elements),
-            Type::List(element) | Type::Task(element) | Type::TaskOutcome(element) => {
-                pending.push(element);
-            }
-            Type::View { bindings, .. } => pending.extend(bindings.values()),
-            Type::Parameter(_) | Type::AssociatedProjection { .. } | Type::Error => return false,
-            Type::Never | Type::Unit | Type::Bool | Type::Int | Type::Float | Type::Text => {}
-        }
-    }
-    true
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use loom_core::Span;
     use loom_mir::{
-        Block, CallPlan, ConceptId, Constant, Expr, ExprKind, FieldDef, Function, FunctionId,
-        LocalDecl, LocalId, Program, TypeDef, TypeDefKind, TypeId, Witness, WitnessId,
+        Block, CallPlan, ConceptId, Constant, Expr, ExprId, ExprKind, FieldDef, Function,
+        FunctionId, LocalDecl, LocalId, Place, Program, Statement, StatementKind, TypeDef,
+        TypeDefKind, TypeId, Witness, WitnessId, WitnessRef,
     };
 
     use super::*;
     use crate::aggregate_plan::AggregatePlanner;
     use crate::{ProgramBuilder, TargetLayout};
 
-    fn root_function(parameter: Type) -> Function {
+    fn root_function(parameter: Type, concrete: Type, view: Type) -> Function {
         let span = Span::default();
         Function {
             id: FunctionId(0),
@@ -318,20 +274,46 @@ mod tests {
             type_parameters: 0,
             is_async: false,
             suspension_points: Vec::new(),
-            params: vec![LocalDecl {
-                id: LocalId(0),
-                name: "value".into(),
-                ty: parameter,
-                mutable: false,
-                span,
-            }],
+            params: vec![
+                LocalDecl {
+                    id: LocalId(0),
+                    name: "value".into(),
+                    ty: parameter,
+                    mutable: false,
+                    span,
+                },
+                LocalDecl {
+                    id: LocalId(1),
+                    name: "producer".into(),
+                    ty: concrete.clone(),
+                    mutable: false,
+                    span,
+                },
+            ],
             witness_params: Vec::new(),
             witness_prefix_count: 0,
             locals: Vec::new(),
             return_ty: Type::Unit,
             receiver: None,
             body: Block {
-                statements: Vec::new(),
+                statements: vec![Statement {
+                    kind: StatementKind::Evaluate(Expr::new(
+                        ExprKind::MakeView {
+                            value: Box::new(Expr::new(
+                                ExprKind::Copy(Place::local(LocalId(1))),
+                                concrete,
+                                span,
+                            )),
+                            writeback: None,
+                            witness: WitnessRef::Concrete(WitnessId(0)),
+                            mutable: false,
+                            token: 0,
+                        },
+                        view,
+                        span,
+                    )),
+                    span,
+                }],
                 tail: Some(Box::new(Expr::new(
                     ExprKind::Constant(Constant::Unit),
                     Type::Unit,
@@ -379,7 +361,11 @@ mod tests {
                     },
                 },
             ],
-            functions: vec![root_function(container.clone())],
+            functions: vec![root_function(
+                container.clone(),
+                concrete.clone(),
+                view.clone(),
+            )],
             witnesses: vec![Witness {
                 id: WitnessId(0),
                 concept: ConceptId(0),
@@ -410,9 +396,17 @@ mod tests {
         let graph = ReachableSourceGraph {
             functions: BTreeSet::from([FunctionId(0)]),
             witnesses: BTreeSet::from([WitnessId(0)]),
+            dynamic_producers: BTreeMap::from([(
+                FunctionId(0),
+                BTreeSet::from([ExprId::UNASSIGNED]),
+            )]),
             ..ReachableSourceGraph::default()
         };
-        let plan = DynConceptPlan::from_reachable(&program, &graph);
+        let plan = DynConceptPlan::from_instances(
+            &program,
+            &graph,
+            &[InstanceKey::monomorphic(FunctionId(0))],
+        );
         assert_eq!(plan.physical_type(&view), Some(concrete.clone()));
         assert_eq!(
             plan.physical_type(&Type::List(Box::new(view.clone()))),
@@ -458,9 +452,17 @@ mod tests {
         let graph = ReachableSourceGraph {
             functions: BTreeSet::from([FunctionId(0)]),
             witnesses: BTreeSet::from([WitnessId(0)]),
+            dynamic_producers: BTreeMap::from([(
+                FunctionId(0),
+                BTreeSet::from([ExprId::UNASSIGNED]),
+            )]),
             ..ReachableSourceGraph::default()
         };
-        let plan = DynConceptPlan::from_reachable(&program, &graph);
+        let plan = DynConceptPlan::from_instances(
+            &program,
+            &graph,
+            &[InstanceKey::monomorphic(FunctionId(0))],
+        );
         let mut aggregates = AggregatePlanner::new(&program, &plan, true);
         assert!(!aggregates.supports_value_type(&container));
     }

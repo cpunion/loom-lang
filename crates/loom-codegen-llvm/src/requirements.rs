@@ -1335,9 +1335,7 @@ mod tests {
         };
         let reachable = ReachableSourceGraph {
             functions: BTreeSet::from([FunctionId(0), FunctionId(1), FunctionId(2), FunctionId(3)]),
-            witnesses: BTreeSet::new(),
-            builtins: BTreeSet::new(),
-            witness_methods: BTreeMap::new(),
+            ..ReachableSourceGraph::default()
         };
         let graph = RuntimeRequirementGraph::analyze(
             &program,

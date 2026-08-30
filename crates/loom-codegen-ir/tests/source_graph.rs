@@ -65,7 +65,7 @@ fn direct_closure_and_serialization_are_deterministic() {
     );
     assert_eq!(
         serde_json::to_string(&reachable).expect("serialize source graph"),
-        r#"{"functions":[0,1],"witnesses":[],"builtins":[],"witness_methods":{}}"#
+        r#"{"functions":[0,1],"witnesses":[],"builtins":[],"dynamic_producers":{},"witness_methods":{}}"#
     );
 }
 

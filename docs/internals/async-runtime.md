@@ -81,13 +81,14 @@ A dynamic View parameter enters an async Task frame as an independent by-value
 copy, even when the coroutine calls one of its mutable methods. Synchronous
 mutable dispatch updates that frame-local copy, leaving the value used to create
 the Task unchanged. When a reachable dynamic concept has exactly one closed
-nongeneric witness, the planner erases the View recursively to its concrete
+instantiated proof, the planner erases the View recursively to its concrete
 representation in coroutine parameters, results, products, sums, and live
-suspension rows. A finite catalog with multiple exact witnesses uses its one
-managed dynamic pointer in the same positions; exact frame and collection
-descriptors trace that pointer and its candidate payload. Open, generic, or
-prerequisite-dependent dynamic Views do not acquire a coroutine-frame
-representation.
+suspension rows. Generic and conditional conformances are admitted when their
+concrete types and prerequisite proof trees are closed. A finite catalog with
+multiple exact proofs uses its one managed dynamic pointer in the same
+positions; exact frame and collection descriptors trace that pointer and its
+candidate payload. Dynamic producers with unresolved parameters or projections
+do not acquire a coroutine-frame representation.
 
 Lexical `defer` and admitted `scoped` resources may remain active across
 suspension. The collision-free carrier gives managed sums one static union of
@@ -104,8 +105,8 @@ converts either state into a source `Result`. Task handles may be live only as
 suspension bookkeeping.
 
 For reachable graphs with no LCIR-only primitive, selected async functions with
-explicit mutable coroutine parameters, raw readiness, and open, generic, or
-prerequisite-dependent dynamic-concept frame values still select the complete
+explicit mutable coroutine parameters, raw readiness, and dynamic-concept frame
+producers with unresolved parameters or projections still select the complete
 checked-MIR route. Finite closed catalogs remain on typed LCIR and use the exact
 managed dynamic pointer described above.
 Async roots with `requires` use the same typed state-zero check as child Tasks.

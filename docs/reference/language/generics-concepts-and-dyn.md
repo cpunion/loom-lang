@@ -255,13 +255,15 @@ Programs can observe only the value, dispatch, mutation, and fault behavior of
 
 ## Current compiler representation
 
-The native compiler closes each dynamic view over witnesses reachable from the
-artifact being built. A single exact closed nongeneric witness is erased to
-its concrete value and all calls are direct. A finite set of two or more exact
-closed nongeneric witnesses uses one managed pointer to a compiler-private
-candidate box. The box has a private ordinal tag and that candidate's exact
-payload; dispatch is a finite switch to direct methods. Records, enums, tuples,
-and Lists store that one pointer.
+The native compiler closes each dynamic view over executable conversion
+producers reachable from the artifact being built. A single exact closed proof
+is erased to its concrete value and all calls are direct. A closed proof may
+apply a generic or conditional conformance when all concrete types and
+prerequisite proofs are known. A finite set of two or more exact closed proofs
+uses one managed pointer to a compiler-private candidate box. The box has a
+private ordinal tag and that candidate's exact payload; dispatch is a finite
+switch to direct specialized methods. Records, enums, tuples, and Lists store
+that one pointer.
 
 Readonly copies may share the immutable box. A mutable call never changes a
 published box in place: it receives the concrete method writeback, creates a
@@ -270,6 +272,7 @@ copy rule above even when the collector moves objects.
 
 This representation is not a stable cross-artifact ABI. It contains no witness
 pointer, universal value, runtime conformance registry, or source-visible type
-tag. Missing witnesses and open, generic, prerequisite-dependent, or otherwise
-incomplete candidate sets currently fail closed for typed LCIR and may select
-the complete checked-MIR native route; the compiler never guesses a finite catalog.
+tag. A missing producer or a proof that still contains an unresolved type,
+witness parameter, or associated projection currently fails closed for typed
+LCIR and may select the complete checked-MIR native route; the compiler never
+guesses a finite catalog.
