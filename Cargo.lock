@@ -299,7 +299,6 @@ dependencies = [
  "loom-syntax",
  "serde",
  "serde_json",
- "wait-timeout",
 ]
 
 [[package]]
