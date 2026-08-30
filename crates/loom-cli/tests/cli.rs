@@ -1559,6 +1559,65 @@ fn typed_runtime_width_task_lists_close_real_commands_and_faults() {
     assert_runtime_width_task_list_faults(&project.0);
 }
 
+#[test]
+fn affine_task_carriers_close_real_check_build_test_and_run_commands() {
+    let project = fixture_project!("lcir-affine-task-carriers");
+
+    let check = loom()
+        .args(["--no-cache", "check"])
+        .arg(&project.0)
+        .output()
+        .expect("check affine Task carriers through the production CLI");
+    assert_eq!(check.status.code(), Some(0), "{check:?}");
+
+    let object_path = project.0.join("affine-task-carriers.o");
+    let build = loom()
+        .args(["--no-cache", "build", "--emit", "object", "--output"])
+        .arg(&object_path)
+        .arg(&project.0)
+        .output()
+        .expect("build affine Task carriers through the production CLI");
+    assert_eq!(build.status.code(), Some(0), "{build:?}");
+    let object = fs::read(object_path).expect("read affine Task-carrier object");
+    for required in [
+        b"loom.lcir.fn".as_slice(),
+        b"loom_typed_task_create_v1",
+        b"loom_typed_task_take_result_v1",
+    ] {
+        assert!(
+            contains_bytes(&object, required),
+            "affine Task-carrier object omitted `{}`",
+            String::from_utf8_lossy(required)
+        );
+    }
+    for forbidden in [b"loom.fn.".as_slice(), b"loom.Value", b"ValueNode"] {
+        assert!(
+            !contains_bytes(&object, forbidden),
+            "affine Task-carrier object exposed `{}`",
+            String::from_utf8_lossy(forbidden)
+        );
+    }
+
+    let tests = loom()
+        .args(["--no-cache", "test"])
+        .arg(&project.0)
+        .output()
+        .expect("test affine Task carriers through the production CLI");
+    assert_eq!(tests.status.code(), Some(0), "{tests:?}");
+    assert_eq!(
+        tests.stdout,
+        b"passed standalone.affineTaskCarriersMoveOnce\n"
+    );
+
+    let run = loom()
+        .args(["--no-cache", "run"])
+        .arg(&project.0)
+        .output()
+        .expect("run affine Task carriers through the production CLI");
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    assert_eq!(run.stdout, b"Unit\n");
+}
+
 fn assert_runtime_width_task_list_faults(project: &Path) {
     for (entry, code, message) in [
         (

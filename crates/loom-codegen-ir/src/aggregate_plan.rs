@@ -695,6 +695,7 @@ pub(crate) struct AggregatePlanner<'program, 'plan> {
     dyn_concepts: &'plan DynConceptPlan,
     supports_managed_text: bool,
     planned: BTreeMap<Type, AggregateShape>,
+    task_handles: BTreeSet<Type>,
     rejected_roots: BTreeSet<Type>,
     acyclic_nominals: BTreeSet<TypeId>,
     rejected_nominals: BTreeSet<TypeId>,
@@ -712,6 +713,7 @@ impl<'program, 'plan> AggregatePlanner<'program, 'plan> {
             dyn_concepts,
             supports_managed_text,
             planned: BTreeMap::new(),
+            task_handles: BTreeSet::new(),
             rejected_roots: BTreeSet::new(),
             acyclic_nominals: BTreeSet::new(),
             rejected_nominals: BTreeSet::new(),
@@ -723,11 +725,23 @@ impl<'program, 'plan> AggregatePlanner<'program, 'plan> {
         self.uses_text_aggregate_leaf
     }
 
+    /// Admits one exact direct Task representation as an affine leaf in a
+    /// surrounding by-value product or sum. The caller proves the output is
+    /// task-free and separately schedules its representation.
+    pub(crate) fn admit_task_handle(&mut self, ty: &Type) -> bool {
+        let Some(ty) = self.dyn_concepts.physical_type(ty) else {
+            return false;
+        };
+        if !self.supports_managed_text || !matches!(ty, Type::Task(_)) {
+            return false;
+        }
+        self.task_handles.insert(ty);
+        true
+    }
+
     /// Admits only the one managed collection shape whose elements are
-    /// scheduler-owned capabilities. Ordinary aggregate discovery continues
-    /// to reject Task handles at every other nesting position. The caller
-    /// separately proves that `T` is task-free and records the exact
-    /// `Task[T]` handle registration.
+    /// scheduler-owned capabilities. The caller separately proves that `T`
+    /// is task-free and records the exact `Task[T]` handle registration.
     pub(crate) fn supports_task_list_type(&mut self, ty: &Type) -> bool {
         let Some(ty) = self.dyn_concepts.physical_type(ty) else {
             return false;
@@ -741,6 +755,9 @@ impl<'program, 'plan> AggregatePlanner<'program, 'plan> {
         };
         let output = output.as_ref().clone();
         if !self.supports_managed_text || !self.supports_value_type(&output) {
+            return false;
+        }
+        if !self.admit_task_handle(&task) {
             return false;
         }
         if self.rejected_roots.contains(&ty) {
@@ -777,14 +794,17 @@ impl<'program, 'plan> AggregatePlanner<'program, 'plan> {
             return false;
         };
         let ty = &ty;
-        if matches!(ty, Type::List(element) if matches!(element.as_ref(), Type::Task(_))) {
-            return false;
-        }
         if is_direct_scalar(ty) {
+            return true;
+        }
+        if self.task_handles.contains(ty) {
             return true;
         }
         if self.planned.contains_key(ty) {
             return true;
+        }
+        if matches!(ty, Type::List(element) if matches!(element.as_ref(), Type::Task(_))) {
+            return false;
         }
         if self.rejected_roots.contains(ty) {
             return false;
@@ -806,15 +826,16 @@ impl<'program, 'plan> AggregatePlanner<'program, 'plan> {
         let mut uses_text_aggregate_leaf = false;
         let mut supported = true;
         while let Some(root) = semantic_roots.pop() {
-            if matches!(&root, Type::List(element) if matches!(element.as_ref(), Type::Task(_))) {
-                supported = false;
-                break;
-            }
             if is_direct_scalar(&root)
+                || self.task_handles.contains(&root)
                 || self.planned.contains_key(&root)
                 || discovered.contains_key(&root)
             {
                 continue;
+            }
+            if matches!(&root, Type::List(element) if matches!(element.as_ref(), Type::Task(_))) {
+                supported = false;
+                break;
             }
             if root == Type::Text {
                 if self.supports_managed_text {
@@ -843,7 +864,10 @@ impl<'program, 'plan> AggregatePlanner<'program, 'plan> {
                     supported = false;
                     break;
                 }
-                if self.planned.contains_key(&semantic) || discovered.contains_key(&semantic) {
+                if self.task_handles.contains(&semantic)
+                    || self.planned.contains_key(&semantic)
+                    || discovered.contains_key(&semantic)
+                {
                     visiting.remove(&semantic);
                     continue;
                 }
@@ -925,7 +949,7 @@ impl<'program, 'plan> AggregatePlanner<'program, 'plan> {
                     );
                 let mut children = Vec::new();
                 for field in shape.dependencies() {
-                    if is_direct_scalar(field) {
+                    if is_direct_scalar(field) || self.task_handles.contains(field) {
                         continue;
                     }
                     if field == &Type::Text {
@@ -1032,17 +1056,24 @@ impl AggregatePlan {
                 )));
             }
             if shape.dependencies().any(|field| {
-                !is_direct_product_leaf(field, canonical_bytes) && !self.entries.contains_key(field)
+                !is_direct_product_leaf(field, canonical_bytes)
+                    && !self.entries.contains_key(field)
+                    && !task_handles.contains(field)
             }) {
                 return Err(AggregateRegistrationError::Inconsistent(format!(
                     "direct type {semantic:?} depends on an unplanned value type"
                 )));
             }
-            let dependencies = shape
+            let mut dependencies = shape
                 .dependencies()
-                .filter(|field| self.entries.contains_key(*field))
+                .filter(|field| self.entries.contains_key(*field) || task_handles.contains(*field))
                 .cloned()
                 .collect::<BTreeSet<_>>();
+            if let AggregateShape::ManagedList(element) = shape
+                && task_handles.contains(element)
+            {
+                dependencies.insert(element.clone());
+            }
             for dependency in &dependencies {
                 dependents
                     .entry(dependency.clone())
@@ -1055,51 +1086,83 @@ impl AggregatePlan {
             remaining_dependencies.insert(semantic.clone(), dependencies.len());
         }
 
+        for task in task_handles {
+            let Type::Task(output) = task else {
+                return Err(AggregateRegistrationError::Inconsistent(format!(
+                    "task-handle plan contains non-Task type {task:?}"
+                )));
+            };
+            if builder.type_id(output).is_none() && !self.entries.contains_key(output.as_ref()) {
+                return Err(AggregateRegistrationError::Inconsistent(format!(
+                    "Task type {task:?} has an unplanned output value type"
+                )));
+            }
+            let dependencies = if self.entries.contains_key(output.as_ref()) {
+                BTreeSet::from([output.as_ref().clone()])
+            } else {
+                BTreeSet::new()
+            };
+            for dependency in &dependencies {
+                dependents
+                    .entry(dependency.clone())
+                    .or_default()
+                    .push(task.clone());
+            }
+            if dependencies.is_empty() {
+                ready.insert(task.clone());
+            }
+            remaining_dependencies.insert(task.clone(), dependencies.len());
+        }
+
         let mut registered = 0_usize;
         while let Some(semantic) = ready.pop_first() {
-            let shape = self.entries.get(&semantic).ok_or_else(|| {
-                AggregateRegistrationError::Inconsistent(format!(
-                    "ready direct type {semantic:?} disappeared from its plan"
-                ))
-            })?;
-            let _: ValueTypeId = match (&semantic, shape) {
-                (Type::Tuple(elements), AggregateShape::Product(_)) => {
-                    builder.add_tuple_type(elements)
-                }
-                (Type::Nominal(_, _), AggregateShape::Product(fields)) => {
-                    builder.add_pod_record_type(semantic.clone(), fields)
-                }
-                (Type::Nominal(_, _), AggregateShape::InvariantProduct(fields)) => {
-                    builder.add_invariant_record_type(semantic.clone(), fields)
-                }
-                (Type::Nominal(_, _), AggregateShape::Transparent(base)) => {
-                    builder.add_transparent_type(semantic.clone(), base)
-                }
-                (Type::Nominal(_, _), AggregateShape::Sum(variants)) => {
-                    builder.add_sum_type(semantic.clone(), variants)
-                }
-                (Type::Nominal(id, arguments), AggregateShape::ManagedBytes)
-                    if Some(*id) == canonical_bytes && arguments.is_empty() =>
-                {
-                    builder.add_managed_bytes_type(semantic.clone())
-                }
-                (Type::List(element), AggregateShape::ManagedList(planned))
-                    if element.as_ref() == planned =>
-                {
-                    builder.add_managed_list_type(semantic.clone())
-                }
-                (Type::Nominal(_, arguments), AggregateShape::ManagedTextMap(planned))
-                    if arguments.as_slice() == std::slice::from_ref(planned) =>
-                {
-                    builder.add_managed_text_map_type(semantic.clone())
-                }
-                (Type::View { .. }, AggregateShape::ManagedDynamic(candidates)) => {
-                    builder.add_managed_dynamic_type(semantic.clone(), candidates)
-                }
-                _ => {
-                    return Err(AggregateRegistrationError::Inconsistent(format!(
-                        "direct-type plan contains invalid semantic type {semantic:?}"
-                    )));
+            let _: ValueTypeId = if task_handles.contains(&semantic) {
+                builder.add_task_handle_type(semantic.clone())
+            } else {
+                let shape = self.entries.get(&semantic).ok_or_else(|| {
+                    AggregateRegistrationError::Inconsistent(format!(
+                        "ready direct type {semantic:?} disappeared from its plan"
+                    ))
+                })?;
+                match (&semantic, shape) {
+                    (Type::Tuple(elements), AggregateShape::Product(_)) => {
+                        builder.add_tuple_type(elements)
+                    }
+                    (Type::Nominal(_, _), AggregateShape::Product(fields)) => {
+                        builder.add_pod_record_type(semantic.clone(), fields)
+                    }
+                    (Type::Nominal(_, _), AggregateShape::InvariantProduct(fields)) => {
+                        builder.add_invariant_record_type(semantic.clone(), fields)
+                    }
+                    (Type::Nominal(_, _), AggregateShape::Transparent(base)) => {
+                        builder.add_transparent_type(semantic.clone(), base)
+                    }
+                    (Type::Nominal(_, _), AggregateShape::Sum(variants)) => {
+                        builder.add_sum_type(semantic.clone(), variants)
+                    }
+                    (Type::Nominal(id, arguments), AggregateShape::ManagedBytes)
+                        if Some(*id) == canonical_bytes && arguments.is_empty() =>
+                    {
+                        builder.add_managed_bytes_type(semantic.clone())
+                    }
+                    (Type::List(element), AggregateShape::ManagedList(planned))
+                        if element.as_ref() == planned =>
+                    {
+                        builder.add_managed_list_type(semantic.clone())
+                    }
+                    (Type::Nominal(_, arguments), AggregateShape::ManagedTextMap(planned))
+                        if arguments.as_slice() == std::slice::from_ref(planned) =>
+                    {
+                        builder.add_managed_text_map_type(semantic.clone())
+                    }
+                    (Type::View { .. }, AggregateShape::ManagedDynamic(candidates)) => {
+                        builder.add_managed_dynamic_type(semantic.clone(), candidates)
+                    }
+                    _ => {
+                        return Err(AggregateRegistrationError::Inconsistent(format!(
+                            "direct-type plan contains invalid semantic type {semantic:?}"
+                        )));
+                    }
                 }
             }
             .map_err(AggregateRegistrationError::Build)?;
@@ -1118,7 +1181,7 @@ impl AggregatePlan {
             }
         }
 
-        if registered != self.entries.len() {
+        if registered != self.entries.len().saturating_add(task_handles.len()) {
             return Err(AggregateRegistrationError::Inconsistent(
                 "direct aggregate plan contains a cycle".to_owned(),
             ));
@@ -1512,6 +1575,55 @@ mod tests {
                 .expect("TextMap value type")
                 .kind(),
             crate::ValueTypeKind::ManagedTextMap
+        );
+    }
+
+    #[test]
+    fn transparent_task_carriers_register_after_their_direct_handle() {
+        let refined = TypeId(0);
+        let span = Span::default();
+        let task = Type::Task(Box::new(Type::Int));
+        let refined_task = Type::Nominal(refined, Vec::new());
+        let program = Program {
+            types: vec![TypeDef {
+                id: refined,
+                name: "Pending".into(),
+                span,
+                type_parameters: 0,
+                kind: TypeDefKind::Refined {
+                    base: task.clone(),
+                    predicate: Contract {
+                        code: "true".into(),
+                        span,
+                        expression: ContractExpr {
+                            kind: ContractExprKind::Constant(Constant::Bool(true)),
+                            span,
+                        },
+                    },
+                },
+            }],
+            ..Program::default()
+        };
+        let dyn_concepts = DynConceptPlan::default();
+        let mut planner = AggregatePlanner::new(&program, &dyn_concepts, true);
+        assert!(planner.admit_task_handle(&task));
+        assert!(planner.supports_value_type(&refined_task));
+        let mut builder = ProgramBuilder::new(crate::TargetLayout::new(64).expect("target"));
+        planner
+            .finish()
+            .register(&mut builder, &BTreeSet::from([task.clone()]))
+            .unwrap_or_else(|_| panic!("transparent Task carrier must register"));
+        let task = builder.type_id(&task).expect("registered direct Task");
+        let refined = builder
+            .type_id(&refined_task)
+            .expect("registered transparent Task");
+        assert_eq!(
+            builder
+                .representations()
+                .value_type(refined)
+                .expect("transparent value type")
+                .kind(),
+            crate::ValueTypeKind::Transparent { base: task }
         );
     }
 }

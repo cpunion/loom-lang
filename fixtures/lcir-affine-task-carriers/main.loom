@@ -1,0 +1,66 @@
+type PendingTask = Task[Int] where true
+
+record Payload {
+    label Text
+    values List[Int]
+}
+
+enum Work {
+    Queued(PendingTask, Payload)
+    Idle
+}
+
+async fn child(value Int) Int {
+    Task.sleep(0).await
+    value
+}
+
+fn wrap(value Task[Int]) PendingTask {
+    PendingTask(value)
+}
+
+fn unwrap(value PendingTask) Task[Int] {
+    value
+}
+
+fn forward(value Work) Work {
+    value
+}
+
+fn forwardOption(value Option[Task[Int]]) Option[Task[Int]] {
+    value
+}
+
+async fn exercise() {
+    let work = forward(Work.Queued(
+        wrap(child(7)),
+        Payload { label = "queued", values = [1, 2] }
+    ))
+
+    // The complete affine carrier crosses suspension. Task handles are owned
+    // by the scheduler; only the Text and List leaves are GC roots.
+    discard Task.sleep(0).await
+
+    match work {
+        Queued(pending, payload) => {
+            assert payload.label == "queued"
+            let valueCount = payload.values.length()
+            assert valueCount == 2
+            let value = unwrap(pending).await
+            assert value == 7
+        }
+        Idle => Unit
+    }
+
+    match forwardOption(Some(child(9))) {
+        Some(task) => {
+            let value = task.await
+            assert value == 9
+        }
+        None => Unit
+    }
+}
+
+pub async fn main() {
+    exercise().await
+}

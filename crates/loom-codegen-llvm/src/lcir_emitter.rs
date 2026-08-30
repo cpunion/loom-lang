@@ -5922,13 +5922,16 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                         }
                     }
                 }
-                Repr::Uninhabited | Repr::ImmortalText | Repr::TaskHandle => {
+                Repr::Uninhabited | Repr::ImmortalText => {
                     return Err(CodegenError::new(
                         "LcirListDescriptorUnsupported",
                         format!("List element type {root} contains an unsupported {repr:?} leaf"),
                     ));
                 }
-                Repr::Zst | Repr::Scalar(_) => {}
+                // Task handles are stable scheduler pointers, not moving-GC
+                // object references, including when carried by a product or
+                // sum rooted in a coroutine frame.
+                Repr::TaskHandle | Repr::Zst | Repr::Scalar(_) => {}
             }
         }
         Ok(offsets.into_iter().collect())
@@ -5977,8 +5980,8 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         // Task handles are stable scheduler pointers, not moving-GC object
         // references. The only repeated carrier allowed to contain them is
         // the exact `List[Task[T]]` shape validated by LCIR; its descriptor
-        // therefore has no managed element offsets. Nested TaskHandle leaves
-        // continue through `managed_element_offsets` and fail closed.
+        // therefore has no managed element offsets. The general walker also
+        // skips TaskHandle leaves in by-value coroutine products and sums.
         let pointer_offsets = if self.repr_of(element_ty)? == Repr::TaskHandle {
             let semantic = self
                 .artifact

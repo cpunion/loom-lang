@@ -6123,6 +6123,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 .unwrap_or_else(|| self.types().error());
             self.check_expr(arguments[0], Some(base), ExpressionContext::Value);
             let proof = self.refinement_proof(definition, arguments[0]);
+            let carries_task = self.has_task_obligation(base, &mut BTreeSet::new(), 0);
             let nominal = self.types().intern(TyData::Nominal {
                 definition,
                 arguments: Vec::new(),
@@ -6146,6 +6147,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             return match proof {
                 ProofResult::Proven => nominal,
                 ProofResult::Disproven => {
+                    if carries_task {
+                        self.consume_task_obligation(arguments[0]);
+                    }
                     let name = self.analyzer.program.definitions[definition]
                         .name
                         .as_ref()
@@ -6158,6 +6162,15 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     self.types().error()
                 }
                 ProofResult::Unknown => {
+                    if carries_task {
+                        self.error_at(
+                            "TaskFallibleConstructionUnsupported",
+                            "a Task-carrying constrained value requires a statically proven predicate because a failed runtime check cannot discard its Task",
+                            expression,
+                        );
+                        self.consume_task_obligation(arguments[0]);
+                        return self.types().error();
+                    }
                     let constraint_error = self.types().builtin(BuiltinType::ConstraintError);
                     self.types().intern(TyData::Result {
                         ok: nominal,
@@ -8357,11 +8370,16 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         let proof = record
             .invariant
             .map(|_| self.invariant_proof(definition, &canonical));
+        let field_values = canonical
+            .iter()
+            .map(|(_, value)| *value)
+            .collect::<Vec<_>>();
         self.semantics.record_fields.insert(expression, canonical);
         let nominal = self.types().intern(TyData::Nominal {
             definition,
             arguments,
         });
+        let carries_task = self.has_task_obligation(nominal, &mut BTreeSet::new(), 0);
         match proof {
             None => nominal,
             Some(ProofResult::Proven) => {
@@ -8371,6 +8389,11 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 nominal
             }
             Some(ProofResult::Disproven) => {
+                if carries_task {
+                    for value in &field_values {
+                        self.consume_task_obligation(*value);
+                    }
+                }
                 self.semantics
                     .construction_checks
                     .insert(expression, ConstructionCheck::Runtime);
@@ -8386,6 +8409,17 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 self.types().error()
             }
             Some(ProofResult::Unknown) => {
+                if carries_task {
+                    self.error_at(
+                        "TaskFallibleConstructionUnsupported",
+                        "a Task-carrying invariant record requires a statically proven invariant because a failed runtime check cannot discard its Task",
+                        expression,
+                    );
+                    for value in field_values {
+                        self.consume_task_obligation(value);
+                    }
+                    return self.types().error();
+                }
                 self.semantics
                     .construction_checks
                     .insert(expression, ConstructionCheck::Runtime);
@@ -8765,6 +8799,12 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
     }
 
     fn seed_task_obligations(&mut self) {
+        // Contract and constraint predicates borrow their receiver and
+        // parameters. They prove facts about the surrounding value; they do
+        // not take ownership of an affine Task obligation from it.
+        if self.environment.contract != ContractMode::None {
+            return;
+        }
         let parameters = self
             .environment
             .params
@@ -8889,7 +8929,8 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 if self.semantics.calls.get(expression).is_some_and(|call| {
                     matches!(
                         &call.target,
-                        CallTarget::EnumVariant(_)
+                        CallTarget::RefinedConstructor(_)
+                            | CallTarget::EnumVariant(_)
                             | CallTarget::Builtin(
                                 BuiltinValue::Some | BuiltinValue::Ok | BuiltinValue::Err
                             )

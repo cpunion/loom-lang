@@ -10308,6 +10308,70 @@ fn typed_fixed_task_outcomes_capture_faults_and_race_nonzero_winners() {
     }
 }
 
+#[test]
+fn task_bearing_sums_emit_with_only_managed_payload_roots() {
+    let program = compile_source(
+        r#"record Payload { label Text, values List[Int] }
+
+enum Work {
+    Pending(Task[Int], Payload)
+    Idle
+}
+
+async fn child() Int { 7 }
+
+pub async fn main() {
+    let work = Work.Pending(child(), Payload { label = "queued", values = [1, 2] })
+    discard Task.sleep(0).await
+    match work {
+        Pending(task, payload) => {
+            assert payload.label == "queued"
+            discard payload.values.length()
+            let value = task.await
+            assert value == 7
+        }
+        Idle => Unit
+    }
+}
+"#,
+    );
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let main = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("main instance");
+    let directory = tempfile::tempdir().expect("create affine sum output");
+    let object = directory.path().join("task-bearing-sum.o");
+    let ir_path = directory.path().join("task-bearing-sum.ll");
+    emit_lcir_native_object(
+        &artifact,
+        &object,
+        &NativeObjectOptions {
+            emit_ir: Some(ir_path.clone()),
+            ..NativeObjectOptions::default()
+        },
+    )
+    .expect("emit Task-bearing sum object");
+    assert!(object.is_file(), "missing Task-bearing sum object");
+    let ir = std::fs::read_to_string(ir_path).expect("read Task-bearing sum IR");
+    assert!(ir.contains("sum.switch"), "{ir}");
+    let offsets_prefix = format!("@loom.lcir.coroutine.root_offsets.{} =", main.id().raw());
+    let offsets = ir
+        .lines()
+        .find(|line| line.starts_with(&offsets_prefix))
+        .unwrap_or_else(|| panic!("missing `{offsets_prefix}`:\n{ir}"));
+    assert!(
+        offsets.contains("[2 x i64] [i64 32, i64 40]"),
+        "the live Work(Task, Payload(Text, List)) frame must trace only Text and List, never LoomTask*: {offsets}"
+    );
+}
+
 const DYNAMIC_TASK_JOIN_SOURCE: &str = r#"async fn managed(value Text) Text {
     value.concat("!")
 }
