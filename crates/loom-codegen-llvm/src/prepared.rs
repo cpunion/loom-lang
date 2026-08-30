@@ -49,6 +49,7 @@ pub enum NativeRouteKind {
 /// Stable class for a failure before a native route can be prepared.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativePreparationErrorKind {
+    InvalidProgram,
     InvalidRoot,
     Unsupported,
     Resource,
@@ -150,6 +151,11 @@ impl NativePreparationError {
 
     fn lowering(error: LoweringError) -> Self {
         match error {
+            LoweringError::InvalidProgram { code, message } => Self::new(
+                NativePreparationErrorKind::InvalidProgram,
+                code.as_str(),
+                message,
+            ),
             LoweringError::InvalidRoot { code, message } => Self::new(
                 NativePreparationErrorKind::InvalidRoot,
                 invalid_root_error_code(code),
@@ -269,9 +275,9 @@ impl PreparedNativeObject<'_> {
 ///
 /// # Errors
 ///
-/// Returns a structured invalid-root, unsupported, resource, target, or
-/// compiler-defect error. Valid but unsupported LCIR selects one whole
-/// checked-MIR plan only under [`NativeRoutePolicy::Automatic`].
+/// Returns a structured invalid-program, invalid-root, unsupported, resource,
+/// target, or compiler-defect error. Valid but unsupported LCIR selects one
+/// whole checked-MIR plan only under [`NativeRoutePolicy::Automatic`].
 pub fn prepare_native_object(
     mir: &CheckedProgram,
     options: EmitOptions,

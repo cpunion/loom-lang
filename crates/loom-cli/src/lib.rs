@@ -156,7 +156,8 @@ impl NativePipelineError {
     const fn exit_status(&self) -> i32 {
         match self {
             Self::Preparation(error) => match error.kind() {
-                loom_codegen_llvm::NativePreparationErrorKind::InvalidRoot
+                loom_codegen_llvm::NativePreparationErrorKind::InvalidProgram
+                | loom_codegen_llvm::NativePreparationErrorKind::InvalidRoot
                 | loom_codegen_llvm::NativePreparationErrorKind::Unsupported
                 | loom_codegen_llvm::NativePreparationErrorKind::Resource => EXIT_FAILURE,
                 loom_codegen_llvm::NativePreparationErrorKind::Target => EXIT_USAGE,
