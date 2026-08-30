@@ -257,8 +257,6 @@ impl Error for LoweringError {}
 /// A stable coverage category for checked MIR not implemented by this slice.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum UnsupportedFeature {
-    AsyncFunction,
-    MutableParameter,
     MutableReceiver,
     Contracts,
     SignatureType,
@@ -286,8 +284,6 @@ impl UnsupportedFeature {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::AsyncFunction => "AsyncFunction",
-            Self::MutableParameter => "MutableParameter",
             Self::MutableReceiver => "MutableReceiver",
             Self::Contracts => "Contracts",
             Self::SignatureType => "SignatureType",
@@ -1387,9 +1383,8 @@ const fn is_mutable_view(ty: &Type) -> bool {
     matches!(ty, Type::View { mutable: true, .. })
 }
 
-/// Functional writeback is a synchronous call boundary. Async parameters are
-/// copied into their Task frame and mutate only that independent logical
-/// value, including the short-form mutable interface parameter.
+/// Functional writeback is a synchronous call boundary. A mutable dynamic View
+/// parameter is copied into an async Task frame as an independent value.
 const fn is_functional_inout_parameter(
     function: &mir::Function,
     parameter: &mir::LocalDecl,
@@ -2378,9 +2373,6 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
     #[allow(clippy::too_many_lines)]
     fn classify_function(&mut self, function: &'program mir::Function, key: &InstanceKey) {
         let base = format!("function[{}]", function.id.0);
-        if !function.is_async && !function.suspension_points.is_empty() {
-            self.function_item(UnsupportedFeature::AsyncFunction, function, &base);
-        }
         if function.is_async {
             for (index, point) in function.suspension_points.iter().enumerate() {
                 if point.state == 0 {
@@ -2446,26 +2438,6 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
         }
         for (index, parameter) in function.params.iter().enumerate() {
             let path = format!("{base}.params[{index}]");
-            let supported_inout_receiver = !function.is_async
-                && index == 0
-                && function.receiver == Some(mir::Receiver::Mutable)
-                && InstanceSubstitution::new(self.program, key)
-                    .instantiate_type(&parameter.ty)
-                    .is_ok_and(|ty| {
-                        task_free_type(self.program, self.dyn_concepts, &ty)
-                            && (self.supported_record_type(&ty)
-                                || (is_invariant_record_type(self.program, &ty)
-                                    && self.aggregates.supports_value_type(&ty)))
-                    });
-            if parameter.mutable && !supported_inout_receiver {
-                self.item(
-                    UnsupportedFeature::MutableParameter,
-                    function.id,
-                    None,
-                    parameter.span,
-                    path.clone(),
-                );
-            }
             let supported = self
                 .instantiated_type(function, key, None, &parameter.ty, parameter.span, &path)
                 .is_some_and(|ty| {
@@ -3686,21 +3658,6 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                             })
                         })
                 });
-                if callee_key.as_ref().is_some_and(|callee_key| {
-                    self.program
-                        .function(callee_key.source())
-                        .is_some_and(|callee| {
-                            callee.is_async
-                                && callee.params.iter().any(|parameter| parameter.mutable)
-                        })
-                }) {
-                    self.expression_item(
-                        UnsupportedFeature::AsyncFunction,
-                        function,
-                        expression,
-                        &format!("{path}.target"),
-                    );
-                }
                 for (index, argument) in arguments.iter().enumerate() {
                     match argument {
                         CallArgument::Value(value) => {
@@ -6319,19 +6276,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 ty: snapshot.ty.clone(),
             });
         }
-        // Immutable async parameters have the same old/current source value.
-        // Reuse the post-resume SSA values so an exit contract never reaches
-        // back to an entry-block ValueId across a suspension. Mutable async
-        // parameters are outside the current LCIR boundary and retain the
-        // ordinary entry snapshots for the fallback path.
-        let old_parameters = if include_old
-            && self.source.is_async
-            && self
-                .source
-                .params
-                .iter()
-                .all(|parameter| !parameter.mutable)
-        {
+        // Async parameters have the same old/current source value. Reuse the
+        // post-resume SSA values so an exit contract never reaches back to an
+        // entry-block ValueId across a suspension.
+        let old_parameters = if include_old && self.source.is_async {
             parameters.clone()
         } else {
             self.old_parameters.clone()
