@@ -8176,6 +8176,8 @@ fn checked_mir_allows_owner_mutation_and_complete_invariant_writeback() {
 fn checked_mir_rejects_every_nested_invariant_writeback_path() {
     let positive = Type::Nominal(TypeId(0), Vec::new());
     let holder = Type::Nominal(TypeId(1), Vec::new());
+    let protected_view = Type::Nominal(TypeId(2), Vec::new());
+    let view_holder = Type::Nominal(TypeId(3), Vec::new());
     let nested_field = || Place {
         local: LocalId(0),
         projection: vec![0, 0],
@@ -8214,7 +8216,7 @@ fn checked_mir_rejects_every_nested_invariant_writeback_path() {
     );
     let nested_view = invariant_test_mut_receiver(
         4,
-        holder,
+        holder.clone(),
         invariant_test_unit_block(
             Vec::new(),
             Some(expr(
@@ -8229,7 +8231,33 @@ fn checked_mir_rejects_every_nested_invariant_writeback_path() {
                             mutable: true,
                             token: 1,
                         },
-                        view,
+                        view.clone(),
+                    ))],
+                    witnesses: Vec::new(),
+                },
+                Type::Unit,
+            )),
+        ),
+    );
+    let nested_reborrow = invariant_test_mut_receiver(
+        5,
+        view_holder,
+        invariant_test_unit_block(
+            Vec::new(),
+            Some(expr(
+                ExprKind::Call {
+                    target: CallTarget::Direct(FunctionId(1)),
+                    type_arguments: Vec::new(),
+                    arguments: vec![CallArgument::Value(expr(
+                        ExprKind::ReborrowView {
+                            owner: Place {
+                                local: LocalId(0),
+                                projection: vec![0, 0],
+                            },
+                            mutable: true,
+                            token: 1,
+                        },
+                        view.clone(),
                     ))],
                     witnesses: Vec::new(),
                 },
@@ -8241,7 +8269,9 @@ fn checked_mir_rejects_every_nested_invariant_writeback_path() {
     let errors = validation_errors(&Program {
         types: vec![
             invariant_test_record(0, "Positive", vec![Type::Int], true),
-            invariant_test_record(1, "Holder", vec![positive], false),
+            invariant_test_record(1, "Holder", vec![positive], true),
+            invariant_test_record(2, "ProtectedView", vec![view], true),
+            invariant_test_record(3, "ViewHolder", vec![protected_view], true),
         ],
         concepts: vec![empty_dyn_concept()],
         functions: vec![
@@ -8250,6 +8280,7 @@ fn checked_mir_rejects_every_nested_invariant_writeback_path() {
             nested_inout,
             nested_assign,
             nested_view,
+            nested_reborrow,
         ],
         witnesses: vec![empty_witness(0, Type::Int)],
         ..Program::default()
@@ -8258,18 +8289,35 @@ fn checked_mir_rejects_every_nested_invariant_writeback_path() {
         .iter()
         .filter(|error| error.code == MirValidationCode::InvariantShape)
         .collect::<Vec<_>>();
-    assert_eq!(invariant_errors.len(), 3, "{errors:#?}");
-    assert!(invariant_errors.iter().all(|error| {
-        error.path.ends_with("projection[1]") && error.message.contains("`Positive`")
-    }));
+    assert_eq!(invariant_errors.len(), 4, "{errors:#?}");
+    assert!(
+        invariant_errors
+            .iter()
+            .all(|error| error.path.ends_with("projection[1]")),
+        "{errors:#?}"
+    );
+    assert_eq!(
+        invariant_errors
+            .iter()
+            .filter(|error| error.message.contains("`Positive`"))
+            .count(),
+        3,
+        "{errors:#?}"
+    );
+    assert!(
+        invariant_errors
+            .iter()
+            .any(|error| error.message.contains("`ProtectedView`")),
+        "{errors:#?}"
+    );
 }
 
 #[test]
 fn checked_mir_rejects_forged_moves_from_invariant_interiors() {
     let positive = Type::Nominal(TypeId(0), Vec::new());
-    let move_field = function(
+    let mut move_field = function(
         0,
-        vec![local(0, positive.clone(), false)],
+        vec![local(0, positive.clone(), true)],
         Vec::new(),
         Type::Int,
         Block {
@@ -8284,6 +8332,7 @@ fn checked_mir_rejects_forged_moves_from_invariant_interiors() {
             span: span(),
         },
     );
+    move_field.receiver = Some(Receiver::Mutable);
     let errors = validation_errors(&Program {
         types: vec![invariant_test_record(0, "Positive", vec![Type::Int], true)],
         functions: vec![move_field],
@@ -8295,25 +8344,164 @@ fn checked_mir_rejects_forged_moves_from_invariant_interiors() {
             && error.message.contains("move out")
     }));
 
+    let holder = Type::Nominal(TypeId(1), Vec::new());
     validate_program(&Program {
-        types: vec![invariant_test_record(0, "Positive", vec![Type::Int], true)],
+        types: vec![
+            invariant_test_record(0, "Positive", vec![Type::Int], true),
+            invariant_test_record(1, "Holder", vec![positive.clone()], false),
+        ],
+        functions: vec![
+            function(
+                0,
+                vec![local(0, positive.clone(), false)],
+                Vec::new(),
+                positive.clone(),
+                Block {
+                    statements: Vec::new(),
+                    tail: Some(Box::new(move_local(
+                        0,
+                        Type::Nominal(TypeId(0), Vec::new()),
+                    ))),
+                    span: span(),
+                },
+            ),
+            function(
+                1,
+                vec![local(0, holder, false)],
+                Vec::new(),
+                positive,
+                Block {
+                    statements: Vec::new(),
+                    tail: Some(Box::new(expr(
+                        ExprKind::Move(Place {
+                            local: LocalId(0),
+                            projection: vec![0],
+                        }),
+                        Type::Nominal(TypeId(0), Vec::new()),
+                    ))),
+                    span: span(),
+                },
+            ),
+        ],
+        ..Program::default()
+    })
+    .expect("moving a complete invariant value or leaf preserves its boundary");
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn checked_mir_protects_refined_record_interiors() {
+    let boxed = Type::Nominal(TypeId(0), Vec::new());
+    let checked = Type::Nominal(TypeId(1), Vec::new());
+    let types = || {
+        vec![
+            invariant_test_record(0, "Box", vec![Type::Int], false),
+            TypeDef {
+                id: TypeId(1),
+                name: "CheckedBox".to_owned(),
+                span: span(),
+                type_parameters: 0,
+                kind: TypeDefKind::Refined {
+                    base: boxed.clone(),
+                    predicate: Contract {
+                        code: "CheckedBox.constraint".to_owned(),
+                        span: span(),
+                        expression: ContractExpr {
+                            kind: ContractExprKind::Constant(Constant::Bool(true)),
+                            span: span(),
+                        },
+                    },
+                },
+            },
+        ]
+    };
+    let touch_int =
+        invariant_test_mut_receiver(0, Type::Int, invariant_test_unit_block(Vec::new(), None));
+    let assign = invariant_test_mut_receiver(
+        1,
+        checked.clone(),
+        invariant_test_unit_block(
+            vec![Statement {
+                kind: StatementKind::Assign {
+                    place: Place {
+                        local: LocalId(0),
+                        projection: vec![0],
+                    },
+                    value: constant(Constant::Int(1), Type::Int),
+                },
+                span: span(),
+            }],
+            None,
+        ),
+    );
+    let inout = invariant_test_mut_receiver(
+        2,
+        checked.clone(),
+        invariant_test_unit_block(
+            Vec::new(),
+            Some(invariant_test_inout_call(
+                0,
+                Place {
+                    local: LocalId(0),
+                    projection: vec![0],
+                },
+            )),
+        ),
+    );
+    let mut move_field = function(
+        3,
+        vec![local(0, checked.clone(), true)],
+        Vec::new(),
+        Type::Int,
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(expr(
+                ExprKind::Move(Place {
+                    local: LocalId(0),
+                    projection: vec![0],
+                }),
+                Type::Int,
+            ))),
+            span: span(),
+        },
+    );
+    move_field.receiver = Some(Receiver::Mutable);
+    let errors = validation_errors(&Program {
+        types: types(),
+        functions: vec![touch_int, assign, inout, move_field],
+        ..Program::default()
+    });
+    let invariant_errors = errors
+        .iter()
+        .filter(|error| error.code == MirValidationCode::InvariantShape)
+        .collect::<Vec<_>>();
+    assert_eq!(invariant_errors.len(), 3, "{errors:#?}");
+    assert!(invariant_errors.iter().all(|error| {
+        error.path.ends_with("projection[0]") && error.message.contains("`CheckedBox`")
+    }));
+
+    validate_program(&Program {
+        types: types(),
         functions: vec![function(
             0,
-            vec![local(0, positive.clone(), false)],
+            vec![local(0, checked, false)],
             Vec::new(),
-            positive,
+            Type::Int,
             Block {
                 statements: Vec::new(),
-                tail: Some(Box::new(move_local(
-                    0,
-                    Type::Nominal(TypeId(0), Vec::new()),
+                tail: Some(Box::new(copy_place(
+                    Place {
+                        local: LocalId(0),
+                        projection: vec![0],
+                    },
+                    Type::Int,
                 ))),
                 span: span(),
             },
         )],
         ..Program::default()
     })
-    .expect("moving a complete invariant value preserves its boundary");
+    .expect("read-only projection through a constrained record remains valid");
 }
 
 #[allow(clippy::too_many_lines)]

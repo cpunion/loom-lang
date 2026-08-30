@@ -210,7 +210,7 @@ impl CheckedProgram {
     }
 
     /// Reports whether artifact decoding replaced at least one serialized
-    /// construction proof with a mandatory replay.
+    /// construction or receiver-invariant proof with a mandatory replay.
     ///
     /// A compiler cache uses this provenance bit to rebuild from its exact
     /// source input instead of turning a warm build into a `Recheck` build.
@@ -7357,6 +7357,15 @@ impl<'program> Validator<'program> {
             expression.span,
             &format!("{path}.owner"),
         );
+        if mutable {
+            self.validate_invariant_place_access(
+                function,
+                owner,
+                InvariantPlaceAccess::Mutate,
+                expression.span,
+                &format!("{path}.owner"),
+            );
+        }
         if owner_ty.as_ref() != Some(&expression.ty) {
             self.push(
                 MirValidationCode::ExpressionShape,
@@ -8273,11 +8282,33 @@ impl<'program> Validator<'program> {
         };
         let mut ty = local.ty.clone();
         for (index, field) in place.projection.iter().copied().enumerate() {
-            let Some((record, has_invariant, projected)) = self.record_projection_step(ty, field)
+            let Some((refined, record, has_invariant, projected)) =
+                self.record_projection_step(ty, field)
             else {
                 // `validate_place` owns malformed-place diagnostics.
                 return;
             };
+            if let Some(refined) = refined {
+                let refined_name = self.program.type_def(refined).map_or_else(
+                    || format!("type#{}", refined.0),
+                    |definition| definition.name.clone(),
+                );
+                let message = match access {
+                    InvariantPlaceAccess::Mutate => format!(
+                        "mutable access cannot cross the interior of constrained type `{refined_name}`"
+                    ),
+                    InvariantPlaceAccess::Move => format!(
+                        "a value cannot move out through the interior of constrained type `{refined_name}`"
+                    ),
+                };
+                self.push(
+                    MirValidationCode::InvariantShape,
+                    message,
+                    span,
+                    format!("{path}.projection[{index}]"),
+                );
+                return;
+            }
             let receiver_boundary = access == InvariantPlaceAccess::Mutate
                 && index == 0
                 && function.receiver == Some(Receiver::Mutable)
@@ -8316,7 +8347,8 @@ impl<'program> Validator<'program> {
         &self,
         mut ty: Type,
         field: u32,
-    ) -> Option<(crate::TypeId, bool, Type)> {
+    ) -> Option<(Option<crate::TypeId>, crate::TypeId, bool, Type)> {
+        let mut refined = None;
         for _ in 0..64 {
             let Type::Nominal(type_id, arguments) = ty else {
                 return None;
@@ -8326,12 +8358,14 @@ impl<'program> Validator<'program> {
                 TypeDefKind::Record { fields, invariant } => {
                     let field = fields.get(field as usize)?;
                     return Some((
+                        refined,
                         type_id,
                         invariant.is_some(),
                         substitute_type(&field.ty, &arguments),
                     ));
                 }
                 TypeDefKind::Refined { base, .. } => {
+                    refined.get_or_insert(type_id);
                     ty = substitute_type(base, &arguments);
                 }
                 TypeDefKind::Enum { .. } => return None,
