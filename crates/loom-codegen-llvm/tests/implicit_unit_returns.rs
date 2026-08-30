@@ -16,8 +16,12 @@ fn omitted_unit_entries_run_and_test_on_both_backends() {
 }
 
 pub fn main() {}
-
-test fn ordinary() {
+",
+    )
+    .expect("write implicit-Unit source");
+    std::fs::write(
+        project.path().join("main_test.loom"),
+        r"test fn ordinary() {
     assert true
 }
 
@@ -26,7 +30,7 @@ test async fn asynchronousTest() {
 }
 ",
     )
-    .expect("write implicit-Unit source");
+    .expect("write implicit-Unit test source");
 
     let snapshot = support::analysis_host(project.path())
         .expect("open implicit-Unit project")

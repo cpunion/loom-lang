@@ -11,8 +11,20 @@ mod support;
 use loom_mir::CheckedProgram;
 
 fn compile_source(source: &str) -> CheckedProgram {
+    compile_project_sources(source, None)
+}
+
+fn compile_sources(source: &str, test_source: &str) -> CheckedProgram {
+    compile_project_sources(source, Some(test_source))
+}
+
+fn compile_project_sources(source: &str, test_source: Option<&str>) -> CheckedProgram {
     let project = tempfile::tempdir().expect("create source project");
     std::fs::write(project.path().join("main.loom"), source).expect("write source fixture");
+    if let Some(test_source) = test_source {
+        std::fs::write(project.path().join("main_test.loom"), test_source)
+            .expect("write test source fixture");
+    }
     let snapshot = support::analysis_host(project.path())
         .expect("load source project")
         .snapshot()
@@ -219,7 +231,8 @@ fn dead() Text { "unreachable" }
 
 #[test]
 fn typed_timer_test_keeps_the_ordered_test_artifact_on_lcir() {
-    let program = compile_source(
+    let program = compile_sources(
+        "",
         r"test fn scalar() {}
 
 test async fn timer() {

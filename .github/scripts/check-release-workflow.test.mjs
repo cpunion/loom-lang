@@ -46,6 +46,15 @@ test("requires exact LF byte checks in both release archive branches", () => {
   }
 });
 
+test("rejects manifest target selection for Loom tests", () => {
+  const errors = checkReleaseWorkflow({
+    release: "loom test --target unit examples/c3/application",
+    bootstrap: "",
+    argumentTest: "",
+  });
+  assert.ok(errors.some((error) => error.includes("test --target")));
+});
+
 test("rejects duplicated downloads, redundant rebuilds, and unsplatted native arguments", () => {
   const errors = checkReleaseWorkflow({
     release: [

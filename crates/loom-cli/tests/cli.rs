@@ -14,13 +14,19 @@ use sha2::{Digest as _, Sha256};
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 static TEST_RUNTIME: OnceLock<PathBuf> = OnceLock::new();
 
-macro_rules! fixture_source {
-    ($name:literal) => {
-        concat!(
-            include_str!(concat!("../../../fixtures/", $name, "/main.loom")),
-            include_str!(concat!("../../../fixtures/", $name, "/main_test.loom"))
-        )
-    };
+macro_rules! fixture_project {
+    ($name:literal) => {{
+        let project = TestProject::new(include_str!(concat!(
+            "../../../fixtures/",
+            $name,
+            "/main.loom"
+        )));
+        project.write(
+            "main_test.loom",
+            include_str!(concat!("../../../fixtures/", $name, "/main_test.loom")),
+        );
+        project
+    }};
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
@@ -46,33 +52,6 @@ impl TestProject {
     }
 
     fn write(&self, relative: &str, text: &str) {
-        if std::path::Path::new(relative)
-            .extension()
-            .is_some_and(|extension| extension == "loom")
-            && !relative.ends_with("_test.loom")
-            && let Some(test_start) = test_source_start(text)
-        {
-            let test_file_start = test_import_block_start(text, test_start).unwrap_or(test_start);
-            let (ordinary, tests) = text.split_at(test_file_start);
-            self.write_exact(relative, ordinary.trim_end());
-            let test_path = format!("{}_test.loom", relative.trim_end_matches(".loom"));
-            let imports = ordinary
-                .lines()
-                .filter(|line| line.starts_with("import "))
-                .collect::<Vec<_>>()
-                .join("\n");
-            let test_source = if imports.is_empty() {
-                tests.to_owned()
-            } else {
-                format!("{imports}\n\n{tests}")
-            };
-            self.write_exact(&test_path, &test_source);
-            return;
-        }
-        self.write_exact(relative, text);
-    }
-
-    fn write_exact(&self, relative: &str, text: &str) {
         let path = self.0.join(relative);
         fs::create_dir_all(path.parent().expect("test path has parent"))
             .expect("create source parent");
@@ -88,34 +67,6 @@ impl TestProject {
         permissions.set_mode(0o755);
         fs::set_permissions(path, permissions).expect("make script executable");
     }
-}
-
-fn test_source_start(source: &str) -> Option<usize> {
-    source
-        .match_indices("test ")
-        .find(|(offset, _)| {
-            (*offset == 0 || source.as_bytes().get(offset - 1) == Some(&b'\n'))
-                && (source[*offset..].starts_with("test fn ")
-                    || source[*offset..].starts_with("test async fn "))
-        })
-        .map(|(offset, _)| offset)
-}
-
-fn test_import_block_start(source: &str, test_start: usize) -> Option<usize> {
-    let mut offset = 0;
-    let mut saw_declaration = false;
-    for line in source[..test_start].split_inclusive('\n') {
-        let trimmed = line.trim();
-        if trimmed.starts_with("import ") {
-            if saw_declaration {
-                return Some(offset);
-            }
-        } else if !trimmed.is_empty() {
-            saw_declaration = true;
-        }
-        offset += line.len();
-    }
-    None
 }
 
 impl Drop for TestProject {
@@ -1068,7 +1019,11 @@ fn target_and_optimization_split_object_cache_but_reuse_checked_mir() {
 #[test]
 fn ordinary_native_commands_use_the_atomic_automatic_route() {
     let scalar = TestProject::new(
-        "fn choose(flag Bool) Int { if flag { 1 } else { 2 } }\n\npub fn main() {\n    discard choose(true)\n}\n\ntest fn scalar() {\n    discard choose(false)\n}\n",
+        "fn choose(flag Bool) Int { if flag { 1 } else { 2 } }\n\npub fn main() {\n    discard choose(true)\n}\n",
+    );
+    scalar.write(
+        "main_test.loom",
+        "test fn scalar() {\n    discard choose(false)\n}\n",
     );
     let scalar_object = scalar.0.join("scalar.o");
     let build = loom()
@@ -1116,7 +1071,7 @@ fn ordinary_native_commands_use_the_atomic_automatic_route() {
 
 #[test]
 fn async_managed_collections_close_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(fixture_source!("lcir-async-managed-collections"));
+    let project = fixture_project!("lcir-async-managed-collections");
 
     let check = loom()
         .args(["--no-cache", "check"])
@@ -1186,7 +1141,7 @@ fn async_managed_collections_close_real_check_build_test_and_run_commands() {
 
 #[test]
 fn typed_sleep_closes_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(fixture_source!("lcir-typed-sleep"));
+    let project = fixture_project!("lcir-typed-sleep");
 
     let check = loom()
         .args(["--no-cache", "check"])
@@ -1251,7 +1206,7 @@ fn typed_sleep_closes_real_check_build_test_and_run_commands() {
 
 #[test]
 fn synchronous_task_helpers_close_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(fixture_source!("lcir-sync-task-helpers"));
+    let project = fixture_project!("lcir-sync-task-helpers");
 
     let check = loom()
         .args(["--no-cache", "check"])
@@ -1312,7 +1267,7 @@ fn synchronous_task_helpers_close_real_check_build_test_and_run_commands() {
 
 #[test]
 fn typed_task_all_closes_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(fixture_source!("lcir-typed-task-all"));
+    let project = fixture_project!("lcir-typed-task-all");
 
     let check = loom()
         .args(["--no-cache", "check"])
@@ -1382,7 +1337,7 @@ fn typed_task_all_closes_real_check_build_test_and_run_commands() {
 
 #[test]
 fn typed_task_any_closes_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(fixture_source!("lcir-typed-task-any"));
+    let project = fixture_project!("lcir-typed-task-any");
 
     let check = loom()
         .args(["--no-cache", "check"])
@@ -1455,7 +1410,7 @@ fn typed_task_any_closes_real_check_build_test_and_run_commands() {
 
 #[test]
 fn typed_task_outcomes_close_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(fixture_source!("lcir-typed-task-outcomes"));
+    let project = fixture_project!("lcir-typed-task-outcomes");
 
     let check = loom()
         .args(["--no-cache", "check"])
@@ -1527,7 +1482,7 @@ fn typed_task_outcomes_close_real_check_build_test_and_run_commands() {
 
 #[test]
 fn typed_async_cleanup_closes_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(fixture_source!("lcir-async-cleanup"));
+    let project = fixture_project!("lcir-async-cleanup");
 
     let check = loom()
         .args(["--no-cache", "check"])
@@ -1612,7 +1567,7 @@ fn typed_async_cleanup_closes_real_check_build_test_and_run_commands() {
 
 #[test]
 fn typed_async_writeback_closes_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(fixture_source!("lcir-async-writeback"));
+    let project = fixture_project!("lcir-async-writeback");
 
     let check = loom()
         .args(["--no-cache", "check"])
@@ -1681,7 +1636,7 @@ fn typed_async_writeback_closes_real_check_build_test_and_run_commands() {
 
 #[test]
 fn generic_native_commands_close_check_build_test_and_run() {
-    let project = TestProject::new(fixture_source!("lcir-generics"));
+    let project = fixture_project!("lcir-generics");
 
     let check = loom()
         .args(["--no-cache", "check"])
@@ -1724,7 +1679,7 @@ fn generic_native_commands_close_check_build_test_and_run() {
 
 #[test]
 fn generic_products_close_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(fixture_source!("lcir-generic-products"));
+    let project = fixture_project!("lcir-generic-products");
 
     let check = loom()
         .args(["--no-cache", "check"])
@@ -1791,7 +1746,7 @@ fn generic_products_close_real_check_build_test_and_run_commands() {
 
 #[test]
 fn scalar_std_apis_close_both_backends_and_typed_object_surface() {
-    let project = TestProject::new(fixture_source!("lcir-scalar-builtins"));
+    let project = fixture_project!("lcir-scalar-builtins");
 
     for backend in ["interpreter", "llvm"] {
         for command in ["check", "test", "run"] {
@@ -1886,7 +1841,7 @@ fn scalar_std_apis_close_both_backends_and_typed_object_surface() {
 
 #[test]
 fn structural_equality_closes_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(fixture_source!("lcir-structural-equality"));
+    let project = fixture_project!("lcir-structural-equality");
 
     let check = loom()
         .args(["--no-cache", "check"])
@@ -1953,7 +1908,7 @@ fn structural_equality_closes_real_check_build_test_and_run_commands() {
 
 #[test]
 fn static_concepts_close_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(fixture_source!("lcir-static-concepts"));
+    let project = fixture_project!("lcir-static-concepts");
 
     let check = loom()
         .args(["--no-cache", "check"])
@@ -2009,7 +1964,7 @@ fn static_concepts_close_real_check_build_test_and_run_commands() {
 
 #[test]
 fn unique_dynamic_concepts_close_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(fixture_source!("lcir-dyn-unique"));
+    let project = fixture_project!("lcir-dyn-unique");
 
     let check = loom()
         .args(["--no-cache", "check"])
@@ -2064,7 +2019,7 @@ fn unique_dynamic_concepts_close_real_check_build_test_and_run_commands() {
 
 #[test]
 fn finite_dynamic_concepts_close_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(fixture_source!("lcir-dyn-finite"));
+    let project = fixture_project!("lcir-dyn-finite");
 
     let check = loom()
         .args(["--no-cache", "check"])
@@ -2129,10 +2084,13 @@ fn finite_dynamic_concepts_close_real_check_build_test_and_run_commands() {
 
 #[test]
 fn concepts_polymorphism_uses_the_unique_witness_lcir_route() {
-    let project = TestProject::new(concat!(
-        include_str!("../../../examples/concepts-polymorphism/concepts.loom"),
-        include_str!("../../../examples/concepts-polymorphism/concepts_test.loom")
+    let project = TestProject::new(include_str!(
+        "../../../examples/concepts-polymorphism/concepts.loom"
     ));
+    project.write(
+        "main_test.loom",
+        include_str!("../../../examples/concepts-polymorphism/concepts_test.loom"),
+    );
     let object_path = project.0.join("concepts-polymorphism-unique-dyn.o");
     let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
@@ -2183,7 +2141,7 @@ fn concepts_polymorphism_uses_the_unique_witness_lcir_route() {
 
 #[test]
 fn lexical_cleanup_and_source_contracts_close_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(fixture_source!("lcir-lexical-cleanup"));
+    let project = fixture_project!("lcir-lexical-cleanup");
 
     let check = loom()
         .args(["--no-cache", "check"])
@@ -2240,7 +2198,7 @@ fn lexical_cleanup_and_source_contracts_close_real_check_build_test_and_run_comm
 
 #[test]
 fn projected_places_close_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(fixture_source!("lcir-projected-places"));
+    let project = fixture_project!("lcir-projected-places");
 
     let check = loom()
         .args(["--no-cache", "check"])
@@ -2283,7 +2241,7 @@ fn projected_places_close_real_check_build_test_and_run_commands() {
 
 #[test]
 fn immortal_text_closes_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(fixture_source!("lcir-text"));
+    let project = fixture_project!("lcir-text");
 
     let check = loom()
         .args(["--no-cache", "check"])
@@ -2332,7 +2290,7 @@ fn immortal_text_closes_real_check_build_test_and_run_commands() {
 
 #[test]
 fn managed_text_concat_closes_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(fixture_source!("lcir-managed-text"));
+    let project = fixture_project!("lcir-managed-text");
 
     let check = loom()
         .args(["--no-cache", "check"])
@@ -2400,7 +2358,7 @@ fn managed_text_concat_closes_real_check_build_test_and_run_commands() {
 
 #[test]
 fn managed_product_leaves_close_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(fixture_source!("lcir-managed-products"));
+    let project = fixture_project!("lcir-managed-products");
 
     let check = loom()
         .args(["--no-cache", "check"])
@@ -2467,7 +2425,7 @@ fn managed_product_leaves_close_real_check_build_test_and_run_commands() {
 
 #[test]
 fn managed_sum_leaves_close_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(fixture_source!("lcir-managed-sums"));
+    let project = fixture_project!("lcir-managed-sums");
 
     let check = loom()
         .args(["--no-cache", "check"])
@@ -2534,7 +2492,7 @@ fn managed_sum_leaves_close_real_check_build_test_and_run_commands() {
 
 #[test]
 fn managed_lists_close_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(fixture_source!("lcir-managed-lists"));
+    let project = fixture_project!("lcir-managed-lists");
 
     let check = loom()
         .args(["--no-cache", "check"])
@@ -2603,7 +2561,7 @@ fn managed_lists_close_real_check_build_test_and_run_commands() {
 
 #[test]
 fn typed_text_maps_close_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(fixture_source!("lcir-typed-textmap"));
+    let project = fixture_project!("lcir-typed-textmap");
 
     let check = loom()
         .args(["--no-cache", "check"])
@@ -2674,7 +2632,7 @@ fn typed_text_maps_close_real_check_build_test_and_run_commands() {
 
 #[test]
 fn typed_logging_closes_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(fixture_source!("lcir-typed-logging"));
+    let project = fixture_project!("lcir-typed-logging");
     let expected = include_bytes!("../../../fixtures/lcir-typed-logging/expected.stderr");
 
     let check = loom()
@@ -2743,7 +2701,7 @@ fn typed_logging_closes_real_check_build_test_and_run_commands() {
 
 #[test]
 fn typed_io_closes_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(fixture_source!("lcir-typed-io"));
+    let project = fixture_project!("lcir-typed-io");
 
     let check = loom()
         .args(["--no-cache", "check", "."])
@@ -2816,7 +2774,7 @@ fn typed_io_closes_real_check_build_test_and_run_commands() {
 
 #[test]
 fn typed_json_format_closes_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(fixture_source!("lcir-json-format"));
+    let project = fixture_project!("lcir-json-format");
 
     let check = loom()
         .args(["--no-cache", "check"])
@@ -2886,7 +2844,7 @@ fn typed_json_format_closes_real_check_build_test_and_run_commands() {
 
 #[test]
 fn source_json_parse_closes_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(fixture_source!("lcir-json-parse"));
+    let project = fixture_project!("lcir-json-parse");
 
     for backend in ["interpreter", "llvm"] {
         for command in ["check", "test", "run"] {
@@ -3100,7 +3058,11 @@ fn manifest_targets_and_path_dependencies_drive_cli_roots() {
     );
     project.write(
         "application/main.loom",
-        "import utility.math.increment\n\npub fn start() {\n    let value = increment(1)\n    assert value == 2\n}\n\ntest fn dependency_works() {\n    let value = increment(2)\n    assert value == 3\n}\n",
+        "import utility.math.increment\n\npub fn start() {\n    let value = increment(1)\n    assert value == 2\n}\n",
+    );
+    project.write(
+        "application/main_test.loom",
+        "import utility.math.increment\n\ntest fn dependency_works() {\n    let value = increment(2)\n    assert value == 3\n}\n",
     );
     let root = project.0.join("application");
 
@@ -3279,7 +3241,11 @@ fn library_targets_build_portable_validated_artifacts() {
     );
     project.write(
         "consumer/main.loom",
-        "import sample.answer\n\npub fn main() {\n    let value = answer()\n    assert value == 42\n}\n\ntest fn artifact_dependency_works() {\n    main()\n}\n",
+        "import sample.answer\n\npub fn main() {\n    let value = answer()\n    assert value == 42\n}\n",
+    );
+    project.write(
+        "consumer/main_test.loom",
+        "test fn artifact_dependency_works() {\n    main()\n}\n",
     );
     fs::remove_file(project.0.join("lib.loom")).expect("remove producer source");
     let consumed = loom()
@@ -3917,8 +3883,8 @@ fn dependency_public_functions_cannot_be_selected_as_root_entries() {
 
 #[test]
 fn test_and_run_execute_native_code() {
-    let project =
-        TestProject::new("pub fn main() {\n}\n\ntest fn passes() {\n    assert true\n}\n");
+    let project = TestProject::new("pub fn main() {\n}\n");
+    project.write("main_test.loom", "test fn passes() {\n    assert true\n}\n");
     let test = loom()
         .arg("test")
         .arg(&project.0)
@@ -3935,6 +3901,25 @@ fn test_and_run_execute_native_code() {
         .expect("run loom run");
     assert_eq!(run.status.code(), Some(0));
     assert_eq!(run.stdout, b"Unit\n");
+}
+
+#[test]
+fn check_rejects_test_declarations_outside_test_files() {
+    let project = TestProject::empty();
+    project.write("main.loom", "test fn misplaced() {\n    assert true\n}\n");
+    let output = loom_without_test_runtime()
+        .args(["--json", "--no-cache", "--backend", "interpreter", "check"])
+        .arg(&project.0)
+        .output()
+        .expect("reject a test declaration in an ordinary source file");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("UTF-8 stdout");
+    assert!(
+        stdout.contains("TestDeclarationOutsideTestFile"),
+        "{stdout}"
+    );
+    assert!(project.0.join("main.loom").is_file());
+    assert!(!project.0.join("main_test.loom").exists());
 }
 
 #[test]
@@ -4003,8 +3988,11 @@ async fn asynchronous_answer() Int {
 pub fn main() {
     discard answer()
 }
-
-test async fn discards_awaited_value() {
+",
+    );
+    project.write(
+        "main_test.loom",
+        r"test async fn discards_awaited_value() {
     discard asynchronous_answer().await
 }
 ",
@@ -4133,11 +4121,11 @@ pub fn main() {
     assert count == 2
     assertEnvironment()
 }
-
-test fn readsEnvironment() {
-    assertEnvironment()
-}
 "#,
+    );
+    project.write(
+        "main_test.loom",
+        "test fn readsEnvironment() {\n    assertEnvironment()\n}\n",
     );
 
     for backend in ["interpreter", "llvm"] {
@@ -4469,7 +4457,8 @@ fn native_target_preparation_errors_are_usage_errors() {
 
 #[test]
 fn non_linking_commands_do_not_resolve_the_native_runtime_bundle() {
-    let project = TestProject::new("pub fn main() {}\n\ntest fn passes() {}\n");
+    let project = TestProject::new("pub fn main() {}\n");
+    project.write("main_test.loom", "test fn passes() {}\n");
     let unavailable = project.0.join("unavailable-runtime-bundle");
 
     let checked = loom_without_test_runtime()
@@ -4827,7 +4816,7 @@ fn release_build_produces_a_runnable_native_executable() {
 
 #[test]
 fn source_backed_std_closes_real_check_build_test_and_run_commands() {
-    let project = TestProject::new(fixture_source!("std-source"));
+    let project = fixture_project!("std-source");
 
     let check = loom()
         .args(["--no-cache", "check"])
@@ -4870,21 +4859,25 @@ fn source_backed_std_closes_real_check_build_test_and_run_commands() {
 
 #[test]
 fn core_examples_close_check_build_test_and_run() {
-    for (fixture, source) in [
+    for (fixture, source, tests) in [
         (
             "constraints-contracts",
             include_str!("../../../examples/constraints-contracts/shop.loom"),
+            include_str!("../../../examples/constraints-contracts/shop_test.loom"),
         ),
         (
             "concepts-polymorphism",
             include_str!("../../../examples/concepts-polymorphism/concepts.loom"),
+            include_str!("../../../examples/concepts-polymorphism/concepts_test.loom"),
         ),
         (
             "async-resources",
             include_str!("../../../examples/async-resources/tasks.loom"),
+            include_str!("../../../examples/async-resources/tasks_test.loom"),
         ),
     ] {
         let project = TestProject::new(source);
+        project.write("main_test.loom", tests);
         for command in ["check", "test", "run"] {
             let output = loom()
                 .arg(command)
@@ -4938,8 +4931,11 @@ impl MustScope for Resource {}
 pub fn main() {
     scoped resource = Resource { value = 1 }
 }
-
-test fn resource_identity() {
+",
+    );
+    project.write(
+        "main_test.loom",
+        r"test fn resource_identity() {
     scoped resource = Resource { value = 2 }
 }
 ",

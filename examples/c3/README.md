@@ -1,20 +1,21 @@
 # Repository-scale package fixture
 
-This committed fixture exercises a multi-package Loom project without generated
-sources. It contains three versioned packages and 24 source modules:
+This committed fixture exercises a three-module Loom project without generated
+sources. It contains three versioned modules, 24 directory packages, and 25
+source files:
 
-- `foundation` defines constrained domain values, records, enums, and a dynamic
-  `Named` concept;
-- `catalog` is a direct path dependency that implements the concept and composes
-  inventory, pricing, shipping, and checkout behavior; and
-- `application` contains binary and test targets with explicit direct
-  dependencies for every imported package.
+- the `foundation` module defines constrained domain values, records, enums,
+  and a dynamic `Named` concept;
+- the `catalog` module is a direct path dependency that implements the concept
+  and composes inventory, pricing, shipping, and checkout behavior; and
+- the `application` module contains a binary target and `*_test.loom` tests,
+  with explicit direct module dependencies for its imported packages.
 
 From the workspace root, run the native closure:
 
 ```sh
 cargo +1.88.0 run --locked -p loom-cli -- check --target app examples/c3/application
-cargo +1.88.0 run --locked -p loom-cli -- test --target unit examples/c3/application
+cargo +1.88.0 run --locked -p loom-cli -- test examples/c3/application/...
 cargo +1.88.0 run --locked -p loom-cli -- run --target app examples/c3/application
 ```
 
@@ -23,7 +24,7 @@ evidence:
 
 ```sh
 cargo +1.88.0 run --locked -p loom-cli -- \
-  --backend interpreter test --target unit examples/c3/application
+  --backend interpreter test examples/c3/application/...
 cargo +1.88.0 run --locked -p loom-cli -- \
   --backend interpreter run --target app examples/c3/application
 ```

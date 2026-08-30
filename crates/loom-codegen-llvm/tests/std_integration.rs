@@ -88,16 +88,19 @@ fn structured_values_match_in_interpreter_and_native_runtime() {
             assert_eq!(bytes, b"socket snapshot");
         }
     });
-    let source = concat!(
+    let test_source = include_str!("../../../fixtures/std/main_test.loom")
+        .replace("__ROUND_TRIP_PATH__", &round_trip_literal)
+        .replace("__MISSING_PATH__", &missing_literal)
+        .replace("__REUSE_PATH__", &reuse_literal)
+        .replace("__LOOPBACK_PORT__", &port.to_string())
+        .replace("__READ_LOOPBACK_PORT__", &read_port.to_string());
+    std::fs::write(
+        project.path().join("main.loom"),
         include_str!("../../../fixtures/std/main.loom"),
-        include_str!("../../../fixtures/std/main_test.loom")
     )
-    .replace("__ROUND_TRIP_PATH__", &round_trip_literal)
-    .replace("__MISSING_PATH__", &missing_literal)
-    .replace("__REUSE_PATH__", &reuse_literal)
-    .replace("__LOOPBACK_PORT__", &port.to_string())
-    .replace("__READ_LOOPBACK_PORT__", &read_port.to_string());
-    std::fs::write(project.path().join("main.loom"), source).expect("write fixture source");
+    .expect("write fixture source");
+    std::fs::write(project.path().join("main_test.loom"), test_source)
+        .expect("write fixture test source");
 
     let interpreter = Command::new(std::env::current_exe().expect("current test executable"))
         .args(["--exact", "interpreter_std_child", "--nocapture"])
