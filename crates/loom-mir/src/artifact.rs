@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Block, CallArgument, CheckedProgram, Constant, Contract, ContractExpr, ContractExprKind, Expr,
-    ExprKind, MirValidationErrors, Pattern, Program, StatementKind, TypeDefKind, check_program,
-    validation::validate_interpreted_artifact_profile,
+    ExprKind, MirValidationErrors, Pattern, Program, StatementKind, Type, TypeDefKind,
+    check_program, validation::validate_interpreted_artifact_profile,
 };
 
 pub const INTERPRETED_ARTIFACT_FORMAT: &str = "loom.interpreted-mir";
@@ -17,13 +17,15 @@ const MAX_ARTIFACT_JSON_NESTING: usize = 512;
 
 impl CheckedProgram {
     /// Reports whether serialization would have to replace a process-local
-    /// construction proof with an executable replay boundary.
+    /// construction or receiver-invariant proof with an executable replay
+    /// boundary.
     ///
     /// Persistent compiler layers use this to avoid publishing an entry which
     /// cannot be reused without changing the fresh-source optimization route.
     #[must_use]
     pub fn requires_serialized_construction_replay(&self) -> bool {
         contains_nonportable_construction_proofs(self.as_program())
+            || contains_nonportable_receiver_invariant_proofs(self.as_program())
     }
 }
 
@@ -172,6 +174,7 @@ fn encode_interpreted_artifact_envelope(
     validate_entry(program, entry)?;
     let mut normalized = program.clone();
     distrust_serialized_construction_proofs(&mut normalized);
+    rebuild_receiver_invariants(&mut normalized);
     let mut float_bits = Vec::new();
     visit_program_constants(&mut normalized, &mut |constant| {
         if let Constant::Float(value) = constant {
@@ -251,6 +254,11 @@ fn decode_interpreted_artifact_envelope(
     // shape while requiring every execution backend to replay the predicate.
     let construction_proofs_distrusted =
         distrust_serialized_construction_proofs(&mut envelope.program);
+    // A receiver call plan may omit a process-locally proven invariant, and
+    // its serialized duplicate is never an authority. Rebuild it from the
+    // nominal record definition before interpreting the Float table so the
+    // wire shape is canonical even when the duplicate was removed or forged.
+    let receiver_invariant_proofs_distrusted = rebuild_receiver_invariants(&mut envelope.program);
 
     let slots = count_program_floats(&envelope.program);
     if slots != envelope.float_bits.len() {
@@ -272,10 +280,14 @@ fn decode_interpreted_artifact_envelope(
             *value = f64::from_bits(next);
         }
     });
+    // Float slots in the duplicated call plan are untrusted independently of
+    // the record definition's slots. Clone the restored definition once more
+    // so a forged side-table entry cannot weaken the executable invariant.
+    rebuild_receiver_invariants(&mut envelope.program);
     let mut program = check_program(envelope.program).map_err(ArtifactError::InvalidProgram)?;
     validate_interpreted_artifact_profile(program.as_program())
         .map_err(ArtifactError::InvalidProgram)?;
-    if construction_proofs_distrusted {
+    if construction_proofs_distrusted || receiver_invariant_proofs_distrusted {
         program.mark_serialized_construction_proofs_distrusted();
     }
     validate_entry(program.as_program(), envelope.entry.as_deref())?;
@@ -394,6 +406,123 @@ fn canonical_float_bits(value: f64) -> u64 {
         CANONICAL_NAN_BITS
     } else {
         value.to_bits()
+    }
+}
+
+fn contains_nonportable_receiver_invariant_proofs(program: &Program) -> bool {
+    program.functions.iter().any(|function| {
+        function.call_plan.receiver_invariant.is_none()
+            && instantiated_receiver_invariant(&program.types, function).is_some()
+    })
+}
+
+/// Canonicalizes the executable receiver boundary from its single nominal
+/// authority. Fresh checked MIR may omit a statically proven invariant, but a
+/// persistent artifact always carries the exact instantiated record contract.
+fn rebuild_receiver_invariants(program: &mut Program) -> bool {
+    let types = &program.types;
+    let mut distrusted_omission = false;
+    for function in &mut program.functions {
+        let rebuilt = instantiated_receiver_invariant(types, function);
+        distrusted_omission |= rebuilt.is_some() && function.call_plan.receiver_invariant.is_none();
+        function.call_plan.receiver_invariant = rebuilt;
+    }
+    distrusted_omission
+}
+
+fn instantiated_receiver_invariant(
+    types: &[crate::TypeDef],
+    function: &crate::Function,
+) -> Option<Contract> {
+    let receiver = function.receiver.and_then(|_| function.params.first())?;
+    let Type::Nominal(type_id, arguments) = &receiver.ty else {
+        return None;
+    };
+    let definition = types.get(type_id.0 as usize)?;
+    if definition.id != *type_id {
+        return None;
+    }
+    let TypeDefKind::Record {
+        invariant: Some(invariant),
+        ..
+    } = &definition.kind
+    else {
+        return None;
+    };
+    let mut invariant = invariant.clone();
+    instantiate_contract_bindings(&mut invariant.expression, arguments);
+    Some(invariant)
+}
+
+fn instantiate_contract_bindings(expression: &mut ContractExpr, arguments: &[Type]) {
+    match &mut expression.kind {
+        ContractExprKind::Field(value, _) | ContractExprKind::Unary(_, value) => {
+            instantiate_contract_bindings(value, arguments);
+        }
+        ContractExprKind::Binary(_, left, right) => {
+            instantiate_contract_bindings(left, arguments);
+            instantiate_contract_bindings(right, arguments);
+        }
+        ContractExprKind::IsFinite(value) => instantiate_contract_bindings(value, arguments),
+        ContractExprKind::Match { scrutinee, arms } => {
+            instantiate_contract_bindings(scrutinee, arguments);
+            for arm in arms {
+                for binding in &mut arm.bindings {
+                    *binding = instantiate_type(binding, arguments);
+                }
+                instantiate_contract_bindings(&mut arm.value, arguments);
+            }
+        }
+        ContractExprKind::Constant(_)
+        | ContractExprKind::Value(_)
+        | ContractExprKind::Binding(_) => {}
+    }
+}
+
+fn instantiate_type(ty: &Type, arguments: &[Type]) -> Type {
+    match ty {
+        Type::Parameter(index) => arguments
+            .get(*index as usize)
+            .cloned()
+            .unwrap_or_else(|| ty.clone()),
+        Type::Tuple(elements) => Type::Tuple(
+            elements
+                .iter()
+                .map(|element| instantiate_type(element, arguments))
+                .collect(),
+        ),
+        Type::List(element) => Type::List(Box::new(instantiate_type(element, arguments))),
+        Type::Nominal(id, nested) => Type::Nominal(
+            *id,
+            nested
+                .iter()
+                .map(|nested| instantiate_type(nested, arguments))
+                .collect(),
+        ),
+        Type::Task(output) => Type::Task(Box::new(instantiate_type(output, arguments))),
+        Type::TaskOutcome(output) => {
+            Type::TaskOutcome(Box::new(instantiate_type(output, arguments)))
+        }
+        Type::View {
+            mutable,
+            concept,
+            bindings,
+        } => Type::View {
+            mutable: *mutable,
+            concept: *concept,
+            bindings: bindings
+                .iter()
+                .map(|(name, binding)| (name.clone(), instantiate_type(binding, arguments)))
+                .collect(),
+        },
+        Type::Never
+        | Type::Unit
+        | Type::Bool
+        | Type::Int
+        | Type::Float
+        | Type::Text
+        | Type::AssociatedProjection { .. }
+        | Type::Error => ty.clone(),
     }
 }
 
@@ -822,5 +951,202 @@ fn visit_pattern(pattern: &mut Pattern, visitor: &mut impl FnMut(&mut Constant))
             }
         }
         Pattern::Wildcard | Pattern::Binding => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        CallPlan, ConceptDef, ConceptId, ConceptIdentity, ContractArm, ContractValue, FieldDef,
+        Function, FunctionId, LocalDecl, LocalId, PreludeIds, Receiver, RequirementDef,
+        RequirementId, RequirementType, TypeDef, TypeId,
+    };
+    use loom_core::Span;
+
+    fn receiver_function(id: u32, ty: Type, invariant: Option<Contract>) -> Function {
+        Function {
+            id: FunctionId(id),
+            name: format!("receiver_{id}"),
+            span: Span::default(),
+            type_parameters: 0,
+            is_async: false,
+            suspension_points: Vec::new(),
+            params: vec![LocalDecl {
+                id: LocalId(0),
+                name: "self".to_owned(),
+                ty,
+                mutable: true,
+                span: Span::default(),
+            }],
+            witness_params: Vec::new(),
+            witness_prefix_count: 0,
+            locals: Vec::new(),
+            return_ty: Type::Unit,
+            receiver: Some(Receiver::Mutable),
+            body: Block::default(),
+            call_plan: CallPlan {
+                receiver_invariant: invariant,
+                requires: Vec::new(),
+                ensures: Vec::new(),
+            },
+        }
+    }
+
+    fn add_artifact_profile(program: &mut Program) {
+        program.concepts = vec![
+            ConceptDef {
+                id: ConceptId(0),
+                module: "std.resource".to_owned(),
+                name: "Dispose".to_owned(),
+                span: Span::default(),
+                identity: Some(ConceptIdentity::Dispose),
+                dynamic: false,
+                associated_types: Vec::new(),
+                requirements: vec![RequirementId(0)],
+            },
+            ConceptDef {
+                id: ConceptId(1),
+                module: "std.resource".to_owned(),
+                name: "MustScope".to_owned(),
+                span: Span::default(),
+                identity: Some(ConceptIdentity::MustScope),
+                dynamic: false,
+                associated_types: Vec::new(),
+                requirements: Vec::new(),
+            },
+            ConceptDef {
+                id: ConceptId(2),
+                module: "std.resource".to_owned(),
+                name: "NoSuspend".to_owned(),
+                span: Span::default(),
+                identity: Some(ConceptIdentity::NoSuspend),
+                dynamic: false,
+                associated_types: Vec::new(),
+                requirements: Vec::new(),
+            },
+        ];
+        program.requirements = vec![RequirementDef {
+            id: RequirementId(0),
+            concept: ConceptId(0),
+            name: "dispose".to_owned(),
+            span: Span::default(),
+            receiver: Some(Receiver::Mutable),
+            method_type_parameters: 0,
+            params: vec![RequirementType::SelfType],
+            return_ty: RequirementType::Unit,
+            witness_params: Vec::new(),
+        }];
+        program.prelude = PreludeIds {
+            dispose_concept: Some(ConceptId(0)),
+            dispose_requirement: Some(RequirementId(0)),
+            must_scope_concept: Some(ConceptId(1)),
+            no_suspend_concept: Some(ConceptId(2)),
+            ..PreludeIds::default()
+        };
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn receiver_invariants_rebuild_omissions_forgery_and_generic_bindings() {
+        let span = Span::default();
+        let invariant = Contract {
+            code: "Box.invariant".to_owned(),
+            span,
+            expression: ContractExpr {
+                kind: ContractExprKind::Match {
+                    scrutinee: Box::new(ContractExpr {
+                        kind: ContractExprKind::Field(
+                            Box::new(ContractExpr {
+                                kind: ContractExprKind::Value(ContractValue::SelfValue),
+                                span,
+                            }),
+                            0,
+                        ),
+                        span,
+                    }),
+                    arms: vec![ContractArm {
+                        pattern: Pattern::Binding,
+                        bindings: vec![Type::Parameter(0)],
+                        value: ContractExpr {
+                            kind: ContractExprKind::Constant(Constant::Bool(true)),
+                            span,
+                        },
+                    }],
+                },
+                span,
+            },
+        };
+        let weak = Contract {
+            code: "forged".to_owned(),
+            span,
+            expression: ContractExpr {
+                kind: ContractExprKind::Constant(Constant::Bool(true)),
+                span,
+            },
+        };
+        let receiver = Type::Nominal(TypeId(0), vec![Type::Text]);
+        let mut program = Program {
+            types: vec![TypeDef {
+                id: TypeId(0),
+                name: "Box".to_owned(),
+                span,
+                type_parameters: 1,
+                kind: TypeDefKind::Record {
+                    fields: vec![FieldDef {
+                        name: "value".to_owned(),
+                        ty: Type::Parameter(0),
+                        span,
+                    }],
+                    invariant: Some(invariant),
+                },
+            }],
+            functions: vec![
+                receiver_function(0, receiver.clone(), None),
+                receiver_function(1, receiver, Some(weak.clone())),
+            ],
+            ..Program::default()
+        };
+        add_artifact_profile(&mut program);
+
+        let checked = check_program(program.clone()).expect("fresh generic receiver program");
+        assert!(checked.requires_serialized_construction_replay());
+        let encoded = encode_interpreted_artifact(&checked).expect("encode normalized receiver");
+        let mut wire =
+            serde_json::from_slice::<serde_json::Value>(&encoded).expect("artifact JSON");
+        let functions = wire["program"]["functions"]
+            .as_array_mut()
+            .expect("wire functions");
+        functions[0]["call_plan"]["receiver_invariant"] = serde_json::Value::Null;
+        functions[1]["call_plan"]["receiver_invariant"] =
+            serde_json::to_value(weak).expect("weak contract JSON");
+        let forged = serde_json::to_vec(&wire).expect("forged artifact JSON");
+        let decoded = decode_interpreted_artifact(&forged).expect("distrust receiver proofs");
+        assert!(decoded.serialized_construction_proofs_were_distrusted());
+        assert!(!decoded.requires_serialized_construction_replay());
+
+        for function in &decoded.functions {
+            let rebuilt = function
+                .call_plan
+                .receiver_invariant
+                .as_ref()
+                .expect("record receiver invariant");
+            assert_eq!(rebuilt.code, "Box.invariant");
+            let ContractExprKind::Match { arms, .. } = &rebuilt.expression.kind else {
+                panic!("forged contract was not overwritten");
+            };
+            assert_eq!(arms[0].bindings, vec![Type::Text]);
+        }
+        let TypeDefKind::Record {
+            invariant: Some(declared),
+            ..
+        } = &decoded.types[0].kind
+        else {
+            panic!("record invariant");
+        };
+        let ContractExprKind::Match { arms, .. } = &declared.expression.kind else {
+            panic!("declared invariant match");
+        };
+        assert_eq!(arms[0].bindings, vec![Type::Parameter(0)]);
     }
 }
