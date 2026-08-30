@@ -859,6 +859,20 @@ requesting the enclosing fault target. This ordering keeps the SSA environment
 ready for lexical cleanup observation, including receiver writeback performed
 by a scoped disposer.
 
+A projected finite `dyn` leaf follows the same place plan. Mutable dispatch
+switches on the closed candidate tag, calls the exact concrete method, builds a
+fresh immutable candidate box from its receiver writeback, and reconstructs the
+containing products on both normal and fault edges. The previously published
+box is never mutated, so copying an enclosing record preserves Loom value
+semantics even when the collector relocates either copy.
+
+Receiver storage is read first and the remaining call arguments retain source
+evaluation order. Every candidate edge then reconstructs from the environment
+produced by the final argument, so an argument-side mutation of a sibling field
+cannot be overwritten by dynamic receiver writeback. Semantic place recovery
+rejects excessive projection depth before instance substitution and substitutes
+only each selected record field under one shared instance-structure budget.
+
 Lowering constructs canonical SSA directly: a single continuing branch does
 not gain a join, values already dominating every predecessor do not gain
 identity block parameters, short-circuit skip edges reuse the evaluated left

@@ -105,6 +105,7 @@ The following repository fixtures are run through real compiler stages:
 | `fixtures/lcir-lexical-cleanup` | direct typed assertions and source contracts, checked-root and assumed-body boundaries, mutable invariant writeback, lexical `defer`, static-concept `scoped` disposal, exact LIFO/fault behavior, and real check/build/test/run commands without universal values or an executor |
 | `fixtures/lcir-static-concepts` | concrete static method selection, conditional proof forwarding, associated-type normalization, direct host execution, and MSVC COFF emission without runtime witness or universal-value surfaces |
 | `fixtures/lcir-dyn-unique` | closed-world unique-witness `dyn` erasure, direct calls, aggregate/List storage, dead conformance and method-slot elimination, real check/build/test/run, host execution, and Linux/MSVC object emission without runtime witness data |
+| `fixtures/lcir-dyn-finite` | closed finite `dyn` catalogs as exact single-pointer immutable boxes, direct switch dispatch, copied-value isolation, nested projected mutable receiver writeback on normal and fault edges, moving-GC pressure, dead method-slot elimination, host differential execution, and Linux/MSVC object emission without witness pointers or a runtime registry |
 | `fixtures/std` | differential interpreter/native checks for structured values, text, maps, JSON, logging, GC, and async behavior; its native half is prepared through the production `Automatic` route, is required to select LCIR, and exercises real filesystem plus loopback-socket I/O |
 
 Every admitted payload-bearing closed sum now uses the same bounded
@@ -187,7 +188,8 @@ mapping source definitions back to them.
 
 Remaining atomic fallback includes dynamic producers with unresolved parameters
 or projections, unsupported proof or contract value shapes, explicit mutable
-coroutine parameters, raw readiness, and unsupported projected inout shapes.
+coroutine parameters, raw readiness, and protected or otherwise
+unrepresentable projected inout shapes.
 Finite closed dynamic catalogs are exact managed-pointer coroutine parameters,
 results, and suspension-live values, including nested aggregate and List
 carriers. Pure reads through already-established

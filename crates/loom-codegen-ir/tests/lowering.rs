@@ -3693,6 +3693,99 @@ pub fn main() {
 }
 
 #[test]
+fn projected_mutable_finite_dynamic_receiver_is_classified_precisely() {
+    let outcome = lower_run(
+        r"dyn concept Advance {
+    method advance(mut self) Int
+    method read(self) Int
+}
+
+record Counter { value Int }
+record Offset { value Int }
+record Slot { value dyn Advance }
+record Holder { slot Slot, guard Int }
+
+impl Advance for Counter {
+    method advance(mut self) Int {
+        self.value = self.value + 1
+        self.value
+    }
+    method read(self) Int { self.value }
+}
+
+impl Advance for Offset {
+    method advance(mut self) Int {
+        self.value = self.value + 2
+        self.value
+    }
+    method read(self) Int { self.value }
+}
+
+fn erased(first Bool) dyn Advance {
+    if first {
+        Counter { value = 10 }
+    } else {
+        Offset { value = 20 }
+    }
+}
+
+fn advanceOne(value Advance) Int {
+    value.advance()
+}
+
+pub fn main() {
+    var holder = Holder {
+        slot = Slot { value = erased(true) },
+        guard = 7,
+    }
+    let advanced = holder.slot.value.advance()
+    let advancedAgain = advanceOne(holder.slot.value)
+    let observed = holder.slot.value.read()
+    let guard = holder.guard
+    assert advanced == 11
+    assert advancedAgain == 12
+    assert observed == 12
+    assert guard == 7
+}
+",
+    );
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("projected mutable finite dyn receiver must lower: {outcome:?}")
+    };
+    let main = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("projected dynamic main instance");
+    assert!(main.blocks().iter().any(|block| matches!(
+        block.terminator().map(loom_codegen_ir::Terminator::kind),
+        Some(TerminatorKind::DynSwitch { cases, .. }) if cases.len() == 2
+    )));
+    assert!(
+        main.instructions()
+            .iter()
+            .filter(|instruction| matches!(
+                instruction.kind(),
+                InstructionKind::DynConstruct { .. }
+            ))
+            .count()
+            >= 4,
+        "each candidate must receive normal and fault-edge fresh boxing"
+    );
+    assert!(
+        main.instructions()
+            .iter()
+            .filter(|instruction| matches!(
+                instruction.kind(),
+                InstructionKind::ProductInsert { .. }
+            ))
+            .count()
+            >= 8,
+        "fresh dynamic boxes must reconstruct both projected product parents"
+    );
+}
+
+#[test]
 fn missing_dynamic_concept_witness_selects_one_atomic_fallback() {
     let LoweringOutcome::Unsupported(report) = lower_run(
         r"dyn concept Truth { method truth(self) Bool }

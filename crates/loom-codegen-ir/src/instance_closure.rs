@@ -2,11 +2,13 @@ use std::collections::BTreeMap;
 
 use loom_core::Span;
 use loom_mir::{
-    self as mir, CallArgument, CallTarget, ConceptId, ExprId, ExprKind, FunctionId, RequirementId,
-    StatementKind, Type, WitnessRef,
+    self as mir, CallArgument, CallTarget, ConceptId, ExprId, ExprKind, FunctionId, Place,
+    RequirementId, StatementKind, Type, WitnessRef,
 };
 
+use crate::aggregate_plan::substituted_type_node_count;
 use crate::dyn_plan::DynConceptPlan;
+use crate::place_plan::PLACE_MAX_PROJECTION_DEPTH;
 use crate::{INSTANCE_KEY_STRUCTURE_BUDGET, InstanceKey, InstanceWitnessArgument};
 
 /// Maximum number of concrete callable instances in one LCIR artifact.
@@ -101,6 +103,71 @@ impl<'program, 'key> InstanceSubstitution<'program, 'key> {
     pub(crate) fn instantiate_type(&self, ty: &Type) -> Result<Type, InstantiationError> {
         let mut budget = StructureBudget::default();
         self.clone_caller_type(ty, &mut budget, &mut Vec::new())
+    }
+
+    /// Resolves a checked MIR record place after applying the enclosing
+    /// function instance. This is semantic type recovery only; the later
+    /// place planner remains the authority for protected access and exact
+    /// physical product identity.
+    pub(crate) fn instantiate_place_type(
+        &self,
+        function: &mir::Function,
+        place: &Place,
+    ) -> Result<Option<Type>, InstantiationError> {
+        // Reject an over-deep checked place before instance substitution can
+        // clone even its root type. The place planner enforces the same shared
+        // limit later for physical reconstruction.
+        if place.projection.len() > PLACE_MAX_PROJECTION_DEPTH {
+            return Err(InstantiationError::StructureBudget);
+        }
+        let Some(local) = function
+            .params
+            .iter()
+            .chain(&function.locals)
+            .find(|local| local.id == place.local)
+        else {
+            return Ok(None);
+        };
+        let mut budget = StructureBudget::default();
+        let mut active_projections = Vec::new();
+        let mut current =
+            self.clone_caller_type(&local.ty, &mut budget, &mut active_projections)?;
+        for field in &place.projection {
+            let Type::Nominal(id, arguments) = &current else {
+                return Ok(None);
+            };
+            if self.program.prelude.text_map == Some(*id) {
+                return Ok(None);
+            }
+            let Some(definition) = self.program.type_def(*id) else {
+                return Ok(None);
+            };
+            let Some(arity) = usize::try_from(definition.type_parameters).ok() else {
+                return Ok(None);
+            };
+            if arity != arguments.len() {
+                return Ok(None);
+            }
+            let mir::TypeDefKind::Record { fields, .. } = &definition.kind else {
+                return Ok(None);
+            };
+            let Some(field) = usize::try_from(*field)
+                .ok()
+                .and_then(|index| fields.get(index))
+            else {
+                return Ok(None);
+            };
+
+            // Count the selected schema after substitution before allocating
+            // its concrete tree. Unselected fields never consume work or get
+            // materialized, and the root plus every projection share one
+            // bounded structure budget.
+            substituted_type_node_count(&field.ty, arguments, budget.remaining()?)
+                .ok_or(InstantiationError::StructureBudget)?;
+            let type_arguments = arguments.iter().collect::<Vec<_>>();
+            current = clone_schema_type(&field.ty, &type_arguments, &mut budget)?;
+        }
+        Ok(Some(current))
     }
 
     pub(crate) fn instantiate_types(
@@ -540,6 +607,12 @@ struct StructureBudget {
 }
 
 impl StructureBudget {
+    fn remaining(&self) -> Result<usize, InstantiationError> {
+        INSTANCE_KEY_STRUCTURE_BUDGET
+            .checked_sub(self.nodes)
+            .ok_or(InstantiationError::StructureBudget)
+    }
+
     fn charge(&mut self) -> Result<(), InstantiationError> {
         self.nodes = self
             .nodes
@@ -1530,22 +1603,10 @@ fn dynamic_receiver_type(
     argument: &CallArgument,
     substitution: &InstanceSubstitution<'_, '_>,
 ) -> Result<Option<Type>, InstantiationError> {
-    let ty = match argument {
-        CallArgument::Value(value) => &value.ty,
-        CallArgument::InOut(place) if place.projection.is_empty() => {
-            let Some(local) = function
-                .params
-                .iter()
-                .chain(&function.locals)
-                .find(|local| local.id == place.local)
-            else {
-                return Ok(None);
-            };
-            &local.ty
-        }
-        CallArgument::InOut(_) => return Ok(None),
-    };
-    substitution.instantiate_type(ty).map(Some)
+    match argument {
+        CallArgument::Value(value) => substitution.instantiate_type(&value.ty).map(Some),
+        CallArgument::InOut(place) => substitution.instantiate_place_type(function, place),
+    }
 }
 
 #[cfg(test)]
@@ -1554,12 +1615,40 @@ mod tests {
 
     use loom_core::Span;
     use loom_mir::{
-        Block, CallPlan, ConceptId, Function, FunctionId, Program, RequirementDef, RequirementId,
-        RequirementType, Type, Witness, WitnessId, WitnessParam, WitnessRef,
+        Block, CallPlan, ConceptId, FieldDef, Function, FunctionId, LocalDecl, LocalId, Place,
+        Program, RequirementDef, RequirementId, RequirementType, Type, TypeDef, TypeDefKind,
+        TypeId, Witness, WitnessId, WitnessParam, WitnessRef,
     };
 
     use super::{InstanceSubstitution, InstantiationError};
+    use crate::place_plan::PLACE_MAX_PROJECTION_DEPTH;
     use crate::{INSTANCE_KEY_STRUCTURE_BUDGET, InstanceKey, InstanceWitnessArgument};
+
+    fn function_with_local(ty: Type) -> Function {
+        let span = Span::default();
+        Function {
+            id: FunctionId(0),
+            name: "place.caller".into(),
+            span,
+            type_parameters: 0,
+            is_async: false,
+            suspension_points: Vec::new(),
+            params: vec![LocalDecl {
+                id: LocalId(0),
+                name: "value".into(),
+                ty,
+                mutable: true,
+                span,
+            }],
+            witness_params: Vec::new(),
+            witness_prefix_count: 0,
+            locals: Vec::new(),
+            return_ty: Type::Unit,
+            receiver: None,
+            body: Block::default(),
+            call_plan: CallPlan::default(),
+        }
+    }
 
     #[test]
     fn substitution_preflights_repeated_expansion_before_cloning() {
@@ -1571,6 +1660,95 @@ mod tests {
         let schema = Type::Tuple(vec![Type::Parameter(0); 8]);
         assert_eq!(
             InstanceSubstitution::new(&Program::default(), &key).instantiate_type(&schema),
+            Err(InstantiationError::StructureBudget)
+        );
+    }
+
+    #[test]
+    fn place_substitution_rejects_depth_before_instantiating_its_root() {
+        let function = function_with_local(Type::Parameter(0));
+        let place = Place {
+            local: LocalId(0),
+            projection: vec![0; PLACE_MAX_PROJECTION_DEPTH + 1],
+        };
+        assert_eq!(
+            InstanceSubstitution::new(
+                &Program::default(),
+                &InstanceKey::monomorphic(FunctionId(0)),
+            )
+            .instantiate_place_type(&function, &place),
+            Err(InstantiationError::StructureBudget)
+        );
+    }
+
+    #[test]
+    fn place_substitution_materializes_only_the_selected_record_field() {
+        let span = Span::default();
+        let fields = (0..=INSTANCE_KEY_STRUCTURE_BUDGET)
+            .map(|index| FieldDef {
+                name: format!("field{index}"),
+                ty: Type::Int,
+                span,
+            })
+            .collect();
+        let program = Program {
+            types: vec![TypeDef {
+                id: TypeId(0),
+                name: "Wide".into(),
+                span,
+                type_parameters: 0,
+                kind: TypeDefKind::Record {
+                    fields,
+                    invariant: None,
+                },
+            }],
+            ..Program::default()
+        };
+        let function = function_with_local(Type::Nominal(TypeId(0), Vec::new()));
+        let place = Place {
+            local: LocalId(0),
+            projection: vec![
+                u32::try_from(INSTANCE_KEY_STRUCTURE_BUDGET)
+                    .expect("instance structure budget fits field identity"),
+            ],
+        };
+        assert_eq!(
+            InstanceSubstitution::new(&program, &InstanceKey::monomorphic(FunctionId(0)))
+                .instantiate_place_type(&function, &place),
+            Ok(Some(Type::Int))
+        );
+    }
+
+    #[test]
+    fn place_substitution_shares_one_structure_budget_across_the_path() {
+        let span = Span::default();
+        let program = Program {
+            types: vec![TypeDef {
+                id: TypeId(0),
+                name: "LargeField".into(),
+                span,
+                type_parameters: 0,
+                kind: TypeDefKind::Record {
+                    fields: vec![FieldDef {
+                        name: "payload".into(),
+                        ty: Type::Tuple(vec![Type::Int; INSTANCE_KEY_STRUCTURE_BUDGET - 1]),
+                        span,
+                    }],
+                    invariant: None,
+                },
+            }],
+            ..Program::default()
+        };
+        let function = function_with_local(Type::Nominal(TypeId(0), Vec::new()));
+        assert_eq!(
+            InstanceSubstitution::new(&program, &InstanceKey::monomorphic(FunctionId(0)))
+                .instantiate_place_type(
+                    &function,
+                    &Place {
+                        local: LocalId(0),
+                        projection: vec![0],
+                    },
+                ),
             Err(InstantiationError::StructureBudget)
         );
     }

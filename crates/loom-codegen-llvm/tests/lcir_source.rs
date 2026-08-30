@@ -38,6 +38,7 @@ use support::{emit_native, link_native_object, run_with_read_only_stderr};
 
 const TYPED_LOGGING_INTERPRETER_CHILD_ENV: &str = "LOOM_LCIR_TYPED_LOGGING_INTERPRETER_CHILD";
 const TYPED_STDOUT_INTERPRETER_CHILD_ENV: &str = "LOOM_LCIR_TYPED_STDOUT_INTERPRETER_CHILD";
+const FINITE_DYN_FAULT_INTERPRETER_CHILD_ENV: &str = "LOOM_LCIR_FINITE_DYN_FAULT_INTERPRETER_CHILD";
 const TYPED_LOGGING_STDERR: &[u8] =
     include_bytes!("../../../fixtures/lcir-typed-logging/expected.stderr");
 
@@ -3510,6 +3511,23 @@ fn typed_stdout_interpreter_child() {
 }
 
 #[test]
+fn finite_dynamic_projected_fault_interpreter_child() {
+    if std::env::var_os(FINITE_DYN_FAULT_INTERPRETER_CHILD_ENV).is_none() {
+        return;
+    }
+    let program = compile_sources(
+        include_str!("../../../fixtures/lcir-dyn-finite/main.loom"),
+        include_str!("../../../fixtures/lcir-dyn-finite/main_test.loom"),
+    );
+    let failure = interpret_run(&program, "projectedFaultMain")
+        .expect_err("projected mutable method must retain its primary fault");
+    assert!(
+        matches!(failure, ExecutionFailure::Contract { ref fault } if fault.code == "AssertionFault"),
+        "{failure:#?}"
+    );
+}
+
+#[test]
 fn source_std_io_writes_exact_text_through_typed_lcir() {
     let program = compile_sources(
         include_str!("../../../fixtures/lcir-typed-stdout/main.loom"),
@@ -6259,6 +6277,75 @@ fn finite_dynamic_witnesses_use_precise_single_pointer_boxes_and_direct_dispatch
     for dead in ["standalone.cold", "7001", "7002"] {
         assert!(!dump.contains(dead), "retained dead `{dead}`:\n{dump}");
     }
+    let verify = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("verify"))
+        .expect("finite-dyn verification function");
+    let checked_stores = artifact
+        .functions()
+        .iter()
+        .filter(|function| function.name().ends_with("storeChecked"))
+        .map(loom_codegen_ir::Function::id)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(checked_stores.len(), 2, "{dump}");
+    assert!(checked_stores.iter().all(|callee| {
+        artifact
+            .function(*callee)
+            .is_some_and(|function| function.effects().contains(Effects::MAY_FAULT))
+    }));
+    let invoked_checked_stores = verify
+        .blocks()
+        .iter()
+        .filter_map(
+            |block| match block.terminator().map(loom_codegen_ir::Terminator::kind) {
+                Some(loom_codegen_ir::TerminatorKind::Invoke { callee, .. })
+                    if checked_stores.contains(callee) =>
+                {
+                    Some(*callee)
+                }
+                _ => None,
+            },
+        )
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        invoked_checked_stores, checked_stores,
+        "both candidates of storeChecked must use fallible Invoke edges"
+    );
+    let projected_dispatch = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("advanceStored"))
+        .expect("projected finite-dyn dispatch method");
+    assert_eq!(projected_dispatch.signature().inout_params(), [0]);
+    assert!(projected_dispatch.blocks().iter().any(|block| matches!(
+        block.terminator().map(loom_codegen_ir::Terminator::kind),
+        Some(loom_codegen_ir::TerminatorKind::DynSwitch { cases, .. }) if cases.len() == 2
+    )));
+    assert_eq!(
+        projected_dispatch
+            .instructions()
+            .iter()
+            .filter(|instruction| matches!(
+                instruction.kind(),
+                InstructionKind::DynConstruct { .. }
+            ))
+            .count(),
+        4,
+        "two candidates need normal and fault-edge fresh boxes"
+    );
+    assert_eq!(
+        projected_dispatch
+            .instructions()
+            .iter()
+            .filter(|instruction| matches!(
+                instruction.kind(),
+                InstructionKind::ProductInsert { .. }
+            ))
+            .count(),
+        8,
+        "each fresh box must reconstruct the slot and holder on both exits"
+    );
 
     let native = emit_and_run_lcir(&artifact, "source-finite-dyn");
     let checked_mir = emit_and_run_checked_mir_tests(&program, "checked-mir-finite-dyn");
@@ -6320,6 +6407,24 @@ fn finite_dynamic_witnesses_use_precise_single_pointer_boxes_and_direct_dispatch
         );
     }
     assert_no_indirect_calls(&native.ir);
+    let projected_dispatch = emitted_lcir_instance(&native.ir, projected_dispatch);
+    assert_eq!(
+        projected_dispatch
+            .matches("call i32 @loom_gc_typed_alloc_v1")
+            .count(),
+        4,
+        "projected normal and fault exits must allocate fresh immutable boxes:\n{projected_dispatch}"
+    );
+    assert!(
+        projected_dispatch.matches("product.extract").count() >= 2
+            && projected_dispatch.matches("product.insert").count() >= 8,
+        "projected dynamic dispatch must rebuild both product parents on normal and fault exits:\n{projected_dispatch}"
+    );
+    assert!(
+        projected_dispatch.contains("dyn.switch.tag")
+            && projected_dispatch.contains("dyn.construct.output"),
+        "projected dispatch must remain a finite direct switch with fresh boxes:\n{projected_dispatch}"
+    );
     let mutable_dispatch = native
         .ir
         .split("\ndefine ")
@@ -6349,6 +6454,53 @@ fn finite_dynamic_witnesses_use_precise_single_pointer_boxes_and_direct_dispatch
         mutable_dispatch.contains("store ptr %managed.root.product.extract"),
         "only managed leaves of the updated concrete payload should be rooted:\n{mutable_dispatch}"
     );
+
+    let fault_artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "projectedFaultMain".into(),
+        },
+    );
+    let interpreted_fault =
+        Command::new(std::env::current_exe().expect("current LCIR test executable"))
+            .args([
+                "--exact",
+                "finite_dynamic_projected_fault_interpreter_child",
+                "--nocapture",
+            ])
+            .env(FINITE_DYN_FAULT_INTERPRETER_CHILD_ENV, "1")
+            .output()
+            .expect("run projected finite-dyn interpreter child");
+    assert!(interpreted_fault.status.success(), "{interpreted_fault:?}");
+    let interpreted_stdout = String::from_utf8_lossy(&interpreted_fault.stdout);
+    assert!(
+        interpreted_stdout.contains("projected fault writeback\n"),
+        "{interpreted_fault:?}"
+    );
+    assert!(
+        !interpreted_stdout.contains("stale projected fault writeback"),
+        "{interpreted_fault:?}"
+    );
+    let faulted =
+        emit_and_run_lcir_machine_fault(&fault_artifact, "finite-dyn-projected-writeback-fault");
+    assert!(!faulted.output.status.success(), "{:?}", faulted.output);
+    assert_eq!(
+        faulted.output.stdout, b"projected fault writeback\n",
+        "LCIR defer observed stale sibling state"
+    );
+    assert_eq!(
+        machine_fault(&faulted.output)["fault"]["code"],
+        "AssertionFault",
+        "LCIR projected writeback changed the primary method fault"
+    );
+    for forbidden in ["%loom.Value", "ValueNode", "loom_witness_", "dyn.registry"] {
+        assert!(
+            !faulted.ir.contains(forbidden),
+            "fault writeback exposed `{forbidden}`:\n{}",
+            faulted.ir
+        );
+    }
+    assert_no_indirect_calls(&faulted.ir);
 
     for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
         let directory = tempfile::tempdir().expect("create finite-dyn target output");
