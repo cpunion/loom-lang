@@ -3396,26 +3396,7 @@ pub fn main() {
     );
 }
 
-#[test]
-fn receiver_invariant_restore_replays_exact_current_self_without_unrelated_parameters() {
-    let source = r"record Guarded {
-    value Int
-    invariant self.value >= 0
-}
-
-impl Guarded {
-    method restore(mut self, next Int, unrelated Int) {
-        self.value = next
-        assert self.value >= 0
-    }
-}
-
-pub fn main() {
-    var guarded = Guarded { value = 1 }
-    guarded.restore(2, 9)
-}
-";
-    let fresh = compile_with_std_resource(source);
+fn assert_fresh_receiver_restore_is_proven(fresh: &loom_mir::CheckedProgram) {
     let fresh_restore = fresh
         .functions
         .iter()
@@ -3430,23 +3411,23 @@ pub fn main() {
         )
     }));
 
-    let fresh_outcome = lower_typed_artifact(
-        &fresh,
+    let outcome = lower_typed_artifact(
+        fresh,
         &SourceArtifactRequest::Run {
             entry: "main".into(),
         },
         TargetLayout::new(64).expect("test target"),
     )
     .expect("lower fresh receiver-invariant proof");
-    let LoweringOutcome::Complete(fresh_artifact) = fresh_outcome else {
+    let LoweringOutcome::Complete(artifact) = outcome else {
         panic!("fresh receiver-invariant proof must use typed LCIR")
     };
-    let fresh_restore = fresh_artifact
+    let restore = artifact
         .functions()
         .iter()
         .find(|function| function.name().ends_with(".restore"))
         .expect("fresh restore instance");
-    assert!(fresh_restore.blocks().iter().all(|block| {
+    assert!(restore.blocks().iter().all(|block| {
         !matches!(
             block.terminator().map(loom_codegen_ir::Terminator::kind),
             Some(TerminatorKind::Assert {
@@ -3455,7 +3436,11 @@ pub fn main() {
             })
         )
     }));
+}
 
+fn poison_and_decode_receiver_restore(
+    fresh: loom_mir::CheckedProgram,
+) -> (loom_mir::CheckedProgram, String) {
     let mut program = fresh.into_program();
     let restore = program
         .functions
@@ -3511,32 +3496,11 @@ pub fn main() {
         .expect("forged receiver state remains structurally valid MIR");
     let bytes = loom_mir::encode_interpreted_executable_artifact(&forged, "main")
         .expect("encode receiver-invariant proof artifact");
-    let (decoded, entry) = loom_mir::decode_interpreted_executable_artifact(&bytes)
-        .expect("decode receiver-invariant proof artifact");
-    assert!(decoded.serialized_construction_proofs_were_distrusted());
-    let decoded_restore = decoded
-        .functions
-        .iter()
-        .find(|function| function.name.ends_with(".restore"))
-        .expect("decoded restore method");
-    assert!(decoded_restore.body.statements.iter().any(|statement| {
-        matches!(
-            statement.kind,
-            StatementKind::RestoreReceiverInvariant {
-                check: ReceiverInvariantCheck::Recheck
-            }
-        )
-    }));
+    loom_mir::decode_interpreted_executable_artifact(&bytes)
+        .expect("decode receiver-invariant proof artifact")
+}
 
-    let outcome = lower_typed_artifact(
-        &decoded,
-        &SourceArtifactRequest::Run { entry },
-        TargetLayout::new(64).expect("test target"),
-    )
-    .expect("lower decoded receiver-invariant replay after unrelated parameter move");
-    let LoweringOutcome::Complete(artifact) = outcome else {
-        panic!("receiver-invariant replay must use typed LCIR: {outcome:?}")
-    };
+fn assert_receiver_replay_reads_current_poisoned_self(artifact: &loom_codegen_ir::CheckedArtifact) {
     let restore = artifact
         .functions()
         .iter()
@@ -3602,6 +3566,56 @@ pub fn main() {
         defining_instruction(poisoned).kind(),
         InstructionKind::Constant(loom_codegen_ir::Constant::Int(-1))
     ));
+}
+
+#[test]
+fn receiver_invariant_restore_replays_exact_current_self_without_unrelated_parameters() {
+    let fresh = compile_with_std_resource(
+        r"record Guarded {
+    value Int
+    invariant self.value >= 0
+}
+
+impl Guarded {
+    method restore(mut self, next Int, unrelated Int) {
+        self.value = next
+        assert self.value >= 0
+    }
+}
+
+pub fn main() {
+    var guarded = Guarded { value = 1 }
+    guarded.restore(2, 9)
+}
+",
+    );
+    assert_fresh_receiver_restore_is_proven(&fresh);
+    let (decoded, entry) = poison_and_decode_receiver_restore(fresh);
+    assert!(decoded.serialized_construction_proofs_were_distrusted());
+    let decoded_restore = decoded
+        .functions
+        .iter()
+        .find(|function| function.name.ends_with(".restore"))
+        .expect("decoded restore method");
+    assert!(decoded_restore.body.statements.iter().any(|statement| {
+        matches!(
+            statement.kind,
+            StatementKind::RestoreReceiverInvariant {
+                check: ReceiverInvariantCheck::Recheck
+            }
+        )
+    }));
+
+    let outcome = lower_typed_artifact(
+        &decoded,
+        &SourceArtifactRequest::Run { entry },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("lower decoded receiver-invariant replay after unrelated parameter move");
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("receiver-invariant replay must use typed LCIR: {outcome:?}")
+    };
+    assert_receiver_replay_reads_current_poisoned_self(&artifact);
 }
 
 #[test]
