@@ -7273,31 +7273,34 @@ pub fn main() {
 }
 
 #[test]
-#[expect(
-    clippy::single_element_loop,
-    reason = "the table form keeps unsupported affine operations easy to extend"
-)]
-fn unsupported_affine_carrier_operations_keep_atomic_lcir_fallback() {
-    for source in [r"async fn child() Int { 1 }
+fn task_bearing_tuple_bindings_use_one_atomic_product_split() {
+    let source = r"async fn child() Int { 1 }
 
 pub async fn main() {
     let task, label = (child(), 1)
     assert label == 1
     discard task.await
 }
-"]
-    {
-        let LoweringOutcome::Unsupported(report) = lower_run(source) else {
-            panic!("unsupported affine carrier operation entered typed LCIR")
-        };
-        assert!(report.items().iter().any(|item| matches!(
-            item.feature(),
-            UnsupportedFeature::ExpressionType
-                | UnsupportedFeature::ProjectedPlace
-                | UnsupportedFeature::SignatureType
-                | UnsupportedFeature::TaskOperation
-        )));
-    }
+";
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("Task-bearing tuple binding must lower through typed LCIR")
+    };
+    let main = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("main instance");
+    assert_eq!(
+        main.instructions()
+            .iter()
+            .filter(|instruction| {
+                matches!(instruction.kind(), InstructionKind::ProductSplit { .. })
+            })
+            .count(),
+        1,
+        "{}",
+        dump_program(artifact.program())
+    );
 }
 
 const NON_REGULAR_SUM_LOWERING_CHILD_ENV: &str = "LOOM_LCIR_NON_REGULAR_SUM_CHILD";
@@ -7907,6 +7910,69 @@ pub fn main() {
     .expect("classify protected projected move");
     let LoweringOutcome::Unsupported(report) = outcome else {
         panic!("move from invariant-protected interior must select whole-artifact fallback")
+    };
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::ProjectedPlace),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn projected_move_cannot_discard_task_bearing_siblings() {
+    let mut program = compile(
+        r"record Envelope {
+    pending Task[Int]
+    label Int
+}
+
+fn pending() Task[Int] { pending() }
+fn consume(value Envelope) { consume(value) }
+
+fn inspect(value Envelope) Int {
+    let label = value.label
+    consume(value)
+    label
+}
+
+pub fn main() {
+    discard inspect(Envelope { pending = pending(), label = 7 })
+}
+",
+    )
+    .into_program();
+    let inspect = program
+        .functions
+        .iter_mut()
+        .find(|function| function.name.ends_with("inspect"))
+        .expect("inspect function");
+    let StatementKind::Let { value, .. } = &mut inspect.body.statements[0].kind else {
+        panic!("inspect must first bind its task-free field")
+    };
+    let ExprKind::Copy(place) = &value.kind else {
+        panic!("source field read must start as a checked copy")
+    };
+    value.kind = ExprKind::Move(place.clone());
+    inspect.body.statements.truncate(1);
+    inspect
+        .renumber_expr_ids()
+        .expect("renumber the forged function after removing its consume");
+
+    let checked = program
+        .into_checked()
+        .expect("projected affine move remains structurally valid checked MIR");
+    let outcome = lower_typed_artifact(
+        &checked,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("classify projected affine move");
+    let LoweringOutcome::Unsupported(report) = outcome else {
+        panic!("a projected move must not silently drop its Task-bearing root")
     };
     assert!(
         report

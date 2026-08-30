@@ -213,11 +213,15 @@ flushes an existing Rust stdout buffer before the raw write and suppresses Unix
 
 LCIR `Product` values become literal LLVM structs whose fields recursively use
 their validated direct types. Tuple and record construction and functional
-record mutation use `insertvalue`; projection and tuple destructuring use
-`extractvalue`. Parameters and ordinary results pass these structs by value,
-and block parameters become aggregate phi nodes. LCIR source functions do not
-allocate a universal value, tuple node, private record box, or GC object for
-this representation.
+record mutation use `insertvalue`. A task-free tuple binding uses borrowed
+`ProductExtract` operations. A Task-bearing ordinary direct structural tuple
+instead uses one consuming `ProductSplit`, which emits one `extractvalue` for
+each result in order. The split introduces no runtime call or ABI. Partial Task
+projection and nominal, transparent, invariant-protected, or resource splits
+remain unavailable. Parameters and ordinary results pass these structs by
+value, and block parameters become aggregate phi nodes. LCIR source functions
+do not allocate a universal value, tuple node, private record box, or GC object
+for this representation.
 
 A mutable inherent receiver is represented as one functional inout value. An
 infallible call with source result `T` and ordered writebacks `W...` returns

@@ -308,10 +308,13 @@ Products, closed sums, and statically proven transparent constrained wrappers
 may carry that exact handle by value. The complete containing value is affine:
 calls, returns, branches, and sum construction transfer it, while `SumSwitch`
 consumes the sum and transfers the selected payload fields. Reading a
-task-free product field is a borrow. Extracting a Task-bearing product field or
-rebuilding such a product remains unavailable until LCIR has an explicit
-consuming product split. `List[Task[T]]` stays a distinct top-level affine
-carrier and cannot be nested in these aggregates.
+task-free product field is a borrow through `ProductExtract`. Destructuring an
+ordinary direct structural tuple that contains a Task uses one `ProductSplit`:
+the instruction consumes the complete tuple and produces every field in order.
+It cannot partially project a Task field or split nominal, transparent,
+invariant-protected, or resource values. Rebuilding a Task-bearing product
+remains unavailable. `List[Task[T]]` stays a distinct top-level affine carrier
+and cannot be nested in these aggregates.
 
 A typed coroutine frame is target-laid out from its checked plan. It contains
 state, parameters, optional creation-site span coordinates for async

@@ -536,7 +536,7 @@ impl RepresentationPlan {
         Some((immortal, managed))
     }
 
-    fn contains_task_handle(&self, root: ValueTypeId) -> Option<bool> {
+    pub(crate) fn contains_task_handle(&self, root: ValueTypeId) -> Option<bool> {
         let mut pending = vec![root];
         let mut visited = BTreeSet::new();
         while let Some(value) = pending.pop() {
