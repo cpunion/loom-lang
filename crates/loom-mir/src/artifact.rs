@@ -10,7 +10,7 @@ use crate::{
 };
 
 pub const INTERPRETED_ARTIFACT_FORMAT: &str = "loom.interpreted-mir";
-pub const INTERPRETED_ARTIFACT_VERSION: u32 = 41;
+pub const INTERPRETED_ARTIFACT_VERSION: u32 = 42;
 pub const LOOM_LANGUAGE_VERSION: &str = loom_core::LOOM_LANGUAGE_VERSION;
 const CANONICAL_NAN_BITS: u64 = 0x7ff8_0000_0000_0000;
 const MAX_ARTIFACT_JSON_NESTING: usize = 512;

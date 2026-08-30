@@ -48,6 +48,7 @@ pub enum MirValidationCode {
     ConceptShape,
     RequirementShape,
     ContractShape,
+    InvariantShape,
     ParameterShape,
     ReceiverShape,
     LocalState,
@@ -87,6 +88,7 @@ impl MirValidationCode {
             Self::ConceptShape => "MirConceptShape",
             Self::RequirementShape => "MirRequirementShape",
             Self::ContractShape => "MirContractShape",
+            Self::InvariantShape => "MirInvariantShape",
             Self::ParameterShape => "MirParameterShape",
             Self::ReceiverShape => "MirReceiverShape",
             Self::LocalState => "MirLocalState",
@@ -424,6 +426,12 @@ impl TemporaryLoanSet {
 enum BorrowedViewPosition {
     DirectCallArgument,
     Other,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum InvariantPlaceAccess {
+    Mutate,
+    Move,
 }
 
 type SlotRoot = u32;
@@ -4082,6 +4090,13 @@ impl<'program> Validator<'program> {
                     statement.span,
                     &format!("{path}.place"),
                 );
+                self.validate_invariant_place_access(
+                    function,
+                    place,
+                    InvariantPlaceAccess::Mutate,
+                    statement.span,
+                    &format!("{path}.place"),
+                );
                 let value_ty = self.validate_expr(function, value, &format!("{path}.value"), depth);
                 if place_ty
                     .as_ref()
@@ -4256,13 +4271,21 @@ impl<'program> Validator<'program> {
                         format!("{path}.place"),
                     );
                 }
-                self.validate_place(
+                let ty = self.validate_place(
                     function,
                     place,
                     false,
                     expression.span,
                     &format!("{path}.place"),
-                )
+                );
+                self.validate_invariant_place_access(
+                    function,
+                    place,
+                    InvariantPlaceAccess::Move,
+                    expression.span,
+                    &format!("{path}.place"),
+                );
+                ty
             }
             ExprKind::Unary(operator, operand) => {
                 let operand_ty =
@@ -6397,15 +6420,18 @@ impl<'program> Validator<'program> {
                 Some(self.validate_expr(function, expression, path, depth))
             }
             CallArgument::InOut(place) => {
+                let span = expected.map_or(Span::default(), |parameter| parameter.span);
                 let mutable_view = Self::local_decl(function, place.local)
                     .is_some_and(|local| matches!(local.ty, Type::View { mutable: true, .. }));
-                self.validate_place(
+                let ty = self.validate_place(function, place, !mutable_view, span, path);
+                self.validate_invariant_place_access(
                     function,
                     place,
-                    !mutable_view,
-                    expected.map_or(Span::default(), |p| p.span),
+                    InvariantPlaceAccess::Mutate,
+                    span,
                     path,
-                )
+                );
+                ty
             }
         }
     }
@@ -7246,6 +7272,15 @@ impl<'program> Validator<'program> {
                 expression.span,
                 &format!("{path}.writeback"),
             );
+            if mutable {
+                self.validate_invariant_place_access(
+                    function,
+                    writeback,
+                    InvariantPlaceAccess::Mutate,
+                    expression.span,
+                    &format!("{path}.writeback"),
+                );
+            }
             if writeback_ty
                 .as_ref()
                 .is_some_and(|writeback| !types_compatible(&value_ty, writeback))
@@ -8219,6 +8254,90 @@ impl<'program> Validator<'program> {
             ty = self.project_type(ty, field, span, &format!("{path}.projection[{index}]"))?;
         }
         Some(ty)
+    }
+
+    /// Rejects access that would cross a record invariant without restoring
+    /// that complete record at a checked boundary. The final place type is
+    /// deliberately not inspected: passing or replacing a complete invariant
+    /// value preserves its boundary.
+    fn validate_invariant_place_access(
+        &mut self,
+        function: &Function,
+        place: &Place,
+        access: InvariantPlaceAccess,
+        span: Span,
+        path: &str,
+    ) {
+        let Some(local) = Self::local_decl(function, place.local) else {
+            return;
+        };
+        let mut ty = local.ty.clone();
+        for (index, field) in place.projection.iter().copied().enumerate() {
+            let Some((record, has_invariant, projected)) = self.record_projection_step(ty, field)
+            else {
+                // `validate_place` owns malformed-place diagnostics.
+                return;
+            };
+            let receiver_boundary = access == InvariantPlaceAccess::Mutate
+                && index == 0
+                && function.receiver == Some(Receiver::Mutable)
+                && function.params.first().is_some_and(|receiver| {
+                    receiver.id == place.local
+                        && matches!(&receiver.ty, Type::Nominal(id, _) if *id == record)
+                });
+            if has_invariant && !receiver_boundary {
+                let record_name = self.program.type_def(record).map_or_else(
+                    || format!("type#{}", record.0),
+                    |record| record.name.clone(),
+                );
+                let message = match access {
+                    InvariantPlaceAccess::Mutate => format!(
+                        "mutable access cannot cross the interior of invariant-bearing record `{record_name}`"
+                    ),
+                    InvariantPlaceAccess::Move => format!(
+                        "a value cannot move out through the interior of invariant-bearing record `{record_name}`"
+                    ),
+                };
+                self.push(
+                    MirValidationCode::InvariantShape,
+                    message,
+                    span,
+                    format!("{path}.projection[{index}]"),
+                );
+                return;
+            }
+            ty = projected;
+        }
+    }
+
+    /// Resolves the record owner of one field projection without producing a
+    /// second diagnostic for a place already checked by `validate_place`.
+    fn record_projection_step(
+        &self,
+        mut ty: Type,
+        field: u32,
+    ) -> Option<(crate::TypeId, bool, Type)> {
+        for _ in 0..64 {
+            let Type::Nominal(type_id, arguments) = ty else {
+                return None;
+            };
+            let definition = self.program.type_def(type_id)?;
+            match &definition.kind {
+                TypeDefKind::Record { fields, invariant } => {
+                    let field = fields.get(field as usize)?;
+                    return Some((
+                        type_id,
+                        invariant.is_some(),
+                        substitute_type(&field.ty, &arguments),
+                    ));
+                }
+                TypeDefKind::Refined { base, .. } => {
+                    ty = substitute_type(base, &arguments);
+                }
+                TypeDefKind::Enum { .. } => return None,
+            }
+        }
+        None
     }
 
     fn project_type(&mut self, mut ty: Type, field: u32, span: Span, path: &str) -> Option<Type> {
