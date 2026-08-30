@@ -41,8 +41,10 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   rejected rather than upgraded when their current identity does not match.
 - Compiler-distributed `std` source modules compiled through the ordinary
   frontend, including integer and JSON parsing, logging wrappers, process
-  wrappers, resource concepts, and the public `DecodeTextError` and `PathError`
-  enums; those public error types and variants have no builtin aliases.
+  wrappers, resource concepts, the public `DecodeTextError` and `PathError`
+  enums, and the complete public `std.log` graph. Logging now resolves through
+  ordinary source `DefId` values and has no universal-value native fallback;
+  only its exact-owner private typed write primitive remains compiler-owned.
   Runtime bundles version the checked-MIR `IoError` nominal-tag shift caused
   by removing the former synthetic error-type slots, so an older bundle cannot
   be accepted under the new MIR layout.

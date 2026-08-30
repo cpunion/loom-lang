@@ -1372,6 +1372,7 @@ import std.log.info
 import std.log.warn
 import std.log.error
 import std.log.write
+import std.log.LogLevel
 
 fn values(text Text) {
     let fields = TextMap[Text]().insert("name", text).remove("absent")
@@ -1458,6 +1459,11 @@ async fn network(host Text, port Int) Result[Unit, IoError] {
         .iter()
         .find(|function| function.name == "lowering_test.values")
         .expect("structured values caller");
+    let write = program
+        .functions
+        .iter()
+        .find(|function| function.name == "std.log.write")
+        .expect("ordinary source logging entry point");
     assert!(
         values.exprs_preorder().any(|expression| {
             matches!(
@@ -1469,6 +1475,55 @@ async fn network(host Text, port Int) Result[Unit, IoError] {
             )
         }),
         "std.json.parse_json must resolve through its ordinary source definition: {program:#?}"
+    );
+    assert!(
+        values.exprs_preorder().any(|expression| {
+            matches!(
+                expression.kind,
+                loom_mir::ExprKind::Call {
+                    target: loom_mir::CallTarget::Direct(target),
+                    ..
+                } if target == write.id
+            )
+        }),
+        "public std.log.write must resolve through its ordinary source definition: {program:#?}"
+    );
+    let log_write_owners = program
+        .functions
+        .iter()
+        .filter(|function| {
+            function.exprs_preorder().any(|expression| {
+                matches!(
+                    expression.kind,
+                    loom_mir::ExprKind::Call {
+                        target: loom_mir::CallTarget::Builtin(loom_mir::Builtin::LogWrite),
+                        ..
+                    }
+                )
+            })
+        })
+        .map(|function| function.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        log_write_owners,
+        ["std.log.write"],
+        "only the private std.log.__write boundary may lower to the LogWrite builtin"
+    );
+    let log_level = program
+        .types
+        .iter()
+        .find(|definition| definition.name == "LogLevel")
+        .expect("ordinary source LogLevel enum");
+    assert_eq!(program.prelude.log_level, Some(log_level.id));
+    let loom_mir::TypeDefKind::Enum { variants } = &log_level.kind else {
+        panic!("LogLevel must be an ordinary source enum: {log_level:#?}");
+    };
+    assert_eq!(
+        variants
+            .iter()
+            .map(|variant| variant.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Debug", "Info", "Warn", "Error"]
     );
     let debug = format!("{program:#?}");
     for builtin in [

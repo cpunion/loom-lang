@@ -1,4 +1,17 @@
-import std.log.write
+import std.log.__write
+
+/// Severity assigned to one structured log event.
+pub enum LogLevel {
+    Debug
+    Info
+    Warn
+    Error
+}
+
+/// Writes one structured log event.
+pub fn write(level LogLevel, message Text, fields TextMap[Text]) {
+    __write(level, message, fields)
+}
 
 fn write_without_fields(level LogLevel, message Text) {
     write(level, message, TextMap[Text]())

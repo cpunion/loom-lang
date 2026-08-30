@@ -743,8 +743,10 @@ direct inputs, stage every borrowed byte sequence before a possible collection,
 and publish only fully initialized managed results. Structured logging receives
 the canonical `LogLevel`, direct Text, and an optional contiguous
 `TextMap[Text]` entry view; it is non-collecting, maps status `2` to
-`LogWriteFault`, and traps on an invalid status. The stdout helper remains an
-output-only boundary and does not create a runtime or executor requirement.
+`LogWriteFault`, and traps on an invalid status. Reachable logging is required
+to lower through typed LCIR; the checked-MIR emitter and runtime export no
+universal-value logging fallback. The stdout helper remains an output-only
+boundary and does not create a runtime or executor requirement.
 
 Typed Task helpers create timer leaves, atomically adopt static join children,
 finalize `any` and `race` losers, and take exact terminal outcomes. Their

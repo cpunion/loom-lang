@@ -226,6 +226,16 @@ fn reject_checked_mir_process(reachable: &ReachableSourceGraph) -> Result<(), Co
     Ok(())
 }
 
+fn reject_checked_mir_log(reachable: &ReachableSourceGraph) -> Result<(), CodegenError> {
+    if reachable.builtins.contains(&Builtin::LogWrite) {
+        return Err(CodegenError::new(
+            "NativeLogRequiresLcir",
+            "reachable std.log output requires the typed LCIR native route",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_checked_mir_root_signatures(
     program: &CheckedProgram,
     options: &EmitOptions,
@@ -296,6 +306,7 @@ pub fn native_object_fingerprint(
 ) -> Result<String, CodegenError> {
     let (roots, reachable) = select_roots(program, options)?;
     reject_checked_mir_process(&reachable)?;
+    reject_checked_mir_log(&reachable)?;
     let target = create_target_machine(options.target_triple.as_deref(), options.optimization)?;
     checked_mir_object_fingerprint_with_target(program, options, &roots, &reachable, &target)
 }
@@ -398,6 +409,7 @@ pub fn emit_native_object(
 ) -> Result<NativeObjectArtifact, CodegenError> {
     let (roots, reachable) = select_roots(program, options)?;
     reject_checked_mir_process(&reachable)?;
+    reject_checked_mir_log(&reachable)?;
     emit_checked_mir_object(program, output, options, &roots, &reachable)
 }
 
@@ -445,6 +457,7 @@ pub fn emit_native(
 ) -> Result<NativeArtifact, CodegenError> {
     let (roots, reachable) = select_roots(program, options)?;
     reject_checked_mir_process(&reachable)?;
+    reject_checked_mir_log(&reachable)?;
     let expected = crate::target_identity(options.target_triple.as_deref(), options.optimization)?;
     if runtime.target_triple() != expected.triple || runtime.data_layout() != expected.data_layout {
         return Err(CodegenError::new(

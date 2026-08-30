@@ -555,6 +555,7 @@ import std.log.info
 import std.log.warn
 import std.log.error
 import std.log.write
+import std.log.LogLevel
 
 pub fn main() {
     debug("debug")
@@ -573,7 +574,18 @@ pub fn main() {
         .iter()
         .find(|function| function.name().ends_with("main"))
         .expect("main instance");
+    let write = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("std.log.write"))
+        .expect("ordinary source std.log.write instance");
     assert_eq!(main.effects(), Effects::MAY_FAULT);
+    assert!(main.blocks().iter().any(|block| {
+        matches!(
+            block.terminator().map(loom_codegen_ir::Terminator::kind),
+            Some(TerminatorKind::Invoke { callee, .. }) if *callee == write.id()
+        )
+    }));
 
     let mut write_count = 0;
     for function in artifact.functions() {
@@ -588,6 +600,11 @@ pub fn main() {
                 continue;
             };
             write_count += 1;
+            assert_eq!(
+                function.id(),
+                write.id(),
+                "only the source std.log.write wrapper may reach the private __write primitive"
+            );
             assert!(function.value(*fields).is_some());
             assert_eq!(
                 function
@@ -606,12 +623,19 @@ pub fn main() {
             ));
         }
     }
-    assert_eq!(write_count, 2, "{}", dump_program(artifact.program()));
+    assert_eq!(write_count, 1, "{}", dump_program(artifact.program()));
 
     let dump = dump_program(artifact.program());
-    assert_eq!(dump.matches("log.write ").count(), 2, "{dump}");
+    assert_eq!(dump.matches("log.write ").count(), 1, "{dump}");
     assert_eq!(dump.matches("text_map.construct").count(), 2, "{dump}");
-    for function in ["debug", "info", "warn", "error", "write_without_fields"] {
+    for function in [
+        "debug",
+        "info",
+        "warn",
+        "error",
+        "write",
+        "write_without_fields",
+    ] {
         assert!(dump.contains(&format!("std.log.{function}")), "{dump}");
     }
     for variant in 0..=3 {

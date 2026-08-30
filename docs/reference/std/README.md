@@ -27,11 +27,11 @@ ordinary package, type, MIR, reachability, and native pipelines. Current source
 declarations include the `std.int`, `std.float`, and `std.json` parsers and
 their public errors; the complete `std.float` public API and conversion error;
 `std.text.DecodeTextError`; `std.path.PathError`; `std.io.write` and
-`write_line`; the `std.log.debug`, `info`, `warn`, and `error` conveniences;
-and the public `Dispose`, `MustScope`, and `NoSuspend` declarations in
+`write_line`; the complete public `std.log` API, including `LogLevel` and
+`write`; and the public `Dispose`, `MustScope`, and `NoSuspend` declarations in
 `std.resource`.
-The logging conveniences are ordinary Loom functions over the irreducible
-`std.log.write` output boundary. Resource declarations are source-backed, but
+The public logging graph is ordinary Loom source over one compiler-private
+typed output primitive. Resource declarations are source-backed, but
 their fixed shapes and irreducible static rules remain part of the language
 core and add no runtime registry. JSON parsing is ordinary Loom source; JSON
 formatting uses the exact typed formatting boundary documented in the JSON

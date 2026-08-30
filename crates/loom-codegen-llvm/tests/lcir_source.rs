@@ -3600,7 +3600,7 @@ fn source_std_io_writes_exact_text_through_typed_lcir() {
 #[test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one gate keeps five public logging calls over two reachable source bodies, exact interpreter/MIR/typed stderr, release IR purity, and Linux/MSVC object ABIs together"
+    reason = "one gate keeps five public logging calls over ordinary source wrappers, exact interpreter/typed stderr, release IR purity, and Linux/MSVC object ABIs together"
 )]
 fn typed_logging_uses_one_direct_fallible_runtime_boundary() {
     let source = concat!(
@@ -3636,8 +3636,15 @@ fn typed_logging_uses_one_direct_fallible_runtime_boundary() {
 
         let artifact = lower_source_artifact(&program, &request);
         let dump = dump_program(artifact.program());
-        assert_eq!(dump.matches("log.write ").count(), 2, "{dump}");
-        for function in ["debug", "info", "warn", "error", "write_without_fields"] {
+        assert_eq!(dump.matches("log.write ").count(), 1, "{dump}");
+        for function in [
+            "debug",
+            "info",
+            "warn",
+            "error",
+            "write",
+            "write_without_fields",
+        ] {
             assert!(dump.contains(&format!("std.log.{function}")), "{dump}");
         }
         let logging = artifact
@@ -3659,19 +3666,8 @@ fn typed_logging_uses_one_direct_fallible_runtime_boundary() {
             stem,
             NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
         );
-        let checked_mir = match &request {
-            SourceArtifactRequest::Run { .. } => {
-                emit_and_run_checked_mir(&program, "main", "checked-mir-typed-logging-run")
-            }
-            SourceArtifactRequest::Tests => {
-                emit_and_run_checked_mir_tests(&program, "checked-mir-typed-logging-tests")
-            }
-        };
         assert!(native.output.status.success(), "{:#?}", native.output);
-        assert!(checked_mir.status.success(), "{checked_mir:#?}");
-        assert_eq!(native.output.stdout, checked_mir.stdout);
         assert_eq!(native.output.stderr, TYPED_LOGGING_STDERR);
-        assert_eq!(native.output.stderr, checked_mir.stderr);
         for required in [
             "@loom_runtime_log_typed_v1",
             "LogWriteFault",
@@ -3749,9 +3745,6 @@ fn typed_logging_uses_one_direct_fallible_runtime_boundary() {
     .expect("emit typed logging unwritable-stderr object");
     link_native_object(&typed_object, &typed_executable)
         .expect("link typed logging unwritable-stderr executable");
-    let checked_mir_executable = directory.path().join("checked-mir-logging-unwritable");
-    emit_native(&program, &checked_mir_executable, &EmitOptions::run("main"))
-        .expect("emit checked-MIR logging unwritable-stderr executable");
 
     let mut interpreter = Command::new(std::env::current_exe().expect("current test executable"));
     interpreter
@@ -3762,15 +3755,13 @@ fn typed_logging_uses_one_direct_fallible_runtime_boundary() {
         interpreter.status.success(),
         "interpreter did not observe read-only stderr: {interpreter:?}"
     );
-    for executable in [&typed_executable, &checked_mir_executable] {
-        let mut command = Command::new(executable);
-        let output = run_with_read_only_stderr(&mut command, directory.path());
-        assert!(
-            !output.status.success(),
-            "{} silently accepted read-only stderr: {output:?}",
-            executable.display()
-        );
-    }
+    let mut command = Command::new(&typed_executable);
+    let output = run_with_read_only_stderr(&mut command, directory.path());
+    assert!(
+        !output.status.success(),
+        "{} silently accepted read-only stderr: {output:?}",
+        typed_executable.display()
+    );
 
     #[cfg(unix)]
     {
@@ -3784,15 +3775,13 @@ fn typed_logging_uses_one_direct_fallible_runtime_boundary() {
             interpreter.status.success(),
             "interpreter did not observe closed stderr: {interpreter:?}"
         );
-        for executable in [&typed_executable, &checked_mir_executable] {
-            let mut command = Command::new(executable);
-            let output = run_with_closed_stderr(&mut command);
-            assert!(
-                !output.status.success(),
-                "{} silently accepted closed stderr: {output:?}",
-                executable.display()
-            );
-        }
+        let mut command = Command::new(&typed_executable);
+        let output = run_with_closed_stderr(&mut command);
+        assert!(
+            !output.status.success(),
+            "{} silently accepted closed stderr: {output:?}",
+            typed_executable.display()
+        );
     }
 }
 

@@ -1081,22 +1081,10 @@ const STD_SYMBOLS: &[StdSymbol] = &[
         signature: "enum IoErrorKind",
     },
     StdSymbol {
-        name: "LogLevel",
-        kind: "enum",
-        module: "std.prelude",
-        signature: "enum LogLevel",
-    },
-    StdSymbol {
         name: "format_json",
         kind: "function",
         module: "std.json",
         signature: "fn format_json(value Json) Result[Text, JsonError]",
-    },
-    StdSymbol {
-        name: "write",
-        kind: "function",
-        module: "std.log",
-        signature: "fn write(level LogLevel, message Text, fields TextMap[Text])",
     },
     StdSymbol {
         name: "try_open_read",

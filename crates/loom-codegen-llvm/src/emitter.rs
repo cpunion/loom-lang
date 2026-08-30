@@ -2177,24 +2177,6 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
             })
     }
 
-    fn native_log_write(&self) -> FunctionValue<'ctx> {
-        self.module
-            .get_function("loom_runtime_log")
-            .unwrap_or_else(|| {
-                let function_type = self.context.i32_type().fn_type(
-                    &[
-                        self.context.i32_type().into(),
-                        self.ptr_type.into(),
-                        self.i64_type.into(),
-                        self.ptr_type.into(),
-                    ],
-                    false,
-                );
-                self.module
-                    .add_function("loom_runtime_log", function_type, None)
-            })
-    }
-
     fn native_four_pointer_status(&self, name: &str) -> FunctionValue<'ctx> {
         self.module.get_function(name).unwrap_or_else(|| {
             let function_type = self.context.i32_type().fn_type(
@@ -10700,6 +10682,12 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 "std.process primitives require the typed LCIR native route",
             ));
         }
+        if builtin == Builtin::LogWrite {
+            return Err(CodegenError::new(
+                "NativeLogRequiresLcir",
+                "std.log output requires the typed LCIR native route",
+            ));
+        }
         if matches!(
             builtin,
             Builtin::ListAdd | Builtin::ListLength | Builtin::ListGet | Builtin::ListToTextMap
@@ -10750,7 +10738,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 | Builtin::JsonFormat
                 | Builtin::IoErrorKind
                 | Builtin::IoErrorMessage
-                | Builtin::LogWrite
         ) {
             let continues =
                 self.emit_structured_value_builtin(builtin, &prepared.values, destination)?;
@@ -11738,21 +11725,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 self.shallow_copy_named(destination, field, "io.error.field.copy")?;
                 Ok(true)
             }
-            (Builtin::LogWrite, [level, message, fields]) => {
-                let level = self.unwrap(*level)?;
-                let level = self.backend.load_i64_field(
-                    self.backend.value_type,
-                    level,
-                    VALUE_FIELD_AUX,
-                    "log.level",
-                )?;
-                let level = self
-                    .backend
-                    .builder
-                    .build_int_truncate(level, self.backend.context.i32_type(), "log.level.i32")
-                    .map_err(builder_error)?;
-                self.emit_log_write_value(level, *message, *fields, destination)
-            }
             _ => Err(CodegenError::new(
                 "InvalidBuiltinCall",
                 "structured value builtin argument shape does not match checked MIR",
@@ -11971,35 +11943,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 .text_map
                 .ok_or_else(|| CodegenError::new("InvalidPrelude", "TextMap is missing"))?,
         ))
-    }
-
-    fn emit_log_write_value(
-        &self,
-        level: IntValue<'ctx>,
-        message: PointerValue<'ctx>,
-        fields: PointerValue<'ctx>,
-        destination: PointerValue<'ctx>,
-    ) -> Result<bool, CodegenError> {
-        let (data, length) = self.text_parts(message, "log.message")?;
-        let status = call_int(
-            &self.backend.builder,
-            self.backend.native_log_write(),
-            &[level.into(), data.into(), length.into(), fields.into()],
-            "log.write.status",
-        )?;
-        let failed = self
-            .backend
-            .builder
-            .build_int_compare(
-                IntPredicate::NE,
-                status,
-                self.backend.context.i32_type().const_zero(),
-                "log.write.failed",
-            )
-            .map_err(builder_error)?;
-        self.fail_if(failed, "LogWriteFault")?;
-        self.emit_constant(&Constant::Unit, destination)?;
-        Ok(true)
     }
 
     fn emit_option_from_status(

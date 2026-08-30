@@ -457,6 +457,7 @@ import std.log.debug
 import std.log.info
 import std.log.warn
 import std.log.error
+import std.log.LogLevel
 import std.log.write
 
 fn values(text Text) {
@@ -526,10 +527,10 @@ fn ioFailure(error IoError) {
 
 fn logLevel(level LogLevel) {
     match level {
-        Debug => Unit
-        Info => Unit
-        Warn => Unit
-        Error => Unit
+        LogLevel.Debug => Unit
+        LogLevel.Info => Unit
+        LogLevel.Warn => Unit
+        LogLevel.Error => Unit
     }
 }
 
@@ -593,6 +594,7 @@ fn structured_builtin_values_reject_wrong_shapes_and_open_matches() {
     let diagnostics = analyze_source(
         r#"
 import std.json.format_json
+import std.log.LogLevel
 import std.log.write
 
 fn genericEquality[T](left TextMap[T], right TextMap[T]) Bool {
