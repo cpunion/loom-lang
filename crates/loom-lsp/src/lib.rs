@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::io::{self, BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use loom_core::{Diagnostic, FileId, Severity};
 use loom_driver::{
@@ -353,7 +353,7 @@ impl<R: BufRead, W: Write> Server<R, W> {
                 let Ok(path) = file_uri_to_path(uri) else {
                     continue;
                 };
-                let canonical = std::fs::canonicalize(&path).unwrap_or(path);
+                let canonical = normalize_path_for_workspace_lookup(&path);
                 self.hosts.remove(&canonical);
             }
         }
@@ -877,7 +877,7 @@ impl<R: BufRead, W: Write> Server<R, W> {
     }
 
     fn workspace_for_path(&self, path: &Path) -> Option<PathBuf> {
-        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let path = normalize_path_for_workspace_lookup(path);
         self.hosts
             .iter()
             .filter_map(|(workspace, host)| {
@@ -1261,6 +1261,43 @@ fn replay_open_documents(host: &mut AnalysisHost, documents: &BTreeMap<String, O
     }
 }
 
+fn normalize_path_for_workspace_lookup(path: &Path) -> PathBuf {
+    let lexical = normalize_lexical_path(path);
+    if let Ok(canonical) = std::fs::canonicalize(&lexical) {
+        return canonical;
+    }
+
+    let mut existing = lexical.as_path();
+    let mut suffix = Vec::new();
+    while let Some(parent) = existing.parent() {
+        if let Some(name) = existing.file_name() {
+            suffix.push(name.to_owned());
+        }
+        if let Ok(mut canonical) = std::fs::canonicalize(parent) {
+            for component in suffix.iter().rev() {
+                canonical.push(component);
+            }
+            return normalize_lexical_path(&canonical);
+        }
+        existing = parent;
+    }
+    lexical
+}
+
+fn normalize_lexical_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
 fn diagnostics_for_uri(snapshot: &AnalysisSnapshot, uri: &str) -> Vec<Value> {
     let Ok(path) = file_uri_to_path(uri) else {
         return Vec::new();
@@ -1345,35 +1382,88 @@ fn pointer_str<'a>(value: &'a Value, pointer: &str) -> Option<&'a str> {
 /// Converts an absolute local path to a percent-encoded file URI.
 #[must_use]
 pub fn path_to_file_uri(path: &Path) -> String {
-    let path = path.to_string_lossy();
-    let mut uri = String::from("file://");
-    for byte in path.as_bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(*byte, b'/' | b'-' | b'.' | b'_' | b'~') {
-            uri.push(char::from(*byte));
-        } else {
-            uri.push('%');
-            let _ = write!(uri, "{byte:02X}");
-        }
+    #[cfg(windows)]
+    {
+        return windows_path_text_to_file_uri(&path.to_string_lossy());
     }
-    uri
+
+    #[cfg(not(windows))]
+    {
+        let path = path.to_string_lossy();
+        let mut uri = String::from("file://");
+        push_percent_encoded_path(&mut uri, &path);
+        uri
+    }
 }
 
-/// Decodes a local `file://` URI. Remote authorities are rejected.
+/// Decodes a local `file://` URI.
+///
+/// Windows drive URIs use the standard `file:///C:/path` form. UNC authorities
+/// such as `file://server/share/path` are supported on Windows and rejected on
+/// other platforms.
 ///
 /// # Errors
 ///
 /// Returns a descriptive message for an unsupported authority, malformed
 /// percent escape, or non-UTF-8 decoded path.
 pub fn file_uri_to_path(uri: &str) -> Result<PathBuf, String> {
+    #[cfg(windows)]
+    {
+        return windows_file_uri_to_path_text(uri).map(PathBuf::from);
+    }
+
+    #[cfg(not(windows))]
+    {
+        let (authority, path) = file_uri_parts(uri)?;
+        if !authority.is_empty() && !authority.eq_ignore_ascii_case("localhost") {
+            return Err("remote file URI authorities are not supported".to_owned());
+        }
+        if !path.starts_with('/') {
+            return Err("file URI path must be absolute".to_owned());
+        }
+        percent_decode_utf8(path).map(PathBuf::from)
+    }
+}
+
+fn push_percent_encoded_path(target: &mut String, path: &str) {
+    for byte in path.as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(*byte, b'/' | b'-' | b'.' | b'_' | b'~') {
+            target.push(char::from(*byte));
+        } else {
+            target.push('%');
+            let _ = write!(target, "{byte:02X}");
+        }
+    }
+}
+
+#[cfg(any(windows, test))]
+fn push_percent_encoded_component(target: &mut String, component: &str) {
+    for byte in component.as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(*byte, b'-' | b'.' | b'_' | b'~') {
+            target.push(char::from(*byte));
+        } else {
+            target.push('%');
+            let _ = write!(target, "{byte:02X}");
+        }
+    }
+}
+
+fn file_uri_parts(uri: &str) -> Result<(&str, &str), String> {
     let rest = uri
         .strip_prefix("file://")
         .ok_or_else(|| "only file:// URIs are supported".to_owned())?;
-    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
-    if !rest.starts_with('/') {
-        return Err("remote file URI authorities are not supported".to_owned());
+    if rest.starts_with('/') {
+        return Ok(("", rest));
     }
-    let mut bytes = Vec::with_capacity(rest.len());
-    let raw = rest.as_bytes();
+    let Some(separator) = rest.find('/') else {
+        return Ok((rest, ""));
+    };
+    Ok((&rest[..separator], &rest[separator..]))
+}
+
+fn percent_decode_utf8(encoded: &str) -> Result<String, String> {
+    let mut bytes = Vec::with_capacity(encoded.len());
+    let raw = encoded.as_bytes();
     let mut index = 0;
     while index < raw.len() {
         if raw[index] == b'%' {
@@ -1389,9 +1479,109 @@ pub fn file_uri_to_path(uri: &str) -> Result<PathBuf, String> {
             index += 1;
         }
     }
-    String::from_utf8(bytes)
-        .map(PathBuf::from)
-        .map_err(|_| "file URI path is not valid UTF-8".to_owned())
+    String::from_utf8(bytes).map_err(|_| "file URI path is not valid UTF-8".to_owned())
+}
+
+#[cfg(any(windows, test))]
+fn windows_path_text_to_file_uri(path: &str) -> String {
+    let verbatim_unc_path = path
+        .get(..8)
+        .filter(|prefix| prefix.eq_ignore_ascii_case(r"\\?\UNC\"))
+        .map(|_| &path[8..]);
+    let unc_path = verbatim_unc_path.or_else(|| {
+        (!path.starts_with(r"\\?\"))
+            .then(|| path.strip_prefix(r"\\"))
+            .flatten()
+    });
+    if let Some(unc_path) = unc_path {
+        let mut components = unc_path
+            .split(['\\', '/'])
+            .filter(|component| !component.is_empty());
+        if let (Some(server), Some(share)) = (components.next(), components.next()) {
+            let mut uri = String::from("file://");
+            if server.eq_ignore_ascii_case("localhost") {
+                // `localhost` is a local authority, so keep a loopback UNC host
+                // in the path instead of changing it into a drive-local path.
+                uri.push_str("//");
+            }
+            push_percent_encoded_component(&mut uri, server);
+            uri.push('/');
+            push_percent_encoded_component(&mut uri, share);
+            for component in components {
+                uri.push('/');
+                push_percent_encoded_component(&mut uri, component);
+            }
+            return uri;
+        }
+    }
+
+    let drive_path = path.strip_prefix(r"\\?\").unwrap_or(path);
+    let raw = drive_path.as_bytes();
+    if raw.len() >= 3
+        && raw[0].is_ascii_alphabetic()
+        && raw[1] == b':'
+        && matches!(raw[2], b'\\' | b'/')
+    {
+        let mut uri = String::from("file:///");
+        uri.push(char::from(raw[0]));
+        uri.push(':');
+        let normalized = drive_path[2..].replace('\\', "/");
+        push_percent_encoded_path(&mut uri, &normalized);
+        return uri;
+    }
+
+    let normalized = drive_path.replace('\\', "/");
+    let mut uri = String::from("file://");
+    if !normalized.starts_with('/') {
+        uri.push('/');
+    }
+    push_percent_encoded_path(&mut uri, &normalized);
+    uri
+}
+
+#[cfg(any(windows, test))]
+fn windows_file_uri_to_path_text(uri: &str) -> Result<String, String> {
+    let (encoded_authority, encoded_path) = file_uri_parts(uri)?;
+    let authority = percent_decode_utf8(encoded_authority)?;
+    if authority.is_empty() || authority.eq_ignore_ascii_case("localhost") {
+        if !encoded_path.starts_with('/') {
+            return Err("file URI path must be absolute".to_owned());
+        }
+        let decoded_path = percent_decode_utf8(encoded_path)?;
+        if has_windows_drive_uri_prefix(&decoded_path) && !is_windows_drive_uri_path(&decoded_path)
+        {
+            return Err("Windows drive file URI path must be absolute".to_owned());
+        }
+        let local_path = if is_windows_drive_uri_path(&decoded_path) {
+            &decoded_path[1..]
+        } else {
+            decoded_path.as_str()
+        };
+        return Ok(local_path.replace('/', "\\"));
+    }
+
+    if authority.contains(['/', '\\']) {
+        return Err("UNC file URI authority contains a path separator".to_owned());
+    }
+    let decoded_path = percent_decode_utf8(encoded_path)?;
+    let unc_path = decoded_path.trim_start_matches('/');
+    let share = unc_path.split('/').next().unwrap_or_default();
+    if share.is_empty() {
+        return Err("UNC file URI must name a share".to_owned());
+    }
+    Ok(format!(r"\\{}\{}", authority, unc_path.replace('/', "\\")))
+}
+
+#[cfg(any(windows, test))]
+fn is_windows_drive_uri_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    has_windows_drive_uri_prefix(path) && bytes.len() >= 4 && matches!(bytes[3], b'/' | b'\\')
+}
+
+#[cfg(any(windows, test))]
+fn has_windows_drive_uri_prefix(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':'
 }
 
 fn hex(value: u8) -> Result<u8, String> {
@@ -1409,13 +1599,70 @@ mod tests {
 
     use super::{
         COMPLETION_KEYWORDS, completion_kind, file_uri_to_path, path_to_file_uri, symbol_kind,
+        windows_file_uri_to_path_text, windows_path_text_to_file_uri,
     };
 
+    #[cfg(not(windows))]
     #[test]
     fn file_uri_round_trip_handles_spaces_and_unicode() {
         let path = Path::new("/tmp/loom project/价格.loom");
         let uri = path_to_file_uri(path);
+        assert_eq!(uri, "file:///tmp/loom%20project/%E4%BB%B7%E6%A0%BC.loom");
         assert_eq!(file_uri_to_path(&uri).as_deref(), Ok(path));
+    }
+
+    #[test]
+    fn windows_drive_file_uri_uses_slashes_and_round_trips_unicode() {
+        let path = r"C:\loom project\价格.loom";
+        let uri = windows_path_text_to_file_uri(path);
+        assert_eq!(uri, "file:///C:/loom%20project/%E4%BB%B7%E6%A0%BC.loom");
+        assert_eq!(windows_file_uri_to_path_text(&uri).as_deref(), Ok(path));
+        assert_eq!(
+            windows_file_uri_to_path_text("file:///C:relative").unwrap_err(),
+            "Windows drive file URI path must be absolute"
+        );
+    }
+
+    #[test]
+    fn windows_unc_file_uri_round_trips_the_authority_and_share() {
+        let path = r"\\server\shared folder\价格.loom";
+        let uri = windows_path_text_to_file_uri(path);
+        assert_eq!(uri, "file://server/shared%20folder/%E4%BB%B7%E6%A0%BC.loom");
+        assert_eq!(windows_file_uri_to_path_text(&uri).as_deref(), Ok(path));
+
+        let loopback = r"\\localhost\shared folder\价格.loom";
+        let loopback_uri = windows_path_text_to_file_uri(loopback);
+        assert_eq!(
+            loopback_uri,
+            "file:////localhost/shared%20folder/%E4%BB%B7%E6%A0%BC.loom"
+        );
+        assert_eq!(
+            windows_file_uri_to_path_text(&loopback_uri).as_deref(),
+            Ok(loopback)
+        );
+        assert!(windows_file_uri_to_path_text("file://server").is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_windows_paths_use_the_windows_file_uri_rules() {
+        let path = Path::new(r"C:\loom project\价格.loom");
+        let uri = path_to_file_uri(path);
+        assert_eq!(uri, "file:///C:/loom%20project/%E4%BB%B7%E6%A0%BC.loom");
+        assert_eq!(file_uri_to_path(&uri).as_deref(), Ok(path));
+
+        let unc = Path::new(r"\\server\shared folder\价格.loom");
+        let unc_uri = path_to_file_uri(unc);
+        assert_eq!(file_uri_to_path(&unc_uri).as_deref(), Ok(unc));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn non_windows_hosts_reject_unc_file_uri_authorities() {
+        assert_eq!(
+            file_uri_to_path("file://server/share/file.loom").unwrap_err(),
+            "remote file URI authorities are not supported"
+        );
     }
 
     #[test]

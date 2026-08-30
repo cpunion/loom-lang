@@ -64,6 +64,8 @@ export function checkReleaseWorkflow({ release, bootstrap, argumentTest }) {
     "compiler: target/release/loom.exe",
     "language_server: target/release/loom-lsp.exe",
     "executable_suffix: .exe",
+    "Test Windows language-server file URI handling",
+    "cargo test --locked --release -p loom-lsp --lib --test protocol",
     "Canonical examples release check/build/test/run smoke",
     "for example in constraints-contracts concepts-polymorphism async-resources",
     "C3 dual-backend release gate",
