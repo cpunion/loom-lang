@@ -884,7 +884,7 @@ mod tests {
     use crate::{
         CallPlan, ConceptDef, ConceptId, ConceptIdentity, ContractArm, ContractValue, FieldDef,
         Function, FunctionId, LocalDecl, LocalId, PreludeIds, Receiver, RequirementDef,
-        RequirementId, RequirementType, Statement, Type, TypeDef, TypeId,
+        RequirementId, RequirementType, Statement, Type, TypeDef, TypeId, VariantDef, VariantId,
     };
     use loom_core::Span;
 
@@ -1036,7 +1036,7 @@ mod tests {
     fn receiver_invariants_rebuild_omissions_forgery_and_generic_bindings() {
         let span = Span::default();
         let invariant = Contract {
-            code: "Box.invariant".to_owned(),
+            code: "Pair.invariant".to_owned(),
             span,
             expression: ContractExpr {
                 kind: ContractExprKind::Match {
@@ -1051,8 +1051,12 @@ mod tests {
                         span,
                     }),
                     arms: vec![ContractArm {
-                        pattern: Pattern::Binding,
-                        bindings: vec![Type::Parameter(0)],
+                        pattern: Pattern::Variant {
+                            ty: TypeId(1),
+                            variant: VariantId(0),
+                            payload: vec![Pattern::Binding, Pattern::Binding],
+                        },
+                        bindings: vec![Type::Parameter(1), Type::Parameter(0)],
                         value: ContractExpr {
                             kind: ContractExprKind::Constant(Constant::Bool(true)),
                             span,
@@ -1070,22 +1074,41 @@ mod tests {
                 span,
             },
         };
-        let receiver = Type::Nominal(TypeId(0), vec![Type::Text]);
+        let receiver = Type::Nominal(TypeId(0), vec![Type::Text, Type::Int]);
         let mut program = Program {
-            types: vec![TypeDef {
-                id: TypeId(0),
-                name: "Box".to_owned(),
-                span,
-                type_parameters: 1,
-                kind: TypeDefKind::Record {
-                    fields: vec![FieldDef {
-                        name: "value".to_owned(),
-                        ty: Type::Parameter(0),
-                        span,
-                    }],
-                    invariant: Some(invariant),
+            types: vec![
+                TypeDef {
+                    id: TypeId(0),
+                    name: "Pair".to_owned(),
+                    span,
+                    type_parameters: 2,
+                    kind: TypeDefKind::Record {
+                        fields: vec![FieldDef {
+                            name: "value".to_owned(),
+                            ty: Type::Nominal(
+                                TypeId(1),
+                                vec![Type::Parameter(1), Type::Parameter(0)],
+                            ),
+                            span,
+                        }],
+                        invariant: Some(invariant),
+                    },
                 },
-            }],
+                TypeDef {
+                    id: TypeId(1),
+                    name: "Payload".to_owned(),
+                    span,
+                    type_parameters: 2,
+                    kind: TypeDefKind::Enum {
+                        variants: vec![VariantDef {
+                            id: VariantId(0),
+                            name: "Both".to_owned(),
+                            payload: vec![Type::Parameter(0), Type::Parameter(1)],
+                            span,
+                        }],
+                    },
+                },
+            ],
             functions: vec![
                 receiver_function(0, receiver.clone(), None),
                 receiver_function(1, receiver, Some(weak.clone())),
@@ -1116,11 +1139,11 @@ mod tests {
                 .receiver_invariant
                 .as_ref()
                 .expect("record receiver invariant");
-            assert_eq!(rebuilt.code, "Box.invariant");
+            assert_eq!(rebuilt.code, "Pair.invariant");
             let ContractExprKind::Match { arms, .. } = &rebuilt.expression.kind else {
                 panic!("forged contract was not overwritten");
             };
-            assert_eq!(arms[0].bindings, vec![Type::Text]);
+            assert_eq!(arms[0].bindings, vec![Type::Int, Type::Text]);
         }
         let TypeDefKind::Record {
             invariant: Some(declared),
@@ -1132,6 +1155,9 @@ mod tests {
         let ContractExprKind::Match { arms, .. } = &declared.expression.kind else {
             panic!("declared invariant match");
         };
-        assert_eq!(arms[0].bindings, vec![Type::Parameter(0)]);
+        assert_eq!(
+            arms[0].bindings,
+            vec![Type::Parameter(1), Type::Parameter(0)]
+        );
     }
 }

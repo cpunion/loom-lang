@@ -149,6 +149,30 @@ impl Program {
         self.witnesses.get(id.0 as usize)
     }
 
+    /// Returns the receiver record's exact invariant instantiated for this
+    /// function's nominal receiver arguments.
+    #[must_use]
+    pub fn instantiated_receiver_invariant(&self, function: &Function) -> Option<Contract> {
+        let receiver = function.receiver.and_then(|_| function.params.first())?;
+        let Type::Nominal(type_id, arguments) = &receiver.ty else {
+            return None;
+        };
+        let definition = self.type_def(*type_id)?;
+        if definition.id != *type_id {
+            return None;
+        }
+        let TypeDefKind::Record {
+            invariant: Some(invariant),
+            ..
+        } = &definition.kind
+        else {
+            return None;
+        };
+        let mut invariant = invariant.clone();
+        instantiate_contract_bindings(&mut invariant.expression, arguments);
+        Some(invariant)
+    }
+
     /// Validates every index and executable type shape in this MIR program.
     ///
     /// # Errors
@@ -608,6 +632,12 @@ pub enum StatementKind {
     Assert {
         condition: Expr,
     },
+    /// Marks the exact point where a successful assertion re-establishes the
+    /// current mutable receiver's declared invariant. The contract itself is
+    /// derived from parameter zero's nominal type, keeping one authority.
+    RestoreReceiverInvariant {
+        check: ReceiverInvariantCheck,
+    },
     Evaluate(Expr),
     /// Registers a cleanup in the current lexical block. Backends execute
     /// registered blocks in LIFO order on every observable scope exit.
@@ -645,6 +675,19 @@ pub enum ConstructionMode {
     Proven,
     Recheck,
     Runtime,
+}
+
+/// Trust disposition for a receiver-invariant restoration marker.
+///
+/// Fresh source lowering emits `Proven` after semantic proof. Artifact decode
+/// replaces that process-local proof with `Recheck`, which executes the exact
+/// invariant from the receiver's nominal type and raises
+/// `ArtifactProofRejected` on failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum ReceiverInvariantCheck {
+    Proven,
+    Recheck,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -856,7 +899,9 @@ impl<'function> ExprPreorder<'function> {
                 self.pending.push(ExprWalkNode::Block(body));
                 self.pending.push(ExprWalkNode::Expr(condition));
             }
-            StatementKind::Break | StatementKind::Continue => {}
+            StatementKind::Break
+            | StatementKind::Continue
+            | StatementKind::RestoreReceiverInvariant { .. } => {}
             StatementKind::Assert { condition } => {
                 self.pending.push(ExprWalkNode::Expr(condition));
             }
@@ -1004,7 +1049,9 @@ impl ExprIdAssigner {
                 self.assign_expr(condition)?;
                 self.assign_block(body)
             }
-            StatementKind::Break | StatementKind::Continue => Ok(()),
+            StatementKind::Break
+            | StatementKind::Continue
+            | StatementKind::RestoreReceiverInvariant { .. } => Ok(()),
             StatementKind::Assert { condition } => self.assign_expr(condition),
             StatementKind::Evaluate(expression) => self.assign_expr(expression),
             StatementKind::Defer(cleanup) => self.assign_block(cleanup),
@@ -1213,4 +1260,78 @@ pub enum BinaryOp {
     GreaterEqual,
     And,
     Or,
+}
+
+fn instantiate_contract_bindings(expression: &mut ContractExpr, arguments: &[Type]) {
+    match &mut expression.kind {
+        ContractExprKind::Field(value, _) | ContractExprKind::Unary(_, value) => {
+            instantiate_contract_bindings(value, arguments);
+        }
+        ContractExprKind::Binary(_, left, right) => {
+            instantiate_contract_bindings(left, arguments);
+            instantiate_contract_bindings(right, arguments);
+        }
+        ContractExprKind::IsFinite(value) => instantiate_contract_bindings(value, arguments),
+        ContractExprKind::Match { scrutinee, arms } => {
+            instantiate_contract_bindings(scrutinee, arguments);
+            for arm in arms {
+                for binding in &mut arm.bindings {
+                    *binding = instantiate_receiver_type(binding, arguments);
+                }
+                instantiate_contract_bindings(&mut arm.value, arguments);
+            }
+        }
+        ContractExprKind::Constant(_)
+        | ContractExprKind::Value(_)
+        | ContractExprKind::Binding(_) => {}
+    }
+}
+
+fn instantiate_receiver_type(ty: &Type, arguments: &[Type]) -> Type {
+    match ty {
+        Type::Parameter(index) => arguments
+            .get(*index as usize)
+            .cloned()
+            .unwrap_or_else(|| ty.clone()),
+        Type::Tuple(elements) => Type::Tuple(
+            elements
+                .iter()
+                .map(|element| instantiate_receiver_type(element, arguments))
+                .collect(),
+        ),
+        Type::List(element) => Type::List(Box::new(instantiate_receiver_type(element, arguments))),
+        Type::Nominal(id, nested) => Type::Nominal(
+            *id,
+            nested
+                .iter()
+                .map(|nested| instantiate_receiver_type(nested, arguments))
+                .collect(),
+        ),
+        Type::Task(output) => Type::Task(Box::new(instantiate_receiver_type(output, arguments))),
+        Type::TaskOutcome(output) => {
+            Type::TaskOutcome(Box::new(instantiate_receiver_type(output, arguments)))
+        }
+        Type::View {
+            mutable,
+            concept,
+            bindings,
+        } => Type::View {
+            mutable: *mutable,
+            concept: *concept,
+            bindings: bindings
+                .iter()
+                .map(|(name, binding)| {
+                    (name.clone(), instantiate_receiver_type(binding, arguments))
+                })
+                .collect(),
+        },
+        Type::Never
+        | Type::Unit
+        | Type::Bool
+        | Type::Int
+        | Type::Float
+        | Type::Text
+        | Type::AssociatedProjection { .. }
+        | Type::Error => ty.clone(),
+    }
 }
