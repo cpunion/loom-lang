@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::io::{self, BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use loom_core::{Diagnostic, FileId, Severity};
 use loom_driver::{
@@ -353,7 +353,7 @@ impl<R: BufRead, W: Write> Server<R, W> {
                 let Ok(path) = file_uri_to_path(uri) else {
                     continue;
                 };
-                let canonical = std::fs::canonicalize(&path).unwrap_or(path);
+                let canonical = normalize_path_for_workspace_lookup(&path);
                 self.hosts.remove(&canonical);
             }
         }
@@ -877,7 +877,7 @@ impl<R: BufRead, W: Write> Server<R, W> {
     }
 
     fn workspace_for_path(&self, path: &Path) -> Option<PathBuf> {
-        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let path = normalize_path_for_workspace_lookup(path);
         self.hosts
             .iter()
             .filter_map(|(workspace, host)| {
@@ -1261,6 +1261,43 @@ fn replay_open_documents(host: &mut AnalysisHost, documents: &BTreeMap<String, O
     }
 }
 
+fn normalize_path_for_workspace_lookup(path: &Path) -> PathBuf {
+    let lexical = normalize_lexical_path(path);
+    if let Ok(canonical) = std::fs::canonicalize(&lexical) {
+        return canonical;
+    }
+
+    let mut existing = lexical.as_path();
+    let mut suffix = Vec::new();
+    while let Some(parent) = existing.parent() {
+        if let Some(name) = existing.file_name() {
+            suffix.push(name.to_owned());
+        }
+        if let Ok(mut canonical) = std::fs::canonicalize(parent) {
+            for component in suffix.iter().rev() {
+                canonical.push(component);
+            }
+            return normalize_lexical_path(&canonical);
+        }
+        existing = parent;
+    }
+    lexical
+}
+
+fn normalize_lexical_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
 fn diagnostics_for_uri(snapshot: &AnalysisSnapshot, uri: &str) -> Vec<Value> {
     let Ok(path) = file_uri_to_path(uri) else {
         return Vec::new();
@@ -1462,6 +1499,11 @@ fn windows_path_text_to_file_uri(path: &str) -> String {
             .filter(|component| !component.is_empty());
         if let (Some(server), Some(share)) = (components.next(), components.next()) {
             let mut uri = String::from("file://");
+            if server.eq_ignore_ascii_case("localhost") {
+                // `localhost` is a local authority, so keep a loopback UNC host
+                // in the path instead of changing it into a drive-local path.
+                uri.push_str("//");
+            }
             push_percent_encoded_component(&mut uri, server);
             uri.push('/');
             push_percent_encoded_component(&mut uri, share);
@@ -1573,6 +1615,17 @@ mod tests {
         let uri = windows_path_text_to_file_uri(path);
         assert_eq!(uri, "file://server/shared%20folder/%E4%BB%B7%E6%A0%BC.loom");
         assert_eq!(windows_file_uri_to_path_text(&uri).as_deref(), Ok(path));
+
+        let loopback = r"\\localhost\shared folder\价格.loom";
+        let loopback_uri = windows_path_text_to_file_uri(loopback);
+        assert_eq!(
+            loopback_uri,
+            "file:////localhost/shared%20folder/%E4%BB%B7%E6%A0%BC.loom"
+        );
+        assert_eq!(
+            windows_file_uri_to_path_text(&loopback_uri).as_deref(),
+            Ok(loopback)
+        );
         assert!(windows_file_uri_to_path_text("file://server").is_err());
     }
 
