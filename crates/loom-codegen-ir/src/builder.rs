@@ -5,10 +5,10 @@ use loom_mir::Type;
 
 use crate::ids::ProgramBrand;
 use crate::{
-    Block, BlockId, CheckedProgram, CoroutinePlan, Effects, Function, InstanceId, InstanceKey,
-    InstancePlan, InstanceRole, Instruction, InstructionId, InstructionKind, Origin,
-    PlannedInstance, Program, RepresentationPlan, Signature, TargetLayout, Terminator, Value,
-    ValueDefinition, ValueId, ValueTypeId, check_program,
+    Block, BlockId, CanonicalTypeCatalog, CheckedProgram, CoroutinePlan, Effects, Function,
+    InstanceId, InstanceKey, InstancePlan, InstanceRole, Instruction, InstructionId,
+    InstructionKind, Origin, PlannedInstance, Program, RepresentationPlan, Signature, TargetLayout,
+    Terminator, Value, ValueDefinition, ValueId, ValueTypeId, check_program,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -65,6 +65,7 @@ impl Error for BuildError {}
 /// Independent validation remains authoritative.
 pub struct ProgramBuilder {
     brand: ProgramBrand,
+    canonical_types: CanonicalTypeCatalog,
     representations: RepresentationPlan,
     instances: InstancePlan,
     functions: Vec<Function>,
@@ -73,13 +74,29 @@ pub struct ProgramBuilder {
 impl ProgramBuilder {
     #[must_use]
     pub fn new(target: TargetLayout) -> Self {
+        Self::with_canonical_types(target, CanonicalTypeCatalog::default())
+    }
+
+    /// Constructs a builder with the checked-MIR source identities used by
+    /// typed standard-library representations and instructions.
+    #[must_use]
+    pub fn with_canonical_types(
+        target: TargetLayout,
+        canonical_types: CanonicalTypeCatalog,
+    ) -> Self {
         let brand = ProgramBrand::fresh();
         Self {
             brand,
+            canonical_types,
             representations: RepresentationPlan::direct_with_brand(target, brand),
             instances: InstancePlan::with_brand(brand),
             functions: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub const fn canonical_types(&self) -> &CanonicalTypeCatalog {
+        &self.canonical_types
     }
 
     #[must_use]
@@ -163,12 +180,18 @@ impl ProgramBuilder {
                 "LCIR managed Bytes must be registered before functions",
             ));
         }
+        let canonical_bytes = self.canonical_types.bytes.ok_or_else(|| {
+            BuildError::new(
+                BuildErrorCode::InvalidBytesType,
+                "LCIR managed Bytes requires an explicit canonical Bytes identity",
+            )
+        })?;
         self.representations
-            .add_managed_bytes(semantic)
+            .add_managed_bytes(semantic, canonical_bytes)
             .ok_or_else(|| {
                 BuildError::new(
                     BuildErrorCode::InvalidBytesType,
-                    "LCIR managed Bytes requires one unique canonical Bytes#9 registration on a 64-bit target",
+                    "LCIR managed Bytes requires one unique exact cataloged Bytes registration on a 64-bit target",
                 )
             })
     }
@@ -217,12 +240,18 @@ impl ProgramBuilder {
                 "LCIR managed TextMap types must be registered before functions",
             ));
         }
+        let canonical_text_map = self.canonical_types.text_map.ok_or_else(|| {
+            BuildError::new(
+                BuildErrorCode::InvalidTextMapType,
+                "LCIR managed TextMap requires an explicit canonical TextMap identity",
+            )
+        })?;
         self.representations
-            .add_managed_text_map(semantic)
+            .add_managed_text_map(semantic, canonical_text_map)
             .ok_or_else(|| {
                 BuildError::new(
                     BuildErrorCode::InvalidTextMapType,
-                    "LCIR managed TextMap requires one unique closed unary nominal type on a 64-bit target",
+                    "LCIR managed TextMap requires one unique exact cataloged closed unary nominal type on a 64-bit target",
                 )
             })
     }
@@ -575,6 +604,7 @@ impl ProgramBuilder {
     pub fn finish(self) -> Program {
         Program {
             brand: self.brand,
+            canonical_types: Box::new(self.canonical_types),
             representations: self.representations,
             instances: self.instances,
             functions: self.functions,

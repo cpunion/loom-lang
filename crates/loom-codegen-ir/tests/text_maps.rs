@@ -1,23 +1,36 @@
 use loom_codegen_ir::{
-    Constant, Effects, InstructionKind, ManagedSafepoint, Origin, ProgramBuilder, Signature,
-    TargetLayout, Terminator, TerminatorKind, ValidationCode, ValueDefinition, plan_managed_roots,
-    validate_program,
+    CanonicalTypeCatalog, Constant, Effects, InstructionKind, ManagedSafepoint, Origin,
+    ProgramBuilder, Signature, TargetLayout, Terminator, TerminatorKind, ValidationCode,
+    ValueDefinition, plan_managed_roots, validate_program,
 };
 use loom_mir::{FunctionId, Type, TypeId};
 
-const RESULT_TYPE_ID: TypeId = TypeId(1);
-const TEXT_MAP_TYPE_ID: TypeId = TypeId(13);
+const OPTION_TYPE_ID: TypeId = TypeId(200);
+const RESULT_TYPE_ID: TypeId = TypeId(201);
+const TEXT_MAP_TYPE_ID: TypeId = TypeId(213);
 
 fn text_map(value: Type) -> Type {
-    Type::Nominal(TypeId(100), vec![value])
+    Type::Nominal(TEXT_MAP_TYPE_ID, vec![value])
 }
 
 fn option(value: Type) -> Type {
-    Type::Nominal(TypeId(101), vec![value])
+    Type::Nominal(OPTION_TYPE_ID, vec![value])
 }
 
 fn canonical_text_map(value: Type) -> Type {
     Type::Nominal(TEXT_MAP_TYPE_ID, vec![value])
+}
+
+fn text_map_builder() -> ProgramBuilder {
+    ProgramBuilder::with_canonical_types(
+        TargetLayout::new(64).expect("target"),
+        CanonicalTypeCatalog {
+            result: Some(RESULT_TYPE_ID),
+            option: Some(OPTION_TYPE_ID),
+            text_map: Some(TEXT_MAP_TYPE_ID),
+            ..CanonicalTypeCatalog::default()
+        },
+    )
 }
 
 fn text_map_bulk_types(
@@ -51,7 +64,7 @@ fn text_map_bulk_types(
 )]
 fn closed_text_map_instructions_have_exact_value_and_option_shapes() {
     let origin = Origin::synthetic(FunctionId(0));
-    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut builder = text_map_builder();
     builder.add_managed_text_type().expect("managed Text");
     let map = builder
         .add_managed_text_map_type(text_map(Type::Int))
@@ -185,7 +198,7 @@ fn closed_text_map_instructions_have_exact_value_and_option_shapes() {
 )]
 fn malformed_text_map_key_value_and_option_are_rejected_together() {
     let origin = Origin::synthetic(FunctionId(1));
-    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut builder = text_map_builder();
     builder.add_managed_text_type().expect("managed Text");
     let map = builder
         .add_managed_text_map_type(text_map(Type::Int))
@@ -312,7 +325,7 @@ fn malformed_text_map_key_value_and_option_are_rejected_together() {
 
 #[test]
 fn text_map_registration_rejects_missing_or_immortal_value_leaves() {
-    let mut missing_text = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut missing_text = text_map_builder();
     missing_text
         .add_managed_text_map_type(text_map(Type::Int))
         .expect("unchecked map without Text keys");
@@ -323,7 +336,7 @@ fn text_map_registration_rejects_missing_or_immortal_value_leaves() {
             && error.message().contains("managed Text keys")
     }));
 
-    let mut immortal_key = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut immortal_key = text_map_builder();
     immortal_key
         .add_immortal_text_type()
         .expect("immortal Text");
@@ -337,7 +350,7 @@ fn text_map_registration_rejects_missing_or_immortal_value_leaves() {
             && error.message().contains("managed Text keys")
     }));
 
-    let mut missing_value = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut missing_value = text_map_builder();
     missing_value
         .add_managed_text_type()
         .expect("managed key Text");
@@ -351,7 +364,7 @@ fn text_map_registration_rejects_missing_or_immortal_value_leaves() {
             && error.message().contains("closed TextMap")
     }));
 
-    let mut immortal = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut immortal = text_map_builder();
     immortal.add_immortal_text_type().expect("immortal Text");
     immortal
         .add_managed_text_map_type(text_map(Type::Text))
@@ -367,7 +380,7 @@ fn text_map_registration_rejects_missing_or_immortal_value_leaves() {
 #[test]
 fn bulk_construction_has_one_exact_shape_and_roots_its_source_list() {
     let origin = Origin::synthetic(FunctionId(3));
-    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut builder = text_map_builder();
     builder.add_managed_text_type().expect("managed Text");
     let (entries, result) = text_map_bulk_types(&mut builder, Type::Int);
     let root = builder
@@ -426,7 +439,7 @@ fn bulk_construction_has_one_exact_shape_and_roots_its_source_list() {
 #[test]
 fn bulk_construction_rejects_non_tuple_products_non_text_entries_and_non_result_output() {
     let origin = Origin::synthetic(FunctionId(4));
-    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut builder = text_map_builder();
     builder.add_managed_text_type().expect("managed Text");
     let (entries, result) = text_map_bulk_types(&mut builder, Type::Int);
     let wrong_entry = Type::Tuple(vec![Type::Int, Type::Int]);
@@ -530,7 +543,7 @@ fn bulk_construction_rejects_non_tuple_products_non_text_entries_and_non_result_
 #[test]
 fn functional_remove_roots_only_its_exact_map_source_at_the_collecting_site() {
     let origin = Origin::synthetic(FunctionId(2));
-    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut builder = text_map_builder();
     builder.add_managed_text_type().expect("managed Text");
     let map = builder
         .add_managed_text_map_type(text_map(Type::Int))

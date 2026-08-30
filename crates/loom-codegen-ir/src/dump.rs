@@ -53,12 +53,40 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 42")?;
+    writeln!(output, "lcir 43")?;
     writeln!(
         output,
         "target pointer_bits={}",
         representations.target().pointer_bits()
     )?;
+    let canonical = program.canonical_types();
+    output.write_str("canonical_types")?;
+    for (name, identity) in [
+        ("result", canonical.result),
+        ("option", canonical.option),
+        ("constraint_error", canonical.constraint_error),
+        ("task_fault", canonical.task_fault),
+        ("task_outcome", canonical.task_outcome),
+        ("duration", canonical.duration),
+        ("file", canonical.file),
+        ("socket", canonical.socket),
+        ("bytes", canonical.bytes),
+        ("path", canonical.path),
+        ("decode_text_error", canonical.decode_text_error),
+        ("path_error", canonical.path_error),
+        ("text_map", canonical.text_map),
+        ("json", canonical.json),
+        ("json_error", canonical.json_error),
+        ("io_error", canonical.io_error),
+        ("io_error_kind", canonical.io_error_kind),
+        ("log_level", canonical.log_level),
+    ] {
+        match identity {
+            Some(identity) => write!(output, " {name}=#{}", identity.0)?,
+            None => write!(output, " {name}=none")?,
+        }
+    }
+    writeln!(output)?;
     writeln!(output)?;
     for (index, repr) in representations.reprs().iter().enumerate() {
         write!(output, "repr r{index} = ")?;

@@ -1,7 +1,7 @@
 use std::fmt;
 
 use loom_core::Span;
-use loom_mir::{ExprId as MirExprId, FunctionId as MirFunctionId, TypeId};
+use loom_mir::{ExprId as MirExprId, FunctionId as MirFunctionId, PreludeIds, TypeId};
 
 use crate::ids::ProgramBrand;
 use crate::{
@@ -13,12 +13,20 @@ use crate::{
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Program {
     pub(crate) brand: ProgramBrand,
+    pub(crate) canonical_types: Box<CanonicalTypeCatalog>,
     pub(crate) representations: RepresentationPlan,
     pub(crate) instances: InstancePlan,
     pub(crate) functions: Vec<Function>,
 }
 
 impl Program {
+    /// Returns the checked-MIR identities which give compiler-known standard
+    /// types their meaning in this LCIR program.
+    #[must_use]
+    pub const fn canonical_types(&self) -> &CanonicalTypeCatalog {
+        &self.canonical_types
+    }
+
     #[must_use]
     pub const fn representations(&self) -> &RepresentationPlan {
         &self.representations
@@ -45,6 +53,62 @@ impl Program {
             .then(|| self.functions.get(id.index()))
             .flatten()
             .filter(|function| function.id == id)
+    }
+}
+
+/// Source-definition identities used by typed standard-library lowering.
+///
+/// LCIR deliberately carries these identities instead of assigning standard
+/// types fixed numeric slots. Every entry is optional because focused LCIR
+/// programs may omit facilities they do not use. Instructions and
+/// representations which do use a facility independently require its exact
+/// catalog entry during validation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CanonicalTypeCatalog {
+    pub result: Option<TypeId>,
+    pub option: Option<TypeId>,
+    pub constraint_error: Option<TypeId>,
+    pub task_fault: Option<TypeId>,
+    pub task_outcome: Option<TypeId>,
+    pub duration: Option<TypeId>,
+    pub file: Option<TypeId>,
+    pub socket: Option<TypeId>,
+    pub bytes: Option<TypeId>,
+    pub path: Option<TypeId>,
+    pub decode_text_error: Option<TypeId>,
+    pub path_error: Option<TypeId>,
+    pub text_map: Option<TypeId>,
+    pub json: Option<TypeId>,
+    pub json_error: Option<TypeId>,
+    pub io_error: Option<TypeId>,
+    pub io_error_kind: Option<TypeId>,
+    pub log_level: Option<TypeId>,
+}
+
+impl CanonicalTypeCatalog {
+    /// Copies only type identities from checked MIR's wider prelude catalog.
+    #[must_use]
+    pub const fn from_prelude(prelude: &PreludeIds) -> Self {
+        Self {
+            result: prelude.result,
+            option: prelude.option,
+            constraint_error: prelude.constraint_error,
+            task_fault: prelude.task_fault,
+            task_outcome: prelude.task_outcome,
+            duration: prelude.duration,
+            file: prelude.file,
+            socket: prelude.socket,
+            bytes: prelude.bytes,
+            path: prelude.path,
+            decode_text_error: prelude.decode_text_error,
+            path_error: prelude.path_error,
+            text_map: prelude.text_map,
+            json: prelude.json,
+            json_error: prelude.json_error,
+            io_error: prelude.io_error,
+            io_error_kind: prelude.io_error_kind,
+            log_level: prelude.log_level,
+        }
     }
 }
 
@@ -636,7 +700,7 @@ pub enum InstructionKind {
         error_variant: u32,
         contains_nul_variant: u32,
     },
-    /// Extracts the immutable managed Text field from canonical `Path#10`.
+    /// Extracts the immutable managed Text field from cataloged canonical `Path`.
     /// This is a representation-preserving, non-allocating operation.
     PathAsText {
         path: ValueId,
@@ -1149,35 +1213,12 @@ pub enum AwaitMode {
     Race,
 }
 
-/// Canonical prelude identities and ordered variants consumed by
-/// [`InstructionKind::TaskOutcomeTake`]. Checked MIR establishes the source
-/// definitions; independent LCIR validation rechecks their concrete semantic
-/// identities and complete target representation shapes.
-pub const TASK_FAULT_TYPE_ID: TypeId = TypeId(4);
-pub const TASK_OUTCOME_TYPE_ID: TypeId = TypeId(5);
+/// Ordered variants consumed by [`InstructionKind::TaskOutcomeTake`]. Checked
+/// MIR establishes the source definition identities; independent LCIR
+/// validation rechecks their concrete shapes through [`CanonicalTypeCatalog`].
 pub const TASK_OUTCOME_COMPLETED_VARIANT: u32 = 0;
 pub const TASK_OUTCOME_FAULTED_VARIANT: u32 = 1;
 pub const TASK_OUTCOME_CANCELLED_VARIANT: u32 = 2;
-
-/// Canonical prelude identities consumed by typed standard-library opcodes.
-/// These synthetic ids are fixed by checked MIR lowering; independent LCIR
-/// validation rechecks both semantic identity and physical shape.
-pub(crate) const OPTION_TYPE_ID: TypeId = TypeId(0);
-pub(crate) const RESULT_TYPE_ID: TypeId = TypeId(1);
-pub(crate) const FILE_TYPE_ID: TypeId = TypeId(7);
-pub(crate) const SOCKET_TYPE_ID: TypeId = TypeId(8);
-/// Canonical prelude identity of the compiler-known immutable Bytes type.
-pub const BYTES_TYPE_ID: TypeId = TypeId(9);
-/// Canonical prelude identity of the compiler-known lexical Path type.
-pub const PATH_TYPE_ID: TypeId = TypeId(10);
-pub(crate) const DECODE_TEXT_ERROR_TYPE_ID: TypeId = TypeId(11);
-pub(crate) const PATH_ERROR_TYPE_ID: TypeId = TypeId(12);
-pub(crate) const TEXT_MAP_TYPE_ID: TypeId = TypeId(13);
-pub(crate) const JSON_TYPE_ID: TypeId = TypeId(14);
-pub(crate) const JSON_ERROR_TYPE_ID: TypeId = TypeId(15);
-pub(crate) const IO_ERROR_TYPE_ID: TypeId = TypeId(16);
-pub(crate) const IO_ERROR_KIND_TYPE_ID: TypeId = TypeId(17);
-pub(crate) const LOG_LEVEL_TYPE_ID: TypeId = TypeId(18);
 
 /// Closed runtime-owned I/O leaves admitted by direct LCIR. Only the
 /// Result-returning source APIs belong here; ordinary operating-system errors

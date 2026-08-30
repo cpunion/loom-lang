@@ -1,7 +1,7 @@
 use loom_codegen_ir::{
-    BuildErrorCode, Constant, Effects, InstructionKind, LIST_LITERAL_MAX_ELEMENTS, Origin,
-    ProgramBuilder, Signature, TargetLayout, Terminator, TerminatorKind, ValidationCode,
-    validate_program,
+    BuildErrorCode, CanonicalTypeCatalog, Constant, Effects, InstructionKind,
+    LIST_LITERAL_MAX_ELEMENTS, Origin, ProgramBuilder, Signature, TargetLayout, Terminator,
+    TerminatorKind, ValidationCode, validate_program,
 };
 use loom_mir::{FunctionId, Type, TypeId};
 
@@ -9,10 +9,20 @@ fn option(element: Type) -> Type {
     Type::Nominal(TypeId(100), vec![element])
 }
 
+fn list_builder() -> ProgramBuilder {
+    ProgramBuilder::with_canonical_types(
+        TargetLayout::new(64).expect("target"),
+        CanonicalTypeCatalog {
+            option: Some(TypeId(100)),
+            ..CanonicalTypeCatalog::default()
+        },
+    )
+}
+
 #[test]
 fn concrete_list_instructions_have_one_closed_typed_shape() {
     let origin = Origin::synthetic(FunctionId(0));
-    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut builder = list_builder();
     let list_semantic = Type::List(Box::new(Type::Int));
     let list = builder
         .add_managed_list_type(list_semantic)
@@ -94,7 +104,7 @@ fn concrete_list_instructions_have_one_closed_typed_shape() {
 #[test]
 fn malformed_list_operands_option_shape_and_literal_budget_are_rejected() {
     let origin = Origin::synthetic(FunctionId(1));
-    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut builder = list_builder();
     let list = builder
         .add_managed_list_type(Type::List(Box::new(Type::Int)))
         .expect("List[Int]");
@@ -182,6 +192,68 @@ fn malformed_list_operands_option_shape_and_literal_budget_are_rejected() {
     }));
     assert!(errors.as_slice().iter().any(|error| {
         error.code() == ValidationCode::TypeMismatch && error.message().contains("Option payload")
+    }));
+}
+
+#[test]
+fn list_get_rejects_a_same_shaped_noncanonical_option_identity() {
+    let origin = Origin::synthetic(FunctionId(2));
+    let mut builder = list_builder();
+    let list = builder
+        .add_managed_list_type(Type::List(Box::new(Type::Int)))
+        .expect("List[Int]");
+    let forged_option = builder
+        .add_sum_type(
+            Type::Nominal(TypeId(200), vec![Type::Int]),
+            &[Box::new([]), Box::from([Type::Int])],
+        )
+        .expect("same-shaped noncanonical Option[Int]");
+    let integer = builder.type_id(&Type::Int).expect("Int");
+    let unit = builder.type_id(&Type::Unit).expect("Unit");
+    let root = builder
+        .declare_function(
+            origin,
+            "lists.wrong_option_identity",
+            Signature::new([list, integer], unit),
+            Effects::NONE,
+        )
+        .expect("function");
+    {
+        let mut function = builder.function(root).expect("function builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("set entry");
+        let list = function.append_block_parameter(entry, list).expect("list");
+        let index = function
+            .append_block_parameter(entry, integer)
+            .expect("index");
+        function
+            .append_instruction(
+                entry,
+                InstructionKind::ListGet { list, index },
+                &[forged_option],
+                origin,
+            )
+            .expect("unchecked list get");
+        let unit = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Unit),
+                &[unit],
+                origin,
+            )
+            .expect("Unit")[0];
+        function
+            .terminate(entry, Terminator::new(TerminatorKind::Return(unit), origin))
+            .expect("return");
+    }
+    let errors = builder
+        .finish_checked()
+        .expect_err("same-shaped noncanonical Option must fail closed");
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code() == ValidationCode::TypeMismatch
+            && error
+                .message()
+                .contains("canonical two-variant Option[element]")
     }));
 }
 

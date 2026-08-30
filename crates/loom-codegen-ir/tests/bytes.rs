@@ -1,13 +1,24 @@
 use loom_codegen_ir::{
-    BYTES_TYPE_ID, BoolPredicate, Constant, Effects, InstructionKind, ManagedSafepoint, Origin,
-    ProgramBuilder, Signature, TargetLayout, Terminator, TerminatorKind, ValidationCode,
+    BoolPredicate, CanonicalTypeCatalog, Constant, Effects, InstructionKind, ManagedSafepoint,
+    Origin, ProgramBuilder, Signature, TargetLayout, Terminator, TerminatorKind, ValidationCode,
     ValueTypeId, dump_program, plan_managed_roots,
 };
 use loom_mir::{FunctionId as MirFunctionId, Type, TypeId};
 
-const OPTION_TYPE_ID: TypeId = TypeId(0);
-const RESULT_TYPE_ID: TypeId = TypeId(1);
-const DECODE_TEXT_ERROR_TYPE_ID: TypeId = TypeId(11);
+const OPTION_TYPE_ID: TypeId = TypeId(100);
+const RESULT_TYPE_ID: TypeId = TypeId(101);
+const BYTES_TYPE_ID: TypeId = TypeId(109);
+const DECODE_TEXT_ERROR_TYPE_ID: TypeId = TypeId(111);
+
+fn bytes_catalog() -> CanonicalTypeCatalog {
+    CanonicalTypeCatalog {
+        result: Some(RESULT_TYPE_ID),
+        option: Some(OPTION_TYPE_ID),
+        bytes: Some(BYTES_TYPE_ID),
+        decode_text_error: Some(DECODE_TEXT_ERROR_TYPE_ID),
+        ..CanonicalTypeCatalog::default()
+    }
+}
 
 #[derive(Clone, Copy)]
 struct BytesTypes {
@@ -26,7 +37,10 @@ fn origin() -> Origin {
 }
 
 fn builder_with_bytes_types() -> (ProgramBuilder, BytesTypes) {
-    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut builder = ProgramBuilder::with_canonical_types(
+        TargetLayout::new(64).expect("target"),
+        bytes_catalog(),
+    );
     let unit = builder.type_id(&Type::Unit).expect("Unit");
     let boolean = builder.type_id(&Type::Bool).expect("Bool");
     let integer = builder.type_id(&Type::Int).expect("Int");
@@ -386,7 +400,10 @@ fn independent_validation_rejects_wrong_bytes_operands_variants_and_effects() {
 
 #[test]
 fn text_construction_rejects_a_transparent_decode_error_carrier() {
-    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut builder = ProgramBuilder::with_canonical_types(
+        TargetLayout::new(64).expect("target"),
+        bytes_catalog(),
+    );
     let unit = builder.type_id(&Type::Unit).expect("Unit");
     builder
         .add_managed_text_type()
@@ -458,16 +475,14 @@ fn text_construction_rejects_a_transparent_decode_error_carrier() {
     assert!(
         errors.as_slice().iter().any(|error| {
             error.code() == ValidationCode::InstructionShape
-                && error
-                    .message()
-                    .contains("canonical direct DecodeTextError#11")
+                && error.message().contains("canonical direct DecodeTextError")
         }),
         "{errors:#?}"
     );
 }
 
 #[test]
-fn bytes_opcodes_fail_closed_without_the_canonical_registration() {
+fn bytes_opcodes_fail_closed_without_the_catalog_identity() {
     let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
     let unit = builder.type_id(&Type::Unit).expect("Unit");
     let integer = builder.type_id(&Type::Int).expect("Int");
@@ -511,9 +526,9 @@ fn bytes_opcodes_fail_closed_without_the_canonical_registration() {
     }
     let errors = builder
         .finish_checked()
-        .expect_err("missing canonical Bytes must fail closed");
+        .expect_err("missing canonical Bytes identity must fail closed");
     assert!(errors.as_slice().iter().any(|error| {
         error.code() == ValidationCode::TypeMismatch
-            && error.message().contains("canonical managed Bytes#9")
+            && error.message().contains("canonical managed Bytes")
     }));
 }

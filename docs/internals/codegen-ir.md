@@ -24,6 +24,16 @@ gates are in the
 LCIR is compiler-private and target-specific. It is not a source IR, a public
 artifact format, or a stable native ABI.
 
+Every LCIR program also carries a `CanonicalTypeCatalog` copied from the
+checked MIR prelude after closure remapping. Standard-library types therefore
+retain their actual source `TypeId` values; LCIR assigns no fixed numeric slots
+to `Result`, `Option`, `TaskFault`, `Bytes`, `Path`, `TextMap`, I/O types, JSON
+types, or logging types. Catalog entries are optional for focused programs,
+pairwise distinct when present, and required only when the corresponding
+representation or opcode is used. The independent validator checks the exact
+catalog identity and physical shape together. The complete catalog, including
+absent entries, is part of the textual dump and artifact identity.
+
 ## Checked-MIR source graph
 
 `SourceRoots` contains MIR `FunctionId` values selected for one command.
@@ -494,8 +504,8 @@ mutable receiver is written back on both normal and unwind edges. Canonical
 File and Socket disposal uses the `ResourceClose` instruction: it consumes one
 exact nominal resource value and produces `Unit` plus the closed resource,
 without raising a source fault. Independent validation accepts only canonical
-`File#7` for the File kind or canonical
-`Socket#8` for the Socket kind. Each is the registered direct one-field
+cataloged canonical `File` for the File kind or cataloged canonical
+`Socket` for the Socket kind. Each is the registered direct one-field
 product whose sole `Int` is an opaque runtime capability token; it is never a
 raw descriptor or handle. An unregistered, generic, structurally similar, or
 representation-alternative nominal fails closed. LLVM calls the typed close
@@ -1043,8 +1053,8 @@ not repair a malformed program. Current checks include:
   only canonical direct Text/List values or compiler-private `ManagedTextMap`
   values, while dynamic boxes continue to fail closed;
 - implicit result/writeback parameter shape and type on normal and fault edges;
-- exact canonical direct one-`Int` product registration for `File#7` or
-  `Socket#8`, exact agreement between the nominal type and `ResourceClose`
+- exact cataloged canonical direct one-`Int` product registration for `File` or
+  `Socket`, exact agreement between the nominal type and `ResourceClose`
   kind, its exact Unit/resource result pair, and the required executor
   capability without a source fault capability;
 - return types and operation-specific fault-effect requirements;

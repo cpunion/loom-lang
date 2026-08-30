@@ -2,9 +2,9 @@ use std::fmt;
 
 use loom_codegen_ir::{
     ARTIFACT_IDENTITY_ROUTE, ARTIFACT_IDENTITY_SCHEMA, ArtifactRootRequest, BlockTarget,
-    CheckedArtifact, CheckedProgram, Constant, Effects, FloatBinaryOp, InstructionKind,
-    IntPredicate, Origin, ProgramBuilder, Repr, Signature, TargetLayout, Terminator,
-    TerminatorKind, artifact_identity, dump_program, write_artifact_identity,
+    CanonicalTypeCatalog, CheckedArtifact, CheckedProgram, Constant, Effects, FloatBinaryOp,
+    InstructionKind, IntPredicate, Origin, ProgramBuilder, Repr, Signature, TargetLayout,
+    Terminator, TerminatorKind, artifact_identity, dump_program, write_artifact_identity,
 };
 use loom_core::{FileId, Span};
 use loom_mir::{ExprId, FunctionId as MirFunctionId, Type, TypeId};
@@ -28,7 +28,7 @@ impl BodyOrigins {
 
 #[test]
 fn identity_schema_is_pinned_for_the_current_lcir_contract() {
-    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 44);
+    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 45);
 }
 
 fn origin(expression: Option<u32>, file: u32, start: u32, end: u32) -> Origin {
@@ -45,8 +45,26 @@ fn scalar_artifact(
     operation: FloatBinaryOp,
     left_bits: u64,
 ) -> CheckedArtifact {
-    let mut builder =
-        ProgramBuilder::new(TargetLayout::new(pointer_bits).expect("test target layout"));
+    scalar_artifact_with_catalog(
+        pointer_bits,
+        origins,
+        operation,
+        left_bits,
+        CanonicalTypeCatalog::default(),
+    )
+}
+
+fn scalar_artifact_with_catalog(
+    pointer_bits: u16,
+    origins: BodyOrigins,
+    operation: FloatBinaryOp,
+    left_bits: u64,
+    canonical_types: CanonicalTypeCatalog,
+) -> CheckedArtifact {
+    let mut builder = ProgramBuilder::with_canonical_types(
+        TargetLayout::new(pointer_bits).expect("test target layout"),
+        canonical_types,
+    );
     let unit_ty = builder.type_id(&Type::Unit).expect("Unit type");
     let float_ty = builder.type_id(&Type::Float).expect("Float type");
     let root = builder
@@ -510,8 +528,8 @@ fn identity_is_brand_independent_and_repeatable() {
         "loom-checked-artifact-identity\nschema={ARTIFACT_IDENTITY_SCHEMA}\nroute={ARTIFACT_IDENTITY_ROUTE}\n"
     )));
     assert!(
-        identity.contains("payload=checked-lcir-with-origins\nlcir 42\n"),
-        "artifact schema 44 changes checked meaning with the LCIR text wire: {identity}"
+        identity.contains("payload=checked-lcir-with-origins\nlcir 43\n"),
+        "artifact schema 45 changes checked meaning with the LCIR text wire: {identity}"
     );
     assert!(!identity.contains("ProgramBrand"));
     assert!(!identity.contains("function-origin f41/e7 file1:10..20"));
@@ -522,6 +540,33 @@ fn identity_is_brand_independent_and_repeatable() {
     let mut written = String::new();
     write_artifact_identity(&first, &mut written).expect("String writer is infallible");
     assert_eq!(identity, written);
+}
+
+#[test]
+fn canonical_type_catalog_is_a_dump_and_artifact_identity_input() {
+    let empty = scalar_artifact(
+        64,
+        BodyOrigins::base(),
+        FloatBinaryOp::Add,
+        1.0_f64.to_bits(),
+    );
+    let cataloged = scalar_artifact_with_catalog(
+        64,
+        BodyOrigins::base(),
+        FloatBinaryOp::Add,
+        1.0_f64.to_bits(),
+        CanonicalTypeCatalog {
+            bytes: Some(TypeId(109)),
+            ..CanonicalTypeCatalog::default()
+        },
+    );
+
+    let empty_dump = dump_program(empty.program());
+    let cataloged_dump = dump_program(cataloged.program());
+    assert!(empty_dump.contains(" bytes=none"), "{empty_dump}");
+    assert!(cataloged_dump.contains(" bytes=#109"), "{cataloged_dump}");
+    assert_ne!(empty_dump, cataloged_dump);
+    assert_ne!(artifact_identity(&empty), artifact_identity(&cataloged));
 }
 
 #[test]
@@ -563,7 +608,7 @@ fn complete_tuple_semantics_are_dump_and_artifact_identity_inputs() {
     assert_ne!(boolean_dump, floating_dump);
     assert_ne!(artifact_identity(&boolean), artifact_identity(&floating));
     assert_eq!(
-        ARTIFACT_IDENTITY_SCHEMA, 44,
+        ARTIFACT_IDENTITY_SCHEMA, 45,
         "complete tuple semantics use the current artifact identity schema"
     );
 }

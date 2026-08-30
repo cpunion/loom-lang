@@ -1,14 +1,27 @@
 use loom_codegen_ir::{
-    Effects, InstructionKind, ManagedSafepoint, Origin, ProgramBuilder, Signature, TargetLayout,
-    Terminator, TerminatorKind, ValidationCode, ValueDefinition, dump_program, plan_managed_roots,
-    validate_program,
+    CanonicalTypeCatalog, Effects, InstructionKind, ManagedSafepoint, Origin, ProgramBuilder,
+    Signature, TargetLayout, Terminator, TerminatorKind, ValidationCode, ValueDefinition,
+    dump_program, plan_managed_roots, validate_program,
 };
 use loom_mir::{FunctionId, Type, TypeId};
 
-const RESULT_TYPE: TypeId = TypeId(1);
-const TEXT_MAP_TYPE: TypeId = TypeId(13);
-const JSON_TYPE: TypeId = TypeId(14);
-const JSON_ERROR_TYPE: TypeId = TypeId(15);
+const RESULT_TYPE: TypeId = TypeId(101);
+const TEXT_MAP_TYPE: TypeId = TypeId(113);
+const JSON_TYPE: TypeId = TypeId(114);
+const JSON_ERROR_TYPE: TypeId = TypeId(115);
+
+fn json_builder() -> ProgramBuilder {
+    ProgramBuilder::with_canonical_types(
+        TargetLayout::new(64).expect("target"),
+        CanonicalTypeCatalog {
+            result: Some(RESULT_TYPE),
+            text_map: Some(TEXT_MAP_TYPE),
+            json: Some(JSON_TYPE),
+            json_error: Some(JSON_ERROR_TYPE),
+            ..CanonicalTypeCatalog::default()
+        },
+    )
+}
 
 struct JsonTypes {
     json: loom_codegen_ir::ValueTypeId,
@@ -69,7 +82,7 @@ fn add_json_types(builder: &mut ProgramBuilder) -> JsonTypes {
 #[test]
 fn canonical_json_format_is_collecting_dumpable_and_rooted() {
     let origin = Origin::synthetic(FunctionId(200));
-    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut builder = json_builder();
     let types = add_json_types(&mut builder);
     let root = builder
         .declare_function(
@@ -145,7 +158,7 @@ fn canonical_json_format_is_collecting_dumpable_and_rooted() {
 )]
 fn independent_validation_rejects_forged_json_format_shapes_and_mappings() {
     let origin = Origin::synthetic(FunctionId(201));
-    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut builder = json_builder();
     let types = add_json_types(&mut builder);
     let wrong_json_semantic = nominal(TypeId(204));
     let wrong_json = builder
@@ -307,7 +320,7 @@ fn independent_validation_rejects_forged_json_format_shapes_and_mappings() {
 #[test]
 fn json_format_requires_the_collecting_effect() {
     let origin = Origin::synthetic(FunctionId(202));
-    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut builder = json_builder();
     let types = add_json_types(&mut builder);
     let root = builder
         .declare_function(

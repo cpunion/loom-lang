@@ -93,8 +93,9 @@ fn branch_merge_is_a_typed_block_parameter_and_dump_is_deterministic() {
     assert_eq!(first_dump, second_dump);
     assert_eq!(
         first_dump,
-        r#"lcir 42
+        r#"lcir 43
 target pointer_bits=64
+canonical_types result=none option=none constraint_error=none task_fault=none task_outcome=none duration=none file=none socket=none bytes=none path=none decode_text_error=none path_error=none text_map=none json=none json_error=none io_error=none io_error_kind=none log_level=none
 
 repr r0 = uninhabited
 repr r1 = zst

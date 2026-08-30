@@ -1,12 +1,23 @@
 use loom_codegen_ir::{
-    Effects, InstructionKind, ManagedSafepoint, Origin, ProgramBuilder, ResultTarget, Signature,
-    TargetLayout, Terminator, TerminatorKind, UnwindTarget, ValidationCode, ValueDefinition,
-    dump_program, plan_managed_roots, validate_program,
+    CanonicalTypeCatalog, Effects, InstructionKind, ManagedSafepoint, Origin, ProgramBuilder,
+    ResultTarget, Signature, TargetLayout, Terminator, TerminatorKind, UnwindTarget,
+    ValidationCode, ValueDefinition, dump_program, plan_managed_roots, validate_program,
 };
 use loom_mir::{FunctionId, Type, TypeId};
 
-const LOG_LEVEL_TYPE: TypeId = TypeId(18);
-const TEXT_MAP_TYPE: TypeId = TypeId(13);
+const LOG_LEVEL_TYPE: TypeId = TypeId(118);
+const TEXT_MAP_TYPE: TypeId = TypeId(113);
+
+fn logging_builder() -> ProgramBuilder {
+    ProgramBuilder::with_canonical_types(
+        TargetLayout::new(64).expect("target"),
+        CanonicalTypeCatalog {
+            text_map: Some(TEXT_MAP_TYPE),
+            log_level: Some(LOG_LEVEL_TYPE),
+            ..CanonicalTypeCatalog::default()
+        },
+    )
+}
 
 fn origin(source: u32) -> Origin {
     Origin::synthetic(FunctionId(source))
@@ -38,7 +49,7 @@ fn register_logging_types(
     reason = "one forged IR fixture keeps fault-edge shape, dump vocabulary, and managed-root behavior together"
 )]
 fn typed_log_write_has_exact_fault_edges_and_keeps_managed_operands_live() {
-    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut builder = logging_builder();
     let (level, text, fields) = register_logging_types(&mut builder);
     let unit = builder.type_id(&Type::Unit).expect("Unit");
     let root = builder
@@ -157,7 +168,7 @@ fn typed_log_write_has_exact_fault_edges_and_keeps_managed_operands_live() {
 
 #[test]
 fn independent_validation_rejects_noncanonical_log_operands() {
-    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut builder = logging_builder();
     let (_level, _text, _fields) = register_logging_types(&mut builder);
     let wrong_fields = builder
         .add_managed_text_map_type(Type::Nominal(TEXT_MAP_TYPE, vec![Type::Int]))

@@ -595,8 +595,8 @@ accepts a live token only when the active Task owns its unique, kind-matching
 resource-ledger entry, closes that concrete RAII owner, and writes the
 invalid-token sentinel; an invalid or already-closed sentinel is rejected. It
 neither constructs a universal value nor enters the executor loop. Independent
-validation rederives canonical one-`Int` `File#7`
-and `Socket#8` products and requires the close kind to agree exactly. Status
+validation rederives the cataloged canonical one-`Int` `File`
+and `Socket` products and requires the close kind to agree exactly. Status
 `0` produces `Unit` and the closed resource; every other status traps as an ABI
 defect.
 Static-concept disposal remains an ordinary selected-witness call, and deferred

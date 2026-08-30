@@ -6,10 +6,10 @@ use std::{
 };
 
 use loom_codegen_ir::{
-    AwaitMode, BYTES_TYPE_ID, CheckedIntBinaryOp, Effects, InstanceKey, InstanceRole,
-    InstructionKind, InvalidRootCode, LoweringErrorCode, LoweringOutcome, ManagedSafepoint,
-    PATH_TYPE_ID, ResourceLimitCode, SourceArtifactRequest, TargetLayout, TerminatorKind,
-    UnsupportedFeature, artifact_identity, dump_program, lower_typed_artifact, plan_managed_roots,
+    AwaitMode, CheckedIntBinaryOp, Effects, InstanceKey, InstanceRole, InstructionKind,
+    InvalidRootCode, LoweringErrorCode, LoweringOutcome, ManagedSafepoint, ResourceLimitCode,
+    SourceArtifactRequest, TargetLayout, TerminatorKind, UnsupportedFeature, artifact_identity,
+    dump_program, lower_typed_artifact, plan_managed_roots,
 };
 use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId, Span};
 use loom_hir::{PackageSourceUnit, SourceUnit, lower_files, lower_package_files};
@@ -277,12 +277,22 @@ pub fn main() {
         panic!("canonical Bytes source must lower completely: {outcome:?}")
     };
 
-    let bytes_semantic = Type::Nominal(BYTES_TYPE_ID, Vec::new());
+    let canonical_bytes = artifact
+        .program()
+        .as_program()
+        .canonical_types()
+        .bytes
+        .expect("canonical Bytes identity");
+    let bytes_semantic = Type::Nominal(canonical_bytes, Vec::new());
     let bytes = artifact
         .representations()
         .type_id(&bytes_semantic)
         .expect("canonical Bytes value type");
-    assert!(artifact.representations().is_managed_bytes_type(bytes));
+    assert!(
+        artifact
+            .representations()
+            .is_managed_bytes_type(Some(canonical_bytes), bytes)
+    );
 
     let mut saw_encode = false;
     let mut saw_length = false;
@@ -402,12 +412,18 @@ pub fn main() {
     let LoweringOutcome::Complete(artifact) = outcome else {
         panic!("canonical Path source must lower completely: {outcome:?}")
     };
+    let path_id = artifact
+        .program()
+        .as_program()
+        .canonical_types()
+        .path
+        .expect("canonical Path identity");
     assert!(
         artifact
             .representations()
-            .type_id(&Type::Nominal(PATH_TYPE_ID, Vec::new()))
+            .type_id(&Type::Nominal(path_id, Vec::new()))
             .is_some(),
-        "canonical Path#10 representation is missing"
+        "canonical Path representation is missing"
     );
 
     let mut from_count = 0_usize;
@@ -3522,7 +3538,7 @@ pub fn main() {
     let dump = dump_program(artifact.program());
     assert!(dump.contains("standalone.main"), "{dump}");
     assert!(!dump.contains("standalone.helper"), "{dump}");
-    assert!(!dump.contains("text"), "{dump}");
+    assert!(!dump.contains("checked_mir"), "{dump}");
 }
 
 #[test]

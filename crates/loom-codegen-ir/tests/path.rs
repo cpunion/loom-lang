@@ -1,12 +1,22 @@
 use loom_codegen_ir::{
-    Constant, Effects, InstructionKind, ManagedRootProjection, ManagedSafepoint, Origin,
-    PATH_TYPE_ID, ProgramBuilder, Signature, TargetLayout, Terminator, TerminatorKind,
+    CanonicalTypeCatalog, Constant, Effects, InstructionKind, ManagedRootProjection,
+    ManagedSafepoint, Origin, ProgramBuilder, Signature, TargetLayout, Terminator, TerminatorKind,
     ValidationCode, ValueDefinition, ValueTypeId, ValueTypeKind, dump_program, plan_managed_roots,
 };
 use loom_mir::{FunctionId as MirFunctionId, Type, TypeId};
 
-const RESULT_TYPE_ID: TypeId = TypeId(1);
-const PATH_ERROR_TYPE_ID: TypeId = TypeId(12);
+const RESULT_TYPE_ID: TypeId = TypeId(101);
+const PATH_TYPE_ID: TypeId = TypeId(110);
+const PATH_ERROR_TYPE_ID: TypeId = TypeId(112);
+
+fn path_catalog() -> CanonicalTypeCatalog {
+    CanonicalTypeCatalog {
+        result: Some(RESULT_TYPE_ID),
+        path: Some(PATH_TYPE_ID),
+        path_error: Some(PATH_ERROR_TYPE_ID),
+        ..CanonicalTypeCatalog::default()
+    }
+}
 
 #[derive(Clone, Copy)]
 struct PathTypes {
@@ -21,7 +31,10 @@ fn origin() -> Origin {
 }
 
 fn builder_with_path_types() -> (ProgramBuilder, PathTypes) {
-    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut builder = ProgramBuilder::with_canonical_types(
+        TargetLayout::new(64).expect("target"),
+        path_catalog(),
+    );
     let unit = builder.type_id(&Type::Unit).expect("Unit");
     let text = builder
         .add_managed_text_type()
@@ -267,7 +280,10 @@ fn ordinary_product_opcodes_cannot_forge_or_rewrite_path() {
 
 #[test]
 fn path_opcodes_reject_a_transparent_path_error_carrier() {
-    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut builder = ProgramBuilder::with_canonical_types(
+        TargetLayout::new(64).expect("target"),
+        path_catalog(),
+    );
     let unit = builder.type_id(&Type::Unit).expect("Unit");
     let text = builder
         .add_managed_text_type()
@@ -343,7 +359,7 @@ fn path_opcodes_reject_a_transparent_path_error_carrier() {
     assert!(
         errors.as_slice().iter().any(|error| {
             error.code() == ValidationCode::InstructionShape
-                && error.message().contains("canonical direct PathError#12")
+                && error.message().contains("canonical direct PathError")
         }),
         "{errors:#?}"
     );

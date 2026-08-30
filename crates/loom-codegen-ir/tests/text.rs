@@ -1,8 +1,8 @@
 use loom_codegen_ir::{
-    ArtifactRootRequest, ArtifactValidationCode, BlockTarget, BoolPredicate, Constant, Effects,
-    InstructionKind, ManagedRootProjection, ManagedSafepoint, Origin, ProgramBuilder, Repr,
-    Signature, TEXT_LITERAL_MAX_BYTES, TargetLayout, Terminator, TerminatorKind, ValidationCode,
-    ValueDefinition, dump_program, plan_managed_roots,
+    ArtifactRootRequest, ArtifactValidationCode, BlockTarget, BoolPredicate, CanonicalTypeCatalog,
+    Constant, Effects, InstructionKind, ManagedRootProjection, ManagedSafepoint, Origin,
+    ProgramBuilder, Repr, Signature, TEXT_LITERAL_MAX_BYTES, TargetLayout, Terminator,
+    TerminatorKind, ValidationCode, ValueDefinition, dump_program, plan_managed_roots,
 };
 use loom_mir::{FunctionId as MirFunctionId, Type, TypeId};
 
@@ -298,7 +298,13 @@ fn managed_concat_has_exact_live_after_roots_and_ignores_dead_edge_arguments() {
     reason = "one manual graph keeps Text.get result shape, live-after roots, and dump identity reviewable together"
 )]
 fn managed_text_get_has_a_checked_option_shape_and_exact_live_after_roots() {
-    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut builder = ProgramBuilder::with_canonical_types(
+        TargetLayout::new(64).expect("target"),
+        CanonicalTypeCatalog {
+            option: Some(TypeId(124)),
+            ..CanonicalTypeCatalog::default()
+        },
+    );
     let text = builder
         .add_managed_text_type()
         .expect("register managed Text");
@@ -1008,7 +1014,13 @@ fn independent_validation_requires_a_canonical_text_pointer_representation() {
     reason = "one hostile graph exercises independent Text.get operand, variant, and semantic-result checks together"
 )]
 fn independent_validation_rejects_forged_text_get_operands_variants_and_result() {
-    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut builder = ProgramBuilder::with_canonical_types(
+        TargetLayout::new(64).expect("target"),
+        CanonicalTypeCatalog {
+            option: Some(TypeId(125)),
+            ..CanonicalTypeCatalog::default()
+        },
+    );
     let text = builder
         .add_managed_text_type()
         .expect("register managed Text");
@@ -1112,7 +1124,7 @@ fn independent_validation_rejects_forged_text_get_operands_variants_and_result()
     for message in [
         "Text selection requires distinct missing and found variants",
         "Text selection missing variant must exist and carry no payload",
-        "Text selection result must be a nominal Option[Text]",
+        "Text selection result must use the cataloged canonical Option[Text] identity",
     ] {
         assert!(
             errors
