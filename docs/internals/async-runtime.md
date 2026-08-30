@@ -104,8 +104,10 @@ converts either state into a source `Result`. Task handles may be live only as
 suspension bookkeeping.
 
 For reachable graphs with no LCIR-only primitive, selected async functions with
-explicit mutable coroutine parameters, raw readiness, and finite-catalog or
-open dynamic-concept frame values still select the complete checked-MIR route.
+explicit mutable coroutine parameters, raw readiness, and open, generic, or
+prerequisite-dependent dynamic-concept frame values still select the complete
+checked-MIR route. Finite closed catalogs remain on typed LCIR and use the exact
+managed dynamic pointer described above.
 Async roots with `requires` use the same typed state-zero check as child Tasks.
 
 ## Runtime and executor

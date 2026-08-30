@@ -775,10 +775,13 @@ scalar/refined/product/Text shapes, closed sums, and canonical one-pointer
 `List[T]` or compiler-private `TextMap[V]` carriers, with Task handles
 additionally allowed only in suspension-live rows. A unique closed dynamic
 witness is recursively physicalized to its concrete representation in those
-locations. The recursive frame walk consumes one shared bounded structural
-budget, so cyclic or non-regular generic expansion fails closed instead of
-growing the compiler stack. Finite-catalog or open dynamic-concept frame values,
-raw readiness, and cancellation sources remain atomic whole-artifact fallback.
+locations. A finite closed catalog uses the existing exact one-pointer managed
+dynamic representation, including when nested in products, sums, Lists, or a
+completed Task result. The recursive frame walk consumes one shared bounded
+structural budget, so cyclic or non-regular generic expansion fails closed
+instead of growing the compiler stack. Open, generic, or
+prerequisite-dependent dynamic-concept frame values, raw readiness, and
+cancellation sources remain atomic whole-artifact fallback.
 Fixed argument joins and runtime-width homogeneous List joins are admitted both
 as first-class Tasks and when consumed later by `.await`; `any` and `race`
 additionally require one homogeneous output type.
