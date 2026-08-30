@@ -6498,8 +6498,8 @@ pub fn main() {
 }
 
 #[test]
-fn projection_through_a_protected_product_is_atomic_unsupported() {
-    let outcome = lower_run(
+fn projection_through_a_protected_product_is_an_exact_read_only_extract_chain() {
+    let LoweringOutcome::Complete(artifact) = lower_run(
         r"record Positive {
     value Int
     invariant self.value >= 0
@@ -6512,9 +6512,124 @@ pub fn main() {
     discard holder.value.value
 }
 ",
+    ) else {
+        panic!("pure projection through an established invariant product must lower completely")
+    };
+    let main = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("main instance");
+    let extracts = main
+        .instructions()
+        .iter()
+        .filter(|instruction| matches!(instruction.kind(), InstructionKind::ProductExtract { .. }))
+        .collect::<Vec<_>>();
+    assert_eq!(extracts.len(), 2, "{}", dump_program(artifact.program()));
+    let InstructionKind::ProductExtract {
+        field: outer_field, ..
+    } = extracts[0].kind()
+    else {
+        unreachable!()
+    };
+    let InstructionKind::ProductExtract {
+        aggregate,
+        field: protected_field,
+    } = extracts[1].kind()
+    else {
+        unreachable!()
+    };
+    assert_eq!((*outer_field, *protected_field), (0, 0));
+    assert_eq!(*aggregate, extracts[0].results()[0]);
+    assert_eq!(
+        main.instructions()
+            .iter()
+            .filter(|instruction| matches!(
+                instruction.kind(),
+                InstructionKind::InvariantRecordProven { .. }
+            ))
+            .count(),
+        1,
+        "{}",
+        dump_program(artifact.program())
+    );
+}
+
+#[test]
+fn projected_move_from_a_protected_root_remains_atomic_unsupported() {
+    let mut program = compile(
+        r"record Positive {
+    value Int
+    invariant self.value >= 0
+}
+
+fn take(value Positive) Int { value.value }
+
+pub fn main() {
+    discard take(Positive { value = 7 })
+}
+",
+    )
+    .into_program();
+    let take = program
+        .functions
+        .iter_mut()
+        .find(|function| function.name.ends_with("take"))
+        .expect("take function");
+    let tail = take.body.tail.as_deref_mut().expect("take tail");
+    let ExprKind::Copy(place) = &tail.kind else {
+        panic!("source field read must start as a checked copy")
+    };
+    tail.kind = ExprKind::Move(place.clone());
+    let checked = program
+        .into_checked()
+        .expect("projected move is structurally valid checked MIR");
+    let outcome = lower_typed_artifact(
+        &checked,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("classify protected projected move");
+    let LoweringOutcome::Unsupported(report) = outcome else {
+        panic!("move from invariant-protected interior must select whole-artifact fallback")
+    };
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::ProjectedPlace),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn projected_inout_through_a_protected_product_remains_atomic_unsupported() {
+    let outcome = lower_run(
+        r"record Counter { value Int }
+
+impl Counter {
+    method add(mut self, value Int) {
+        self.value = self.value + value
+    }
+}
+
+record Positive {
+    counter Counter
+    invariant self.counter.value >= 0
+}
+
+record Holder { value Positive }
+
+pub fn main() {
+    var holder = Holder { value = Positive { counter = Counter { value = 7 } } }
+    holder.value.counter.add(1)
+}
+",
     );
     let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("projection through an invariant product must select whole-artifact fallback")
+        panic!("inout through an invariant product must select whole-artifact fallback")
     };
     assert!(
         report

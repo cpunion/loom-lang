@@ -182,11 +182,12 @@ scheduler primitives, and deletes the catalog and `TaskIntrinsic` rather than
 mapping source definitions back to them.
 
 Remaining atomic fallback includes open or prerequisite-dependent dynamic
-concepts, unsupported proof or contract value shapes, recursive nominal
-equality through managed collections, finite/open dynamic managed carriers,
-explicit mutable coroutine parameters, raw readiness,
+concepts, unsupported proof or contract value shapes, finite/open dynamic
+managed carriers, explicit mutable coroutine parameters, raw readiness,
 empty/stored/computed/runtime-sized Task List joins, and unsupported projected
-inout shapes.
+inout shapes. Pure reads through already-established invariant-protected
+products lower to exact typed `ProductExtract` chains; protected interior
+mutation and moves remain closed.
 
 ## Automated quality evidence
 

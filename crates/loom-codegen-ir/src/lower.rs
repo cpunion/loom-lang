@@ -2066,11 +2066,12 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 .first()
                 .is_some_and(|receiver| receiver.id == place.local)
             && is_invariant_record_type(self.program, &ty);
-        let invariant_root_access = invariant_receiver
-            || (matches!(usage, PlaceUse::Read | PlaceUse::Move)
-                && is_invariant_record_type(self.program, &ty));
         for (depth, field) in place.projection.iter().enumerate() {
-            let fields = if invariant_root_access && depth == 0 {
+            let protected_read =
+                usage == PlaceUse::Read && is_invariant_record_type(self.program, &ty);
+            let invariant_receiver_root =
+                invariant_receiver && usage != PlaceUse::Move && depth == 0;
+            let fields = if protected_read || invariant_receiver_root {
                 concrete_any_record_fields(self.program, &ty)?
             } else {
                 concrete_record_fields(self.program, &ty)?
@@ -3618,12 +3619,17 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 }
                 expression.ty != Type::Never
             }
-            ExprKind::ReborrowView { owner, .. } => {
+            ExprKind::ReborrowView { owner, mutable, .. } => {
+                let usage = if *mutable {
+                    PlaceUse::InOut
+                } else {
+                    PlaceUse::Read
+                };
                 let owner_ty = self.projected_place(
                     function,
                     key,
                     owner,
-                    PlaceUse::Read,
+                    usage,
                     PlaceSite::expression(expression),
                     &format!("{path}.owner"),
                 );
@@ -5503,17 +5509,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                         .ok()
                 })
                 .is_some_and(|ty| is_invariant_record_type(self.program, &ty));
-        let invariant_read = matches!(usage, PlaceUse::Read | PlaceUse::Move)
-            && self
-                .local_types
-                .get(&place.local)
-                .and_then(|ty| {
-                    InstanceSubstitution::new(self.program, self.key)
-                        .instantiate_type(ty)
-                        .ok()
-                })
-                .is_some_and(|ty| is_invariant_record_type(self.program, &ty));
-        let planned = if invariant_receiver || invariant_read {
+        let planned = if usage == PlaceUse::Read {
+            PlacePlan::build_protected_read(self.builder.representations(), place, root_type)
+        } else if invariant_receiver && usage != PlaceUse::Move {
             PlacePlan::build_invariant_receiver(self.builder.representations(), place, root_type)
         } else {
             PlacePlan::build(self.builder.representations(), place, root_type)
@@ -7942,8 +7940,13 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     self.expression_origin(expression),
                 )
             }
-            ExprKind::ReborrowView { owner, .. } => {
-                let plan = self.place_plan(owner, PlaceUse::Read)?;
+            ExprKind::ReborrowView { owner, mutable, .. } => {
+                let usage = if *mutable {
+                    PlaceUse::InOut
+                } else {
+                    PlaceUse::Read
+                };
+                let plan = self.place_plan(owner, usage)?;
                 if plan.leaf_type() != self.type_id(&expression.ty)? {
                     return Err(LoweringError::defect(
                         LoweringDefectCode::InconsistentPlan,
