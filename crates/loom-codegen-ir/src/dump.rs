@@ -1020,6 +1020,7 @@ const fn fault_code_name(code: crate::FaultCode) -> &'static str {
         crate::FaultCode::InvalidSleepDuration => "InvalidSleepDuration",
         crate::FaultCode::SleepDurationOverflow => "SleepDurationOverflow",
         crate::FaultCode::TaskAnyFailed => "TaskAnyFailed",
+        crate::FaultCode::EmptyTaskJoin => "EmptyTaskJoin",
         crate::FaultCode::LogWrite => "LogWriteFault",
         crate::FaultCode::StdoutWrite => "StdoutWriteFault",
     }

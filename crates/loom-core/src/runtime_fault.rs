@@ -34,6 +34,14 @@ pub const TASK_ANY_FAILED_FAULT_CODE: &str = "TaskAnyFailed";
 /// Stable user-facing message when Task.any has no successful child.
 pub const TASK_ANY_FAILED_FAULT_MESSAGE: &str = "Task.any completed without a successful task";
 
+/// Stable runtime-fault code emitted when a winner-selecting Task join is
+/// constructed from an empty runtime-width task list.
+pub const EMPTY_TASK_JOIN_FAULT_CODE: &str = "EmptyTaskJoin";
+
+/// Stable user-facing message for an empty runtime-width Task.any/Task.race.
+pub const EMPTY_TASK_JOIN_FAULT_MESSAGE: &str =
+    "Task.any and Task.race require a non-empty task list";
+
 /// Stable runtime-fault code emitted when a structured log line cannot be
 /// written to the process error stream.
 pub const LOG_WRITE_FAULT_CODE: &str = "LogWriteFault";

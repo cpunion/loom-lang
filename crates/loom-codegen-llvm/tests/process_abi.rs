@@ -224,7 +224,7 @@ pub fn main() {
     assert_eq!(String::from_utf8(output.stdout).unwrap(), "Unit\n");
 
     assert_environment_only_omits_argument_snapshot(project.path());
-    assert_unsupported_process_never_falls_back(project.path());
+    assert_task_join_process_stays_on_lcir(project.path());
     assert_dead_process_does_not_reject(project.path());
 }
 
@@ -269,7 +269,7 @@ pub fn main() {
     );
 }
 
-fn assert_unsupported_process_never_falls_back(directory: &Path) {
+fn assert_task_join_process_stays_on_lcir(directory: &Path) {
     let source = r"import std.process.arguments
 
 async fn child(value Int) Int { value }
@@ -295,12 +295,9 @@ pub async fn main() {
         program,
         EmitOptions::run("main"),
         NativeRoutePolicy::Automatic,
-    );
-    let Err(error) = prepared else {
-        panic!("unsupported process program must not select checked-MIR fallback");
-    };
-    assert_eq!(error.code(), "NativePreparationProcessRequiresLcir");
-    assert!(error.support_report().is_some());
+    )
+    .expect("Task join and process access must share the typed LCIR route");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
 }
 
 fn assert_dead_process_does_not_reject(directory: &Path) {

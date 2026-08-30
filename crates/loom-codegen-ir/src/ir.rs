@@ -1230,6 +1230,7 @@ pub enum FaultCode {
     InvalidSleepDuration,
     SleepDurationOverflow,
     TaskAnyFailed,
+    EmptyTaskJoin,
     LogWrite,
     StdoutWrite,
 }

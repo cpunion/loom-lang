@@ -105,11 +105,11 @@ pub async fn main() {
         "universal Value leaked into:\n{ir}"
     );
 
-    assert_unsupported_io_never_falls_back(project.path());
+    assert_task_join_io_stays_on_lcir(project.path());
     assert_dead_io_does_not_reject(project.path());
 }
 
-fn assert_unsupported_io_never_falls_back(directory: &Path) {
+fn assert_task_join_io_stays_on_lcir(directory: &Path) {
     let project = source_program_in(
         directory,
         r#"import std.file.try_open_read
@@ -138,12 +138,9 @@ pub async fn main() {
         program,
         EmitOptions::run("main"),
         NativeRoutePolicy::Automatic,
-    );
-    let Err(error) = prepared else {
-        panic!("unsupported I/O must not select checked-MIR fallback");
-    };
-    assert_eq!(error.code(), "NativePreparationIoRequiresLcir");
-    assert!(error.support_report().is_some());
+    )
+    .expect("Task join and I/O must share the typed LCIR route");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
 }
 
 fn assert_dead_io_does_not_reject(directory: &Path) {
