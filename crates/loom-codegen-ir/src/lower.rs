@@ -2441,9 +2441,10 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
         }
     }
 
-    fn admit_contract_pattern_text(
+    fn admit_pattern_text(
         &mut self,
         function: &mir::Function,
+        expression: Option<ExprId>,
         pattern: &mir::Pattern,
         span: Span,
         path: &str,
@@ -2456,7 +2457,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         self.item(
                             UnsupportedFeature::TextConstant,
                             function.id,
-                            None,
+                            expression,
                             span,
                             path.to_owned(),
                         );
@@ -2590,8 +2591,9 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             }
             ContractExprKind::Match { scrutinee, arms } => {
                 for (index, arm) in arms.iter().enumerate() {
-                    if !self.admit_contract_pattern_text(
+                    if !self.admit_pattern_text(
                         function,
+                        None,
                         &arm.pattern,
                         expression.span,
                         &format!("{path}.arms[{index}].pattern"),
@@ -2959,6 +2961,15 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 then_continues || else_continues
             }
             ExprKind::Match { scrutinee, arms } => {
+                let patterns_supported = arms.iter().enumerate().all(|(index, arm)| {
+                    self.admit_pattern_text(
+                        function,
+                        Some(expression.id),
+                        &arm.pattern,
+                        expression.span,
+                        &format!("{path}.arms[{index}].pattern"),
+                    )
+                });
                 if !self.visit_expr(function, key, scrutinee, &format!("{path}.scrutinee")) {
                     return false;
                 }
@@ -2979,9 +2990,10 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     scrutinee.span,
                     &format!("{path}.scrutinee.ty"),
                 );
-                if scrutinee_ty
-                    .as_ref()
-                    .is_some_and(|ty| self.supported_value_type(ty))
+                if patterns_supported
+                    && scrutinee_ty
+                        .as_ref()
+                        .is_some_and(|ty| self.supported_value_type(ty))
                 {
                     if let Some(plan) = plan_match(
                         self.program,
@@ -3010,7 +3022,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                             path,
                         );
                     }
-                } else {
+                } else if patterns_supported {
                     self.expression_item(
                         UnsupportedFeature::PatternMatch,
                         function,
@@ -9363,52 +9375,80 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                         "constant decision has no planned type",
                     )
                 })?;
-                let constant = match constant {
-                    mir::Constant::Unit => Constant::Unit,
-                    mir::Constant::Bool(value) => Constant::Bool(value),
-                    mir::Constant::Int(value) => Constant::Int(value),
-                    mir::Constant::Float(value) => Constant::float(value),
+                let origin = self.expression_origin(expression);
+                let (flow, instruction) = match constant {
+                    mir::Constant::Text(text) if ty == &Type::Text => {
+                        let EvalFlow::Continue { flow, value } = self.one_instruction(
+                            flow,
+                            InstructionKind::TextLiteral {
+                                utf8: text.into_boxed_str(),
+                            },
+                            self.type_id(&Type::Text)?,
+                            origin,
+                        )?
+                        else {
+                            return Err(LoweringError::defect(
+                                LoweringDefectCode::Builder,
+                                "match Text literal unexpectedly terminated",
+                            ));
+                        };
+                        (
+                            flow,
+                            InstructionKind::TextCompare {
+                                predicate: BoolPredicate::Equal,
+                                left: operand,
+                                right: value,
+                            },
+                        )
+                    }
                     mir::Constant::Text(_) => {
-                        return Err(self.unsupported_reached("text pattern"));
+                        return Err(self.unsupported_reached("non-Text literal pattern"));
+                    }
+                    constant => {
+                        let constant = match constant {
+                            mir::Constant::Unit => Constant::Unit,
+                            mir::Constant::Bool(value) => Constant::Bool(value),
+                            mir::Constant::Int(value) => Constant::Int(value),
+                            mir::Constant::Float(value) => Constant::float(value),
+                            mir::Constant::Text(_) => unreachable!(),
+                        };
+                        let EvalFlow::Continue {
+                            flow,
+                            value: expected,
+                        } = self.constant(flow, constant, ty, origin)?
+                        else {
+                            return Err(LoweringError::defect(
+                                LoweringDefectCode::Builder,
+                                "match constant unexpectedly terminated",
+                            ));
+                        };
+                        let instruction = match ty {
+                            Type::Bool => InstructionKind::BoolCompare {
+                                predicate: BoolPredicate::Equal,
+                                left: operand,
+                                right: expected,
+                            },
+                            Type::Int => InstructionKind::IntCompare {
+                                predicate: IntPredicate::Equal,
+                                left: operand,
+                                right: expected,
+                            },
+                            Type::Float => InstructionKind::FloatCompare {
+                                predicate: FloatPredicate::OrderedEqual,
+                                left: operand,
+                                right: expected,
+                            },
+                            _ => {
+                                return Err(self.unsupported_reached("non-scalar constant pattern"));
+                            }
+                        };
+                        (flow, instruction)
                     }
                 };
                 let EvalFlow::Continue {
                     flow,
-                    value: expected,
-                } = self.constant(flow, constant, ty, self.expression_origin(expression))?
-                else {
-                    return Err(LoweringError::defect(
-                        LoweringDefectCode::Builder,
-                        "match constant unexpectedly terminated",
-                    ));
-                };
-                let instruction = match ty {
-                    Type::Bool => InstructionKind::BoolCompare {
-                        predicate: BoolPredicate::Equal,
-                        left: operand,
-                        right: expected,
-                    },
-                    Type::Int => InstructionKind::IntCompare {
-                        predicate: IntPredicate::Equal,
-                        left: operand,
-                        right: expected,
-                    },
-                    Type::Float => InstructionKind::FloatCompare {
-                        predicate: FloatPredicate::OrderedEqual,
-                        left: operand,
-                        right: expected,
-                    },
-                    _ => return Err(self.unsupported_reached("non-scalar constant pattern")),
-                };
-                let EvalFlow::Continue {
-                    flow,
                     value: condition,
-                } = self.one_instruction(
-                    flow,
-                    instruction,
-                    self.type_id(&Type::Bool)?,
-                    self.expression_origin(expression),
-                )?
+                } = self.one_instruction(flow, instruction, self.type_id(&Type::Bool)?, origin)?
                 else {
                     return Err(LoweringError::defect(
                         LoweringDefectCode::Builder,
@@ -9424,7 +9464,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                         then_target: BlockTarget::new(equal_block, []),
                         else_target: BlockTarget::new(not_equal_block, []),
                     },
-                    self.expression_origin(expression),
+                    origin,
                 )?;
                 self.lower_match_node(
                     plan,

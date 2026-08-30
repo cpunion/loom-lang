@@ -111,7 +111,6 @@ struct Planner<'program> {
     arm_nodes: BTreeMap<(usize, Vec<(LocalId, MatchValueId)>), MatchNodeId>,
     reserved_nodes: usize,
     planning_work: usize,
-    allow_text_constants: bool,
 }
 
 pub(crate) fn plan_match(
@@ -123,7 +122,7 @@ pub(crate) fn plan_match(
         .iter()
         .map(|arm| (&arm.pattern, arm.bindings.clone()))
         .collect::<Vec<_>>();
-    plan_match_inputs(program, scrutinee, &inputs, false)
+    plan_match_inputs(program, scrutinee, &inputs)
 }
 
 /// Plans a contract match using lexical binding indexes as synthetic locals.
@@ -150,14 +149,13 @@ pub(crate) fn plan_contract_match(
             Some((&arm.pattern, bindings))
         })
         .collect::<Option<Vec<_>>>()?;
-    plan_match_inputs(program, scrutinee, &inputs, true)
+    plan_match_inputs(program, scrutinee, &inputs)
 }
 
 fn plan_match_inputs(
     program: &mir::Program,
     scrutinee: &Type,
     arms: &[(&Pattern, Vec<LocalId>)],
-    allow_text_constants: bool,
 ) -> Option<MatchPlan> {
     if arms.is_empty()
         || arms.len() > DIRECT_MATCH_MAX_PATTERN_NODES
@@ -187,7 +185,6 @@ fn plan_match_inputs(
         arm_nodes: BTreeMap::new(),
         reserved_nodes: 0,
         planning_work: 0,
-        allow_text_constants,
     };
     let root = planner.compile(rows, vec![MatchValueId(0)])?;
     let cfg_blocks = planner.nodes.iter().try_fold(1_usize, |blocks, node| {
@@ -290,7 +287,7 @@ impl Planner<'_> {
                 self.compile(rows, columns)
             }
             PlannedPattern::Constant(constant) => {
-                if !constant_matches_type(&constant, &ty, self.allow_text_constants) {
+                if !constant_matches_type(&constant, &ty) {
                     return None;
                 }
                 if matches!(&constant, mir::Constant::Float(value) if value.is_nan()) {
@@ -493,14 +490,15 @@ fn row_cost(row: &Row) -> Option<usize> {
     Some(nodes)
 }
 
-fn constant_matches_type(constant: &mir::Constant, ty: &Type, allow_text_constants: bool) -> bool {
+fn constant_matches_type(constant: &mir::Constant, ty: &Type) -> bool {
     matches!(
         (constant, ty),
         (mir::Constant::Unit, Type::Unit)
             | (mir::Constant::Bool(_), Type::Bool)
             | (mir::Constant::Int(_), Type::Int)
             | (mir::Constant::Float(_), Type::Float)
-    ) || (allow_text_constants && matches!((constant, ty), (mir::Constant::Text(_), Type::Text)))
+            | (mir::Constant::Text(_), Type::Text)
+    )
 }
 
 #[expect(

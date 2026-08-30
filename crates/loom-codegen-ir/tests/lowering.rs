@@ -2604,6 +2604,86 @@ pub fn main() {
 }
 
 #[test]
+fn executable_text_literal_patterns_plan_nested_managed_comparisons() {
+    let outcome = lower_run(
+        r#"enum Envelope {
+    Empty
+    Wrapped(Option[Text])
+}
+
+fn join(left Text, right Text) Text { left.concat(right) }
+
+fn classify(value Text) Int {
+    match value {
+        "hit" => 1
+        "miss" => 2
+        _ => 3
+    }
+}
+
+fn classifyNested(value Envelope) Int {
+    match value {
+        Wrapped(Some("nested")) => 4
+        Wrapped(Some(_)) => 5
+        _ => 6
+    }
+}
+
+pub fn main() {
+    let hit = classify(join("h", "it"))
+    let miss = classify(join("m", "iss"))
+    let fallback = classify(join("other", ""))
+    let nestedHit = classifyNested(Envelope.Wrapped(Some(join("nest", "ed"))))
+    let nestedFallback = classifyNested(Envelope.Wrapped(Some(join("other", ""))))
+    let empty = classifyNested(Envelope.Empty)
+    assert hit == 1
+    assert miss == 2
+    assert fallback == 3
+    assert nestedHit == 4
+    assert nestedFallback == 5
+    assert empty == 6
+}
+"#,
+    );
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("executable Text literal patterns must lower through typed LCIR: {outcome:?}")
+    };
+    assert_eq!(
+        artifact
+            .representations()
+            .type_id(&loom_mir::Type::Text)
+            .and_then(|ty| artifact.representations().value_type(ty))
+            .and_then(|ty| artifact.representations().repr(ty.repr())),
+        Some(&loom_codegen_ir::Repr::ManagedPointer)
+    );
+    let instructions = artifact
+        .functions()
+        .iter()
+        .flat_map(loom_codegen_ir::Function::instructions)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        instructions
+            .iter()
+            .filter(|instruction| matches!(instruction.kind(), InstructionKind::TextCompare { .. }))
+            .count(),
+        3,
+        "{}",
+        dump_program(artifact.program())
+    );
+    let dump = dump_program(artifact.program());
+    for required in [
+        "text.literal \"hit\"",
+        "text.literal \"miss\"",
+        "text.literal \"nested\"",
+        "text.compare.equal",
+        "sum.switch",
+    ] {
+        assert!(dump.contains(required), "missing `{required}`:\n{dump}");
+    }
+    assert!(!dump.contains("loom.Value"), "{dump}");
+}
+
+#[test]
 fn text_literal_bytes_participate_in_artifact_identity() {
     let identity = |literal: &str| {
         let source = format!("pub fn main() {{\n    discard \"{literal}\".length()\n}}\n");
