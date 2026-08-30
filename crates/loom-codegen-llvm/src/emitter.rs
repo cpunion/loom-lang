@@ -219,9 +219,10 @@ fn block_contains_await(block: &Block) -> bool {
             StatementKind::While { condition, body } => {
                 expression_contains_await(condition) || block_contains_await(body)
             }
-            StatementKind::Break | StatementKind::Continue => false,
+            StatementKind::Break
+            | StatementKind::Continue
+            | StatementKind::RestoreReceiverInvariant { .. } => false,
             StatementKind::Assert { condition } => expression_contains_await(condition),
-            StatementKind::RestoreReceiverInvariant { .. } => false,
             StatementKind::Defer(cleanup) => block_contains_await(cleanup),
             StatementKind::Return(value) => value.as_ref().is_some_and(expression_contains_await),
         })
