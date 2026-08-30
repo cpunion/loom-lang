@@ -1,8 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
-    process::Command,
-    time::Duration,
 };
 
 use loom_codegen_ir::{
@@ -21,7 +19,6 @@ use loom_mir::{
 };
 use loom_sema::analyze;
 use loom_syntax::parse_with_file;
-use wait_timeout::ChildExt as _;
 
 fn compile(source: &str) -> loom_mir::CheckedProgram {
     compile_source_files(&[source])
@@ -7027,11 +7024,7 @@ test fn fails() Result[Unit, Problem] { Err(Problem.Failed) }
 }
 
 #[test]
-#[expect(
-    clippy::single_element_loop,
-    reason = "the table form keeps unsupported aggregate graph cases easy to extend"
-)]
-fn managed_sums_lower_directly_while_unsupported_sum_graphs_fall_back_atomically() {
+fn managed_task_and_dynamic_sums_lower_directly() {
     let managed = r#"record Label { value Text }
 
 enum Message { Textual(Label) }
@@ -7094,32 +7087,6 @@ pub async fn main() {
     let task_sum_dump = dump_program(task_sum.program());
     assert!(task_sum_dump.contains("sum.construct"), "{task_sum_dump}");
     assert!(task_sum_dump.contains("sum.switch"), "{task_sum_dump}");
-
-    for source in [r"enum Chain {
-    End
-    Next(Chain)
-}
-
-pub fn main() {
-    discard Chain.End
-}
-"]
-    {
-        let LoweringOutcome::Unsupported(report) = lower_run(source) else {
-            panic!("unsupported sum graph must select atomic fallback")
-        };
-        assert!(report.items().iter().any(|item| matches!(
-            item.feature(),
-            UnsupportedFeature::ExpressionType
-                | UnsupportedFeature::NominalValue
-                | UnsupportedFeature::TextConstant
-                | UnsupportedFeature::ListValue
-                | UnsupportedFeature::RefinedValue
-                | UnsupportedFeature::View
-                | UnsupportedFeature::AsyncFunction
-                | UnsupportedFeature::TaskOperation
-        )));
-    }
 }
 
 #[test]
@@ -7300,243 +7267,6 @@ pub async fn main() {
         1,
         "{}",
         dump_program(artifact.program())
-    );
-}
-
-const NON_REGULAR_SUM_LOWERING_CHILD_ENV: &str = "LOOM_LCIR_NON_REGULAR_SUM_CHILD";
-
-#[test]
-fn non_regular_generic_sum_lowering_finishes_within_the_resource_gate() {
-    let mut child = Command::new(std::env::current_exe().expect("current test executable"))
-        .args([
-            "--exact",
-            "non_regular_generic_sum_lowering_child",
-            "--nocapture",
-        ])
-        .env(NON_REGULAR_SUM_LOWERING_CHILD_ENV, "1")
-        .spawn()
-        .expect("spawn non-regular sum lowering child");
-    let status = child
-        .wait_timeout(Duration::from_secs(15))
-        .expect("wait for non-regular sum lowering child");
-    let Some(status) = status else {
-        child.kill().expect("kill timed-out sum lowering child");
-        child.wait().expect("reap timed-out sum lowering child");
-        panic!("non-regular generic sum lowering exceeded 15 seconds");
-    };
-    assert!(status.success(), "non-regular sum lowering child failed");
-}
-
-fn checked_non_regular_spiral_fixture() -> loom_mir::CheckedProgram {
-    use loom_core::Span;
-    use loom_mir::{
-        Block, CallPlan, Constant, Expr, ExprKind, Function, FunctionId, Program, Statement,
-        StatementKind, Type, TypeDef, TypeDefKind, TypeId, VariantDef, VariantId,
-    };
-
-    let span = Span::default();
-    let spiral = TypeId(0);
-    let spiral_int = Type::Nominal(spiral, vec![Type::Int]);
-    let done = Expr::new(
-        ExprKind::Variant {
-            ty: spiral,
-            type_arguments: vec![Type::Int],
-            variant: VariantId(0),
-            payload: vec![Expr::new(
-                ExprKind::Constant(Constant::Int(0)),
-                Type::Int,
-                span,
-            )],
-        },
-        spiral_int,
-        span,
-    );
-    let mut main = Function {
-        id: FunctionId(0),
-        name: "manual.main".into(),
-        span,
-        type_parameters: 0,
-        is_async: false,
-        suspension_points: Vec::new(),
-        params: Vec::new(),
-        witness_params: Vec::new(),
-        witness_prefix_count: 0,
-        locals: Vec::new(),
-        return_ty: Type::Unit,
-        receiver: None,
-        body: Block {
-            statements: vec![Statement {
-                kind: StatementKind::Evaluate(done),
-                span,
-            }],
-            tail: Some(Box::new(Expr::new(
-                ExprKind::Constant(Constant::Unit),
-                Type::Unit,
-                span,
-            ))),
-            span,
-        },
-        call_plan: CallPlan::default(),
-    };
-    main.renumber_expr_ids().expect("number raw MIR fixture");
-    Program {
-        types: vec![TypeDef {
-            id: spiral,
-            name: "Spiral".into(),
-            span,
-            type_parameters: 1,
-            kind: TypeDefKind::Enum {
-                variants: vec![
-                    VariantDef {
-                        id: VariantId(0),
-                        name: "Done".into(),
-                        payload: vec![Type::Parameter(0)],
-                        span,
-                    },
-                    VariantDef {
-                        id: VariantId(1),
-                        name: "Next".into(),
-                        payload: vec![Type::Nominal(
-                            spiral,
-                            vec![Type::Tuple(vec![Type::Parameter(0), Type::Parameter(0)])],
-                        )],
-                        span,
-                    },
-                ],
-            },
-        }],
-        functions: vec![main],
-        exports: BTreeMap::from([("main".into(), FunctionId(0))]),
-        ..Program::default()
-    }
-    .into_checked()
-    .expect("bounded MIR validation must accept Spiral[Int].Done(0)")
-}
-
-fn checked_non_regular_spiral_coroutine_fixture() -> loom_mir::CheckedProgram {
-    use loom_core::Span;
-    use loom_mir::{
-        Block, CallPlan, CallTarget, Expr, ExprKind, Function, FunctionId, Statement,
-        StatementKind, SuspensionPoint, Type,
-    };
-
-    let span = Span::default();
-    let mut program = checked_non_regular_spiral_fixture().into_program();
-    let mut child = program.functions.remove(0);
-    let StatementKind::Evaluate(done) = child.body.statements.remove(0).kind else {
-        panic!("the manual Spiral fixture must construct one value")
-    };
-    let spiral_int = done.ty.clone();
-    child.id = FunctionId(1);
-    child.name = "manual.child".into();
-    child.is_async = true;
-    child.return_ty = spiral_int.clone();
-    child.body.statements.clear();
-    child.body.tail = Some(Box::new(done));
-    child
-        .renumber_expr_ids()
-        .expect("number raw async child fixture");
-
-    let task = Expr::new(
-        ExprKind::Call {
-            target: CallTarget::Direct(child.id),
-            type_arguments: Vec::new(),
-            arguments: Vec::new(),
-            witnesses: Vec::new(),
-        },
-        Type::Task(Box::new(spiral_int.clone())),
-        span,
-    );
-    let awaited = Expr::new(
-        ExprKind::Await {
-            state: 1,
-            task: Box::new(task),
-        },
-        spiral_int,
-        span,
-    );
-    let mut main = Function {
-        id: FunctionId(0),
-        name: "manual.main".into(),
-        span,
-        type_parameters: 0,
-        is_async: true,
-        suspension_points: vec![SuspensionPoint {
-            state: 1,
-            span,
-            live_locals: Vec::new(),
-        }],
-        params: Vec::new(),
-        witness_params: Vec::new(),
-        witness_prefix_count: 0,
-        locals: Vec::new(),
-        return_ty: Type::Unit,
-        receiver: None,
-        body: Block {
-            statements: vec![Statement {
-                kind: StatementKind::Evaluate(awaited),
-                span,
-            }],
-            tail: Some(Box::new(Expr::new(
-                ExprKind::Constant(loom_mir::Constant::Unit),
-                Type::Unit,
-                span,
-            ))),
-            span,
-        },
-        call_plan: CallPlan::default(),
-    };
-    main.renumber_expr_ids()
-        .expect("number raw async root fixture");
-    program.functions = vec![main, child];
-    program.exports = BTreeMap::from([("main".into(), FunctionId(0))]);
-    program
-        .into_checked()
-        .expect("bounded MIR validation must accept the non-regular async fixture")
-}
-
-#[test]
-fn non_regular_generic_sum_lowering_child() {
-    if std::env::var_os(NON_REGULAR_SUM_LOWERING_CHILD_ENV).is_none() {
-        return;
-    }
-
-    let outcome = lower_typed_artifact(
-        &checked_non_regular_spiral_fixture(),
-        &SourceArtifactRequest::Run {
-            entry: "main".into(),
-        },
-        TargetLayout::new(64).expect("test target"),
-    )
-    .expect("bounded direct aggregate classification");
-    let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("a non-regular by-value sum must select whole-artifact fallback")
-    };
-    assert!(
-        report
-            .items()
-            .iter()
-            .any(|item| item.feature() == UnsupportedFeature::NominalValue),
-        "{report:?}"
-    );
-
-    let coroutine = lower_typed_artifact(
-        &checked_non_regular_spiral_coroutine_fixture(),
-        &SourceArtifactRequest::Run {
-            entry: "main".into(),
-        },
-        TargetLayout::new(64).expect("test target"),
-    )
-    .expect("bounded coroutine-frame classification");
-    let LoweringOutcome::Unsupported(report) = coroutine else {
-        panic!("a non-regular coroutine frame must select whole-artifact fallback")
-    };
-    assert!(
-        report
-            .items()
-            .iter()
-            .any(|item| item.feature() == UnsupportedFeature::SignatureType),
-        "{report:?}"
     );
 }
 

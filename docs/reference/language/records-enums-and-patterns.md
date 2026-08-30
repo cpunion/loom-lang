@@ -79,6 +79,12 @@ Payload expressions are evaluated left to right. Variant order has no source
 level integer value or priority. Loom has no open enums, implicit discriminants,
 or enum inheritance.
 
+Records, enums, and constrained bases cannot form a direct or mutual by-value
+cycle. Such a declaration has no finite layout and is rejected; Loom does not
+implicitly box it. Recursion must cross an explicit indirect type such as
+`List`, `TextMap`, `Task`, or `dyn C` storage. See
+[Types and values](types-and-values.md#structural-and-nominal-types).
+
 The prelude's `Some`, `None`, `Ok`, and `Err` are the built-in short constructor
 names for `Option` and `Result`.
 

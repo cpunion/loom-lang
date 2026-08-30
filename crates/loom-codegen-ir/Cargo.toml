@@ -17,7 +17,6 @@ loom-lowering.workspace = true
 loom-sema.workspace = true
 loom-syntax.workspace = true
 serde_json.workspace = true
-wait-timeout.workspace = true
 
 [lints]
 workspace = true

@@ -96,6 +96,20 @@ User-defined records, enums, and constrained types are nominal. Two
 declarations remain different types even when their fields, variants, bases,
 or predicates have identical spelling.
 
+Every value type must have a finite by-value layout. Record fields, enum
+payloads, constrained bases, tuple elements, `Option`, `Result`, and
+`TaskOutcome` payloads are inline edges. Nominal type arguments participate in
+this rule even when the declaration does not otherwise expose that parameter.
+A direct or mutual cycle through only inline edges is rejected as
+`RecursiveValueType`; Loom never inserts a hidden box to make it compile.
+
+`List`, `TextMap`, `Task`, and `dyn C` storage are explicit
+indirection boundaries and therefore break a layout cycle. For example, a
+record may contain `List[Node]` when `Node` is that record, but it cannot contain
+`Node` or `Option[Node]` directly. This keeps allocation and failure visible in
+the selected type constructors instead of changing a nominal declaration's
+ABI implicitly.
+
 ## `Option`, `Result`, and absence
 
 Loom has no `null` value. Optional data uses:

@@ -5044,6 +5044,31 @@ fn artifact_decode_runs_mir_validation() {
     let error = decode_interpreted_artifact(&serde_json::to_vec(&value).expect("json"))
         .expect_err("invalid MIR");
     assert!(matches!(error, ArtifactError::InvalidProgram(_)));
+
+    let recursive = TypeId(0);
+    let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    value["program"]["types"] = serde_json::to_value([TypeDef {
+        id: recursive,
+        name: "ForgedLoop".to_owned(),
+        span: span(),
+        type_parameters: 0,
+        kind: TypeDefKind::Record {
+            fields: vec![FieldDef {
+                name: "next".to_owned(),
+                ty: Type::Nominal(recursive, Vec::new()),
+                span: span(),
+            }],
+            invariant: None,
+        },
+    }])
+    .expect("recursive type JSON");
+    let error = decode_interpreted_artifact(&serde_json::to_vec(&value).expect("json"))
+        .expect_err("cached recursive MIR must fail the checked boundary");
+    assert!(matches!(
+        error,
+        ArtifactError::InvalidProgram(errors)
+            if errors.contains(MirValidationCode::RecursiveValueType)
+    ));
 }
 
 #[test]
@@ -9194,6 +9219,227 @@ fn phantom_type_arity_is_declared_and_checked() {
     assert!(validation_errors(&program).contains(MirValidationCode::TypeMismatch));
 }
 
+#[test]
+fn direct_by_value_nominal_cycle_is_rejected_at_the_checked_boundary() {
+    let node = TypeId(0);
+    let errors = validation_errors(&Program {
+        types: vec![TypeDef {
+            id: node,
+            name: "Node".to_owned(),
+            span: span(),
+            type_parameters: 0,
+            kind: TypeDefKind::Record {
+                fields: vec![FieldDef {
+                    name: "next".to_owned(),
+                    ty: Type::Nominal(node, Vec::new()),
+                    span: span(),
+                }],
+                invariant: None,
+            },
+        }],
+        ..Program::default()
+    });
+    let error = errors
+        .iter()
+        .find(|error| error.code == MirValidationCode::RecursiveValueType)
+        .expect("direct recursive storage must be rejected");
+    assert_eq!(error.code.to_string(), "MirRecursiveValueType");
+    assert_eq!(error.path, "types[0]");
+    assert!(error.message.contains("`Node`"));
+}
+
+#[test]
+fn mutual_tuple_nominal_cycle_is_rejected_as_one_component() {
+    let left = TypeId(0);
+    let right = TypeId(1);
+    let errors = validation_errors(&Program {
+        types: vec![
+            TypeDef {
+                id: left,
+                name: "Left".to_owned(),
+                span: span(),
+                type_parameters: 0,
+                kind: TypeDefKind::Record {
+                    fields: vec![FieldDef {
+                        name: "right".to_owned(),
+                        ty: Type::Tuple(vec![Type::Int, Type::Nominal(right, Vec::new())]),
+                        span: span(),
+                    }],
+                    invariant: None,
+                },
+            },
+            TypeDef {
+                id: right,
+                name: "Right".to_owned(),
+                span: span(),
+                type_parameters: 0,
+                kind: TypeDefKind::Record {
+                    fields: vec![FieldDef {
+                        name: "left".to_owned(),
+                        ty: Type::Nominal(left, Vec::new()),
+                        span: span(),
+                    }],
+                    invariant: None,
+                },
+            },
+        ],
+        ..Program::default()
+    });
+    let recursive = errors
+        .iter()
+        .filter(|error| error.code == MirValidationCode::RecursiveValueType)
+        .collect::<Vec<_>>();
+    assert_eq!(recursive.len(), 1, "{errors:?}");
+    assert_eq!(recursive[0].path, "types[0]");
+    assert!(recursive[0].message.contains("`Left`, `Right`"));
+}
+
+#[test]
+fn nominal_arguments_are_conservative_by_value_edges() {
+    let carrier = TypeId(0);
+    let recursive = TypeId(1);
+    let errors = validation_errors(&Program {
+        types: vec![
+            TypeDef {
+                id: carrier,
+                name: "Carrier".to_owned(),
+                span: span(),
+                type_parameters: 1,
+                kind: TypeDefKind::Record {
+                    fields: Vec::new(),
+                    invariant: None,
+                },
+            },
+            TypeDef {
+                id: recursive,
+                name: "Recursive".to_owned(),
+                span: span(),
+                type_parameters: 0,
+                kind: TypeDefKind::Record {
+                    fields: vec![FieldDef {
+                        name: "carrier".to_owned(),
+                        ty: Type::Nominal(carrier, vec![Type::Nominal(recursive, Vec::new())]),
+                        span: span(),
+                    }],
+                    invariant: None,
+                },
+            },
+        ],
+        ..Program::default()
+    });
+    assert!(errors.contains(MirValidationCode::RecursiveValueType));
+}
+
+#[test]
+fn task_outcome_payload_remains_a_by_value_edge() {
+    let outcome = TypeId(0);
+    let errors = validation_errors(&Program {
+        types: vec![TypeDef {
+            id: outcome,
+            name: "OutcomeLoop".to_owned(),
+            span: span(),
+            type_parameters: 0,
+            kind: TypeDefKind::Record {
+                fields: vec![FieldDef {
+                    name: "outcome".to_owned(),
+                    ty: Type::TaskOutcome(Box::new(Type::Nominal(outcome, Vec::new()))),
+                    span: span(),
+                }],
+                invariant: None,
+            },
+        }],
+        ..Program::default()
+    });
+    assert!(errors.contains(MirValidationCode::RecursiveValueType));
+}
+
+#[test]
+fn indirect_carriers_break_recursive_nominal_storage() {
+    let text_map = TypeId(0);
+    let list_node = TypeId(1);
+    let map_node = TypeId(2);
+    let task_node = TypeId(3);
+    let view_node = TypeId(4);
+    let record = |id, name: &str, field: Type| TypeDef {
+        id,
+        name: name.to_owned(),
+        span: span(),
+        type_parameters: 0,
+        kind: TypeDefKind::Record {
+            fields: vec![FieldDef {
+                name: "next".to_owned(),
+                ty: field,
+                span: span(),
+            }],
+            invariant: None,
+        },
+    };
+    let program = Program {
+        types: vec![
+            TypeDef {
+                id: text_map,
+                name: "TextMap".to_owned(),
+                span: span(),
+                type_parameters: 1,
+                kind: TypeDefKind::Record {
+                    fields: vec![FieldDef {
+                        name: "raw".to_owned(),
+                        ty: Type::Int,
+                        span: span(),
+                    }],
+                    invariant: None,
+                },
+            },
+            record(
+                list_node,
+                "ListNode",
+                Type::List(Box::new(Type::Nominal(list_node, Vec::new()))),
+            ),
+            record(
+                map_node,
+                "MapNode",
+                Type::Nominal(text_map, vec![Type::Nominal(map_node, Vec::new())]),
+            ),
+            record(
+                task_node,
+                "TaskNode",
+                Type::Task(Box::new(Type::Nominal(task_node, Vec::new()))),
+            ),
+            record(
+                view_node,
+                "ViewNode",
+                Type::View {
+                    mutable: false,
+                    concept: ConceptId(0),
+                    bindings: BTreeMap::from([(
+                        "Item".to_owned(),
+                        Type::Nominal(view_node, Vec::new()),
+                    )]),
+                },
+            ),
+        ],
+        concepts: vec![ConceptDef {
+            id: ConceptId(0),
+            module: "test".to_owned(),
+            name: "Source".to_owned(),
+            span: span(),
+            identity: None,
+            dynamic: true,
+            associated_types: vec![AssociatedTypeDef {
+                name: "Item".to_owned(),
+                span: span(),
+            }],
+            requirements: Vec::new(),
+        }],
+        prelude: PreludeIds {
+            text_map: Some(text_map),
+            ..PreludeIds::default()
+        },
+        ..Program::default()
+    };
+    validate_program(&program).expect("all four recursive edges cross explicit indirection");
+}
+
 const NON_REGULAR_VALIDATION_CHILD_ENV: &str = "LOOM_MIR_NON_REGULAR_VALIDATION_CHILD";
 
 fn non_regular_spiral_definition(spiral: TypeId) -> TypeDef {
@@ -9293,15 +9539,15 @@ fn non_regular_generic_validation_child() {
             span: span(),
         },
     );
-    let checked = Program {
+    let errors = Program {
         types: vec![definition.clone()],
         functions: vec![checked_main],
         exports: BTreeMap::from([("main".to_owned(), FunctionId(0))]),
         ..Program::default()
     }
     .into_checked()
-    .expect("non-regular obligation and equality analysis must remain bounded");
-    assert_eq!(checked.functions.len(), 1);
+    .expect_err("a non-regular by-value schema has infinite storage");
+    assert!(errors.contains(MirValidationCode::RecursiveValueType));
 
     let incomplete_match = expr(
         ExprKind::Match {
@@ -9334,6 +9580,7 @@ fn non_regular_generic_validation_child() {
         ..Program::default()
     };
     let errors = validate_program(&invalid).expect_err("the match intentionally omits Next");
+    assert!(errors.contains(MirValidationCode::RecursiveValueType));
     assert!(errors.contains(MirValidationCode::PatternShape));
 }
 

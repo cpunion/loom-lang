@@ -13,7 +13,8 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
 - A conventional statically typed source language with Go-style `name Type`
   declarations, inferred `Unit` returns, final-expression returns, postfix
   `.await`, tuples, records, closed sums, pattern matching, loops, and explicit
-  `discard`.
+  `discard`. Direct and mutual by-value nominal cycles are rejected instead of
+  receiving an implicit box; recursion crosses an explicit indirect type.
 - Refinement types, record invariants, preconditions, postconditions, checked
   conversions, generic functions and records, associated types, concepts, and
   explicit `dyn C` values. Closed-world conformance planning permits direct
@@ -62,7 +63,7 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   public `std.file` and `std.net` functions resolve through ordinary source
   wrappers, and the Path forms reuse their Text counterparts. Only 16
   exact-owner resource/I/O/close leaves plus two protected error access leaves
-  remain below source. Interpreted MIR artifact 39 and persistent cache schema
+  remain below source. Interpreted MIR artifact 40 and persistent cache schema
   15 reject the removed semantic types, fixed slots, and special cleanup tags
   instead of decoding them through compatibility paths.
   Native runtime ABI 36 (`runtime-v30`) records the removal of the former

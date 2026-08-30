@@ -20,7 +20,7 @@ writers for unreleased formats. Development history belongs in
 | Manifest schema | `2` |
 | Lockfile schema | `2` |
 | Registry protocol and bundle | `1` |
-| Interpreted MIR artifact | `loom.interpreted-mir`, version `39` |
+| Interpreted MIR artifact | `loom.interpreted-mir`, version `40` |
 | Portable library artifact | `loom-library`, source-and-interface version `3` |
 | Persistent compiler cache | schema `15` |
 | Compilation-cache domain | `loom-compilation-cache-v15` |
@@ -76,13 +76,14 @@ LCIR artifact identity schema 48 records the exact runtime-width
 identities are not reused for artifacts whose checked LCIR meaning predates
 the affine `List[Task[T]]` carrier.
 
-Interpreted MIR version 39 and persistent cache schema 15 encode `IoError`,
-`File`, and `Socket` by their exact ordinary standard-library source identities.
-Their protected source records receive compiler-private MIR storage, while
-resource cleanup carries only the selected source `Dispose.dispose` proof.
-Checked MIR rejects direct construction and projection. LCIR, native objects,
-and the runtime wire do not change because their typed product layouts and
-operation contracts are unchanged.
+Interpreted MIR version 40 independently rejects infinite by-value nominal
+cycles as part of decoded-program validation. It encodes exact ordinary
+standard-library source identities for `IoError`, `File`, and `Socket`. Their
+protected source records receive compiler-private MIR storage, while resource
+cleanup carries only the selected source `Dispose.dispose` proof. Checked MIR
+rejects direct construction and projection. LCIR, native objects, and the
+runtime wire do not change because no valid value layout or operation contract
+changed.
 
 ## Source language
 
