@@ -7027,11 +7027,7 @@ test fn fails() Result[Unit, Problem] { Err(Problem.Failed) }
 }
 
 #[test]
-#[expect(
-    clippy::single_element_loop,
-    reason = "the table form keeps unsupported aggregate graph cases easy to extend"
-)]
-fn managed_sums_lower_directly_while_unsupported_sum_graphs_fall_back_atomically() {
+fn managed_task_and_dynamic_sums_lower_directly() {
     let managed = r#"record Label { value Text }
 
 enum Message { Textual(Label) }
@@ -7095,31 +7091,6 @@ pub async fn main() {
     assert!(task_sum_dump.contains("sum.construct"), "{task_sum_dump}");
     assert!(task_sum_dump.contains("sum.switch"), "{task_sum_dump}");
 
-    for source in [r"enum Chain {
-    End
-    Next(Chain)
-}
-
-pub fn main() {
-    discard Chain.End
-}
-"]
-    {
-        let LoweringOutcome::Unsupported(report) = lower_run(source) else {
-            panic!("unsupported sum graph must select atomic fallback")
-        };
-        assert!(report.items().iter().any(|item| matches!(
-            item.feature(),
-            UnsupportedFeature::ExpressionType
-                | UnsupportedFeature::NominalValue
-                | UnsupportedFeature::TextConstant
-                | UnsupportedFeature::ListValue
-                | UnsupportedFeature::RefinedValue
-                | UnsupportedFeature::View
-                | UnsupportedFeature::AsyncFunction
-                | UnsupportedFeature::TaskOperation
-        )));
-    }
 }
 
 #[test]

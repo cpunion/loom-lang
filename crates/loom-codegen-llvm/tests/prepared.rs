@@ -97,19 +97,19 @@ pub async fn main() {{
 
 fn sync_executor_root_with_unsupported_site_program() -> CheckedProgram {
     compile_source(
-        r"enum Chain {
-    End
-    Next(Chain)
-}
+        r"dyn concept Truth { method truth(self) Bool }
+
+fn missing() dyn Truth { missing() }
 
 async fn child() Int { 1 }
 
-fn consume(task Task[Int], chain Chain) {
-    consume(task, Chain.Next(chain))
+fn consume(task Task[Int]) {
+    discard missing().truth()
+    consume(task)
 }
 
 pub fn main() {
-    consume(child(), Chain.End)
+    consume(child())
 }
 ",
     )
@@ -135,16 +135,15 @@ pub fn main() {
     )
 }
 
-fn recursive_sum_program() -> CheckedProgram {
+fn unsupported_dynamic_program() -> CheckedProgram {
     compile_source(
-        r"enum Chain {
-    End
-    Next(Chain)
-}
+        r"dyn concept Truth { method truth(self) Bool }
 
 pub fn main() {
-    discard Chain.End
+    discard missing().truth()
 }
+
+fn missing() dyn Truth { missing() }
 ",
     )
 }
@@ -357,7 +356,7 @@ fn lcir_only_accepts_a_complete_typed_artifact() {
 
 #[test]
 fn lcir_only_preserves_a_deterministic_structured_support_report() {
-    let program = recursive_sum_program();
+    let program = unsupported_dynamic_program();
     let prepare = || {
         prepare_native_object(
             &program,
@@ -381,10 +380,10 @@ fn lcir_only_preserves_a_deterministic_structured_support_report() {
         report
             .items()
             .iter()
-            .any(|item| item.feature() == UnsupportedFeature::ExpressionType),
+            .any(|item| item.feature() == UnsupportedFeature::DynamicWitnessSet),
         "{report:#?}"
     );
-    assert!(first.message().contains("ExpressionType"), "{first}");
+    assert!(first.message().contains("DynamicWitnessSet"), "{first}");
     assert!(
         first.message().contains(report.items()[0].path()),
         "{first}"
