@@ -1010,7 +1010,10 @@ const fn builtin_requirements(builtin: Builtin) -> RuntimeRequirements {
         | Builtin::TextMapNew
         | Builtin::TextMapLength
         | Builtin::IoErrorKind
-        | Builtin::IoErrorMessage => RuntimeRequirements::NONE,
+        | Builtin::IoErrorMessage
+        | Builtin::ProcessArgumentCount
+        | Builtin::ProcessArgumentAt
+        | Builtin::ProcessEnvironment => RuntimeRequirements::NONE,
         Builtin::FileOpenRead
         | Builtin::FileCreate
         | Builtin::FileOpenReadPath
@@ -1051,8 +1054,6 @@ const fn builtin_requirements(builtin: Builtin) -> RuntimeRequirements {
         | Builtin::ListAdd
         | Builtin::ListGet
         | Builtin::ListToTextMap
-        | Builtin::ProcessArguments
-        | Builtin::ProcessEnvironment
         | Builtin::DurationMilliseconds
         | Builtin::TextMapGet
         | Builtin::TextMapInsert

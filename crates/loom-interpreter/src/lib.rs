@@ -5050,7 +5050,9 @@ impl<'program> Interpreter<'program> {
         }
         if matches!(
             builtin,
-            Builtin::ProcessArguments | Builtin::ProcessEnvironment
+            Builtin::ProcessArgumentCount
+                | Builtin::ProcessArgumentAt
+                | Builtin::ProcessEnvironment
         ) {
             return self.eval_process_builtin(builtin, arguments, span);
         }
@@ -5238,14 +5240,29 @@ impl<'program> Interpreter<'program> {
         span: Span,
     ) -> Result<Value, ExecutionFailure> {
         match (builtin, arguments) {
-            (Builtin::ProcessArguments, []) => Ok(Value::List {
-                elements: self
-                    .process_arguments
-                    .iter()
-                    .cloned()
-                    .map(|value| Value::Text { value })
-                    .collect(),
+            (Builtin::ProcessArgumentCount, []) => Ok(Value::Int {
+                value: i64::try_from(self.process_arguments.len()).map_err(|_| {
+                    self.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "process argument count exceeds Int",
+                        span,
+                    )
+                })?,
             }),
+            (Builtin::ProcessArgumentAt, [Value::Int { value: index }]) => {
+                let value = usize::try_from(*index)
+                    .ok()
+                    .and_then(|index| self.process_arguments.get(index))
+                    .cloned()
+                    .ok_or_else(|| {
+                        self.runtime_fault(
+                            "LOOM_RUNTIME_INVALID_MIR",
+                            "process argument index is out of bounds",
+                            span,
+                        )
+                    })?;
+                Ok(Value::Text { value })
+            }
             (Builtin::ProcessEnvironment, [Value::Text { value: name }]) => self.option_value(
                 std::env::var(name).ok().map(|value| Value::Text { value }),
                 span,
@@ -8721,5 +8738,41 @@ mod builtin_value_tests {
                 if matches!(payload.as_slice(), [Value::Record { fields, .. }]
                     if fields == &vec![Value::Text { value: "root/child/file".into() }])
         ));
+    }
+
+    #[test]
+    fn process_argument_primitives_expose_the_snapshot_and_fail_closed_on_bad_indices() {
+        let program = builtin_program()
+            .into_checked()
+            .expect("valid process checked-MIR fixture");
+        let interpreter =
+            Interpreter::new(&program).with_process_arguments(vec!["first".into(), "界🙂".into()]);
+        let span = Span::default();
+
+        assert_eq!(
+            interpreter
+                .eval_process_builtin(Builtin::ProcessArgumentCount, &[], span)
+                .unwrap(),
+            Value::Int { value: 2 }
+        );
+        assert_eq!(
+            interpreter
+                .eval_process_builtin(Builtin::ProcessArgumentAt, &[Value::Int { value: 1 }], span,)
+                .unwrap(),
+            Value::Text {
+                value: "界🙂".into()
+            }
+        );
+
+        for index in [-1, 2] {
+            assert!(matches!(
+                interpreter.eval_process_builtin(
+                    Builtin::ProcessArgumentAt,
+                    &[Value::Int { value: index }],
+                    span,
+                ),
+                Err(ExecutionFailure::Defect { .. })
+            ));
+        }
     }
 }

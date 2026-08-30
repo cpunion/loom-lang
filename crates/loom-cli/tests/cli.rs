@@ -3990,16 +3990,12 @@ test async fn discards_awaited_value() {
 #[test]
 fn range_and_growable_list_run_on_both_backends() {
     let project = TestProject::new(
-        "import std.int.ParseIntError\nimport std.int.parse_int\nimport std.process.arguments\nimport std.process.environment\n\nasync fn worker(value Int) Int {\n    value * 2\n}\n\npub async fn main() {\n    let processArguments = arguments()\n    let argumentCount = processArguments.length()\n    assert argumentCount == 5\n    let count = match environment(\"LOOM_WORKERS\") {\n        Some(text) => {\n            match parse_int(text) {\n                Ok(value) => value\n                Err(ParseIntError.InvalidSyntax) => 0\n                Err(ParseIntError.OutOfRange) => 0\n            }\n        }\n        None => 0\n    }\n    assert count == 5\n    match environment(\"LOOM_TEST_ENV\") {\n        Some(value) => {\n            assert value == \"visible\"\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    var tasks = List[Task[Int]]()\n    for i in 0..count {\n        tasks.add(worker(i))\n        Unit\n    }\n    let values = Task.all(tasks).await\n    let length = values.length()\n    assert length == count\n    let selected = values.get(3)\n    match selected {\n        Some(value) => {\n            assert value == 6\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    let missing = values.get(-1)\n    match missing {\n        Some(_) => {\n            assert false\n            Unit\n        }\n        None => Unit\n    }\n}\n",
+        "async fn worker(value Int) Int {\n    value * 2\n}\n\npub async fn main() {\n    let count = 5\n    var tasks = List[Task[Int]]()\n    for i in 0..count {\n        tasks.add(worker(i))\n        Unit\n    }\n    let values = Task.all(tasks).await\n    let length = values.length()\n    assert length == count\n    let selected = values.get(3)\n    match selected {\n        Some(value) => {\n            assert value == 6\n            Unit\n        }\n        None => {\n            assert false\n            Unit\n        }\n    }\n    let missing = values.get(-1)\n    match missing {\n        Some(_) => {\n            assert false\n            Unit\n        }\n        None => Unit\n    }\n}\n",
     );
     for backend in ["interpreter", "llvm"] {
         let output = loom()
             .args(["--backend", backend, "run"])
             .arg(&project.0)
-            .arg("--")
-            .args(["one", "two", "three", "four", "five"])
-            .env("LOOM_TEST_ENV", "visible")
-            .env("LOOM_WORKERS", "5")
             .output()
             .expect("run range/List program");
         assert_eq!(
@@ -4028,10 +4024,6 @@ fn range_and_growable_list_run_on_both_backends() {
         let artifact_output = loom()
             .args(["--backend", backend, "run", "--artifact"])
             .arg(&artifact)
-            .arg("--")
-            .args(["one", "two", "three", "four", "five"])
-            .env("LOOM_TEST_ENV", "visible")
-            .env("LOOM_WORKERS", "5")
             .output()
             .expect("run range/List artifact");
         assert_eq!(

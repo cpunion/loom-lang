@@ -4,11 +4,17 @@ use loom_sema::{Analysis, BuiltinValue, CallTarget, analyze};
 use loom_syntax::parse_with_file;
 
 const PROCESS_SOURCE: &str = r"
-import std.process.__arguments
+import std.process.__argument_at
+import std.process.__argument_count
 import std.process.__environment
 
 pub fn arguments() List[Text] {
-    __arguments()
+    let count = __argument_count()
+    var values = List[Text]()
+    for index in 0..count {
+        values.add(__argument_at(index))
+    }
+    values
 }
 
 pub fn environment(name Text) Option[Text] {
@@ -61,7 +67,9 @@ fn assert_no_process_primitive(
             .all(|target| !matches!(
                 target,
                 CallTarget::Builtin(
-                    BuiltinValue::ProcessArguments | BuiltinValue::ProcessEnvironment
+                    BuiltinValue::ProcessArgumentCount
+                        | BuiltinValue::ProcessArgumentAt
+                        | BuiltinValue::ProcessEnvironment
                 )
             )),
         "unauthorized function received a process primitive: {package:?} {module}.{name}"
@@ -151,9 +159,27 @@ pub fn environment_value(name Text) Option[Text] {
         "environment_value",
     );
 
-    assert_eq!(
-        call_targets(&lowered.program, &analysis, arguments),
-        vec![CallTarget::Builtin(BuiltinValue::ProcessArguments)]
+    let argument_targets = call_targets(&lowered.program, &analysis, arguments);
+    for primitive in [
+        BuiltinValue::ProcessArgumentCount,
+        BuiltinValue::ProcessArgumentAt,
+    ] {
+        assert_eq!(
+            argument_targets
+                .iter()
+                .filter(|target| **target == CallTarget::Builtin(primitive))
+                .count(),
+            1,
+            "arguments wrapper must own exactly one {primitive:?} call: {argument_targets:#?}"
+        );
+    }
+    assert!(
+        argument_targets.contains(&CallTarget::Builtin(BuiltinValue::ListNew)),
+        "arguments wrapper must construct its ordinary source List: {argument_targets:#?}"
+    );
+    assert!(
+        argument_targets.contains(&CallTarget::Builtin(BuiltinValue::ListAdd)),
+        "arguments wrapper must populate its ordinary source List: {argument_targets:#?}"
     );
     assert_eq!(
         call_targets(&lowered.program, &analysis, environment),
@@ -179,30 +205,30 @@ fn private_process_calls_reject_application_wrong_owner_and_wrong_package() {
     let wrong_owner = parse_with_file(
         wrong_owner_file,
         r"
-import std.process.__arguments
+import std.process.__argument_at
 
-pub fn wrong_owner() List[Text] {
-    __arguments()
+pub fn wrong_owner(index Int) Text {
+    __argument_at(index)
 }
 ",
     );
     let wrong_package = parse_with_file(
         wrong_package_file,
         r"
-import std.process.__arguments
+import std.process.__argument_count
 
-pub fn wrong_package() List[Text] {
-    __arguments()
+pub fn wrong_package() Int {
+    __argument_count()
 }
 ",
     );
     let application = parse_with_file(
         application_file,
         r"
-import std.process.__arguments
+import std.process.__environment
 
-pub fn application_private_import() List[Text] {
-    __arguments()
+pub fn application_private_import(name Text) Option[Text] {
+    __environment(name)
 }
 ",
     );

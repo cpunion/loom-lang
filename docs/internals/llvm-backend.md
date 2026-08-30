@@ -61,7 +61,11 @@ whole-artifact classification, but an `Unsupported` result is a structured
 `NativePreparationUnsupportedLcir` error. The error owns the ordered
 `SupportReport`, including stable feature, function, expression, span, and path
 facts for every unsupported reachable site. `CheckedMirOnly` skips LCIR
-classification and exists for focused backend validation.
+classification and exists for focused backend validation. Reachable process
+input primitives are an explicit exception: they have no checked-MIR ABI, so
+`CheckedMirOnly` rejects them and `Automatic` never uses them as part of a
+checked-MIR fallback. This rejection is based on the reachable graph; a dead
+private process wrapper does not affect the selected route.
 
 Source contracts are part of the checked direct route. LCIR carries canonical
 assertion, precondition, postcondition, and invariant fault metadata, including
@@ -101,7 +105,10 @@ Preparation failures have five structured classes: invalid root, unsupported
 LCIR under a strict policy, resource, target/configuration, and compiler defect.
 Unsupported errors and ordinary invalid/resource failures use the failure exit;
 target errors use the usage exit and defects use the defect exit.
-Classification never depends on matching diagnostic strings.
+Classification never depends on matching diagnostic strings. A reachable
+process primitive that cannot remain on the complete LCIR route reports
+`NativePreparationProcessRequiresLcir`, including when another reachable
+feature caused the LCIR classification to be unsupported.
 
 ## Target-machine policy
 
@@ -123,6 +130,12 @@ selects atomic checked-MIR fallback during 32-bit direct classification, and tha
 checked-MIR route then reports its existing unsupported-target boundary. None of
 these cases establishes 32-bit runtime, linker, CI, or release support; LLVM
 target availability proves only object emission.
+
+Process input does not participate in that fallback. If a reachable argument
+or environment primitive makes the direct artifact unsupported, route
+preparation reports the process-requires-LCIR error before checked-MIR target
+validation. Direct checked-MIR fingerprint and emission APIs enforce the same
+reachable-graph rule.
 
 Under `LcirOnly`, the same unsupported 32-bit Text artifact returns its
 coverage report before any checked-MIR ABI validation. A complete width-independent

@@ -5895,8 +5895,11 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     crate::std_primitives::CompilerStdPrimitive::IoWriteStdout => {
                         BuiltinValue::StdoutWrite
                     }
-                    crate::std_primitives::CompilerStdPrimitive::ProcessArguments => {
-                        BuiltinValue::ProcessArguments
+                    crate::std_primitives::CompilerStdPrimitive::ProcessArgumentCount => {
+                        BuiltinValue::ProcessArgumentCount
+                    }
+                    crate::std_primitives::CompilerStdPrimitive::ProcessArgumentAt => {
+                        BuiltinValue::ProcessArgumentAt
                     }
                     crate::std_primitives::CompilerStdPrimitive::ProcessEnvironment => {
                         BuiltinValue::ProcessEnvironment
@@ -6092,7 +6095,8 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::FloatIsFinite
             | BuiltinValue::IntToFloat
             | BuiltinValue::FloatToIntStatus
-            | BuiltinValue::ProcessArguments
+            | BuiltinValue::ProcessArgumentCount
+            | BuiltinValue::ProcessArgumentAt
             | BuiltinValue::ProcessEnvironment
             | BuiltinValue::DurationMilliseconds
             | BuiltinValue::FileOpenRead
@@ -6301,10 +6305,14 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 let int = self.types().builtin(BuiltinType::Int);
                 self.types().intern(TyData::Tuple(vec![int, int]))
             }
-            BuiltinValue::ProcessArguments => {
+            BuiltinValue::ProcessArgumentCount => {
                 self.check_fixed_arguments(expression, arguments, &[]);
-                let text = self.types().builtin(BuiltinType::Text);
-                self.types().intern(TyData::List(text))
+                self.types().builtin(BuiltinType::Int)
+            }
+            BuiltinValue::ProcessArgumentAt => {
+                let int = self.types().builtin(BuiltinType::Int);
+                self.check_fixed_arguments(expression, arguments, &[int]);
+                self.types().builtin(BuiltinType::Text)
             }
             BuiltinValue::ProcessEnvironment => {
                 let text = self.types().builtin(BuiltinType::Text);

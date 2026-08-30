@@ -1,9 +1,15 @@
-import std.process.__arguments
+import std.process.__argument_at
+import std.process.__argument_count
 import std.process.__environment
 
 /// Returns the arguments passed after the executable name in their original order.
 pub fn arguments() List[Text] {
-    __arguments()
+    let count = __argument_count()
+    var values = List[Text]()
+    for index in 0..count {
+        values.add(__argument_at(index))
+    }
+    values
 }
 
 /// Returns a Unicode environment value when it is present.

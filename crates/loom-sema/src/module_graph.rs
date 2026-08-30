@@ -349,7 +349,13 @@ mod tests {
         );
         program.modules[process]
             .imports
-            .push(import(FileId(1), "std.process", "__arguments"));
+            .push(import(FileId(1), "std.process", "__argument_count"));
+        program.modules[process]
+            .imports
+            .push(import(FileId(1), "std.process", "__argument_at"));
+        program.modules[process]
+            .imports
+            .push(import(FileId(1), "std.process", "__environment"));
         program.modules[wrong_owner].imports.push(import(
             FileId(2),
             "std.process",
@@ -358,11 +364,13 @@ mod tests {
         program.modules[wrong_package].imports.push(import(
             FileId(3),
             "std.process",
-            "__arguments",
+            "__argument_count",
         ));
-        program.modules[application]
-            .imports
-            .push(import(FileId(4), "std.process", "__arguments"));
+        program.modules[application].imports.push(import(
+            FileId(4),
+            "std.process",
+            "__argument_count",
+        ));
         program.modules[application]
             .imports
             .push(import(FileId(4), "std.process", "arguments"));

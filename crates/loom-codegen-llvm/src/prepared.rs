@@ -10,7 +10,7 @@ use loom_codegen_ir::{
     ReachableSourceGraph, ResourceLimitCode, SourceArtifactRequest, SourceRoots, SupportReport,
     TargetLayout, analyze_source_reachability, lower_typed_artifact, write_artifact_identity,
 };
-use loom_mir::CheckedProgram;
+use loom_mir::{Builtin, CheckedProgram};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -23,7 +23,7 @@ use crate::lcir_emitter::LcirEmitter;
 use crate::target::{NATIVE_RUNTIME_ABI, NativeTargetMachine, create_llvm_target_machine};
 use crate::{CodegenError, NativeTargetIdentity, trace_llvm_stage};
 
-const LCIR_NATIVE_OBJECT_FORMAT: &str = "loom-lcir-native-object-v41";
+const LCIR_NATIVE_OBJECT_FORMAT: &str = "loom-lcir-native-object-v42";
 
 /// Policy controlling the whole-artifact native route.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -108,6 +108,16 @@ impl NativePreparationError {
             code: "NativePreparationUnsupportedLcir",
             message,
             support_report: Some(report),
+        }
+    }
+
+    fn process_requires_lcir(report: Option<SupportReport>) -> Self {
+        Self {
+            kind: NativePreparationErrorKind::Unsupported,
+            code: "NativePreparationProcessRequiresLcir",
+            message: "reachable std.process primitives require complete typed LCIR lowering"
+                .to_owned(),
+            support_report: report,
         }
     }
 
@@ -291,11 +301,14 @@ pub fn prepare_native_object(
                     if policy == NativeRoutePolicy::LcirOnly {
                         return Err(NativePreparationError::unsupported(report));
                     }
+                    let (roots, reachable) =
+                        checked_mir_graph_after_validated_lowering(mir, &options)?;
+                    if reachable_uses_process(&reachable) {
+                        return Err(NativePreparationError::process_requires_lcir(Some(report)));
+                    }
                     target
                         .validate_checked_mir_value_abi()
                         .map_err(|error| NativePreparationError::target(&error))?;
-                    let (roots, reachable) =
-                        checked_mir_graph_after_validated_lowering(mir, &options)?;
                     PreparedRoute::CheckedMir {
                         mir,
                         roots,
@@ -312,6 +325,9 @@ pub fn prepare_native_object(
                     format!("checked-MIR reachability failed: {error}"),
                 )
             })?;
+            if reachable_uses_process(&reachable) {
+                return Err(NativePreparationError::process_requires_lcir(None));
+            }
             target
                 .validate_checked_mir_value_abi()
                 .map_err(|error| NativePreparationError::target(&error))?;
@@ -327,6 +343,17 @@ pub fn prepare_native_object(
         target_identity,
         options,
         route,
+    })
+}
+
+fn reachable_uses_process(reachable: &ReachableSourceGraph) -> bool {
+    reachable.builtins.iter().any(|builtin| {
+        matches!(
+            builtin,
+            Builtin::ProcessArgumentCount
+                | Builtin::ProcessArgumentAt
+                | Builtin::ProcessEnvironment
+        )
     })
 }
 
@@ -535,7 +562,7 @@ mod tests {
     fn lcir_object_fingerprint_domain_is_pinned() {
         assert_eq!(
             super::LCIR_NATIVE_OBJECT_FORMAT,
-            "loom-lcir-native-object-v41"
+            "loom-lcir-native-object-v42"
         );
     }
 }

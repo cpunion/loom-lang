@@ -6328,7 +6328,10 @@ impl<'program> Validator<'program> {
             Builtin::StdoutWrite if types_compatible(&Type::Text, types[0].as_ref()?) => {
                 Some(Type::Unit)
             }
-            Builtin::ProcessArguments => Some(Type::List(Box::new(Type::Text))),
+            Builtin::ProcessArgumentCount => Some(Type::Int),
+            Builtin::ProcessArgumentAt if types_compatible(&Type::Int, types[0].as_ref()?) => {
+                Some(Type::Text)
+            }
             Builtin::ProcessEnvironment if types_compatible(&Type::Text, types[0].as_ref()?) => {
                 let Some(option) = self.program.prelude.option else {
                     self.push(
@@ -6512,7 +6515,7 @@ impl<'program> Validator<'program> {
             | Builtin::SocketTryConnect
             | Builtin::SocketTryWriteText => 2,
             Builtin::TextMapInsert | Builtin::LogWrite => 3,
-            Builtin::ProcessArguments | Builtin::TextMapNew => 0,
+            Builtin::ProcessArgumentCount | Builtin::TextMapNew => 0,
             Builtin::FloatIsFinite
             | Builtin::IntToFloat
             | Builtin::FloatToIntStatus
@@ -6527,6 +6530,7 @@ impl<'program> Validator<'program> {
             | Builtin::PathAsText
             | Builtin::ListLength
             | Builtin::ListToTextMap
+            | Builtin::ProcessArgumentAt
             | Builtin::ProcessEnvironment
             | Builtin::TaskFaultCode
             | Builtin::TaskFaultMessage
@@ -8764,7 +8768,8 @@ impl<'program> Validator<'program> {
             | Builtin::ListLength
             | Builtin::ListGet
             | Builtin::ListToTextMap
-            | Builtin::ProcessArguments
+            | Builtin::ProcessArgumentCount
+            | Builtin::ProcessArgumentAt
             | Builtin::ProcessEnvironment
             | Builtin::TaskFaultCode
             | Builtin::TaskFaultMessage

@@ -61,17 +61,20 @@ use loom_runtime_abi::{
     GC_MAX_OBJECT_BYTES, GC_MAX_OBJECT_POINTERS, GC_MAX_REPEATED_POINTER_CELLS,
     GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES,
     PARSE_FLOAT_STATUS_INVALID_SYNTAX, PARSE_FLOAT_STATUS_OK, PARSE_FLOAT_STATUS_OUT_OF_RANGE,
-    PARSE_FLOAT_SYMBOL, PATH_JOIN_TYPED_ABSOLUTE, PATH_JOIN_TYPED_SYMBOL, STDOUT_WRITE_FAILED,
-    STDOUT_WRITE_OK, STDOUT_WRITE_SYMBOL, TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED,
-    TASK_JOIN_ALL, TASK_JOIN_ANY, TASK_JOIN_RACE, TASK_JOIN_SETTLED, TASK_PENDING,
-    TEXT_CONCAT_TYPED_SYMBOL, TEXT_CONTAINS_SYMBOL, TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8,
-    TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_MISSING,
-    TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT,
-    TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH,
-    TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION, TYPED_GC_ALLOC_SYMBOL,
-    TYPED_GC_REPEATED_ABI_VERSION, TYPED_GC_REPEATED_ALLOC_SYMBOL, TYPED_GC_ROOT_POP_SYMBOL,
-    TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_IO_ABI_VERSION, TYPED_IO_CANCEL_SYMBOL,
-    TYPED_IO_INVALID_RESOURCE_TOKEN, TYPED_IO_OPERATION_FILE_CREATE,
+    PARSE_FLOAT_SYMBOL, PATH_JOIN_TYPED_ABSOLUTE, PATH_JOIN_TYPED_SYMBOL,
+    PROCESS_ARGUMENT_AT_TYPED_SYMBOL, PROCESS_ARGUMENT_COUNT_TYPED_INVALID,
+    PROCESS_ARGUMENT_COUNT_TYPED_SYMBOL, PROCESS_ARGUMENTS_INITIALIZE_TYPED_SYMBOL,
+    PROCESS_ENVIRONMENT_TYPED_FOUND, PROCESS_ENVIRONMENT_TYPED_MISSING,
+    PROCESS_ENVIRONMENT_TYPED_SYMBOL, STDOUT_WRITE_FAILED, STDOUT_WRITE_OK, STDOUT_WRITE_SYMBOL,
+    TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL, TASK_JOIN_ANY, TASK_JOIN_RACE,
+    TASK_JOIN_SETTLED, TASK_PENDING, TEXT_CONCAT_TYPED_SYMBOL, TEXT_CONTAINS_SYMBOL,
+    TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8, TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL,
+    TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_MISSING, TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL,
+    TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES,
+    TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION,
+    TYPED_GC_ALLOC_SYMBOL, TYPED_GC_REPEATED_ABI_VERSION, TYPED_GC_REPEATED_ALLOC_SYMBOL,
+    TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_IO_ABI_VERSION,
+    TYPED_IO_CANCEL_SYMBOL, TYPED_IO_INVALID_RESOURCE_TOKEN, TYPED_IO_OPERATION_FILE_CREATE,
     TYPED_IO_OPERATION_FILE_OPEN_READ, TYPED_IO_OPERATION_FILE_READ_TEXT,
     TYPED_IO_OPERATION_FILE_WRITE_TEXT, TYPED_IO_OPERATION_SOCKET_CONNECT,
     TYPED_IO_OPERATION_SOCKET_READ_TEXT, TYPED_IO_OPERATION_SOCKET_WRITE_TEXT,
@@ -5688,6 +5691,60 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             })
     }
 
+    fn runtime_process_arguments_initialize_typed(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(PROCESS_ARGUMENTS_INITIALIZE_TYPED_SYMBOL)
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[self.context.i32_type().into(), self.ptr_type.into()],
+                    false,
+                );
+                self.module.add_function(
+                    PROCESS_ARGUMENTS_INITIALIZE_TYPED_SYMBOL,
+                    function_type,
+                    None,
+                )
+            })
+    }
+
+    fn runtime_process_argument_count_typed(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(PROCESS_ARGUMENT_COUNT_TYPED_SYMBOL)
+            .unwrap_or_else(|| {
+                self.module.add_function(
+                    PROCESS_ARGUMENT_COUNT_TYPED_SYMBOL,
+                    self.context.i64_type().fn_type(&[], false),
+                    None,
+                )
+            })
+    }
+
+    fn runtime_process_argument_at_typed(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(PROCESS_ARGUMENT_AT_TYPED_SYMBOL)
+            .unwrap_or_else(|| {
+                let function_type = self.context.i32_type().fn_type(
+                    &[self.context.i64_type().into(), self.ptr_type.into()],
+                    false,
+                );
+                self.module
+                    .add_function(PROCESS_ARGUMENT_AT_TYPED_SYMBOL, function_type, None)
+            })
+    }
+
+    fn runtime_process_environment_typed(&self) -> FunctionValue<'ctx> {
+        self.module
+            .get_function(PROCESS_ENVIRONMENT_TYPED_SYMBOL)
+            .unwrap_or_else(|| {
+                let function_type = self
+                    .context
+                    .i32_type()
+                    .fn_type(&[self.ptr_type.into(), self.ptr_type.into()], false);
+                self.module
+                    .add_function(PROCESS_ENVIRONMENT_TYPED_SYMBOL, function_type, None)
+            })
+    }
+
     fn runtime_text_from_utf8_units_typed(&self) -> FunctionValue<'ctx> {
         self.module
             .get_function(TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL)
@@ -6302,6 +6359,50 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         Ok(())
     }
 
+    fn require_nonnegative_i64(
+        &self,
+        value: IntValue<'ctx>,
+        name: &str,
+    ) -> Result<(), CodegenError> {
+        let function = self
+            .builder
+            .get_insert_block()
+            .and_then(BasicBlock::get_parent)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmBuilderFailed", "integer guard has no active function")
+            })?;
+        let success = self
+            .context
+            .append_basic_block(function, &format!("{name}.ok"));
+        let failure = self
+            .context
+            .append_basic_block(function, &format!("{name}.failed"));
+        let valid = self
+            .builder
+            .build_int_compare(
+                IntPredicate::SGT,
+                value,
+                self.context
+                    .i64_type()
+                    .const_int(PROCESS_ARGUMENT_COUNT_TYPED_INVALID.cast_unsigned(), true),
+                &format!("{name}.nonnegative"),
+            )
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(valid, success, failure)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(failure);
+        let trap = inkwell::intrinsics::Intrinsic::find("llvm.trap")
+            .and_then(|intrinsic| intrinsic.get_declaration(&self.module, &[]))
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "missing llvm.trap"))?;
+        self.builder
+            .build_call(trap, &[], &format!("{name}.trap"))
+            .map_err(builder_error)?;
+        self.builder.build_unreachable().map_err(builder_error)?;
+        self.builder.position_at_end(success);
+        Ok(())
+    }
+
     fn require_nonnull(&self, pointer: PointerValue<'ctx>, name: &str) -> Result<(), CodegenError> {
         let function = self
             .builder
@@ -6339,6 +6440,21 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         &self,
         status: IntValue<'ctx>,
     ) -> Result<IntValue<'ctx>, CodegenError> {
+        self.require_missing_or_found_status(
+            status,
+            TEXT_GET_TYPED_MISSING,
+            TEXT_GET_TYPED_FOUND,
+            "text.get",
+        )
+    }
+
+    fn require_missing_or_found_status(
+        &self,
+        status: IntValue<'ctx>,
+        missing_status: i32,
+        found_status: i32,
+        name: &str,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
         let function = self
             .builder
             .get_insert_block()
@@ -6346,26 +6462,25 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             .ok_or_else(|| {
                 CodegenError::new(
                     "LlvmBuilderFailed",
-                    "Text.get status guard has no active function",
+                    format!("{name} status guard has no active function"),
                 )
             })?;
         let success = self
             .context
-            .append_basic_block(function, "text.get.status.ok");
+            .append_basic_block(function, &format!("{name}.status.ok"));
         let failure = self
             .context
-            .append_basic_block(function, "text.get.status.failed");
+            .append_basic_block(function, &format!("{name}.status.failed"));
         let missing = self
             .builder
             .build_int_compare(
                 IntPredicate::EQ,
                 status,
                 self.context.i32_type().const_int(
-                    u64::try_from(TEXT_GET_TYPED_MISSING)
-                        .expect("Text.get missing status is non-negative"),
+                    u64::try_from(missing_status).expect("missing status is non-negative"),
                     false,
                 ),
-                "text.get.missing",
+                &format!("{name}.missing"),
             )
             .map_err(builder_error)?;
         let found = self
@@ -6374,16 +6489,15 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                 IntPredicate::EQ,
                 status,
                 self.context.i32_type().const_int(
-                    u64::try_from(TEXT_GET_TYPED_FOUND)
-                        .expect("Text.get found status is non-negative"),
+                    u64::try_from(found_status).expect("found status is non-negative"),
                     false,
                 ),
-                "text.get.found",
+                &format!("{name}.found"),
             )
             .map_err(builder_error)?;
         let valid = self
             .builder
-            .build_or(missing, found, "text.get.status.valid")
+            .build_or(missing, found, &format!("{name}.status.valid"))
             .map_err(builder_error)?;
         self.builder
             .build_conditional_branch(valid, success, failure)
@@ -6393,7 +6507,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             .and_then(|intrinsic| intrinsic.get_declaration(&self.module, &[]))
             .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "missing llvm.trap"))?;
         self.builder
-            .build_call(trap, &[], "text.get.status.trap")
+            .build_call(trap, &[], &format!("{name}.status.trap"))
             .map_err(builder_error)?;
         self.builder.build_unreachable().map_err(builder_error)?;
         self.builder.position_at_end(success);
@@ -7208,6 +7322,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 InstructionKind::TextConcat { .. }
                     | InstructionKind::TextGet { .. }
                     | InstructionKind::TextFromUtf8Units { .. }
+                    | InstructionKind::ProcessArgumentAt { .. }
+                    | InstructionKind::ProcessEnvironment { .. }
                     | InstructionKind::PathJoin { .. }
                     | InstructionKind::BytesAppend { .. }
                     | InstructionKind::BytesDecodeUtf8 { .. }
@@ -9392,6 +9508,98 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 *error_variant,
                 *invalid_utf8_variant,
             )?),
+            InstructionKind::ProcessArgumentCount => {
+                let count = call_int(
+                    &self.backend.builder,
+                    self.backend.runtime_process_argument_count_typed(),
+                    &[],
+                    "process.argument_count",
+                )?;
+                self.backend
+                    .require_nonnegative_i64(count, "process.argument_count")?;
+                one(count.into())
+            }
+            InstructionKind::ProcessArgumentAt { index } => {
+                let result = instruction.results().first().copied().ok_or_else(|| {
+                    CodegenError::new("LlvmAbiDefect", "process argument selection has no result")
+                })?;
+                let index = self.int(*index)?;
+                self.publish_root_state(ManagedSafepoint::Instruction(instruction.id()))?;
+                let output = if let Some(cell) = self.direct_root_cell(result)? {
+                    cell
+                } else {
+                    self.managed_output_cell(instruction.id())?
+                };
+                self.backend
+                    .builder
+                    .build_store(output, self.backend.ptr_type.const_null())
+                    .map_err(builder_error)?;
+                let status = call_int(
+                    &self.backend.builder,
+                    self.backend.runtime_process_argument_at_typed(),
+                    &[index.into(), output.into()],
+                    "process.argument_at.status",
+                )?;
+                self.backend
+                    .require_zero_status(status, "process.argument_at")?;
+                one(self
+                    .backend
+                    .builder
+                    .build_load(self.backend.ptr_type, output, "process.argument_at.result")
+                    .map_err(builder_error)?)
+            }
+            InstructionKind::ProcessEnvironment {
+                name,
+                missing_variant,
+                found_variant,
+            } => {
+                let result = instruction.results().first().copied().ok_or_else(|| {
+                    CodegenError::new("LlvmAbiDefect", "process environment lookup has no result")
+                })?;
+                let ty = self
+                    .source
+                    .value(result)
+                    .ok_or_else(|| {
+                        CodegenError::new("LlvmAbiDefect", format!("missing result {result}"))
+                    })?
+                    .ty();
+                let name = self.value(*name)?.into_pointer_value();
+                self.publish_root_state(ManagedSafepoint::Instruction(instruction.id()))?;
+                let output = self.managed_output_cell(instruction.id())?;
+                self.backend
+                    .builder
+                    .build_store(output, self.backend.ptr_type.const_null())
+                    .map_err(builder_error)?;
+                let status = call_int(
+                    &self.backend.builder,
+                    self.backend.runtime_process_environment_typed(),
+                    &[name.into(), output.into()],
+                    "process.environment.status",
+                )?;
+                let found = self.backend.require_missing_or_found_status(
+                    status,
+                    PROCESS_ENVIRONMENT_TYPED_MISSING,
+                    PROCESS_ENVIRONMENT_TYPED_FOUND,
+                    "process.environment",
+                )?;
+                let value = self
+                    .backend
+                    .builder
+                    .build_load(self.backend.ptr_type, output, "process.environment.value")
+                    .map_err(builder_error)?;
+                let missing_value = self.emit_sum_construct_values(ty, *missing_variant, &[])?;
+                let found_value = self.emit_sum_construct_values(ty, *found_variant, &[value])?;
+                one(self
+                    .backend
+                    .builder
+                    .build_select(
+                        found,
+                        found_value,
+                        missing_value,
+                        "process.environment.option",
+                    )
+                    .map_err(builder_error)?)
+            }
             InstructionKind::PathFromText {
                 text,
                 ok_variant,
@@ -16173,6 +16381,18 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
 }
 
 impl<'ctx> Backend<'ctx, '_> {
+    fn uses_process_arguments(&self) -> bool {
+        self.artifact.functions().iter().any(|function| {
+            function.instructions().iter().any(|instruction| {
+                matches!(
+                    instruction.kind(),
+                    InstructionKind::ProcessArgumentCount
+                        | InstructionKind::ProcessArgumentAt { .. }
+                )
+            })
+        })
+    }
+
     fn emit_main(&self) -> Result<(), CodegenError> {
         let main_type = self.context.i32_type().fn_type(
             &[self.context.i32_type().into(), self.ptr_type.into()],
@@ -16181,6 +16401,21 @@ impl<'ctx> Backend<'ctx, '_> {
         let main = self.module.add_function("main", main_type, None);
         let entry = self.context.append_basic_block(main, "entry");
         self.builder.position_at_end(entry);
+        if self.uses_process_arguments() {
+            let argument_count = main
+                .get_nth_param(0)
+                .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "main argc is missing"))?;
+            let argument_vector = main
+                .get_nth_param(1)
+                .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "main argv is missing"))?;
+            let status = call_int(
+                &self.builder,
+                self.runtime_process_arguments_initialize_typed(),
+                &[argument_count.into(), argument_vector.into()],
+                "process.arguments.initialize.status",
+            )?;
+            self.require_zero_status(status, "process.arguments.initialize")?;
+        }
         if let Some(root) = self.artifact.run_root() {
             let source = self.artifact.function(root).ok_or_else(|| {
                 CodegenError::new("InvalidFunctionReference", "LCIR run root is missing")

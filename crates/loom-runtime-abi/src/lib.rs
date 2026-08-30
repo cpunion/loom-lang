@@ -4,11 +4,11 @@
 //! values crossing the runtime boundary are defined here once and consumed by
 //! both generated-code declarations and the Rust runtime implementation.
 
-pub const RUNTIME_ABI_VERSION: u32 = 32;
+pub const RUNTIME_ABI_VERSION: u32 = 33;
 pub const COROUTINE_ABI_VERSION: u32 = 2;
 pub const TYPED_TASK_ABI_VERSION: u32 = 1;
 pub const WAIT_ABI_VERSION: u32 = 1;
-pub const STDLIB_ABI_VERSION: u32 = 6;
+pub const STDLIB_ABI_VERSION: u32 = 7;
 pub const LAYOUT_ABI_VERSION: u32 = 1;
 pub const SHADOW_STACK_ABI_VERSION: u32 = 1;
 pub const TYPED_GC_ABI_VERSION: u32 = 1;
@@ -17,7 +17,31 @@ pub const TYPED_SHADOW_STACK_ABI_VERSION: u32 = 1;
 pub const WITNESS_ABI_VERSION: u32 = 1;
 pub const TYPED_JSON_ABI_VERSION: u32 = 1;
 pub const TYPED_IO_ABI_VERSION: u32 = 1;
-pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v26/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v6";
+pub const TYPED_PROCESS_ABI_VERSION: u32 = 1;
+pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/typed-process-v1/runtime-v27/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v7";
+
+/// Copies `argv[1..argc]` into the process-wide immutable argument snapshot.
+/// Generated `main` calls this only when the reachable program reads process
+/// arguments. Zero reports a newly installed snapshot; repeated or malformed
+/// initialization returns a nonzero ABI defect status.
+pub const PROCESS_ARGUMENTS_INITIALIZE_TYPED_SYMBOL: &str =
+    "loom_runtime_process_arguments_initialize_typed_v1";
+/// Returns the number of entries in the initialized argument snapshot, or a
+/// negative value when no snapshot exists.
+pub const PROCESS_ARGUMENT_COUNT_TYPED_SYMBOL: &str =
+    "loom_runtime_process_argument_count_typed_v1";
+pub const PROCESS_ARGUMENT_COUNT_TYPED_INVALID: i64 = -1;
+/// Allocates one snapshot entry as canonical managed Text. The boundary takes
+/// `(index, output)` and returns zero only after publishing a complete value.
+pub const PROCESS_ARGUMENT_AT_TYPED_SYMBOL: &str = "loom_runtime_process_argument_at_typed_v1";
+/// Looks up one canonical Text name and publishes a canonical managed Text
+/// value through `output` only for the found status.
+pub const PROCESS_ENVIRONMENT_TYPED_SYMBOL: &str = "loom_runtime_process_environment_typed_v1";
+pub const PROCESS_ARGUMENT_TYPED_OK: i32 = 0;
+pub const PROCESS_ARGUMENT_TYPED_INVALID: i32 = 1;
+pub const PROCESS_ENVIRONMENT_TYPED_INVALID: i32 = -1;
+pub const PROCESS_ENVIRONMENT_TYPED_MISSING: i32 = 0;
+pub const PROCESS_ENVIRONMENT_TYPED_FOUND: i32 = 1;
 
 /// Writes exactly `length` bytes to the process standard-output stream.
 ///
@@ -677,9 +701,14 @@ mod tests {
         LoomTypedTaskFaultView, LoomWitnessDescriptor, LoomWitnessInstance,
         NATIVE_RUNTIME_ABI_IDENTITY, PARSE_FLOAT_STATUS_INVALID_SYNTAX, PARSE_FLOAT_STATUS_OK,
         PARSE_FLOAT_STATUS_OUT_OF_RANGE, PARSE_FLOAT_SYMBOL, PATH_JOIN_TYPED_ABSOLUTE,
-        PATH_JOIN_TYPED_SYMBOL, RUNTIME_ABI_VERSION, SHADOW_STACK_ABI_VERSION, STDLIB_ABI_VERSION,
-        STDOUT_WRITE_FAILED, STDOUT_WRITE_INVALID_ARGUMENT, STDOUT_WRITE_OK, STDOUT_WRITE_SYMBOL,
-        TEXT_CONTAINS_SYMBOL, TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8,
+        PATH_JOIN_TYPED_SYMBOL, PROCESS_ARGUMENT_AT_TYPED_SYMBOL,
+        PROCESS_ARGUMENT_COUNT_TYPED_INVALID, PROCESS_ARGUMENT_COUNT_TYPED_SYMBOL,
+        PROCESS_ARGUMENT_TYPED_INVALID, PROCESS_ARGUMENT_TYPED_OK,
+        PROCESS_ARGUMENTS_INITIALIZE_TYPED_SYMBOL, PROCESS_ENVIRONMENT_TYPED_FOUND,
+        PROCESS_ENVIRONMENT_TYPED_INVALID, PROCESS_ENVIRONMENT_TYPED_MISSING,
+        PROCESS_ENVIRONMENT_TYPED_SYMBOL, RUNTIME_ABI_VERSION, SHADOW_STACK_ABI_VERSION,
+        STDLIB_ABI_VERSION, STDOUT_WRITE_FAILED, STDOUT_WRITE_INVALID_ARGUMENT, STDOUT_WRITE_OK,
+        STDOUT_WRITE_SYMBOL, TEXT_CONTAINS_SYMBOL, TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8,
         TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_INVALID,
         TEXT_GET_TYPED_MISSING, TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT,
         TEXT_OBJECT_FIELD_ALLOCATION_SIZE, TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES,
@@ -698,18 +727,18 @@ mod tests {
         TYPED_JSON_FORMAT_OK, TYPED_JSON_FORMAT_RESOURCE_LIMIT, TYPED_JSON_FORMAT_SYMBOL,
         TYPED_LOG_FIELD_ALIGNMENT, TYPED_LOG_FIELD_KEY_OFFSET, TYPED_LOG_FIELD_SIZE,
         TYPED_LOG_FIELD_VALUE_OFFSET, TYPED_LOG_INVALID_ARGUMENT, TYPED_LOG_OK,
-        TYPED_LOG_WRITE_FAILED, TYPED_LOG_WRITE_SYMBOL, TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT,
-        TYPED_RESOURCE_CLOSE_OK, TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE,
-        TYPED_RESOURCE_KIND_SOCKET, TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION,
-        TYPED_TASK_CLEANUP_FAULTED, TYPED_TASK_INVALID_ARGUMENT, TYPED_TASK_MAX_FAULT_TEXT_BYTES,
-        TYPED_TASK_NO_MEMORY, TYPED_TASK_OK, TYPED_TASK_PUBLISH_ADOPTING_SYMBOL,
-        TYPED_TASK_STATUS_INVALID, TYPED_TASK_TAKE_OUTCOME_SYMBOL, TYPED_TIMER_TASK_CREATE_SYMBOL,
-        WITNESS_ABI_VERSION,
+        TYPED_LOG_WRITE_FAILED, TYPED_LOG_WRITE_SYMBOL, TYPED_PROCESS_ABI_VERSION,
+        TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT, TYPED_RESOURCE_CLOSE_OK,
+        TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET,
+        TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION, TYPED_TASK_CLEANUP_FAULTED,
+        TYPED_TASK_INVALID_ARGUMENT, TYPED_TASK_MAX_FAULT_TEXT_BYTES, TYPED_TASK_NO_MEMORY,
+        TYPED_TASK_OK, TYPED_TASK_PUBLISH_ADOPTING_SYMBOL, TYPED_TASK_STATUS_INVALID,
+        TYPED_TASK_TAKE_OUTCOME_SYMBOL, TYPED_TIMER_TASK_CREATE_SYMBOL, WITNESS_ABI_VERSION,
     };
 
     #[test]
     fn native_runtime_identity_is_pinned() {
-        assert_eq!(RUNTIME_ABI_VERSION, 32);
+        assert_eq!(RUNTIME_ABI_VERSION, 33);
         assert_eq!(COROUTINE_ABI_VERSION, 2);
         assert_eq!(TYPED_TASK_ABI_VERSION, 1);
         assert_eq!(LAYOUT_ABI_VERSION, 1);
@@ -794,11 +823,38 @@ mod tests {
             "loom_typed_timer_task_create_v1"
         );
         assert_eq!(WITNESS_ABI_VERSION, 1);
-        assert_eq!(STDLIB_ABI_VERSION, 6);
+        assert_eq!(STDLIB_ABI_VERSION, 7);
         assert_eq!(
             NATIVE_RUNTIME_ABI_IDENTITY,
-            "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v26/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v6",
+            "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/typed-process-v1/runtime-v27/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v7",
         );
+    }
+
+    #[test]
+    fn typed_process_abi_is_pinned() {
+        assert_eq!(TYPED_PROCESS_ABI_VERSION, 1);
+        assert_eq!(
+            PROCESS_ARGUMENTS_INITIALIZE_TYPED_SYMBOL,
+            "loom_runtime_process_arguments_initialize_typed_v1"
+        );
+        assert_eq!(
+            PROCESS_ARGUMENT_COUNT_TYPED_SYMBOL,
+            "loom_runtime_process_argument_count_typed_v1"
+        );
+        assert_eq!(PROCESS_ARGUMENT_COUNT_TYPED_INVALID, -1);
+        assert_eq!(
+            PROCESS_ARGUMENT_AT_TYPED_SYMBOL,
+            "loom_runtime_process_argument_at_typed_v1"
+        );
+        assert_eq!(
+            PROCESS_ENVIRONMENT_TYPED_SYMBOL,
+            "loom_runtime_process_environment_typed_v1"
+        );
+        assert_eq!(PROCESS_ARGUMENT_TYPED_OK, 0);
+        assert_eq!(PROCESS_ARGUMENT_TYPED_INVALID, 1);
+        assert_eq!(PROCESS_ENVIRONMENT_TYPED_INVALID, -1);
+        assert_eq!(PROCESS_ENVIRONMENT_TYPED_MISSING, 0);
+        assert_eq!(PROCESS_ENVIRONMENT_TYPED_FOUND, 1);
     }
 
     #[test]

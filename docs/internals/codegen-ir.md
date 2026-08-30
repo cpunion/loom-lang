@@ -448,10 +448,11 @@ scalar faults use only the local fault context. A synchronous caller gains
 synchronous body does not gain that effect merely because it declares
 `requires`. An async precondition instead contributes `MAY_FAULT` to the child
 coroutine's state-zero path. `TaskCreate` does not inherit any child effect.
-`TextConcat`, `TextGet`, `TextFromUtf8Units`, `BytesAppend`,
+`TextConcat`, `TextGet`, `TextFromUtf8Units`, process argument selection,
+process environment lookup, `BytesAppend`,
 `BytesDecodeUtf8`, `PathJoin`, `FloatFormat`, and `JsonFormat` are collecting
-opcodes and contribute `MAY_COLLECT`. Path construction and extraction remain
-non-collecting. `TaskCreate` contributes
+opcodes and contribute `MAY_COLLECT`. Process argument count, Path construction,
+and Path extraction remain non-collecting. `TaskCreate` contributes
 `NEEDS_EXECUTOR`, while the `AwaitTasks` terminator contributes `MAY_FAULT` and
 `MAY_SUSPEND`.
 `TaskJoinAll` contributes `NEEDS_EXECUTOR` but does not itself suspend.
@@ -941,6 +942,8 @@ The current instruction set is deliberately small:
 - explicitly ordered or unordered floating-point comparisons;
 - typed Text literal, concat, Unicode-scalar get, length, containment, content
   comparison, and UTF-8-unit construction operations;
+- typed process argument count/selection and environment lookup, with exact
+  direct-Text results and canonical `Option[Text]` construction;
 - typed Bytes operations and exact Path construction, Text extraction, and
   lexical join;
 - closed integer/float parsing, managed float formatting, and Duration

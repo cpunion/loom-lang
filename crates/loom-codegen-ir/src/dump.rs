@@ -53,7 +53,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 43")?;
+    writeln!(output, "lcir 44")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -302,6 +302,18 @@ fn write_instruction(
         } => write!(
             output,
             "text.from_utf8_units %{units}, ok {ok_variant}, error {error_variant}, invalid_utf8 {invalid_utf8_variant}"
+        ),
+        InstructionKind::ProcessArgumentCount => output.write_str("process.argument_count"),
+        InstructionKind::ProcessArgumentAt { index } => {
+            write!(output, "process.argument_at %{index}")
+        }
+        InstructionKind::ProcessEnvironment {
+            name,
+            missing_variant,
+            found_variant,
+        } => write!(
+            output,
+            "process.environment %{name}, missing {missing_variant}, found {found_variant}"
         ),
         InstructionKind::PathFromText {
             text,

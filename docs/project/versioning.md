@@ -20,26 +20,27 @@ writers for unreleased formats. Development history belongs in
 | Manifest schema | `2` |
 | Lockfile schema | `2` |
 | Registry protocol and bundle | `1` |
-| Interpreted MIR artifact | `loom.interpreted-mir`, version `32` |
+| Interpreted MIR artifact | `loom.interpreted-mir`, version `33` |
 | Portable library artifact | `loom-library`, source-and-interface version `3` |
-| Persistent compiler cache | schema `8` |
-| Compilation-cache domain | `loom-compilation-cache-v8` |
+| Persistent compiler cache | schema `9` |
+| Compilation-cache domain | `loom-compilation-cache-v9` |
 | Interpreted final-cache layer | `final-artifact-v3` |
 | Interpreted artifact writer | `loom-interpreted-artifact-writer-v3` |
 | Portable-library final-cache layer | `portable-library-artifact-v3` |
-| LCIR textual dump | `lcir 43` |
-| LCIR artifact identity | schema `45` |
+| LCIR textual dump | `lcir 44` |
+| LCIR artifact identity | schema `46` |
 | LCIR artifact route | `typed-lcir-whole-artifact` |
-| LCIR native-object domain | `loom-lcir-native-object-v41` |
-| Checked-MIR native-object domain | `loom-checked-mir-native-object-v2` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v46` |
+| LCIR native-object domain | `loom-lcir-native-object-v42` |
+| Checked-MIR native-object domain | `loom-checked-mir-native-object-v3` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v47` |
 | Controlled quality evidence | schema `4` |
 | Runtime bundle manifest | schema `2` |
-| Native runtime ABI component | `32` |
+| Native runtime ABI component | `33` |
 | Coroutine ABI component | `2` |
 | Typed Task ABI component | `1` |
 | Wait ABI component | `1` |
-| Standard-library ABI component | `6` |
+| Typed process ABI component | `1` |
+| Standard-library ABI component | `7` |
 
 The checked-MIR native-object domain identifies the checked-MIR LLVM route. It
 is a compiler-private invalidation boundary, not an artifact compatibility
@@ -54,11 +55,11 @@ cache entries even when no public ABI component changes.
 The complete compiler-private native runtime identity is:
 
 ```text
-loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/runtime-v26/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v6
+loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/typed-process-v1/runtime-v27/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v7
 ```
 
 Runtime bundles compare this entire identity, not only native runtime component
-`32` or one subordinate ABI version.
+`33` or one subordinate ABI version.
 
 ## Source language
 

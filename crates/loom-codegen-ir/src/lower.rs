@@ -3271,6 +3271,9 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         | mir::Builtin::TextConcat
                         | mir::Builtin::TextEncodeUtf8
                         | mir::Builtin::TextFromUtf8Units
+                        | mir::Builtin::ProcessArgumentCount
+                        | mir::Builtin::ProcessArgumentAt
+                        | mir::Builtin::ProcessEnvironment
                         | mir::Builtin::BytesLength
                         | mir::Builtin::BytesGet
                         | mir::Builtin::BytesAppend
@@ -3316,6 +3319,8 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                             CallTarget::Builtin(
                                 mir::Builtin::TextConcat
                                     | mir::Builtin::TextGet
+                                    | mir::Builtin::ProcessArgumentAt
+                                    | mir::Builtin::ProcessEnvironment
                                     | mir::Builtin::FloatFormat
                                     | mir::Builtin::JsonFormat
                                     | mir::Builtin::TextMapNew
@@ -4074,6 +4079,8 @@ fn scan_effect_expr(
                     mir::Builtin::TextConcat
                         | mir::Builtin::TextGet
                         | mir::Builtin::TextFromUtf8Units
+                        | mir::Builtin::ProcessArgumentAt
+                        | mir::Builtin::ProcessEnvironment
                         | mir::Builtin::BytesAppend
                         | mir::Builtin::BytesDecodeUtf8
                         | mir::Builtin::PathJoin
@@ -11737,6 +11744,18 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 ok_variant: 0,
                 error_variant: 1,
                 invalid_utf8_variant: 0,
+            }
+            .into(),
+            (mir::Builtin::ProcessArgumentCount, []) => {
+                InstructionKind::ProcessArgumentCount.into()
+            }
+            (mir::Builtin::ProcessArgumentAt, [index]) => {
+                InstructionKind::ProcessArgumentAt { index: *index }.into()
+            }
+            (mir::Builtin::ProcessEnvironment, [name]) => InstructionKind::ProcessEnvironment {
+                name: *name,
+                missing_variant: 0,
+                found_variant: 1,
             }
             .into(),
             (mir::Builtin::PathFromText, [text]) => InstructionKind::PathFromText {
