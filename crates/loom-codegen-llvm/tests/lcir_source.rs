@@ -15,7 +15,8 @@ use loom_codegen_llvm::{
     prepare_native_object,
 };
 use loom_core::runtime_fault::{
-    INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE, INVALID_SLEEP_DURATION_FAULT_CODE,
+    EMPTY_TASK_JOIN_FAULT_CODE, EMPTY_TASK_JOIN_FAULT_MESSAGE, INTEGER_OVERFLOW_FAULT_CODE,
+    INTEGER_OVERFLOW_FAULT_MESSAGE, INVALID_SLEEP_DURATION_FAULT_CODE,
     INVALID_SLEEP_DURATION_FAULT_MESSAGE, SLEEP_DURATION_OVERFLOW_FAULT_CODE,
     SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE, TASK_ANY_FAILED_FAULT_CODE,
     TASK_ANY_FAILED_FAULT_MESSAGE,
@@ -10226,6 +10227,272 @@ fn typed_fixed_task_outcomes_capture_faults_and_race_nonzero_winners() {
             object.is_file(),
             "missing typed Task outcome object for {target}"
         );
+    }
+}
+
+const DYNAMIC_TASK_JOIN_SOURCE: &str = r#"async fn managed(value Text) Text {
+    value.concat("!")
+}
+
+async fn failedText() Text {
+    assert false
+    "unreachable"
+}
+
+async fn number(value Int) Int { value }
+
+async fn failedNumber() Int {
+    assert false
+    0
+}
+
+pub async fn main() {
+    let pressure = "__PRESSURE__"
+
+    var allTasks = List[Task[Text]]()
+    allTasks.add(managed(pressure))
+    allTasks.add(managed(pressure))
+    let allValues = Task.all(allTasks).await
+    let allCount = allValues.length()
+    assert allCount == 2
+
+    var anyTasks = List[Task[Int]]()
+    anyTasks.add(number(1))
+    anyTasks.add(number(2))
+    discard Task.any(anyTasks).await
+
+    var settledTasks = List[Task[Text]]()
+    settledTasks.add(managed(pressure))
+    settledTasks.add(failedText())
+    settledTasks.add(failedText())
+    let outcomes = Task.settled(settledTasks).await
+    let outcomeCount = outcomes.length()
+    assert outcomeCount == 3
+
+    var raceTasks = List[Task[Int]]()
+    raceTasks.add(number(3))
+    raceTasks.add(number(4))
+    discard Task.race(raceTasks).await
+
+    let emptyAll = Task.all(List[Task[Int]]()).await
+    let emptyAllCount = emptyAll.length()
+    assert emptyAllCount == 0
+    let emptySettled = Task.settled(List[Task[Int]]()).await
+    let emptySettledCount = emptySettled.length()
+    assert emptySettledCount == 0
+}
+
+pub async fn emptyAny() {
+    discard Task.any(List[Task[Int]]()).await
+}
+
+pub async fn emptyRace() {
+    discard Task.race(List[Task[Int]]()).await
+}
+
+pub async fn allFailed() {
+    var tasks = List[Task[Int]]()
+    tasks.add(failedNumber())
+    tasks.add(failedNumber())
+    discard Task.any(tasks).await
+}
+
+pub async fn raceOrigins() {
+    discard Task.race(List[Task[Int]]()).await
+    discard Task.race(List[Task[Int]]()).await
+}
+"#;
+
+fn dynamic_task_join_program() -> CheckedProgram {
+    compile_source(&DYNAMIC_TASK_JOIN_SOURCE.replace("__PRESSURE__", &"x".repeat(40 * 1024)))
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one object gate pins the exact dynamic frame roots, direct adoption surface, producer-origin identity, and both cross targets"
+)]
+fn typed_dynamic_task_join_lists_emit_exact_rooted_objects_for_linux_and_msvc() {
+    let program = dynamic_task_join_program();
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let main = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("dynamic Task join main instance");
+    assert!(main.instructions().iter().any(|instruction| matches!(
+        instruction.kind(),
+        InstructionKind::TaskJoinList {
+            mode: loom_codegen_ir::AwaitMode::All,
+            ..
+        }
+    )));
+    let task_list = artifact
+        .representations()
+        .type_id(&Type::List(Box::new(Type::Task(Box::new(Type::Int)))))
+        .expect("exact List[Task[Int]] type");
+
+    for target in ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"] {
+        let directory = tempfile::tempdir().expect("create dynamic join target output");
+        let object = directory.path().join(if target.contains("windows") {
+            "dynamic-task-joins.obj"
+        } else {
+            "dynamic-task-joins.o"
+        });
+        let ir_path = directory.path().join("dynamic-task-joins.ll");
+        emit_lcir_native_object(
+            &artifact,
+            &object,
+            &NativeObjectOptions {
+                target_triple: Some(target.to_owned()),
+                emit_ir: Some(ir_path.clone()),
+                ..NativeObjectOptions::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("emit dynamic Task joins for {target}: {error}"));
+        assert!(object.is_file(), "missing dynamic join object for {target}");
+        let ir = std::fs::read_to_string(ir_path).expect("read dynamic Task join IR");
+        for required in [
+            "loom.lcir.task_join_list.all.",
+            "loom.lcir.task_join_list.any.",
+            "loom.lcir.task_join_list.settled.",
+            "loom.lcir.task_join_list.race.",
+            "loom_typed_task_publish_v1",
+            "loom_typed_task_publish_adopting_v1",
+            "task.join.dynamic.publish.children",
+            "task.join.dynamic.register.source.reload",
+            "task.join.dynamic.result.source.reload",
+            "task.join.dynamic.result.partial.reload",
+            "task.join.dynamic.collecting_root_state",
+            "loom_gc_typed_repeated_alloc_v1",
+            EMPTY_TASK_JOIN_FAULT_CODE,
+        ] {
+            assert!(
+                ir.contains(required),
+                "{target} omitted `{required}`:\n{ir}"
+            );
+        }
+        assert!(
+            ir.lines().any(|line| {
+                line.starts_with("@loom.lcir.task_join_list.all.")
+                    && line.contains(".root_offsets =")
+                    && line.contains("[2 x i64] [i64 8, i64 16]")
+            }),
+            "dynamic all frame must expose only source and exact result roots:\n{ir}"
+        );
+        assert!(
+            ir.lines().any(|line| {
+                line.starts_with("@loom.lcir.task_join_list.all.")
+                    && line.contains(".live_bitmaps =")
+                    && line.contains("[4 x i64] [i64 1, i64 1, i64 3, i64 2]")
+            }),
+            "dynamic all states must root source/source/source+result/result:\n{ir}"
+        );
+        let task_list_descriptor = ir
+            .lines()
+            .find(|line| {
+                line.starts_with(&format!("@loom.lcir.list.descriptor.{} =", task_list.raw()))
+            })
+            .expect("List[Task[Int]] repeated descriptor");
+        assert!(
+            task_list_descriptor.contains("i64 8, i64 0, ptr null"),
+            "Task handles must be stable untraced repeated elements: {task_list_descriptor}"
+        );
+        for forbidden in [
+            "%loom.Value",
+            "loom.Value",
+            "loom_join_",
+            "task.join.children",
+        ] {
+            assert!(
+                !ir.contains(forbidden),
+                "{target} retained `{forbidden}`:\n{ir}"
+            );
+        }
+        assert!(
+            ir.contains(&format!("target triple = \"{target}\"")),
+            "{ir}"
+        );
+    }
+
+    let origins = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "raceOrigins".into(),
+        },
+    );
+    let directory = tempfile::tempdir().expect("create race-origin output");
+    let object = directory.path().join("race-origins.o");
+    let ir_path = directory.path().join("race-origins.ll");
+    emit_lcir_native_object(
+        &origins,
+        &object,
+        &NativeObjectOptions {
+            emit_ir: Some(ir_path.clone()),
+            ..NativeObjectOptions::default()
+        },
+    )
+    .expect("emit race-origin-sensitive callbacks");
+    let ir = std::fs::read_to_string(ir_path).expect("read race-origin IR");
+    assert_eq!(
+        ir.lines()
+            .filter(|line| {
+                line.starts_with("@loom.lcir.task_join_list.race.")
+                    && line.contains(".descriptor =")
+            })
+            .count(),
+        2,
+        "each empty-race producer origin needs its own fault callback:\n{ir}"
+    );
+}
+
+#[test]
+fn typed_dynamic_task_join_lists_run_and_match_canonical_empty_faults() {
+    let program = dynamic_task_join_program();
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let native = emit_and_run_lcir(&artifact, "source-dynamic-task-joins");
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert_eq!(native.output.stdout, b"Unit\n");
+
+    for entry in ["emptyAny", "emptyRace", "allFailed"] {
+        let expected = serde_json::to_value(
+            interpret_run(&program, entry).expect_err("dynamic Task join must fault"),
+        )
+        .expect("serialize interpreter Task join fault");
+        let artifact = lower_source_artifact(
+            &program,
+            &SourceArtifactRequest::Run {
+                entry: entry.into(),
+            },
+        );
+        let native = emit_and_run_lcir_machine_fault(
+            &artifact,
+            &format!("source-dynamic-task-join-{entry}"),
+        );
+        assert!(
+            !native.output.status.success(),
+            "{entry}: {:?}",
+            native.output
+        );
+        assert_eq!(machine_fault(&native.output), expected, "{entry}");
+        if entry == "allFailed" {
+            assert_eq!(expected["fault"]["code"], TASK_ANY_FAILED_FAULT_CODE);
+            assert_eq!(expected["fault"]["message"], TASK_ANY_FAILED_FAULT_MESSAGE);
+        } else {
+            assert_eq!(expected["fault"]["code"], EMPTY_TASK_JOIN_FAULT_CODE);
+            assert_eq!(expected["fault"]["message"], EMPTY_TASK_JOIN_FAULT_MESSAGE);
+        }
     }
 }
 

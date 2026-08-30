@@ -115,13 +115,38 @@ pub(crate) struct PlacePlan {
     steps: Box<[PlaceStep]>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProtectedProductAccess {
+    Deny,
+    Read,
+    InvariantReceiver,
+}
+
 impl PlacePlan {
     pub(crate) fn build(
         representations: &RepresentationPlan,
         place: &Place,
         root_type: ValueTypeId,
     ) -> Result<Self, PlacePlanError> {
-        Self::build_with_invariant_receiver(representations, place, root_type, false)
+        Self::build_with_protected_access(
+            representations,
+            place,
+            root_type,
+            ProtectedProductAccess::Deny,
+        )
+    }
+
+    pub(crate) fn build_protected_read(
+        representations: &RepresentationPlan,
+        place: &Place,
+        root_type: ValueTypeId,
+    ) -> Result<Self, PlacePlanError> {
+        Self::build_with_protected_access(
+            representations,
+            place,
+            root_type,
+            ProtectedProductAccess::Read,
+        )
     }
 
     pub(crate) fn build_invariant_receiver(
@@ -129,14 +154,19 @@ impl PlacePlan {
         place: &Place,
         root_type: ValueTypeId,
     ) -> Result<Self, PlacePlanError> {
-        Self::build_with_invariant_receiver(representations, place, root_type, true)
+        Self::build_with_protected_access(
+            representations,
+            place,
+            root_type,
+            ProtectedProductAccess::InvariantReceiver,
+        )
     }
 
-    fn build_with_invariant_receiver(
+    fn build_with_protected_access(
         representations: &RepresentationPlan,
         place: &Place,
         root_type: ValueTypeId,
-        allow_invariant_receiver: bool,
+        protected_access: ProtectedProductAccess,
     ) -> Result<Self, PlacePlanError> {
         if place.projection.len() > PLACE_MAX_PROJECTION_DEPTH {
             return Err(PlacePlanError::new(format!(
@@ -163,11 +193,16 @@ impl PlacePlan {
                     "place projection {index} has unknown parent type {current_type}"
                 ))
             })?;
-            let invariant_receiver_root = allow_invariant_receiver
-                && index == 0
-                && current_type == root_type
-                && parent.kind() == ValueTypeKind::InvariantProduct;
-            if parent.kind() != ValueTypeKind::Direct && !invariant_receiver_root {
+            let protected_parent = match protected_access {
+                ProtectedProductAccess::Deny => false,
+                ProtectedProductAccess::Read => parent.kind() == ValueTypeKind::InvariantProduct,
+                ProtectedProductAccess::InvariantReceiver => {
+                    index == 0
+                        && current_type == root_type
+                        && parent.kind() == ValueTypeKind::InvariantProduct
+                }
+            };
+            if parent.kind() != ValueTypeKind::Direct && !protected_parent {
                 return Err(PlacePlanError::new(format!(
                     "place projection {index} crosses protected value type {current_type}"
                 )));
@@ -351,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_rejects_excess_depth_and_projection_through_protected_products() {
+    fn plan_separates_protected_reads_from_reconstruction_and_bounds_depth() {
         let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("test target"));
         let protected_semantic = Type::Nominal(TypeId(102), Vec::new());
         let outer_semantic = Type::Nominal(TypeId(103), Vec::new());
@@ -369,6 +404,16 @@ mod tests {
         let outer = builder
             .add_pod_record_type(outer_semantic, &[protected_semantic])
             .expect("outer product");
+        let read = PlacePlan::build_protected_read(
+            builder.representations(),
+            &Place {
+                local: LocalId(0),
+                projection: vec![0, 0],
+            },
+            outer,
+        )
+        .expect("read-only projection may traverse an invariant product");
+        assert_eq!(read.steps().len(), 2);
         let protected_error = PlacePlan::build(
             builder.representations(),
             &Place {
@@ -384,8 +429,9 @@ mod tests {
             local: LocalId(0),
             projection: vec![0; PLACE_MAX_PROJECTION_DEPTH + 1],
         };
-        let depth_error = PlacePlan::build(builder.representations(), &excessive, outer)
-            .expect_err("projection depth is bounded before traversal");
+        let depth_error =
+            PlacePlan::build_protected_read(builder.representations(), &excessive, outer)
+                .expect_err("read projection depth is bounded before traversal");
         assert!(
             depth_error
                 .to_string()

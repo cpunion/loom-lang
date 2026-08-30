@@ -397,8 +397,10 @@ View parameter used by mutable dispatch in an async body is a by-value
 Task-frame value rather than an inout callable boundary; dispatch updates that
 independent copy. Two or more artifact-closed exact witnesses use checked
 `dyn.construct` and `dyn.switch` operations backed by one managed pointer and
-direct candidate calls in ordinary supported value flow,
-but that finite-catalog View does not enter a coroutine frame. It covers
+direct candidate calls. The same managed pointer is an exact coroutine
+parameter, result, or suspension-live value and composes recursively inside
+records, tuples, closed sums, and Lists; the frame and repeated descriptors
+trace it through the ordinary managed-root plan. Finite dynamic flow covers
 constants, locals and assignment, tuple construction and immutable `let`
 destructuring, blocks and conditionals, short-circuit Boolean operations,
 integer ranges, pure scalar operations,
@@ -715,6 +717,16 @@ checks the source name. `TaskIntrinsic` is an implementation bridge for API
 shapes that the current source type system cannot yet declare. It is not a
 standard-library identity, source ABI, or persistent extension point.
 
+Every other exact homogeneous `List[Task[T]]` policy becomes `TaskJoinList`.
+The opcode consumes one affine top-level carrier and returns the precise Task
+type selected by the policy. The List's element representation is one stable
+`TaskHandle`; it has no managed offsets. The composite descriptor instead roots
+the source List while child handles are being read and roots the exact output
+List while `all` or `settled` captures results. Nonempty construction adopts
+the existing contiguous child row directly, without a temporary pointer copy.
+Empty `all` and `settled` publish an already-complete empty result; empty `any`
+and `race` publish canonical `EmptyTaskJoin`.
+
 The completed source boundary instead resolves each public Task policy to its
 ordinary definition `DefId` in the compiler-owned `std` module. Normal
 reachability follows that function body, which may call private typed
@@ -722,8 +734,9 @@ join/select readiness, exact value-or-outcome extraction, and structured
 cancellation-and-drain primitives. Neither semantic analysis nor LCIR maps the
 public `DefId` back to a policy enum. The temporary Task catalog and
 `TaskIntrinsic` are deleted when the general source-level associated-function
-and tuple/List mechanisms can express the API. Empty, stored, computed, and
-runtime-sized Lists are deliberately not classified as fixed rows today.
+and tuple/List mechanisms can express the API. Runtime-width Lists remain a
+distinct typed instruction because their child row is dynamic rather than a
+fixed LCIR suspension row.
 
 LLVM derives a target-laid-out frame containing state, parameters, optional
 creation-site span coordinates, one ordered child-pointer row plus one
@@ -762,14 +775,16 @@ scalar/refined/product/Text shapes, closed sums, and canonical one-pointer
 `List[T]` or compiler-private `TextMap[V]` carriers, with Task handles
 additionally allowed only in suspension-live rows. A unique closed dynamic
 witness is recursively physicalized to its concrete representation in those
-locations. The recursive frame walk consumes one shared bounded structural
-budget, so cyclic or non-regular generic expansion fails closed instead of
-growing the compiler stack. Finite-catalog or open dynamic-concept frame values,
-raw readiness, stored or computed dynamic Task collections, and cancellation
-sources remain atomic whole-artifact fallback. Fixed argument joins are
-admitted both as first-class Tasks and when consumed immediately by `.await`; a
-sole nonempty List literal is admitted only for immediate consumption. `any`
-and `race` additionally require one homogeneous output type.
+locations. A finite closed catalog uses the existing exact one-pointer managed
+dynamic representation, including when nested in products, sums, Lists, or a
+completed Task result. The recursive frame walk consumes one shared bounded
+structural budget, so cyclic or non-regular generic expansion fails closed
+instead of growing the compiler stack. Open, generic, or
+prerequisite-dependent dynamic-concept frame values, raw readiness, and
+cancellation sources remain atomic whole-artifact fallback.
+Fixed argument joins and runtime-width homogeneous List joins are admitted both
+as first-class Tasks and when consumed later by `.await`; `any` and `race`
+additionally require one homogeneous output type.
 An exact transitive `NEEDS_EXECUTOR` effect adds one compiler-private executor
 parameter to a synchronous function after its optional fault context. Direct
 calls and invokes forward the caller's current executor in that fixed ABI

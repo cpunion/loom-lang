@@ -21,11 +21,11 @@ fn representation_pointer_kinds(
     let mut visited = BTreeSet::new();
     let mut immortal = false;
     let mut managed = false;
-    while let Some(value) = pending.pop() {
-        if !visited.insert(value) {
+    while let Some(value_id) = pending.pop() {
+        if !visited.insert(value_id) {
             continue;
         }
-        let value = representations.value_type(value)?;
+        let value = representations.value_type(value_id)?;
         match representations.repr(value.repr())? {
             Repr::ImmortalText => immortal = true,
             Repr::ManagedPointer => managed = true,
@@ -51,11 +51,30 @@ fn representation_contains_task_handle(
 ) -> Option<bool> {
     let mut pending = vec![root];
     let mut visited = BTreeSet::new();
-    while let Some(value) = pending.pop() {
-        if !visited.insert(value) {
+    while let Some(value_id) = pending.pop() {
+        if !visited.insert(value_id) {
             continue;
         }
-        let value = representations.value_type(value)?;
+        let value = representations.value_type(value_id)?;
+        match value.semantic() {
+            Type::List(element) => pending.push(representations.type_id(element)?),
+            Type::Nominal(_, arguments) if value.kind() == ValueTypeKind::ManagedTextMap => {
+                let [element] = arguments.as_slice() else {
+                    return None;
+                };
+                pending.push(representations.type_id(element)?);
+            }
+            Type::View { .. } => {
+                pending.extend(
+                    representations
+                        .dynamic(value_id)?
+                        .candidates()
+                        .iter()
+                        .copied(),
+                );
+            }
+            _ => {}
+        }
         match representations.repr(value.repr())? {
             Repr::TaskHandle => return Some(true),
             Repr::Product(product) => {
@@ -76,6 +95,28 @@ fn representation_contains_task_handle(
         }
     }
     Some(false)
+}
+
+fn semantic_type_is_task_free(root: &Type) -> bool {
+    let mut pending = vec![root];
+    let mut visited = 0_usize;
+    while let Some(ty) = pending.pop() {
+        visited = visited.saturating_add(1);
+        if visited > crate::repr::DIRECT_PRODUCT_MAX_STRUCTURAL_NODES {
+            return false;
+        }
+        match ty {
+            Type::Tuple(elements) | Type::Nominal(_, elements) => pending.extend(elements),
+            Type::List(element) | Type::TaskOutcome(element) => pending.push(element),
+            Type::View { bindings, .. } => pending.extend(bindings.values()),
+            Type::Task(_)
+            | Type::Parameter(_)
+            | Type::AssociatedProjection { .. }
+            | Type::Error => return false,
+            Type::Never | Type::Unit | Type::Bool | Type::Int | Type::Float | Type::Text => {}
+        }
+    }
+    true
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -781,10 +822,19 @@ impl<'a> Validator<'a> {
                                                         Repr::Zst
                                                             | Repr::Scalar(_)
                                                             | Repr::ManagedPointer
+                                                            | Repr::TaskHandle
                                                             | Repr::Product(_)
                                                             | Repr::Sum(_)
                                                     )
                                                 )
+                                                && (representations.repr(element.repr())
+                                                    == Some(&Repr::TaskHandle)
+                                                    || (semantic_type_is_task_free(
+                                                        element.semantic(),
+                                                    ) && representation_contains_task_handle(
+                                                        &representations,
+                                                        element_id,
+                                                    ) == Some(false)))
                                                 && representation_pointer_kinds(
                                                     &representations,
                                                     element_id,
@@ -803,6 +853,11 @@ impl<'a> Validator<'a> {
                             representations.type_id(value).is_some_and(|value_id| {
                                 representations.value_type(value_id).is_some_and(|value| {
                                     value.semantic() != &Type::Never
+                                        && semantic_type_is_task_free(value.semantic())
+                                        && representation_contains_task_handle(
+                                            &representations,
+                                            value_id,
+                                        ) == Some(false)
                                         && matches!(
                                             representations.repr(value.repr()),
                                             Some(
@@ -844,7 +899,11 @@ impl<'a> Validator<'a> {
                             representations.type_id(output).is_some_and(|output_id| {
                                 representations.value_type(output_id).is_some_and(|output| {
                                     output.semantic() != &Type::Never
-                                        && !matches!(output.semantic(), Type::Task(_))
+                                        && semantic_type_is_task_free(output.semantic())
+                                        && representation_contains_task_handle(
+                                            &representations,
+                                            output_id,
+                                        ) == Some(false)
                                 })
                             })
                         }
@@ -858,7 +917,7 @@ impl<'a> Validator<'a> {
                         self.error(
                             ValidationCode::RepresentationPlan,
                             format!("representations.type[{index}].task_handle"),
-                            "Task handles must be direct Task[output] values with a registered inhabited non-Task output on a 64-bit target",
+                            "Task handles must be direct Task[output] values with a registered inhabited task-free output on a 64-bit target",
                         );
                     }
                 }
@@ -919,6 +978,7 @@ impl<'a> Validator<'a> {
                                 )
                                 && representation_contains_task_handle(&representations, candidate)
                                     == Some(false)
+                                && semantic_type_is_task_free(candidate_type.semantic())
                                 && representation_pointer_kinds(&representations, candidate)
                                     .is_some_and(|(immortal, _)| !immortal)
                         });
@@ -959,6 +1019,8 @@ impl<'a> Validator<'a> {
         let supported_product_field = |field: ValueTypeId| {
             representations.value_type(field).is_some_and(|value_type| {
                 value_type.semantic() != &Type::Never
+                    && semantic_type_is_task_free(value_type.semantic())
+                    && representation_contains_task_handle(&representations, field) == Some(false)
                     && matches!(
                         representations.repr(value_type.repr()),
                         Some(
@@ -1503,6 +1565,7 @@ impl<'a> Validator<'a> {
                     .value_type(value.ty())
                     .is_some_and(|ty| {
                         self.program.representations.repr(ty.repr()) == Some(&Repr::TaskHandle)
+                            || self.task_list_output(value.ty()).is_some()
                     })
             })
             .collect::<Vec<_>>();
@@ -1844,7 +1907,7 @@ impl<'a> Validator<'a> {
                 self.error(
                     ValidationCode::InvalidCoroutinePlan,
                     format!("{base}.coroutine.frame_type[{index}]"),
-                    "typed coroutine parameter/result slots require closed direct values without task handles",
+                    "typed coroutine parameter/result slots require closed direct values or cataloged dynamic pointers without task handles",
                 );
             }
         }
@@ -1910,7 +1973,7 @@ impl<'a> Validator<'a> {
                         format!(
                             "{base}.coroutine.suspension[{index}].awaited[{awaited_index}]"
                         ),
-                        "typed coroutine awaited-result slots require closed direct values without task handles",
+                        "typed coroutine awaited-result slots require closed direct values or cataloged dynamic pointers without task handles",
                     );
                 }
             }
@@ -2326,6 +2389,10 @@ impl<'a> Validator<'a> {
                         self.program.representations.type_id(value_type.semantic()) == Some(ty);
                     let supported = match value_type.semantic() {
                         Type::Text | Type::List(_) => value_type.kind() == ValueTypeKind::Direct,
+                        Type::View { .. } => {
+                            value_type.kind() == ValueTypeKind::Direct
+                                && self.program.representations.dynamic(ty).is_some()
+                        }
                         Type::Nominal(_, arguments) => {
                             value_type.kind() == ValueTypeKind::ManagedTextMap
                                 && arguments.len() == 1
@@ -3739,6 +3806,21 @@ impl<'a> Validator<'a> {
                         "list get receiver must be a canonical concrete List value",
                     );
                 }
+                if list_element.is_some_and(|element| {
+                    self.program
+                        .representations
+                        .value_type(element)
+                        .is_some_and(|element| {
+                            self.program.representations.repr(element.repr())
+                                == Some(&Repr::TaskHandle)
+                        })
+                }) {
+                    self.error(
+                        ValidationCode::InvalidTaskOwnership,
+                        format!("{path}.list"),
+                        "list.get cannot extract or duplicate a child handle from a List[Task[T]] carrier",
+                    );
+                }
                 self.require_known_value_type(
                     function,
                     *index,
@@ -4529,6 +4611,73 @@ impl<'a> Validator<'a> {
                         ValidationCode::EffectMismatch,
                         &path,
                         "task.join requires the function's NEEDS_EXECUTOR effect",
+                    );
+                }
+            }
+            InstructionKind::TaskJoinList { mode, tasks } => {
+                let list_type = function.value(*tasks).map(Value::ty);
+                let output = list_type.and_then(|list| self.task_list_output(list));
+                if list_type.is_some() && output.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.tasks"),
+                        "task.join_list operand must be one canonical exact List[Task[T]] carrier",
+                    );
+                }
+                let joined_output = output.and_then(|output| match mode {
+                    AwaitMode::All => self
+                        .program
+                        .representations
+                        .value_type(output)
+                        .map(crate::ValueType::semantic)
+                        .cloned()
+                        .and_then(|output| {
+                            self.program
+                                .representations
+                                .type_id(&Type::List(Box::new(output)))
+                        }),
+                    AwaitMode::Any => Some(output),
+                    AwaitMode::Settled => self
+                        .canonical_task_outcome_type(output)
+                        .and_then(|outcome| {
+                            self.program
+                                .representations
+                                .value_type(outcome)
+                                .map(crate::ValueType::semantic)
+                                .cloned()
+                        })
+                        .and_then(|outcome| {
+                            self.program
+                                .representations
+                                .type_id(&Type::List(Box::new(outcome)))
+                        }),
+                    AwaitMode::Race => self.canonical_task_outcome_type(output),
+                });
+                let expected = joined_output.and_then(|output| {
+                    self.program
+                        .representations
+                        .value_type(output)
+                        .map(crate::ValueType::semantic)
+                        .cloned()
+                        .and_then(|output| {
+                            self.program
+                                .representations
+                                .type_id(&Type::Task(Box::new(output)))
+                        })
+                });
+                if output.is_some() && expected.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.result[0]"),
+                        "task.join_list requires the canonical mode-specific Task result",
+                    );
+                }
+                self.require_results(function, instruction, &[expected], &path);
+                if !function.effects().contains(Effects::NEEDS_EXECUTOR) {
+                    self.error(
+                        ValidationCode::EffectMismatch,
+                        &path,
+                        "task.join_list requires the function's NEEDS_EXECUTOR effect",
                     );
                 }
             }
@@ -5779,6 +5928,9 @@ impl<'a> Validator<'a> {
                     InstructionKind::TaskCreate { .. } => Some("create a Task"),
                     InstructionKind::IoTaskCreate { .. } => Some("create a typed I/O Task"),
                     InstructionKind::TaskJoin { .. } => Some("construct a Task join"),
+                    InstructionKind::TaskJoinList { .. } => {
+                        Some("construct a runtime-width Task join")
+                    }
                     InstructionKind::TaskOutcomeTake { .. } => {
                         Some("consume a terminal Task outcome")
                     }
@@ -6426,6 +6578,17 @@ impl<'a> Validator<'a> {
             return None;
         };
         self.program.representations.type_id(element)
+    }
+
+    fn task_list_output(&self, ty: ValueTypeId) -> Option<ValueTypeId> {
+        let element = self.list_element(ty)?;
+        let element_type = self.program.representations.value_type(element)?;
+        let Type::Task(output) = element_type.semantic() else {
+            return None;
+        };
+        let output = self.program.representations.type_id(output)?;
+        self.canonical_task_handle(element, output)
+            .then_some(output)
     }
 
     fn text_map_value(&self, ty: ValueTypeId) -> Option<ValueTypeId> {
@@ -7311,6 +7474,7 @@ fn instruction_direct_effects(kind: &InstructionKind) -> Effects {
             | InstructionKind::IoTaskCreate { .. }
             | InstructionKind::ResourceClose { .. }
             | InstructionKind::TaskJoin { .. }
+            | InstructionKind::TaskJoinList { .. }
             | InstructionKind::TaskOutcomeTake { .. }
     ) {
         effects = effects.union(Effects::NEEDS_EXECUTOR);
@@ -7668,10 +7832,30 @@ fn consume_task_handle(
         issues.push(TaskOwnershipIssue {
             site,
             value,
-            message: "a Task handle is consumed more than once or is unavailable on an incoming control-flow path",
+            message: "a Task handle or List[Task] carrier is consumed more than once or is unavailable on an incoming control-flow path",
         });
     }
     *state = TaskAvailability::CONSUMED;
+}
+
+fn borrow_task_carrier(
+    value: ValueId,
+    site: TaskOwnershipSite,
+    states: &[TaskAvailability],
+    task_values: &[bool],
+    collect_issues: bool,
+    issues: &mut Vec<TaskOwnershipIssue>,
+) {
+    if !task_values.get(value.index()).copied().unwrap_or(false) {
+        return;
+    }
+    if collect_issues && states.get(value.index()).copied() != Some(TaskAvailability::AVAILABLE) {
+        issues.push(TaskOwnershipIssue {
+            site,
+            value,
+            message: "a Task handle or List[Task] carrier is borrowed after it was consumed or is unavailable on an incoming control-flow path",
+        });
+    }
 }
 
 #[expect(
@@ -7692,15 +7876,27 @@ fn transfer_task_ownership(
             continue;
         };
         let site = TaskOwnershipSite::Instruction(instruction_id);
-        for operand in instruction.kind().operands() {
-            consume_task_handle(
-                operand,
+        match instruction.kind() {
+            InstructionKind::ListLength { list } => borrow_task_carrier(
+                *list,
                 site,
-                &mut states,
+                &states,
                 task_values,
                 collect_issues,
                 &mut issues,
-            );
+            ),
+            kind => {
+                for operand in kind.operands() {
+                    consume_task_handle(
+                        operand,
+                        site,
+                        &mut states,
+                        task_values,
+                        collect_issues,
+                        &mut issues,
+                    );
+                }
+            }
         }
         for result in instruction.results().iter().copied() {
             if task_values.get(result.index()).copied().unwrap_or(false) {

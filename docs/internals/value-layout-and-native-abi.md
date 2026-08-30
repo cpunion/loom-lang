@@ -285,10 +285,11 @@ construction and extraction; they do not allocate tuple nodes. Invariant-free
 record projections and eligible projected mutable receivers use exact typed
 extraction and functional root reconstruction on normal and fault edges.
 Shapes outside the current typed-LCIR SupportReport—including non-regular
-generic expansion, protected projections, unsupported contract/cleanup forms,
-explicit mutable coroutine parameters, and finite/open dynamic coroutine
-carriers—still select the complete universal route. Typed LCIR does not change
-the checked-MIR runtime ABI or make either object ABI public.
+generic expansion, protected mutation, unsupported contract/cleanup forms,
+explicit mutable coroutine parameters, and open or prerequisite-dependent
+dynamic coroutine carriers—still select the complete universal route. Typed
+LCIR does not change the checked-MIR runtime ABI or make either object ABI
+public.
 
 See [Code generation IR](codegen-ir.md) for the implemented foundation and the
 [typed code generation IR RFC](../rfcs/typed-codegen-ir.md) for the accepted
@@ -316,8 +317,8 @@ A concrete closed `List[T]` or compiler-private `TextMap[V]` contributes one
 managed-pointer cell at every frame occurrence, including nested product/sum
 leaves. The collection's element pointer map remains in its typed repeated
 descriptor. Frame validation accepts only canonical direct List and
-`ManagedTextMap` registrations; a finite/open dynamic box cannot be relabeled as
-a collection carrier.
+`ManagedTextMap` registrations; a managed dynamic box cannot be relabeled as a
+collection carrier.
 
 An immediately awaited fixed tuple or fixed Task-policy call uses that
 multi-child suspension row directly. A first-class stored fixed join uses a
@@ -334,8 +335,17 @@ Outcome-producing rows and callbacks consume terminal affine child handles
 through explicit `TaskOutcomeTake` operations. The resulting canonical sums
 use the ordinary collision-free closed-sum carrier and exact managed Text
 leaves for `TaskFault`. A sole nonempty List literal is flattened to the same
-static row; empty, stored, computed, and runtime-sized List joins remain
-complete fallback.
+static row.
+
+A stored, computed, empty, or runtime-sized homogeneous List join uses
+`TaskJoinList`. Its composite frame contains state, the source List carrier,
+and the exact result. The descriptor roots the source List while children are
+active and the result List while `all` or `settled` is assembling or publishing
+it. List elements are stable scheduler-owned Task pointers and therefore add no
+managed offsets to the repeated descriptor. Nonempty construction passes the
+List's contiguous element storage directly to atomic child adoption; empty
+construction requires no ownership transfer. No universal join result or
+runtime type tag participates.
 
 The runtime separately tracks concrete typed File and Socket owners held by a
 published typed result; that ledger is not a field in `Task[T]` or in the

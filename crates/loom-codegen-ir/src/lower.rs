@@ -578,7 +578,7 @@ pub fn lower_typed_artifact(
             .map_err(LoweringError::from)?;
     }
     aggregate_plan
-        .register(&mut builder)
+        .register(&mut builder, &task_handles)
         .map_err(|error| match error {
             AggregateRegistrationError::Build(error) => LoweringError::from(error),
             AggregateRegistrationError::Inconsistent(message) => {
@@ -977,6 +977,79 @@ fn task_output_type(ty: &Type) -> Option<Type> {
     }
 }
 
+fn task_list_child_output(ty: &Type) -> Option<Type> {
+    let Type::List(element) = ty else {
+        return None;
+    };
+    let Type::Task(output) = element.as_ref() else {
+        return None;
+    };
+    Some(output.as_ref().clone())
+}
+
+/// Proves that one fully instantiated source type contains no affine Task
+/// obligation, expanding concrete record, enum, refined, and finite-View
+/// shapes independently of aggregate-planner discovery order.
+fn task_free_type(program: &mir::Program, dyn_concepts: &DynConceptPlan, root: &Type) -> bool {
+    let mut pending = vec![root.clone()];
+    let mut visited = BTreeSet::new();
+    let mut inspected = 0_usize;
+    while let Some(semantic) = pending.pop() {
+        inspected = inspected.saturating_add(1);
+        if inspected > crate::repr::DIRECT_PRODUCT_MAX_STRUCTURAL_NODES {
+            return false;
+        }
+        let Some(ty) = dyn_concepts.physical_type(&semantic) else {
+            return false;
+        };
+        if !visited.insert(ty.clone()) {
+            continue;
+        }
+        match &ty {
+            Type::Tuple(elements) => pending.extend(elements.iter().cloned()),
+            Type::List(element) | Type::TaskOutcome(element) => {
+                pending.push(element.as_ref().clone());
+            }
+            Type::Nominal(id, arguments)
+                if program.prelude.bytes == Some(*id) && arguments.is_empty() => {}
+            Type::Nominal(id, arguments) if program.prelude.text_map == Some(*id) => {
+                let [value] = arguments.as_slice() else {
+                    return false;
+                };
+                pending.push(value.clone());
+            }
+            Type::Nominal(_, _) => {
+                if let Some(fields) = concrete_any_record_fields(program, &ty) {
+                    pending.extend(fields.into_vec());
+                } else if let Some(base) = concrete_refined_base(program, &ty) {
+                    pending.push(base);
+                } else if let Some(variants) = closed_enum_variants(program, &ty) {
+                    pending.extend(variants.into_vec().into_iter().flat_map(Vec::from));
+                } else {
+                    return false;
+                }
+            }
+            Type::View { .. } => {
+                let Some(finite) = dyn_concepts.finite(&ty) else {
+                    return false;
+                };
+                pending.extend(
+                    finite
+                        .candidates()
+                        .iter()
+                        .map(|candidate| candidate.concrete().clone()),
+                );
+            }
+            Type::Task(_)
+            | Type::Parameter(_)
+            | Type::AssociatedProjection { .. }
+            | Type::Error => return false,
+            Type::Never | Type::Unit | Type::Bool | Type::Int | Type::Float | Type::Text => {}
+        }
+    }
+    true
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AwaitResultShape {
     Scalar,
@@ -995,12 +1068,12 @@ struct AwaitSourcePlan<'a> {
     result_shape: AwaitResultShape,
 }
 
-/// Returns the exact fixed child row consumed by one checked await expression.
+/// Returns the exact child row consumed by one checked await expression.
 /// Literal task tuples and immediately awaited fixed joins expose their child
 /// handles directly; every first-class Task remains one ordinary `all` child.
-/// A List join is specialized only for one nonempty literal argument. Empty,
-/// stored, computed, and otherwise dynamic Lists deliberately remain outside
-/// this fixed-row LCIR contract.
+/// A nonempty List literal join retains the fixed-row specialization. Empty,
+/// stored, and computed List joins first become `TaskJoinList` and are then
+/// awaited as one ordinary composite Task child.
 fn await_source_plan(task: &mir::Expr) -> Option<AwaitSourcePlan<'_>> {
     match &task.kind {
         ExprKind::Tuple(tasks) if !tasks.is_empty() => Some(AwaitSourcePlan {
@@ -1013,6 +1086,17 @@ fn await_source_plan(task: &mir::Expr) -> Option<AwaitSourcePlan<'_>> {
             result_shape: AwaitResultShape::Tuple,
         }),
         ExprKind::TaskJoin { mode, arguments } => {
+            if let [argument] = arguments.as_slice()
+                && !matches!(&argument.kind, ExprKind::List(elements) if !elements.is_empty())
+                && task_list_child_output(&argument.ty).is_some()
+            {
+                return Some(AwaitSourcePlan {
+                    mode: AwaitMode::All,
+                    children: std::slice::from_ref(task),
+                    outputs: vec![task_output_type(&task.ty)?],
+                    result_shape: AwaitResultShape::Scalar,
+                });
+            }
             let (children, result_shape) = match arguments.as_slice() {
                 [
                     mir::Expr {
@@ -1083,9 +1167,25 @@ fn task_outcome_type(program: &mir::Program, output: Type) -> Option<Type> {
         .map(|outcome| Type::Nominal(outcome, vec![output]))
 }
 
+fn dynamic_task_join_output_type(
+    program: &mir::Program,
+    mode: mir::TaskJoinMode,
+    task_list: &Type,
+) -> Option<Type> {
+    let output = task_list_child_output(task_list)?;
+    match mode {
+        mir::TaskJoinMode::All => Some(Type::List(Box::new(output))),
+        mir::TaskJoinMode::Any => Some(output),
+        mir::TaskJoinMode::Settled => {
+            task_outcome_type(program, output).map(|outcome| Type::List(Box::new(outcome)))
+        }
+        mir::TaskJoinMode::Race => task_outcome_type(program, output),
+    }
+}
+
 /// Computes the exact output carried by one first-class fixed-width join.
-/// Dynamic `List[Task[T]]` operands are deliberately absent: their runtime
-/// width needs a separate runtime-width lowering and validation contract.
+/// Dynamic `List[Task[T]]` operands are deliberately handled by
+/// `dynamic_task_join_output_type` and `TaskJoinList` instead.
 fn fixed_task_join_output_type(
     program: &mir::Program,
     mode: mir::TaskJoinMode,
@@ -1732,8 +1832,22 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             self.immortal_text = true;
             return true;
         }
+        if let Type::List(element) = &ty
+            && let Type::Task(output) = element.as_ref()
+        {
+            if self.target.pointer_bits() != 64
+                || !task_free_type(self.program, self.dyn_concepts, output)
+                || !self.supported_value_type(output)
+            {
+                return false;
+            }
+            self.task_handles.insert(element.as_ref().clone());
+            return self.aggregates.supports_task_list_type(&ty);
+        }
         if let Type::Task(output) = &ty {
-            if self.target.pointer_bits() != 64 || matches!(output.as_ref(), Type::Task(_)) {
+            if self.target.pointer_bits() != 64
+                || !task_free_type(self.program, self.dyn_concepts, output)
+            {
                 return false;
             }
             if !self.supported_value_type(output) {
@@ -1741,6 +1855,9 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             }
             self.task_handles.insert(ty.clone());
             return true;
+        }
+        if !task_free_type(self.program, self.dyn_concepts, &ty) {
+            return false;
         }
         self.aggregates.supports_value_type(&ty)
     }
@@ -1803,11 +1920,14 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     active.remove(&ty);
                     supported
                 }
+                // A finite closed View is already one exact managed pointer:
+                // its candidate payload layouts live in the separately
+                // validated dynamic catalog rather than inline in the frame.
+                Type::View { .. } => dyn_concepts.finite(&ty).is_some(),
                 Type::Never
                 | Type::Parameter(_)
                 | Type::AssociatedProjection { .. }
                 | Type::TaskOutcome(_)
-                | Type::View { .. }
                 | Type::Error => false,
             }
         }
@@ -1949,11 +2069,12 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 .first()
                 .is_some_and(|receiver| receiver.id == place.local)
             && is_invariant_record_type(self.program, &ty);
-        let invariant_root_access = invariant_receiver
-            || (matches!(usage, PlaceUse::Read | PlaceUse::Move)
-                && is_invariant_record_type(self.program, &ty));
         for (depth, field) in place.projection.iter().enumerate() {
-            let fields = if invariant_root_access && depth == 0 {
+            let protected_read =
+                usage == PlaceUse::Read && is_invariant_record_type(self.program, &ty);
+            let invariant_receiver_root =
+                invariant_receiver && usage != PlaceUse::Move && depth == 0;
+            let fields = if protected_read || invariant_receiver_root {
                 concrete_any_record_fields(self.program, &ty)?
             } else {
                 concrete_record_fields(self.program, &ty)?
@@ -3501,12 +3622,17 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 }
                 expression.ty != Type::Never
             }
-            ExprKind::ReborrowView { owner, .. } => {
+            ExprKind::ReborrowView { owner, mutable, .. } => {
+                let usage = if *mutable {
+                    PlaceUse::InOut
+                } else {
+                    PlaceUse::Read
+                };
                 let owner_ty = self.projected_place(
                     function,
                     key,
                     owner,
-                    PlaceUse::Read,
+                    usage,
                     PlaceSite::expression(expression),
                     &format!("{path}.owner"),
                 );
@@ -3667,7 +3793,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 if !self.visit_exprs(function, key, arguments, &format!("{path}.arguments")) {
                     return false;
                 }
-                let outputs = arguments
+                let argument_types = arguments
                     .iter()
                     .enumerate()
                     .map(|(index, argument)| {
@@ -3679,7 +3805,6 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                             argument.span,
                             &format!("{path}.arguments[{index}].ty"),
                         )
-                        .and_then(|ty| task_output_type(&ty))
                     })
                     .collect::<Option<Vec<_>>>();
                 let result = self.instantiated_type(
@@ -3690,9 +3815,24 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     expression.span,
                     &format!("{path}.ty"),
                 );
-                let expected = outputs.as_deref().and_then(|outputs| {
-                    fixed_task_join_output_type(self.program, *mode, outputs)
-                        .map(|output| Type::Task(Box::new(output)))
+                let expected = argument_types.as_deref().and_then(|arguments| {
+                    if let [task_list] = arguments
+                        && let Some(child_output) = task_list_child_output(task_list)
+                    {
+                        task_free_type(self.program, self.dyn_concepts, &child_output)
+                            .then(|| dynamic_task_join_output_type(self.program, *mode, task_list))
+                            .flatten()
+                            .map(|output| Type::Task(Box::new(output)))
+                    } else {
+                        arguments
+                            .iter()
+                            .map(task_output_type)
+                            .collect::<Option<Vec<_>>>()
+                            .and_then(|outputs| {
+                                fixed_task_join_output_type(self.program, *mode, &outputs)
+                            })
+                            .map(|output| Type::Task(Box::new(output)))
+                    }
                 });
                 let supported = expected.is_some() && result == expected;
                 if !supported {
@@ -5372,17 +5512,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                         .ok()
                 })
                 .is_some_and(|ty| is_invariant_record_type(self.program, &ty));
-        let invariant_read = matches!(usage, PlaceUse::Read | PlaceUse::Move)
-            && self
-                .local_types
-                .get(&place.local)
-                .and_then(|ty| {
-                    InstanceSubstitution::new(self.program, self.key)
-                        .instantiate_type(ty)
-                        .ok()
-                })
-                .is_some_and(|ty| is_invariant_record_type(self.program, &ty));
-        let planned = if invariant_receiver || invariant_read {
+        let planned = if usage == PlaceUse::Read {
+            PlacePlan::build_protected_read(self.builder.representations(), place, root_type)
+        } else if invariant_receiver && usage != PlaceUse::Move {
             PlacePlan::build_invariant_receiver(self.builder.representations(), place, root_type)
         } else {
             PlacePlan::build(self.builder.representations(), place, root_type)
@@ -7811,8 +7943,13 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     self.expression_origin(expression),
                 )
             }
-            ExprKind::ReborrowView { owner, .. } => {
-                let plan = self.place_plan(owner, PlaceUse::Read)?;
+            ExprKind::ReborrowView { owner, mutable, .. } => {
+                let usage = if *mutable {
+                    PlaceUse::InOut
+                } else {
+                    PlaceUse::Read
+                };
+                let plan = self.place_plan(owner, usage)?;
                 if plan.leaf_type() != self.type_id(&expression.ty)? {
                     return Err(LoweringError::defect(
                         LoweringDefectCode::InconsistentPlan,
@@ -8138,6 +8275,55 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     };
                     flow = next_flow;
                     tasks.push(value);
+                }
+                let substitution = InstanceSubstitution::new(self.program, self.key);
+                let argument_types = arguments
+                    .iter()
+                    .map(|argument| {
+                        substitution
+                            .instantiate_type(&argument.ty)
+                            .map_err(|error| {
+                                instantiation_defect(self.source.id, Some(argument.id), error)
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                if let ([task_list], [tasks]) = (argument_types.as_slice(), tasks.as_slice())
+                    && let Some(child_output) = task_list_child_output(task_list)
+                {
+                    if !task_free_type(self.program, self.dyn_concepts, &child_output) {
+                        return Err(LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            "classified dynamic Task join has a nested Task obligation",
+                        ));
+                    }
+                    let expected = dynamic_task_join_output_type(self.program, *mode, task_list)
+                        .map(|output| Type::Task(Box::new(output)));
+                    let actual =
+                        substitution
+                            .instantiate_type(&expression.ty)
+                            .map_err(|error| {
+                                instantiation_defect(self.source.id, Some(expression.id), error)
+                            })?;
+                    if expected.as_ref() != Some(&actual) {
+                        return Err(LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            "classified dynamic Task join result does not match its mode-specific Task type",
+                        ));
+                    }
+                    return self.one_instruction(
+                        flow,
+                        InstructionKind::TaskJoinList {
+                            mode: match mode {
+                                mir::TaskJoinMode::All => AwaitMode::All,
+                                mir::TaskJoinMode::Any => AwaitMode::Any,
+                                mir::TaskJoinMode::Settled => AwaitMode::Settled,
+                                mir::TaskJoinMode::Race => AwaitMode::Race,
+                            },
+                            tasks: *tasks,
+                        },
+                        self.type_id(&expression.ty)?,
+                        origin,
+                    );
                 }
                 if tasks.is_empty() {
                     return Err(LoweringError::defect(
@@ -12311,6 +12497,42 @@ const fn float_predicate(operator: BinaryOp) -> Option<FloatPredicate> {
 mod tests {
     use super::*;
     use crate::ids::ProgramBrand;
+
+    #[test]
+    fn task_free_proof_expands_nominal_fields_independently_of_planner_state() {
+        let wrapper = mir::TypeId(0);
+        let task_list = Type::List(Box::new(Type::Task(Box::new(Type::Int))));
+        let program = mir::Program {
+            types: vec![mir::TypeDef {
+                id: wrapper,
+                name: "TaskWrapper".into(),
+                span: Span::default(),
+                type_parameters: 0,
+                kind: mir::TypeDefKind::Record {
+                    fields: vec![mir::FieldDef {
+                        name: "tasks".into(),
+                        ty: task_list.clone(),
+                        span: Span::default(),
+                    }],
+                    invariant: None,
+                },
+            }],
+            ..mir::Program::default()
+        };
+        let dyn_concepts = DynConceptPlan::default();
+        let wrapper_type = Type::Nominal(wrapper, Vec::new());
+        assert!(!task_free_type(&program, &dyn_concepts, &wrapper_type));
+        assert!(!task_free_type(
+            &program,
+            &dyn_concepts,
+            &Type::List(Box::new(wrapper_type))
+        ));
+        assert!(!task_free_type(
+            &program,
+            &dyn_concepts,
+            &Type::Task(Box::new(task_list))
+        ));
+    }
 
     #[test]
     fn persistent_environment_identity_joins_are_independent_of_live_local_count() {

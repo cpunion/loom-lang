@@ -53,7 +53,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 45")?;
+    writeln!(output, "lcir 46")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -542,6 +542,9 @@ fn write_instruction(
             write_arguments(output, tasks)?;
             write!(output, ")")
         }
+        InstructionKind::TaskJoinList { mode, tasks } => {
+            write!(output, "task.join_list.{} %{tasks}", await_mode_name(*mode))
+        }
         InstructionKind::TaskOutcomeTake { task } => {
             write!(output, "task.outcome_take %{task}")
         }
@@ -1017,6 +1020,7 @@ const fn fault_code_name(code: crate::FaultCode) -> &'static str {
         crate::FaultCode::InvalidSleepDuration => "InvalidSleepDuration",
         crate::FaultCode::SleepDurationOverflow => "SleepDurationOverflow",
         crate::FaultCode::TaskAnyFailed => "TaskAnyFailed",
+        crate::FaultCode::EmptyTaskJoin => "EmptyTaskJoin",
         crate::FaultCode::LogWrite => "LogWriteFault",
         crate::FaultCode::StdoutWrite => "StdoutWriteFault",
     }

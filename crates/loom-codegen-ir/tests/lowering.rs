@@ -1083,7 +1083,7 @@ fn static_heterogeneous_task_all_uses_direct_and_first_class_checked_shapes() {
     clippy::too_many_lines,
     reason = "one route-selection matrix pins fixed, generic, stored, dynamic, and unsupported join modes together"
 )]
-fn immediately_awaited_fixed_task_any_and_stored_any_lower_but_dynamic_lists_fall_back() {
+fn immediately_awaited_fixed_and_dynamic_task_joins_keep_distinct_lcir_shapes() {
     let fixed = r"async fn child(value Int) Int { value }
 
 pub async fn main() {
@@ -1174,15 +1174,29 @@ pub async fn main() {
     discard Task.all(tasks).await
 }
 ";
-    let LoweringOutcome::Unsupported(dynamic) = lower_run(dynamic) else {
-        panic!("dynamic List Task.all must remain one whole-artifact fallback")
+    let LoweringOutcome::Complete(dynamic) = lower_run(dynamic) else {
+        panic!("dynamic List Task.all must lower through typed LCIR")
     };
-    assert!(
-        dynamic
-            .items()
-            .iter()
-            .any(|item| { item.feature() == UnsupportedFeature::TaskOperation })
-    );
+    let main = dynamic
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("main instance");
+    assert!(main.instructions().iter().any(|instruction| matches!(
+        instruction.kind(),
+        InstructionKind::TaskJoinList {
+            mode: AwaitMode::All,
+            ..
+        }
+    )));
+    assert!(main.blocks().iter().any(|block| matches!(
+        block.terminator().map(loom_codegen_ir::Terminator::kind),
+        Some(TerminatorKind::AwaitTasks {
+            mode: AwaitMode::All,
+            tasks,
+            ..
+        }) if tasks.len() == 1
+    )));
 
     let terminal = r#"async fn child(value Int) Int { value }
 async fn label() Text { "two" }
@@ -1413,37 +1427,99 @@ pub async fn main() {
 }
 
 #[test]
-fn empty_and_stored_task_list_joins_remain_whole_artifact_fallbacks() {
-    let empty = r"pub async fn main() {
-    discard Task.all(List[Task[Int]]()).await
-}
-";
-    let LoweringOutcome::Unsupported(empty) = lower_run(empty) else {
-        panic!("an empty Task List must not masquerade as a fixed runtime-length join")
-    };
-    assert!(empty.items().iter().any(|item| {
-        matches!(
-            item.feature(),
-            UnsupportedFeature::TaskOperation | UnsupportedFeature::Suspension
-        )
-    }));
-
-    let stored = r"async fn child(value Int) Int { value }
+fn empty_stored_and_computed_task_lists_lower_as_runtime_width_joins() {
+    let source = r"async fn child(value Int) Int { value }
 
 pub async fn main() {
-    let pending = Task.all([child(1), child(2)])
+    let stored = [child(1), child(2)]
+    let pending = Task.all(stored)
     discard pending.await
+
+    var computed = List[Task[Int]]()
+    computed.add(child(3))
+    computed.add(child(4))
+    let computedCount = computed.length()
+    discard computedCount
+    discard Task.any(computed).await
+
+    discard Task.all(List[Task[Int]]()).await
+    discard Task.any(List[Task[Int]]()).await
+    discard Task.settled(List[Task[Int]]()).await
+    discard Task.race(List[Task[Int]]()).await
 }
 ";
-    let LoweringOutcome::Unsupported(stored) = lower_run(stored) else {
-        panic!("a stored List join must remain a first-class dynamic-List fallback")
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("stored, computed, and empty Task Lists must lower through typed LCIR")
     };
-    assert!(
-        stored
-            .items()
-            .iter()
-            .any(|item| item.feature() == UnsupportedFeature::TaskOperation)
+    let main = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("main instance");
+    let joins = main
+        .instructions()
+        .iter()
+        .filter_map(|instruction| match instruction.kind() {
+            InstructionKind::TaskJoinList { mode, .. } => Some((
+                *mode,
+                instruction
+                    .results()
+                    .first()
+                    .and_then(|result| main.value(*result))
+                    .and_then(|result| artifact.representations().value_type(result.ty()))
+                    .map(loom_codegen_ir::ValueType::semantic)
+                    .cloned()
+                    .expect("dynamic join result type"),
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let outcome = artifact
+        .program()
+        .as_program()
+        .canonical_types()
+        .task_outcome
+        .expect("TaskOutcome identity");
+    let task_int = Type::Task(Box::new(Type::Int));
+    let task_int_list = Type::Task(Box::new(Type::List(Box::new(Type::Int))));
+    let outcome_int = Type::Nominal(outcome, vec![Type::Int]);
+    assert_eq!(
+        joins,
+        [
+            (AwaitMode::All, task_int_list.clone()),
+            (AwaitMode::Any, task_int.clone()),
+            (AwaitMode::All, task_int_list),
+            (AwaitMode::Any, task_int),
+            (
+                AwaitMode::Settled,
+                Type::Task(Box::new(Type::List(Box::new(outcome_int.clone())))),
+            ),
+            (AwaitMode::Race, Type::Task(Box::new(outcome_int))),
+        ]
     );
+    assert!(
+        main.instructions().iter().any(|instruction| matches!(
+            instruction.kind(),
+            InstructionKind::ListAppendUnique { .. }
+        ))
+    );
+    assert!(
+        main.instructions()
+            .iter()
+            .any(|instruction| matches!(instruction.kind(), InstructionKind::ListLength { .. }))
+    );
+    assert!(
+        main.coroutine()
+            .expect("main coroutine")
+            .suspensions()
+            .iter()
+            .all(|suspension| {
+                suspension.mode() == AwaitMode::All && suspension.awaited().len() == 1
+            })
+    );
+    let task_list = Type::List(Box::new(Type::Task(Box::new(Type::Int))));
+    assert!(artifact.representations().type_id(&task_list).is_some());
+    assert!(dump_program(artifact.program()).contains("task.join_list.settled"));
 }
 
 #[test]
@@ -2065,34 +2141,162 @@ pub async fn main() {
 }
 
 #[test]
-fn async_finite_and_open_views_remain_atomic_signature_fallback() {
-    let finite = r"dyn concept Source {
-    method next(mut self) Int
+#[expect(
+    clippy::too_many_lines,
+    reason = "one fixture keeps every finite dynamic coroutine carrier and its managed roots together"
+)]
+fn async_finite_views_are_exact_managed_coroutine_frame_carriers() {
+    let source = r#"dyn concept Source {
+    method read(self) Int
 }
 
-record First { value Int }
-record Second { value Int }
+record First { values List[Int] }
+record Second { label Text }
+record Envelope { source dyn Source }
+
+enum Packet {
+    Wrapped(Envelope)
+    Many(List[dyn Source])
+}
 
 impl Source for First {
-    method next(mut self) Int { self.value }
+    method read(self) Int { self.values.length() }
 }
 
 impl Source for Second {
-    method next(mut self) Int { self.value }
+    method read(self) Int { self.label.length() }
 }
 
-async fn takeOwned(source Source) Int {
-    source.next()
+fn first() dyn Source { First { values = [1] } }
+fn second() dyn Source { Second { label = "two" } }
+
+async fn pause() {}
+
+async fn carryDirect(source Source) dyn Source {
+    pause().await
+    source
+}
+
+async fn carryRecord(envelope Envelope) Envelope {
+    pause().await
+    envelope
+}
+
+async fn carryTuple(pair (dyn Source, Envelope)) (dyn Source, Envelope) {
+    pause().await
+    pair
+}
+
+async fn carrySum(packet Packet) Packet {
+    pause().await
+    packet
+}
+
+async fn carryList(sources List[dyn Source]) List[dyn Source] {
+    pause().await
+    sources
 }
 
 pub async fn main() {
-    let first = takeOwned(First { value = 1 }).await
-    let second = takeOwned(Second { value = 2 }).await
-    assert first == 1
-    assert second == 2
+    let direct = carryDirect(first()).await
+    let observed = direct.read()
+    assert observed == 1
+    discard carryRecord(Envelope { source = second() }).await
+    discard carryTuple((first(), Envelope { source = second() })).await
+    discard carrySum(Packet.Wrapped(Envelope { source = first() })).await
+    discard carrySum(Packet.Many([first(), second()])).await
+    discard carryList([first(), second()]).await
 }
-";
-    let open = r"dyn concept Source {
+"#;
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("finite closed Views must lower through exact typed coroutine frames")
+    };
+
+    let representations = artifact.representations();
+    let [dynamic] = representations.dynamics() else {
+        panic!("the source View must have one finite managed catalog")
+    };
+    assert_eq!(dynamic.candidates().len(), 2);
+    assert_eq!(
+        representations
+            .value_type(dynamic.view())
+            .and_then(|value| representations.repr(value.repr())),
+        Some(&loom_codegen_ir::Repr::ManagedPointer)
+    );
+    assert!(dynamic.candidates().iter().all(|candidate| {
+        representations
+            .value_type(*candidate)
+            .and_then(|value| representations.repr(value.repr()))
+            .and_then(|repr| match repr {
+                loom_codegen_ir::Repr::Product(product) => representations.product(*product),
+                _ => None,
+            })
+            .is_some_and(|product| {
+                product.fields().iter().copied().any(|field| {
+                    representations
+                        .value_type(field)
+                        .and_then(|value| representations.repr(value.repr()))
+                        == Some(&loom_codegen_ir::Repr::ManagedPointer)
+                })
+            })
+    }));
+
+    for name in [
+        "carryDirect",
+        "carryRecord",
+        "carryTuple",
+        "carrySum",
+        "carryList",
+    ] {
+        let function = artifact
+            .functions()
+            .iter()
+            .find(|function| function.name().ends_with(name))
+            .unwrap_or_else(|| panic!("missing {name} coroutine"));
+        let [parameter] = function.signature().params() else {
+            panic!("{name} must have one carrier parameter")
+        };
+        assert_eq!(function.signature().result(), *parameter);
+        let plan = function.coroutine().expect("checked coroutine plan");
+        let [suspension] = plan.suspensions() else {
+            panic!("{name} must cross one real await suspension")
+        };
+        assert!(suspension.live().contains(parameter));
+        assert!(function.blocks().iter().any(|block| matches!(
+            block.terminator().map(loom_codegen_ir::Terminator::kind),
+            Some(TerminatorKind::AwaitTasks { state: 1, .. })
+        )));
+    }
+
+    let mut dynamic_allocations = 0_usize;
+    for function in artifact.functions() {
+        let roots = plan_managed_roots(artifact.program(), function.id())
+            .expect("finite dynamic lowering must retain an exact managed-root plan");
+        for instruction in function.instructions() {
+            let InstructionKind::DynConstruct { value, .. } = instruction.kind() else {
+                continue;
+            };
+            dynamic_allocations = dynamic_allocations.saturating_add(1);
+            assert!(
+                roots
+                    .state(ManagedSafepoint::Instruction(instruction.id()))
+                    .is_some(),
+                "dynamic allocation must publish its managed candidate at the safepoint"
+            );
+            assert!(
+                roots
+                    .slots()
+                    .iter()
+                    .any(|slot| { slot.value() == *value && !slot.projection().is_empty() })
+            );
+        }
+    }
+    assert!(dynamic_allocations >= 2);
+}
+
+#[test]
+fn async_open_views_remain_atomic_signature_fallback() {
+    let source = r"dyn concept Source {
     method next(mut self) Int
 }
 
@@ -2111,50 +2315,16 @@ pub async fn main() {
     assert observed == 1
 }
 ";
-    let nested_finite = r"dyn concept Source {
-    method next(mut self) Int
-}
-
-record First { value Int }
-record Second { value Int }
-record Envelope { source dyn Source }
-
-impl Source for First {
-    method next(mut self) Int { self.value }
-}
-
-impl Source for Second {
-    method next(mut self) Int { self.value }
-}
-
-async fn takeNested(envelope Envelope) Int {
-    var source = envelope.source
-    source.next()
-}
-
-pub async fn main() {
-    let first = takeNested(Envelope { source = First { value = 1 } }).await
-    let second = takeNested(Envelope { source = Second { value = 2 } }).await
-    assert first == 1
-    assert second == 2
-}
-";
-    for (label, source) in [
-        ("finite", finite),
-        ("open", open),
-        ("nested finite", nested_finite),
-    ] {
-        let LoweringOutcome::Unsupported(report) = lower_run(source) else {
-            panic!("{label} dynamic coroutine frame must remain atomic fallback")
-        };
-        assert!(
-            report
-                .items()
-                .iter()
-                .any(|item| item.feature() == UnsupportedFeature::SignatureType),
-            "{label}: {report:#?}"
-        );
-    }
+    let LoweringOutcome::Unsupported(report) = lower_run(source) else {
+        panic!("an open dynamic coroutine frame must remain atomic fallback")
+    };
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::SignatureType),
+        "{report:#?}"
+    );
 }
 
 #[test]
@@ -6422,8 +6592,8 @@ pub fn main() {
 }
 
 #[test]
-fn projection_through_a_protected_product_is_atomic_unsupported() {
-    let outcome = lower_run(
+fn projection_through_a_protected_product_is_an_exact_read_only_extract_chain() {
+    let LoweringOutcome::Complete(artifact) = lower_run(
         r"record Positive {
     value Int
     invariant self.value >= 0
@@ -6436,9 +6606,124 @@ pub fn main() {
     discard holder.value.value
 }
 ",
+    ) else {
+        panic!("pure projection through an established invariant product must lower completely")
+    };
+    let main = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("main instance");
+    let extracts = main
+        .instructions()
+        .iter()
+        .filter(|instruction| matches!(instruction.kind(), InstructionKind::ProductExtract { .. }))
+        .collect::<Vec<_>>();
+    assert_eq!(extracts.len(), 2, "{}", dump_program(artifact.program()));
+    let InstructionKind::ProductExtract {
+        field: outer_field, ..
+    } = extracts[0].kind()
+    else {
+        unreachable!()
+    };
+    let InstructionKind::ProductExtract {
+        aggregate,
+        field: protected_field,
+    } = extracts[1].kind()
+    else {
+        unreachable!()
+    };
+    assert_eq!((*outer_field, *protected_field), (0, 0));
+    assert_eq!(*aggregate, extracts[0].results()[0]);
+    assert_eq!(
+        main.instructions()
+            .iter()
+            .filter(|instruction| matches!(
+                instruction.kind(),
+                InstructionKind::InvariantRecordProven { .. }
+            ))
+            .count(),
+        1,
+        "{}",
+        dump_program(artifact.program())
+    );
+}
+
+#[test]
+fn projected_move_from_a_protected_root_remains_atomic_unsupported() {
+    let mut program = compile(
+        r"record Positive {
+    value Int
+    invariant self.value >= 0
+}
+
+fn take(value Positive) Int { value.value }
+
+pub fn main() {
+    discard take(Positive { value = 7 })
+}
+",
+    )
+    .into_program();
+    let take = program
+        .functions
+        .iter_mut()
+        .find(|function| function.name.ends_with("take"))
+        .expect("take function");
+    let tail = take.body.tail.as_deref_mut().expect("take tail");
+    let ExprKind::Copy(place) = &tail.kind else {
+        panic!("source field read must start as a checked copy")
+    };
+    tail.kind = ExprKind::Move(place.clone());
+    let checked = program
+        .into_checked()
+        .expect("projected move is structurally valid checked MIR");
+    let outcome = lower_typed_artifact(
+        &checked,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("classify protected projected move");
+    let LoweringOutcome::Unsupported(report) = outcome else {
+        panic!("move from invariant-protected interior must select whole-artifact fallback")
+    };
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::ProjectedPlace),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn projected_inout_through_a_protected_product_remains_atomic_unsupported() {
+    let outcome = lower_run(
+        r"record Counter { value Int }
+
+impl Counter {
+    method add(mut self, value Int) {
+        self.value = self.value + value
+    }
+}
+
+record Positive {
+    counter Counter
+    invariant self.counter.value >= 0
+}
+
+record Holder { value Positive }
+
+pub fn main() {
+    var holder = Holder { value = Positive { counter = Counter { value = 7 } } }
+    holder.value.counter.add(1)
+}
+",
     );
     let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("projection through an invariant product must select whole-artifact fallback")
+        panic!("inout through an invariant product must select whole-artifact fallback")
     };
     assert!(
         report

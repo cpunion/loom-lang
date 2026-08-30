@@ -1,0 +1,146 @@
+async fn completed(label Text) Text {
+    label.concat(" completed")
+}
+
+async fn delayed(label Text) Text {
+    Task.sleep(5).await
+    label.concat(" delayed")
+}
+
+async fn faulted(label Text) Text {
+    let length = label.length()
+    assert length == 0
+    label
+}
+
+fn taskPair(first Task[Text], second Task[Text]) List[Task[Text]] {
+    var tasks = List[Task[Text]]()
+    tasks.add(first)
+    tasks.add(second)
+    tasks
+}
+
+fn assertText(values List[Text], index Int, expected Text) {
+    match values.get(index) {
+        Some(value) => {
+            assert value == expected
+        }
+        None => {
+            assert false
+        }
+    }
+}
+
+async fn exerciseAll() {
+    let tasks = taskPair(completed("first"), completed("second"))
+    let taskCount = tasks.length()
+    assert taskCount == 2
+
+    // The affine task-list carrier remains rooted while this unrelated Task
+    // suspends the parent. Its children remain scheduler-owned, not GC edges.
+    Task.sleep(1).await
+
+    let pending = Task.all(tasks)
+    let values = pending.await
+    let valueCount = values.length()
+    assert valueCount == 2
+    assertText(values, 0, "first completed")
+    assertText(values, 1, "second completed")
+
+    let empty = Task.all(List[Task[Text]]()).await
+    let emptyCount = empty.length()
+    assert emptyCount == 0
+}
+
+async fn exerciseAny() {
+    let tasks = taskPair(delayed("slow"), completed("fast"))
+    let pending = Task.any(tasks)
+    let winner = pending.await
+    assert winner == "fast completed"
+}
+
+async fn exerciseSettled() {
+    var tasks = List[Task[Text]]()
+    tasks.add(faulted("first failure"))
+    tasks.add(completed("middle"))
+    tasks.add(faulted("second failure"))
+
+    let outcomes = Task.settled(tasks).await
+    let outcomeCount = outcomes.length()
+    assert outcomeCount == 3
+    match outcomes.get(0) {
+        Some(Faulted(fault)) => {
+            let code = fault.code()
+            let message = fault.message()
+            assert code == "AssertionFault"
+            assert message == "assertion was not satisfied"
+        }
+        _ => {
+            assert false
+        }
+    }
+    match outcomes.get(1) {
+        Some(Completed(value)) => {
+            assert value == "middle completed"
+        }
+        _ => {
+            assert false
+        }
+    }
+    match outcomes.get(2) {
+        Some(Faulted(fault)) => {
+            let code = fault.code()
+            let message = fault.message()
+            assert code == "AssertionFault"
+            assert message == "assertion was not satisfied"
+        }
+        _ => {
+            assert false
+        }
+    }
+
+    let empty = Task.settled(List[Task[Text]]()).await
+    let emptyCount = empty.length()
+    assert emptyCount == 0
+}
+
+async fn exerciseRace() {
+    let tasks = taskPair(delayed("slow"), faulted("race failure"))
+    match Task.race(tasks).await {
+        Faulted(fault) => {
+            let code = fault.code()
+            let message = fault.message()
+            assert code == "AssertionFault"
+            assert message == "assertion was not satisfied"
+        }
+        _ => {
+            assert false
+        }
+    }
+}
+
+async fn exerciseDynamicTaskLists() {
+    exerciseAll().await
+    exerciseAny().await
+    exerciseSettled().await
+    exerciseRace().await
+}
+
+pub async fn emptyAny() {
+    discard Task.any(List[Task[Text]]()).await
+}
+
+pub async fn emptyRace() {
+    discard Task.race(List[Task[Text]]()).await
+}
+
+pub async fn failedAny() {
+    var tasks = List[Task[Text]]()
+    tasks.add(faulted("left failure"))
+    tasks.add(faulted("right failure"))
+    discard Task.any(tasks).await
+}
+
+pub async fn main() {
+    exerciseDynamicTaskLists().await
+}

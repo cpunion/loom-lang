@@ -45,8 +45,8 @@ use loom_codegen_ir::{
 };
 use loom_core::runtime_fault::{
     ARTIFACT_PROOF_REJECTED_FAULT_CODE, ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
-    INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE, INVALID_DURATION_FAULT_CODE,
-    INVALID_DURATION_FAULT_MESSAGE,
+    EMPTY_TASK_JOIN_FAULT_CODE, EMPTY_TASK_JOIN_FAULT_MESSAGE, INTEGER_OVERFLOW_FAULT_CODE,
+    INTEGER_OVERFLOW_FAULT_MESSAGE, INVALID_DURATION_FAULT_CODE, INVALID_DURATION_FAULT_MESSAGE,
 };
 use loom_core::runtime_fault::{
     INVALID_SLEEP_DURATION_FAULT_CODE, INVALID_SLEEP_DURATION_FAULT_MESSAGE, LOG_WRITE_FAULT_CODE,
@@ -1820,7 +1820,7 @@ struct TaskJoinLayout<'ctx> {
     mode: AwaitMode,
     fault_origin: Option<Origin>,
     frame: StructType<'ctx>,
-    child_fields: Vec<u32>,
+    inputs: TaskJoinInputs<'ctx>,
     result_field: u32,
     collecting_root_state: Option<u64>,
     output_types: Vec<ValueTypeId>,
@@ -1829,12 +1829,26 @@ struct TaskJoinLayout<'ctx> {
     descriptor: PointerValue<'ctx>,
 }
 
+#[derive(Clone)]
+enum TaskJoinInputs<'ctx> {
+    Fixed {
+        child_fields: Vec<u32>,
+    },
+    Dynamic {
+        source_field: u32,
+        source_type: ValueTypeId,
+        source_layout: ListLayout<'ctx>,
+        output_type: ValueTypeId,
+    },
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct TaskJoinShape {
     mode: AwaitMode,
+    source_list_type: Option<ValueTypeId>,
     output_types: Vec<ValueTypeId>,
     result_type: ValueTypeId,
-    fault_origin: Option<(u32, u32, u32)>,
+    fault_origin: Option<(u32, Option<u32>, u32, u32, u32)>,
 }
 
 #[derive(Clone)]
@@ -2217,8 +2231,11 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             .iter()
             .flat_map(|source| {
                 source.instructions().iter().filter_map(move |instruction| {
-                    matches!(instruction.kind(), InstructionKind::TaskJoin { .. })
-                        .then_some((source, instruction))
+                    matches!(
+                        instruction.kind(),
+                        InstructionKind::TaskJoin { .. } | InstructionKind::TaskJoinList { .. }
+                    )
+                    .then_some((source, instruction))
                 })
             })
             .collect::<Vec<_>>();
@@ -2233,6 +2250,11 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             if !self.task_join_layouts.contains_key(&shape) {
                 let shape_index = self.task_join_layouts.len();
                 let mode_name = task_join_mode_name(shape.mode);
+                let namespace = if shape.source_list_type.is_some() {
+                    "task_join_list"
+                } else {
+                    "task_join"
+                };
                 let cancel = self.coroutine_cancel.ok_or_else(|| {
                     CodegenError::new(
                         "LlvmAbiDefect",
@@ -2240,7 +2262,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                     )
                 })?;
                 let callback = self.module.add_function(
-                    &format!("loom.lcir.task_join.{mode_name}.resume.{shape_index}"),
+                    &format!("loom.lcir.{namespace}.{mode_name}.resume.{shape_index}"),
                     self.context.i32_type().fn_type(
                         &[
                             self.ptr_type.into(),
@@ -2589,56 +2611,106 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "exact fixed Task-join validation keeps mode semantics, canonical output identities, and result agreement in one audit boundary"
+        reason = "exact Task-join validation keeps fixed/runtime-width mode semantics, canonical output identities, and result agreement in one audit boundary"
     )]
     fn task_join_shape(
         &self,
         source: &Function,
         instruction: &Instruction,
     ) -> Result<TaskJoinShape, CodegenError> {
-        let InstructionKind::TaskJoin { mode, tasks } = instruction.kind() else {
-            return Err(CodegenError::new(
-                "LlvmAbiDefect",
-                format!("{} is not a typed Task join instruction", instruction.id()),
-            ));
-        };
-        if tasks.is_empty() {
-            return Err(CodegenError::new(
-                "LlvmAbiDefect",
-                "typed fixed Task join cannot have an empty exact shape",
-            ));
-        }
-        let output_types = tasks
-            .iter()
-            .copied()
-            .map(|task| {
-                let semantic = source
-                    .value(task)
-                    .and_then(|value| self.artifact.representations().value_type(value.ty()))
+        let (mode, source_list_type, output_types) = match instruction.kind() {
+            InstructionKind::TaskJoin { mode, tasks } => {
+                if tasks.is_empty() {
+                    return Err(CodegenError::new(
+                        "LlvmAbiDefect",
+                        "typed fixed Task join cannot have an empty exact shape",
+                    ));
+                }
+                let output_types = tasks
+                    .iter()
+                    .copied()
+                    .map(|task| {
+                        let semantic = source
+                            .value(task)
+                            .and_then(|value| {
+                                self.artifact.representations().value_type(value.ty())
+                            })
+                            .map(loom_codegen_ir::ValueType::semantic)
+                            .ok_or_else(|| {
+                                CodegenError::new(
+                                    "LlvmAbiDefect",
+                                    format!("typed Task join child {task} has no semantic type"),
+                                )
+                            })?;
+                        let Type::Task(output) = semantic else {
+                            return Err(CodegenError::new(
+                                "LlvmAbiDefect",
+                                format!("typed Task join child {task} is not a Task"),
+                            ));
+                        };
+                        self.artifact
+                            .representations()
+                            .type_id(output)
+                            .ok_or_else(|| {
+                                CodegenError::new(
+                                    "LlvmAbiDefect",
+                                    format!("typed Task join child {task} output has no LCIR type"),
+                                )
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                (*mode, None, output_types)
+            }
+            InstructionKind::TaskJoinList { mode, tasks } => {
+                let list = source.value(*tasks).ok_or_else(|| {
+                    CodegenError::new(
+                        "LlvmAbiDefect",
+                        format!("typed Task join List operand {tasks} is missing"),
+                    )
+                })?;
+                let list_type = list.ty();
+                let semantic = self
+                    .artifact
+                    .representations()
+                    .value_type(list_type)
                     .map(loom_codegen_ir::ValueType::semantic)
                     .ok_or_else(|| {
                         CodegenError::new(
                             "LlvmAbiDefect",
-                            format!("typed Task join child {task} has no semantic type"),
+                            "typed Task join List semantic type is missing",
                         )
                     })?;
-                let Type::Task(output) = semantic else {
+                let Type::List(element) = semantic else {
                     return Err(CodegenError::new(
                         "LlvmAbiDefect",
-                        format!("typed Task join child {task} is not a Task"),
+                        "typed Task join List operand is not a List",
                     ));
                 };
-                self.artifact
+                let Type::Task(output) = element.as_ref() else {
+                    return Err(CodegenError::new(
+                        "LlvmAbiDefect",
+                        "typed Task join List element is not an exact Task handle",
+                    ));
+                };
+                let output = self
+                    .artifact
                     .representations()
                     .type_id(output)
                     .ok_or_else(|| {
                         CodegenError::new(
                             "LlvmAbiDefect",
-                            format!("typed Task join child {task} output has no LCIR type"),
+                            "typed Task join List output has no LCIR type",
                         )
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+                    })?;
+                (*mode, Some(list_type), vec![output])
+            }
+            _ => {
+                return Err(CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("{} is not a typed Task join instruction", instruction.id()),
+                ));
+            }
+        };
         let result = instruction
             .results()
             .first()
@@ -2710,16 +2782,18 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                     )
                 })
         };
-        let expected = match mode {
-            AwaitMode::All => Type::Tuple(outputs),
-            AwaitMode::Settled => Type::Tuple(
+        let expected = match (source_list_type, mode) {
+            (None, AwaitMode::All) => Type::Tuple(outputs),
+            (None, AwaitMode::Settled) => Type::Tuple(
                 outputs
                     .into_iter()
                     .map(outcome)
                     .collect::<Result<Vec<_>, _>>()?,
             ),
-            AwaitMode::Any => outputs[0].clone(),
-            AwaitMode::Race => outcome(outputs[0].clone())?,
+            (Some(_), AwaitMode::All) => Type::List(Box::new(outputs[0].clone())),
+            (Some(_), AwaitMode::Settled) => Type::List(Box::new(outcome(outputs[0].clone())?)),
+            (_, AwaitMode::Any) => outputs[0].clone(),
+            (_, AwaitMode::Race) => outcome(outputs[0].clone())?,
         };
         if actual != &expected {
             return Err(CodegenError::new(
@@ -2728,11 +2802,16 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             ));
         }
         let origin = instruction.origin();
+        let faults_on_empty =
+            source_list_type.is_some() && matches!(mode, AwaitMode::Any | AwaitMode::Race);
         Ok(TaskJoinShape {
-            mode: *mode,
+            mode,
+            source_list_type,
             output_types,
             result_type,
-            fault_origin: (*mode == AwaitMode::Any).then_some((
+            fault_origin: (mode == AwaitMode::Any || faults_on_empty).then_some((
+                origin.source_function.0,
+                origin.expression.map(|expression| expression.0),
                 origin.span.file.0,
                 origin.span.range.start,
                 origin.span.range.end,
@@ -2742,7 +2821,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "one target-data proof constructs the exact fixed Task-join frame, completed roots, and immutable descriptor"
+        reason = "one target-data proof constructs each exact Task-join frame, state-specific roots, and immutable descriptor"
     )]
     fn build_task_join_layout(
         &self,
@@ -2754,12 +2833,15 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
     ) -> Result<TaskJoinLayout<'ctx>, CodegenError> {
         let TaskJoinShape {
             mode,
+            source_list_type,
             output_types,
             result_type,
             fault_origin,
         } = shape;
         let mode = *mode;
         let actual_fault_origin = (
+            origin.source_function.0,
+            origin.expression.map(|expression| expression.0),
             origin.span.file.0,
             origin.span.range.start,
             origin.span.range.end,
@@ -2767,15 +2849,20 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         if fault_origin.is_some_and(|expected| expected != actual_fault_origin) {
             return Err(CodegenError::new(
                 "LlvmAbiDefect",
-                "typed Task.any shape disagrees with its fault origin",
+                "typed Task join shape disagrees with its fault origin",
             ));
         }
 
         let mut fields = vec![self.context.i64_type().into()];
-        let mut child_fields = Vec::with_capacity(output_types.len());
         let mut next_field = 1_u32;
-        for _ in output_types {
-            child_fields.push(next_field);
+        let inputs = if let Some(source_type) = source_list_type {
+            let [output_type] = output_types.as_slice() else {
+                return Err(CodegenError::new(
+                    "LlvmAbiDefect",
+                    "typed dynamic Task join does not have one homogeneous output type",
+                ));
+            };
+            let source_field = next_field;
             next_field = next_field.checked_add(1).ok_or_else(|| {
                 CodegenError::new(
                     "ProgramTooLarge",
@@ -2783,7 +2870,26 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                 )
             })?;
             fields.push(self.ptr_type.into());
-        }
+            TaskJoinInputs::Dynamic {
+                source_field,
+                source_type: *source_type,
+                source_layout: self.list_layout(*source_type)?,
+                output_type: *output_type,
+            }
+        } else {
+            let mut child_fields = Vec::with_capacity(output_types.len());
+            for _ in output_types {
+                child_fields.push(next_field);
+                next_field = next_field.checked_add(1).ok_or_else(|| {
+                    CodegenError::new(
+                        "ProgramTooLarge",
+                        "typed Task join frame has too many fields",
+                    )
+                })?;
+                fields.push(self.ptr_type.into());
+            }
+            TaskJoinInputs::Fixed { child_fields }
+        };
         let result_field = next_field;
         fields.push(self.llvm_type(*result_type)?);
         let frame = self.context.struct_type(&fields, false);
@@ -2805,15 +2911,32 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         let result_offset = self.coroutine_field_offset(frame, result_field)?;
         let mut completed_roots = BTreeSet::new();
         self.collect_coroutine_root_offsets(*result_type, result_offset, &mut completed_roots)?;
-        if u64::try_from(completed_roots.len()).unwrap_or(u64::MAX) > GC_MAX_ROOT_SLOTS {
+        let source_root = match &inputs {
+            TaskJoinInputs::Fixed { .. } => None,
+            TaskJoinInputs::Dynamic { source_field, .. } => {
+                Some(self.coroutine_field_offset(frame, *source_field)?)
+            }
+        };
+        let mut all_roots = completed_roots.clone();
+        if let Some(source_root) = source_root {
+            all_roots.insert(source_root);
+        }
+        if u64::try_from(all_roots.len()).unwrap_or(u64::MAX) > GC_MAX_ROOT_SLOTS {
             return Err(CodegenError::new(
                 "ProgramTooLarge",
                 "typed Task join result has too many exact managed roots",
             ));
         }
-        let offsets = completed_roots.into_iter().collect::<Vec<_>>();
+        let offsets = all_roots.into_iter().collect::<Vec<_>>();
+        let indexes = offsets
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, offset)| (offset, index))
+            .collect::<BTreeMap<_, _>>();
         let bitmap_words = offsets.len().div_ceil(64);
-        let collecting_root_state = (mode == AwaitMode::Settled).then_some(2_u64);
+        let dynamic = source_list_type.is_some();
+        let collecting_root_state = (dynamic || mode == AwaitMode::Settled).then_some(2_u64);
         let completed_root_state = collecting_root_state.map_or(2_u64, |_| 3_u64);
         let state_count = usize::try_from(completed_root_state.saturating_add(1))
             .map_err(|_| CodegenError::new("ProgramTooLarge", "Task join state overflowed"))?;
@@ -2827,16 +2950,28 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             ));
         }
         let mut bitmaps = vec![0_u64; total_bitmap_words];
+        if let Some(source_root) = source_root {
+            let slot = indexes[&source_root];
+            for state in 0..=2_usize {
+                bitmaps[state * bitmap_words + slot / 64] |= 1_u64 << (slot % 64);
+            }
+        }
         for state in collecting_root_state.unwrap_or(completed_root_state)..=completed_root_state {
             let state = usize::try_from(state).map_err(|_| {
                 CodegenError::new("ProgramTooLarge", "Task join root state overflowed")
             })?;
-            for slot in 0..offsets.len() {
+            for root in &completed_roots {
+                let slot = indexes[root];
                 bitmaps[state * bitmap_words + slot / 64] |= 1_u64 << (slot % 64);
             }
         }
+        let namespace = if dynamic {
+            "task_join_list"
+        } else {
+            "task_join"
+        };
         let stem = format!(
-            "loom.lcir.task_join.{}.{shape_index}",
+            "loom.lcir.{namespace}.{}.{shape_index}",
             task_join_mode_name(mode)
         );
         let offsets_pointer = self.emit_i64_array(&format!("{stem}.root_offsets"), &offsets)?;
@@ -2914,9 +3049,9 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         descriptor.set_unnamed_address(UnnamedAddress::Global);
         Ok(TaskJoinLayout {
             mode,
-            fault_origin: (mode == AwaitMode::Any).then_some(origin),
+            fault_origin: fault_origin.map(|_| origin),
             frame,
-            child_fields,
+            inputs,
             result_field,
             collecting_root_state,
             output_types: output_types.clone(),
@@ -3348,7 +3483,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "one generated callback owns the complete pointer-only fixed Task-join protocol and exact result publication"
+        reason = "one generated callback owns the shared fixed/runtime-width Task-join protocol and exact result publication"
     )]
     fn emit_task_join_callback(&self, layout: &TaskJoinLayout<'ctx>) -> Result<(), CodegenError> {
         let task = layout
@@ -3413,6 +3548,54 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             .map_err(builder_error)?;
 
         self.builder.position_at_end(start);
+        let dynamic_length = if matches!(&layout.inputs, TaskJoinInputs::Dynamic { .. }) {
+            let length =
+                self.load_dynamic_task_join_length(layout, frame, "task.join.dynamic.source")?;
+            let empty = self
+                .context
+                .append_basic_block(layout.callback, "join.dynamic.empty");
+            let nonempty = self
+                .context
+                .append_basic_block(layout.callback, "join.dynamic.nonempty");
+            let is_empty = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    length,
+                    self.context.i64_type().const_zero(),
+                    "task.join.dynamic.is_empty",
+                )
+                .map_err(builder_error)?;
+            self.builder
+                .build_conditional_branch(is_empty, empty, nonempty)
+                .map_err(builder_error)?;
+
+            self.builder.position_at_end(empty);
+            match layout.mode {
+                AwaitMode::All | AwaitMode::Settled => {
+                    self.builder
+                        .build_unconditional_branch(completed)
+                        .map_err(builder_error)?;
+                }
+                AwaitMode::Any | AwaitMode::Race => {
+                    self.raise_fault(
+                        executor,
+                        FaultCode::EmptyTaskJoin,
+                        layout.fault_origin.ok_or_else(|| {
+                            CodegenError::new(
+                                "LlvmAbiDefect",
+                                "empty winner-selecting Task join has no producer origin",
+                            )
+                        })?,
+                    )?;
+                    self.emit_task_step_return(TASK_FAULTED)?;
+                }
+            }
+            self.builder.position_at_end(nonempty);
+            Some(length)
+        } else {
+            None
+        };
         let runtime_mode = match layout.mode {
             AwaitMode::All => TASK_JOIN_ALL,
             AwaitMode::Any => TASK_JOIN_ANY,
@@ -3433,43 +3616,61 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             "task.join.prepare",
         )?;
         self.require_zero_status(prepared, "task.join.prepare")?;
-        for (index, field) in layout.child_fields.iter().copied().enumerate() {
-            let pointer = self
-                .builder
-                .build_struct_gep(
-                    layout.frame,
+        match &layout.inputs {
+            TaskJoinInputs::Fixed { child_fields } => {
+                for (index, field) in child_fields.iter().copied().enumerate() {
+                    let pointer = self
+                        .builder
+                        .build_struct_gep(
+                            layout.frame,
+                            frame,
+                            field,
+                            &format!("task.join.child.{index}.pointer"),
+                        )
+                        .map_err(builder_error)?;
+                    let child = self
+                        .builder
+                        .build_load(self.ptr_type, pointer, &format!("task.join.child.{index}"))
+                        .map_err(builder_error)?
+                        .into_pointer_value();
+                    let name = format!("task.join.add_child.{index}");
+                    let added = call_int(
+                        &self.builder,
+                        self.task_add_join_child(),
+                        &[executor.into(), task.into(), child.into()],
+                        &name,
+                    )?;
+                    self.require_zero_status(added, &name)?;
+                }
+            }
+            TaskJoinInputs::Dynamic { .. } => {
+                let length = dynamic_length.ok_or_else(|| {
+                    CodegenError::new(
+                        "LlvmAbiDefect",
+                        "dynamic Task join registration has no runtime length",
+                    )
+                })?;
+                self.emit_dynamic_task_join_loop(
+                    layout,
                     frame,
-                    field,
-                    &format!("task.join.child.{index}.pointer"),
-                )
-                .map_err(builder_error)?;
-            let child = self
-                .builder
-                .build_load(self.ptr_type, pointer, &format!("task.join.child.{index}"))
-                .map_err(builder_error)?
-                .into_pointer_value();
-            let name = format!("task.join.add_child.{index}");
-            let added = call_int(
-                &self.builder,
-                self.task_add_join_child(),
-                &[executor.into(), task.into(), child.into()],
-                &name,
-            )?;
-            self.require_zero_status(added, &name)?;
+                    length,
+                    "task.join.dynamic.register",
+                    |_, child| {
+                        let added = call_int(
+                            &self.builder,
+                            self.task_add_join_child(),
+                            &[executor.into(), task.into(), child.into()],
+                            "task.join.dynamic.add_child",
+                        )?;
+                        self.require_zero_status(added, "task.join.dynamic.add_child")
+                    },
+                )?;
+            }
         }
         self.builder
             .build_store(state_pointer, self.context.i64_type().const_int(1, false))
             .map_err(builder_error)?;
-        let rooted = call_int(
-            &self.builder,
-            self.typed_task_set_root_state(),
-            &[
-                task.into(),
-                self.context.i64_type().const_int(1, false).into(),
-            ],
-            "task.join.root_state",
-        )?;
-        self.require_zero_status(rooted, "task.join.root_state")?;
+        self.set_task_join_root_state(task, 1, "task.join.root_state")?;
         let suspended = call_int(
             &self.builder,
             self.task_suspend_join(),
@@ -3595,7 +3796,13 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         index: usize,
         name: &str,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
-        let field = layout.child_fields.get(index).copied().ok_or_else(|| {
+        let TaskJoinInputs::Fixed { child_fields } = &layout.inputs else {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "fixed Task join child requested from a runtime-width source",
+            ));
+        };
+        let field = child_fields.get(index).copied().ok_or_else(|| {
             CodegenError::new(
                 "LlvmAbiDefect",
                 format!("Task join child {index} is missing"),
@@ -3607,6 +3814,207 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             .map_err(builder_error)?;
         self.builder
             .build_load(self.ptr_type, pointer, name)
+            .map(BasicValueEnum::into_pointer_value)
+            .map_err(builder_error)
+    }
+
+    fn dynamic_task_join_source(
+        &self,
+        layout: &TaskJoinLayout<'ctx>,
+        frame: PointerValue<'ctx>,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let TaskJoinInputs::Dynamic { source_field, .. } = &layout.inputs else {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "runtime-width Task join source requested from a fixed join",
+            ));
+        };
+        let pointer = self
+            .builder
+            .build_struct_gep(
+                layout.frame,
+                frame,
+                *source_field,
+                &format!("{name}.pointer"),
+            )
+            .map_err(builder_error)?;
+        self.builder
+            .build_load(self.ptr_type, pointer, name)
+            .map(BasicValueEnum::into_pointer_value)
+            .map_err(builder_error)
+    }
+
+    fn load_dynamic_task_join_length(
+        &self,
+        layout: &TaskJoinLayout<'ctx>,
+        frame: PointerValue<'ctx>,
+        name: &str,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        let TaskJoinInputs::Dynamic { source_layout, .. } = &layout.inputs else {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "runtime-width length requested from a fixed Task join",
+            ));
+        };
+        let source = self.dynamic_task_join_source(layout, frame, name)?;
+        let current = self.builder.get_insert_block().ok_or_else(|| {
+            CodegenError::new("LlvmBuilderFailed", "Task join List length has no block")
+        })?;
+        let function = current.get_parent().ok_or_else(|| {
+            CodegenError::new("LlvmBuilderFailed", "Task join List length has no function")
+        })?;
+        let empty = self
+            .context
+            .append_basic_block(function, &format!("{name}.null"));
+        let present = self
+            .context
+            .append_basic_block(function, &format!("{name}.present"));
+        let merge = self
+            .context
+            .append_basic_block(function, &format!("{name}.length.merge"));
+        let is_null = self
+            .builder
+            .build_is_null(source, &format!("{name}.is_null"))
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(is_null, empty, present)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(empty);
+        let zero = self.context.i64_type().const_zero();
+        self.builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(present);
+        let length_pointer =
+            self.task_join_list_field(source_layout, source, 0, &format!("{name}.length"))?;
+        let length = self
+            .builder
+            .build_load(
+                self.context.i64_type(),
+                length_pointer,
+                &format!("{name}.loaded_length"),
+            )
+            .map_err(builder_error)?
+            .into_int_value();
+        self.builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(merge);
+        let selected = self
+            .builder
+            .build_phi(self.context.i64_type(), &format!("{name}.runtime_length"))
+            .map_err(builder_error)?;
+        selected.add_incoming(&[(&zero, empty), (&length, present)]);
+        Ok(selected.as_basic_value().into_int_value())
+    }
+
+    fn emit_dynamic_task_join_loop<F>(
+        &self,
+        layout: &TaskJoinLayout<'ctx>,
+        frame: PointerValue<'ctx>,
+        length: IntValue<'ctx>,
+        name: &str,
+        mut emit: F,
+    ) -> Result<BasicBlock<'ctx>, CodegenError>
+    where
+        F: FnMut(IntValue<'ctx>, PointerValue<'ctx>) -> Result<(), CodegenError>,
+    {
+        if !matches!(&layout.inputs, TaskJoinInputs::Dynamic { .. }) {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "runtime-width loop requested from a fixed Task join",
+            ));
+        }
+        let current = self.builder.get_insert_block().ok_or_else(|| {
+            CodegenError::new("LlvmBuilderFailed", "Task join List loop has no block")
+        })?;
+        let function = current.get_parent().ok_or_else(|| {
+            CodegenError::new("LlvmBuilderFailed", "Task join List loop has no function")
+        })?;
+        let header = self
+            .context
+            .append_basic_block(function, &format!("{name}.header"));
+        let body = self
+            .context
+            .append_basic_block(function, &format!("{name}.body"));
+        let done = self
+            .context
+            .append_basic_block(function, &format!("{name}.done"));
+        self.builder
+            .build_unconditional_branch(header)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(header);
+        let index = self
+            .builder
+            .build_phi(self.context.i64_type(), &format!("{name}.index"))
+            .map_err(builder_error)?;
+        let zero = self.context.i64_type().const_zero();
+        index.add_incoming(&[(&zero, current)]);
+        let ordinal = index.as_basic_value().into_int_value();
+        let in_bounds = self
+            .builder
+            .build_int_compare(
+                IntPredicate::ULT,
+                ordinal,
+                length,
+                &format!("{name}.in_bounds"),
+            )
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(in_bounds, body, done)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(body);
+        let child = self.dynamic_task_join_child(layout, frame, ordinal, name)?;
+        emit(ordinal, child)?;
+        let predecessor = self.builder.get_insert_block().ok_or_else(|| {
+            CodegenError::new("LlvmBuilderFailed", "Task join List loop lost its block")
+        })?;
+        let successor = self
+            .builder
+            .build_int_add(
+                ordinal,
+                self.context.i64_type().const_int(1, false),
+                &format!("{name}.successor"),
+            )
+            .map_err(builder_error)?;
+        self.builder
+            .build_unconditional_branch(header)
+            .map_err(builder_error)?;
+        index.add_incoming(&[(&successor, predecessor)]);
+        self.builder.position_at_end(done);
+        Ok(done)
+    }
+
+    fn dynamic_task_join_child(
+        &self,
+        layout: &TaskJoinLayout<'ctx>,
+        frame: PointerValue<'ctx>,
+        index: IntValue<'ctx>,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let TaskJoinInputs::Dynamic { source_layout, .. } = &layout.inputs else {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "runtime-width child requested from a fixed Task join",
+            ));
+        };
+        // The frame is stable scheduler storage, while its rooted List moves.
+        let source =
+            self.dynamic_task_join_source(layout, frame, &format!("{name}.source.reload"))?;
+        let pointer = self.task_join_list_element_pointer(
+            source_layout,
+            source,
+            index,
+            &format!("{name}.child.pointer"),
+        )?;
+        self.builder
+            .build_load(self.ptr_type, pointer, &format!("{name}.child"))
             .map(BasicValueEnum::into_pointer_value)
             .map_err(builder_error)
     }
@@ -3635,6 +4043,24 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             })
     }
 
+    fn set_task_join_root_state(
+        &self,
+        task: PointerValue<'ctx>,
+        state: u64,
+        name: &str,
+    ) -> Result<(), CodegenError> {
+        let rooted = call_int(
+            &self.builder,
+            self.typed_task_set_root_state(),
+            &[
+                task.into(),
+                self.context.i64_type().const_int(state, false).into(),
+            ],
+            name,
+        )?;
+        self.require_zero_status(rooted, name)
+    }
+
     fn emit_task_join_result(
         &self,
         layout: &TaskJoinLayout<'ctx>,
@@ -3642,6 +4068,9 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         frame: PointerValue<'ctx>,
         result_pointer: PointerValue<'ctx>,
     ) -> Result<(), CodegenError> {
+        if matches!(&layout.inputs, TaskJoinInputs::Dynamic { .. }) {
+            return self.emit_dynamic_task_join_result(layout, task, frame, result_pointer);
+        }
         match layout.mode {
             AwaitMode::All => {
                 let mut tuple = self
@@ -3686,6 +4115,297 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         Ok(())
     }
 
+    fn emit_dynamic_task_join_result(
+        &self,
+        layout: &TaskJoinLayout<'ctx>,
+        task: PointerValue<'ctx>,
+        frame: PointerValue<'ctx>,
+        result_pointer: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let collecting = layout.collecting_root_state.ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                "runtime-width Task join has no collecting root state",
+            )
+        })?;
+        self.set_task_join_root_state(task, collecting, "task.join.dynamic.collecting_root_state")?;
+        match layout.mode {
+            AwaitMode::All | AwaitMode::Settled => {
+                self.emit_dynamic_task_join_list_result(layout, frame, result_pointer)
+            }
+            AwaitMode::Any | AwaitMode::Race => {
+                let selected = self.emit_dynamic_task_join_selected_result(layout, task, frame)?;
+                self.builder
+                    .build_store(result_pointer, selected)
+                    .map_err(builder_error)?;
+                Ok(())
+            }
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one runtime-width result loop keeps exact repeated allocation, source-order capture, and post-GC frame reloads adjacent"
+    )]
+    fn emit_dynamic_task_join_list_result(
+        &self,
+        layout: &TaskJoinLayout<'ctx>,
+        frame: PointerValue<'ctx>,
+        result_pointer: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let TaskJoinInputs::Dynamic { output_type, .. } = &layout.inputs else {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "runtime-width List result requested from a fixed Task join",
+            ));
+        };
+        let result_layout = self.list_layout(layout.result_type)?;
+        let result_element = self.list_element_type(layout.result_type)?;
+        let expected_element = match layout.mode {
+            AwaitMode::All => *output_type,
+            AwaitMode::Settled => self.task_outcome_type(*output_type)?,
+            AwaitMode::Any | AwaitMode::Race => {
+                return Err(CodegenError::new(
+                    "LlvmAbiDefect",
+                    "winner-selecting runtime-width Task join requested a List result",
+                ));
+            }
+        };
+        if result_element != expected_element {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "runtime-width Task join result List has the wrong exact element type",
+            ));
+        }
+        let length =
+            self.load_dynamic_task_join_length(layout, frame, "task.join.dynamic.result.source")?;
+        let current = self.builder.get_insert_block().ok_or_else(|| {
+            CodegenError::new("LlvmBuilderFailed", "Task join List result has no block")
+        })?;
+        let function = current.get_parent().ok_or_else(|| {
+            CodegenError::new("LlvmBuilderFailed", "Task join List result has no function")
+        })?;
+        let empty = self
+            .context
+            .append_basic_block(function, "join.dynamic.result.empty");
+        let allocate = self
+            .context
+            .append_basic_block(function, "join.dynamic.result.allocate");
+        let is_empty = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                length,
+                self.context.i64_type().const_zero(),
+                "task.join.dynamic.result.is_empty",
+            )
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(is_empty, empty, allocate)
+            .map_err(builder_error)?;
+
+        self.builder.position_at_end(allocate);
+        let descriptor = self.list_descriptor(layout.result_type, &result_layout)?;
+        let status = call_int(
+            &self.builder,
+            self.typed_repeated_alloc(),
+            &[descriptor.into(), length.into(), result_pointer.into()],
+            "task.join.dynamic.result.allocate.status",
+        )?;
+        self.require_zero_status(status, "task.join.dynamic.result.allocate")?;
+        // Allocation may move both the source List and the partial result.
+        // Their only authoritative addresses are the stable task-frame cells.
+        let result = self
+            .builder
+            .build_load(
+                self.ptr_type,
+                result_pointer,
+                "task.join.dynamic.result.reload.after_allocate",
+            )
+            .map_err(builder_error)?
+            .into_pointer_value();
+        self.require_nonnull(result, "task.join.dynamic.result.allocate")?;
+        for (field, name) in [(0_u32, "length"), (1_u32, "capacity")] {
+            let pointer = self
+                .builder
+                .build_struct_gep(
+                    result_layout.object,
+                    result,
+                    field,
+                    &format!("task.join.dynamic.result.{name}.pointer"),
+                )
+                .map_err(builder_error)?;
+            self.builder
+                .build_store(pointer, length)
+                .map_err(builder_error)?;
+        }
+        let done = self.emit_dynamic_task_join_loop(
+            layout,
+            frame,
+            length,
+            "task.join.dynamic.result",
+            |ordinal, child| {
+                let value = match layout.mode {
+                    AwaitMode::All => self.take_typed_task_result_exact(
+                        child,
+                        *output_type,
+                        "task.join.dynamic.all.result",
+                    )?,
+                    AwaitMode::Settled => self.take_typed_task_outcome_exact(
+                        child,
+                        *output_type,
+                        expected_element,
+                        "task.join.dynamic.settled.outcome",
+                    )?,
+                    AwaitMode::Any | AwaitMode::Race => unreachable!(
+                        "winner-selecting joins were rejected before List result emission"
+                    ),
+                };
+                // Outcome capture may collect; both bases live in frame cells.
+                let result = self
+                    .builder
+                    .build_load(
+                        self.ptr_type,
+                        result_pointer,
+                        "task.join.dynamic.result.partial.reload",
+                    )
+                    .map_err(builder_error)?
+                    .into_pointer_value();
+                let destination = self.task_join_list_element_pointer(
+                    &result_layout,
+                    result,
+                    ordinal,
+                    "task.join.dynamic.result.element",
+                )?;
+                self.builder
+                    .build_store(destination, value)
+                    .map_err(builder_error)?;
+                Ok(())
+            },
+        )?;
+
+        // The constructor left canonical zero in the result cell, so empty
+        // all/settled reaches publication without invoking the allocator.
+        self.builder.position_at_end(empty);
+        self.builder
+            .build_unconditional_branch(done)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(done);
+        Ok(())
+    }
+
+    fn emit_dynamic_task_join_selected_result(
+        &self,
+        layout: &TaskJoinLayout<'ctx>,
+        task: PointerValue<'ctx>,
+        frame: PointerValue<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let TaskJoinInputs::Dynamic { output_type, .. } = &layout.inputs else {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "runtime-width winner requested from a fixed Task join",
+            ));
+        };
+        let winner = call_int(
+            &self.builder,
+            self.task_join_winner(),
+            &[task.into()],
+            "task.join.dynamic.winner",
+        )?;
+        let length =
+            self.load_dynamic_task_join_length(layout, frame, "task.join.dynamic.winner.source")?;
+        let current = self.builder.get_insert_block().ok_or_else(|| {
+            CodegenError::new("LlvmBuilderFailed", "Task join winner has no block")
+        })?;
+        let function = current.get_parent().ok_or_else(|| {
+            CodegenError::new("LlvmBuilderFailed", "Task join winner has no function")
+        })?;
+        let valid = self
+            .context
+            .append_basic_block(function, "join.dynamic.winner.valid");
+        let invalid = self
+            .context
+            .append_basic_block(function, "join.dynamic.winner.invalid");
+        let in_bounds = self
+            .builder
+            .build_int_compare(
+                IntPredicate::ULT,
+                winner,
+                length,
+                "task.join.dynamic.winner.in_bounds",
+            )
+            .map_err(builder_error)?;
+        self.builder
+            .build_conditional_branch(in_bounds, valid, invalid)
+            .map_err(builder_error)?;
+        self.builder.position_at_end(invalid);
+        self.emit_task_step_return(TASK_FAULTED)?;
+
+        self.builder.position_at_end(valid);
+        let child =
+            self.dynamic_task_join_child(layout, frame, winner, "task.join.dynamic.winner")?;
+        match layout.mode {
+            AwaitMode::Any => self.take_typed_task_result_exact(
+                child,
+                *output_type,
+                "task.join.dynamic.any.result",
+            ),
+            AwaitMode::Race => self.take_typed_task_outcome_exact(
+                child,
+                *output_type,
+                layout.result_type,
+                "task.join.dynamic.race.outcome",
+            ),
+            AwaitMode::All | AwaitMode::Settled => Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "non-selecting runtime-width Task join requested a winner result",
+            )),
+        }
+    }
+
+    fn task_join_list_element_pointer(
+        &self,
+        layout: &ListLayout<'ctx>,
+        object: PointerValue<'ctx>,
+        index: IntValue<'ctx>,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let data = self.task_join_list_field(layout, object, 2, &format!("{name}.data"))?;
+        let base = self
+            .builder
+            .build_ptr_to_int(data, self.context.i64_type(), &format!("{name}.base"))
+            .map_err(builder_error)?;
+        let offset = self
+            .builder
+            .build_int_mul(
+                index,
+                self.context
+                    .i64_type()
+                    .const_int(layout.element_stride, false),
+                &format!("{name}.offset"),
+            )
+            .map_err(builder_error)?;
+        let address = self
+            .builder
+            .build_int_add(base, offset, &format!("{name}.address"))
+            .map_err(builder_error)?;
+        self.builder
+            .build_int_to_ptr(address, self.ptr_type, name)
+            .map_err(builder_error)
+    }
+
+    fn task_join_list_field(
+        &self,
+        layout: &ListLayout<'ctx>,
+        object: PointerValue<'ctx>,
+        field: u32,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        self.builder
+            .build_struct_gep(layout.object, object, field, name)
+            .map_err(builder_error)
+    }
+
     fn emit_task_join_settled_result(
         &self,
         layout: &TaskJoinLayout<'ctx>,
@@ -3699,16 +4419,7 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         self.builder
             .build_store(result_pointer, self.zero(layout.result_type)?)
             .map_err(builder_error)?;
-        let rooted = call_int(
-            &self.builder,
-            self.typed_task_set_root_state(),
-            &[
-                task.into(),
-                self.context.i64_type().const_int(collecting, false).into(),
-            ],
-            "task.join.settled.collecting_root_state",
-        )?;
-        self.require_zero_status(rooted, "task.join.settled.collecting_root_state")?;
+        self.set_task_join_root_state(task, collecting, "task.join.settled.collecting_root_state")?;
         let tuple_type = self.llvm_type(layout.result_type)?.into_struct_type();
         for (index, output) in layout.output_types.iter().copied().enumerate() {
             let child = self.task_join_child(
@@ -3781,8 +4492,13 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         let merge = self
             .context
             .append_basic_block(layout.callback, "join.winner.merge");
-        let cases = layout
-            .child_fields
+        let TaskJoinInputs::Fixed { child_fields } = &layout.inputs else {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "fixed Task join winner requested from a runtime-width source",
+            ));
+        };
+        let cases = child_fields
             .iter()
             .enumerate()
             .map(|(index, _)| {
@@ -5258,7 +5974,33 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
                 ),
             ));
         }
-        let pointer_offsets = self.managed_element_offsets(element_ty)?;
+        // Task handles are stable scheduler pointers, not moving-GC object
+        // references. The only repeated carrier allowed to contain them is
+        // the exact `List[Task[T]]` shape validated by LCIR; its descriptor
+        // therefore has no managed element offsets. Nested TaskHandle leaves
+        // continue through `managed_element_offsets` and fail closed.
+        let pointer_offsets = if self.repr_of(element_ty)? == Repr::TaskHandle {
+            let semantic = self
+                .artifact
+                .representations()
+                .value_type(element_ty)
+                .map(loom_codegen_ir::ValueType::semantic)
+                .ok_or_else(|| {
+                    CodegenError::new(
+                        "LlvmAbiDefect",
+                        format!("List type {ty} has no semantic element type"),
+                    )
+                })?;
+            if !matches!(semantic, Type::Task(_)) || element != BasicTypeEnum::from(self.ptr_type) {
+                return Err(CodegenError::new(
+                    "LcirListDescriptorUnsupported",
+                    format!("List type {ty} does not use the exact TaskHandle pointer layout"),
+                ));
+            }
+            Vec::new()
+        } else {
+            self.managed_element_offsets(element_ty)?
+        };
         let pointer_size = self.target_data.get_abi_size(&self.ptr_type);
         let pointer_align = u64::from(self.target_data.get_abi_alignment(&self.ptr_type));
         for offset in &pointer_offsets {
@@ -10621,6 +11363,9 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             InstructionKind::TaskJoin { mode, tasks } => {
                 one(self.emit_task_join(instruction, *mode, tasks)?.into())
             }
+            InstructionKind::TaskJoinList { mode, tasks } => {
+                one(self.emit_task_join_list(instruction, *mode, *tasks)?.into())
+            }
             InstructionKind::TaskOutcomeTake { task } => {
                 one(self.emit_task_outcome_take(instruction, *task)?)
             }
@@ -15604,10 +16349,108 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .into_int_value())
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one exact fixed-join construction edge initializes its generated frame and atomically adopts every child before publishing the handle"
-    )]
+    fn create_task_join_frame(
+        &self,
+        layout: &TaskJoinLayout<'ctx>,
+        executor: PointerValue<'ctx>,
+        name: &str,
+    ) -> Result<(PointerValue<'ctx>, PointerValue<'ctx>), CodegenError> {
+        let composite = call_pointer(
+            &self.backend.builder,
+            self.backend.typed_task_create(),
+            &[executor.into(), layout.descriptor.into()],
+            &format!("{name}.create"),
+        )?;
+        self.backend
+            .require_nonnull(composite, &format!("{name}.create"))?;
+        let frame = call_pointer(
+            &self.backend.builder,
+            self.backend.typed_task_frame(),
+            &[composite.into()],
+            &format!("{name}.frame"),
+        )?;
+        self.backend
+            .require_nonnull(frame, &format!("{name}.frame"))?;
+        let state = self
+            .backend
+            .builder
+            .build_struct_gep(layout.frame, frame, 0, &format!("{name}.frame.state"))
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_store(state, self.backend.context.i64_type().const_zero())
+            .map_err(builder_error)?;
+        Ok((composite, frame))
+    }
+
+    fn initialize_task_join(
+        &self,
+        composite: PointerValue<'ctx>,
+        name: &str,
+    ) -> Result<(), CodegenError> {
+        let initialized = call_int(
+            &self.backend.builder,
+            self.backend.typed_task_initialize(),
+            &[
+                composite.into(),
+                self.backend.context.i64_type().const_zero().into(),
+            ],
+            name,
+        )?;
+        self.backend.require_zero_status(initialized, name)
+    }
+
+    fn finish_task_join_publish(
+        &self,
+        executor: PointerValue<'ctx>,
+        composite: PointerValue<'ctx>,
+        status: IntValue<'ctx>,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let success = self
+            .backend
+            .context
+            .append_basic_block(self.function, &format!("{name}.ok"));
+        let failure = self
+            .backend
+            .context
+            .append_basic_block(self.function, &format!("{name}.failed"));
+        let ok = self
+            .backend
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.backend.context.i32_type().const_zero(),
+                &format!("{name}.status.ok"),
+            )
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_conditional_branch(ok, success, failure)
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(failure);
+        let _aborted = call_int(
+            &self.backend.builder,
+            self.backend.typed_task_abort_unpublished(),
+            &[executor.into(), composite.into()],
+            &format!("{name}.abort_unpublished"),
+        )?;
+        let trap = inkwell::intrinsics::Intrinsic::find("llvm.trap")
+            .and_then(|intrinsic| intrinsic.get_declaration(&self.backend.module, &[]))
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "missing llvm.trap"))?;
+        self.backend
+            .builder
+            .build_call(trap, &[], &format!("{name}.trap"))
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_unreachable()
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(success);
+        Ok(composite)
+    }
+
     fn emit_task_join(
         &self,
         instruction: &Instruction,
@@ -15616,9 +16459,18 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
     ) -> Result<PointerValue<'ctx>, CodegenError> {
         let executor = self.executor_context()?;
         let layout = self.backend.task_join_layout(instruction.id())?;
+        let TaskJoinInputs::Fixed { child_fields } = &layout.inputs else {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!(
+                    "typed fixed Task join {} resolved to a runtime-width layout",
+                    instruction.id()
+                ),
+            ));
+        };
         if layout.mode != mode
             || tasks.is_empty()
-            || tasks.len() != layout.child_fields.len()
+            || tasks.len() != child_fields.len()
             || tasks.len() != layout.output_types.len()
         {
             return Err(CodegenError::new(
@@ -15634,34 +16486,11 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .copied()
             .map(|task| self.value(task).map(BasicValueEnum::into_pointer_value))
             .collect::<Result<Vec<_>, _>>()?;
-        let composite = call_pointer(
-            &self.backend.builder,
-            self.backend.typed_task_create(),
-            &[executor.into(), layout.descriptor.into()],
-            "task.join.create",
-        )?;
-        self.backend
-            .require_nonnull(composite, "task.join.create")?;
-        let frame = call_pointer(
-            &self.backend.builder,
-            self.backend.typed_task_frame(),
-            &[composite.into()],
-            "task.join.frame",
-        )?;
-        self.backend.require_nonnull(frame, "task.join.frame")?;
-        let state = self
-            .backend
-            .builder
-            .build_struct_gep(layout.frame, frame, 0, "task.join.frame.state")
-            .map_err(builder_error)?;
-        self.backend
-            .builder
-            .build_store(state, self.backend.context.i64_type().const_zero())
-            .map_err(builder_error)?;
+        let (composite, frame) = self.create_task_join_frame(layout, executor, "task.join")?;
         for ((child, field), index) in children
             .iter()
             .copied()
-            .zip(layout.child_fields.iter().copied())
+            .zip(child_fields.iter().copied())
             .zip(0_u32..)
         {
             let pointer = self
@@ -15679,17 +16508,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 .build_store(pointer, child)
                 .map_err(builder_error)?;
         }
-        let initialized = call_int(
-            &self.backend.builder,
-            self.backend.typed_task_initialize(),
-            &[
-                composite.into(),
-                self.backend.context.i64_type().const_zero().into(),
-            ],
-            "task.join.initialize",
-        )?;
-        self.backend
-            .require_zero_status(initialized, "task.join.initialize")?;
+        self.initialize_task_join(composite, "task.join.initialize")?;
 
         let count = self
             .backend
@@ -15725,48 +16544,185 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             ],
             "task.join.publish_adopting",
         )?;
-        let success = self
-            .backend
-            .context
-            .append_basic_block(self.function, "task.join.publish_adopting.ok");
-        let failure = self
-            .backend
-            .context
-            .append_basic_block(self.function, "task.join.publish_adopting.failed");
-        let ok = self
+        self.finish_task_join_publish(executor, composite, published, "task.join.publish_adopting")
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one runtime-width constructor initializes the exact rooted frame and selects ordinary versus directly adopting publication atomically"
+    )]
+    fn emit_task_join_list(
+        &self,
+        instruction: &Instruction,
+        mode: AwaitMode,
+        tasks: ValueId,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let executor = self.executor_context()?;
+        let layout = self.backend.task_join_layout(instruction.id())?;
+        let TaskJoinInputs::Dynamic {
+            source_field,
+            source_type,
+            source_layout,
+            output_type,
+        } = &layout.inputs
+        else {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!(
+                    "typed Task join List {} resolved to a fixed-width layout",
+                    instruction.id()
+                ),
+            ));
+        };
+        let actual_source_type = self
+            .source
+            .value(tasks)
+            .map(loom_codegen_ir::Value::ty)
+            .ok_or_else(|| {
+                CodegenError::new(
+                    "LlvmAbiDefect",
+                    format!("typed Task join List source {tasks} is missing"),
+                )
+            })?;
+        if layout.mode != mode
+            || actual_source_type != *source_type
+            || layout.output_types.as_slice() != [*output_type]
+            || !source_layout.pointer_offsets.is_empty()
+            || source_layout.element != BasicTypeEnum::from(self.backend.ptr_type)
+        {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!(
+                    "typed Task join List {} disagrees with its exact generated shape",
+                    instruction.id()
+                ),
+            ));
+        }
+        let source = self.value(tasks)?.into_pointer_value();
+        let (composite, frame) =
+            self.create_task_join_frame(layout, executor, "task.join.dynamic")?;
+        let source_pointer = self
             .backend
             .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                published,
-                self.backend.context.i32_type().const_zero(),
-                "task.join.publish_adopting.status.ok",
+            .build_struct_gep(
+                layout.frame,
+                frame,
+                *source_field,
+                "task.join.dynamic.frame.source",
+            )
+            .map_err(builder_error)?;
+        // The managed source is installed before the task can be published;
+        // root state zero makes this frame cell authoritative to moving GC.
+        self.backend
+            .builder
+            .build_store(source_pointer, source)
+            .map_err(builder_error)?;
+        let result_pointer = self
+            .backend
+            .builder
+            .build_struct_gep(
+                layout.frame,
+                frame,
+                layout.result_field,
+                "task.join.dynamic.frame.result",
             )
             .map_err(builder_error)?;
         self.backend
             .builder
-            .build_conditional_branch(ok, success, failure)
+            .build_store(result_pointer, self.backend.zero(layout.result_type)?)
             .map_err(builder_error)?;
-        self.backend.builder.position_at_end(failure);
-        let _aborted = call_int(
-            &self.backend.builder,
-            self.backend.typed_task_abort_unpublished(),
-            &[executor.into(), composite.into()],
-            "task.join.abort_unpublished",
+        self.initialize_task_join(composite, "task.join.dynamic.initialize")?;
+
+        let length = self.backend.load_dynamic_task_join_length(
+            layout,
+            frame,
+            "task.join.dynamic.publish.source",
         )?;
-        let trap = inkwell::intrinsics::Intrinsic::find("llvm.trap")
-            .and_then(|intrinsic| intrinsic.get_declaration(&self.backend.module, &[]))
-            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "missing llvm.trap"))?;
-        self.backend
+        let empty = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.join.dynamic.publish.empty");
+        let nonempty = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.join.dynamic.publish.nonempty");
+        let merge = self
+            .backend
+            .context
+            .append_basic_block(self.function, "task.join.dynamic.publish.merge");
+        let is_empty = self
+            .backend
             .builder
-            .build_call(trap, &[], "task.join.publish_adopting.trap")
+            .build_int_compare(
+                IntPredicate::EQ,
+                length,
+                self.backend.context.i64_type().const_zero(),
+                "task.join.dynamic.publish.is_empty",
+            )
             .map_err(builder_error)?;
         self.backend
             .builder
-            .build_unreachable()
+            .build_conditional_branch(is_empty, empty, nonempty)
             .map_err(builder_error)?;
-        self.backend.builder.position_at_end(success);
-        Ok(composite)
+
+        self.backend.builder.position_at_end(empty);
+        let empty_status = call_int(
+            &self.backend.builder,
+            self.backend.typed_task_publish(),
+            &[executor.into(), composite.into()],
+            "task.join.dynamic.publish",
+        )?;
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(nonempty);
+        // Do not copy the runtime-width child row to the native stack. The
+        // List layout is exactly a contiguous array of stable LoomTask*.
+        let relocated_source = self.backend.dynamic_task_join_source(
+            layout,
+            frame,
+            "task.join.dynamic.publish.source.reload",
+        )?;
+        let child_data = self.backend.task_join_list_field(
+            source_layout,
+            relocated_source,
+            2,
+            "task.join.dynamic.publish.children",
+        )?;
+        let adopting_status = call_int(
+            &self.backend.builder,
+            self.backend.typed_task_publish_adopting(),
+            &[
+                executor.into(),
+                composite.into(),
+                child_data.into(),
+                length.into(),
+            ],
+            "task.join.dynamic.publish_adopting",
+        )?;
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(merge);
+        let published = self
+            .backend
+            .builder
+            .build_phi(
+                self.backend.context.i32_type(),
+                "task.join.dynamic.publish.status",
+            )
+            .map_err(builder_error)?;
+        published.add_incoming(&[(&empty_status, empty), (&adopting_status, nonempty)]);
+        self.finish_task_join_publish(
+            executor,
+            composite,
+            published.as_basic_value().into_int_value(),
+            "task.join.dynamic.publish",
+        )
     }
 
     #[expect(
@@ -18017,6 +18973,7 @@ impl<'ctx> Backend<'ctx, '_> {
                 | FaultCode::InvalidSleepDuration
                 | FaultCode::SleepDurationOverflow
                 | FaultCode::TaskAnyFailed
+                | FaultCode::EmptyTaskJoin
                 | FaultCode::LogWrite
                 | FaultCode::StdoutWrite
         ) {
@@ -18371,6 +19328,7 @@ fn fault_properties(code: FaultCode) -> (&'static str, &'static str) {
             SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE,
         ),
         FaultCode::TaskAnyFailed => (TASK_ANY_FAILED_FAULT_CODE, TASK_ANY_FAILED_FAULT_MESSAGE),
+        FaultCode::EmptyTaskJoin => (EMPTY_TASK_JOIN_FAULT_CODE, EMPTY_TASK_JOIN_FAULT_MESSAGE),
         FaultCode::LogWrite => (LOG_WRITE_FAULT_CODE, LOG_WRITE_FAULT_MESSAGE),
         FaultCode::StdoutWrite => (STDOUT_WRITE_FAULT_CODE, STDOUT_WRITE_FAULT_MESSAGE),
     }

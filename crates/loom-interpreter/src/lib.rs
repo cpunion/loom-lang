@@ -13,11 +13,11 @@ use std::time::{Duration, Instant};
 use loom_core::Span;
 use loom_core::runtime_fault::{
     ARTIFACT_PROOF_REJECTED_FAULT_CODE, ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
-    INTEGER_OVERFLOW_FAULT_CODE, INTEGER_OVERFLOW_FAULT_MESSAGE, INVALID_DURATION_FAULT_CODE,
-    INVALID_DURATION_FAULT_MESSAGE, INVALID_SLEEP_DURATION_FAULT_CODE,
-    INVALID_SLEEP_DURATION_FAULT_MESSAGE, LOG_WRITE_FAULT_CODE, LOG_WRITE_FAULT_MESSAGE,
-    SLEEP_DURATION_OVERFLOW_FAULT_CODE, SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE,
-    STDOUT_WRITE_FAULT_CODE, STDOUT_WRITE_FAULT_MESSAGE,
+    EMPTY_TASK_JOIN_FAULT_CODE, EMPTY_TASK_JOIN_FAULT_MESSAGE, INTEGER_OVERFLOW_FAULT_CODE,
+    INTEGER_OVERFLOW_FAULT_MESSAGE, INVALID_DURATION_FAULT_CODE, INVALID_DURATION_FAULT_MESSAGE,
+    INVALID_SLEEP_DURATION_FAULT_CODE, INVALID_SLEEP_DURATION_FAULT_MESSAGE, LOG_WRITE_FAULT_CODE,
+    LOG_WRITE_FAULT_MESSAGE, SLEEP_DURATION_OVERFLOW_FAULT_CODE,
+    SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE, STDOUT_WRITE_FAULT_CODE, STDOUT_WRITE_FAULT_MESSAGE,
 };
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, CheckedProgram, Constant, ConstructionMode,
@@ -1547,8 +1547,8 @@ impl<'program> Interpreter<'program> {
                     }
                     TaskJoinMode::Any | TaskJoinMode::Race => Ok(AwaitPoll::Failed(
                         self.runtime_fault(
-                            "EmptyTaskJoin",
-                            "Task.any and Task.race require a non-empty task list",
+                            EMPTY_TASK_JOIN_FAULT_CODE,
+                            EMPTY_TASK_JOIN_FAULT_MESSAGE,
                             join_origin,
                         )
                         .into(),

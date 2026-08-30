@@ -984,6 +984,17 @@ pub enum InstructionKind {
         mode: AwaitMode,
         tasks: Box<[ValueId]>,
     },
+    /// Allocates one runtime-width composite Task from an exact
+    /// `List[Task[T]]` carrier. The List and every child handle it owns are
+    /// consumed together. Unlike [`Self::TaskJoin`], every mode has one
+    /// homogeneous child output and preserves the source-visible List shape:
+    /// `all` produces `Task[List[T]]`, `any` produces `Task[T]`, `settled`
+    /// produces `Task[List[TaskOutcome[T]]]`, and `race` produces
+    /// `Task[TaskOutcome[T]]`.
+    TaskJoinList {
+        mode: AwaitMode,
+        tasks: ValueId,
+    },
     /// Consumes one terminal child handle produced by a `settled` or `race`
     /// await and constructs its exact canonical `TaskOutcome[T]`. Completed
     /// payloads are moved from the child frame, fault code/message bytes become
@@ -1110,6 +1121,7 @@ impl InstructionKind {
             | Self::IoTaskCreate { arguments, .. }
             | Self::DirectCall { arguments, .. } => arguments.to_vec(),
             Self::TaskJoin { tasks, .. } => tasks.to_vec(),
+            Self::TaskJoinList { tasks, .. } => vec![*tasks],
             Self::TaskOutcomeTake { task } => vec![*task],
             Self::IntSuccessorBelow {
                 value,
@@ -1218,6 +1230,7 @@ pub enum FaultCode {
     InvalidSleepDuration,
     SleepDurationOverflow,
     TaskAnyFailed,
+    EmptyTaskJoin,
     LogWrite,
     StdoutWrite,
 }
