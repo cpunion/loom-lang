@@ -20,7 +20,7 @@ use crate::instance_closure::{
 };
 use crate::match_plan::{MatchNode, MatchPlan, plan_contract_match, plan_match};
 use crate::place_plan::{PlaceBudget, PlacePlan, PlaceUse};
-use crate::text_plan::TextLiteralBudget;
+use crate::text_plan::{TEXT_LITERAL_MAX_BYTES, TextLiteralBudget};
 use crate::{
     ArtifactRootRequest, AwaitMode, BlockId, BlockTarget, BoolPredicate, BuildError,
     BuildErrorCode, CanonicalTypeCatalog, CheckedArtifact, CheckedIntBinaryOp, Constant,
@@ -2441,7 +2441,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
         }
     }
 
-    fn admit_pattern_text(
+    fn preflight_pattern_text(
         &mut self,
         function: &mir::Function,
         expression: Option<ExprId>,
@@ -2453,7 +2453,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
         while let Some(pattern) = pending.pop() {
             match pattern {
                 mir::Pattern::Constant(mir::Constant::Text(value)) => {
-                    if self.target.pointer_bits() != 64 || !self.text_literals.admit(value.len()) {
+                    if self.target.pointer_bits() != 64 || value.len() > TEXT_LITERAL_MAX_BYTES {
                         self.item(
                             UnsupportedFeature::TextConstant,
                             function.id,
@@ -2463,12 +2463,46 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         );
                         return false;
                     }
-                    self.immortal_text = true;
                 }
                 mir::Pattern::Variant { payload, .. } => pending.extend(payload),
                 mir::Pattern::Wildcard | mir::Pattern::Binding | mir::Pattern::Constant(_) => {}
             }
         }
+        true
+    }
+
+    fn admit_match_plan_text(
+        &mut self,
+        function: &mir::Function,
+        expression: Option<ExprId>,
+        plan: &MatchPlan,
+        span: Span,
+        path: &str,
+    ) -> bool {
+        let literals = plan
+            .nodes()
+            .filter_map(|(_, node)| match node {
+                MatchNode::Constant {
+                    constant: mir::Constant::Text(value),
+                    ..
+                } => Some(value.len()),
+                MatchNode::Arm { .. } | MatchNode::Constant { .. } | MatchNode::Sum { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        if literals.is_empty() {
+            return true;
+        }
+        if self.target.pointer_bits() != 64 || !self.text_literals.admit_all(literals) {
+            self.item(
+                UnsupportedFeature::TextConstant,
+                function.id,
+                expression,
+                span,
+                path.to_owned(),
+            );
+            return false;
+        }
+        self.immortal_text = true;
         true
     }
 
@@ -2591,7 +2625,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             }
             ContractExprKind::Match { scrutinee, arms } => {
                 for (index, arm) in arms.iter().enumerate() {
-                    if !self.admit_pattern_text(
+                    if !self.preflight_pattern_text(
                         function,
                         None,
                         &arm.pattern,
@@ -2610,14 +2644,12 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 )?;
                 let planned_scrutinee = contract_base_type(self.program, &scrutinee_ty)
                     .unwrap_or_else(|| scrutinee_ty.clone());
-                if plan_contract_match(
+                let Some(plan) = plan_contract_match(
                     self.program,
                     &planned_scrutinee,
                     arms,
                     context.bindings.len(),
-                )
-                .is_none()
-                {
+                ) else {
                     self.item(
                         UnsupportedFeature::PatternMatch,
                         function.id,
@@ -2625,6 +2657,9 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         expression.span,
                         path.to_owned(),
                     );
+                    return None;
+                };
+                if !self.admit_match_plan_text(function, None, &plan, expression.span, path) {
                     return None;
                 }
                 let mut result = None;
@@ -2962,7 +2997,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             }
             ExprKind::Match { scrutinee, arms } => {
                 let patterns_supported = arms.iter().enumerate().all(|(index, arm)| {
-                    self.admit_pattern_text(
+                    self.preflight_pattern_text(
                         function,
                         Some(expression.id),
                         &arm.pattern,
@@ -3000,7 +3035,13 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         scrutinee_ty.as_ref().expect("checked Some"),
                         arms,
                     ) {
-                        if self
+                        if self.admit_match_plan_text(
+                            function,
+                            Some(expression.id),
+                            &plan,
+                            expression.span,
+                            path,
+                        ) && self
                             .match_plans
                             .entry(key.canonical_identity())
                             .or_default()

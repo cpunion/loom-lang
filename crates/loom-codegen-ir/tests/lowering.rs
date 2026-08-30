@@ -8,9 +8,9 @@ use std::{
 use loom_codegen_ir::{
     AwaitMode, CheckedIntBinaryOp, Effects, InstanceKey, InstanceRole, InstructionKind,
     InvalidRootCode, IoTaskErrorMode, IoTaskOperation, LoweringErrorCode, LoweringOutcome,
-    ManagedSafepoint, ResourceKind, ResourceLimitCode, SourceArtifactRequest, TargetLayout,
-    TerminatorKind, UnsupportedFeature, artifact_identity, dump_program, lower_typed_artifact,
-    plan_managed_roots,
+    ManagedSafepoint, ResourceKind, ResourceLimitCode, SourceArtifactRequest,
+    TEXT_LITERAL_MAX_TOTAL_BYTES, TargetLayout, TerminatorKind, UnsupportedFeature,
+    artifact_identity, dump_program, lower_typed_artifact, plan_managed_roots,
 };
 use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId, Span};
 use loom_hir::{PackageSourceUnit, lower_package_files};
@@ -2681,6 +2681,46 @@ pub fn main() {
         assert!(dump.contains(required), "missing `{required}`:\n{dump}");
     }
     assert!(!dump.contains("loom.Value"), "{dump}");
+}
+
+#[test]
+fn text_pattern_budget_charges_specialized_decision_nodes_atomically() {
+    let mut distinct_arms = String::new();
+    for index in 0..31 {
+        writeln!(
+            distinct_arms,
+            "        Pair(\"x{index}\", \"a{index}\") => {index}"
+        )
+        .expect("write generated match arm");
+    }
+    let repeated = "B".repeat(TEXT_LITERAL_MAX_TOTAL_BYTES / 32 + 1);
+    let source = format!(
+        r#"enum Pair {{
+    Pair(Text, Text)
+}}
+
+fn classify(value Pair) Int {{
+    match value {{
+{distinct_arms}        Pair(_, "{repeated}") => 31
+        _ => 32
+    }}
+}}
+
+pub fn main() {{
+    discard classify(Pair.Pair("other", "other"))
+}}
+"#
+    );
+    let LoweringOutcome::Unsupported(report) = lower_run(&source) else {
+        panic!("specialized Text literals must select atomic fallback")
+    };
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::TextConstant),
+        "{report:?}"
+    );
 }
 
 #[test]
