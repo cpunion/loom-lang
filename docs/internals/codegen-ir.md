@@ -414,9 +414,10 @@ tuple/record nesting, product block parameters, parameters, returns, and
 loop-carried products lower directly to SSA. Compile-time-proven
 refined construction, exact unrefinement, and compile-time-proven record
 invariants are representation-preserving typed operations. Unknown nongeneric
-refined predicates and record invariants remain normal typed
-`Result[..., ConstraintError]` constructions; generic or unsupported-shape
-runtime construction selects whole-artifact fallback. A decoded `.loomi` MIR
+refined predicates and fully concrete nongeneric or generic record invariants
+remain normal typed `Result[..., ConstraintError]` constructions. Open or
+unsupported-shape runtime construction selects whole-artifact fallback. A
+decoded `.loomi` MIR
 proof replay (`ConstructionMode::Recheck`) for a refined type or concrete
 invariant-record instantiation re-evaluates the embedded predicate in typed
 LCIR, raises the canonical `ArtifactProofRejected` runtime fault on rejection,
@@ -1017,14 +1018,14 @@ await Tasks, including through an executor-dependent callee. An active
 source-fault cleanup likewise cannot await again before `resume_fault`.
 
 Managed values outside the admitted Text, List, and TextMap graphs, open or
-recursive enums, generic or unsupported-shape runtime construction,
+recursive enums, open or unsupported-shape runtime construction,
 unsupported-shape proof replay, incomplete dynamic witness catalogs, derived
 dynamic proof conversion, contracts over unsupported value shapes, and
 coroutine forms outside the bounded typed slice are not implemented. Nongeneric
-refined and invariant runtime construction is direct typed CFG returning the
-exact `Result[..., ConstraintError]`; portable refined and concrete
-invariant-record proof replay uses a canonical runtime-fault assertion before
-nominal publication. The current CFG
+refined and fully concrete invariant-record runtime construction is direct typed
+CFG returning the exact `Result[..., ConstraintError]`; portable refined and
+concrete invariant-record proof replay uses a canonical runtime-fault assertion
+before nominal publication. The current CFG
 represents direct products, concrete closed sums, both direct Text modes, and
 the scalar operations and fault-state transitions which later slices use.
 

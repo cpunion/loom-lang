@@ -8586,6 +8586,67 @@ pub fn main() {
 }
 
 #[test]
+fn generic_runtime_record_invariants_match_checked_mir_without_universal_values() {
+    let source = r#"record Guarded[T] {
+    value Option[T]
+    marker Int
+
+    invariant match self.value {
+        Some(value) => self.marker + 1 > 0
+        None => false
+    }
+}
+
+fn checked[T](value Option[T], marker Int) Result[Guarded[T], ConstraintError] {
+    Guarded { value = value, marker = marker }
+}
+
+pub fn main() {
+    match checked[Text](Some("typed"), 1) {
+        Ok(value) => { assert value.marker == 1 }
+        Err(_) => { assert false }
+    }
+    match checked[Text](None, 1) {
+        Ok(_) => { assert false }
+        Err(_) => { assert true }
+    }
+    match checked[Text](Some("typed"), -1) {
+        Ok(_) => { assert false }
+        Err(_) => { assert true }
+    }
+}
+"#;
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+    let prepared = prepare_native_object(
+        &program,
+        EmitOptions::run("main"),
+        NativeRoutePolicy::Automatic,
+    )
+    .expect("prepare generic runtime invariant route");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("[Text]"), "{dump}");
+    assert!(dump.contains("invariant_record.proven"), "{dump}");
+    assert!(dump.contains("InvariantViolation"), "{dump}");
+
+    let lcir = emit_and_run_lcir(&artifact, "generic-runtime-invariant");
+    let checked_mir =
+        emit_and_run_checked_mir(&program, "main", "checked-mir-generic-runtime-invariant");
+    assert!(lcir.output.status.success(), "{:?}", lcir.output);
+    assert!(checked_mir.status.success(), "{checked_mir:?}");
+    assert_eq!(lcir.output.stdout, checked_mir.stdout);
+    assert_typed_lcir_surface(&lcir.ir);
+    assert_no_indirect_calls(&lcir.ir);
+}
+
+#[test]
 fn release_tuple_ir_needs_no_storage_runtime_or_executor_surface() {
     let source = r"record Packet { pair (Int, Bool) }
 

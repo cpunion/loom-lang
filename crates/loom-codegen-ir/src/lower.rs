@@ -3042,43 +3042,37 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     .ok()
                     .map(|arguments| Type::Nominal(*ty, arguments));
                 if *construction == mir::ConstructionMode::Runtime {
-                    let runtime = self
-                        .program
-                        .type_def(*ty)
-                        .and_then(|definition| {
-                            (definition.type_parameters == 0).then_some(definition)
-                        })
-                        .and_then(|definition| match &definition.kind {
-                            mir::TypeDefKind::Record {
-                                invariant: Some(invariant),
-                                ..
-                            } => Some((definition.name.clone(), invariant.clone())),
-                            _ => None,
-                        });
-                    let target = Type::Nominal(*ty, Vec::new());
-                    let result = runtime_constraint_result_type(self.program, target.clone());
-                    let direct_runtime = semantic.as_ref() == Some(&target)
-                        && expression_ty.as_ref() == result.as_ref()
-                        && self.supported_value_type(&target)
-                        && result
-                            .as_ref()
-                            .is_some_and(|result| self.supported_value_type(result));
-                    let contract_supported = runtime.as_ref().is_some_and(|(_, invariant)| {
-                        self.classify_contract_expr(
-                            function,
-                            key,
-                            &invariant.expression,
-                            &ContractTypeContext {
-                                receiver: Some(target.clone()),
-                                result: None,
-                                arguments: Vec::new(),
-                                old_receiver: None,
-                                old_arguments: Vec::new(),
-                                bindings: Vec::new(),
-                            },
-                            &format!("{path}.runtime_invariant"),
-                        ) == Some(Type::Bool)
+                    let runtime = semantic.as_ref().and_then(|target| {
+                        let definition = self.program.type_def(*ty)?;
+                        let (_, invariant) = concrete_invariant_record(self.program, target)?;
+                        Some((definition.name.clone(), target.clone(), invariant))
                     });
+                    let result = runtime.as_ref().and_then(|(_, target, _)| {
+                        runtime_constraint_result_type(self.program, target.clone())
+                    });
+                    let direct_runtime = runtime.as_ref().is_some_and(|(_, target, _)| {
+                        expression_ty.as_ref() == result.as_ref()
+                            && self.supported_value_type(target)
+                    }) && result
+                        .as_ref()
+                        .is_some_and(|result| self.supported_value_type(result));
+                    let contract_supported =
+                        runtime.as_ref().is_some_and(|(_, target, invariant)| {
+                            self.classify_contract_expr(
+                                function,
+                                key,
+                                &invariant.expression,
+                                &ContractTypeContext {
+                                    receiver: Some(target.clone()),
+                                    result: None,
+                                    arguments: Vec::new(),
+                                    old_receiver: None,
+                                    old_arguments: Vec::new(),
+                                    bindings: Vec::new(),
+                                },
+                                &format!("{path}.runtime_invariant"),
+                            ) == Some(Type::Bool)
+                        });
                     if !direct_runtime || !contract_supported {
                         self.expression_item(
                             UnsupportedFeature::NominalValue,
@@ -3086,8 +3080,8 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                             expression,
                             path,
                         );
-                    } else if let Some((name, invariant)) = runtime.as_ref() {
-                        let summary = disclosure_type_summary(self.program, &target);
+                    } else if let Some((name, target, invariant)) = runtime.as_ref() {
+                        let summary = disclosure_type_summary(self.program, target);
                         if !self.admit_generated_text_literals(&[
                             name,
                             "InvariantViolation",
@@ -4140,6 +4134,43 @@ impl InstanceLookup {
     }
 }
 
+fn instantiated_runtime_record_may_fault(
+    program: &mir::Program,
+    function: &mir::Function,
+    key: &InstanceKey,
+) -> bool {
+    let substitution = InstanceSubstitution::new(program, key);
+    function.exprs_preorder().any(|expression| {
+        let ExprKind::Record {
+            ty,
+            type_arguments,
+            construction: mir::ConstructionMode::Runtime,
+            ..
+        } = &expression.kind
+        else {
+            return false;
+        };
+        let Ok(arguments) = substitution.instantiate_types(type_arguments) else {
+            return false;
+        };
+        let target = Type::Nominal(*ty, arguments);
+        concrete_invariant_record(program, &target).is_some_and(|(_, invariant)| {
+            contract_expr_may_fault(
+                program,
+                &invariant.expression,
+                &ContractTypeContext {
+                    receiver: Some(target),
+                    result: None,
+                    arguments: Vec::new(),
+                    old_receiver: None,
+                    old_arguments: Vec::new(),
+                    bindings: Vec::new(),
+                },
+            )
+        })
+    })
+}
+
 fn summarize_effects(
     program: &mir::Program,
     function: &mir::Function,
@@ -4158,6 +4189,9 @@ fn summarize_effects(
         }
     }
     scan_effect_block(program, &function.body, &mut summary);
+    if instantiated_runtime_record_may_fault(program, function, key) {
+        summary.include(Effects::MAY_FAULT);
+    }
     let substitution = InstanceSubstitution::new(program, key);
     if function.exprs_preorder().any(|expression| {
         matches!(expression.kind, ExprKind::MakeView { .. })
@@ -4356,9 +4390,9 @@ fn scan_effect_expr(
         }
         ExprKind::Record {
             ty,
+            type_arguments,
             fields,
             construction,
-            ..
         } => {
             let continues = scan_effect_exprs(program, fields, summary);
             if continues
@@ -4376,7 +4410,7 @@ fn scan_effect_expr(
                                 program,
                                 &invariant.expression,
                                 &ContractTypeContext {
-                                    receiver: Some(Type::Nominal(*ty, Vec::new())),
+                                    receiver: Some(Type::Nominal(*ty, type_arguments.clone())),
                                     result: None,
                                     arguments: Vec::new(),
                                     old_receiver: None,
@@ -8017,7 +8051,13 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     mir::ConstructionMode::Plain => ProductConstruction::Plain,
                     mir::ConstructionMode::Proven => ProductConstruction::InvariantProven,
                     mir::ConstructionMode::Runtime => {
-                        return self.lower_runtime_checked_record(flow, *ty, fields, expression);
+                        return self.lower_runtime_checked_record(
+                            flow,
+                            *ty,
+                            type_arguments,
+                            fields,
+                            expression,
+                        );
                     }
                     mir::ConstructionMode::Recheck => {
                         return self.lower_rechecked_record(
@@ -8579,27 +8619,20 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         &mut self,
         mut flow: Flow,
         ty: mir::TypeId,
+        type_arguments: &[Type],
         fields: &[mir::Expr],
         expression: &mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
-        let (name, field_types, invariant) = self
+        let arguments = InstanceSubstitution::new(self.program, self.key)
+            .instantiate_types(type_arguments)
+            .map_err(|error| instantiation_defect(self.source.id, Some(expression.id), error))?;
+        let target = Type::Nominal(ty, arguments);
+        let name = self
             .program
             .type_def(ty)
-            .and_then(|definition| (definition.type_parameters == 0).then_some(definition))
-            .and_then(|definition| match &definition.kind {
-                mir::TypeDefKind::Record {
-                    fields,
-                    invariant: Some(invariant),
-                } => Some((
-                    definition.name.clone(),
-                    fields
-                        .iter()
-                        .map(|field| field.ty.clone())
-                        .collect::<Vec<_>>(),
-                    invariant.clone(),
-                )),
-                _ => None,
-            })
+            .map(|definition| definition.name.clone())
+            .ok_or_else(|| self.unsupported_reached("runtime record constraint"))?;
+        let (field_types, invariant) = concrete_invariant_record(self.program, &target)
             .ok_or_else(|| self.unsupported_reached("runtime record constraint"))?;
         if field_types.len() != fields.len() {
             return Err(LoweringError::defect(
@@ -8624,7 +8657,6 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 ty: field_ty,
             });
         }
-        let target = Type::Nominal(ty, Vec::new());
         let context = ContractContext {
             receiver: None,
             record_candidate: Some(ContractRecordCandidate {

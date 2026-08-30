@@ -6905,6 +6905,50 @@ pub fn main() {
 }
 
 #[test]
+fn generic_runtime_invariants_build_exact_instantiated_results() {
+    let outcome = lower_run(
+        r#"record Guarded[T] {
+    value Option[T]
+    marker Int
+
+    invariant match self.value {
+        Some(value) => self.marker + 1 > 0
+        None => false
+    }
+}
+
+fn checked[T](value Option[T], marker Int) Result[Guarded[T], ConstraintError] {
+    Guarded { value = value, marker = marker }
+}
+
+pub fn main() {
+    match checked[Text](Some("typed"), 1) {
+        Ok(value) => { assert value.marker == 1 }
+        Err(_) => { assert false }
+    }
+    match checked[Text](None, 1) {
+        Ok(_) => { assert false }
+        Err(_) => { assert true }
+    }
+    match checked[Text](Some("typed"), -1) {
+        Ok(_) => { assert false }
+        Err(_) => { assert true }
+    }
+}
+"#,
+    );
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("closed generic runtime invariants must use typed LCIR: {outcome:?}")
+    };
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("[Text]"), "{dump}");
+    assert!(dump.contains("invariant_record.proven"), "{dump}");
+    assert!(dump.contains("sum.construct"), "{dump}");
+    assert!(dump.contains("effects=may_fault"), "{dump}");
+    assert!(!dump.contains("loom.Value"), "{dump}");
+}
+
+#[test]
 fn projection_through_a_protected_product_is_an_exact_read_only_extract_chain() {
     let LoweringOutcome::Complete(artifact) = lower_run(
         r"record Positive {
