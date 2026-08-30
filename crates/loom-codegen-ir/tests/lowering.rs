@@ -2798,9 +2798,142 @@ pub fn main() {{
         "a few expanded cleanup literals must remain supported: {small:?}"
     );
 
-    let overflowing = lower_run(&source(16));
+    // Keep expanding cleanup matches well after they cross the budget so the
+    // unsupported tail also stays on the borrowed plan.
+    let overflowing = lower_run(&source(32));
     let LoweringOutcome::Unsupported(report) = overflowing else {
         panic!("cleanup Text amplification must select atomic fallback: {overflowing:?}")
+    };
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::TextConstant),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn text_budget_charges_invariant_and_refined_contracts_in_expanded_cleanup() {
+    let source = |return_count: usize| {
+        let invariant_pattern = "D".repeat(TEXT_LITERAL_MAX_TOTAL_BYTES / 32);
+        let refined_pattern = "E".repeat(TEXT_LITERAL_MAX_TOTAL_BYTES / 32);
+        let returns = "    if flag {\n        return\n    }\n".repeat(return_count);
+        format!(
+            r#"record Guarded[T] {{
+    value T
+    marker Text
+    invariant match self.marker {{
+        "{invariant_pattern}" => true
+        _ => false
+    }}
+}}
+
+type RefinedInt = Int where match "probe" {{
+    "{refined_pattern}" => true
+    _ => false
+}}
+
+fn consume_record(value Result[Guarded[Text], ConstraintError]) {{}}
+fn consume_refined(value Result[RefinedInt, ConstraintError]) {{}}
+
+fn exercise(value Text, flag Bool) {{
+    defer {{
+        consume_record(Guarded {{ value = value, marker = value }})
+        consume_refined(RefinedInt(1))
+    }}
+{returns}}}
+
+pub fn main() {{
+    exercise("other", false)
+}}
+"#
+        )
+    };
+
+    let small = lower_run(&source(1));
+    assert!(
+        matches!(small, LoweringOutcome::Complete(_)),
+        "a few expanded constraint literals must remain supported: {small:?}"
+    );
+
+    let overflowing = lower_run(&source(32));
+    let LoweringOutcome::Unsupported(report) = overflowing else {
+        panic!("expanded constraint Text must select atomic fallback: {overflowing:?}")
+    };
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::TextConstant),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn text_budget_charges_rechecked_contracts_in_expanded_cleanup() {
+    let source = |return_count: usize| {
+        let invariant_pattern = "F".repeat(TEXT_LITERAL_MAX_TOTAL_BYTES / 32);
+        let refined_pattern = "G".repeat(TEXT_LITERAL_MAX_TOTAL_BYTES / 32);
+        let returns = "    if flag {\n        return\n    }\n".repeat(return_count);
+        format!(
+            r#"record Guarded[T] {{
+    value T
+    marker Int
+    invariant self.marker >= 0 || match "probe" {{
+        "{invariant_pattern}" => true
+        _ => false
+    }}
+}}
+
+type RefinedInt = Int where self >= 0 || match "probe" {{
+    "{refined_pattern}" => true
+    _ => false
+}}
+
+fn consume_record(value Guarded[Text]) {{}}
+fn consume_refined(value RefinedInt) {{}}
+
+fn exercise(value Text, flag Bool) {{
+    defer {{
+        consume_record(Guarded {{ value = value, marker = 1 }})
+        consume_refined(RefinedInt(1))
+    }}
+{returns}}}
+
+pub fn main() {{
+    exercise("other", false)
+}}
+"#
+        )
+    };
+    let lower_rechecked = |return_count| {
+        let fresh = compile_with_std_resource(&source(return_count));
+        let bytes = loom_mir::encode_interpreted_executable_artifact(&fresh, "main")
+            .expect("encode portable cleanup proof artifact");
+        let (decoded, entry) = loom_mir::decode_interpreted_executable_artifact(&bytes)
+            .expect("decode portable cleanup proof artifact");
+        assert!(
+            format!("{decoded:#?}").contains("construction: Recheck"),
+            "portable cleanup proof must be distrusted"
+        );
+        lower_typed_artifact(
+            &decoded,
+            &SourceArtifactRequest::Run { entry },
+            TargetLayout::new(64).expect("test target"),
+        )
+        .expect("lower portable cleanup proof")
+    };
+
+    let small = lower_rechecked(1);
+    assert!(
+        matches!(small, LoweringOutcome::Complete(_)),
+        "a few expanded proof rechecks must remain supported: {small:?}"
+    );
+
+    let overflowing = lower_rechecked(32);
+    let LoweringOutcome::Unsupported(report) = overflowing else {
+        panic!("expanded proof recheck Text must select atomic fallback: {overflowing:?}")
     };
     assert!(
         report

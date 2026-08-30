@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
 use std::fmt;
+use std::rc::Rc;
 
 use loom_core::Span;
 use loom_mir::{
@@ -516,6 +517,7 @@ pub fn lower_typed_artifact(
                 key,
                 calls,
                 &dyn_concepts,
+                &classifier.concrete_invariants,
             ))
         })
         .collect::<Result<Vec<_>, LoweringError>>()?;
@@ -573,6 +575,8 @@ pub fn lower_typed_artifact(
     let Classifier {
         aggregates,
         match_plans,
+        concrete_invariants,
+        constraint_summaries,
         immortal_text,
         managed_text,
         task_handles,
@@ -733,6 +737,8 @@ pub fn lower_typed_artifact(
                 &instances,
                 &instance_effects,
                 &match_plans,
+                &concrete_invariants,
+                &constraint_summaries,
                 &dyn_concepts,
                 equality_anchor,
                 &mut emitted_text_literals,
@@ -879,6 +885,8 @@ pub fn lower_typed_artifact(
             &instances,
             &instance_effects,
             &match_plans,
+            &concrete_invariants,
+            &constraint_summaries,
             &dyn_concepts,
             equality_anchor,
             &mut emitted_text_literals,
@@ -1867,7 +1875,9 @@ struct Classifier<'program, 'plan> {
     target: TargetLayout,
     items: Vec<UnsupportedItem>,
     aggregates: AggregatePlanner<'program, 'plan>,
-    match_plans: BTreeMap<String, BTreeMap<ExprId, MatchPlan>>,
+    match_plans: BTreeMap<String, BTreeMap<ExprId, MatchPlan<'program>>>,
+    concrete_invariants: BTreeMap<Type, Rc<Contract>>,
+    constraint_summaries: BTreeMap<Type, Rc<str>>,
     places: PlaceBudget,
     immortal_text: bool,
     managed_text: bool,
@@ -1920,6 +1930,8 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             items: Vec::new(),
             aggregates: AggregatePlanner::new(program, dyn_concepts, target.pointer_bits() == 64),
             match_plans: BTreeMap::new(),
+            concrete_invariants: BTreeMap::new(),
+            constraint_summaries: BTreeMap::new(),
             places: PlaceBudget::default(),
             immortal_text: false,
             managed_text: false,
@@ -2148,6 +2160,101 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             .all(|literal| literal.len() <= TEXT_LITERAL_MAX_BYTES)
     }
 
+    fn concrete_invariant_contract(
+        &mut self,
+        target: &Type,
+        function: &mir::Function,
+        expression: &mir::Expr,
+        path: &str,
+    ) -> Option<Rc<Contract>> {
+        if let Some(invariant) = self.concrete_invariants.get(target) {
+            return Some(Rc::clone(invariant));
+        }
+        let Type::Nominal(id, _) = target else {
+            return None;
+        };
+        let source = self.program.type_def(*id).and_then(|definition| {
+            let mir::TypeDefKind::Record {
+                invariant: Some(invariant),
+                ..
+            } = &definition.kind
+            else {
+                return None;
+            };
+            Some(invariant)
+        })?;
+        if !self.contract_text_supported(&source.expression) {
+            self.expression_item(UnsupportedFeature::TextConstant, function, expression, path);
+            return None;
+        }
+        // Generic binding substitution may clone the source contract once for
+        // this concrete target. Every lowering expansion borrows this cache.
+        let (_, invariant) = concrete_invariant_record(self.program, target)?;
+        let invariant = Rc::new(invariant);
+        self.concrete_invariants
+            .insert(target.clone(), Rc::clone(&invariant));
+        Some(invariant)
+    }
+
+    fn concrete_constraint_summary(&mut self, target: &Type) -> Rc<str> {
+        if let Some(summary) = self.constraint_summaries.get(target) {
+            return Rc::clone(summary);
+        }
+        let summary: Rc<str> = disclosure_type_summary(self.program, target).into();
+        self.constraint_summaries
+            .insert(target.clone(), Rc::clone(&summary));
+        summary
+    }
+
+    fn contract_text_supported(&self, root: &ContractExpr) -> bool {
+        let mut pending = vec![root];
+        while let Some(expression) = pending.pop() {
+            match &expression.kind {
+                ContractExprKind::Constant(mir::Constant::Text(value)) => {
+                    if self.target.pointer_bits() != 64 || value.len() > TEXT_LITERAL_MAX_BYTES {
+                        return false;
+                    }
+                }
+                ContractExprKind::Constant(_)
+                | ContractExprKind::Value(_)
+                | ContractExprKind::Binding(_) => {}
+                ContractExprKind::Field(owner, _)
+                | ContractExprKind::Unary(_, owner)
+                | ContractExprKind::IsFinite(owner) => pending.push(owner),
+                ContractExprKind::Binary(_, left, right) => {
+                    pending.push(left);
+                    pending.push(right);
+                }
+                ContractExprKind::Match { scrutinee, arms } => {
+                    pending.push(scrutinee);
+                    for arm in arms {
+                        if !self.pattern_text_supported(&arm.pattern) {
+                            return false;
+                        }
+                        pending.push(&arm.value);
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    fn pattern_text_supported(&self, pattern: &mir::Pattern) -> bool {
+        let mut pending = vec![pattern];
+        while let Some(pattern) = pending.pop() {
+            match pattern {
+                mir::Pattern::Constant(mir::Constant::Text(value)) => {
+                    if self.target.pointer_bits() != 64 || value.len() > TEXT_LITERAL_MAX_BYTES {
+                        return false;
+                    }
+                }
+                mir::Pattern::Variant { payload, .. } => pending.extend(payload),
+                mir::Pattern::Wildcard | mir::Pattern::Binding | mir::Pattern::Constant(_) => {}
+            }
+        }
+        true
+    }
+
     fn local_type(function: &mir::Function, local: LocalId) -> Option<&Type> {
         function
             .params
@@ -2266,7 +2373,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn classify_function(&mut self, function: &mir::Function, key: &InstanceKey) {
+    fn classify_function(&mut self, function: &'program mir::Function, key: &InstanceKey) {
         let base = format!("function[{}]", function.id.0);
         if !function.is_async && !function.suspension_points.is_empty() {
             self.function_item(UnsupportedFeature::AsyncFunction, function, &base);
@@ -2486,24 +2593,15 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
         span: Span,
         path: &str,
     ) -> bool {
-        let mut pending = vec![pattern];
-        while let Some(pattern) = pending.pop() {
-            match pattern {
-                mir::Pattern::Constant(mir::Constant::Text(value)) => {
-                    if self.target.pointer_bits() != 64 || value.len() > TEXT_LITERAL_MAX_BYTES {
-                        self.item(
-                            UnsupportedFeature::TextConstant,
-                            function.id,
-                            expression,
-                            span,
-                            path.to_owned(),
-                        );
-                        return false;
-                    }
-                }
-                mir::Pattern::Variant { payload, .. } => pending.extend(payload),
-                mir::Pattern::Wildcard | mir::Pattern::Binding | mir::Pattern::Constant(_) => {}
-            }
+        if !self.pattern_text_supported(pattern) {
+            self.item(
+                UnsupportedFeature::TextConstant,
+                function.id,
+                expression,
+                span,
+                path.to_owned(),
+            );
+            return false;
         }
         true
     }
@@ -2512,7 +2610,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
         &mut self,
         function: &mir::Function,
         expression: Option<ExprId>,
-        plan: &MatchPlan,
+        plan: &MatchPlan<'_>,
         span: Span,
         path: &str,
     ) -> bool {
@@ -2798,9 +2896,9 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
 
     fn visit_block(
         &mut self,
-        function: &mir::Function,
+        function: &'program mir::Function,
         key: &InstanceKey,
-        block: &mir::Block,
+        block: &'program mir::Block,
         path: &str,
     ) -> bool {
         for (index, statement) in block.statements.iter().enumerate() {
@@ -2819,9 +2917,9 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
     #[allow(clippy::too_many_lines)]
     fn visit_statement(
         &mut self,
-        function: &mir::Function,
+        function: &'program mir::Function,
         key: &InstanceKey,
-        statement: &mir::Statement,
+        statement: &'program mir::Statement,
         path: &str,
     ) -> bool {
         match &statement.kind {
@@ -2909,9 +3007,9 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
     #[allow(clippy::too_many_lines)]
     fn visit_expr(
         &mut self,
-        function: &mir::Function,
+        function: &'program mir::Function,
         key: &InstanceKey,
-        expression: &mir::Expr,
+        expression: &'program mir::Expr,
         path: &str,
     ) -> bool {
         let continues = match &expression.kind {
@@ -3132,10 +3230,17 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     .ok()
                     .map(|arguments| Type::Nominal(*ty, arguments));
                 if *construction == mir::ConstructionMode::Runtime {
+                    let program = self.program;
+                    let invariant_path = format!("{path}.runtime_invariant");
                     let runtime = semantic.as_ref().and_then(|target| {
-                        let definition = self.program.type_def(*ty)?;
-                        let (_, invariant) = concrete_invariant_record(self.program, target)?;
-                        Some((definition.name.clone(), target.clone(), invariant))
+                        let definition = program.type_def(*ty)?;
+                        let invariant = self.concrete_invariant_contract(
+                            target,
+                            function,
+                            expression,
+                            &invariant_path,
+                        )?;
+                        Some((definition.name.as_str(), target.clone(), invariant))
                     });
                     let result = runtime.as_ref().and_then(|(_, target, _)| {
                         runtime_constraint_result_type(self.program, target.clone())
@@ -3162,7 +3267,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                                     old_arguments: Vec::new(),
                                     bindings: Vec::new(),
                                 },
-                                &format!("{path}.runtime_invariant"),
+                                &invariant_path,
                             ) == Some(Type::Bool)
                         });
                     if !direct_runtime || !contract_supported {
@@ -3173,12 +3278,12 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                             path,
                         );
                     } else if let Some((name, target, invariant)) = runtime.as_ref() {
-                        let summary = disclosure_type_summary(self.program, target);
+                        let summary = self.concrete_constraint_summary(target);
                         if !Self::preflight_generated_text_literals(&[
                             name,
                             "InvariantViolation",
                             &invariant.code,
-                            &summary,
+                            summary.as_ref(),
                         ]) {
                             self.expression_item(
                                 UnsupportedFeature::TextConstant,
@@ -3191,14 +3296,19 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     return expression.ty != Type::Never;
                 }
                 if *construction == mir::ConstructionMode::Recheck {
+                    let invariant_path = format!("{path}.recheck_invariant");
                     let target = semantic.as_ref().filter(|target| {
                         expression_ty.as_ref() == Some(*target)
                             && self.supported_value_type(target)
                             && task_free_type(self.program, self.dyn_concepts, target)
                     });
                     let invariant = target.and_then(|target| {
-                        concrete_invariant_record(self.program, target)
-                            .map(|(_, invariant)| invariant)
+                        self.concrete_invariant_contract(
+                            target,
+                            function,
+                            expression,
+                            &invariant_path,
+                        )
                     });
                     let direct_recheck = target.is_some() && invariant.is_some();
                     let contract_supported = target.is_some_and(|target| {
@@ -3215,7 +3325,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                                     old_arguments: Vec::new(),
                                     bindings: Vec::new(),
                                 },
-                                &format!("{path}.recheck_invariant"),
+                                &invariant_path,
                             ) == Some(Type::Bool)
                         })
                     });
@@ -3323,15 +3433,15 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     &format!("{path}.value.ty"),
                 );
                 if *construction == mir::ConstructionMode::Runtime {
-                    let runtime = self
-                        .program
+                    let program = self.program;
+                    let runtime = program
                         .type_def(*ty)
                         .and_then(|definition| {
                             (definition.type_parameters == 0).then_some(definition)
                         })
                         .and_then(|definition| match &definition.kind {
                             mir::TypeDefKind::Refined { base, predicate } => {
-                                Some((definition.name.clone(), base.clone(), predicate.clone()))
+                                Some((definition.name.as_str(), base.clone(), predicate))
                             }
                             _ => None,
                         });
@@ -3370,12 +3480,12 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                             path,
                         );
                     } else if let Some((name, base, predicate)) = runtime.as_ref() {
-                        let summary = disclosure_type_summary(self.program, base);
+                        let summary = self.concrete_constraint_summary(base);
                         if !Self::preflight_generated_text_literals(&[
                             name,
                             "ConstraintViolation",
                             &predicate.code,
-                            &summary,
+                            summary.as_ref(),
                         ]) {
                             self.expression_item(
                                 UnsupportedFeature::TextConstant,
@@ -3388,15 +3498,15 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     return expression.ty != Type::Never;
                 }
                 if *construction == mir::ConstructionMode::Recheck {
-                    let refined = self
-                        .program
+                    let program = self.program;
+                    let refined = program
                         .type_def(*ty)
                         .and_then(|definition| {
                             (definition.type_parameters == 0).then_some(definition)
                         })
                         .and_then(|definition| match &definition.kind {
                             mir::TypeDefKind::Refined { base, predicate } => {
-                                Some((base.clone(), predicate.clone()))
+                                Some((base.clone(), predicate))
                             }
                             _ => None,
                         });
@@ -4135,9 +4245,9 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
 
     fn visit_exprs(
         &mut self,
-        function: &mir::Function,
+        function: &'program mir::Function,
         key: &InstanceKey,
-        expressions: &[mir::Expr],
+        expressions: &'program [mir::Expr],
         path: &str,
     ) -> bool {
         for (index, expression) in expressions.iter().enumerate() {
@@ -4235,6 +4345,7 @@ fn instantiated_runtime_record_may_fault(
     program: &mir::Program,
     function: &mir::Function,
     key: &InstanceKey,
+    concrete_invariants: &BTreeMap<Type, Rc<Contract>>,
 ) -> bool {
     let substitution = InstanceSubstitution::new(program, key);
     function.exprs_preorder().any(|expression| {
@@ -4251,7 +4362,7 @@ fn instantiated_runtime_record_may_fault(
             return false;
         };
         let target = Type::Nominal(*ty, arguments);
-        concrete_invariant_record(program, &target).is_some_and(|(_, invariant)| {
+        concrete_invariants.get(&target).is_some_and(|invariant| {
             contract_expr_may_fault(
                 program,
                 &invariant.expression,
@@ -4274,6 +4385,7 @@ fn summarize_effects(
     key: &InstanceKey,
     calls: &[InstanceKey],
     dyn_concepts: &DynConceptPlan,
+    concrete_invariants: &BTreeMap<Type, Rc<Contract>>,
 ) -> InstanceEffectSummary {
     let mut summary = EffectSummary::default();
     if function.is_async {
@@ -4286,7 +4398,7 @@ fn summarize_effects(
         }
     }
     scan_effect_block(program, &function.body, &mut summary);
-    if instantiated_runtime_record_may_fault(program, function, key) {
+    if instantiated_runtime_record_may_fault(program, function, key, concrete_invariants) {
         summary.include(Effects::MAY_FAULT);
     }
     let substitution = InstanceSubstitution::new(program, key);
@@ -5455,12 +5567,12 @@ enum StatementFlow {
     Terminated,
 }
 
-#[derive(Clone)]
-enum CleanupAction {
-    Deferred(mir::Block),
+#[derive(Clone, Copy)]
+enum CleanupAction<'function> {
+    Deferred(&'function mir::Block),
     Scoped {
         local: LocalId,
-        disposal: mir::ScopedDisposal,
+        disposal: &'function mir::ScopedDisposal,
         span: Span,
     },
 }
@@ -5522,14 +5634,16 @@ struct FunctionLowerer<'function, 'builder, 'plan> {
     instances: &'plan InstanceLookup,
     effects: &'plan [Effects],
     equality_anchor: Option<FunctionId>,
-    match_plans: Option<&'plan BTreeMap<ExprId, MatchPlan>>,
+    match_plans: Option<&'plan BTreeMap<ExprId, MatchPlan<'plan>>>,
+    concrete_invariants: &'plan BTreeMap<Type, Rc<Contract>>,
+    constraint_summaries: &'plan BTreeMap<Type, Rc<str>>,
     text_literals: &'builder mut TextLiteralBudget,
     text_literal_unsupported: &'builder mut Option<UnsupportedItem>,
     local_types: BTreeMap<LocalId, Type>,
     inout_locals: Box<[LocalId]>,
     environments: EnvironmentArena,
     fault_block: Option<BlockId>,
-    cleanups: Vec<CleanupAction>,
+    cleanups: Vec<CleanupAction<'function>>,
     loops: Vec<LoopControl>,
     cleanup_expansions: usize,
     old_parameters: Vec<ContractOperand>,
@@ -5545,7 +5659,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         builder: FunctionBuilder<'builder>,
         instances: &'plan InstanceLookup,
         effects: &'plan [Effects],
-        match_plans: &'plan BTreeMap<String, BTreeMap<ExprId, MatchPlan>>,
+        match_plans: &'plan BTreeMap<String, BTreeMap<ExprId, MatchPlan<'plan>>>,
+        concrete_invariants: &'plan BTreeMap<Type, Rc<Contract>>,
+        constraint_summaries: &'plan BTreeMap<Type, Rc<str>>,
         dyn_concepts: &'plan DynConceptPlan,
         equality_anchor: Option<FunctionId>,
         text_literals: &'builder mut TextLiteralBudget,
@@ -5579,6 +5695,8 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             effects,
             equality_anchor,
             match_plans: match_plans.get(&key.canonical_identity()),
+            concrete_invariants,
+            constraint_summaries,
             text_literals,
             text_literal_unsupported,
             local_types,
@@ -7024,7 +7142,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         expression: &ContractExpr,
         lowered_arms: &BTreeMap<crate::match_plan::MatchNodeId, LoweredContractArm>,
     ) -> Result<(), LoweringError> {
-        let decision = plan.node(node).cloned().ok_or_else(|| {
+        let decision = plan.node(node).ok_or_else(|| {
             LoweringError::defect(
                 LoweringDefectCode::InconsistentPlan,
                 "contract match decision references a missing node",
@@ -7076,7 +7194,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                             "contract match constant operand is unavailable",
                         )
                     })?;
-                let ty = plan.value_type(value).ok_or_else(|| {
+                let ty = plan.value_type(*value).ok_or_else(|| {
                     LoweringError::defect(
                         LoweringDefectCode::InconsistentPlan,
                         "contract match constant has no type",
@@ -7085,14 +7203,14 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 let expected = match constant {
                     mir::Constant::Text(text) => {
                         let EvalFlow::Continue { flow: next, value } =
-                            self.owned_text_literal(flow, text, origin)?
+                            self.text_literal(flow, text, origin)?
                         else {
                             return Err(self.unsupported_reached("contract Text pattern"));
                         };
                         return self.lower_contract_match_constant_branch(
                             plan,
-                            equal,
-                            not_equal,
+                            *equal,
+                            *not_equal,
                             next,
                             values,
                             expression,
@@ -7105,9 +7223,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                         );
                     }
                     mir::Constant::Unit => Constant::Unit,
-                    mir::Constant::Bool(value) => Constant::Bool(value),
-                    mir::Constant::Int(value) => Constant::Int(value),
-                    mir::Constant::Float(value) => Constant::float(value),
+                    mir::Constant::Bool(value) => Constant::Bool(*value),
+                    mir::Constant::Int(value) => Constant::Int(*value),
+                    mir::Constant::Float(value) => Constant::float(*value),
                 };
                 let EvalFlow::Continue {
                     flow,
@@ -7135,7 +7253,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     Type::Unit => {
                         return self.lower_contract_match_node(
                             plan,
-                            equal,
+                            *equal,
                             flow,
                             values,
                             expression,
@@ -7146,8 +7264,8 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 };
                 self.lower_contract_match_constant_branch(
                     plan,
-                    equal,
-                    not_equal,
+                    *equal,
+                    *not_equal,
                     flow,
                     values,
                     expression,
@@ -7168,7 +7286,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     })?;
                 let mut lowered_cases = Vec::with_capacity(cases.len());
                 let mut case_flows = Vec::with_capacity(cases.len());
-                for case in &cases {
+                for case in cases {
                     let block = self.create_block()?;
                     let mut case_values = values.to_vec();
                     for payload in case.payload.iter().copied() {
@@ -7436,16 +7554,6 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         self.emit_text_literal(flow, utf8.len(), || utf8.into(), origin)
     }
 
-    fn owned_text_literal(
-        &mut self,
-        flow: Flow,
-        utf8: String,
-        origin: Origin,
-    ) -> Result<EvalFlow, LoweringError> {
-        let bytes = utf8.len();
-        self.emit_text_literal(flow, bytes, || utf8.into_boxed_str(), origin)
-    }
-
     fn one_trusted_instruction(
         &mut self,
         flow: Flow,
@@ -7521,21 +7629,6 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         }
     }
 
-    fn required_owned_text_literal(
-        &mut self,
-        flow: Flow,
-        utf8: String,
-        origin: Origin,
-    ) -> Result<(Flow, ValueId), LoweringError> {
-        match self.owned_text_literal(flow, utf8, origin)? {
-            EvalFlow::Continue { flow, value } => Ok((flow, value)),
-            EvalFlow::Terminated => Err(LoweringError::defect(
-                LoweringDefectCode::Builder,
-                "Text literal instruction unexpectedly terminated",
-            )),
-        }
-    }
-
     fn required_trusted_instruction(
         &mut self,
         flow: Flow,
@@ -7555,7 +7648,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
     fn lower_scoped_block(
         &mut self,
         flow: Flow,
-        block: &mir::Block,
+        block: &'function mir::Block,
     ) -> Result<EvalFlow, LoweringError> {
         let cleanup_base = self.cleanups.len();
         let lowered = self.lower_block(flow, block)?;
@@ -7577,13 +7670,15 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 "cleanup suffix starts beyond the active lexical cleanup stack",
             ));
         }
+        // CleanupAction is Copy and contains only references into source MIR,
+        // so replaying a suffix never clones deferred bodies or their Text.
         let saved = self.cleanups.clone();
         let lowered = (|| {
             for index in (base..saved.len()).rev() {
                 self.consume_cleanup_expansion()?;
                 self.cleanups.clear();
                 self.cleanups.extend_from_slice(&saved[..index]);
-                flow = self.lower_cleanup_action(flow, saved[index].clone())?;
+                flow = self.lower_cleanup_action(flow, saved[index])?;
             }
             Ok(flow)
         })();
@@ -7591,7 +7686,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         lowered
     }
 
-    fn register_cleanup(&mut self, cleanup: CleanupAction) -> Result<(), LoweringError> {
+    fn register_cleanup(&mut self, cleanup: CleanupAction<'function>) -> Result<(), LoweringError> {
         if self.cleanups.len() >= DIRECT_CLEANUP_MAX_ACTIVE_ACTIONS {
             return Err(LoweringError::ResourceLimit {
                 code: ResourceLimitCode::ProgramTooLarge,
@@ -7631,10 +7726,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
     fn lower_cleanup_action(
         &mut self,
         flow: Flow,
-        cleanup: CleanupAction,
+        cleanup: CleanupAction<'function>,
     ) -> Result<Flow, LoweringError> {
         match cleanup {
-            CleanupAction::Deferred(block) => match self.lower_scoped_block(flow, &block)? {
+            CleanupAction::Deferred(block) => match self.lower_scoped_block(flow, block)? {
                 EvalFlow::Continue { flow, .. } => Ok(flow),
                 EvalFlow::Terminated => Err(LoweringError::defect(
                     LoweringDefectCode::InconsistentPlan,
@@ -7645,7 +7740,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 local,
                 disposal,
                 span,
-            } => self.lower_scoped_disposal(flow, local, &disposal, span),
+            } => self.lower_scoped_disposal(flow, local, disposal, span),
         }
     }
 
@@ -7799,7 +7894,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
     fn lower_block(
         &mut self,
         mut flow: Flow,
-        block: &mir::Block,
+        block: &'function mir::Block,
     ) -> Result<EvalFlow, LoweringError> {
         for statement in &block.statements {
             flow = match self.lower_statement(flow, statement)? {
@@ -7818,7 +7913,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
     fn lower_statement(
         &mut self,
         flow: Flow,
-        statement: &mir::Statement,
+        statement: &'function mir::Statement,
     ) -> Result<StatementFlow, LoweringError> {
         match &statement.kind {
             StatementKind::Let { local, value } => match self.lower_expr(flow, value)? {
@@ -7837,7 +7932,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     flow.env = self.environments.set(flow.env, *local, value)?;
                     self.register_cleanup(CleanupAction::Scoped {
                         local: *local,
-                        disposal: disposal.clone(),
+                        disposal,
                         span: statement.span,
                     })?;
                     Ok(StatementFlow::Continue(flow))
@@ -7973,7 +8068,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 }
             }
             StatementKind::Defer(cleanup) => {
-                self.register_cleanup(CleanupAction::Deferred(cleanup.clone()))?;
+                self.register_cleanup(CleanupAction::Deferred(cleanup))?;
                 Ok(StatementFlow::Continue(flow))
             }
         }
@@ -8066,7 +8161,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
     fn lower_expr(
         &mut self,
         flow: Flow,
-        expression: &mir::Expr,
+        expression: &'function mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
         let origin = self.expression_origin(expression);
         match &expression.kind {
@@ -8740,7 +8835,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
     fn lower_product_values(
         &mut self,
         mut flow: Flow,
-        fields: &[mir::Expr],
+        fields: &'function [mir::Expr],
         expression: &mir::Expr,
         construction: ProductConstruction,
     ) -> Result<EvalFlow, LoweringError> {
@@ -8789,20 +8884,34 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         mut flow: Flow,
         ty: mir::TypeId,
         type_arguments: &[Type],
-        fields: &[mir::Expr],
+        fields: &'function [mir::Expr],
         expression: &mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
         let arguments = InstanceSubstitution::new(self.program, self.key)
             .instantiate_types(type_arguments)
             .map_err(|error| instantiation_defect(self.source.id, Some(expression.id), error))?;
         let target = Type::Nominal(ty, arguments);
-        let name = self
-            .program
+        let program = self.program;
+        let name = program
             .type_def(ty)
-            .map(|definition| definition.name.clone())
+            .map(|definition| definition.name.as_str())
             .ok_or_else(|| self.unsupported_reached("runtime record constraint"))?;
-        let (field_types, invariant) = concrete_invariant_record(self.program, &target)
+        let field_types = concrete_any_record_fields(program, &target)
             .ok_or_else(|| self.unsupported_reached("runtime record constraint"))?;
+        let concrete_invariants = self.concrete_invariants;
+        let invariant = concrete_invariants.get(&target).ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "runtime record constraint has no classified concrete invariant",
+            )
+        })?;
+        let constraint_summaries = self.constraint_summaries;
+        let summary = constraint_summaries.get(&target).ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "runtime record constraint has no classified disclosure summary",
+            )
+        })?;
         if field_types.len() != fields.len() {
             return Err(LoweringError::defect(
                 LoweringDefectCode::InconsistentPlan,
@@ -8885,10 +8994,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 block: rejected,
                 env: flow.env,
             },
-            &name,
+            name,
             "InvariantViolation",
-            &invariant,
-            &target,
+            invariant,
+            summary.as_ref(),
             origin,
         )?;
         let (rejected_flow, error) = self.required_instruction(
@@ -8925,20 +9034,27 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         &mut self,
         flow: Flow,
         ty: mir::TypeId,
-        value: &mir::Expr,
+        value: &'function mir::Expr,
         expression: &mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
-        let (name, base, predicate) = self
-            .program
+        let program = self.program;
+        let (name, base, predicate) = program
             .type_def(ty)
             .and_then(|definition| (definition.type_parameters == 0).then_some(definition))
             .and_then(|definition| match &definition.kind {
                 mir::TypeDefKind::Refined { base, predicate } => {
-                    Some((definition.name.clone(), base.clone(), predicate.clone()))
+                    Some((definition.name.as_str(), base.clone(), predicate))
                 }
                 _ => None,
             })
             .ok_or_else(|| self.unsupported_reached("runtime refinement constraint"))?;
+        let constraint_summaries = self.constraint_summaries;
+        let summary = constraint_summaries.get(&base).ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "runtime refinement constraint has no classified disclosure summary",
+            )
+        })?;
         let EvalFlow::Continue { flow, value } = self.lower_expr(flow, value)? else {
             return Ok(EvalFlow::Terminated);
         };
@@ -9000,10 +9116,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 block: rejected,
                 env: flow.env,
             },
-            &name,
+            name,
             "ConstraintViolation",
-            &predicate,
-            &base,
+            predicate,
+            summary.as_ref(),
             origin,
         )?;
         let (rejected_flow, error) = self.required_instruction(
@@ -9038,10 +9154,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         target_name: &str,
         violation_code: &str,
         contract: &Contract,
-        summary_type: &Type,
+        summary: &str,
         origin: Origin,
     ) -> Result<(Flow, ValueId), LoweringError> {
-        let summary = disclosure_type_summary(self.program, summary_type);
         let (flow, target) = self.required_text_literal(flow, target_name, origin)?;
         let (flow, code) = self.required_text_literal(flow, violation_code, origin)?;
         let (flow, predicate) = self.required_text_literal(flow, &contract.code, origin)?;
@@ -9054,7 +9169,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             &list_text,
             origin,
         )?;
-        let (mut flow, summary) = self.required_owned_text_literal(flow, summary, origin)?;
+        let (mut flow, summary) = self.required_text_literal(flow, summary, origin)?;
         let mut span_fields = Vec::with_capacity(3);
         for component in [
             i64::from(contract.span.file.0),
@@ -9105,7 +9220,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         mut flow: Flow,
         ty: mir::TypeId,
         type_arguments: &[Type],
-        fields: &[mir::Expr],
+        fields: &'function [mir::Expr],
         expression: &mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
         let arguments = InstanceSubstitution::new(self.program, self.key)
@@ -9118,8 +9233,15 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         if target != expected {
             return Err(self.unsupported_reached("serialized record proof recheck type"));
         }
-        let (field_types, invariant) = concrete_invariant_record(self.program, &target)
+        let field_types = concrete_any_record_fields(self.program, &target)
             .ok_or_else(|| self.unsupported_reached("serialized record proof recheck"))?;
+        let concrete_invariants = self.concrete_invariants;
+        let invariant = concrete_invariants.get(&target).ok_or_else(|| {
+            LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "record proof recheck has no classified concrete invariant",
+            )
+        })?;
         if field_types.len() != fields.len() {
             return Err(LoweringError::defect(
                 LoweringDefectCode::InconsistentPlan,
@@ -9185,17 +9307,15 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         &mut self,
         flow: Flow,
         ty: mir::TypeId,
-        value: &mir::Expr,
+        value: &'function mir::Expr,
         expression: &mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
-        let (base, predicate) = self
-            .program
+        let program = self.program;
+        let (base, predicate) = program
             .type_def(ty)
             .and_then(|definition| (definition.type_parameters == 0).then_some(definition))
             .and_then(|definition| match &definition.kind {
-                mir::TypeDefKind::Refined { base, predicate } => {
-                    Some((base.clone(), predicate.clone()))
-                }
+                mir::TypeDefKind::Refined { base, predicate } => Some((base.clone(), predicate)),
                 _ => None,
             })
             .ok_or_else(|| self.unsupported_reached("serialized refinement proof recheck"))?;
@@ -9267,7 +9387,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         &mut self,
         mut flow: Flow,
         variant: mir::VariantId,
-        payload: &[mir::Expr],
+        payload: &'function [mir::Expr],
         expression: &mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
         let mut lowered = Vec::with_capacity(payload.len());
@@ -9300,8 +9420,8 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
     fn lower_match(
         &mut self,
         flow: Flow,
-        scrutinee: &mir::Expr,
-        arms: &[mir::MatchArm],
+        scrutinee: &'function mir::Expr,
+        arms: &'function [mir::MatchArm],
         expression: &mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
         let EvalFlow::Continue {
@@ -9311,10 +9431,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         else {
             return Ok(EvalFlow::Terminated);
         };
-        let plan = self
-            .match_plans
+        let match_plans = self.match_plans;
+        let plan = match_plans
             .and_then(|plans| plans.get(&expression.id))
-            .cloned()
             .ok_or_else(|| self.unsupported_reached("unplanned pattern match"))?;
         let mut values = vec![None; plan.value_count()];
         // Match-value ids have a separate bounded domain from decision nodes.
@@ -9370,7 +9489,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             );
         }
         let mut alternatives = Vec::new();
-        self.lower_match_node(&plan, plan.root(), flow, &values, expression, &lowered_arms)?;
+        self.lower_match_node(plan, plan.root(), flow, &values, expression, &lowered_arms)?;
         for lowered_arm in lowered_arms.values().cloned() {
             let source_arm = arms.get(lowered_arm.source_arm).ok_or_else(|| {
                 LoweringError::defect(
@@ -9425,7 +9544,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         expression: &mir::Expr,
         lowered_arms: &BTreeMap<crate::match_plan::MatchNodeId, LoweredMatchArm>,
     ) -> Result<(), LoweringError> {
-        let decision = plan.node(node).cloned().ok_or_else(|| {
+        let decision = plan.node(node).ok_or_else(|| {
             LoweringError::defect(
                 LoweringDefectCode::InconsistentPlan,
                 "match decision references a missing node",
@@ -9491,7 +9610,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                             "constant decision operand is unavailable",
                         )
                     })?;
-                let ty = plan.value_type(value).ok_or_else(|| {
+                let ty = plan.value_type(*value).ok_or_else(|| {
                     LoweringError::defect(
                         LoweringDefectCode::InconsistentPlan,
                         "constant decision has no planned type",
@@ -9501,7 +9620,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 let (flow, instruction) = match constant {
                     mir::Constant::Text(text) if ty == &Type::Text => {
                         let EvalFlow::Continue { flow, value } =
-                            self.owned_text_literal(flow, text, origin)?
+                            self.text_literal(flow, text, origin)?
                         else {
                             return Err(LoweringError::defect(
                                 LoweringDefectCode::Builder,
@@ -9523,9 +9642,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     constant => {
                         let constant = match constant {
                             mir::Constant::Unit => Constant::Unit,
-                            mir::Constant::Bool(value) => Constant::Bool(value),
-                            mir::Constant::Int(value) => Constant::Int(value),
-                            mir::Constant::Float(value) => Constant::float(value),
+                            mir::Constant::Bool(value) => Constant::Bool(*value),
+                            mir::Constant::Int(value) => Constant::Int(*value),
+                            mir::Constant::Float(value) => Constant::float(*value),
                             mir::Constant::Text(_) => unreachable!(),
                         };
                         let EvalFlow::Continue {
@@ -9584,7 +9703,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 )?;
                 self.lower_match_node(
                     plan,
-                    equal,
+                    *equal,
                     Flow {
                         block: equal_block,
                         env: flow.env,
@@ -9595,7 +9714,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 )?;
                 self.lower_match_node(
                     plan,
-                    not_equal,
+                    *not_equal,
                     Flow {
                         block: not_equal_block,
                         env: flow.env,
@@ -9618,7 +9737,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     })?;
                 let mut lowered_cases = Vec::with_capacity(cases.len());
                 let mut case_flows = Vec::with_capacity(cases.len());
-                for case in &cases {
+                for case in cases {
                     let block = self.create_block()?;
                     let mut case_values = values.to_vec();
                     for payload in case.payload.iter().copied() {
@@ -10795,8 +10914,8 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         &mut self,
         flow: Flow,
         operator: BinaryOp,
-        left: &mir::Expr,
-        right: &mir::Expr,
+        left: &'function mir::Expr,
+        right: &'function mir::Expr,
         expression: &mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
         let EvalFlow::Continue {
@@ -10913,9 +11032,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
     fn lower_if(
         &mut self,
         flow: Flow,
-        condition: &mir::Expr,
-        then_branch: &mir::Block,
-        else_branch: &mir::Block,
+        condition: &'function mir::Expr,
+        then_branch: &'function mir::Block,
+        else_branch: &'function mir::Block,
         expression: &mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
         let EvalFlow::Continue {
@@ -11032,9 +11151,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         &mut self,
         flow: Flow,
         local: LocalId,
-        start: &mir::Expr,
-        end: &mir::Expr,
-        body: &mir::Block,
+        start: &'function mir::Expr,
+        end: &'function mir::Expr,
+        body: &'function mir::Block,
         statement: &mir::Statement,
     ) -> Result<StatementFlow, LoweringError> {
         let EvalFlow::Continue { flow, value: start } = self.lower_expr(flow, start)? else {
@@ -11260,8 +11379,8 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
     fn lower_while(
         &mut self,
         flow: Flow,
-        condition: &mir::Expr,
-        body: &mir::Block,
+        condition: &'function mir::Expr,
+        body: &'function mir::Block,
         statement: &mir::Statement,
     ) -> Result<StatementFlow, LoweringError> {
         let mut mutations = BTreeSet::new();
@@ -11375,7 +11494,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         mut flow: Flow,
         target: &CallTarget,
         type_arguments: &[Type],
-        arguments: &[CallArgument],
+        arguments: &'function [CallArgument],
         witnesses: &[mir::WitnessRef],
         expression: &mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
@@ -11719,7 +11838,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         &mut self,
         mut flow: Flow,
         requirement: mir::RequirementId,
-        arguments: &[CallArgument],
+        arguments: &'function [CallArgument],
         expression: &mir::Expr,
         receiver_ty: &Type,
     ) -> Result<EvalFlow, LoweringError> {
@@ -11890,7 +12009,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         &mut self,
         flow: Flow,
         requirement: mir::RequirementId,
-        arguments: &[CallArgument],
+        arguments: &'function [CallArgument],
         expression: &mir::Expr,
         receiver_ty: &Type,
     ) -> Result<EvalFlow, LoweringError> {
@@ -12206,7 +12325,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
     fn lower_view_inout_argument(
         &mut self,
         flow: Flow,
-        argument: &mir::Expr,
+        argument: &'function mir::Expr,
         call: &mir::Expr,
     ) -> Result<(Flow, ValueId, PlacePlan), LoweringError> {
         let origin = self.expression_origin(call);
@@ -12320,7 +12439,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         &mut self,
         mut flow: Flow,
         builtin: mir::Builtin,
-        arguments: &[CallArgument],
+        arguments: &'function [CallArgument],
         expression: &mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
         let mut values = Vec::with_capacity(arguments.len());
@@ -12594,7 +12713,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         &mut self,
         mut flow: Flow,
         builtin: mir::Builtin,
-        arguments: &[CallArgument],
+        arguments: &'function [CallArgument],
         expression: &mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
         let origin = self.expression_origin(expression);
@@ -12688,7 +12807,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         &mut self,
         mut flow: Flow,
         builtin: mir::Builtin,
-        arguments: &[CallArgument],
+        arguments: &'function [CallArgument],
         expression: &mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
         let origin = self.expression_origin(expression);
@@ -12739,7 +12858,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
     fn lower_log_builtin(
         &mut self,
         mut flow: Flow,
-        arguments: &[CallArgument],
+        arguments: &'function [CallArgument],
         expression: &mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
         let mut lowered = Vec::with_capacity(arguments.len());
@@ -12792,7 +12911,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
     fn lower_stdout_builtin(
         &mut self,
         flow: Flow,
-        arguments: &[CallArgument],
+        arguments: &'function [CallArgument],
         expression: &mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
         let [CallArgument::Value(text)] = arguments else {
