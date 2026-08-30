@@ -7090,7 +7090,6 @@ pub async fn main() {
     let task_sum_dump = dump_program(task_sum.program());
     assert!(task_sum_dump.contains("sum.construct"), "{task_sum_dump}");
     assert!(task_sum_dump.contains("sum.switch"), "{task_sum_dump}");
-
 }
 
 #[test]

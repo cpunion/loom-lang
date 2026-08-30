@@ -95,9 +95,11 @@ Concrete instantiations of generic enums, including `Result[Unit, E]`, are
 eligible after payload substitution. Proven monomorphic refined values and
 closed records with statically proven invariants may appear as product fields
 or sum payloads. Fully concrete generic records use the same plan.
-Runtime-checked constructions, general by-value recursive sums, operations that
-rebuild Task-bearing products, incomplete dynamic witness sets, and uninhabited
-fields are not selected. An ordinary direct structural tuple that contains a
+The frontend rejects direct and mutual by-value nominal cycles because they
+have no finite value layout; LCIR never receives them and no backend inserts a
+hidden box. Runtime-checked constructions, operations that rebuild
+Task-bearing products, incomplete dynamic witness sets, and uninhabited fields
+are not selected. An ordinary direct structural tuple that contains a
 Task handle may instead be destructured by one atomic `ProductSplit`: the
 instruction consumes the complete tuple and produces every field in source
 order. It is not a general projected move and does not admit nominal,
@@ -1049,11 +1051,12 @@ only in `task.cancelled`; cancellation cleanup cannot create, aggregate, or
 await Tasks, including through an executor-dependent callee. An active
 source-fault cleanup likewise cannot await again before `resume_fault`.
 
-Managed values outside the admitted Text, List, and TextMap graphs, open or
-recursive enums, open, affine, or unsupported-shape runtime construction,
-affine or unsupported-shape proof replay, incomplete dynamic witness catalogs, derived
-dynamic proof conversion, contracts over unsupported value shapes, and
-coroutine forms outside the bounded typed slice are not implemented. Nongeneric
+Managed values outside the admitted Text, List, and TextMap graphs, open generic
+enum instantiations, runtime constructions with open, affine, or unsupported
+shapes, affine or unsupported-shape proof replay, incomplete dynamic witness
+catalogs, derived dynamic proof conversion, contracts over unsupported value
+shapes, and coroutine forms outside the bounded typed slice are not
+implemented. Nongeneric
 task-free refined and fully concrete task-free invariant-record runtime
 construction is direct typed CFG returning the exact
 `Result[..., ConstraintError]`; portable task-free refined and concrete

@@ -64,6 +64,8 @@ Validation covers:
 - call, receiver, generic proof, witness, record, variant, pattern, and builtin
   arity/shape;
 - contract schemas and the types visible to each contract arm;
+- finite by-value layouts for record, enum, refined, tuple, nominal-argument,
+  `Option`, `Result`, and `TaskOutcome` graphs;
 - concept definitions, requirement schemas, witnesses, associated bindings,
   prerequisites, and method slots;
 - error-type confinement and source nesting limits;
@@ -108,11 +110,20 @@ assignment reconstructs the complete value through its typed field path.
 
 ### Bounded recursive type analysis
 
-Validation never expands recursive generic definitions into an unbounded
-concrete type tree. Resource and Task containment are evaluated as a least
-fixed point over finite abstract argument states. Value equality is evaluated
-as the corresponding greatest fixed point. For example, the non-regular
-schema `Spiral[T] = Done(T) | Next(Spiral[(T, T)])` reaches the same abstract
+Before validating executable bodies, MIR builds the finite nominal declaration
+graph and rejects every strongly connected component made only of by-value
+edges as `MirRecursiveValueType`. Tuple fields, nominal arguments, and
+`TaskOutcome` payloads remain inline; `List`, canonical `TextMap`, `Task`, and
+dynamic views are explicit indirection boundaries. This independently repeats
+the frontend rule for decoded or otherwise untrusted MIR and never inserts a
+hidden allocation.
+
+Validation never expands the recursive types that remain legal through an
+indirection into an unbounded concrete type tree. Resource and Task containment
+are evaluated as a least fixed point over finite abstract argument states.
+Value equality is evaluated as the corresponding greatest fixed point. For
+example, the non-regular indirect schema
+`Spiral[T] = Done(T) | Next(List[Spiral[(T, T)]])` reaches the same abstract
 state for `Int` without materializing successively doubled tuple arguments.
 Argument transitions still matter: a recursive edge that replaces `T` with
 `File` retains the resource obligation and disables value equality.
@@ -202,7 +213,7 @@ root merely because storage still exists.
 The interpreted MIR envelope currently uses:
 
 - format `loom.interpreted-mir`;
-- artifact version `39`;
+- artifact version `40`;
 - Loom language version `0.3`.
 
 Generic compiler-cache envelopes carry an explicit null `entry`. Executable

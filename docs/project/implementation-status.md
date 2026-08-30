@@ -132,6 +132,7 @@ reclamation, and cleanup even when a typed disposer reports a defect.
 | Capability | Status and evidence boundary |
 | --- | --- |
 | `check/build/test/run` | Implemented for the tested Core and package fixtures on both backends. |
+| Finite value layouts | Semantic analysis and independent checked-MIR validation reject direct, mutual, generic, and non-regular by-value nominal cycles. `List`, `TextMap`, `Task`, and `dyn C` storage are the explicit indirection boundaries; no backend inserts a hidden box. |
 | Code generation IR foundation | Implemented for the direct slices listed below. Native preparation is atomic. Unsupported artifacts may select the complete checked-MIR route only when the reachable graph contains no LCIR-only primitive; reachable File/Socket I/O fails closed instead of using that fallback. |
 | Native LLVM executable | Implemented for Linux x86-64 and macOS arm64 release closures, with macOS also covered by the development gate; the Windows x86-64 release entry must pass before release support is claimed. |
 | Interpreted executable artifact | Implemented with strict cache/executable kind separation, selected-entry definition closure, dense identity remapping, deterministic bytes, complete decode validation, and CLI tests. |
