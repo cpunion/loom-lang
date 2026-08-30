@@ -142,6 +142,7 @@ fn analyze_with_reused_bodies(
         let canonical_std_items = analyzer.resolve_canonical_std_items();
         analyzer.canonical_std_items = canonical_std_items;
         analyzer.collect_signatures();
+        analyzer.validate_recursive_value_types();
         analyzer.validate_dynamic_concepts();
         analyzer.build_conformances();
         let canonical_concepts = analyzer.resolve_canonical_concepts();
@@ -560,6 +561,125 @@ impl Analyzer<'_> {
                 DefinitionKind::Error => {}
             }
         }
+    }
+
+    /// Rejects nominal declarations whose by-value representation would have
+    /// infinite size. This runs only after every declared type has been
+    /// resolved, so declaration and source order cannot affect the graph.
+    fn validate_recursive_value_types(&mut self) {
+        let nominal_definitions = self
+            .program
+            .definitions
+            .iter()
+            .filter_map(|(definition, item)| {
+                matches!(
+                    item.kind,
+                    DefinitionKind::RefinedType(_)
+                        | DefinitionKind::Record(_)
+                        | DefinitionKind::Enum(_)
+                )
+                .then_some(definition)
+            })
+            .collect::<BTreeSet<_>>();
+        let mut graph = nominal_definitions
+            .iter()
+            .copied()
+            .map(|definition| (definition, Vec::new()))
+            .collect::<BTreeMap<_, _>>();
+
+        for definition in &nominal_definitions {
+            let roots = match &self.program.definitions[*definition].kind {
+                DefinitionKind::RefinedType(refined) => self
+                    .typed
+                    .resolved_type_refs
+                    .get(refined.base)
+                    .copied()
+                    .into_iter()
+                    .collect(),
+                DefinitionKind::Record(record) => record
+                    .fields
+                    .iter()
+                    .filter_map(|field| match self.typed.signatures.get(*field) {
+                        Some(Signature::Field { ty, .. }) => Some(*ty),
+                        _ => None,
+                    })
+                    .collect(),
+                DefinitionKind::Enum(enumeration) => enumeration
+                    .variants
+                    .iter()
+                    .filter_map(|variant| match self.typed.signatures.get(*variant) {
+                        Some(Signature::Variant { payload, .. }) => Some(payload.as_slice()),
+                        _ => None,
+                    })
+                    .flatten()
+                    .copied()
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let mut dependencies = BTreeSet::new();
+            for root in roots {
+                collect_by_value_nominal_dependencies(
+                    &self.typed.types,
+                    root,
+                    &nominal_definitions,
+                    &mut dependencies,
+                );
+            }
+            graph.insert(*definition, dependencies.into_iter().collect());
+        }
+
+        for mut component in strongly_connected_nominal_components(&graph) {
+            component.sort_unstable();
+            let is_cycle = component.len() > 1
+                || graph
+                    .get(&component[0])
+                    .is_some_and(|dependencies| dependencies.contains(&component[0]));
+            if !is_cycle {
+                continue;
+            }
+
+            self.report_recursive_value_component(&component);
+        }
+    }
+
+    fn report_recursive_value_component(&mut self, component: &[DefId]) {
+        let names = component
+            .iter()
+            .map(|definition| {
+                self.program.definitions[*definition]
+                    .name
+                    .as_ref()
+                    .map_or("<anonymous>", Name::as_str)
+            })
+            .collect::<Vec<_>>();
+        let message = if names.len() == 1 {
+            format!(
+                "by-value nominal type `{}` has infinite size because it contains itself",
+                names[0]
+            )
+        } else {
+            format!(
+                "by-value nominal types {} form an infinite-size cycle",
+                names
+                    .iter()
+                    .map(|name| format!("`{name}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        let mut diagnostic = Diagnostic::error(
+            "RecursiveValueType",
+            message,
+            self.definition_span(component[0]),
+        )
+        .with_note("break the cycle with an indirect List, TextMap, Task, or dynamic concept view");
+        for definition in component.iter().skip(1) {
+            diagnostic = diagnostic.with_label(
+                self.definition_span(*definition),
+                "this declaration participates in the by-value cycle",
+            );
+        }
+        self.diagnostics.push(diagnostic);
     }
 
     fn resolve_callable(
@@ -10592,6 +10712,119 @@ fn places_overlap(left: &Place, right: &Place) -> bool {
     }
     let shared = left.projections.len().min(right.projections.len());
     left.projections[..shared] == right.projections[..shared]
+}
+
+fn collect_by_value_nominal_dependencies(
+    types: &crate::TyInterner,
+    root: TyId,
+    nominal_definitions: &BTreeSet<DefId>,
+    output: &mut BTreeSet<DefId>,
+) {
+    let mut pending = vec![root];
+    let mut visited = BTreeSet::new();
+    while let Some(ty) = pending.pop() {
+        if !visited.insert(ty) {
+            continue;
+        }
+        match types.data(ty) {
+            TyData::Tuple(elements) => pending.extend(elements.iter().copied()),
+            TyData::Option(element) | TyData::TaskOutcome(element) => pending.push(*element),
+            TyData::Result { ok, error } => {
+                pending.push(*ok);
+                pending.push(*error);
+            }
+            TyData::Nominal {
+                definition,
+                arguments,
+            } => {
+                if nominal_definitions.contains(definition) {
+                    output.insert(*definition);
+                }
+                // Nominal arguments participate even when the declaration does
+                // not otherwise expose its parameter. This deliberately keeps
+                // generic and non-regular cycles syntactic and deterministic.
+                pending.extend(arguments.iter().copied());
+            }
+            // List, TextMap, Task, and View carry their nested value
+            // indirectly; the remaining leaves add no nominal dependency.
+            TyData::List(_)
+            | TyData::TextMap(_)
+            | TyData::Task(_)
+            | TyData::View { .. }
+            | TyData::Error
+            | TyData::Never
+            | TyData::Builtin(_)
+            | TyData::Param(_)
+            | TyData::SelfType(_)
+            | TyData::Projection { .. }
+            | TyData::DynTarget(_) => {}
+        }
+    }
+}
+
+/// Computes strongly connected components without using the process stack.
+/// Both passes iterate ordered maps and adjacency lists, so diagnostics remain
+/// deterministic across machines.
+fn strongly_connected_nominal_components(graph: &BTreeMap<DefId, Vec<DefId>>) -> Vec<Vec<DefId>> {
+    let mut visited = BTreeSet::new();
+    let mut finishing_order = Vec::with_capacity(graph.len());
+    for start in graph.keys().copied() {
+        if !visited.insert(start) {
+            continue;
+        }
+        let mut stack = vec![(start, 0_usize)];
+        while let Some((node, next_index)) = stack.last_mut() {
+            let dependencies = graph.get(node).map_or(&[][..], Vec::as_slice);
+            if let Some(next) = dependencies.get(*next_index).copied() {
+                *next_index += 1;
+                if visited.insert(next) {
+                    stack.push((next, 0));
+                }
+            } else {
+                let (finished, _) = stack.pop().expect("DFS stack is not empty");
+                finishing_order.push(finished);
+            }
+        }
+    }
+
+    let mut reverse = graph
+        .keys()
+        .copied()
+        .map(|definition| (definition, Vec::new()))
+        .collect::<BTreeMap<_, _>>();
+    for (definition, dependencies) in graph {
+        for dependency in dependencies {
+            if let Some(incoming) = reverse.get_mut(dependency) {
+                incoming.push(*definition);
+            }
+        }
+    }
+    for incoming in reverse.values_mut() {
+        incoming.sort_unstable();
+        incoming.dedup();
+    }
+
+    let mut assigned = BTreeSet::new();
+    let mut components = Vec::new();
+    while let Some(start) = finishing_order.pop() {
+        if !assigned.insert(start) {
+            continue;
+        }
+        let mut component = Vec::new();
+        let mut pending = vec![start];
+        while let Some(node) = pending.pop() {
+            component.push(node);
+            if let Some(incoming) = reverse.get(&node) {
+                for predecessor in incoming.iter().rev().copied() {
+                    if assigned.insert(predecessor) {
+                        pending.push(predecessor);
+                    }
+                }
+            }
+        }
+        components.push(component);
+    }
+    components
 }
 
 fn builtin_type(name: &str) -> Option<BuiltinType> {
