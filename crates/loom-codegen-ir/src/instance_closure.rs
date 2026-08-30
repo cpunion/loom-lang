@@ -1133,26 +1133,24 @@ fn scan_statement(
             )? {
                 return Ok(false);
             }
-            if let mir::ScopedDisposal::StaticConcept {
+            let mir::ScopedDisposal::StaticConcept {
                 requirement,
                 witness,
                 dispatch_type,
-            } = disposal
-            {
-                let key = substitution
-                    .static_call_key(*requirement, witness, dispatch_type, &[], &[])
-                    .map_err(|error| {
-                        instantiation_issue(function, value, &format!("{path}.disposal"), error)
-                    })?;
-                calls.reserve(function, value, &format!("{path}.disposal"))?;
-                calls.calls.push(CallSite {
-                    key,
-                    function: function.id,
-                    expression: value.id,
-                    span: statement.span,
-                    path: format!("{path}.disposal.instance"),
-                });
-            }
+            } = disposal;
+            let key = substitution
+                .static_call_key(*requirement, witness, dispatch_type, &[], &[])
+                .map_err(|error| {
+                    instantiation_issue(function, value, &format!("{path}.disposal"), error)
+                })?;
+            calls.reserve(function, value, &format!("{path}.disposal"))?;
+            calls.calls.push(CallSite {
+                key,
+                function: function.id,
+                expression: value.id,
+                span: statement.span,
+                path: format!("{path}.disposal.instance"),
+            });
             Ok(true)
         }
         StatementKind::ForRange {

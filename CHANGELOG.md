@@ -52,12 +52,19 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   and fixed MIR type slot are gone. `IoError` is likewise an ordinary protected
   source record with source-owned `kind` and `message` methods. Its exact
   standard-library identity receives the private typed-I/O representation;
-  application source cannot construct, project, or compare it. All public
-  `std.file` open/create and `std.net` connect functions likewise
-  resolve through ordinary source wrappers; four Path forms reuse the Text
-  wrappers, leaving six exact-owner platform I/O primitives plus two protected
-  error access primitives below source and no duplicate Path-specific semantic
-  or MIR builtin tags.
+  application source cannot construct, project, or compare it. `File` and
+  `Socket` are likewise protected empty source records. Their public methods,
+  `Dispose` implementations, and `MustScope` conformances have ordinary source
+  identities; their exact canonical definitions alone receive hidden one-Int
+  MIR capability storage. Every scoped cleanup now follows the selected source
+  `Dispose.dispose` witness, whose body reaches the private close leaf and typed
+  LCIR `ResourceClose`; MIR has no File/Socket-specific scoped action. All
+  public `std.file` and `std.net` functions resolve through ordinary source
+  wrappers, and the Path forms reuse their Text counterparts. Only 16
+  exact-owner resource/I/O/close leaves plus two protected error access leaves
+  remain below source. Interpreted MIR artifact 39 and persistent cache schema
+  15 reject the removed semantic types, fixed slots, and special cleanup tags
+  instead of decoding them through compatibility paths.
   Native runtime ABI 36 (`runtime-v30`) records the removal of the former
   universal File, Socket, and close entry points and their fixed File/Socket
   nominal IDs; the complete identity also retains the earlier removal of

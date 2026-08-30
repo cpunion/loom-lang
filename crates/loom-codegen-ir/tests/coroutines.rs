@@ -1298,8 +1298,9 @@ fn await_tasks_program_with_mode(
     let int_origin = Origin::synthetic(FunctionId(1));
     let bool_origin = Origin::synthetic(FunctionId(2));
     let fallible_origin = Origin::synthetic(FunctionId(3));
-    let sync_task_origin = Origin::synthetic(FunctionId(4));
+    let task_factory_origin = Origin::synthetic(FunctionId(4));
     let sync_timer_origin = Origin::synthetic(FunctionId(5));
+    let sync_task_origin = Origin::synthetic(FunctionId(6));
     let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
     let unit = builder.type_id(&Type::Unit).expect("Unit");
     let integer = builder.type_id(&Type::Int).expect("Int");
@@ -1415,18 +1416,18 @@ fn await_tasks_program_with_mode(
             .expect("fault");
     }
 
-    let sync_task_factory = builder
+    let task_factory = builder
         .declare_function(
-            sync_task_origin,
-            "await.sync_task_factory",
+            task_factory_origin,
+            "await.task_factory",
             Signature::new([], task_int),
             Effects::NEEDS_EXECUTOR.with_implications(),
         )
-        .expect("sync Task factory");
+        .expect("Task factory");
     {
         let mut function = builder
-            .function(sync_task_factory)
-            .expect("sync Task factory builder");
+            .function(task_factory)
+            .expect("Task factory builder");
         let entry = function.create_block().expect("entry");
         function.set_entry(entry).expect("entry");
         let task = function
@@ -1437,15 +1438,48 @@ fn await_tasks_program_with_mode(
                     arguments: Box::new([]),
                 },
                 &[task_int],
-                sync_task_origin,
+                task_factory_origin,
             )
             .expect("Task[Int]")[0];
         function
             .terminate(
                 entry,
-                Terminator::new(TerminatorKind::Return(task), sync_task_origin),
+                Terminator::new(TerminatorKind::Return(task), task_factory_origin),
             )
             .expect("return Task");
+    }
+
+    let sync_task_factory = builder
+        .declare_function(
+            sync_task_origin,
+            "await.sync_task_factory",
+            Signature::new([], task_int),
+            Effects::NEEDS_EXECUTOR.with_implications(),
+        )
+        .expect("disguised sync Task factory");
+    {
+        let mut function = builder
+            .function(sync_task_factory)
+            .expect("disguised sync Task factory builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("entry");
+        let task = function
+            .append_instruction(
+                entry,
+                InstructionKind::DirectCall {
+                    callee: task_factory,
+                    arguments: Box::new([]),
+                },
+                &[task_int],
+                sync_task_origin,
+            )
+            .expect("transitive Task[Int]")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(TerminatorKind::Return(task), sync_task_origin),
+            )
+            .expect("return transitive Task");
     }
 
     let sync_timer_factory = builder

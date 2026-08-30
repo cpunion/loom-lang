@@ -507,28 +507,28 @@ inactive source fault state and ends in the coroutine-only `TaskCancelled`
 terminal. Cleanup remains synchronous on both paths. This is static CFG
 duplication under the same cleanup budgets, not a runtime registration stack.
 
-Scoped concept disposal is closed through the already selected concrete
-witness method and uses the ordinary direct or fallible typed call ABI. A
-mutable receiver is written back on both normal and unwind edges. Canonical
-File and Socket disposal uses the `ResourceClose` instruction: it consumes one
-exact nominal resource value and produces `Unit` plus the closed resource,
-without raising a source fault. Independent validation accepts only canonical
-cataloged canonical `File` for the File kind or cataloged canonical
-`Socket` for the Socket kind. Each is the registered direct one-field
-product whose sole `Int` is an opaque runtime capability token; it is never a
-raw descriptor or handle. An unregistered, generic, structurally similar, or
-representation-alternative nominal fails closed. LLVM calls the typed close
-ABI directly, and the runtime accepts the token only when the active Task owns
-its unique, kind-matching ledger entry. Normal code must be running and not
-cancelled; the same exact owner may close during the executor-guarded
+Every scoped disposal closes through the already selected concrete witness
+method and uses the ordinary direct or fallible typed call ABI. A mutable
+receiver is written back on both normal and unwind edges. The canonical source
+File and Socket witnesses call authenticated private close leaves; those leaf
+calls lower to `ResourceClose`, which consumes one exact nominal resource value
+and produces `Unit` plus the closed resource without raising a source fault.
+Independent validation accepts only the cataloged canonical `File` for the File
+kind or canonical `Socket` for the Socket kind. Each is the registered direct
+one-field product whose sole `Int` is an opaque runtime capability token; it is
+never a raw descriptor or handle. An unregistered, generic, structurally
+similar, or representation-alternative nominal fails closed. LLVM calls the
+typed close ABI directly, and the runtime accepts the token only when the active
+Task owns its unique, kind-matching ledger entry. Normal code must be running
+and not cancelled; the same exact owner may close during the executor-guarded
 cancellation or result-disposal cleanup phase. Other I/O remains forbidden in
 that phase. An invalid or already-closed sentinel is rejected rather than
 treated as a second successful close. Runtime status `0` produces both
 instruction results, and every other status traps as an ABI defect. The path
 does not construct a universal `Value`, a runtime cleanup stack, or another
-executor. MIR rejects
-suspension in cleanup, and LCIR independently rejects a suspending exact callee
-or an invented suspension effect in the resulting cleanup graph.
+executor. MIR rejects suspension in cleanup, and LCIR independently rejects a
+suspending exact callee or an invented suspension effect in the resulting
+cleanup graph.
 
 When any reachable instance contains `TextConcat`, `TextGet`, a TextMap, or a
 tuple/record/closed-sum containing Text, representation planning selects

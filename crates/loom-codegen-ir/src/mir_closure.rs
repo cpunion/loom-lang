@@ -499,23 +499,14 @@ impl SerializationClosure {
                     value, disposal, ..
                 } => {
                     self.scan_expr(program, value);
-                    match disposal {
-                        ScopedDisposal::StaticConcept {
-                            requirement,
-                            witness,
-                            dispatch_type,
-                        } => {
-                            self.add_requirement(*requirement);
-                            self.scan_witness_ref(witness);
-                            self.scan_type(dispatch_type);
-                        }
-                        ScopedDisposal::FileClose => {
-                            self.add_optional_type(program.prelude.file);
-                        }
-                        ScopedDisposal::SocketClose => {
-                            self.add_optional_type(program.prelude.socket);
-                        }
-                    }
+                    let ScopedDisposal::StaticConcept {
+                        requirement,
+                        witness,
+                        dispatch_type,
+                    } = disposal;
+                    self.add_requirement(*requirement);
+                    self.scan_witness_ref(witness);
+                    self.scan_type(dispatch_type);
                 }
                 StatementKind::ForRange {
                     start, end, body, ..
@@ -1159,16 +1150,14 @@ impl IdMaps {
                     value, disposal, ..
                 } => {
                     self.remap_expr(value)?;
-                    if let ScopedDisposal::StaticConcept {
+                    let ScopedDisposal::StaticConcept {
                         requirement,
                         witness,
                         dispatch_type,
-                    } = disposal
-                    {
-                        *requirement = self.requirement(*requirement)?;
-                        self.remap_witness_ref(witness)?;
-                        self.remap_type(dispatch_type)?;
-                    }
+                    } = disposal;
+                    *requirement = self.requirement(*requirement)?;
+                    self.remap_witness_ref(witness)?;
+                    self.remap_type(dispatch_type)?;
                 }
                 StatementKind::ForRange {
                     start, end, body, ..

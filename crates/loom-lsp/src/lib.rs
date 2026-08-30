@@ -1110,18 +1110,6 @@ const STD_SYMBOLS: &[StdSymbol] = &[
         module: "std.prelude.TextMap",
         signature: "method remove[V](self TextMap[V], key Text) TextMap[V]",
     },
-    StdSymbol {
-        name: "try_read_text",
-        kind: "method",
-        module: "std.file",
-        signature: "method try_read_text(mut self File) Task[Result[Text, IoError]]",
-    },
-    StdSymbol {
-        name: "try_write_text",
-        kind: "method",
-        module: "std.file",
-        signature: "method try_write_text(mut self File, text Text) Task[Result[Unit, IoError]]",
-    },
 ];
 
 fn std_symbol_at(

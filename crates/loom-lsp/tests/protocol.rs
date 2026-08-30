@@ -125,19 +125,40 @@ fn source_position(source: &str, needle: &str) -> Value {
     reason = "one editor contract keeps structured standard-library hover and completion evidence together"
 )]
 fn structured_std_values_are_discoverable_through_completion_and_hover() {
-    let source = r#"import std.json.parse_json
+    let source = r#"import std.file.File
+import std.file.try_open_read
+import std.json.parse_json
 import std.log.debug
 import std.log.error
 import std.log.info
 import std.log.LogLevel
 import std.log.warn
 import std.log.write
+import std.net.Socket
+import std.net.try_connect
 
 fn inspect(problem IoError, value Json) {
     let fields = TextMap[Text]().insert("key", "value")
     let parsed = parse_json("null")
     debug("indexed from source")
     write(LogLevel.Info, problem.message(), fields)
+}
+
+async fn inspect_resources(path Text) {
+    match try_open_read(path).await {
+        Ok(file) => {
+            scoped file = file
+            discard file.try_read_text().await
+        }
+        Err(_) => {}
+    }
+    match try_connect("localhost", -1).await {
+        Ok(socket) => {
+            scoped socket = socket
+            discard socket.try_write_text("").await
+        }
+        Err(_) => {}
+    }
 }
 "#;
     let project = TestProject::new(source);
@@ -152,8 +173,11 @@ fn inspect(problem IoError, value Json) {
         json!({"jsonrpc":"2.0","id":4,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "insert")}}),
         json!({"jsonrpc":"2.0","id":5,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "IoError")}}),
         json!({"jsonrpc":"2.0","id":6,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "debug(\"indexed")}}),
-        json!({"jsonrpc":"2.0","id":7,"method":"textDocument/completion","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "\n}")}}),
-        json!({"jsonrpc":"2.0","id":8,"method":"shutdown","params":null}),
+        json!({"jsonrpc":"2.0","id":7,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "File\nimport std.file.try_open_read")}}),
+        json!({"jsonrpc":"2.0","id":8,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "Socket\nimport std.net.try_connect")}}),
+        json!({"jsonrpc":"2.0","id":9,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "try_read_text().await")}}),
+        json!({"jsonrpc":"2.0","id":10,"method":"textDocument/completion","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "\n}")}}),
+        json!({"jsonrpc":"2.0","id":11,"method":"shutdown","params":null}),
         json!({"jsonrpc":"2.0","method":"exit","params":null}),
     ];
     let responses = run_framed_session(&messages);
@@ -166,6 +190,9 @@ fn inspect(problem IoError, value Json) {
             "method insert[V](self TextMap[V], key Text, value V) TextMap[V]",
         ),
         (5, "record IoError"),
+        (7, "record File"),
+        (8, "record Socket"),
+        (9, "method try_read_text"),
     ] {
         let hover = responses
             .iter()
@@ -199,6 +226,17 @@ fn inspect(problem IoError, value Json) {
         "{io_error_hover}"
     );
 
+    for (id, module) in [(7, "std.file"), (8, "std.net"), (9, "std.file")] {
+        let hover = responses
+            .iter()
+            .find(|message| message.get("id") == Some(&json!(id)))
+            .unwrap_or_else(|| panic!("missing source-backed resource hover {id}"))
+            .pointer("/result/contents/value")
+            .and_then(Value::as_str)
+            .expect("source-backed resource hover markdown");
+        assert!(hover.contains(&format!("module `{module}`")), "{hover}");
+    }
+
     let logging_hover = responses
         .iter()
         .find(|message| message.get("id") == Some(&json!(6)))
@@ -213,7 +251,7 @@ fn inspect(problem IoError, value Json) {
 
     let completion_items = responses
         .iter()
-        .find(|message| message.get("id") == Some(&json!(7)))
+        .find(|message| message.get("id") == Some(&json!(10)))
         .and_then(|message| message.pointer("/result/items"))
         .and_then(Value::as_array)
         .expect("completion items");
@@ -227,6 +265,8 @@ fn inspect(problem IoError, value Json) {
         "JsonError",
         "IoError",
         "IoErrorKind",
+        "File",
+        "Socket",
         "entry_at",
         "LogLevel",
         "parse_json",
@@ -267,6 +307,16 @@ fn inspect(problem IoError, value Json) {
         ("IoErrorKind", "enum", "std.io"),
         ("kind", "method", "std.io"),
         ("message", "method", "std.io"),
+        ("File", "record", "std.file"),
+        ("read_text", "method", "std.file"),
+        ("write_text", "method", "std.file"),
+        ("try_read_text", "method", "std.file"),
+        ("try_write_text", "method", "std.file"),
+        ("Socket", "record", "std.net"),
+        ("read_text", "method", "std.net"),
+        ("write_text", "method", "std.net"),
+        ("try_read_text", "method", "std.net"),
+        ("try_write_text", "method", "std.net"),
         ("LogLevel", "enum", "std.log"),
         ("write", "function", "std.log"),
         ("try_open_read_path", "function", "std.file"),

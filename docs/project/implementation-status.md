@@ -24,7 +24,7 @@ names still recognized by semantic builtin tables.
 | `std.process` | public `arguments` and `environment` wrappers | compiler-private process snapshot primitives and their runtime OS boundary | source-backed |
 | `std.text` / `std.path` | public `DecodeTextError` and `PathError` enums | Text, Bytes, Path, and their intrinsic construction and decoding operations remain core mechanisms | partial |
 | `std.time` | none | `Duration`, construction, and conversion | not source-backed |
-| `std.file` / `std.net` | all public open/create/connect functions, including Path forwarding | exact-owner typed I/O primitives; `File`, `Socket`, and resource methods | partial |
+| `std.file` / `std.net` | `File`, `Socket`, all public acquisition and I/O methods, and their `Dispose`/`MustScope` conformances | only exact-owner private typed I/O and close leaves | source-backed |
 | `Task.sleep/all/settled/any/race` | none | temporary public-name resolution through `TaskIntrinsic` plus the private scheduler substrate | transitional |
 
 The target boundary gives every public library declaration an ordinary source

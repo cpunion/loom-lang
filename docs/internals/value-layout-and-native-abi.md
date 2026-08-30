@@ -164,11 +164,11 @@ mixes the two routes.
 
 ## Typed external resources
 
-Canonical `File` and `Socket` are protected direct one-field products
-containing an `Int` runtime capability token. The token is not an OS
-descriptor or handle. The concrete RAII owner remains in the runtime Task
-ledger, and every operation resolves the token against the current active,
-running owner before it clones or closes the resource. Generic product
+Canonical `File` and `Socket` are protected empty source records that lower to
+direct one-field products containing an `Int` runtime capability token. The
+token is not an OS descriptor or handle. The concrete RAII owner remains in the
+runtime Task ledger, and every operation resolves the token against the current
+active, running owner before it clones or closes the resource. Generic product
 construction, extraction, and insertion cannot forge or expose these
 capabilities.
 
@@ -337,7 +337,7 @@ leaves for `TaskFault`. A sole nonempty List literal is flattened to the same
 static row; empty, stored, computed, and runtime-sized List joins and
 first-class `any`, `settled`, or `race` results remain complete fallback.
 
-The runtime separately tracks concrete built-in File and Socket owners held by a
+The runtime separately tracks concrete typed File and Socket owners held by a
 published typed result; that ledger is not a field in `Task[T]` or in the
 source value. Source records carry only their monotonic capability token. A
 successful exact child-result take, including the Completed
@@ -346,10 +346,10 @@ which may itself be the root Task, before retiring the child. If result-take is
 applied directly to the ownerless root Task, its entries remain attached to
 that Task in the executor-owned task registry. Faulted, cancelled, losing, and
 unconsumed tasks do not transfer entries. Terminal cleanup and typed result
-disposal release their remaining built-in owners at the deterministic cleanup
-boundary, even if a disposer reports a fault or protocol defect; retired-task
-reaping only reclaims memory. Validation failure commits neither a topology
-change nor an ownership move.
+disposal release their remaining typed resource owners at the deterministic
+cleanup boundary, even if a disposer reports a fault or protocol defect;
+retired-task reaping only reclaims memory. Validation failure commits neither a
+topology change nor an ownership move.
 
 Child extraction also rechecks its complete scheduler protocol before copying:
 one exact owned/join membership, a settled successful join, result take only

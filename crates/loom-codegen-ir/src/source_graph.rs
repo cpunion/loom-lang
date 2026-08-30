@@ -506,25 +506,16 @@ fn scan_block_with_flow<'mir>(
                 let witnesses = expression_witnesses(value, flow);
                 if scan_expr(value, edges, flow, active_cleanups, loops) {
                     flow.set(*local, witnesses);
-                    match disposal {
-                        loom_mir::ScopedDisposal::StaticConcept {
-                            requirement,
-                            witness,
-                            ..
-                        } => {
-                            collect_witness(witness, &mut edges.witnesses);
-                            if let Some(witness) = concrete_witness(witness) {
-                                edges.concrete_methods.insert((witness, *requirement));
-                            } else {
-                                edges.dynamic.insert(*requirement);
-                            }
-                        }
-                        loom_mir::ScopedDisposal::FileClose => {
-                            edges.builtins.insert(Builtin::FileClose);
-                        }
-                        loom_mir::ScopedDisposal::SocketClose => {
-                            edges.builtins.insert(Builtin::SocketClose);
-                        }
+                    let loom_mir::ScopedDisposal::StaticConcept {
+                        requirement,
+                        witness,
+                        ..
+                    } = disposal;
+                    collect_witness(witness, &mut edges.witnesses);
+                    if let Some(witness) = concrete_witness(witness) {
+                        edges.concrete_methods.insert((witness, *requirement));
+                    } else {
+                        edges.dynamic.insert(*requirement);
                     }
                     true
                 } else {

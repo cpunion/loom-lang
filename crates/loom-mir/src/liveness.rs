@@ -882,8 +882,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        CallTarget, Constant, Contract, Expr, ExprKind, FunctionId, Pattern, ScopedDisposal,
-        Statement, TaskJoinMode, TypeId,
+        CallTarget, Constant, Contract, Expr, ExprKind, FunctionId, Pattern, RequirementId,
+        ScopedDisposal, Statement, TaskJoinMode, TypeId, WitnessId, WitnessRef,
     };
 
     fn expression(kind: ExprKind, ty: Type) -> Expr {
@@ -1362,7 +1362,11 @@ mod tests {
                     kind: StatementKind::Scoped {
                         local: initializing,
                         value: sleep_await(1),
-                        disposal: ScopedDisposal::FileClose,
+                        disposal: ScopedDisposal::StaticConcept {
+                            requirement: RequirementId(0),
+                            witness: WitnessRef::Concrete(WitnessId(0)),
+                            dispatch_type: Type::Int,
+                        },
                     },
                     span: Span::default(),
                 },

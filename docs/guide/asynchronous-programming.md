@@ -139,8 +139,8 @@ Matching must be exhaustive. `TaskFault` reports a task-local fault. A business
 fault. Process-level failures such as OOM do not become `TaskOutcome` values.
 
 If `Completed(value)` contains a File, Socket, or another `MustScope` value,
-bind it directly with `scoped` in that arm. For built-in File and Socket
-handles, completion transfers runtime ownership from the child to its owner
+bind it directly with `scoped` in that arm. For typed File and Socket
+resources, completion transfers runtime ownership from the child to its owner
 Task, which may itself be the root Task, before the child is retired. Faulted,
 cancelled, losing, and unconsumed tasks transfer no completed-result handle.
 Terminal cleanup or typed result disposal closes their remaining built-in

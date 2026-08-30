@@ -66,9 +66,11 @@ methods on the binding, but an ordinary `mut self` method still requires `var`
 and is therefore rejected. The registered `Dispose.dispose(mut self)` call is
 performed only by lexical cleanup.
 
-`File` and `Socket` are built-in scoped resources. A package defining a custom
-resource imports the canonical concepts from the compiler-distributed
-`std.resource` source package:
+The standard `File` and `Socket` records are ordinary source types that
+implement `Dispose` and `MustScope`; their compiler-private capability storage
+does not change the language rule. A package defining another resource imports
+the canonical concepts from the compiler-distributed `std.resource` source
+package:
 
 ```loom
 import std.resource.Dispose
@@ -122,7 +124,8 @@ exactly-once disposal. These are implementation guarantees behind the same
 recursive `MustScope` rule, not ownership or borrowing syntax.
 
 Calling a method on a `MustScope` value requires that the receiver already be a
-`scoped` binding. Built-in File and Socket methods follow the same rule.
+`scoped` binding. The source-defined File and Socket methods follow the same
+rule.
 
 ## `defer`
 

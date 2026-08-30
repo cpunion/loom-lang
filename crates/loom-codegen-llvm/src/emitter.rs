@@ -6092,18 +6092,15 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         span: Span,
         destination: PointerValue<'ctx>,
     ) -> Result<bool, CodegenError> {
-        let target = match disposal {
-            ScopedDisposal::StaticConcept {
-                requirement,
-                witness,
-                dispatch_type,
-            } => CallTarget::StaticConcept {
-                requirement: *requirement,
-                witness: witness.clone(),
-                dispatch_type: dispatch_type.clone(),
-            },
-            ScopedDisposal::FileClose => CallTarget::Builtin(Builtin::FileClose),
-            ScopedDisposal::SocketClose => CallTarget::Builtin(Builtin::SocketClose),
+        let ScopedDisposal::StaticConcept {
+            requirement,
+            witness,
+            dispatch_type,
+        } = disposal;
+        let target = CallTarget::StaticConcept {
+            requirement: *requirement,
+            witness: witness.clone(),
+            dispatch_type: dispatch_type.clone(),
         };
         let site = Expr::new(ExprKind::Constant(Constant::Unit), Type::Unit, span);
         self.emit_call(

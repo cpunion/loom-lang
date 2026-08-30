@@ -619,7 +619,7 @@ pub enum StatementKind {
 ///
 /// This remains first-class in portable MIR so independent validation can
 /// distinguish an authorized lexical cleanup from an arbitrary user call to
-/// `Dispose.dispose`, `File.close`, or `Socket.close`.
+/// `Dispose.dispose`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum ScopedDisposal {
@@ -628,8 +628,6 @@ pub enum ScopedDisposal {
         witness: WitnessRef,
         dispatch_type: Type,
     },
-    FileClose,
-    SocketClose,
 }
 
 /// Checked-construction disposition fixed by semantic analysis.

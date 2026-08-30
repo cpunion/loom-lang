@@ -8,6 +8,7 @@ use loom_syntax::parse_with_file;
 const FILE_SOURCE: &str = include_str!("../../../library/std/file/file.loom");
 const NET_SOURCE: &str = include_str!("../../../library/std/net/net.loom");
 const IO_SOURCE: &str = include_str!("../../../library/std/io/io.loom");
+const RESOURCE_SOURCE: &str = include_str!("../../../library/std/resource/resource.loom");
 
 const PRIVATE_BUILTINS: [BuiltinValue; 6] = [
     BuiltinValue::FileOpenRead,
@@ -88,10 +89,12 @@ fn public_file_and_net_calls_are_source_functions_with_exact_private_owners() {
     let io_file = FileId(0);
     let file_file = FileId(1);
     let net_file = FileId(2);
-    let application_file = FileId(3);
+    let resource_file = FileId(3);
+    let application_file = FileId(4);
     let io = parse(io_file, IO_SOURCE);
     let file = parse(file_file, FILE_SOURCE);
     let net = parse(net_file, NET_SOURCE);
+    let resource = parse(resource_file, RESOURCE_SOURCE);
     let application = parse(
         application_file,
         r"
@@ -145,6 +148,12 @@ pub fn app_try_connect(host Text, port Int) Task[Result[Socket, IoError]] {
             package: std_package.clone(),
             module: ModuleName::new("std.net"),
             syntax: net.ast(),
+        },
+        PackageSourceUnit {
+            file: resource_file,
+            package: std_package.clone(),
+            module: ModuleName::new("std.resource"),
+            syntax: resource.ast(),
         },
         PackageSourceUnit {
             file: application_file,
@@ -309,16 +318,22 @@ fn private_try_connect(host Text, port Int) Task[Result[Socket, IoError]] {
 ";
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the authority test assembles canonical, hostile-package, and hostile-module sources"
+)]
 fn private_file_and_net_primitives_reject_wrong_owner_package_and_application() {
     let io_file = FileId(0);
     let file_file = FileId(1);
     let net_file = FileId(2);
-    let wrong_owner_file = FileId(3);
-    let wrong_package_file = FileId(4);
-    let application_file = FileId(5);
+    let resource_file = FileId(3);
+    let wrong_owner_file = FileId(4);
+    let wrong_package_file = FileId(5);
+    let application_file = FileId(6);
     let io = parse(io_file, IO_SOURCE);
     let file = parse(file_file, FILE_SOURCE);
     let net = parse(net_file, NET_SOURCE);
+    let resource = parse(resource_file, RESOURCE_SOURCE);
     let wrong_owner = parse(wrong_owner_file, HOSTILE_SOURCE);
     let wrong_package = parse(wrong_package_file, HOSTILE_SOURCE);
     let application = parse(application_file, HOSTILE_SOURCE);
@@ -344,6 +359,12 @@ fn private_file_and_net_primitives_reject_wrong_owner_package_and_application() 
             package: std_package.clone(),
             module: ModuleName::new("std.net"),
             syntax: net.ast(),
+        },
+        PackageSourceUnit {
+            file: resource_file,
+            package: std_package.clone(),
+            module: ModuleName::new("std.resource"),
+            syntax: resource.ast(),
         },
         PackageSourceUnit {
             file: wrong_owner_file,

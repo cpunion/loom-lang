@@ -1035,6 +1035,25 @@ impl<'program> Validator<'program> {
             ("io_error_kind", self.program.prelude.io_error_kind, "enum"),
             ("log_level", self.program.prelude.log_level, "enum"),
         ];
+        let mut identities = BTreeMap::new();
+        for (name, id, _) in entries {
+            let Some(id) = id else {
+                continue;
+            };
+            if let Some(first) = identities.get(&id) {
+                self.push(
+                    MirValidationCode::InvalidTypeReference,
+                    format!(
+                        "prelude `{name}` must have a distinct type identity; it aliases prelude `{first}` as type #{}",
+                        id.0
+                    ),
+                    Span::default(),
+                    format!("prelude.{name}"),
+                );
+            } else {
+                identities.insert(id, name);
+            }
+        }
         for (name, id, expected_kind) in entries {
             let Some(id) = id else {
                 continue;
@@ -5165,6 +5184,10 @@ impl<'program> Validator<'program> {
     ) {
         let message = if self.program.prelude.path == Some(type_id) {
             Some("prelude Path values may only be established by Path.from_text or Path.join")
+        } else if self.program.prelude.file == Some(type_id) {
+            Some("prelude File values may only be established by trusted I/O primitives")
+        } else if self.program.prelude.socket == Some(type_id) {
+            Some("prelude Socket values may only be established by trusted I/O primitives")
         } else if self.program.prelude.io_error == Some(type_id) {
             Some("prelude IoError values may only be established by trusted I/O primitives")
         } else {
@@ -6951,36 +6974,6 @@ impl<'program> Validator<'program> {
                     );
                 }
             }
-            ScopedDisposal::FileClose => {
-                if !self
-                    .program
-                    .prelude
-                    .file
-                    .is_some_and(|file| nominal_is(&local.ty, file))
-                {
-                    self.push(
-                        MirValidationCode::BuiltinShape,
-                        "FileClose scoped disposal requires the canonical File type",
-                        span,
-                        path,
-                    );
-                }
-            }
-            ScopedDisposal::SocketClose => {
-                if !self
-                    .program
-                    .prelude
-                    .socket
-                    .is_some_and(|socket| nominal_is(&local.ty, socket))
-                {
-                    self.push(
-                        MirValidationCode::BuiltinShape,
-                        "SocketClose scoped disposal requires the canonical Socket type",
-                        span,
-                        path,
-                    );
-                }
-            }
         }
     }
 
@@ -8012,6 +8005,24 @@ impl<'program> Validator<'program> {
                 self.push(
                     MirValidationCode::InvalidPlace,
                     "prelude Path storage is opaque; use the Path APIs",
+                    span,
+                    path,
+                );
+                return None;
+            }
+            if self.program.prelude.file == Some(type_id) {
+                self.push(
+                    MirValidationCode::InvalidPlace,
+                    "prelude File storage is protected; use the File APIs",
+                    span,
+                    path,
+                );
+                return None;
+            }
+            if self.program.prelude.socket == Some(type_id) {
+                self.push(
+                    MirValidationCode::InvalidPlace,
+                    "prelude Socket storage is protected; use the Socket APIs",
                     span,
                     path,
                 );
@@ -9785,12 +9796,73 @@ impl<'program> Validator<'program> {
                     | Builtin::FileWriteText
                     | Builtin::FileTryReadText
                     | Builtin::FileTryWriteText
+                    | Builtin::FileClose
                     | Builtin::SocketReadText
                     | Builtin::SocketWriteText
                     | Builtin::SocketTryReadText
                     | Builtin::SocketTryWriteText
+                    | Builtin::SocketClose
             ),
         }
+    }
+
+    fn call_is_authorized_resource_close(
+        &self,
+        function: &Function,
+        target: &CallTarget,
+        arguments: &[CallArgument],
+    ) -> bool {
+        let resource = match target {
+            CallTarget::Builtin(Builtin::FileClose) => self.program.prelude.file,
+            CallTarget::Builtin(Builtin::SocketClose) => self.program.prelude.socket,
+            _ => return false,
+        };
+        let Some(resource) = resource else {
+            return false;
+        };
+        let resource_ty = Type::Nominal(resource, Vec::new());
+        let Some(receiver) = function.params.first() else {
+            return false;
+        };
+        let [CallArgument::InOut(place)] = arguments else {
+            return false;
+        };
+        if function.is_async
+            || function.type_parameters != 0
+            || function.receiver != Some(Receiver::Mutable)
+            || function.params.len() != 1
+            || !receiver.mutable
+            || receiver.ty != resource_ty
+            || place.local != receiver.id
+            || !place.projection.is_empty()
+            || !function.witness_params.is_empty()
+            || function.witness_prefix_count != 0
+            || function.return_ty != Type::Unit
+            || function.call_plan.receiver_invariant.is_some()
+            || !function.call_plan.requires.is_empty()
+            || !function.call_plan.ensures.is_empty()
+        {
+            return false;
+        }
+        let (Some(dispose), Some(requirement)) = (
+            self.program.prelude.dispose_concept,
+            self.program.prelude.dispose_requirement,
+        ) else {
+            return false;
+        };
+        self.program
+            .witnesses
+            .iter()
+            .filter(|witness| {
+                witness.concept == dispose
+                    && witness.concrete == resource_ty
+                    && witness.type_parameters == 0
+                    && witness.prerequisites.is_empty()
+                    && witness.methods.get(&requirement) == Some(&function.id)
+            })
+            .take(2)
+            .count()
+            == 1
     }
 
     fn call_target_is_manual_disposal(&self, target: &CallTarget) -> bool {
@@ -10350,10 +10422,12 @@ impl<'program> Validator<'program> {
             } => {
                 let target_is_synchronous = self.call_target_is_proven_synchronous(target);
                 let target_has_receiver = self.call_target_has_receiver(target);
-                if self.call_target_is_manual_disposal(target) {
+                if self.call_target_is_manual_disposal(target)
+                    && !self.call_is_authorized_resource_close(function, target, arguments)
+                {
                     self.push(
                         MirValidationCode::ObligationShape,
-                        "Dispose and intrinsic close operations may only be invoked by a Scoped registration",
+                        "Dispose may only be invoked by a Scoped cleanup, and intrinsic close only by its matching canonical Dispose implementation",
                         expression.span,
                         format!("{path}.target"),
                     );

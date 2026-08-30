@@ -265,7 +265,6 @@ pub enum ScopedDisposal {
         requirement: DefId,
         witness: WitnessSelection,
     },
-    Builtin(BuiltinValue),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

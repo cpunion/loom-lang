@@ -270,7 +270,7 @@ from that status and the exact payloads. Each capture is an explicit collecting
 safepoint, so outcomes already constructed remain in the ordinary exact root
 plan while a later fault is captured.
 
-Successful completion consumption preserves built-in File/Socket ownership
+Successful completion consumption preserves typed File/Socket ownership
 before that retirement. `loom_typed_task_take_result_v1` moves those concrete owners to
 the task's non-null owner Task before detaching and retiring the child. When it
 is applied directly to the ownerless root Task, the owners remain on that
@@ -281,7 +281,7 @@ root Task. The transfer is part of the successful commit: validation failure
 leaves both task topology and ownership unchanged, and a repeated take cannot
 duplicate ownership. Faulted and cancelled outcomes transfer no completed-
 result resources. Fault/cancellation cleanup and completed loser or unconsumed
-result disposal release all remaining built-in File/Socket ledger entries at
+result disposal release all remaining typed File/Socket ledger entries at
 that deterministic cleanup boundary, even if a result disposer reports a fault
 or protocol defect. Retired-task reaping then reclaims memory only.
 
@@ -385,7 +385,7 @@ of:
 
 Tuple inputs preserve heterogeneous result types. List inputs support a dynamic
 number of homogeneous tasks. A successfully consumed completed result transfers
-its concrete built-in File/Socket owners to the child's owner Task, which may
+its concrete typed File/Socket owners to the child's owner Task, which may
 itself be the root Task, before the child is retired or reclaimed. Faulted,
 cancelled, losing, and unconsumed tasks do not transfer completed-result
 resources. Their terminal cleanup or typed result disposal releases remaining

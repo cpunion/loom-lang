@@ -48,7 +48,7 @@ larger graph.
 
 ## Persistent layers
 
-The persistent cache schema is `14`. Current layers include source parse,
+The persistent cache schema is `15`. Current layers include source parse,
 package-interface presence, typed package state, complete checked MIR, target
 objects, and deterministic final artifacts.
 
@@ -74,27 +74,27 @@ inconsistent or incomplete identity metadata is a cache miss.
 
 The canonical source identities for `std.float.is_finite`,
 `std.text.DecodeTextError`, `std.path.PathError`, `std.io.IoError`,
-`std.io.IoErrorKind`, and `std.log.LogLevel` follow the same rule. Their exact
-`DefId` values are rederived before signature and body checking; cached
-semantic bytes never grant a same-named function, record, or enum canonical
-authority.
+`std.io.IoErrorKind`, `std.file.File`, `std.net.Socket`, and
+`std.log.LogLevel` follow the same rule. Their exact `DefId` values are
+rederived before signature and body checking; cached semantic bytes never grant
+a same-named function, record, or enum canonical authority.
 
 Task policy and timer calls currently store a resolved `TaskIntrinsic` in typed
-body facts. Cache schema `14` and the `loom-compilation-cache-v14` domain cover
+body facts. Cache schema `15` and the `loom-compilation-cache-v15` domain cover
 that identity, the current compiler-private Float, logging, file, and network
-primitive sets, and the replacement of fixed standard type slots with exact
-source definitions. They also exclude the removed Path-specific file builtin
-tags: the source wrappers convert Path to Text before the private primitive.
+primitive sets, and exact source identities for standard types. They also
+exclude Path-specific file builtin tags: the source wrappers convert Path to
+Text before the private primitive.
 Whether a body is reused or conservatively reanalyzed, MIR lowering consumes
 only the resolved identity; it never reconstructs a policy or canonical
 standard-library item from source spelling. The same schema removes the
-compiler-private `IoErrorKind` semantic type and its ten builtin constructors,
-as well as the compiler-private `IoError` semantic type and public builtin
-method path. The checked types and accessor calls now use exact ordinary source
-definitions. The Task cache identity disappears when the temporary catalog is
-replaced by ordinary source definitions.
+compiler-private semantic types and public builtin method paths for
+`IoErrorKind`, `IoError`, `File`, and `Socket`. Checked types, accessors,
+resource methods, and disposal witnesses use exact ordinary source definitions.
+The Task cache identity disappears when the temporary catalog is replaced by
+ordinary source definitions.
 
-Checked-MIR cache envelopes use artifact version `38` and its exact current
+Checked-MIR cache envelopes use artifact version `39` and its exact current
 MIR shape. The artifact profile requires the complete compiler-known resource
 identity trio, all matching prelude ids, the canonical six-field
 `ConstraintError`, the exact source-backed decoding/path error identities and

@@ -2947,54 +2947,35 @@ impl<'program> Interpreter<'program> {
         disposal: &'program ScopedDisposal,
         span: Span,
     ) -> SyncStep<'program, Value> {
-        match disposal {
-            ScopedDisposal::FileClose | ScopedDisposal::SocketClose => {
-                let builtin = match disposal {
-                    ScopedDisposal::FileClose => Builtin::FileClose,
-                    ScopedDisposal::SocketClose => Builtin::SocketClose,
-                    ScopedDisposal::StaticConcept { .. } => unreachable!(),
-                };
-                match self.eval_resource_close(
-                    frame,
-                    builtin,
-                    &[CallArgument::InOut(Place::local(local))],
-                    span,
-                ) {
-                    Ok(value) => SyncStep::complete(value),
-                    Err(abort) => SyncStep::Complete(Err(abort)),
-                }
-            }
-            ScopedDisposal::StaticConcept {
-                requirement,
-                witness,
-                ..
-            } => {
-                let runtime_witness = match self.resolve_witness(frame, witness, span) {
-                    Ok(witness) => witness,
-                    Err(abort) => return SyncStep::Complete(Err(abort)),
-                };
-                let Some(definition) = self.program.witness(runtime_witness.definition) else {
-                    return SyncStep::fail(self.runtime_fault(
-                        "LOOM_RUNTIME_INVALID_MIR",
-                        "scoped disposal references an unknown witness",
-                        span,
-                    ));
-                };
-                let Some(function) = definition.methods.get(requirement).copied() else {
-                    return SyncStep::fail(self.runtime_fault(
-                        "LOOM_RUNTIME_INVALID_MIR",
-                        "scoped disposal witness is missing Dispose.dispose",
-                        span,
-                    ));
-                };
-                SyncStep::call(SyncCall {
-                    function,
-                    arguments: vec![BoundArgument::Alias(Location::local(frame, local))],
-                    witnesses: runtime_witness.arguments,
-                    span,
-                })
-            }
-        }
+        let ScopedDisposal::StaticConcept {
+            requirement,
+            witness,
+            ..
+        } = disposal;
+        let runtime_witness = match self.resolve_witness(frame, witness, span) {
+            Ok(witness) => witness,
+            Err(abort) => return SyncStep::Complete(Err(abort)),
+        };
+        let Some(definition) = self.program.witness(runtime_witness.definition) else {
+            return SyncStep::fail(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "scoped disposal references an unknown witness",
+                span,
+            ));
+        };
+        let Some(function) = definition.methods.get(requirement).copied() else {
+            return SyncStep::fail(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "scoped disposal witness is missing Dispose.dispose",
+                span,
+            ));
+        };
+        SyncStep::call(SyncCall {
+            function,
+            arguments: vec![BoundArgument::Alias(Location::local(frame, local))],
+            witnesses: runtime_witness.arguments,
+            span,
+        })
     }
 
     fn eval_block(&mut self, frame: u64, block: &Block) -> Result<Value, EvalAbort> {
@@ -4627,57 +4608,41 @@ impl<'program> Interpreter<'program> {
         disposal: &ScopedDisposal,
         span: Span,
     ) -> Result<Value, EvalAbort> {
-        match disposal {
-            ScopedDisposal::FileClose | ScopedDisposal::SocketClose => {
-                let builtin = match disposal {
-                    ScopedDisposal::FileClose => Builtin::FileClose,
-                    ScopedDisposal::SocketClose => Builtin::SocketClose,
-                    ScopedDisposal::StaticConcept { .. } => unreachable!(),
-                };
-                self.eval_resource_close(
-                    frame,
-                    builtin,
-                    &[CallArgument::InOut(Place::local(local))],
+        let ScopedDisposal::StaticConcept {
+            requirement,
+            witness,
+            ..
+        } = disposal;
+        let runtime_witness = self.resolve_witness(frame, witness, span)?;
+        let definition = self
+            .program
+            .witness(runtime_witness.definition)
+            .cloned()
+            .ok_or_else(|| {
+                EvalAbort::from(self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "scoped disposal references an unknown witness",
                     span,
-                )
-            }
-            ScopedDisposal::StaticConcept {
-                requirement,
-                witness,
-                ..
-            } => {
-                let runtime_witness = self.resolve_witness(frame, witness, span)?;
-                let definition = self
-                    .program
-                    .witness(runtime_witness.definition)
-                    .cloned()
-                    .ok_or_else(|| {
-                        EvalAbort::from(self.runtime_fault(
-                            "LOOM_RUNTIME_INVALID_MIR",
-                            "scoped disposal references an unknown witness",
-                            span,
-                        ))
-                    })?;
-                let function = definition
-                    .methods
-                    .get(requirement)
-                    .copied()
-                    .ok_or_else(|| {
-                        EvalAbort::from(self.runtime_fault(
-                            "LOOM_RUNTIME_INVALID_MIR",
-                            "scoped disposal witness is missing Dispose.dispose",
-                            span,
-                        ))
-                    })?;
-                self.invoke_bound(
-                    function,
-                    vec![BoundArgument::Alias(Location::local(frame, local))],
-                    runtime_witness.arguments,
+                ))
+            })?;
+        let function = definition
+            .methods
+            .get(requirement)
+            .copied()
+            .ok_or_else(|| {
+                EvalAbort::from(self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "scoped disposal witness is missing Dispose.dispose",
                     span,
-                )
-                .map_err(EvalAbort::from)
-            }
-        }
+                ))
+            })?;
+        self.invoke_bound(
+            function,
+            vec![BoundArgument::Alias(Location::local(frame, local))],
+            runtime_witness.arguments,
+            span,
+        )
+        .map_err(EvalAbort::from)
     }
 
     fn eval_static_concept_call(
@@ -8223,133 +8188,6 @@ fn test_value_passed(value: &Value) -> bool {
             variant, payload, ..
         } => variant.0 == 0 && matches!(payload.as_slice(), [Value::Unit]),
         _ => false,
-    }
-}
-
-#[cfg(test)]
-mod scoped_cleanup_tests {
-    use super::*;
-    use loom_mir::{CallPlan, ConstructionMode, FieldDef, LocalDecl, Statement, Type, TypeDef};
-
-    fn expression(kind: ExprKind, ty: Type) -> Expr {
-        Expr::new(kind, ty, Span::default())
-    }
-
-    #[test]
-    #[allow(clippy::too_many_lines)]
-    fn faulting_scoped_initializer_does_not_register_its_disposal() {
-        let file_ty = Type::Nominal(TypeId(0), Vec::new());
-        let initializer = expression(
-            ExprKind::Block(Block {
-                statements: vec![Statement {
-                    kind: StatementKind::Assert {
-                        condition: expression(
-                            ExprKind::Constant(Constant::Bool(false)),
-                            Type::Bool,
-                        ),
-                    },
-                    span: Span::default(),
-                }],
-                tail: Some(Box::new(expression(
-                    ExprKind::Record {
-                        ty: TypeId(0),
-                        type_arguments: Vec::new(),
-                        fields: vec![expression(ExprKind::Constant(Constant::Int(9)), Type::Int)],
-                        construction: ConstructionMode::Plain,
-                    },
-                    file_ty.clone(),
-                ))),
-                span: Span::default(),
-            }),
-            file_ty.clone(),
-        );
-        let mut program = Program {
-            types: vec![TypeDef {
-                id: TypeId(0),
-                name: "File".into(),
-                span: Span::default(),
-                type_parameters: 0,
-                kind: TypeDefKind::Record {
-                    fields: vec![FieldDef {
-                        name: "raw".into(),
-                        ty: Type::Int,
-                        span: Span::default(),
-                    }],
-                    invariant: None,
-                },
-            }],
-            functions: vec![Function {
-                id: FunctionId(0),
-                name: "main".into(),
-                span: Span::default(),
-                type_parameters: 0,
-                is_async: false,
-                suspension_points: Vec::new(),
-                params: Vec::new(),
-                witness_params: Vec::new(),
-                witness_prefix_count: 0,
-                locals: vec![LocalDecl {
-                    id: LocalId(0),
-                    name: "file".into(),
-                    ty: file_ty.clone(),
-                    mutable: true,
-                    span: Span::default(),
-                }],
-                return_ty: Type::Unit,
-                receiver: None,
-                body: Block {
-                    statements: vec![Statement {
-                        kind: StatementKind::Scoped {
-                            local: LocalId(0),
-                            value: initializer,
-                            disposal: ScopedDisposal::FileClose,
-                        },
-                        span: Span::default(),
-                    }],
-                    tail: Some(Box::new(expression(
-                        ExprKind::Constant(Constant::Unit),
-                        Type::Unit,
-                    ))),
-                    span: Span::default(),
-                },
-                call_plan: CallPlan::default(),
-            }],
-            prelude: loom_mir::PreludeIds {
-                file: Some(TypeId(0)),
-                ..loom_mir::PreludeIds::default()
-            },
-            ..Program::default()
-        };
-        program
-            .renumber_expr_ids()
-            .expect("renumber scoped initializer fixture");
-        let program = program
-            .into_checked()
-            .expect("valid checked scoped initializer fixture");
-        let body = program.functions[0].body.clone();
-        let mut interpreter = Interpreter::new(&program);
-        interpreter.frames.insert(
-            1,
-            Frame {
-                // A stale slot makes an incorrectly pre-registered cleanup
-                // observable without relying on language-level aliasing.
-                slots: vec![Slot::Value(Value::Record {
-                    ty: TypeId(0),
-                    fields: vec![Value::Int { value: 9 }],
-                })],
-                witnesses: Vec::new(),
-            },
-        );
-        interpreter
-            .files
-            .insert(9, tempfile::tempfile().expect("create file handle fixture"));
-
-        let outcome = interpreter.eval_block(1, &body);
-        assert!(matches!(outcome, Err(EvalAbort::Failure(_))));
-        assert!(
-            interpreter.files.contains_key(&9),
-            "a Scoped disposal must register only after its initializer succeeds"
-        );
     }
 }
 
