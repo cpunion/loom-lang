@@ -526,6 +526,50 @@ fn non_negative_contract() -> Contract {
     }
 }
 
+fn rejected_contract(code: &str) -> Contract {
+    Contract {
+        code: code.into(),
+        span: span(),
+        expression: ContractExpr {
+            span: span(),
+            kind: ContractExprKind::Constant(Constant::Bool(false)),
+        },
+    }
+}
+
+fn unit_contract_function(
+    id: u32,
+    name: &str,
+    is_async: bool,
+    receiver: Option<Receiver>,
+    call_plan: CallPlan,
+) -> Function {
+    let params = receiver
+        .map(|_| local(0, "self", Type::Nominal(TypeId(0), Vec::new()), false))
+        .into_iter()
+        .collect();
+    Function {
+        id: FunctionId(id),
+        name: name.into(),
+        span: span(),
+        type_parameters: 0,
+        is_async,
+        suspension_points: Vec::new(),
+        params,
+        witness_params: Vec::new(),
+        witness_prefix_count: 0,
+        locals: Vec::new(),
+        return_ty: Type::Unit,
+        receiver,
+        body: Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+        call_plan,
+    }
+}
+
 fn non_negative_first_field_contract() -> Contract {
     let mut contract = non_negative_contract();
     let ContractExprKind::Binary(_, left, _) = &mut contract.expression.kind else {
@@ -1397,6 +1441,94 @@ fn method_contract_arguments_exclude_the_receiver() {
         ExecutionFailure::Contract { fault }
             if fault.code == "PreconditionFault"
     ));
+}
+
+#[test]
+fn entry_contract_order_distinguishes_sync_functions_methods_and_async_methods() {
+    let record_invariant = rejected_contract("record.invariant");
+    let ordinary = unit_contract_function(
+        0,
+        "ordinary",
+        false,
+        None,
+        CallPlan {
+            requires: vec![
+                rejected_contract("ordinary.first"),
+                rejected_contract("ordinary.second"),
+            ],
+            ..CallPlan::default()
+        },
+    );
+    let sync_method = unit_contract_function(
+        1,
+        "sample.R.sync_method",
+        false,
+        Some(Receiver::Readonly),
+        CallPlan {
+            receiver_invariant: Some(record_invariant.clone()),
+            requires: vec![rejected_contract("sync.method.requires")],
+            ..CallPlan::default()
+        },
+    );
+    let async_method = unit_contract_function(
+        2,
+        "sample.R.async_method",
+        true,
+        Some(Receiver::Readonly),
+        CallPlan {
+            receiver_invariant: Some(record_invariant.clone()),
+            requires: vec![rejected_contract("async.method.requires")],
+            ..CallPlan::default()
+        },
+    );
+    let program = checked(Program {
+        types: vec![TypeDef {
+            id: TypeId(0),
+            name: "sample.R".into(),
+            span: span(),
+            type_parameters: 0,
+            kind: TypeDefKind::Record {
+                fields: Vec::new(),
+                invariant: Some(record_invariant),
+            },
+        }],
+        functions: vec![ordinary, sync_method, async_method],
+        ..Program::default()
+    });
+    let mut interpreter = Interpreter::new(&program);
+    let receiver = || Value::Record {
+        ty: TypeId(0),
+        fields: Vec::new(),
+    };
+
+    let failure = interpreter
+        .invoke(FunctionId(0), Vec::new(), span())
+        .expect_err("the first declared precondition must fail");
+    let ExecutionFailure::Contract { fault } = failure else {
+        panic!("ordinary precondition must produce a contract fault");
+    };
+    assert_eq!(fault.category, ContractFaultKind::Precondition);
+    assert!(fault.message.contains("ordinary.first"), "{fault:?}");
+
+    let failure = interpreter
+        .invoke(FunctionId(1), vec![receiver()], span())
+        .expect_err("the synchronous precondition must precede the entry invariant");
+    let ExecutionFailure::Contract { fault } = failure else {
+        panic!("method precondition must produce a contract fault");
+    };
+    assert_eq!(fault.category, ContractFaultKind::Precondition);
+    assert_eq!(fault.code, "PreconditionFault");
+    assert!(fault.message.contains("sync.method.requires"), "{fault:?}");
+
+    let failure = interpreter
+        .invoke(FunctionId(2), vec![receiver()], span())
+        .expect_err("the async entry invariant must remain first");
+    let ExecutionFailure::Contract { fault } = failure else {
+        panic!("async invariant must produce a contract fault");
+    };
+    assert_eq!(fault.category, ContractFaultKind::Invariant);
+    assert_eq!(fault.code, "InvariantFault");
+    assert!(fault.message.contains("record.invariant"), "{fault:?}");
 }
 
 #[test]

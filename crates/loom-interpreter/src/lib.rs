@@ -2142,6 +2142,18 @@ impl<'program> Interpreter<'program> {
             let parameter_values = self.read_parameter_values(frame, function)?;
             let (receiver, arguments) = self.contract_arguments(function, &parameter_values)?;
 
+            for contract in &function.call_plan.requires {
+                self.require_contract(
+                    contract,
+                    ContractFaultKind::Precondition,
+                    receiver.as_ref().unwrap_or(&Value::Unit),
+                    arguments,
+                    None,
+                    None,
+                    &[],
+                    call_site,
+                )?;
+            }
             if let (Some(contract), Some(receiver_value)) =
                 (&function.call_plan.receiver_invariant, receiver.as_ref())
             {
@@ -2154,18 +2166,6 @@ impl<'program> Interpreter<'program> {
                     None,
                     &[],
                     contract.span,
-                )?;
-            }
-            for contract in &function.call_plan.requires {
-                self.require_contract(
-                    contract,
-                    ContractFaultKind::Precondition,
-                    receiver.as_ref().unwrap_or(&Value::Unit),
-                    arguments,
-                    None,
-                    None,
-                    &[],
-                    call_site,
                 )?;
             }
 
