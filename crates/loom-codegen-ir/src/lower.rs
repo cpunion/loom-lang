@@ -2194,6 +2194,33 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
         Some(invariant)
     }
 
+    fn statement_invariant_contract(
+        &mut self,
+        target: &Type,
+        function: &mir::Function,
+        span: Span,
+        path: &str,
+    ) -> Option<Rc<Contract>> {
+        if let Some(invariant) = self.concrete_invariants.get(target) {
+            return Some(Rc::clone(invariant));
+        }
+        let (_, invariant) = concrete_invariant_record(self.program, target)?;
+        if !self.contract_text_supported(&invariant.expression) {
+            self.item(
+                UnsupportedFeature::TextConstant,
+                function.id,
+                None,
+                span,
+                path.to_owned(),
+            );
+            return None;
+        }
+        let invariant = Rc::new(invariant);
+        self.concrete_invariants
+            .insert(target.clone(), Rc::clone(&invariant));
+        Some(invariant)
+    }
+
     fn concrete_constraint_summary(&mut self, target: &Type) -> Rc<str> {
         if let Some(summary) = self.constraint_summaries.get(target) {
             return Rc::clone(summary);
@@ -2342,22 +2369,13 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
         {
             return None;
         }
-        let invariant_receiver = function.receiver == Some(mir::Receiver::Mutable)
-            && function
-                .params
-                .first()
-                .is_some_and(|receiver| receiver.id == place.local)
-            && is_invariant_record_type(self.program, &ty);
-        for (depth, field) in place.projection.iter().enumerate() {
-            let protected_read =
-                usage == PlaceUse::Read && is_invariant_record_type(self.program, &ty);
-            let invariant_receiver_root =
-                invariant_receiver && usage != PlaceUse::Move && depth == 0;
-            let fields = if protected_read || invariant_receiver_root {
-                concrete_any_record_fields(self.program, &ty)?
-            } else {
-                concrete_record_fields(self.program, &ty)?
-            };
+        for field in &place.projection {
+            // Checked MIR has already validated the exact read, move, or
+            // mutation path against every invariant boundary. Classification
+            // only needs the concrete field type; the lowerer's PlacePlan
+            // independently selects protected-read and owning-receiver
+            // instructions rather than reconstructing this policy here.
+            let fields = concrete_any_record_fields(self.program, &ty)?;
             let next = usize::try_from(*field)
                 .ok()
                 .and_then(|index| fields.get(index))
@@ -2985,6 +3003,60 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             }
             StatementKind::Assert { condition } => {
                 self.visit_expr(function, key, condition, &format!("{path}.condition"))
+            }
+            StatementKind::RestoreReceiverInvariant { check } => {
+                if *check == mir::ReceiverInvariantCheck::Proven {
+                    return true;
+                }
+                let invariant_path = format!("{path}.receiver_invariant");
+                let target = function.params.first().and_then(|receiver| {
+                    self.instantiated_type(
+                        function,
+                        key,
+                        None,
+                        &receiver.ty,
+                        statement.span,
+                        &invariant_path,
+                    )
+                });
+                let invariant = target.as_ref().and_then(|target| {
+                    self.statement_invariant_contract(
+                        target,
+                        function,
+                        statement.span,
+                        &invariant_path,
+                    )
+                });
+                let supported = target.as_ref().is_some_and(|target| {
+                    self.supported_value_type(target)
+                        && task_free_type(self.program, self.dyn_concepts, target)
+                        && invariant.as_ref().is_some_and(|invariant| {
+                            self.classify_contract_expr(
+                                function,
+                                key,
+                                &invariant.expression,
+                                &ContractTypeContext {
+                                    receiver: Some(target.clone()),
+                                    result: None,
+                                    arguments: Vec::new(),
+                                    old_receiver: None,
+                                    old_arguments: Vec::new(),
+                                    bindings: Vec::new(),
+                                },
+                                &invariant_path,
+                            ) == Some(Type::Bool)
+                        })
+                });
+                if !supported {
+                    self.item(
+                        UnsupportedFeature::SerializedProofRecheck,
+                        function.id,
+                        None,
+                        statement.span,
+                        path.to_owned(),
+                    );
+                }
+                true
             }
             StatementKind::Evaluate(expression) => {
                 self.visit_expr(function, key, expression, &format!("{path}.value"))
@@ -4504,6 +4576,12 @@ fn scan_effect_statement(
             }
             continues
         }
+        StatementKind::RestoreReceiverInvariant { check } => {
+            if *check == mir::ReceiverInvariantCheck::Recheck {
+                summary.include(Effects::MAY_FAULT);
+            }
+            true
+        }
         StatementKind::Defer(cleanup) => {
             scan_effect_block(program, cleanup, summary);
             true
@@ -4876,7 +4954,14 @@ fn statement_mentions_local(statement: &mir::Statement, local: LocalId) -> bool 
                     .as_deref()
                     .is_some_and(|tail| expr_mentions_local(tail, local))
         }
-        StatementKind::Break | StatementKind::Continue => false,
+        StatementKind::Break
+        | StatementKind::Continue
+        | StatementKind::RestoreReceiverInvariant {
+            check: mir::ReceiverInvariantCheck::Proven,
+        } => false,
+        StatementKind::RestoreReceiverInvariant {
+            check: mir::ReceiverInvariantCheck::Recheck,
+        } => local == LocalId(0),
         StatementKind::Assign { place, value } => {
             place.local == local || expr_mentions_local(value, local)
         }
@@ -5039,6 +5124,7 @@ fn collect_loop_mutations_statement(
         StatementKind::Assert { condition } | StatementKind::Evaluate(condition) => {
             collect_loop_mutations_expr(condition, changed)
         }
+        StatementKind::RestoreReceiverInvariant { .. } => true,
         StatementKind::Defer(cleanup) => {
             // A deferred cleanup runs on every path that leaves its scope,
             // including loop break/continue and normal iteration exit.
@@ -8142,6 +8228,69 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 }
                 EvalFlow::Terminated => Ok(StatementFlow::Terminated),
             },
+            StatementKind::RestoreReceiverInvariant { check } => {
+                if *check == mir::ReceiverInvariantCheck::Proven {
+                    return Ok(StatementFlow::Continue(flow));
+                }
+                let receiver = self.source.params.first().ok_or_else(|| {
+                    LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        "receiver invariant restoration has no receiver parameter",
+                    )
+                })?;
+                let target = InstanceSubstitution::new(self.program, self.key)
+                    .instantiate_type(&receiver.ty)
+                    .map_err(|error| instantiation_defect(self.source.id, None, error))?;
+                let invariant =
+                    self.concrete_invariants
+                        .get(&target)
+                        .cloned()
+                        .ok_or_else(|| {
+                            LoweringError::defect(
+                                LoweringDefectCode::InconsistentPlan,
+                                "receiver invariant restoration has no classified exact contract",
+                            )
+                        })?;
+                let receiver_value =
+                    self.environments
+                        .get(flow.env, receiver.id)
+                        .ok_or_else(|| {
+                            LoweringError::defect(
+                                LoweringDefectCode::InconsistentPlan,
+                                "receiver invariant restoration lost the receiver value",
+                            )
+                        })?;
+                let context = ContractContext {
+                    instance: self.key,
+                    receiver: Some(ContractOperand {
+                        value: receiver_value,
+                        ty: target,
+                    }),
+                    record_candidate: None,
+                    result: None,
+                    arguments: Vec::new(),
+                    old_receiver: None,
+                    old_arguments: Vec::new(),
+                    bindings: Vec::new(),
+                };
+                let EvalFlow::Continue {
+                    flow,
+                    value: condition,
+                } = self.lower_contract_expr(flow, &invariant.expression, &context)?
+                else {
+                    return Err(LoweringError::defect(
+                        LoweringDefectCode::InconsistentPlan,
+                        "receiver invariant restoration unexpectedly terminated",
+                    ));
+                };
+                let flow = self.lower_runtime_assert(
+                    flow,
+                    condition,
+                    FaultCode::ArtifactProofRejected,
+                    self.statement_origin(statement),
+                )?;
+                Ok(StatementFlow::Continue(flow))
+            }
             StatementKind::Evaluate(expression) => match self.lower_expr(flow, expression)? {
                 EvalFlow::Continue { flow, .. } => Ok(StatementFlow::Continue(flow)),
                 EvalFlow::Terminated => Ok(StatementFlow::Terminated),

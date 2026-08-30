@@ -1347,6 +1347,7 @@ fn scan_statement(
             Ok(true)
         }
         StatementKind::Break | StatementKind::Continue => Ok(false),
+        StatementKind::RestoreReceiverInvariant { .. } => Ok(true),
         StatementKind::Defer(cleanup) => {
             let _ = scan_block(
                 function,

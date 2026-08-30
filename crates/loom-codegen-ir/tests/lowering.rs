@@ -7811,55 +7811,6 @@ pub fn main() {
 }
 
 #[test]
-fn projected_move_from_a_protected_root_remains_atomic_unsupported() {
-    let mut program = compile(
-        r"record Positive {
-    value Int
-    invariant self.value >= 0
-}
-
-fn take(value Positive) Int { value.value }
-
-pub fn main() {
-    discard take(Positive { value = 7 })
-}
-",
-    )
-    .into_program();
-    let take = program
-        .functions
-        .iter_mut()
-        .find(|function| function.name.ends_with("take"))
-        .expect("take function");
-    let tail = take.body.tail.as_deref_mut().expect("take tail");
-    let ExprKind::Copy(place) = &tail.kind else {
-        panic!("source field read must start as a checked copy")
-    };
-    tail.kind = ExprKind::Move(place.clone());
-    let checked = program
-        .into_checked()
-        .expect("projected move is structurally valid checked MIR");
-    let outcome = lower_typed_artifact(
-        &checked,
-        &SourceArtifactRequest::Run {
-            entry: "main".into(),
-        },
-        TargetLayout::new(64).expect("test target"),
-    )
-    .expect("classify protected projected move");
-    let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("move from invariant-protected interior must select whole-artifact fallback")
-    };
-    assert!(
-        report
-            .items()
-            .iter()
-            .any(|item| item.feature() == UnsupportedFeature::ProjectedPlace),
-        "{report:?}"
-    );
-}
-
-#[test]
 fn projected_move_cannot_discard_task_bearing_siblings() {
     let mut program = compile(
         r"record Envelope {
@@ -7923,8 +7874,8 @@ pub fn main() {
 }
 
 #[test]
-fn projected_inout_through_a_protected_product_remains_atomic_unsupported() {
-    let outcome = lower_run(
+fn owning_projected_inout_rechecks_its_invariant_and_lowers_completely() {
+    let dump = complete_dump(
         r"record Counter { value Int }
 
 impl Counter {
@@ -7938,24 +7889,23 @@ record Positive {
     invariant self.counter.value >= 0
 }
 
-record Holder { value Positive }
+impl Positive {
+    method add(mut self, value Int) {
+        self.counter.add(value)
+        assert self.counter.value >= 0
+    }
+}
 
 pub fn main() {
-    var holder = Holder { value = Positive { counter = Counter { value = 7 } } }
-    holder.value.counter.add(1)
+    var positive = Positive { counter = Counter { value = 7 } }
+    positive.add(1)
 }
 ",
     );
-    let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("inout through an invariant product must select whole-artifact fallback")
-    };
-    assert!(
-        report
-            .items()
-            .iter()
-            .any(|item| item.feature() == UnsupportedFeature::ProjectedPlace),
-        "{report:?}"
-    );
+    assert!(dump.contains("product.extract"), "{dump}");
+    assert!(dump.contains("invariant_receiver.insert"), "{dump}");
+    assert!(dump.contains("inout=[0]"), "{dump}");
+    assert!(dump.contains("InvariantFault"), "{dump}");
 }
 
 #[test]
