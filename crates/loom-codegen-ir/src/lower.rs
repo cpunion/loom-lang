@@ -6367,7 +6367,6 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         instance: &'instance InstanceKey,
         callee: &mir::Function,
         values: &[ValueId],
-        call: &mir::Expr,
     ) -> Result<ContractContext<'instance>, LoweringError> {
         if callee.params.len() != values.len() {
             return Err(LoweringError::defect(
@@ -6388,7 +6387,11 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 InstanceSubstitution::new(self.program, instance)
                     .instantiate_type(&parameter.ty)
                     .map(|ty| ContractOperand { value, ty })
-                    .map_err(|error| instantiation_defect(self.source.id, Some(call.id), error))
+                    // The open schema belongs to the callee instance. The
+                    // call ExprId is in the caller's independent namespace,
+                    // so attaching it to the callee would misidentify a
+                    // substitution defect.
+                    .map_err(|error| instantiation_defect(instance.source(), None, error))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let (receiver, arguments) = if callee.receiver.is_some() {
@@ -6425,7 +6428,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         if callee.is_async || callee.call_plan.requires.is_empty() {
             return Ok(flow);
         }
-        let context = self.call_contract_context(instance, callee, values, call)?;
+        let context = self.call_contract_context(instance, callee, values)?;
         for contract in &callee.call_plan.requires {
             flow = self.lower_contract_check(
                 flow,
@@ -11955,12 +11958,8 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     "finite dynamic method disappeared",
                 )
             })?;
-            if callee_source.receiver == Some(mir::Receiver::Mutable)
-                || !callee_source.call_plan.requires.is_empty()
-            {
-                return Err(
-                    self.unsupported_reached("mutable or preconditioned finite dynamic dispatch")
-                );
+            if callee_source.receiver == Some(mir::Receiver::Mutable) {
+                return Err(self.unsupported_reached("mutable finite dynamic readonly dispatch"));
             }
             let instance = self.instances.get(&key).ok_or_else(|| {
                 LoweringError::defect(
@@ -11977,7 +11976,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 .append_block_parameter(block, self.type_id(candidate.concrete())?)
                 .map_err(LoweringError::from)?;
             cases.push(crate::SumCase::new(variant, block, []));
-            plans.push((block, payload, instance));
+            plans.push((key, block, payload, instance));
         }
         self.terminate(
             flow.block,
@@ -11987,10 +11986,26 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             },
             origin,
         )?;
-        for (block, payload, instance) in plans {
+        for (key, block, payload, instance) in plans {
             let mut branch_arguments = Vec::with_capacity(values.len());
             branch_arguments.push(payload);
             branch_arguments.extend(values.iter().copied().skip(1));
+            let callee_source = self.program.function(key.source()).ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    "finite dynamic method disappeared before contract lowering",
+                )
+            })?;
+            let branch_flow = self.lower_sync_requires(
+                Flow {
+                    block,
+                    env: flow.env,
+                },
+                &key,
+                callee_source,
+                &branch_arguments,
+                expression,
+            )?;
             let effect = effect_for(self.effects, instance)?;
             if effect.contains(Effects::MAY_FAULT) {
                 let normal = self.create_block()?;
@@ -11998,12 +12013,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     .builder
                     .append_block_parameter(normal, result_type)
                     .map_err(LoweringError::from)?;
-                let unwind = self.fault_target(Flow {
-                    block,
-                    env: flow.env,
-                })?;
+                let unwind = self.fault_target(branch_flow)?;
                 self.terminate(
-                    block,
+                    branch_flow.block,
                     TerminatorKind::Invoke {
                         callee: instance,
                         arguments: branch_arguments.into_boxed_slice(),
@@ -12021,7 +12033,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 let value = self
                     .builder
                     .append_instruction(
-                        block,
+                        branch_flow.block,
                         InstructionKind::DirectCall {
                             callee: instance,
                             arguments: branch_arguments.into_boxed_slice(),
@@ -12031,7 +12043,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     )
                     .map_err(LoweringError::from)?[0];
                 self.terminate(
-                    block,
+                    branch_flow.block,
                     TerminatorKind::Jump(BlockTarget::new(join, [value])),
                     origin,
                 )?;
@@ -12155,17 +12167,6 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 .map_err(|error| {
                     instantiation_defect(self.source.id, Some(expression.id), error)
                 })?;
-            let callee_source = self.program.function(key.source()).ok_or_else(|| {
-                LoweringError::defect(
-                    LoweringDefectCode::InconsistentPlan,
-                    "finite mutable dynamic method disappeared",
-                )
-            })?;
-            if !callee_source.call_plan.requires.is_empty() {
-                return Err(
-                    self.unsupported_reached("preconditioned finite mutable dynamic dispatch")
-                );
-            }
             let instance = self.instances.get(&key).ok_or_else(|| {
                 LoweringError::defect(
                     LoweringDefectCode::InconsistentPlan,
@@ -12181,7 +12182,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 .append_block_parameter(block, self.type_id(candidate.concrete())?)
                 .map_err(LoweringError::from)?;
             cases.push(crate::SumCase::new(variant, block, []));
-            plans.push((variant, block, payload, instance));
+            plans.push((variant, key, block, payload, instance));
         }
         self.terminate(
             flow.block,
@@ -12194,7 +12195,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
 
         let result_type = self.type_id(&expression.ty)?;
         let mut continuations = Vec::with_capacity(plans.len());
-        for (variant, block, payload, instance) in plans {
+        for (variant, key, block, payload, instance) in plans {
             let candidate_type = self.builder.value_type(payload).ok_or_else(|| {
                 LoweringError::defect(
                     LoweringDefectCode::InconsistentPlan,
@@ -12204,6 +12205,22 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             let mut branch_arguments = Vec::with_capacity(values.len());
             branch_arguments.push(payload);
             branch_arguments.extend(values.iter().copied().skip(1));
+            let callee_source = self.program.function(key.source()).ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    "finite mutable dynamic method disappeared before contract lowering",
+                )
+            })?;
+            let branch_flow = self.lower_sync_requires(
+                Flow {
+                    block,
+                    env: base_environment,
+                },
+                &key,
+                callee_source,
+                &branch_arguments,
+                expression,
+            )?;
             let effect = effect_for(self.effects, instance)?;
             if effect.contains(Effects::MAY_FAULT) {
                 let normal = self.create_block()?;
@@ -12221,7 +12238,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     .append_block_parameter(fault, candidate_type)
                     .map_err(LoweringError::from)?;
                 self.terminate(
-                    block,
+                    branch_flow.block,
                     TerminatorKind::Invoke {
                         callee: instance,
                         arguments: branch_arguments.into_boxed_slice(),
@@ -12233,7 +12250,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
 
                 let fault_flow = Flow {
                     block: fault,
-                    env: base_environment,
+                    env: branch_flow.env,
                 };
                 let EvalFlow::Continue {
                     flow: fault_flow,
@@ -12266,7 +12283,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
 
                 let normal_flow = Flow {
                     block: normal,
-                    env: base_environment,
+                    env: branch_flow.env,
                 };
                 let EvalFlow::Continue {
                     flow: normal_flow,
@@ -12295,7 +12312,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 let results = self
                     .builder
                     .append_instruction(
-                        block,
+                        branch_flow.block,
                         InstructionKind::DirectCall {
                             callee: instance,
                             arguments: branch_arguments.into_boxed_slice(),
@@ -12309,10 +12326,6 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                         LoweringDefectCode::Builder,
                         "finite mutable call did not return result and receiver writeback",
                     ));
-                };
-                let branch_flow = Flow {
-                    block,
-                    env: base_environment,
                 };
                 let EvalFlow::Continue {
                     flow: branch_flow,

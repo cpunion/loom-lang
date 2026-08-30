@@ -3919,6 +3919,79 @@ pub fn main() {
 }
 
 #[test]
+fn finite_dynamic_requirements_lower_at_each_exact_candidate_call_site() {
+    let LoweringOutcome::Complete(artifact) = lower_run(
+        r"dyn concept Metric {
+    method read(self, minimum Int) Int
+        requires minimum > 0
+}
+
+dyn concept Advance {
+    method advance(mut self, amount Int) Int
+        requires amount > 0
+}
+
+record Counter { value Int }
+record Offset { value Int }
+
+impl Metric for Counter {
+    method read(self, minimum Int) Int { self.value + minimum }
+}
+
+impl Metric for Offset {
+    method read(self, minimum Int) Int { self.value + minimum + 100 }
+}
+
+impl Advance for Counter {
+    method advance(mut self, amount Int) Int {
+        self.value = self.value + amount
+        self.value
+    }
+}
+
+impl Advance for Offset {
+    method advance(mut self, amount Int) Int {
+        self.value = self.value + amount + 100
+        self.value
+    }
+}
+
+fn chooseMetric(first Bool) dyn Metric {
+    if first { Counter { value = 40 } } else { Offset { value = 1 } }
+}
+
+fn chooseAdvance(first Bool) dyn Advance {
+    if first { Counter { value = 40 } } else { Offset { value = 1 } }
+}
+
+fn measure(value Metric) Int { value.read(2) }
+
+fn advanceOne(value Advance) Int { value.advance(2) }
+
+pub fn main() {
+    let measured = measure(chooseMetric(true))
+    assert measured == 42
+    var value = chooseAdvance(false)
+    let advanced = advanceOne(value)
+    assert advanced == 103
+}
+",
+    ) else {
+        panic!("finite readonly and mutable requirements must lower through typed LCIR")
+    };
+    let dump = dump_program(artifact.program());
+    assert_eq!(dump.matches("dyn.switch").count(), 2, "{dump}");
+    assert_eq!(
+        dump.matches("contract PreconditionFault").count(),
+        4,
+        "every candidate branch must own one caller-side precondition:\n{dump}"
+    );
+    assert!(dump.contains("read.requires[0]"), "{dump}");
+    assert!(dump.contains("advance.requires[0]"), "{dump}");
+    assert!(dump.matches("invoke i").count() >= 4, "{dump}");
+}
+
+#[test]
 fn missing_dynamic_concept_witness_selects_one_atomic_fallback() {
     let LoweringOutcome::Unsupported(report) = lower_run(
         r"dyn concept Truth { method truth(self) Bool }
