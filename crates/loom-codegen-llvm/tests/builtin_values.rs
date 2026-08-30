@@ -1,9 +1,12 @@
 use std::process::Command;
 
-use loom_codegen_llvm::EmitOptions;
+use loom_codegen_llvm::{
+    EmitOptions, NativeRouteKind, NativeRoutePolicy, emit_prepared_native_object,
+    prepare_native_object,
+};
 
 mod support;
-use support::{emit_native, loom_text_literal};
+use support::{link_native_object, loom_text_literal};
 
 #[test]
 #[allow(clippy::too_many_lines)]
@@ -152,13 +155,15 @@ test async fn path_file_round_trip() {{
         "{interpreted:#?}"
     );
 
+    let program = snapshot.executable().expect("lower standard-value MIR");
+    let prepared =
+        prepare_native_object(program, EmitOptions::tests(), NativeRoutePolicy::Automatic)
+            .expect("prepare typed standard-value tests");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    let object = project.path().join("native-tests.o");
     let executable = project.path().join("native-tests");
-    emit_native(
-        snapshot.executable().expect("lower standard-value MIR"),
-        &executable,
-        &EmitOptions::tests(),
-    )
-    .expect("emit standard-value native tests");
+    emit_prepared_native_object(&prepared, &object).expect("emit typed standard-value test object");
+    link_native_object(&object, &executable).expect("link typed standard-value tests");
     let output = Command::new(executable)
         .output()
         .expect("run standard-value native tests");

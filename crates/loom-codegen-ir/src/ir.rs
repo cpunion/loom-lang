@@ -956,14 +956,16 @@ pub enum InstructionKind {
         coroutine: InstanceId,
         arguments: Box<[ValueId]>,
     },
-    /// Creates one runtime-owned typed I/O leaf Task. The operation fixes the
-    /// exact argument and `Task[Result[T, IoError]]` shape; the runtime copies
-    /// every borrowed source value before this instruction returns. Completion
-    /// crosses the private ABI only as primitive status data, and a
-    /// compiler-generated callback constructs the target-native direct result
-    /// in the Task frame without a universal value envelope.
+    /// Creates one runtime-owned typed I/O leaf Task. The operation and error
+    /// mode fix the exact argument and either `Task[Result[T, IoError]]` or
+    /// faulting `Task[T]` shape; the runtime copies every borrowed source value
+    /// before this instruction returns. Completion crosses the private ABI only
+    /// as primitive status data, and a compiler-generated callback constructs
+    /// the target-native direct result or records the operation-specific fault
+    /// without a universal value envelope.
     IoTaskCreate {
         operation: IoTaskOperation,
+        error_mode: IoTaskErrorMode,
         arguments: Box<[ValueId]>,
     },
     /// Closes one compiler-known File or Socket token without a universal
@@ -1245,9 +1247,7 @@ pub const TASK_OUTCOME_COMPLETED_VARIANT: u32 = 0;
 pub const TASK_OUTCOME_FAULTED_VARIANT: u32 = 1;
 pub const TASK_OUTCOME_CANCELLED_VARIANT: u32 = 2;
 
-/// Closed runtime-owned I/O leaves admitted by direct LCIR. Only the
-/// Result-returning source APIs belong here; ordinary operating-system errors
-/// are values, while scheduler/runtime defects remain fault edges.
+/// Closed runtime-owned I/O leaves admitted by direct LCIR.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum IoTaskOperation {
     FileOpenRead,
@@ -1257,6 +1257,15 @@ pub enum IoTaskOperation {
     SocketConnect,
     SocketReadText,
     SocketWriteText,
+}
+
+/// Source-visible treatment of an ordinary host I/O error.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum IoTaskErrorMode {
+    /// Completes with the exact `Result[T, IoError]` value.
+    Result,
+    /// Records an operation-specific runtime fault and faults `Task[T]`.
+    Fault,
 }
 
 /// Statically known external-resource class for typed lexical disposal.

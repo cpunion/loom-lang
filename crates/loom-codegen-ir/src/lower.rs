@@ -26,15 +26,39 @@ use crate::{
     BuildErrorCode, CanonicalTypeCatalog, CheckedArtifact, CheckedIntBinaryOp, Constant,
     ContractFaultKind, ContractFaultMetadata, CoroutinePlan, CoroutineSuspension, Effects,
     FaultCode, FaultMetadata, FloatBinaryOp, FloatPredicate, FunctionBuilder, InstanceId,
-    InstanceKey, InstancePlan, InstanceRole, InstructionKind, IntPredicate, IoTaskOperation,
-    Origin, ProgramBuilder, ResourceKind, ResultTarget, Signature, SourceRoots, SumCase,
-    TargetLayout, Terminator, TerminatorKind, TestOutcomePlan, UnwindTarget, ValueId, ValueTypeId,
-    analyze_source_reachability,
+    InstanceKey, InstancePlan, InstanceRole, InstructionKind, IntPredicate, IoTaskErrorMode,
+    IoTaskOperation, Origin, ProgramBuilder, ResourceKind, ResultTarget, Signature, SourceRoots,
+    SumCase, TargetLayout, Terminator, TerminatorKind, TestOutcomePlan, UnwindTarget, ValueId,
+    ValueTypeId, analyze_source_reachability,
 };
 
 const DIRECT_CLEANUP_MAX_ACTIVE_ACTIONS: usize = 1_024;
 const DIRECT_CLEANUP_MAX_EXPANSIONS: usize = 65_536;
 const DIRECT_EQUALITY_MAX_CFG_NODES: usize = 4_096;
+
+fn io_task_error_mode(builtin: mir::Builtin) -> IoTaskErrorMode {
+    match builtin {
+        mir::Builtin::FileTryOpenRead
+        | mir::Builtin::FileTryCreate
+        | mir::Builtin::FileTryOpenReadPath
+        | mir::Builtin::FileTryCreatePath
+        | mir::Builtin::FileTryReadText
+        | mir::Builtin::FileTryWriteText
+        | mir::Builtin::SocketTryConnect
+        | mir::Builtin::SocketTryReadText
+        | mir::Builtin::SocketTryWriteText => IoTaskErrorMode::Result,
+        mir::Builtin::FileOpenRead
+        | mir::Builtin::FileCreate
+        | mir::Builtin::FileOpenReadPath
+        | mir::Builtin::FileCreatePath
+        | mir::Builtin::FileReadText
+        | mir::Builtin::FileWriteText
+        | mir::Builtin::SocketConnect
+        | mir::Builtin::SocketReadText
+        | mir::Builtin::SocketWriteText => IoTaskErrorMode::Fault,
+        _ => unreachable!("non-I/O builtin has no typed I/O error mode"),
+    }
+}
 
 /// Source-level roots selected for one attempted LCIR artifact.
 ///
@@ -3299,13 +3323,22 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         | mir::Builtin::JsonFormat
                         | mir::Builtin::IoErrorKind
                         | mir::Builtin::IoErrorMessage
+                        | mir::Builtin::FileOpenRead
+                        | mir::Builtin::FileCreate
+                        | mir::Builtin::FileOpenReadPath
+                        | mir::Builtin::FileCreatePath
                         | mir::Builtin::FileTryOpenRead
                         | mir::Builtin::FileTryCreate
                         | mir::Builtin::FileTryOpenReadPath
                         | mir::Builtin::FileTryCreatePath
+                        | mir::Builtin::FileReadText
+                        | mir::Builtin::FileWriteText
                         | mir::Builtin::FileTryReadText
                         | mir::Builtin::FileTryWriteText
+                        | mir::Builtin::SocketConnect
                         | mir::Builtin::SocketTryConnect
+                        | mir::Builtin::SocketReadText
+                        | mir::Builtin::SocketWriteText
                         | mir::Builtin::SocketTryReadText
                         | mir::Builtin::SocketTryWriteText
                         | mir::Builtin::TaskFaultCode
@@ -3330,13 +3363,22 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                                     | mir::Builtin::TextMapGet
                                     | mir::Builtin::TextMapEntryAt
                                     | mir::Builtin::TextMapRemove
+                                    | mir::Builtin::FileOpenRead
+                                    | mir::Builtin::FileCreate
+                                    | mir::Builtin::FileOpenReadPath
+                                    | mir::Builtin::FileCreatePath
                                     | mir::Builtin::FileTryOpenRead
                                     | mir::Builtin::FileTryCreate
                                     | mir::Builtin::FileTryOpenReadPath
                                     | mir::Builtin::FileTryCreatePath
+                                    | mir::Builtin::FileReadText
+                                    | mir::Builtin::FileWriteText
                                     | mir::Builtin::FileTryReadText
                                     | mir::Builtin::FileTryWriteText
+                                    | mir::Builtin::SocketConnect
                                     | mir::Builtin::SocketTryConnect
+                                    | mir::Builtin::SocketReadText
+                                    | mir::Builtin::SocketWriteText
                                     | mir::Builtin::SocketTryReadText
                                     | mir::Builtin::SocketTryWriteText
                                     | mir::Builtin::TaskFaultCode
@@ -4088,13 +4130,22 @@ fn scan_effect_expr(
                         | mir::Builtin::TextMapRemove
                         | mir::Builtin::FloatFormat
                         | mir::Builtin::JsonFormat
+                        | mir::Builtin::FileOpenRead
+                        | mir::Builtin::FileCreate
+                        | mir::Builtin::FileOpenReadPath
+                        | mir::Builtin::FileCreatePath
                         | mir::Builtin::FileTryOpenRead
                         | mir::Builtin::FileTryCreate
                         | mir::Builtin::FileTryOpenReadPath
                         | mir::Builtin::FileTryCreatePath
+                        | mir::Builtin::FileReadText
+                        | mir::Builtin::FileWriteText
                         | mir::Builtin::FileTryReadText
                         | mir::Builtin::FileTryWriteText
+                        | mir::Builtin::SocketConnect
                         | mir::Builtin::SocketTryConnect
+                        | mir::Builtin::SocketReadText
+                        | mir::Builtin::SocketWriteText
                         | mir::Builtin::SocketTryReadText
                         | mir::Builtin::SocketTryWriteText
                 )
@@ -4102,13 +4153,22 @@ fn scan_effect_expr(
                 if matches!(
                     target,
                     CallTarget::Builtin(
-                        mir::Builtin::FileTryOpenRead
+                        mir::Builtin::FileOpenRead
+                            | mir::Builtin::FileCreate
+                            | mir::Builtin::FileOpenReadPath
+                            | mir::Builtin::FileCreatePath
+                            | mir::Builtin::FileTryOpenRead
                             | mir::Builtin::FileTryCreate
                             | mir::Builtin::FileTryOpenReadPath
                             | mir::Builtin::FileTryCreatePath
+                            | mir::Builtin::FileReadText
+                            | mir::Builtin::FileWriteText
                             | mir::Builtin::FileTryReadText
                             | mir::Builtin::FileTryWriteText
+                            | mir::Builtin::SocketConnect
                             | mir::Builtin::SocketTryConnect
+                            | mir::Builtin::SocketReadText
+                            | mir::Builtin::SocketWriteText
                             | mir::Builtin::SocketTryReadText
                             | mir::Builtin::SocketTryWriteText
                     )
@@ -11824,42 +11884,71 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 field: 1,
             }
             .into(),
-            (mir::Builtin::FileTryOpenRead | mir::Builtin::FileTryOpenReadPath, [path]) => {
-                InstructionKind::IoTaskCreate {
-                    operation: IoTaskOperation::FileOpenRead,
-                    arguments: Box::new([*path]),
-                }
-                .into()
-            }
-            (mir::Builtin::FileTryCreate | mir::Builtin::FileTryCreatePath, [path]) => {
-                InstructionKind::IoTaskCreate {
-                    operation: IoTaskOperation::FileCreate,
-                    arguments: Box::new([*path]),
-                }
-                .into()
-            }
-            (mir::Builtin::FileTryReadText, [file]) => InstructionKind::IoTaskCreate {
-                operation: IoTaskOperation::FileReadText,
-                arguments: Box::new([*file]),
+            (
+                builtin @ (mir::Builtin::FileOpenRead
+                | mir::Builtin::FileOpenReadPath
+                | mir::Builtin::FileTryOpenRead
+                | mir::Builtin::FileTryOpenReadPath),
+                [path],
+            ) => InstructionKind::IoTaskCreate {
+                operation: IoTaskOperation::FileOpenRead,
+                error_mode: io_task_error_mode(builtin),
+                arguments: Box::new([*path]),
             }
             .into(),
-            (mir::Builtin::FileTryWriteText, [file, text]) => InstructionKind::IoTaskCreate {
+            (
+                builtin @ (mir::Builtin::FileCreate
+                | mir::Builtin::FileCreatePath
+                | mir::Builtin::FileTryCreate
+                | mir::Builtin::FileTryCreatePath),
+                [path],
+            ) => InstructionKind::IoTaskCreate {
+                operation: IoTaskOperation::FileCreate,
+                error_mode: io_task_error_mode(builtin),
+                arguments: Box::new([*path]),
+            }
+            .into(),
+            (builtin @ (mir::Builtin::FileReadText | mir::Builtin::FileTryReadText), [file]) => {
+                InstructionKind::IoTaskCreate {
+                    operation: IoTaskOperation::FileReadText,
+                    error_mode: io_task_error_mode(builtin),
+                    arguments: Box::new([*file]),
+                }
+                .into()
+            }
+            (
+                builtin @ (mir::Builtin::FileWriteText | mir::Builtin::FileTryWriteText),
+                [file, text],
+            ) => InstructionKind::IoTaskCreate {
                 operation: IoTaskOperation::FileWriteText,
+                error_mode: io_task_error_mode(builtin),
                 arguments: Box::new([*file, *text]),
             }
             .into(),
-            (mir::Builtin::SocketTryConnect, [host, port]) => InstructionKind::IoTaskCreate {
+            (
+                builtin @ (mir::Builtin::SocketConnect | mir::Builtin::SocketTryConnect),
+                [host, port],
+            ) => InstructionKind::IoTaskCreate {
                 operation: IoTaskOperation::SocketConnect,
+                error_mode: io_task_error_mode(builtin),
                 arguments: Box::new([*host, *port]),
             }
             .into(),
-            (mir::Builtin::SocketTryReadText, [socket]) => InstructionKind::IoTaskCreate {
+            (
+                builtin @ (mir::Builtin::SocketReadText | mir::Builtin::SocketTryReadText),
+                [socket],
+            ) => InstructionKind::IoTaskCreate {
                 operation: IoTaskOperation::SocketReadText,
+                error_mode: io_task_error_mode(builtin),
                 arguments: Box::new([*socket]),
             }
             .into(),
-            (mir::Builtin::SocketTryWriteText, [socket, text]) => InstructionKind::IoTaskCreate {
+            (
+                builtin @ (mir::Builtin::SocketWriteText | mir::Builtin::SocketTryWriteText),
+                [socket, text],
+            ) => InstructionKind::IoTaskCreate {
                 operation: IoTaskOperation::SocketWriteText,
+                error_mode: io_task_error_mode(builtin),
                 arguments: Box::new([*socket, *text]),
             }
             .into(),

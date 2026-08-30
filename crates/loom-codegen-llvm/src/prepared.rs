@@ -21,9 +21,9 @@ use crate::codegen::{
 use crate::emitter::Emitter;
 use crate::lcir_emitter::LcirEmitter;
 use crate::target::{NATIVE_RUNTIME_ABI, NativeTargetMachine, create_llvm_target_machine};
-use crate::{CodegenError, NativeTargetIdentity, trace_llvm_stage};
+use crate::{CodegenError, NativeTargetIdentity, builtin_requires_typed_io, trace_llvm_stage};
 
-const LCIR_NATIVE_OBJECT_FORMAT: &str = "loom-lcir-native-object-v42";
+const LCIR_NATIVE_OBJECT_FORMAT: &str = "loom-lcir-native-object-v43";
 
 /// Policy controlling the whole-artifact native route.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -126,6 +126,16 @@ impl NativePreparationError {
             kind: NativePreparationErrorKind::Unsupported,
             code: "NativePreparationLogRequiresLcir",
             message: "reachable std.log output requires complete typed LCIR lowering".to_owned(),
+            support_report: report,
+        }
+    }
+
+    fn io_requires_lcir(report: Option<SupportReport>) -> Self {
+        Self {
+            kind: NativePreparationErrorKind::Unsupported,
+            code: "NativePreparationIoRequiresLcir",
+            message: "reachable file or socket I/O requires complete typed LCIR lowering"
+                .to_owned(),
             support_report: report,
         }
     }
@@ -318,6 +328,9 @@ pub fn prepare_native_object(
                     if reachable_uses_log(&reachable) {
                         return Err(NativePreparationError::log_requires_lcir(Some(report)));
                     }
+                    if reachable_uses_io(&reachable) {
+                        return Err(NativePreparationError::io_requires_lcir(Some(report)));
+                    }
                     target
                         .validate_checked_mir_value_abi()
                         .map_err(|error| NativePreparationError::target(&error))?;
@@ -342,6 +355,9 @@ pub fn prepare_native_object(
             }
             if reachable_uses_log(&reachable) {
                 return Err(NativePreparationError::log_requires_lcir(None));
+            }
+            if reachable_uses_io(&reachable) {
+                return Err(NativePreparationError::io_requires_lcir(None));
             }
             target
                 .validate_checked_mir_value_abi()
@@ -374,6 +390,14 @@ fn reachable_uses_process(reachable: &ReachableSourceGraph) -> bool {
 
 fn reachable_uses_log(reachable: &ReachableSourceGraph) -> bool {
     reachable.builtins.contains(&Builtin::LogWrite)
+}
+
+fn reachable_uses_io(reachable: &ReachableSourceGraph) -> bool {
+    reachable
+        .builtins
+        .iter()
+        .copied()
+        .any(builtin_requires_typed_io)
 }
 
 /// Returns the exact target identity owned by a prepared object plan.
@@ -581,7 +605,7 @@ mod tests {
     fn lcir_object_fingerprint_domain_is_pinned() {
         assert_eq!(
             super::LCIR_NATIVE_OBJECT_FORMAT,
-            "loom-lcir-native-object-v42"
+            "loom-lcir-native-object-v43"
         );
     }
 }

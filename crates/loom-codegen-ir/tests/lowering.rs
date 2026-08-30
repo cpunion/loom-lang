@@ -7,9 +7,9 @@ use std::{
 
 use loom_codegen_ir::{
     AwaitMode, CheckedIntBinaryOp, Effects, InstanceKey, InstanceRole, InstructionKind,
-    InvalidRootCode, LoweringErrorCode, LoweringOutcome, ManagedSafepoint, ResourceLimitCode,
-    SourceArtifactRequest, TargetLayout, TerminatorKind, UnsupportedFeature, artifact_identity,
-    dump_program, lower_typed_artifact, plan_managed_roots,
+    InvalidRootCode, IoTaskErrorMode, IoTaskOperation, LoweringErrorCode, LoweringOutcome,
+    ManagedSafepoint, ResourceLimitCode, SourceArtifactRequest, TargetLayout, TerminatorKind,
+    UnsupportedFeature, artifact_identity, dump_program, lower_typed_artifact, plan_managed_roots,
 };
 use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId, Span};
 use loom_hir::{PackageSourceUnit, SourceUnit, lower_files, lower_package_files};
@@ -299,6 +299,67 @@ fn complete_dump(source: &str) -> String {
         panic!("source should be completely supported: {outcome:?}")
     };
     dump_program(artifact.program())
+}
+
+#[test]
+fn non_try_file_and_socket_calls_lower_to_fault_mode_typed_io_tasks() {
+    let outcome = lower_run_with_std_resource(
+        r#"import std.file.open_read
+import std.file.create
+import std.net.connect
+
+pub async fn main() {
+    {
+        scoped output = create("typed-fault-mode.txt").await
+        output.write_text("loom").await
+    }
+    {
+        scoped input = open_read("typed-fault-mode.txt").await
+        discard input.read_text().await
+    }
+    {
+        scoped socket = connect("localhost", 1).await
+        socket.write_text("loom").await
+        discard socket.read_text().await
+    }
+}
+"#,
+    );
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("non-try I/O source must lower completely: {outcome:?}")
+    };
+    let operations = artifact
+        .functions()
+        .iter()
+        .flat_map(loom_codegen_ir::Function::instructions)
+        .filter_map(|instruction| match instruction.kind() {
+            InstructionKind::IoTaskCreate {
+                operation,
+                error_mode,
+                ..
+            } => Some((*operation, *error_mode)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        operations,
+        [
+            (IoTaskOperation::FileCreate, IoTaskErrorMode::Fault),
+            (IoTaskOperation::FileWriteText, IoTaskErrorMode::Fault),
+            (IoTaskOperation::FileOpenRead, IoTaskErrorMode::Fault),
+            (IoTaskOperation::FileReadText, IoTaskErrorMode::Fault),
+            (IoTaskOperation::SocketConnect, IoTaskErrorMode::Fault),
+            (IoTaskOperation::SocketWriteText, IoTaskErrorMode::Fault),
+            (IoTaskOperation::SocketReadText, IoTaskErrorMode::Fault),
+        ]
+    );
+    let dump = dump_program(artifact.program());
+    assert_eq!(dump.matches("io.task_create.").count(), 7, "{dump}");
+    assert_eq!(dump.matches(".fault(").count(), 7, "{dump}");
+    assert!(
+        !dump.contains("io.task_create.file_create.result"),
+        "{dump}"
+    );
 }
 
 #[test]

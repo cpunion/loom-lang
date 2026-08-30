@@ -53,7 +53,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 44")?;
+    writeln!(output, "lcir 45")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -518,12 +518,14 @@ fn write_instruction(
         }
         InstructionKind::IoTaskCreate {
             operation,
+            error_mode,
             arguments,
         } => {
             write!(
                 output,
-                "io.task_create.{}(",
-                io_task_operation_name(*operation)
+                "io.task_create.{}.{}(",
+                io_task_operation_name(*operation),
+                io_task_error_mode_name(*error_mode),
             )?;
             write_arguments(output, arguments)?;
             write!(output, ")")
@@ -543,6 +545,13 @@ fn write_instruction(
         InstructionKind::TaskOutcomeTake { task } => {
             write!(output, "task.outcome_take %{task}")
         }
+    }
+}
+
+const fn io_task_error_mode_name(mode: crate::IoTaskErrorMode) -> &'static str {
+    match mode {
+        crate::IoTaskErrorMode::Result => "result",
+        crate::IoTaskErrorMode::Fault => "fault",
     }
 }
 

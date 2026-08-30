@@ -342,16 +342,24 @@ authoritative current values for every LCIR, object-cache, checked-MIR, and
 runtime boundary are maintained in
 [Versioning and compatibility](../project/versioning.md).
 
-`IoTaskCreate` covers the seven closed File and Socket operations with one exact
-`Task[Result[T, IoError]]` shape per operation. A direct File or Socket value
-contains a monotonic runtime capability token, never an OS descriptor or
-handle. Read and write requests resolve that token against the active Task's
-unique resource-ledger entry; the runtime copies borrowed Text bytes and
-duplicates the concrete resource before the instruction returns. Open, create,
-and connect completion place the concrete RAII owner in the child Task's result
-ledger before publishing its token. The compiler-generated completion callback
-then constructs the target-native Result in the Task frame without a universal
-value envelope.
+`IoTaskCreate` covers the seven closed File and Socket operations. Its explicit
+error mode selects either the recoverable `Task[Result[T, IoError]]` shape or
+the faulting `Task[T]` shape. A direct File or Socket value contains a monotonic
+runtime capability token, never an OS descriptor or handle. Read and write
+requests resolve that token against the active Task's unique resource-ledger
+entry; the runtime copies borrowed Text bytes and duplicates the concrete
+resource before the instruction returns. Open, create, and connect completion
+place the concrete RAII owner in the child Task's result ledger before
+publishing its token. The compiler-generated callback either constructs the
+target-native `Result`, publishes the exact success value, or records the
+operation-specific Task fault. No mode uses a universal value envelope.
+
+File and Socket I/O is a typed-LCIR-only native boundary. Classification admits
+both public operation families, but production preparation may use them only
+when the complete reachable artifact lowers to LCIR. If another reachable site
+is unsupported, `Automatic` fails closed instead of handing the I/O graph to
+the checked-MIR emitter. Direct checked-MIR identity and emission reject the
+same reachable builtins; unreachable I/O does not change either route.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
@@ -1060,6 +1068,10 @@ not repair a malformed program. Current checks include:
   `Socket`, exact agreement between the nominal type and `ResourceClose`
   kind, its exact Unit/resource result pair, and the required executor
   capability without a source fault capability;
+- exact File/Socket operation, argument, success, and Task result shapes for
+  every `IoTaskCreate`; recoverable mode requires the canonical
+  `Result[T, IoError]`, faulting mode requires `Task[T]`, and both consume the
+  same closed runtime error-kind and managed-message outcome domain;
 - return types and operation-specific fault-effect requirements;
 - the exact minimal transitive effect closure across the complete call graph,
   including capability implications and active-cleanup fault masking;
@@ -1131,7 +1143,8 @@ typed runtime/contract fault identity including proof-replay and Duration
 guards, the closed Float parse operation, ordinary source-lowered integer
 parsing, and managed Float formatting,
 managed-pointer representations, finite dynamic candidate catalogs,
-`dyn.construct`, `dyn.switch`, `io.task_create`, and
+`dyn.construct`, `dyn.switch`, mode-qualified `io.task_create.*.result` and
+`io.task_create.*.fault`, and
 `text.concat`, `text.get`, `text.encode_utf8`, `text.from_utf8_units`, the
 typed Bytes operations, `path.from_text`, `path.as_text`, and `path.join`,
 `json.format`, typed resource close, structured-log edges, transient
@@ -1198,6 +1211,16 @@ writeback before lexical cleanup, by-value dynamic View parameters with mutable
 dispatch, unique closed dynamic erasure in coroutine parameters, results, and
 nested frame shapes, and finite dynamic calls whose values are not
 suspension-live.
+
+Typed-I/O regressions cover all seven operations and both error modes, exact
+direct Task/result layouts, runtime request/outcome validation, resource-ledger
+transfer and cleanup, checked-MIR rejection, unreachable-I/O reachability, and
+the rule that an otherwise unsupported reachable I/O artifact may not select
+`Automatic` checked-MIR fallback. A dedicated source fixture closes real
+`check/build/test/run` commands and inspects its object for only the typed
+I/O/task/resource symbols. The integrated standard-library test prepares its
+native object through the production router, requires LCIR, and exercises real
+filesystem and loopback-socket traffic on the host test platform.
 
 Malformed-LCIR tests prove that ordinary products cannot forge an invariant and
 that refinement cannot accept a merely layout-compatible, non-base value.

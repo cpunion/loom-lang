@@ -6,8 +6,8 @@ use std::process::Command;
 #[cfg(not(target_os = "windows"))]
 use inkwell::targets::TargetMachine;
 use loom_codegen_llvm::{
-    EmitOptions, OptimizationProfile, emit_native_object, native_object_fingerprint,
-    target_identity,
+    EmitOptions, NativeRouteKind, NativeRoutePolicy, OptimizationProfile, emit_native_object,
+    emit_prepared_native_object, native_object_fingerprint, prepare_native_object, target_identity,
 };
 use loom_interpreter::Interpreter;
 use loom_mir::{
@@ -18,7 +18,7 @@ use loom_mir::{
 mod support;
 #[cfg(unix)]
 use support::run_with_closed_stdout;
-use support::{emit_native, loom_text_literal, run_with_read_only_stdout};
+use support::{emit_native, link_native_object, loom_text_literal, run_with_read_only_stdout};
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 const CROSS_TRIPLE: &str = "x86_64-unknown-linux-gnu";
@@ -4248,6 +4248,13 @@ fn duration_file_and_socket_tasks_run_natively() {
         file.to_str()
             .expect("temporary I/O path must be valid UTF-8"),
     );
+    let missing_literal = loom_text_literal(
+        project
+            .path()
+            .join("missing.txt")
+            .to_str()
+            .expect("temporary missing path must be valid UTF-8"),
+    );
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind test listener");
     let port = listener.local_addr().expect("listener address").port();
     let server = std::thread::spawn(move || {
@@ -4287,6 +4294,18 @@ pub async fn main() {{
         Unit
     }}
 }}
+
+pub async fn missingFile() {{
+    scoped missing = open_read("{missing_literal}").await
+}}
+
+pub async fn invalidPort() {{
+    scoped socket = connect("127.0.0.1", -1).await
+}}
+
+pub async fn unresolvedHost() {{
+    scoped socket = connect("invalid\0host", 80).await
+}}
 "#,
     );
     std::fs::write(project.path().join("main.loom"), source).expect("write I/O source");
@@ -4296,9 +4315,17 @@ pub async fn main() {{
         .expect("analyze I/O project");
     assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
     let program = snapshot.executable().expect("lower I/O MIR");
+    let prepared = prepare_native_object(
+        program,
+        EmitOptions::run("main"),
+        NativeRoutePolicy::Automatic,
+    )
+    .expect("prepare typed I/O executable");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    let object = project.path().join("program.o");
     let executable = project.path().join("program");
-    emit_native(program, &executable, &EmitOptions::run("main"))
-        .expect("emit native I/O executable");
+    emit_prepared_native_object(&prepared, &object).expect("emit typed I/O object");
+    link_native_object(&object, &executable).expect("link typed I/O executable");
     let output = Command::new(executable)
         .output()
         .expect("run native I/O program");
@@ -4311,6 +4338,45 @@ pub async fn main() {{
     assert_eq!(output.stdout, b"Unit\n");
     server.join().expect("join test server");
     assert_eq!(std::fs::read_to_string(file).unwrap(), "hello from loom");
+
+    for (entry, expected) in [
+        ("missingFile", "FileOpenFault"),
+        ("invalidPort", "InvalidPort"),
+        ("unresolvedHost", "SocketResolveFault"),
+    ] {
+        assert_typed_io_root_fault(program, project.path(), entry, expected);
+    }
+}
+
+fn assert_typed_io_root_fault(
+    program: &CheckedProgram,
+    directory: &std::path::Path,
+    entry: &str,
+    expected: &str,
+) {
+    let prepared = prepare_native_object(
+        program,
+        EmitOptions::run(entry),
+        NativeRoutePolicy::Automatic,
+    )
+    .expect("prepare faulting typed I/O executable");
+    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    let object = directory.join(format!("{entry}.o"));
+    let executable = directory.join(entry);
+    emit_prepared_native_object(&prepared, &object).expect("emit faulting typed I/O object");
+    link_native_object(&object, &executable).expect("link faulting typed I/O executable");
+    let output = Command::new(executable)
+        .env("LOOM_FAULT_FORMAT", "json")
+        .output()
+        .expect("run faulting native I/O program");
+    assert!(!output.status.success(), "{output:?}");
+    let fault = String::from_utf8(output.stderr)
+        .expect("faulting I/O stderr is UTF-8")
+        .lines()
+        .find_map(|line| line.strip_prefix("LOOM_FAULT_JSON_V1:"))
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("parse I/O fault"))
+        .expect("faulting I/O program reports one machine fault");
+    assert_eq!(fault["fault"]["code"], expected);
 }
 
 #[test]

@@ -6,6 +6,8 @@
 
 use std::sync::OnceLock;
 
+use loom_mir::Builtin;
+
 mod abi;
 mod codegen;
 mod emitter;
@@ -53,6 +55,32 @@ pub const BACKEND_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// linked LLVM build used to emit native objects.
 pub const LLVM_OBJECT_BUILD_FINGERPRINT: &str = env!("LOOM_LLVM_OBJECT_BUILD_FINGERPRINT");
 
+pub(crate) const fn builtin_requires_typed_io(builtin: Builtin) -> bool {
+    matches!(
+        builtin,
+        Builtin::FileOpenRead
+            | Builtin::FileCreate
+            | Builtin::FileOpenReadPath
+            | Builtin::FileCreatePath
+            | Builtin::FileReadText
+            | Builtin::FileWriteText
+            | Builtin::FileClose
+            | Builtin::SocketConnect
+            | Builtin::SocketReadText
+            | Builtin::SocketWriteText
+            | Builtin::SocketClose
+            | Builtin::FileTryOpenRead
+            | Builtin::FileTryCreate
+            | Builtin::FileTryOpenReadPath
+            | Builtin::FileTryCreatePath
+            | Builtin::FileTryReadText
+            | Builtin::FileTryWriteText
+            | Builtin::SocketTryConnect
+            | Builtin::SocketTryReadText
+            | Builtin::SocketTryWriteText
+    )
+}
+
 /// Emits a bounded stage marker for diagnosing failures inside LLVM's C API.
 ///
 /// Stage names are compiler-owned constants and deliberately exclude source
@@ -61,5 +89,43 @@ pub(crate) fn trace_llvm_stage(stage: &'static str) {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     if *ENABLED.get_or_init(|| std::env::var_os("LOOM_LLVM_TRACE_STAGES").is_some()) {
         eprintln!("loom LLVM stage: {stage}");
+    }
+}
+
+#[cfg(test)]
+mod typed_io_guard_tests {
+    use loom_mir::Builtin;
+
+    use super::builtin_requires_typed_io;
+
+    #[test]
+    fn every_file_and_socket_builtin_requires_typed_lcir() {
+        for builtin in [
+            Builtin::FileOpenRead,
+            Builtin::FileCreate,
+            Builtin::FileOpenReadPath,
+            Builtin::FileCreatePath,
+            Builtin::FileReadText,
+            Builtin::FileWriteText,
+            Builtin::FileClose,
+            Builtin::SocketConnect,
+            Builtin::SocketReadText,
+            Builtin::SocketWriteText,
+            Builtin::SocketClose,
+            Builtin::FileTryOpenRead,
+            Builtin::FileTryCreate,
+            Builtin::FileTryOpenReadPath,
+            Builtin::FileTryCreatePath,
+            Builtin::FileTryReadText,
+            Builtin::FileTryWriteText,
+            Builtin::SocketTryConnect,
+            Builtin::SocketTryReadText,
+            Builtin::SocketTryWriteText,
+        ] {
+            assert!(
+                builtin_requires_typed_io(builtin),
+                "missing guard for {builtin:?}"
+            );
+        }
     }
 }

@@ -43,7 +43,6 @@ use loom_runtime_abi::{
     TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE,
 };
 
-use crate::CodegenError;
 use crate::abi::{
     ARG_NODE_FIELD_NEXT, ARG_NODE_FIELD_VALUE, COROUTINE_ABI_VERSION, COROUTINE_FRAME_FIELD_RESULT,
     COROUTINE_FRAME_FIELD_STATE, DYN_FLAG_MUTABLE, GC_ROOT_FRAME_FIELD_ABI_VERSION,
@@ -75,6 +74,7 @@ use crate::native_storage::{
 };
 use crate::requirements::{RuntimeRequirementGraph, builtin_borrows_copy_argument};
 use crate::target::{NativeTargetMachine, configure_debug_module_flags, create_target_machine};
+use crate::{CodegenError, builtin_requires_typed_io};
 
 pub(crate) struct Emitter;
 
@@ -2211,128 +2211,6 @@ impl<'ctx, 'program> Backend<'ctx, 'program> {
                     self.ptr_type.into(),
                     self.i64_type.into(),
                     self.ptr_type.into(),
-                ],
-                false,
-            );
-            self.module.add_function(name, function_type, None)
-        })
-    }
-
-    fn native_file_open_read(&self) -> FunctionValue<'ctx> {
-        self.native_io_task_text("loom_file_open_read")
-    }
-
-    fn native_file_create(&self) -> FunctionValue<'ctx> {
-        self.native_io_task_text("loom_file_create")
-    }
-
-    fn native_file_try_open_read(&self) -> FunctionValue<'ctx> {
-        self.native_io_task_text("loom_file_try_open_read")
-    }
-
-    fn native_file_try_create(&self) -> FunctionValue<'ctx> {
-        self.native_io_task_text("loom_file_try_create")
-    }
-
-    fn native_socket_connect(&self) -> FunctionValue<'ctx> {
-        self.native_socket_connect_named("loom_socket_connect")
-    }
-
-    fn native_socket_try_connect(&self) -> FunctionValue<'ctx> {
-        self.native_socket_connect_named("loom_socket_try_connect")
-    }
-
-    fn native_socket_connect_named(&self, name: &str) -> FunctionValue<'ctx> {
-        self.module.get_function(name).unwrap_or_else(|| {
-            let function_type = self.ptr_type.fn_type(
-                &[
-                    self.ptr_type.into(),
-                    self.ptr_type.into(),
-                    self.i64_type.into(),
-                    self.i64_type.into(),
-                ],
-                false,
-            );
-            self.module.add_function(name, function_type, None)
-        })
-    }
-
-    fn native_file_read_text(&self) -> FunctionValue<'ctx> {
-        self.native_io_task_descriptor("loom_file_read_text")
-    }
-
-    fn native_file_try_read_text(&self) -> FunctionValue<'ctx> {
-        self.native_io_task_descriptor("loom_file_try_read_text")
-    }
-
-    fn native_socket_read_text(&self) -> FunctionValue<'ctx> {
-        self.native_io_task_descriptor("loom_socket_read_text")
-    }
-
-    fn native_socket_try_read_text(&self) -> FunctionValue<'ctx> {
-        self.native_io_task_descriptor("loom_socket_try_read_text")
-    }
-
-    fn native_file_write_text(&self) -> FunctionValue<'ctx> {
-        self.native_io_task_write("loom_file_write_text")
-    }
-
-    fn native_file_try_write_text(&self) -> FunctionValue<'ctx> {
-        self.native_io_task_write("loom_file_try_write_text")
-    }
-
-    fn native_socket_write_text(&self) -> FunctionValue<'ctx> {
-        self.native_io_task_write("loom_socket_write_text")
-    }
-
-    fn native_socket_try_write_text(&self) -> FunctionValue<'ctx> {
-        self.native_io_task_write("loom_socket_try_write_text")
-    }
-
-    fn native_io_close(&self) -> FunctionValue<'ctx> {
-        self.module
-            .get_function("loom_io_close")
-            .unwrap_or_else(|| {
-                let function_type = self
-                    .context
-                    .i32_type()
-                    .fn_type(&[self.ptr_type.into(), self.ptr_type.into()], false);
-                self.module
-                    .add_function("loom_io_close", function_type, None)
-            })
-    }
-
-    fn native_io_task_text(&self, name: &str) -> FunctionValue<'ctx> {
-        self.module.get_function(name).unwrap_or_else(|| {
-            let function_type = self.ptr_type.fn_type(
-                &[
-                    self.ptr_type.into(),
-                    self.ptr_type.into(),
-                    self.i64_type.into(),
-                ],
-                false,
-            );
-            self.module.add_function(name, function_type, None)
-        })
-    }
-
-    fn native_io_task_descriptor(&self, name: &str) -> FunctionValue<'ctx> {
-        self.module.get_function(name).unwrap_or_else(|| {
-            let function_type = self
-                .ptr_type
-                .fn_type(&[self.ptr_type.into(), self.i64_type.into()], false);
-            self.module.add_function(name, function_type, None)
-        })
-    }
-
-    fn native_io_task_write(&self, name: &str) -> FunctionValue<'ctx> {
-        self.module.get_function(name).unwrap_or_else(|| {
-            let function_type = self.ptr_type.fn_type(
-                &[
-                    self.ptr_type.into(),
-                    self.i64_type.into(),
-                    self.ptr_type.into(),
-                    self.i64_type.into(),
                 ],
                 false,
             );
@@ -10688,6 +10566,12 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 "std.log output requires the typed LCIR native route",
             ));
         }
+        if builtin_requires_typed_io(builtin) {
+            return Err(CodegenError::new(
+                "NativeIoRequiresLcir",
+                "file and socket I/O require the typed LCIR native route",
+            ));
+        }
         if matches!(
             builtin,
             Builtin::ListAdd | Builtin::ListLength | Builtin::ListGet | Builtin::ListToTextMap
@@ -10748,39 +10632,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         }
         if matches!(
             builtin,
-            Builtin::DurationMilliseconds
-                | Builtin::DurationAsMilliseconds
-                | Builtin::FileOpenRead
-                | Builtin::FileCreate
-                | Builtin::FileOpenReadPath
-                | Builtin::FileCreatePath
-                | Builtin::FileTryOpenRead
-                | Builtin::FileTryCreate
-                | Builtin::FileTryOpenReadPath
-                | Builtin::FileTryCreatePath
-                | Builtin::FileReadText
-                | Builtin::FileWriteText
-                | Builtin::FileTryReadText
-                | Builtin::FileTryWriteText
-                | Builtin::FileClose
-                | Builtin::SocketConnect
-                | Builtin::SocketTryConnect
-                | Builtin::SocketReadText
-                | Builtin::SocketWriteText
-                | Builtin::SocketTryReadText
-                | Builtin::SocketTryWriteText
-                | Builtin::SocketClose
+            Builtin::DurationMilliseconds | Builtin::DurationAsMilliseconds
         ) {
-            let commits_before_status =
-                matches!(builtin, Builtin::FileClose | Builtin::SocketClose);
-            let writebacks = if commits_before_status {
-                prepared.writebacks.as_slice()
-            } else {
-                &[]
-            };
-            let continues =
-                self.emit_builtin_io(builtin, &prepared.values, writebacks, destination)?;
-            if continues && !commits_before_status {
+            let continues = self.emit_duration_builtin(builtin, &prepared.values, destination)?;
+            if continues {
                 self.emit_call_writebacks(&prepared.writebacks)?;
             }
             return Ok(continues);
@@ -12747,12 +12602,10 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
-    fn emit_builtin_io(
+    fn emit_duration_builtin(
         &self,
         builtin: Builtin,
         values: &[PointerValue<'ctx>],
-        writebacks: &[CallWriteback<'ctx>],
         destination: PointerValue<'ctx>,
     ) -> Result<bool, CodegenError> {
         match (builtin, values) {
@@ -12781,182 +12634,9 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
                 self.shallow_copy_named(destination, value, "duration.value.copy")?;
                 Ok(true)
             }
-            (
-                Builtin::FileOpenRead
-                | Builtin::FileCreate
-                | Builtin::FileOpenReadPath
-                | Builtin::FileCreatePath
-                | Builtin::FileTryOpenRead
-                | Builtin::FileTryCreate
-                | Builtin::FileTryOpenReadPath
-                | Builtin::FileTryCreatePath,
-                [path],
-            ) => {
-                let path = if matches!(
-                    builtin,
-                    Builtin::FileOpenReadPath
-                        | Builtin::FileCreatePath
-                        | Builtin::FileTryOpenReadPath
-                        | Builtin::FileTryCreatePath
-                ) {
-                    self.opaque_record_field(*path, "file.path.payload")?
-                } else {
-                    *path
-                };
-                let (data, length) = self.text_parts(path, "file.path")?;
-                let function = match builtin {
-                    Builtin::FileOpenRead | Builtin::FileOpenReadPath => {
-                        self.backend.native_file_open_read()
-                    }
-                    Builtin::FileCreate | Builtin::FileCreatePath => {
-                        self.backend.native_file_create()
-                    }
-                    Builtin::FileTryOpenRead | Builtin::FileTryOpenReadPath => {
-                        self.backend.native_file_try_open_read()
-                    }
-                    Builtin::FileTryCreate | Builtin::FileTryCreatePath => {
-                        self.backend.native_file_try_create()
-                    }
-                    _ => unreachable!("matched file open/create builtin"),
-                };
-                self.publish_gc_root_state()?;
-                let task = call_pointer(
-                    &self.backend.builder,
-                    function,
-                    &[self.runtime_context.into(), data.into(), length.into()],
-                    "file.task",
-                )?;
-                self.store_io_task(task, destination, "FileTaskAllocationFault")?;
-                Ok(true)
-            }
-            (
-                Builtin::FileReadText
-                | Builtin::SocketReadText
-                | Builtin::FileTryReadText
-                | Builtin::SocketTryReadText,
-                [resource],
-            ) => {
-                let descriptor = self.resource_descriptor(*resource)?;
-                let function = match builtin {
-                    Builtin::FileReadText => self.backend.native_file_read_text(),
-                    Builtin::SocketReadText => self.backend.native_socket_read_text(),
-                    Builtin::FileTryReadText => self.backend.native_file_try_read_text(),
-                    Builtin::SocketTryReadText => self.backend.native_socket_try_read_text(),
-                    _ => unreachable!("matched I/O read builtin"),
-                };
-                self.publish_gc_root_state()?;
-                let task = call_pointer(
-                    &self.backend.builder,
-                    function,
-                    &[self.runtime_context.into(), descriptor.into()],
-                    "io.read.task",
-                )?;
-                self.store_io_task(task, destination, "IoTaskAllocationFault")?;
-                Ok(true)
-            }
-            (
-                Builtin::FileWriteText
-                | Builtin::SocketWriteText
-                | Builtin::FileTryWriteText
-                | Builtin::SocketTryWriteText,
-                [resource, text],
-            ) => {
-                let descriptor = self.resource_descriptor(*resource)?;
-                let (data, length) = self.text_parts(*text, "io.write.text")?;
-                let function = match builtin {
-                    Builtin::FileWriteText => self.backend.native_file_write_text(),
-                    Builtin::SocketWriteText => self.backend.native_socket_write_text(),
-                    Builtin::FileTryWriteText => self.backend.native_file_try_write_text(),
-                    Builtin::SocketTryWriteText => self.backend.native_socket_try_write_text(),
-                    _ => unreachable!("matched I/O write builtin"),
-                };
-                self.publish_gc_root_state()?;
-                let task = call_pointer(
-                    &self.backend.builder,
-                    function,
-                    &[
-                        self.runtime_context.into(),
-                        descriptor.into(),
-                        data.into(),
-                        length.into(),
-                    ],
-                    "io.write.task",
-                )?;
-                self.store_io_task(task, destination, "IoTaskAllocationFault")?;
-                Ok(true)
-            }
-            (Builtin::SocketConnect | Builtin::SocketTryConnect, [host, port]) => {
-                let (data, length) = self.text_parts(*host, "socket.host")?;
-                let port = self.int_scalar(*port)?;
-                if builtin == Builtin::SocketConnect {
-                    let negative = self
-                        .backend
-                        .builder
-                        .build_int_compare(
-                            IntPredicate::SLT,
-                            port,
-                            self.backend.i64_type.const_zero(),
-                            "socket.port.negative",
-                        )
-                        .map_err(builder_error)?;
-                    self.fail_if(negative, "InvalidPort")?;
-                    let too_large = self
-                        .backend
-                        .builder
-                        .build_int_compare(
-                            IntPredicate::SGT,
-                            port,
-                            self.backend.i64_type.const_int(u64::from(u16::MAX), false),
-                            "socket.port.large",
-                        )
-                        .map_err(builder_error)?;
-                    self.fail_if(too_large, "InvalidPort")?;
-                }
-                let function = if builtin == Builtin::SocketTryConnect {
-                    self.backend.native_socket_try_connect()
-                } else {
-                    self.backend.native_socket_connect()
-                };
-                self.publish_gc_root_state()?;
-                let task = call_pointer(
-                    &self.backend.builder,
-                    function,
-                    &[
-                        self.runtime_context.into(),
-                        data.into(),
-                        length.into(),
-                        port.into(),
-                    ],
-                    "socket.connect.task",
-                )?;
-                self.store_io_task(task, destination, "SocketTaskAllocationFault")?;
-                Ok(true)
-            }
-            (Builtin::FileClose | Builtin::SocketClose, [resource]) => {
-                let status = call_int(
-                    &self.backend.builder,
-                    self.backend.native_io_close(),
-                    &[self.runtime_context.into(), (*resource).into()],
-                    "io.close",
-                )?;
-                self.emit_call_writebacks(writebacks)?;
-                let invalid = self
-                    .backend
-                    .builder
-                    .build_int_compare(
-                        IntPredicate::NE,
-                        status,
-                        self.backend.context.i32_type().const_zero(),
-                        "io.close.invalid",
-                    )
-                    .map_err(builder_error)?;
-                self.fail_if(invalid, "ResourceCloseFault")?;
-                self.emit_constant(&Constant::Unit, destination)?;
-                Ok(true)
-            }
             _ => Err(CodegenError::new(
                 "InvalidBuiltinCall",
-                "standard I/O builtin argument shape does not match checked MIR",
+                "Duration builtin argument shape does not match checked MIR",
             )),
         }
     }
@@ -13010,14 +12690,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         )
     }
 
-    fn resource_descriptor(
-        &self,
-        resource: PointerValue<'ctx>,
-    ) -> Result<IntValue<'ctx>, CodegenError> {
-        let value = self.opaque_record_field(resource, "resource.raw")?;
-        self.int_scalar(value)
-    }
-
     fn duration_scalar(
         &self,
         expression: &Expr,
@@ -13047,33 +12719,6 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
         let text = self.unwrap(text)?;
         let (_, data, length) = self.backend.sequence_parts(text, name)?;
         Ok((data, length))
-    }
-
-    fn store_io_task(
-        &self,
-        task: PointerValue<'ctx>,
-        destination: PointerValue<'ctx>,
-        fault: &str,
-    ) -> Result<(), CodegenError> {
-        let missing = self
-            .backend
-            .builder
-            .build_is_null(task, "io.task.missing")
-            .map_err(builder_error)?;
-        self.fail_if(missing, fault)?;
-        self.initialize(destination, VALUE_TAG_TASK)?;
-        self.backend.store_i64_field(
-            self.backend.value_type,
-            destination,
-            VALUE_FIELD_AUX,
-            self.backend.tag(TASK_VALUE_DIRECT),
-        )?;
-        self.backend.store_pointer_field(
-            self.backend.value_type,
-            destination,
-            VALUE_FIELD_DATA,
-            task,
-        )
     }
 
     fn emit_parse_float_status(

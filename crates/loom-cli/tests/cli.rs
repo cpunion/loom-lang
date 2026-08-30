@@ -2742,6 +2742,79 @@ fn typed_logging_closes_real_check_build_test_and_run_commands() {
 }
 
 #[test]
+fn typed_io_closes_real_check_build_test_and_run_commands() {
+    let project = TestProject::new(fixture_source!("lcir-typed-io"));
+
+    let check = loom()
+        .args(["--no-cache", "check", "."])
+        .current_dir(&project.0)
+        .output()
+        .expect("check typed I/O source through the CLI");
+    assert_eq!(check.status.code(), Some(0), "{check:?}");
+
+    let object_path = project.0.join("typed-io.o");
+    let build = loom()
+        .args(["--no-cache", "build", "--emit", "object", "--output"])
+        .arg(&object_path)
+        .arg(".")
+        .current_dir(&project.0)
+        .output()
+        .expect("build typed I/O source through the CLI");
+    assert_eq!(build.status.code(), Some(0), "{build:?}");
+    let object = fs::read(object_path).expect("read typed I/O object");
+    for required in [
+        b"loom.lcir.fn".as_slice(),
+        b"loom_typed_io_task_create_v1",
+        b"loom_typed_io_poll_v1",
+        b"loom_typed_io_cancel_v1",
+        b"loom_typed_resource_close_v1",
+    ] {
+        assert!(
+            contains_bytes(&object, required),
+            "typed I/O object omitted `{}`",
+            String::from_utf8_lossy(required)
+        );
+    }
+    for forbidden in [
+        b"loom.fn.".as_slice(),
+        b"loom.Value",
+        b"loom_file_",
+        b"loom_socket_",
+        b"loom_io_close",
+    ] {
+        assert!(
+            !contains_bytes(&object, forbidden),
+            "typed I/O object exposed `{}`",
+            String::from_utf8_lossy(forbidden)
+        );
+    }
+
+    let tests = loom()
+        .args(["--no-cache", "test", "."])
+        .current_dir(&project.0)
+        .output()
+        .expect("test typed I/O source through the CLI");
+    assert_eq!(tests.status.code(), Some(0), "{tests:?}");
+    assert_eq!(tests.stdout, b"passed standalone.typedIo\n");
+    assert_eq!(
+        fs::read(project.0.join("round-trip.txt")).expect("read test I/O result"),
+        b"direct typed I/O"
+    );
+
+    let run = loom()
+        .args(["--no-cache", "run", "."])
+        .current_dir(&project.0)
+        .output()
+        .expect("run typed I/O source through the CLI");
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    assert_eq!(run.stdout, b"Unit\n");
+    assert_eq!(
+        fs::read(project.0.join("round-trip.txt")).expect("read run I/O result"),
+        b"direct typed I/O"
+    );
+}
+
+#[test]
 fn typed_json_format_closes_real_check_build_test_and_run_commands() {
     let project = TestProject::new(fixture_source!("lcir-json-format"));
 

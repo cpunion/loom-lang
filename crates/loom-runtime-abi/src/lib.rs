@@ -4,7 +4,7 @@
 //! values crossing the runtime boundary are defined here once and consumed by
 //! both generated-code declarations and the Rust runtime implementation.
 
-pub const RUNTIME_ABI_VERSION: u32 = 35;
+pub const RUNTIME_ABI_VERSION: u32 = 36;
 pub const COROUTINE_ABI_VERSION: u32 = 2;
 pub const TYPED_TASK_ABI_VERSION: u32 = 1;
 pub const WAIT_ABI_VERSION: u32 = 1;
@@ -18,7 +18,7 @@ pub const WITNESS_ABI_VERSION: u32 = 1;
 pub const TYPED_JSON_ABI_VERSION: u32 = 1;
 pub const TYPED_IO_ABI_VERSION: u32 = 1;
 pub const TYPED_PROCESS_ABI_VERSION: u32 = 1;
-pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/typed-process-v1/runtime-v29/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v7";
+pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/typed-process-v1/runtime-v30/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v7";
 
 /// Copies `argv[1..argc]` into the process-wide immutable argument snapshot.
 /// Generated `main` calls this only when the reachable program reads process
@@ -145,7 +145,7 @@ pub const TYPED_TASK_PUBLISH_ADOPTING_SYMBOL: &str = "loom_typed_task_publish_ad
 /// `TASK_CANCELLED`. `TYPED_TASK_STATUS_INVALID` reports every invalid call.
 pub const TYPED_TASK_TAKE_OUTCOME_SYMBOL: &str = "loom_typed_task_take_outcome_v1";
 
-/// Creates one typed recoverable-I/O leaf Task from a fully staged request.
+/// Creates one typed I/O leaf Task from a fully staged request.
 ///
 /// The boundary takes `(executor, typed_task_descriptor, request)`. The
 /// runtime copies every borrowed byte before retaining the operation and
@@ -182,6 +182,13 @@ pub const TYPED_IO_OUTCOME_UNIT: u32 = 1;
 pub const TYPED_IO_OUTCOME_TEXT: u32 = 2;
 pub const TYPED_IO_OUTCOME_RESOURCE: u32 = 3;
 pub const TYPED_IO_OUTCOME_ERROR: u32 = 4;
+
+/// Default fault class for operation-specific File/Socket failures.
+pub const TYPED_IO_FAULT_CLASS_OPERATION: u64 = 0;
+/// Fault class for a Socket connect port outside `0..=65535`.
+pub const TYPED_IO_FAULT_CLASS_INVALID_PORT: u64 = 1;
+/// Fault class for Socket host resolution failure or an empty address set.
+pub const TYPED_IO_FAULT_CLASS_SOCKET_RESOLVE: u64 = 2;
 
 /// Zeroed typed allocator taking `(descriptor, allocation_size, output)`.
 ///
@@ -489,7 +496,7 @@ pub struct LoomByteView {
     pub length: u64,
 }
 
-/// One copied request for a typed recoverable-I/O leaf Task.
+/// One copied request for a typed I/O leaf Task.
 ///
 /// `resource_token` is [`TYPED_IO_INVALID_RESOURCE_TOKEN`] for File open/create
 /// and Socket connect. File/Socket read and write carry the exact direct
@@ -513,15 +520,16 @@ pub struct LoomTypedIoRequest {
 /// Primitive completion wire written by [`TYPED_IO_POLL_SYMBOL`].
 ///
 /// This is deliberately not the physical layout of `Result[T, IoError]`.
-/// `detail` is the closed `IoErrorKind` index only for Error; `resource_token`
-/// is live only for Resource. Text and Error publish their sole managed Text
+/// `detail` is the closed `IoErrorKind` index only for Error. `payload` is the
+/// capability token for Resource, the closed fault-class value for Error, and
+/// zero for Text or Unit. Text and Error publish their sole managed Text
 /// through the separate rooted scratch cell.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LoomTypedIoOutcome {
     pub kind: u32,
     pub detail: u32,
-    pub resource_token: u64,
+    pub payload: u64,
 }
 
 /// One borrowed canonical `TextMap[Text]` entry for typed structured logging.
@@ -715,20 +723,21 @@ mod tests {
         TEXT_OBJECT_FIELD_LAYOUT, TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE,
         TYPED_GC_ABI_VERSION, TYPED_GC_ALLOC_SYMBOL, TYPED_GC_REPEATED_ABI_VERSION,
         TYPED_GC_REPEATED_ALLOC_SYMBOL, TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL,
-        TYPED_IO_ABI_VERSION, TYPED_IO_CANCEL_SYMBOL, TYPED_IO_INVALID_RESOURCE_TOKEN,
-        TYPED_IO_OPERATION_FILE_CREATE, TYPED_IO_OPERATION_FILE_OPEN_READ,
-        TYPED_IO_OPERATION_FILE_READ_TEXT, TYPED_IO_OPERATION_FILE_WRITE_TEXT,
-        TYPED_IO_OPERATION_SOCKET_CONNECT, TYPED_IO_OPERATION_SOCKET_READ_TEXT,
-        TYPED_IO_OPERATION_SOCKET_WRITE_TEXT, TYPED_IO_OUTCOME_ERROR, TYPED_IO_OUTCOME_RESOURCE,
-        TYPED_IO_OUTCOME_TEXT, TYPED_IO_OUTCOME_UNIT, TYPED_IO_POLL_SYMBOL,
-        TYPED_IO_TASK_CREATE_SYMBOL, TYPED_JSON_ABI_VERSION, TYPED_JSON_FORMAT_ABI_MISMATCH,
-        TYPED_JSON_FORMAT_DEPTH_LIMIT, TYPED_JSON_FORMAT_DESCRIPTOR_INVALID,
-        TYPED_JSON_FORMAT_INVALID_ARGUMENT, TYPED_JSON_FORMAT_NON_FINITE_NUMBER,
-        TYPED_JSON_FORMAT_OK, TYPED_JSON_FORMAT_RESOURCE_LIMIT, TYPED_JSON_FORMAT_SYMBOL,
-        TYPED_LOG_FIELD_ALIGNMENT, TYPED_LOG_FIELD_KEY_OFFSET, TYPED_LOG_FIELD_SIZE,
-        TYPED_LOG_FIELD_VALUE_OFFSET, TYPED_LOG_INVALID_ARGUMENT, TYPED_LOG_OK,
-        TYPED_LOG_WRITE_FAILED, TYPED_LOG_WRITE_SYMBOL, TYPED_PROCESS_ABI_VERSION,
-        TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT, TYPED_RESOURCE_CLOSE_OK,
+        TYPED_IO_ABI_VERSION, TYPED_IO_CANCEL_SYMBOL, TYPED_IO_FAULT_CLASS_INVALID_PORT,
+        TYPED_IO_FAULT_CLASS_OPERATION, TYPED_IO_FAULT_CLASS_SOCKET_RESOLVE,
+        TYPED_IO_INVALID_RESOURCE_TOKEN, TYPED_IO_OPERATION_FILE_CREATE,
+        TYPED_IO_OPERATION_FILE_OPEN_READ, TYPED_IO_OPERATION_FILE_READ_TEXT,
+        TYPED_IO_OPERATION_FILE_WRITE_TEXT, TYPED_IO_OPERATION_SOCKET_CONNECT,
+        TYPED_IO_OPERATION_SOCKET_READ_TEXT, TYPED_IO_OPERATION_SOCKET_WRITE_TEXT,
+        TYPED_IO_OUTCOME_ERROR, TYPED_IO_OUTCOME_RESOURCE, TYPED_IO_OUTCOME_TEXT,
+        TYPED_IO_OUTCOME_UNIT, TYPED_IO_POLL_SYMBOL, TYPED_IO_TASK_CREATE_SYMBOL,
+        TYPED_JSON_ABI_VERSION, TYPED_JSON_FORMAT_ABI_MISMATCH, TYPED_JSON_FORMAT_DEPTH_LIMIT,
+        TYPED_JSON_FORMAT_DESCRIPTOR_INVALID, TYPED_JSON_FORMAT_INVALID_ARGUMENT,
+        TYPED_JSON_FORMAT_NON_FINITE_NUMBER, TYPED_JSON_FORMAT_OK,
+        TYPED_JSON_FORMAT_RESOURCE_LIMIT, TYPED_JSON_FORMAT_SYMBOL, TYPED_LOG_FIELD_ALIGNMENT,
+        TYPED_LOG_FIELD_KEY_OFFSET, TYPED_LOG_FIELD_SIZE, TYPED_LOG_FIELD_VALUE_OFFSET,
+        TYPED_LOG_INVALID_ARGUMENT, TYPED_LOG_OK, TYPED_LOG_WRITE_FAILED, TYPED_LOG_WRITE_SYMBOL,
+        TYPED_PROCESS_ABI_VERSION, TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT, TYPED_RESOURCE_CLOSE_OK,
         TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET,
         TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION, TYPED_TASK_CLEANUP_FAULTED,
         TYPED_TASK_INVALID_ARGUMENT, TYPED_TASK_MAX_FAULT_TEXT_BYTES, TYPED_TASK_NO_MEMORY,
@@ -738,7 +747,7 @@ mod tests {
 
     #[test]
     fn native_runtime_identity_is_pinned() {
-        assert_eq!(RUNTIME_ABI_VERSION, 35);
+        assert_eq!(RUNTIME_ABI_VERSION, 36);
         assert_eq!(COROUTINE_ABI_VERSION, 2);
         assert_eq!(TYPED_TASK_ABI_VERSION, 1);
         assert_eq!(LAYOUT_ABI_VERSION, 1);
@@ -826,7 +835,7 @@ mod tests {
         assert_eq!(STDLIB_ABI_VERSION, 7);
         assert_eq!(
             NATIVE_RUNTIME_ABI_IDENTITY,
-            "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/typed-process-v1/runtime-v29/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v7",
+            "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/typed-process-v1/runtime-v30/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v7",
         );
     }
 
@@ -876,6 +885,9 @@ mod tests {
         assert_eq!(TYPED_IO_OUTCOME_TEXT, 2);
         assert_eq!(TYPED_IO_OUTCOME_RESOURCE, 3);
         assert_eq!(TYPED_IO_OUTCOME_ERROR, 4);
+        assert_eq!(TYPED_IO_FAULT_CLASS_OPERATION, 0);
+        assert_eq!(TYPED_IO_FAULT_CLASS_INVALID_PORT, 1);
+        assert_eq!(TYPED_IO_FAULT_CLASS_SOCKET_RESOLVE, 2);
         assert_eq!(size_of::<LoomTypedIoRequest>(), 40);
         assert_eq!(align_of::<LoomTypedIoRequest>(), 8);
         assert_eq!(offset_of!(LoomTypedIoRequest, abi_version), 0);
@@ -887,7 +899,7 @@ mod tests {
         assert_eq!(align_of::<LoomTypedIoOutcome>(), 8);
         assert_eq!(offset_of!(LoomTypedIoOutcome, kind), 0);
         assert_eq!(offset_of!(LoomTypedIoOutcome, detail), 4);
-        assert_eq!(offset_of!(LoomTypedIoOutcome, resource_token), 8);
+        assert_eq!(offset_of!(LoomTypedIoOutcome, payload), 8);
     }
 
     #[test]

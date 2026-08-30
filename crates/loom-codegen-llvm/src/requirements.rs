@@ -6,12 +6,12 @@ use loom_mir::{
     Program, ScopedDisposal, StatementKind, Type, TypeDefKind, UnaryOp, WitnessRef,
 };
 
-use crate::CodegenError;
 use crate::native_layout::{NativeLayout, NativePassMode, NativeSignatureShape};
 use crate::native_range::{NativeBodyMode, NativeIntRangePlan};
 use crate::native_storage::{
     NativeIntListPlan, NativeStackRecordPlan, native_pod_value_argument_local,
 };
+use crate::{CodegenError, builtin_requires_typed_io};
 
 /// Compiler-private runtime capabilities needed by one lowered callable.
 ///
@@ -418,10 +418,10 @@ impl RequirementScanner<'_> {
                         }
                         ScopedDisposal::FileClose => output
                             .requirements
-                            .include(builtin_requirements(Builtin::FileClose)),
+                            .include(builtin_requirements(Builtin::FileClose)?),
                         ScopedDisposal::SocketClose => output
                             .requirements
-                            .include(builtin_requirements(Builtin::SocketClose)),
+                            .include(builtin_requirements(Builtin::SocketClose)?),
                     }
                 }
                 StatementKind::Assign { value, .. } | StatementKind::Evaluate(value) => {
@@ -877,7 +877,7 @@ impl RequirementScanner<'_> {
                             // but it never allocates a managed Value or collects.
                             output.requirements.include(RuntimeRequirements::MAY_FAULT);
                         } else {
-                            output.requirements.include(builtin_requirements(*builtin));
+                            output.requirements.include(builtin_requirements(*builtin)?);
                         }
                     }
                 }
@@ -995,8 +995,14 @@ pub(crate) const fn builtin_borrows_copy_argument(builtin: Builtin, index: usize
     }
 }
 
-const fn builtin_requirements(builtin: Builtin) -> RuntimeRequirements {
-    match builtin {
+fn builtin_requirements(builtin: Builtin) -> Result<RuntimeRequirements, CodegenError> {
+    if builtin_requires_typed_io(builtin) {
+        return Err(CodegenError::new(
+            "NativeIoRequiresLcir",
+            "file and socket I/O require the typed LCIR native route",
+        ));
+    }
+    Ok(match builtin {
         Builtin::FloatIsFinite
         | Builtin::IntToFloat
         | Builtin::FloatToIntStatus
@@ -1031,10 +1037,9 @@ const fn builtin_requirements(builtin: Builtin) -> RuntimeRequirements {
         | Builtin::FileTryWriteText
         | Builtin::SocketTryConnect
         | Builtin::SocketTryReadText
-        | Builtin::SocketTryWriteText => RuntimeRequirements::ASYNC,
-        Builtin::FileClose | Builtin::SocketClose => {
-            RuntimeRequirements::MAY_FAULT.union(RuntimeRequirements::NEEDS_EXECUTOR)
-        }
+        | Builtin::SocketTryWriteText
+        | Builtin::FileClose
+        | Builtin::SocketClose => unreachable!("typed I/O was rejected before requirement scan"),
         Builtin::TextContains
         | Builtin::TextMapContains
         | Builtin::LogWrite
@@ -1061,7 +1066,7 @@ const fn builtin_requirements(builtin: Builtin) -> RuntimeRequirements {
         | Builtin::JsonFormat => {
             RuntimeRequirements::MAY_FAULT.union(RuntimeRequirements::MAY_COLLECT)
         }
-    }
+    })
 }
 
 #[cfg(test)]
@@ -1390,6 +1395,9 @@ mod tests {
     fn builtins_distinguish_collection_fault_and_executor_requirements() {
         use loom_mir::Builtin;
 
+        let requirements = |builtin| {
+            builtin_requirements(builtin).expect("supported checked-MIR builtin requirements")
+        };
         for builtin in [
             Builtin::TextLength,
             Builtin::TextContains,
@@ -1406,11 +1414,9 @@ mod tests {
             Builtin::IoErrorMessage,
             Builtin::LogWrite,
             Builtin::StdoutWrite,
-            Builtin::FileClose,
-            Builtin::SocketClose,
         ] {
             assert!(
-                !builtin_requirements(builtin).may_collect(),
+                !requirements(builtin).may_collect(),
                 "{builtin:?} unexpectedly enters moving GC"
             );
         }
@@ -1423,30 +1429,46 @@ mod tests {
             Builtin::JsonFormat,
         ] {
             assert!(
-                builtin_requirements(builtin).may_collect(),
+                requirements(builtin).may_collect(),
                 "{builtin:?} lost its managed builder boundary"
             );
         }
 
-        let contains = builtin_requirements(Builtin::TextMapContains);
+        let contains = requirements(Builtin::TextMapContains);
         assert!(contains.may_fault());
         assert!(!contains.needs_executor());
-        let get = builtin_requirements(Builtin::TextMapGet);
+        let get = requirements(Builtin::TextMapGet);
         assert!(get.may_fault());
         assert!(get.may_collect());
-        let entry_at = builtin_requirements(Builtin::TextMapEntryAt);
+        let entry_at = requirements(Builtin::TextMapEntryAt);
         assert!(!entry_at.may_fault());
         assert!(entry_at.may_collect());
 
-        for builtin in [Builtin::FileClose, Builtin::SocketClose] {
-            let requirements = builtin_requirements(builtin);
-            assert!(requirements.may_fault());
-            assert!(requirements.needs_executor());
-            assert!(!requirements.may_collect());
+        for builtin in [
+            Builtin::FileOpenRead,
+            Builtin::FileCreate,
+            Builtin::FileOpenReadPath,
+            Builtin::FileCreatePath,
+            Builtin::FileReadText,
+            Builtin::FileWriteText,
+            Builtin::FileClose,
+            Builtin::SocketConnect,
+            Builtin::SocketReadText,
+            Builtin::SocketWriteText,
+            Builtin::SocketClose,
+            Builtin::FileTryOpenRead,
+            Builtin::FileTryCreate,
+            Builtin::FileTryOpenReadPath,
+            Builtin::FileTryCreatePath,
+            Builtin::FileTryReadText,
+            Builtin::FileTryWriteText,
+            Builtin::SocketTryConnect,
+            Builtin::SocketTryReadText,
+            Builtin::SocketTryWriteText,
+        ] {
+            let error = builtin_requirements(builtin)
+                .expect_err("checked-MIR requirements must reject file and socket I/O");
+            assert_eq!(error.code(), "NativeIoRequiresLcir");
         }
-        let async_constructor = builtin_requirements(Builtin::FileOpenRead);
-        assert!(async_constructor.may_fault());
-        assert!(async_constructor.needs_executor());
-        assert!(async_constructor.may_collect());
     }
 }

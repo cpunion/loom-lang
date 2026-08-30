@@ -4095,13 +4095,13 @@ fn typed_io_tasks_use_direct_result_frames_and_real_scheduler_io() {
     );
     let dump = dump_program(artifact.program());
     for operation in [
-        "io.task_create.file_open_read",
-        "io.task_create.file_create",
-        "io.task_create.file_read_text",
-        "io.task_create.file_write_text",
-        "io.task_create.socket_connect",
-        "io.task_create.socket_read_text",
-        "io.task_create.socket_write_text",
+        "io.task_create.file_open_read.result",
+        "io.task_create.file_create.result",
+        "io.task_create.file_read_text.result",
+        "io.task_create.file_write_text.result",
+        "io.task_create.socket_connect.result",
+        "io.task_create.socket_read_text.result",
+        "io.task_create.socket_write_text.result",
     ] {
         assert!(dump.contains(operation), "missing `{operation}`:\n{dump}");
     }
@@ -4172,6 +4172,80 @@ fn typed_io_tasks_use_direct_result_frames_and_real_scheduler_io() {
         .unwrap_or_else(|error| panic!("emit typed I/O object for {target}: {error}"));
         assert!(object.is_file(), "missing typed I/O object for {target}");
     }
+}
+
+#[test]
+fn fault_mode_typed_io_callbacks_record_operation_specific_faults() {
+    let source = r#"import std.file.open_read
+import std.file.create
+import std.net.connect
+
+pub async fn main() {
+    {
+        scoped output = create("typed-fault-mode.txt").await
+        output.write_text("loom").await
+    }
+    {
+        scoped input = open_read("typed-fault-mode.txt").await
+        discard input.read_text().await
+    }
+    {
+        scoped socket = connect("localhost", 1).await
+        socket.write_text("loom").await
+        discard socket.read_text().await
+    }
+}
+"#;
+    let program = compile_source(source);
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    for operation in [
+        "file_open_read",
+        "file_create",
+        "file_read_text",
+        "file_write_text",
+        "socket_connect",
+        "socket_read_text",
+        "socket_write_text",
+    ] {
+        let expected = format!("io.task_create.{operation}.fault");
+        assert!(dump.contains(&expected), "missing `{expected}`:\n{dump}");
+    }
+
+    let directory = tempfile::tempdir().expect("create fault-mode I/O directory");
+    let object = directory.path().join("fault-mode-io.o");
+    let ir_path = directory.path().join("fault-mode-io.ll");
+    emit_lcir_native_object(
+        &artifact,
+        &object,
+        &NativeObjectOptions {
+            emit_ir: Some(ir_path.clone()),
+            ..NativeObjectOptions::default()
+        },
+    )
+    .expect("emit fault-mode typed I/O object");
+    let ir = std::fs::read_to_string(ir_path).expect("read fault-mode typed I/O LLVM IR");
+    for code in [
+        "FileOpenFault",
+        "FileCreateFault",
+        "FileReadFault",
+        "FileWriteFault",
+        "InvalidPort",
+        "SocketConnectFault",
+        "SocketResolveFault",
+        "SocketReadFault",
+        "SocketWriteFault",
+    ] {
+        assert!(ir.contains(code), "missing `{code}`:\n{ir}");
+    }
+    assert!(ir.contains("@loom_context_raise_fault_v1"), "{ir}");
+    assert!(ir.contains("io.fault_mode.resource"), "{ir}");
+    assert!(!ir.contains("%loom.Value"), "{ir}");
 }
 
 #[test]

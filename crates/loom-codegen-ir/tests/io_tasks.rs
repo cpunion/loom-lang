@@ -1,8 +1,8 @@
 use loom_codegen_ir::{
     AwaitMode, BlockTarget, CanonicalTypeCatalog, Constant, CoroutinePlan, CoroutineSuspension,
-    Effects, InstructionKind, IoTaskOperation, Origin, Program, ProgramBuilder, ResultTarget,
-    Signature, TargetLayout, Terminator, TerminatorKind, UnwindTarget, ValidationCode,
-    validate_program,
+    Effects, InstructionKind, IoTaskErrorMode, IoTaskOperation, Origin, Program, ProgramBuilder,
+    ResultTarget, Signature, TargetLayout, Terminator, TerminatorKind, UnwindTarget,
+    ValidationCode, validate_program,
 };
 use loom_mir::{FunctionId, Type, TypeId};
 
@@ -23,6 +23,15 @@ fn io_catalog() -> CanonicalTypeCatalog {
     }
 }
 
+fn io_catalog_without_error_types() -> CanonicalTypeCatalog {
+    CanonicalTypeCatalog {
+        result: Some(RESULT_TYPE_ID),
+        file: Some(FILE_TYPE_ID),
+        socket: Some(SOCKET_TYPE_ID),
+        ..CanonicalTypeCatalog::default()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Defect {
     None,
@@ -33,6 +42,7 @@ enum Defect {
     IoErrorShape,
     IoErrorInvariantProduct,
     IoErrorKindTag,
+    MissingIoErrorCatalog,
     MissingResultRegistration,
     MissingTaskRegistration,
     ResultShape,
@@ -57,14 +67,27 @@ fn empty_variants(count: usize) -> Vec<Box<[Type]>> {
     vec![Box::new([]); count]
 }
 
+fn io_task_program(operation: IoTaskOperation, defect: Defect) -> Program {
+    io_task_program_in_mode(operation, IoTaskErrorMode::Result, defect)
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "one hostile raw-LCIR fixture keeps every nominal and physical typed-I/O boundary independently forgeable"
 )]
-fn io_task_program(operation: IoTaskOperation, defect: Defect) -> Program {
+fn io_task_program_in_mode(
+    operation: IoTaskOperation,
+    error_mode: IoTaskErrorMode,
+    defect: Defect,
+) -> Program {
     let origin = Origin::synthetic(FunctionId(500));
+    let catalog = if defect == Defect::MissingIoErrorCatalog {
+        io_catalog_without_error_types()
+    } else {
+        io_catalog()
+    };
     let mut builder =
-        ProgramBuilder::with_canonical_types(TargetLayout::new(64).expect("target"), io_catalog());
+        ProgramBuilder::with_canonical_types(TargetLayout::new(64).expect("target"), catalog);
     let unit = builder.type_id(&Type::Unit).expect("Unit");
     let integer = builder.type_id(&Type::Int).expect("Int");
     let text = builder
@@ -156,6 +179,11 @@ fn io_task_program(operation: IoTaskOperation, defect: Defect) -> Program {
             .add_task_handle_type(Type::Task(Box::new(result_semantic)))
             .expect("Task[Result[T, IoError]]")
     });
+    let task_success = (defect != Defect::MissingTaskRegistration).then(|| {
+        builder
+            .add_task_handle_type(Type::Task(Box::new(success_semantic.clone())))
+            .expect("Task[T]")
+    });
     let wrong_task = if matches!(
         defect,
         Defect::WrongTaskType | Defect::MissingResultRegistration | Defect::MissingTaskRegistration
@@ -236,10 +264,14 @@ fn io_task_program(operation: IoTaskOperation, defect: Defect) -> Program {
                 entry,
                 InstructionKind::IoTaskCreate {
                     operation,
+                    error_mode,
                     arguments: arguments.clone().into_boxed_slice(),
                 },
                 &[wrong_task
-                    .or(task_result)
+                    .or(match error_mode {
+                        IoTaskErrorMode::Result => task_result,
+                        IoTaskErrorMode::Fault => task_success,
+                    })
                     .expect("test has an output type for the forged instruction")],
                 origin,
             )
@@ -269,6 +301,7 @@ fn io_task_program(operation: IoTaskOperation, defect: Defect) -> Program {
                     cancel,
                     InstructionKind::IoTaskCreate {
                         operation,
+                        error_mode,
                         arguments: arguments.into_boxed_slice(),
                     },
                     &[task_result.expect("cancellation test has canonical Task")],
@@ -423,9 +456,47 @@ fn canonical_typed_io_task_shapes_validate_for_every_closed_operation() {
         IoTaskOperation::SocketReadText,
         IoTaskOperation::SocketWriteText,
     ] {
-        validate_program(&io_task_program(operation, Defect::None))
-            .unwrap_or_else(|errors| panic!("canonical {operation:?} failed: {errors:#?}"));
+        for error_mode in [IoTaskErrorMode::Result, IoTaskErrorMode::Fault] {
+            validate_program(&io_task_program_in_mode(
+                operation,
+                error_mode,
+                Defect::None,
+            ))
+            .unwrap_or_else(|errors| {
+                panic!("canonical {operation:?}/{error_mode:?} failed: {errors:#?}")
+            });
+        }
     }
+}
+
+#[test]
+fn fault_mode_typed_io_requires_task_of_the_direct_success_type() {
+    let errors = validate_program(&io_task_program_in_mode(
+        IoTaskOperation::FileCreate,
+        IoTaskErrorMode::Fault,
+        Defect::WrongTaskType,
+    ))
+    .expect_err("Fault-mode typed I/O must reject Task[Bool] for a File result");
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code() == ValidationCode::TypeMismatch
+            && error.path().ends_with("instruction[0].result[0]")
+    }));
+}
+
+#[test]
+fn fault_mode_typed_io_does_not_require_result_error_types() {
+    validate_program(&io_task_program_in_mode(
+        IoTaskOperation::FileCreate,
+        IoTaskErrorMode::Fault,
+        Defect::MissingIoErrorCatalog,
+    ))
+    .expect("Fault-mode typed I/O writes File directly and must not depend on IoError");
+
+    let errors = rejected(IoTaskOperation::FileCreate, Defect::MissingIoErrorCatalog);
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code() == ValidationCode::InstructionShape
+            && error.message().contains("canonical IoError")
+    }));
 }
 
 #[test]

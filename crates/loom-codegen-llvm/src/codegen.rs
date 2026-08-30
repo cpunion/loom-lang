@@ -8,7 +8,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    CodegenError, NATIVE_RUNTIME_ABI, OptimizationProfile,
+    CodegenError, NATIVE_RUNTIME_ABI, OptimizationProfile, builtin_requires_typed_io,
     emitter::Emitter,
     lcir_emitter::LcirEmitter,
     target::{NativeTargetMachine, create_target_machine},
@@ -236,6 +236,21 @@ fn reject_checked_mir_log(reachable: &ReachableSourceGraph) -> Result<(), Codege
     Ok(())
 }
 
+fn reject_checked_mir_io(reachable: &ReachableSourceGraph) -> Result<(), CodegenError> {
+    if reachable
+        .builtins
+        .iter()
+        .copied()
+        .any(builtin_requires_typed_io)
+    {
+        return Err(CodegenError::new(
+            "NativeIoRequiresLcir",
+            "reachable file or socket I/O requires the typed LCIR native route",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_checked_mir_root_signatures(
     program: &CheckedProgram,
     options: &EmitOptions,
@@ -307,6 +322,7 @@ pub fn native_object_fingerprint(
     let (roots, reachable) = select_roots(program, options)?;
     reject_checked_mir_process(&reachable)?;
     reject_checked_mir_log(&reachable)?;
+    reject_checked_mir_io(&reachable)?;
     let target = create_target_machine(options.target_triple.as_deref(), options.optimization)?;
     checked_mir_object_fingerprint_with_target(program, options, &roots, &reachable, &target)
 }
@@ -410,6 +426,7 @@ pub fn emit_native_object(
     let (roots, reachable) = select_roots(program, options)?;
     reject_checked_mir_process(&reachable)?;
     reject_checked_mir_log(&reachable)?;
+    reject_checked_mir_io(&reachable)?;
     emit_checked_mir_object(program, output, options, &roots, &reachable)
 }
 
@@ -458,6 +475,7 @@ pub fn emit_native(
     let (roots, reachable) = select_roots(program, options)?;
     reject_checked_mir_process(&reachable)?;
     reject_checked_mir_log(&reachable)?;
+    reject_checked_mir_io(&reachable)?;
     let expected = crate::target_identity(options.target_triple.as_deref(), options.optimization)?;
     if runtime.target_triple() != expected.triple || runtime.data_layout() != expected.data_layout {
         return Err(CodegenError::new(
