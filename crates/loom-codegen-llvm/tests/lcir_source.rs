@@ -6259,6 +6259,40 @@ fn finite_dynamic_witnesses_use_precise_single_pointer_boxes_and_direct_dispatch
     for dead in ["standalone.cold", "7001", "7002"] {
         assert!(!dump.contains(dead), "retained dead `{dead}`:\n{dump}");
     }
+    let projected_dispatch = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("advanceStored"))
+        .expect("projected finite-dyn dispatch method");
+    assert_eq!(projected_dispatch.signature().inout_params(), [0]);
+    assert!(projected_dispatch.blocks().iter().any(|block| matches!(
+        block.terminator().map(loom_codegen_ir::Terminator::kind),
+        Some(loom_codegen_ir::TerminatorKind::DynSwitch { cases, .. }) if cases.len() == 2
+    )));
+    assert_eq!(
+        projected_dispatch
+            .instructions()
+            .iter()
+            .filter(|instruction| matches!(
+                instruction.kind(),
+                InstructionKind::DynConstruct { .. }
+            ))
+            .count(),
+        4,
+        "two candidates need normal and fault-edge fresh boxes"
+    );
+    assert_eq!(
+        projected_dispatch
+            .instructions()
+            .iter()
+            .filter(|instruction| matches!(
+                instruction.kind(),
+                InstructionKind::ProductInsert { .. }
+            ))
+            .count(),
+        8,
+        "each fresh box must reconstruct the slot and holder on both exits"
+    );
 
     let native = emit_and_run_lcir(&artifact, "source-finite-dyn");
     let checked_mir = emit_and_run_checked_mir_tests(&program, "checked-mir-finite-dyn");
@@ -6320,6 +6354,24 @@ fn finite_dynamic_witnesses_use_precise_single_pointer_boxes_and_direct_dispatch
         );
     }
     assert_no_indirect_calls(&native.ir);
+    let projected_dispatch = emitted_lcir_instance(&native.ir, projected_dispatch);
+    assert_eq!(
+        projected_dispatch
+            .matches("call i32 @loom_gc_typed_alloc_v1")
+            .count(),
+        4,
+        "projected normal and fault exits must allocate fresh immutable boxes:\n{projected_dispatch}"
+    );
+    assert!(
+        projected_dispatch.matches("product.extract").count() >= 2
+            && projected_dispatch.matches("product.insert").count() >= 8,
+        "projected dynamic dispatch must rebuild both product parents on normal and fault exits:\n{projected_dispatch}"
+    );
+    assert!(
+        projected_dispatch.contains("dyn.switch.tag")
+            && projected_dispatch.contains("dyn.construct.output"),
+        "projected dispatch must remain a finite direct switch with fresh boxes:\n{projected_dispatch}"
+    );
     let mutable_dispatch = native
         .ir
         .split("\ndefine ")

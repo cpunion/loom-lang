@@ -2,10 +2,11 @@ use std::collections::BTreeMap;
 
 use loom_core::Span;
 use loom_mir::{
-    self as mir, CallArgument, CallTarget, ConceptId, ExprId, ExprKind, FunctionId, RequirementId,
-    StatementKind, Type, WitnessRef,
+    self as mir, CallArgument, CallTarget, ConceptId, ExprId, ExprKind, FunctionId, Place,
+    RequirementId, StatementKind, Type, WitnessRef,
 };
 
+use crate::aggregate_plan::concrete_any_record_fields;
 use crate::dyn_plan::DynConceptPlan;
 use crate::{INSTANCE_KEY_STRUCTURE_BUDGET, InstanceKey, InstanceWitnessArgument};
 
@@ -101,6 +102,40 @@ impl<'program, 'key> InstanceSubstitution<'program, 'key> {
     pub(crate) fn instantiate_type(&self, ty: &Type) -> Result<Type, InstantiationError> {
         let mut budget = StructureBudget::default();
         self.clone_caller_type(ty, &mut budget, &mut Vec::new())
+    }
+
+    /// Resolves a checked MIR record place after applying the enclosing
+    /// function instance. This is semantic type recovery only; the later
+    /// place planner remains the authority for protected access and exact
+    /// physical product identity.
+    pub(crate) fn instantiate_place_type(
+        &self,
+        function: &mir::Function,
+        place: &Place,
+    ) -> Result<Option<Type>, InstantiationError> {
+        let Some(local) = function
+            .params
+            .iter()
+            .chain(&function.locals)
+            .find(|local| local.id == place.local)
+        else {
+            return Ok(None);
+        };
+        let mut current = self.instantiate_type(&local.ty)?;
+        for field in &place.projection {
+            let Some(fields) = concrete_any_record_fields(self.program, &current) else {
+                return Ok(None);
+            };
+            let Some(next) = usize::try_from(*field)
+                .ok()
+                .and_then(|index| fields.get(index))
+                .cloned()
+            else {
+                return Ok(None);
+            };
+            current = next;
+        }
+        Ok(Some(current))
     }
 
     pub(crate) fn instantiate_types(
@@ -1530,22 +1565,10 @@ fn dynamic_receiver_type(
     argument: &CallArgument,
     substitution: &InstanceSubstitution<'_, '_>,
 ) -> Result<Option<Type>, InstantiationError> {
-    let ty = match argument {
-        CallArgument::Value(value) => &value.ty,
-        CallArgument::InOut(place) if place.projection.is_empty() => {
-            let Some(local) = function
-                .params
-                .iter()
-                .chain(&function.locals)
-                .find(|local| local.id == place.local)
-            else {
-                return Ok(None);
-            };
-            &local.ty
-        }
-        CallArgument::InOut(_) => return Ok(None),
-    };
-    substitution.instantiate_type(ty).map(Some)
+    match argument {
+        CallArgument::Value(value) => substitution.instantiate_type(&value.ty).map(Some),
+        CallArgument::InOut(place) => substitution.instantiate_place_type(function, place),
+    }
 }
 
 #[cfg(test)]

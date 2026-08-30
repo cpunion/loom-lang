@@ -2187,14 +2187,31 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
         expression: &mir::Expr,
         path: &str,
     ) -> Option<Type> {
-        let ty = match argument {
-            CallArgument::Value(value) => &value.ty,
-            CallArgument::InOut(place) if place.projection.is_empty() => {
-                Self::local_type(function, place.local)?
+        match argument {
+            CallArgument::Value(value) => self.instantiated_type(
+                function,
+                key,
+                Some(expression),
+                &value.ty,
+                expression.span,
+                path,
+            ),
+            CallArgument::InOut(place) => {
+                let Ok(ty) = InstanceSubstitution::new(self.program, key)
+                    .instantiate_place_type(function, place)
+                else {
+                    self.item(
+                        UnsupportedFeature::UnresolvedGenericInstantiation,
+                        function.id,
+                        Some(expression.id),
+                        expression.span,
+                        path.to_owned(),
+                    );
+                    return None;
+                };
+                ty
             }
-            CallArgument::InOut(_) => return None,
-        };
-        self.instantiated_type(function, key, Some(expression), ty, expression.span, path)
+        }
     }
 
     fn supported_projected_place(
@@ -3910,7 +3927,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                             .zip(self.dyn_concepts.finite(result))
                     })
                     .is_some_and(|(owner, result)| owner == result);
-                if !owner.projection.is_empty() || (!same_choice && !same_finite) {
+                if !same_choice && !same_finite {
                     self.expression_item(UnsupportedFeature::View, function, expression, path);
                 }
                 true
@@ -4295,18 +4312,17 @@ fn summarize_effects(
             .is_some_and(|requirement| requirement.receiver == Some(mir::Receiver::Mutable))
             && arguments.first().is_some_and(|receiver| {
                 let receiver_ty = match receiver {
-                    CallArgument::Value(receiver) => Some(&receiver.ty),
-                    CallArgument::InOut(place) if place.projection.is_empty() => function
-                        .params
-                        .iter()
-                        .chain(&function.locals)
-                        .find(|local| local.id == place.local)
-                        .map(|local| &local.ty),
-                    CallArgument::InOut(_) => None,
+                    CallArgument::Value(receiver) => {
+                        substitution.instantiate_type(&receiver.ty).ok()
+                    }
+                    CallArgument::InOut(place) => substitution
+                        .instantiate_place_type(function, place)
+                        .ok()
+                        .flatten(),
                 };
                 receiver_ty
-                    .and_then(|receiver_ty| substitution.instantiate_type(receiver_ty).ok())
-                    .is_some_and(|ty| dyn_concepts.finite(&ty).is_some())
+                    .as_ref()
+                    .is_some_and(|ty| dyn_concepts.finite(ty).is_some())
             })
     }) {
         summary.include(Effects::MAY_COLLECT);
@@ -12163,23 +12179,24 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         argument: &CallArgument,
         expression: &mir::Expr,
     ) -> Result<Type, LoweringError> {
-        let source = match argument {
-            CallArgument::Value(value) => &value.ty,
-            CallArgument::InOut(place) if place.projection.is_empty() => {
-                self.local_types.get(&place.local).ok_or_else(|| {
+        let substitution = InstanceSubstitution::new(self.program, self.key);
+        match argument {
+            CallArgument::Value(value) => substitution
+                .instantiate_type(&value.ty)
+                .map_err(|error| instantiation_defect(self.source.id, Some(expression.id), error)),
+            CallArgument::InOut(place) => substitution
+                .instantiate_place_type(self.source, place)
+                .map_err(|error| instantiation_defect(self.source.id, Some(expression.id), error))?
+                .ok_or_else(|| {
                     LoweringError::defect(
                         LoweringDefectCode::InconsistentPlan,
-                        format!("dynamic receiver local #{} disappeared", place.local.0),
+                        format!(
+                            "dynamic receiver place rooted at local #{} lost its semantic type",
+                            place.local.0
+                        ),
                     )
-                })?
-            }
-            CallArgument::InOut(_) => {
-                return Err(self.unsupported_reached("projected dynamic receiver"));
-            }
-        };
-        InstanceSubstitution::new(self.program, self.key)
-            .instantiate_type(source)
-            .map_err(|error| instantiation_defect(self.source.id, Some(expression.id), error))
+                }),
+        }
     }
 
     fn lower_view_inout_argument(

@@ -44,6 +44,21 @@ record Holder {
     item dyn Metric
 }
 
+record AdvanceSlot {
+    item dyn Advance
+}
+
+record AdvanceHolder {
+    slot AdvanceSlot
+    guard Int
+}
+
+impl AdvanceHolder {
+    method advanceStored(mut self) Int {
+        self.slot.item.advance()
+    }
+}
+
 fn measure(metric Metric) Int {
     metric.read()
 }
@@ -118,6 +133,38 @@ fn verify() {
     var offset = eraseOffsetAdvance(Offset { value = 100 })
     let offsetFirst = advanceOne(offset)
     assert offsetFirst == 102
+
+    var stored = AdvanceHolder {
+        slot = AdvanceSlot {
+            item = eraseCounterAdvance(Counter { value = 0, label = "stored" }),
+        },
+        guard = 73,
+    }
+    var storedCopy = stored
+    forceRelocation()
+    let storedCopyFirst = storedCopy.advanceStored()
+    let storedCopySecond = storedCopy.advanceStored()
+    let storedCopyThird = advanceOne(storedCopy.slot.item)
+    let storedFirst = stored.advanceStored()
+    let storedGuard = stored.guard
+    let storedCopyGuard = storedCopy.guard
+    assert storedCopyFirst == 1
+    assert storedCopySecond == 2
+    assert storedCopyThird == 3
+    assert storedFirst == 1
+    assert storedGuard == 73
+    assert storedCopyGuard == 73
+
+    var storedOffset = AdvanceHolder {
+        slot = AdvanceSlot {
+            item = eraseOffsetAdvance(Offset { value = 100 }),
+        },
+        guard = 91,
+    }
+    let storedOffsetFirst = storedOffset.advanceStored()
+    let storedOffsetGuard = storedOffset.guard
+    assert storedOffsetFirst == 102
+    assert storedOffsetGuard == 91
 }
 
 pub fn main() {

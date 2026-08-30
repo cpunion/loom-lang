@@ -859,6 +859,13 @@ requesting the enclosing fault target. This ordering keeps the SSA environment
 ready for lexical cleanup observation, including receiver writeback performed
 by a scoped disposer.
 
+A projected finite `dyn` leaf follows the same place plan. Mutable dispatch
+switches on the closed candidate tag, calls the exact concrete method, builds a
+fresh immutable candidate box from its receiver writeback, and reconstructs the
+containing products on both normal and fault edges. The previously published
+box is never mutated, so copying an enclosing record preserves Loom value
+semantics even when the collector relocates either copy.
+
 Lowering constructs canonical SSA directly: a single continuing branch does
 not gain a join, values already dominating every predecessor do not gain
 identity block parameters, short-circuit skip edges reuse the evaluated left
