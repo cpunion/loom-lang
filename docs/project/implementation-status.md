@@ -190,12 +190,13 @@ mapping source definitions back to them.
 
 Remaining atomic fallback includes dynamic producers with unresolved parameters
 or projections, unsupported proof or contract value shapes, raw readiness, and
-protected or otherwise unrepresentable projected inout shapes.
+otherwise unrepresentable projected inout shapes.
 Finite closed dynamic catalogs are exact managed-pointer coroutine parameters,
 results, and suspension-live values, including nested aggregate and List
 carriers. Pure reads through already-established
 invariant-protected products lower to exact typed `ProductExtract` chains;
-protected interior mutation and moves remain closed.
+source analysis and checked MIR reject interior mutation or moves that would
+bypass a constrained-type predicate or the owning record's invariant boundary.
 
 ## Automated quality evidence
 

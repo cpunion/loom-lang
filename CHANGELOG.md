@@ -63,10 +63,11 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   public `std.file` and `std.net` functions resolve through ordinary source
   wrappers, and the Path forms reuse their Text counterparts. Only 16
   exact-owner resource/I/O/close leaves plus two protected error access leaves
-  remain below source. Interpreted MIR artifact 41 and persistent cache schema
+  remain below source. Interpreted MIR artifact 42 and persistent cache schema
   15 reject infinite value layouts, source-impossible mutable parameter slots
-  and coroutine receivers, removed semantic types, fixed slots, and special
-  cleanup tags instead of decoding them through compatibility paths.
+  and coroutine receivers, invariant-boundary bypasses, removed semantic types,
+  fixed slots, and special cleanup tags instead of decoding them through
+  compatibility paths.
   Native runtime ABI 36 (`runtime-v30`) records the removal of the former
   universal File, Socket, and close entry points and their fixed File/Socket
   nominal IDs; the complete identity also retains the earlier removal of

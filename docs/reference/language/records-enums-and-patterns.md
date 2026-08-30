@@ -48,6 +48,14 @@ statically, or produce `Result[Range, ConstraintError]`, depending on what the
 language proof rules establish. See
 [Constrained types and contracts](constrained-types-and-contracts.md#record-invariants).
 
+An established invariant-bearing record is also a mutation boundary. Code may
+call a `mut self` method on the complete record, but it cannot pass a field
+below that record as another mutable receiver. A method on an outer record must
+therefore call the nested invariant-bearing record's own `mut self` method on
+the complete field. Inside an invariant-bearing record's own `mut self` method,
+mutation through the current `self` belongs to that receiver boundary and must
+follow the normal isolation and invariant-recovery rules.
+
 ## Enums
 
 An enum is a closed nominal sum. A variant may have no payload or any fixed

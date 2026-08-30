@@ -123,6 +123,24 @@ returned, stored, or used for another method call. A successful `assert` that
 re-establishes the invariant ends that isolation. Every normal method exit,
 including an `Err` result, must restore the invariant.
 
+Mutation cannot bypass that boundary. Calling a mutable method on a projected
+field below an invariant-bearing record is `InvariantInteriorMutation`; call a
+`mut self` method on the complete invariant-bearing record instead. The only
+protected prefix a projected mutable call may cross is the current method's own
+`self` root. Such a call makes `self` isolated until its invariant is proven
+again, and a second invariant-bearing record nested below `self` remains a
+separate boundary. Read-only projection and operations on the complete value do
+not violate this rule.
+
+The rule is independent of dispatch. Mutable adaptation to `dyn C` and mutable
+interface reborrowing cannot hide the owner place: the compiler applies the
+same complete-value, current-`self`, and nested-boundary checks to that owner.
+On a fault edge, an inout writeback may contain the callee's partial mutation.
+Such an invariant-bearing place is unavailable to `defer` and `scoped`
+cleanup until cleanup replaces the complete place with an established value.
+This prevents fault handling from observing a value for which the invariant is
+not known.
+
 Failure while establishing a new value is `ConstraintError`. Failure because a
 method received or left an already established value with a broken invariant is
 an `InvariantFault`.

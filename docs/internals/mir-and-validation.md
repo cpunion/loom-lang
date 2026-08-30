@@ -66,6 +66,10 @@ Validation covers:
 - parameter shape: only parameter zero of a synchronous `mut self` method may
   be a mutable slot; ordinary parameters and all coroutine parameters are
   immutable slots, and coroutines cannot carry receiver metadata;
+- protected-value boundaries: mutation and projected moves cannot cross a
+  constrained-type predicate or record-invariant interior; non-move mutation
+  may cross only the current synchronous `mut self` parameter's own top-level
+  record invariant, never a constrained wrapper or nested invariant;
 - contract schemas and the types visible to each contract arm;
 - finite by-value layouts for record, enum, refined, tuple, nominal-argument,
   `Option`, `Result`, and `TaskOutcome` graphs;
@@ -109,7 +113,30 @@ A projected `Copy` observes only its leaf. A projected `Move` transfers that
 leaf and marks the complete root local moved. Consuming the root is intentional:
 checked MIR has no partial-initialization state, so later access to either the
 root or a sibling is rejected until the root is assigned again. Projected
-assignment reconstructs the complete value through its typed field path.
+assignment reconstructs the complete value through its typed field path. A
+read may cross an established constrained wrapper or record invariant, but a
+move may not cross its interior. Assignment, inout, mutable interface creation,
+and mutable interface reborrow may cross only the owning synchronous `mut self`
+receiver's top-level record invariant. Checked MIR rejects every constrained,
+external, or nested crossing as `MirInvariantShape`.
+
+The validator carries the owning receiver's dirty state through branches by
+union and requires every continuing loop backedge to reproduce the entry
+state. A complete checked assignment clears the corresponding state. A source
+`assert` that semantically proves the exact declared receiver invariant is
+followed by `RestoreReceiverInvariant(Proven)`; this marker carries no copied
+contract and restores only the current receiver. Artifact decoding changes the
+marker to `Recheck`, derives the invariant from the receiver's nominal type,
+and requires the receiver to remain available.
+
+Fault paths are stricter than normal continuations. Mutable inout and mutable
+interface writeback identify every enclosing invariant-bearing place. Those
+places become unavailable to the active cleanup suffix on the fault edge, and
+cleanup cannot copy, move, project, borrow, or call through them. A complete
+checked replacement is the only operation that clears this fault state. State
+joins take the union, so no branch can erase an invalidated place. Successful
+mutable receiver calls keep their normal continuation clean because the callee
+has completed its normal exit invariant check.
 
 ### Bounded recursive type analysis
 
@@ -216,7 +243,7 @@ root merely because storage still exists.
 The interpreted MIR envelope currently uses:
 
 - format `loom.interpreted-mir`;
-- artifact version `41`;
+- artifact version `42`;
 - Loom language version `0.3`.
 
 Generic compiler-cache envelopes carry an explicit null `entry`. Executable

@@ -282,12 +282,15 @@ compiler-private object ABI, not a native library ABI.
 The production automatic route uses this typed ABI for eligible build, run,
 and test artifacts. Tuple construction and `let` destructuring are direct SSA
 construction and extraction; they do not allocate tuple nodes. Invariant-free
-record projections and eligible projected mutable receivers use exact typed
-extraction and functional root reconstruction on normal and fault edges.
-Shapes outside the current typed-LCIR SupportReport—including non-regular
-generic expansion, protected mutation, unsupported contract/cleanup forms,
-and open or prerequisite-dependent dynamic coroutine carriers—still select the
-complete universal route. Typed
+record projections, eligible projected mutable receivers, and reconstruction
+through the current synchronous `mut self` receiver's own top-level invariant
+use exact typed extraction and functional writeback on normal and fault edges.
+Source analysis and checked MIR reject mutation or moves that bypass a
+constrained-type predicate or record-invariant boundary. Shapes outside the
+current typed-LCIR SupportReport—including non-regular generic expansion,
+Task-bearing or otherwise unrepresentable projections, unsupported
+contract/cleanup forms, and open or prerequisite-dependent dynamic coroutine
+carriers—still select the complete checked-MIR route. Typed
 LCIR does not change the checked-MIR runtime ABI or make either object ABI
 public.
 
