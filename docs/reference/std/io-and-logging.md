@@ -145,12 +145,19 @@ rule.
 
 ## `IoError`
 
-`IoError` is opaque source data with two accessors:
+`IoError` is an ordinary protected record declaration in `std.io` with two
+ordinary source methods:
 
 ```text
 error.kind() IoErrorKind
 error.message() Text
 ```
+
+Its physical `{ kind IoErrorKind, message Text }` representation is available
+only to the typed-I/O boundary. Source cannot construct it with a record
+literal, project its fields, or compare it for equality. This keeps host detail
+encapsulated without adding an `opaque` or ownership syntax; applications use
+the two methods and may match the returned kind.
 
 `IoErrorKind` is a closed value:
 

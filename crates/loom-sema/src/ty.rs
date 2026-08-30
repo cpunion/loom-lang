@@ -48,7 +48,6 @@ pub enum BuiltinType {
     Socket,
     Json,
     JsonError,
-    IoError,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]

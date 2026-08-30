@@ -29,6 +29,18 @@ fn compile_lowered_package(
 }
 
 fn compile(source: &str) -> loom_mir::CheckedProgram {
+    let program = lower_with_std_io(source);
+    let analysis = analyze(&program);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "semantic diagnostics: {:#?}",
+        analysis.diagnostics
+    );
+    lower_to_mir(&program, &analysis)
+        .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()))
+}
+
+fn lower_with_std_io(source: &str) -> loom_hir::Program {
     let application = parse_with_file(FileId(0), source);
     let io = parse_with_file(FileId(1), include_str!("../../../library/std/io/io.loom"));
     assert!(
@@ -39,7 +51,7 @@ fn compile(source: &str) -> loom_mir::CheckedProgram {
     );
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("lowering-test", "0");
-    let lowered = lower_package_files([
+    let mut lowered = lower_package_files([
         PackageSourceUnit {
             file: FileId(0),
             package: root.clone(),
@@ -53,7 +65,16 @@ fn compile(source: &str) -> loom_mir::CheckedProgram {
             syntax: io.ast(),
         },
     ]);
-    compile_lowered_package(lowered, std, root)
+    lowered.program.register_package(std.clone(), [], false);
+    lowered
+        .program
+        .register_package(root, [(Name::new("std"), std)], true);
+    assert!(
+        lowered.diagnostics.is_empty(),
+        "HIR diagnostics: {:#?}",
+        lowered.diagnostics
+    );
+    lowered.program
 }
 
 fn compile_and_validate(source: &str) -> loom_mir::CheckedProgram {
@@ -1064,6 +1085,114 @@ fn errored_analysis_returns_only_structured_compiler_defects() {
     let failure = lower_to_mir(&lowered.program, &analysis).expect_err("must not emit partial MIR");
     assert_eq!(failure.diagnostics().len(), 1);
     assert_eq!(failure.diagnostics()[0].code, "CompilerDefect");
+}
+
+#[test]
+fn canonical_source_io_error_receives_dynamic_hidden_mir_storage() {
+    let source = lower_with_std_io("fn message(error IoError) Text { error.message() }\n");
+    let analysis = analyze(&source);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "semantic diagnostics: {:#?}",
+        analysis.diagnostics
+    );
+    let source_error = analysis
+        .canonical_std_items
+        .io_error
+        .expect("canonical source IoError");
+    let loom_hir::DefinitionKind::Record(source_record) = &source.definitions[source_error].kind
+    else {
+        panic!("canonical IoError must be a source record");
+    };
+    assert!(source_record.generic_params.is_empty());
+    assert!(source_record.fields.is_empty());
+    assert!(source_record.invariant.is_none());
+
+    let program = lower_to_mir(&source, &analysis)
+        .unwrap_or_else(|failure| panic!("MIR lowering diagnostics: {:#?}", failure.diagnostics()));
+    let error_id = program.prelude.io_error.expect("MIR IoError identity");
+    let kind_id = program
+        .prelude
+        .io_error_kind
+        .expect("MIR IoErrorKind identity");
+    let error = program.type_def(error_id).expect("MIR IoError definition");
+    let loom_mir::TypeDefKind::Record { fields, invariant } = &error.kind else {
+        panic!("MIR IoError must use protected record storage: {error:#?}");
+    };
+    assert!(invariant.is_none());
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| (field.name.as_str(), &field.ty))
+            .collect::<Vec<_>>(),
+        [
+            ("kind", &loom_mir::Type::Nominal(kind_id, Vec::new()),),
+            ("message", &loom_mir::Type::Text),
+        ]
+    );
+
+    let shifted =
+        compile("record Prefix {}\n\nfn message(error IoError) Text { error.message() }\n");
+    assert_eq!(
+        shifted.prelude.io_error.expect("shifted IoError").0,
+        error_id.0 + 1,
+        "IoError must use its ordinary source allocation rather than a fixed synthetic id"
+    );
+}
+
+#[test]
+fn io_error_lowering_fails_closed_without_the_exact_canonical_source_record() {
+    let source = lower_with_std_io("fn idle() {}\n");
+    let mut missing = analyze(&source);
+    assert!(missing.diagnostics.is_empty());
+    missing.canonical_std_items.io_error = None;
+    let failure = lower_to_mir(&source, &missing).expect_err("missing IoError must fail lowering");
+    assert!(
+        failure.diagnostics()[0]
+            .message
+            .contains("embedded std.io.IoError is required"),
+        "{:#?}",
+        failure.diagnostics()
+    );
+
+    let mut private = lower_with_std_io("fn idle() {}\n");
+    let analysis = analyze(&private);
+    assert!(analysis.diagnostics.is_empty());
+    let error = analysis
+        .canonical_std_items
+        .io_error
+        .expect("canonical source IoError");
+    private.definitions[error].visibility = loom_hir::Visibility::Private;
+    let failure =
+        lower_to_mir(&private, &analysis).expect_err("private IoError must fail lowering");
+    assert!(
+        failure.diagnostics()[0]
+            .message
+            .contains("public empty non-generic record"),
+        "{:#?}",
+        failure.diagnostics()
+    );
+
+    let mut malformed = source;
+    let analysis = analyze(&malformed);
+    assert!(analysis.diagnostics.is_empty());
+    let error = analysis
+        .canonical_std_items
+        .io_error
+        .expect("canonical source IoError");
+    let loom_hir::DefinitionKind::Record(record) = &mut malformed.definitions[error].kind else {
+        panic!("canonical IoError must start as a record");
+    };
+    record.fields.push(error);
+    let failure =
+        lower_to_mir(&malformed, &analysis).expect_err("non-empty IoError must fail lowering");
+    assert!(
+        failure.diagnostics()[0]
+            .message
+            .contains("empty non-generic record without an invariant"),
+        "{:#?}",
+        failure.diagnostics()
+    );
 }
 
 #[test]

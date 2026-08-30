@@ -1069,18 +1069,6 @@ const STD_SYMBOLS: &[StdSymbol] = &[
         signature: "enum JsonError",
     },
     StdSymbol {
-        name: "IoError",
-        kind: "record",
-        module: "std.prelude",
-        signature: "record IoError",
-    },
-    StdSymbol {
-        name: "IoErrorKind",
-        kind: "enum",
-        module: "std.io",
-        signature: "enum IoErrorKind",
-    },
-    StdSymbol {
         name: "format_json",
         kind: "function",
         module: "std.json",
@@ -1121,18 +1109,6 @@ const STD_SYMBOLS: &[StdSymbol] = &[
         kind: "method",
         module: "std.prelude.TextMap",
         signature: "method remove[V](self TextMap[V], key Text) TextMap[V]",
-    },
-    StdSymbol {
-        name: "kind",
-        kind: "method",
-        module: "std.prelude.IoError",
-        signature: "method kind(self IoError) IoErrorKind",
-    },
-    StdSymbol {
-        name: "message",
-        kind: "method",
-        module: "std.prelude.IoError",
-        signature: "method message(self IoError) Text",
     },
     StdSymbol {
         name: "try_read_text",

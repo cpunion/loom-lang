@@ -40,8 +40,7 @@ const PATH_TYPE: TypeId = TypeId(10);
 const TEXT_MAP_TYPE: TypeId = TypeId(11);
 const JSON_TYPE: TypeId = TypeId(12);
 const JSON_ERROR_TYPE: TypeId = TypeId(13);
-const IO_ERROR_TYPE: TypeId = TypeId(14);
-const SYNTHETIC_TYPE_COUNT: u32 = 15;
+const SYNTHETIC_TYPE_COUNT: u32 = 14;
 
 /// Failure at the trusted typed-HIR to MIR boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -141,6 +140,9 @@ struct Compiler<'a> {
     hir: &'a HirProgram,
     analysis: &'a Analysis,
     indices: Indices,
+    io_error_definition: DefId,
+    io_error_type: TypeId,
+    io_error_kind_type: TypeId,
 }
 
 impl<'a> Compiler<'a> {
@@ -260,10 +262,52 @@ impl<'a> Compiler<'a> {
             }
         }
 
+        let io_error_definition = required(
+            analysis.canonical_std_items.io_error,
+            "embedded std.io.IoError is required for MIR lowering",
+            Span::default(),
+        )?;
+        let io_error_span = definition_span(hir, io_error_definition);
+        let io_error_source = &hir.definitions[io_error_definition];
+        let DefinitionKind::Record(io_error) = &io_error_source.kind else {
+            return Err(defect(
+                "canonical std.io.IoError must be an empty source record",
+                io_error_span,
+            ));
+        };
+        if io_error_source.visibility != Visibility::Public
+            || !io_error.generic_params.is_empty()
+            || !io_error.fields.is_empty()
+            || io_error.invariant.is_some()
+        {
+            return Err(defect(
+                "canonical std.io.IoError must be a public empty non-generic record without an invariant",
+                io_error_span,
+            ));
+        }
+        let io_error_type = required(
+            indices.types.get(&io_error_definition).copied(),
+            "canonical IoError has no MIR type id",
+            io_error_span,
+        )?;
+        let io_error_kind_definition = required(
+            analysis.canonical_std_items.io_error_kind,
+            "embedded std.io.IoErrorKind is required for MIR lowering",
+            Span::default(),
+        )?;
+        let io_error_kind_type = required(
+            indices.types.get(&io_error_kind_definition).copied(),
+            "canonical IoErrorKind has no MIR type id",
+            definition_span(hir, io_error_kind_definition),
+        )?;
+
         Ok(Self {
             hir,
             analysis,
             indices,
+            io_error_definition,
+            io_error_type,
+            io_error_kind_type,
         })
     }
 
@@ -344,19 +388,8 @@ impl<'a> Compiler<'a> {
             self.analysis.canonical_std_items.log_level,
             "canonical LogLevel has no MIR type id",
         )?;
-        let io_error_kind = self
-            .canonical_std_type_id(
-                self.analysis.canonical_std_items.io_error_kind,
-                "canonical IoErrorKind has no MIR type id",
-            )?
-            .ok_or_else(|| {
-                defect(
-                    "embedded std.io.IoErrorKind is required for MIR lowering",
-                    Span::default(),
-                )
-            })?;
         let mut program = Program {
-            types: self.lower_types(io_error_kind)?,
+            types: self.lower_types()?,
             concepts: self.lower_concepts()?,
             requirements: self.lower_requirements()?,
             functions: self.lower_functions()?,
@@ -379,8 +412,8 @@ impl<'a> Compiler<'a> {
                 text_map: Some(TEXT_MAP_TYPE),
                 json: Some(JSON_TYPE),
                 json_error: Some(JSON_ERROR_TYPE),
-                io_error: Some(IO_ERROR_TYPE),
-                io_error_kind: Some(io_error_kind),
+                io_error: Some(self.io_error_type),
+                io_error_kind: Some(self.io_error_kind_type),
                 log_level,
                 dispose_concept: dispose,
                 dispose_requirement,
@@ -395,12 +428,26 @@ impl<'a> Compiler<'a> {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn lower_types(&self, io_error_kind: TypeId) -> LowerResult<Vec<TypeDef>> {
-        let mut types = synthetic_types(io_error_kind);
+    fn lower_types(&self) -> LowerResult<Vec<TypeDef>> {
+        let mut types = synthetic_types();
         for (definition, source) in self.hir.definitions.iter() {
             let Some(id) = self.indices.types.get(&definition).copied() else {
                 continue;
             };
+            if definition == self.io_error_definition {
+                if id.0 as usize != types.len() {
+                    return Err(defect(
+                        "MIR type id allocation is not dense",
+                        definition_span(self.hir, definition),
+                    ));
+                }
+                types.push(io_error_type(
+                    id,
+                    self.io_error_kind_type,
+                    definition_span(self.hir, definition),
+                ));
+                continue;
+            }
             let name = definition_name(self.hir, definition)?;
             let span = definition_span(self.hir, definition);
             let type_parameters = match &source.kind {
@@ -941,7 +988,6 @@ impl<'a> Compiler<'a> {
                 BuiltinType::Socket => RequirementType::Nominal(SOCKET_TYPE, Vec::new()),
                 BuiltinType::Json => RequirementType::Nominal(JSON_TYPE, Vec::new()),
                 BuiltinType::JsonError => RequirementType::Nominal(JSON_ERROR_TYPE, Vec::new()),
-                BuiltinType::IoError => RequirementType::Nominal(IO_ERROR_TYPE, Vec::new()),
             }),
             TyData::Tuple(elements) => Ok(RequirementType::Tuple(
                 elements
@@ -3993,7 +4039,7 @@ impl TypeParameters {
 }
 
 #[allow(clippy::too_many_lines)]
-fn synthetic_types(io_error_kind: TypeId) -> Vec<TypeDef> {
+fn synthetic_types() -> Vec<TypeDef> {
     let span = Span::default();
     vec![
         TypeDef {
@@ -4114,7 +4160,6 @@ fn synthetic_types(io_error_kind: TypeId) -> Vec<TypeDef> {
         },
         json_type(span),
         json_error_type(span),
-        io_error_type(io_error_kind, span),
     ]
 }
 
@@ -4196,9 +4241,9 @@ fn json_error_type(span: Span) -> TypeDef {
     }
 }
 
-fn io_error_type(kind: TypeId, span: Span) -> TypeDef {
+fn io_error_type(id: TypeId, kind: TypeId, span: Span) -> TypeDef {
     TypeDef {
-        id: IO_ERROR_TYPE,
+        id,
         name: "IoError".into(),
         span,
         type_parameters: 0,
@@ -4237,7 +4282,6 @@ fn lower_builtin_type(builtin: BuiltinType) -> Type {
         BuiltinType::Socket => Type::Nominal(SOCKET_TYPE, Vec::new()),
         BuiltinType::Json => Type::Nominal(JSON_TYPE, Vec::new()),
         BuiltinType::JsonError => Type::Nominal(JSON_ERROR_TYPE, Vec::new()),
-        BuiltinType::IoError => Type::Nominal(IO_ERROR_TYPE, Vec::new()),
     }
 }
 

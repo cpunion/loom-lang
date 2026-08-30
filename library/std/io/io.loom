@@ -1,3 +1,5 @@
+import std.io.__error_kind
+import std.io.__error_message
 import std.io.__write_stdout
 
 /// Describes a recoverable operating-system I/O failure.
@@ -12,6 +14,22 @@ pub enum IoErrorKind {
     UnexpectedEof
     Closed
     Other
+}
+
+/// A recoverable operating-system I/O failure produced by fallible I/O operations.
+/// The representation is protected and can only be inspected through public methods.
+pub record IoError {}
+
+impl IoError {
+    /// Returns the stable category of this I/O failure.
+    pub method kind(self) IoErrorKind {
+        __error_kind(self)
+    }
+
+    /// Returns the platform-provided detail for this I/O failure.
+    pub method message(self) Text {
+        __error_message(self)
+    }
 }
 
 /// Writes Text to the process standard-output stream without adding a delimiter.

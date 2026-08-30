@@ -2,11 +2,12 @@ use std::collections::BTreeMap;
 
 use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId};
 use loom_hir::{DefId, DefinitionKind, PackageSourceUnit, Program, lower_package_files};
-use loom_sema::{Analysis, BuiltinValue, CallTarget, analyze};
+use loom_sema::{Analysis, BuiltinValue, CallTarget, Signature, TyData, analyze};
 use loom_syntax::parse_with_file;
 
 const FILE_SOURCE: &str = include_str!("../../../library/std/file/file.loom");
 const NET_SOURCE: &str = include_str!("../../../library/std/net/net.loom");
+const IO_SOURCE: &str = include_str!("../../../library/std/io/io.loom");
 
 const PRIVATE_BUILTINS: [BuiltinValue; 6] = [
     BuiltinValue::FileOpenRead,
@@ -48,6 +49,25 @@ fn call_targets(program: &Program, analysis: &Analysis, definition: DefId) -> Ve
         .collect()
 }
 
+fn assert_task_result_error(analysis: &Analysis, definition: DefId, expected_error: DefId) {
+    let Some(Signature::Callable(signature)) = analysis.typed.signatures.get(definition) else {
+        panic!("definition is not callable")
+    };
+    let TyData::Task(output) = analysis.typed.types.data(signature.return_ty) else {
+        panic!("callable does not return Task")
+    };
+    let TyData::Result { error, .. } = analysis.typed.types.data(*output) else {
+        panic!("Task does not contain Result")
+    };
+    assert_eq!(
+        analysis.typed.types.data(*error),
+        &TyData::Nominal {
+            definition: expected_error,
+            arguments: Vec::new(),
+        }
+    );
+}
+
 fn parse(file: FileId, source: &str) -> loom_syntax::Parse {
     let parsed = parse_with_file(file, source);
     assert!(
@@ -65,9 +85,11 @@ fn parse(file: FileId, source: &str) -> loom_syntax::Parse {
     reason = "one vertical boundary test keeps all public wrappers and private I/O owners together"
 )]
 fn public_file_and_net_calls_are_source_functions_with_exact_private_owners() {
-    let file_file = FileId(0);
-    let net_file = FileId(1);
-    let application_file = FileId(2);
+    let io_file = FileId(0);
+    let file_file = FileId(1);
+    let net_file = FileId(2);
+    let application_file = FileId(3);
+    let io = parse(io_file, IO_SOURCE);
     let file = parse(file_file, FILE_SOURCE);
     let net = parse(net_file, NET_SOURCE);
     let application = parse(
@@ -107,6 +129,12 @@ pub fn app_try_connect(host Text, port Int) Task[Result[Socket, IoError]] {
     let application_package = PackageId::new("application", "0");
     let mut lowered = lower_package_files([
         PackageSourceUnit {
+            file: io_file,
+            package: std_package.clone(),
+            module: ModuleName::new("std.io"),
+            syntax: io.ast(),
+        },
+        PackageSourceUnit {
             file: file_file,
             package: std_package.clone(),
             module: ModuleName::new("std.file"),
@@ -141,6 +169,12 @@ pub fn app_try_connect(host Text, port Int) Task[Result[Socket, IoError]] {
         "{:#?}",
         analysis.diagnostics
     );
+    let io_error = definition_named(&lowered.program, &std_package, "std.io", "IoError");
+    assert_eq!(analysis.canonical_std_items.io_error, Some(io_error));
+    let DefinitionKind::Record(record) = &lowered.program.definitions[io_error].kind else {
+        panic!("canonical IoError must be an ordinary source record")
+    };
+    assert!(record.fields.is_empty(), "IoError must remain protected");
 
     let public_functions = [
         ("std.file", "open_read", "app_open_read"),
@@ -169,6 +203,10 @@ pub fn app_try_connect(host Text, port Int) Task[Result[Socket, IoError]] {
                 vec![CallTarget::Function(public)],
                 "application call must target the ordinary source wrapper"
             );
+            if public_name.starts_with("try_") {
+                assert_task_result_error(&analysis, public, io_error);
+                assert_task_result_error(&analysis, application, io_error);
+            }
             ((*module, *public_name), public)
         })
         .collect::<BTreeMap<_, _>>();
@@ -272,11 +310,13 @@ fn private_try_connect(host Text, port Int) Task[Result[Socket, IoError]] {
 
 #[test]
 fn private_file_and_net_primitives_reject_wrong_owner_package_and_application() {
-    let file_file = FileId(0);
-    let net_file = FileId(1);
-    let wrong_owner_file = FileId(2);
-    let wrong_package_file = FileId(3);
-    let application_file = FileId(4);
+    let io_file = FileId(0);
+    let file_file = FileId(1);
+    let net_file = FileId(2);
+    let wrong_owner_file = FileId(3);
+    let wrong_package_file = FileId(4);
+    let application_file = FileId(5);
+    let io = parse(io_file, IO_SOURCE);
     let file = parse(file_file, FILE_SOURCE);
     let net = parse(net_file, NET_SOURCE);
     let wrong_owner = parse(wrong_owner_file, HOSTILE_SOURCE);
@@ -287,6 +327,12 @@ fn private_file_and_net_primitives_reject_wrong_owner_package_and_application() 
     let hostile_package = PackageId::new("hostile-std", "0");
     let application_package = PackageId::new("application", "0");
     let mut lowered = lower_package_files([
+        PackageSourceUnit {
+            file: io_file,
+            package: std_package.clone(),
+            module: ModuleName::new("std.io"),
+            syntax: io.ast(),
+        },
         PackageSourceUnit {
             file: file_file,
             package: std_package.clone(),

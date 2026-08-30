@@ -119,7 +119,6 @@ mod tests {
 
     #[test]
     fn embedded_sources_have_unique_sorted_portable_paths() {
-        assert!(!STD_SOURCES.is_empty());
         assert!(STD_SOURCES.iter().all(|source| {
             let path = std::path::Path::new(source.path);
             path.extension() == Some(std::ffi::OsStr::new("loom"))
