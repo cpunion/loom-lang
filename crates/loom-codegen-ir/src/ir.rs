@@ -826,6 +826,13 @@ pub enum InstructionKind {
         aggregate: ValueId,
         field: u32,
     },
+    /// Atomically consumes one ordinary structural tuple and produces all of
+    /// its fields in source order. Unlike [`Self::ProductExtract`], this is a
+    /// consuming decomposition boundary for affine Task-bearing aggregates;
+    /// the aggregate cannot be used again after the split.
+    ProductSplit {
+        aggregate: ValueId,
+    },
     /// Produces a new product value by replacing one field. The input remains
     /// independently usable, preserving source copy semantics in SSA.
     ProductInsert {
@@ -1077,7 +1084,9 @@ impl InstructionKind {
             Self::ProductConstruct { fields } | Self::InvariantRecordProven { fields } => {
                 fields.to_vec()
             }
-            Self::ProductExtract { aggregate, .. } => vec![*aggregate],
+            Self::ProductExtract { aggregate, .. } | Self::ProductSplit { aggregate } => {
+                vec![*aggregate]
+            }
             Self::ProductInsert {
                 aggregate, value, ..
             }

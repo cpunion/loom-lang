@@ -11647,6 +11647,20 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     "product.extract",
                 )
                 .map_err(builder_error)?),
+            InstructionKind::ProductSplit { aggregate } => {
+                let aggregate = self.value(*aggregate)?.into_struct_value();
+                (0..instruction.results().len())
+                    .map(|index| {
+                        let index = u32::try_from(index).map_err(|_| {
+                            CodegenError::new("ProgramTooLarge", "too many product split results")
+                        })?;
+                        self.backend
+                            .builder
+                            .build_extract_value(aggregate, index, "product.split")
+                            .map_err(builder_error)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            }
             InstructionKind::ProductInsert {
                 aggregate,
                 field,
