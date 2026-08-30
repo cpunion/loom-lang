@@ -5162,6 +5162,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             let builtin = self
                 .compiler_std_primitive_call(&path)
                 .map(|primitive| match primitive {
+                    crate::std_primitives::CompilerStdPrimitive::IoWriteStdout => {
+                        BuiltinValue::StdoutWrite
+                    }
                     crate::std_primitives::CompilerStdPrimitive::ProcessArguments => {
                         BuiltinValue::ProcessArguments
                     }
@@ -5380,7 +5383,8 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::SocketConnect
             | BuiltinValue::SocketTryConnect
             | BuiltinValue::JsonFormat
-            | BuiltinValue::LogWrite => {
+            | BuiltinValue::LogWrite
+            | BuiltinValue::StdoutWrite => {
                 self.check_builtin_function_call(expression, builtin, arguments)
             }
             BuiltinValue::ListNew
@@ -5627,6 +5631,11 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 let text = self.types().builtin(BuiltinType::Text);
                 let fields = self.types().intern(TyData::TextMap(text));
                 self.check_fixed_arguments(expression, arguments, &[level, text, fields]);
+                self.types().builtin(BuiltinType::Unit)
+            }
+            BuiltinValue::StdoutWrite => {
+                let text = self.types().builtin(BuiltinType::Text);
+                self.check_fixed_arguments(expression, arguments, &[text]);
                 self.types().builtin(BuiltinType::Unit)
             }
             _ => unreachable!("caller filters standard builtins"),

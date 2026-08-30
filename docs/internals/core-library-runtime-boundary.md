@@ -104,6 +104,12 @@ fail; there is no public-name fallback to a builtin. The existing interpreter
 and native runtime operations remain the irreducible host boundary beneath
 those wrappers.
 
+`std.io.write` and `std.io.write_line` use the same boundary. Their public
+definitions are ordinary Loom source, while only the exact compiler-owned
+`std.io` module may import the format-neutral standard-output primitive. The
+primitive accepts Text bytes and returns no policy-bearing value; line-feed
+composition remains in `write_line` source.
+
 The embedded source content is part of compiler-cache identity. Editing an
 unused private library body may leave a native object reusable when ordinary
 reachability proves that body dead; changing an imported public interface or a

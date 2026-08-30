@@ -3859,6 +3859,57 @@ fn test_and_run_execute_native_code() {
 }
 
 #[test]
+fn test_selects_one_directory_package_or_the_recursive_root_module() {
+    let project = TestProject::empty();
+    project.write(
+        "loom.toml",
+        "schema = 2\n[module]\nname = \"application\"\nversion = \"1.0.0\"\n",
+    );
+    project.write("main.loom", "pub fn main() {}\n");
+    project.write(
+        "main_test.loom",
+        "test fn root_package_test() { assert true }\n",
+    );
+    project.write(
+        "math/math_test.loom",
+        "test fn math_package_test() { assert true }\n",
+    );
+
+    let run = |path: &Path| {
+        loom_without_test_runtime()
+            .args(["--backend", "interpreter", "test"])
+            .arg(path)
+            .output()
+            .expect("run package tests")
+    };
+
+    let root = run(&project.0);
+    assert_eq!(root.status.code(), Some(0), "{root:?}");
+    let root_stdout = String::from_utf8(root.stdout).expect("UTF-8 root test output");
+    assert!(root_stdout.contains("root_package_test"), "{root_stdout}");
+    assert!(!root_stdout.contains("math_package_test"), "{root_stdout}");
+
+    let math = run(&project.0.join("math"));
+    assert_eq!(math.status.code(), Some(0), "{math:?}");
+    let math_stdout = String::from_utf8(math.stdout).expect("UTF-8 math test output");
+    assert!(!math_stdout.contains("root_package_test"), "{math_stdout}");
+    assert!(math_stdout.contains("math_package_test"), "{math_stdout}");
+
+    let recursive = run(&project.0.join("..."));
+    assert_eq!(recursive.status.code(), Some(0), "{recursive:?}");
+    let recursive_stdout =
+        String::from_utf8(recursive.stdout).expect("UTF-8 recursive test output");
+    assert!(
+        recursive_stdout.contains("root_package_test"),
+        "{recursive_stdout}"
+    );
+    assert!(
+        recursive_stdout.contains("math_package_test"),
+        "{recursive_stdout}"
+    );
+}
+
+#[test]
 fn explicit_discard_closes_both_backend_cli_loops() {
     let project = TestProject::new(
         r"fn answer() Int {

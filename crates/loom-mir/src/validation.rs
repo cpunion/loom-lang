@@ -6304,6 +6304,9 @@ impl<'program> Validator<'program> {
             {
                 Some(Type::Unit)
             }
+            Builtin::StdoutWrite if types_compatible(&Type::Text, types[0].as_ref()?) => {
+                Some(Type::Unit)
+            }
             Builtin::ProcessArguments => Some(Type::List(Box::new(Type::Text))),
             Builtin::ProcessEnvironment if types_compatible(&Type::Text, types[0].as_ref()?) => {
                 let Some(option) = self.program.prelude.option else {
@@ -6517,6 +6520,7 @@ impl<'program> Validator<'program> {
             | Builtin::JsonFormat
             | Builtin::IoErrorKind
             | Builtin::IoErrorMessage
+            | Builtin::StdoutWrite
             | Builtin::FileTryOpenRead
             | Builtin::FileTryCreate
             | Builtin::FileTryOpenReadPath
@@ -8752,7 +8756,8 @@ impl<'program> Validator<'program> {
             | Builtin::JsonFormat
             | Builtin::IoErrorKind
             | Builtin::IoErrorMessage
-            | Builtin::LogWrite => true,
+            | Builtin::LogWrite
+            | Builtin::StdoutWrite => true,
         }
     }
 

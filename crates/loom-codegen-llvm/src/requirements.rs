@@ -982,7 +982,8 @@ pub(crate) const fn builtin_borrows_copy_argument(builtin: Builtin, index: usize
         | Builtin::DurationAsMilliseconds
         | Builtin::TextMapLength
         | Builtin::IoErrorKind
-        | Builtin::IoErrorMessage => index == 0,
+        | Builtin::IoErrorMessage
+        | Builtin::StdoutWrite => index == 0,
         Builtin::TextContains | Builtin::TextMapContains => index < 2,
         Builtin::LogWrite => index < 3,
         _ => false,
@@ -1024,9 +1025,10 @@ const fn builtin_requirements(builtin: Builtin) -> RuntimeRequirements {
         Builtin::FileClose | Builtin::SocketClose => {
             RuntimeRequirements::MAY_FAULT.union(RuntimeRequirements::NEEDS_EXECUTOR)
         }
-        Builtin::TextContains | Builtin::TextMapContains | Builtin::LogWrite => {
-            RuntimeRequirements::MAY_FAULT
-        }
+        Builtin::TextContains
+        | Builtin::TextMapContains
+        | Builtin::LogWrite
+        | Builtin::StdoutWrite => RuntimeRequirements::MAY_FAULT,
         Builtin::ParseFloat | Builtin::TextEncodeUtf8 | Builtin::TextMapEntryAt => {
             RuntimeRequirements::MAY_COLLECT
         }
@@ -1395,6 +1397,7 @@ mod tests {
             Builtin::IoErrorKind,
             Builtin::IoErrorMessage,
             Builtin::LogWrite,
+            Builtin::StdoutWrite,
             Builtin::FileClose,
             Builtin::SocketClose,
         ] {

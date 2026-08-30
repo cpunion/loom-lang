@@ -33,7 +33,7 @@ pub use library::{
 };
 pub use project::{
     CURRENT_LANGUAGE_VERSION, LOCK_FILE, LOCK_SCHEMA_VERSION, LockMode, MANIFEST_FILE, Package,
-    PackageDependency, PackageId, ProjectGraph, ProjectOptions, Target, TargetKind,
+    PackageDependency, PackageId, ProjectGraph, ProjectOptions, Target, TargetKind, TestSelection,
 };
 pub use registry::{RegistryPublish, publish_registry_package};
 pub use report::{DiagnosticRecord, Position, Range, RelatedDiagnostic, SpanRecord};

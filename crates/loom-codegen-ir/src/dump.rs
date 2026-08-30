@@ -705,6 +705,16 @@ fn write_terminator(
             write!(output, ", fault ")?;
             write_unwind_target(output, fault, 0)
         }
+        TerminatorKind::StdoutWrite {
+            text,
+            normal,
+            fault,
+        } => {
+            write!(output, "stdout.write %{text}, normal ")?;
+            write_result_target(output, normal, 0)?;
+            write!(output, ", fault ")?;
+            write_unwind_target(output, fault, 0)
+        }
         TerminatorKind::Assert {
             condition,
             metadata,
@@ -962,6 +972,7 @@ const fn fault_code_name(code: crate::FaultCode) -> &'static str {
         crate::FaultCode::SleepDurationOverflow => "SleepDurationOverflow",
         crate::FaultCode::TaskAnyFailed => "TaskAnyFailed",
         crate::FaultCode::LogWrite => "LogWriteFault",
+        crate::FaultCode::StdoutWrite => "StdoutWriteFault",
     }
 }
 

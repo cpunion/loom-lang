@@ -20,7 +20,7 @@ fn source_json_fixture_runs_on_a_one_mib_interpreter_stack() {
             let snapshot = AnalysisHost::new_with_options(
                 &fixture,
                 &ProjectOptions {
-                    include_tests: true,
+                    tests: loom_driver::TestSelection::Recursive,
                     ..ProjectOptions::default()
                 },
             )

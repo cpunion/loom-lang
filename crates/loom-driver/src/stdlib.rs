@@ -15,28 +15,7 @@ struct StdSource {
     text: &'static str,
 }
 
-const STD_SOURCES: &[StdSource] = &[
-    StdSource {
-        path: "int/int.loom",
-        text: include_str!("../../../library/std/int/int.loom"),
-    },
-    StdSource {
-        path: "json/json.loom",
-        text: include_str!("../../../library/std/json/json.loom"),
-    },
-    StdSource {
-        path: "log/log.loom",
-        text: include_str!("../../../library/std/log/log.loom"),
-    },
-    StdSource {
-        path: "process/process.loom",
-        text: include_str!("../../../library/std/process/process.loom"),
-    },
-    StdSource {
-        path: "resource/resource.loom",
-        text: include_str!("../../../library/std/resource/resource.loom"),
-    },
-];
+include!(concat!(env!("OUT_DIR"), "/stdlib_sources.rs"));
 
 #[must_use]
 pub(crate) fn package_id(language_version: &str) -> PackageId {
@@ -97,7 +76,7 @@ fn hash_field(hasher: &mut Sha256, value: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{STDLIB_IDENTITY_DOMAIN, StdSource, identity_for_sources};
+    use super::{STD_SOURCES, STDLIB_IDENTITY_DOMAIN, StdSource, identity_for_sources};
 
     fn source(path: &'static str, text: &'static str) -> StdSource {
         StdSource { path, text }
@@ -136,5 +115,24 @@ mod tests {
         );
 
         assert_ne!(base, changed_body);
+    }
+
+    #[test]
+    fn embedded_sources_have_unique_sorted_portable_paths() {
+        assert!(!STD_SOURCES.is_empty());
+        assert!(STD_SOURCES.iter().all(|source| {
+            let path = std::path::Path::new(source.path);
+            path.extension() == Some(std::ffi::OsStr::new("loom"))
+                && !path
+                    .file_stem()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .is_some_and(|stem| stem.ends_with("_test"))
+                && !source.path.contains('\\')
+        }));
+        assert!(
+            STD_SOURCES
+                .windows(2)
+                .all(|sources| sources[0].path < sources[1].path)
+        );
     }
 }

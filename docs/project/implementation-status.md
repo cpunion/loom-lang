@@ -7,15 +7,16 @@ long-term compatibility guarantee.
 
 ## Source `std` completion
 
-The compiler currently embeds five Loom source packages: `std.int`, `std.json`,
-`std.log`, `std.process`, and `std.resource`. Passing interpreter or native
-tests does not by itself make an API source-backed; the table distinguishes
-ordinary source definitions from public names still recognized by semantic
-builtin tables.
+The compiler deterministically embeds every non-test Loom source below
+`library/std`; adding a package does not require a hand-maintained compiler
+table. Passing interpreter or native tests does not by itself make an API
+source-backed: the table distinguishes ordinary source definitions from public
+names still recognized by semantic builtin tables.
 
 | Surface | Ordinary `library/std` source today | Remaining compiler-owned public surface | Status |
 | --- | --- | --- | --- |
 | `std.int` | `ParseIntError`, `minimum`, `maximum`, `parse_int`, and the complete parser helper graph | none for the current package API | source-backed |
+| `std.io` | public `write` and `write_line` wrappers | compiler-private standard-output primitive and runtime byte boundary | source-backed |
 | `std.json` | `parse_json` and its bounded iterative parser helper graph | `Json`, `JsonError`, and `format_json` | partial |
 | `std.log` | `debug`, `info`, `warn`, `error`, and their no-fields helper | `LogLevel` and `write` | partial |
 | `std.resource` | `Dispose`, `MustScope`, and `NoSuspend` declarations | their fixed language-item meaning and static enforcement intentionally remain language core | source declarations complete |

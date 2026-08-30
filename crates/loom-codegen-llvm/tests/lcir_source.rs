@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use loom_codegen_ir::{
     CheckedArtifact, Effects, InstanceId, InstanceRole, InstanceWitnessArgument, InstructionKind,
@@ -40,6 +40,7 @@ use support::run_with_closed_stderr;
 use support::{emit_native, link_native_object, run_with_read_only_stderr};
 
 const TYPED_LOGGING_INTERPRETER_CHILD_ENV: &str = "LOOM_LCIR_TYPED_LOGGING_INTERPRETER_CHILD";
+const TYPED_STDOUT_INTERPRETER_CHILD_ENV: &str = "LOOM_LCIR_TYPED_STDOUT_INTERPRETER_CHILD";
 const TYPED_LOGGING_STDERR: &[u8] =
     include_bytes!("../../../fixtures/lcir-typed-logging/expected.stderr");
 
@@ -3203,6 +3204,119 @@ fn typed_logging_interpreter_child() {
         assert_eq!(results.len(), 1, "{results:#?}");
         assert_eq!(results[0].status, TestStatus::Passed, "{results:#?}");
     }
+}
+
+#[test]
+fn typed_stdout_interpreter_child() {
+    if std::env::var_os(TYPED_STDOUT_INTERPRETER_CHILD_ENV).is_none() {
+        return;
+    }
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-typed-stdout/main.loom"),
+        include_str!("../../../fixtures/lcir-typed-stdout/main_test.loom")
+    );
+    let program = compile_source(source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+}
+
+#[test]
+fn source_std_io_writes_exact_text_through_typed_lcir() {
+    let source = concat!(
+        include_str!("../../../fixtures/lcir-typed-stdout/main.loom"),
+        include_str!("../../../fixtures/lcir-typed-stdout/main_test.loom")
+    );
+    let program = compile_source(source);
+
+    let interpreter = Command::new(std::env::current_exe().expect("current LCIR test executable"))
+        .args(["--exact", "typed_stdout_interpreter_child", "--nocapture"])
+        .env(TYPED_STDOUT_INTERPRETER_CHILD_ENV, "1")
+        .output()
+        .expect("run typed stdout interpreter child");
+    assert!(interpreter.status.success(), "{interpreter:?}");
+    assert!(
+        String::from_utf8_lossy(&interpreter.stdout).contains("loom stdout 界\n"),
+        "{interpreter:?}"
+    );
+
+    for policy in [NativeRoutePolicy::Automatic, NativeRoutePolicy::LcirOnly] {
+        let prepared = prepare_native_object(&program, EmitOptions::run("main"), policy)
+            .unwrap_or_else(|error| panic!("prepare source std.io with {policy:?}: {error}"));
+        assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    }
+
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    assert_eq!(dump.matches("stdout.write ").count(), 2, "{dump}");
+    for function in ["std.io.write", "std.io.write_line"] {
+        assert!(dump.contains(function), "{dump}");
+    }
+    let entry = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("typed stdout entry");
+    assert!(entry.effects().contains(Effects::MAY_FAULT));
+    assert!(entry.effects().contains(Effects::MAY_COLLECT));
+    assert!(entry.effects().contains(Effects::NEEDS_RUNTIME));
+    assert!(!entry.effects().contains(Effects::NEEDS_EXECUTOR));
+
+    let native = emit_and_run_lcir_with_options(
+        &artifact,
+        "source-typed-stdout",
+        NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
+    );
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert_eq!(native.output.stdout, "loom stdout 界\nUnit\n".as_bytes());
+    assert!(native.output.stderr.is_empty(), "{:?}", native.output);
+    for required in [
+        "@loom_runtime_stdout_write_v1",
+        "StdoutWriteFault",
+        "stdout.write.failed",
+        "llvm.trap",
+    ] {
+        assert!(
+            native.ir.contains(required),
+            "missing `{required}`:\n{}",
+            native.ir
+        );
+    }
+    for forbidden in ["%loom.Value", "ValueNode", "loom_executor_"] {
+        assert!(
+            !native.ir.contains(forbidden),
+            "retained `{forbidden}`:\n{}",
+            native.ir
+        );
+    }
+
+    let directory = tempfile::tempdir().expect("create unwritable stdout output");
+    let object = directory.path().join("typed-stdout-unwritable.o");
+    let executable = directory.path().join("typed-stdout-unwritable");
+    emit_lcir_native_object(
+        &artifact,
+        &object,
+        &NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
+    )
+    .expect("emit typed stdout failure fixture");
+    link_native_object(&object, &executable).expect("link typed stdout failure fixture");
+    let read_only_path = directory.path().join("read-only-stdout");
+    std::fs::write(&read_only_path, b"stdout sentinel\n").expect("create stdout sentinel");
+    let read_only = std::fs::File::open(&read_only_path).expect("open read-only stdout");
+    let failed = Command::new(&executable)
+        .env(FAULT_FORMAT_ENV, FAULT_FORMAT_JSON)
+        .stdout(Stdio::from(read_only))
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run typed stdout with read-only stdout");
+    assert!(!failed.status.success(), "{failed:?}");
+    let fault = machine_fault(&failed);
+    assert_eq!(fault["channel"], "runtime");
+    assert_eq!(fault["fault"]["code"], "StdoutWriteFault");
+    assert_eq!(fault["fault"]["message"], "standard output write failed");
 }
 
 #[test]

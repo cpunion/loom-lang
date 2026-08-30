@@ -35,6 +35,18 @@ pub enum LockMode {
     Refresh,
 }
 
+/// Selects which root-package test files participate in a compilation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TestSelection {
+    /// Exclude every `*_test.loom` source.
+    #[default]
+    None,
+    /// Include tests from the package directory named by the project input.
+    Package,
+    /// Include tests from every package directory in the root module.
+    Recursive,
+}
+
 /// Explicit package-graph inputs which are independent of source semantics.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProjectOptions {
@@ -42,8 +54,7 @@ pub struct ProjectOptions {
     pub no_default_features: bool,
     pub lock_mode: LockMode,
     pub offline: bool,
-    /// Include root-module `*_test.loom` files in the source set.
-    pub include_tests: bool,
+    pub tests: TestSelection,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -224,7 +235,8 @@ pub struct ProjectGraph {
     packages: BTreeMap<PackageId, Package>,
     targets: Vec<Target>,
     lock: Option<LockState>,
-    include_tests: bool,
+    tests: TestSelection,
+    test_package_directory: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -281,8 +293,14 @@ impl ProjectGraph {
             None
         };
 
+        let test_package_directory = match options.tests {
+            TestSelection::Package if metadata.is_dir() => Some(canonical.clone()),
+            TestSelection::Package => canonical.parent().map(Path::to_path_buf),
+            TestSelection::None | TestSelection::Recursive => None,
+        };
+
         if let Some(manifest) = manifest {
-            return Self::load_manifest(&manifest, options);
+            return Self::load_manifest(&manifest, test_package_directory, options);
         }
         if metadata.is_dir() || metadata.is_file() && has_loom_extension(&canonical) {
             if !options.features.is_empty()
@@ -309,13 +327,18 @@ impl ProjectGraph {
                 packages: BTreeMap::new(),
                 targets: Vec::new(),
                 lock: None,
-                include_tests: options.include_tests,
+                tests: options.tests,
+                test_package_directory,
             });
         }
         Err(DriverError::InvalidRoot(canonical))
     }
 
-    fn load_manifest(manifest: &Path, options: &ProjectOptions) -> Result<Self, DriverError> {
+    fn load_manifest(
+        manifest: &Path,
+        test_package_directory: Option<PathBuf>,
+        options: &ProjectOptions,
+    ) -> Result<Self, DriverError> {
         let root = manifest
             .parent()
             .expect("manifest path has a parent")
@@ -370,7 +393,8 @@ impl ProjectGraph {
                 rendered,
                 current,
             }),
-            include_tests: options.include_tests,
+            tests: options.tests,
+            test_package_directory,
         })
     }
 
@@ -472,9 +496,12 @@ impl ProjectGraph {
     )]
     pub(crate) fn source_files(&self) -> Result<Vec<ProjectSource>, DriverError> {
         let mut sources = match &self.kind {
-            ProjectKind::Standalone { input } => {
-                standalone_sources(&self.root, input, self.include_tests)?
-            }
+            ProjectKind::Standalone { input } => standalone_sources(
+                &self.root,
+                input,
+                self.tests,
+                self.test_package_directory.as_deref(),
+            )?,
             ProjectKind::Manifest { root_package } => {
                 let mut sources = BTreeMap::<
                     PathBuf,
@@ -523,7 +550,7 @@ impl ProjectGraph {
                         continue;
                     }
                     for path in discover_package_sources(&package.root)? {
-                        if is_test_source(&path) && (!is_root || !self.include_tests) {
+                        if is_test_source(&path) && !self.includes_test_source(&path, is_root) {
                             continue;
                         }
                         let relative = relative_key(&package.root, &path)
@@ -616,7 +643,8 @@ impl ProjectGraph {
                 let normalized = normalize_absolute(path);
                 let selected = normalized.strip_prefix(&package.root).is_ok()
                     && !is_nested_module_source(&package.root, &normalized)
-                    && (!is_test_source(&normalized) || self.include_tests);
+                    && (!is_test_source(&normalized)
+                        || self.includes_test_source(&normalized, true));
                 if !selected {
                     return Ok(None);
                 }
@@ -667,6 +695,20 @@ impl ProjectGraph {
                 }
                 fields
             }
+        }
+    }
+
+    fn includes_test_source(&self, path: &Path, is_root_package: bool) -> bool {
+        if !is_root_package {
+            return false;
+        }
+        match self.tests {
+            TestSelection::None => false,
+            TestSelection::Recursive => true,
+            TestSelection::Package => self
+                .test_package_directory
+                .as_deref()
+                .is_some_and(|directory| path.parent().is_some_and(|parent| parent == directory)),
         }
     }
 
@@ -2220,7 +2262,8 @@ fn discover_package_sources(package_root: &Path) -> Result<Vec<PathBuf>, DriverE
 fn standalone_sources(
     root: &Path,
     input: &Path,
-    include_tests: bool,
+    tests: TestSelection,
+    test_package_directory: Option<&Path>,
 ) -> Result<Vec<ProjectSource>, DriverError> {
     let paths = if input.is_file() {
         vec![input.to_path_buf()]
@@ -2249,7 +2292,18 @@ fn standalone_sources(
     };
     paths
         .into_iter()
-        .filter(|path| include_tests || !is_test_source(path))
+        .filter(|path| {
+            if !is_test_source(path) {
+                return true;
+            }
+            match tests {
+                TestSelection::None => false,
+                TestSelection::Recursive => true,
+                TestSelection::Package => test_package_directory.is_some_and(|directory| {
+                    path.parent().is_some_and(|parent| parent == directory)
+                }),
+            }
+        })
         .map(|absolute| {
             let stable_path = relative_key(root, &absolute)
                 .ok_or_else(|| DriverError::NonUtf8Path(absolute.clone()))?;

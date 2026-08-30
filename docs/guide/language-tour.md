@@ -239,8 +239,9 @@ test fn arithmetic_works() {
 ```
 
 Asynchronous tests are written `test async fn`. Production commands exclude
-`*_test.loom`. `loom test` adds the selected root module's test files, and
-never adds or runs dependency test files.
+`*_test.loom`. `loom test .` adds the current directory package's tests;
+`loom test ./...` adds every package below the selected root module. Neither
+form adds or runs dependency test files.
 
 ## Next topics
 

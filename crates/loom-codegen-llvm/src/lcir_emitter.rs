@@ -51,8 +51,8 @@ use loom_core::runtime_fault::{
 use loom_core::runtime_fault::{
     INVALID_SLEEP_DURATION_FAULT_CODE, INVALID_SLEEP_DURATION_FAULT_MESSAGE, LOG_WRITE_FAULT_CODE,
     LOG_WRITE_FAULT_MESSAGE, SLEEP_DURATION_OVERFLOW_FAULT_CODE,
-    SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE, TASK_ANY_FAILED_FAULT_CODE,
-    TASK_ANY_FAILED_FAULT_MESSAGE,
+    SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE, STDOUT_WRITE_FAULT_CODE, STDOUT_WRITE_FAULT_MESSAGE,
+    TASK_ANY_FAILED_FAULT_CODE, TASK_ANY_FAILED_FAULT_MESSAGE,
 };
 use loom_mir::Type;
 use loom_runtime_abi::{
@@ -61,16 +61,17 @@ use loom_runtime_abi::{
     GC_MAX_OBJECT_BYTES, GC_MAX_OBJECT_POINTERS, GC_MAX_REPEATED_POINTER_CELLS,
     GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES,
     PARSE_FLOAT_STATUS_INVALID_SYNTAX, PARSE_FLOAT_STATUS_OK, PARSE_FLOAT_STATUS_OUT_OF_RANGE,
-    PARSE_FLOAT_SYMBOL, PATH_JOIN_TYPED_ABSOLUTE, PATH_JOIN_TYPED_SYMBOL, STDOUT_WRITE_SYMBOL,
-    TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL, TASK_JOIN_ANY, TASK_JOIN_RACE,
-    TASK_JOIN_SETTLED, TASK_PENDING, TEXT_CONCAT_TYPED_SYMBOL, TEXT_CONTAINS_SYMBOL,
-    TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8, TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL,
-    TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_MISSING, TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL,
-    TEXT_OBJECT_ALIGNMENT, TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES,
-    TEXT_OBJECT_FIELD_SCALAR_LENGTH, TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION,
-    TYPED_GC_ALLOC_SYMBOL, TYPED_GC_REPEATED_ABI_VERSION, TYPED_GC_REPEATED_ALLOC_SYMBOL,
-    TYPED_GC_ROOT_POP_SYMBOL, TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_IO_ABI_VERSION,
-    TYPED_IO_CANCEL_SYMBOL, TYPED_IO_INVALID_RESOURCE_TOKEN, TYPED_IO_OPERATION_FILE_CREATE,
+    PARSE_FLOAT_SYMBOL, PATH_JOIN_TYPED_ABSOLUTE, PATH_JOIN_TYPED_SYMBOL, STDOUT_WRITE_FAILED,
+    STDOUT_WRITE_OK, STDOUT_WRITE_SYMBOL, TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED,
+    TASK_JOIN_ALL, TASK_JOIN_ANY, TASK_JOIN_RACE, TASK_JOIN_SETTLED, TASK_PENDING,
+    TEXT_CONCAT_TYPED_SYMBOL, TEXT_CONTAINS_SYMBOL, TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8,
+    TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_MISSING,
+    TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT,
+    TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH,
+    TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION, TYPED_GC_ALLOC_SYMBOL,
+    TYPED_GC_REPEATED_ABI_VERSION, TYPED_GC_REPEATED_ALLOC_SYMBOL, TYPED_GC_ROOT_POP_SYMBOL,
+    TYPED_GC_ROOT_PUSH_SYMBOL, TYPED_IO_ABI_VERSION, TYPED_IO_CANCEL_SYMBOL,
+    TYPED_IO_INVALID_RESOURCE_TOKEN, TYPED_IO_OPERATION_FILE_CREATE,
     TYPED_IO_OPERATION_FILE_OPEN_READ, TYPED_IO_OPERATION_FILE_READ_TEXT,
     TYPED_IO_OPERATION_FILE_WRITE_TEXT, TYPED_IO_OPERATION_SOCKET_CONNECT,
     TYPED_IO_OPERATION_SOCKET_READ_TEXT, TYPED_IO_OPERATION_SOCKET_WRITE_TEXT,
@@ -9313,7 +9314,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 TerminatorKind::CheckedIntNegate { normal, fault, .. }
                 | TerminatorKind::CheckedIntBinary { normal, fault, .. }
                 | TerminatorKind::TaskSleep { normal, fault, .. }
-                | TerminatorKind::LogWrite { normal, fault, .. } => {
+                | TerminatorKind::LogWrite { normal, fault, .. }
+                | TerminatorKind::StdoutWrite { normal, fault, .. } => {
                     pending.push(fault.block);
                     pending.push(normal.block);
                 }
@@ -13947,6 +13949,11 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 normal,
                 fault,
             ),
+            TerminatorKind::StdoutWrite {
+                text,
+                normal,
+                fault,
+            } => self.emit_stdout_write(*text, terminator.origin(), normal, fault),
             TerminatorKind::Assert {
                 condition,
                 metadata,
@@ -15391,6 +15398,69 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         self.result_branch(normal, self.backend.unit_type.const_zero().into())
     }
 
+    fn emit_stdout_write(
+        &mut self,
+        text: ValueId,
+        origin: Origin,
+        normal: &ResultTarget,
+        fault: &UnwindTarget,
+    ) -> Result<(), CodegenError> {
+        let text = self.value(text)?.into_pointer_value();
+        let (data, length) = self.backend.text_parts(text, "stdout.write.text")?;
+        let status = call_int(
+            &self.backend.builder,
+            self.backend.runtime_stdout_write(),
+            &[data.into(), length.into()],
+            "stdout.write",
+        )?;
+
+        let succeeded = self
+            .backend
+            .context
+            .append_basic_block(self.function, "stdout.write.succeeded");
+        let write_failed = self
+            .backend
+            .context
+            .append_basic_block(self.function, "stdout.write.failed");
+        let invalid = self
+            .backend
+            .context
+            .append_basic_block(self.function, "stdout.write.invalid_status");
+        let status_type = self.backend.context.i32_type();
+        let ok = status_type.const_int(
+            u64::try_from(STDOUT_WRITE_OK).expect("stdout success status is non-negative"),
+            false,
+        );
+        let failed = status_type.const_int(
+            u64::try_from(STDOUT_WRITE_FAILED).expect("stdout failure status is non-negative"),
+            false,
+        );
+        self.backend
+            .builder
+            .build_switch(status, invalid, &[(ok, succeeded), (failed, write_failed)])
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(invalid);
+        let trap = inkwell::intrinsics::Intrinsic::find("llvm.trap")
+            .and_then(|intrinsic| intrinsic.get_declaration(&self.backend.module, &[]))
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "missing llvm.trap"))?;
+        self.backend
+            .builder
+            .build_call(trap, &[], "stdout.write.invalid_status.trap")
+            .map_err(builder_error)?;
+        self.backend
+            .builder
+            .build_unreachable()
+            .map_err(builder_error)?;
+
+        self.backend.builder.position_at_end(write_failed);
+        self.emit_source_fault(FaultCode::StdoutWrite, origin)?;
+        self.unwind_branch(fault)?;
+
+        self.backend.builder.position_at_end(succeeded);
+        self.result_branch(normal, self.backend.unit_type.const_zero().into())
+    }
+
     fn emit_source_fault(&self, code: FaultCode, origin: Origin) -> Result<(), CodegenError> {
         self.emit_fault(FaultEmission::Runtime { code, origin })
     }
@@ -16657,6 +16727,7 @@ impl<'ctx> Backend<'ctx, '_> {
                 | FaultCode::SleepDurationOverflow
                 | FaultCode::TaskAnyFailed
                 | FaultCode::LogWrite
+                | FaultCode::StdoutWrite
         ) {
             serde_json::json!({
                 "channel": "runtime",
@@ -17001,6 +17072,7 @@ fn fault_properties(code: FaultCode) -> (&'static str, &'static str) {
         ),
         FaultCode::TaskAnyFailed => (TASK_ANY_FAILED_FAULT_CODE, TASK_ANY_FAILED_FAULT_MESSAGE),
         FaultCode::LogWrite => (LOG_WRITE_FAULT_CODE, LOG_WRITE_FAULT_MESSAGE),
+        FaultCode::StdoutWrite => (STDOUT_WRITE_FAULT_CODE, STDOUT_WRITE_FAULT_MESSAGE),
     }
 }
 

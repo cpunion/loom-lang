@@ -54,8 +54,9 @@ directory extends that package path. For module `application`, files directly
 beside the manifest belong to `application`, while files in `http/client/`
 belong to `application.http.client`. A file name never changes its package.
 
-Ordinary source selection excludes `*_test.loom`. `loom test` includes those
-files only for the root module. Dependency test files are never selected.
+Ordinary source selection excludes `*_test.loom`. `loom test PATH` includes
+tests from that directory package, and `loom test PATH/...` includes them from
+every package in that root module. Dependency test files are never selected.
 
 ## Dependencies
 
@@ -128,7 +129,7 @@ The supported target kinds are:
 - `lib`: a portable source-and-interface module artifact with no entry.
 
 An `entry` is valid only on a binary target. Tests are not targets: `loom test`
-selects root-module `*_test.loom` files directly and does not accept `--target`.
+selects package `*_test.loom` files directly and does not accept `--target`.
 
 ## Lockfile behavior
 

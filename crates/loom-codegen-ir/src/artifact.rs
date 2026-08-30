@@ -684,7 +684,8 @@ impl ArtifactValidator<'_> {
                     TerminatorKind::CheckedIntNegate { normal, fault, .. }
                     | TerminatorKind::CheckedIntBinary { normal, fault, .. }
                     | TerminatorKind::TaskSleep { normal, fault, .. }
-                    | TerminatorKind::LogWrite { normal, fault, .. } => {
+                    | TerminatorKind::LogWrite { normal, fault, .. }
+                    | TerminatorKind::StdoutWrite { normal, fault, .. } => {
                         mark_text_target(
                             function,
                             text,

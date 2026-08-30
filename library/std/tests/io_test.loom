@@ -1,0 +1,10 @@
+import std.io.write
+import std.io.write_line
+
+fn line_output_typechecks() {
+    write_line("")
+}
+
+test fn empty_output_is_valid() {
+    write("")
+}

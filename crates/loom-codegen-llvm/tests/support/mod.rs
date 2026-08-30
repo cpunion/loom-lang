@@ -34,7 +34,7 @@ pub fn analysis_host(input: impl AsRef<Path>) -> Result<AnalysisHost, DriverErro
     AnalysisHost::new_with_options(
         input,
         &ProjectOptions {
-            include_tests: true,
+            tests: loom_driver::TestSelection::Recursive,
             ..ProjectOptions::default()
         },
     )

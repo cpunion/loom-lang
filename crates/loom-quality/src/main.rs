@@ -93,7 +93,7 @@ struct NativeBuild {
 
 fn test_project_options() -> ProjectOptions {
     ProjectOptions {
-        include_tests: true,
+        tests: loom_driver::TestSelection::Recursive,
         ..ProjectOptions::default()
     }
 }

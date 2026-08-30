@@ -3271,6 +3271,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             | BuiltinValue::IoErrorKind
             | BuiltinValue::IoErrorMessage
             | BuiltinValue::LogWrite
+            | BuiltinValue::StdoutWrite
             | BuiltinValue::ListAdd
             | BuiltinValue::ListLength
             | BuiltinValue::ListGet
@@ -3746,6 +3747,7 @@ fn executable_builtin(builtin: BuiltinValue) -> Option<Builtin> {
         BuiltinValue::IoErrorKind => Builtin::IoErrorKind,
         BuiltinValue::IoErrorMessage => Builtin::IoErrorMessage,
         BuiltinValue::LogWrite => Builtin::LogWrite,
+        BuiltinValue::StdoutWrite => Builtin::StdoutWrite,
         BuiltinValue::ListAdd => Builtin::ListAdd,
         BuiltinValue::ListLength => Builtin::ListLength,
         BuiltinValue::ListGet => Builtin::ListGet,

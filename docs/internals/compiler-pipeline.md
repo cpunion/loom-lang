@@ -127,8 +127,9 @@ Frontend checking and backend roots are intentionally different:
 
 - `check` validates the full resolved source graph and emits no object.
 - a binary `build`, `run`, or `debug` selects one public entry;
-- `test` adds root-module `*_test.loom` sources and selects every MIR test in
-  that graph; dependency test sources are never loaded;
+- `test PATH` adds one directory package's `*_test.loom` sources, while
+  `test PATH/...` adds every package in the root module; dependency test
+  sources are never loaded;
 - an empty test set produces a successful empty harness;
 - a library target packages the resolved module graph and public interfaces;
   it has no executable or code-generation root.
