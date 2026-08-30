@@ -618,7 +618,7 @@ rebuilds the exact closed resource value before the next cleanup action. There i
 universal `loom.Value`, indirect witness call, source close fault, or
 synchronous executor route.
 
-Emission follows the validator's exact canonical `File#7`/`Socket#8` kind
+Emission follows the validator's exact cataloged canonical `File`/`Socket` kind
 agreement. The returned status is switched explicitly: `0` produces `Unit` and
 the closed resource, while every other value calls `llvm.trap` and is
 unreachable. An invalid, stale, sibling-owned, or opposite-kind live token is an

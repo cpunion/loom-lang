@@ -1,9 +1,12 @@
 use loom_codegen_ir::{
-    BlockTarget, Constant, ContractFaultMetadata, Effects, FaultMetadata, InstructionKind, Origin,
-    Program, ProgramBuilder, ResourceKind, Signature, TargetLayout, Terminator, TerminatorKind,
-    UnwindTarget, ValidationCode, dump_program,
+    BlockTarget, CanonicalTypeCatalog, Constant, ContractFaultMetadata, Effects, FaultMetadata,
+    InstructionKind, Origin, Program, ProgramBuilder, ResourceKind, Signature, TargetLayout,
+    Terminator, TerminatorKind, UnwindTarget, ValidationCode, dump_program,
 };
 use loom_mir::{FunctionId, Type, TypeId};
+
+const FILE_TYPE_ID: TypeId = TypeId(107);
+const SOCKET_TYPE_ID: TypeId = TypeId(108);
 
 fn origin(function: u32) -> Origin {
     Origin::synthetic(FunctionId(function))
@@ -29,7 +32,7 @@ fn resource_program(
 fn file_resource_program(fields: &[Type], effects: Effects) -> Program {
     resource_program(
         ResourceKind::File,
-        Type::Nominal(TypeId(7), Vec::new()),
+        Type::Nominal(FILE_TYPE_ID, Vec::new()),
         fields,
         effects,
     )
@@ -42,7 +45,20 @@ fn resource_program_with_representation(
     effects: Effects,
     invariant: bool,
 ) -> Program {
-    let mut program = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let canonical_types = match kind {
+        ResourceKind::File => CanonicalTypeCatalog {
+            file: Some(FILE_TYPE_ID),
+            ..CanonicalTypeCatalog::default()
+        },
+        ResourceKind::Socket => CanonicalTypeCatalog {
+            socket: Some(SOCKET_TYPE_ID),
+            ..CanonicalTypeCatalog::default()
+        },
+    };
+    let mut program = ProgramBuilder::with_canonical_types(
+        TargetLayout::new(64).expect("target"),
+        canonical_types,
+    );
     let unit = program.type_id(&Type::Unit).expect("Unit");
     let resource = if invariant {
         program.add_invariant_record_type(semantic, fields)
@@ -131,7 +147,7 @@ fn typed_resource_cleanup_rejects_noncanonical_shape_and_missing_executor_effect
     assert_has_code(
         resource_program_with_representation(
             ResourceKind::File,
-            Type::Nominal(TypeId(7), Vec::new()),
+            Type::Nominal(FILE_TYPE_ID, Vec::new()),
             &[Type::Int],
             effects,
             true,
@@ -149,20 +165,26 @@ fn typed_resource_cleanup_requires_the_exact_canonical_nominal_for_each_kind() {
     let effects = resource_effects();
     resource_program(
         ResourceKind::Socket,
-        Type::Nominal(TypeId(8), Vec::new()),
+        Type::Nominal(SOCKET_TYPE_ID, Vec::new()),
         &[Type::Int],
         effects,
     )
     .into_checked()
-    .expect("canonical Socket#8 cleanup is valid");
+    .expect("canonical Socket cleanup is valid");
 
     for (kind, semantic) in [
-        (ResourceKind::File, Type::Nominal(TypeId(8), Vec::new())),
-        (ResourceKind::Socket, Type::Nominal(TypeId(7), Vec::new())),
+        (
+            ResourceKind::File,
+            Type::Nominal(SOCKET_TYPE_ID, Vec::new()),
+        ),
+        (
+            ResourceKind::Socket,
+            Type::Nominal(FILE_TYPE_ID, Vec::new()),
+        ),
         (ResourceKind::File, Type::Nominal(TypeId(90), Vec::new())),
         (
             ResourceKind::File,
-            Type::Nominal(TypeId(7), vec![Type::Int]),
+            Type::Nominal(FILE_TYPE_ID, vec![Type::Int]),
         ),
     ] {
         assert_has_code(
@@ -174,11 +196,17 @@ fn typed_resource_cleanup_requires_the_exact_canonical_nominal_for_each_kind() {
 
 #[test]
 fn active_resource_cleanup_preserves_the_primary_after_close() {
-    let mut program = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut program = ProgramBuilder::with_canonical_types(
+        TargetLayout::new(64).expect("target"),
+        CanonicalTypeCatalog {
+            socket: Some(SOCKET_TYPE_ID),
+            ..CanonicalTypeCatalog::default()
+        },
+    );
     let boolean = program.type_id(&Type::Bool).expect("Bool");
     let unit = program.type_id(&Type::Unit).expect("Unit");
     let resource = program
-        .add_pod_record_type(Type::Nominal(TypeId(8), Vec::new()), &[Type::Int])
+        .add_pod_record_type(Type::Nominal(SOCKET_TYPE_ID, Vec::new()), &[Type::Int])
         .expect("resource product");
     let function = program
         .declare_function(

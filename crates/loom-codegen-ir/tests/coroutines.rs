@@ -246,7 +246,13 @@ fn validator_accepts_a_fallible_coroutine_with_a_managed_sum_result() {
 #[test]
 fn validator_accepts_managed_list_and_text_map_coroutine_boundaries() {
     let origin = Origin::synthetic(FunctionId(0));
-    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut builder = ProgramBuilder::with_canonical_types(
+        TargetLayout::new(64).expect("target"),
+        loom_codegen_ir::CanonicalTypeCatalog {
+            text_map: Some(TypeId(80)),
+            ..loom_codegen_ir::CanonicalTypeCatalog::default()
+        },
+    );
     builder
         .add_managed_text_type()
         .expect("register managed Text");

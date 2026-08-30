@@ -155,7 +155,7 @@ direct coverage includes:
 - canonical structured logging with direct Text and `TextMap[Text]` values;
 - supported contracts and proof replay, static concepts, closed dynamic-concept
   catalogs, exact moving-GC roots, and static lexical cleanup, including exact
-  canonical `File#7`/`Socket#8` close validation and fail-closed status
+  cataloged canonical `File`/`Socket` close validation and fail-closed status
   classification;
 - checked stackless coroutines, typed Task handles, exact suspension rows,
   fallible timers, and executor-owned roots;

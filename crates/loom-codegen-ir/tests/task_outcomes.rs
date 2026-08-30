@@ -1,13 +1,24 @@
 use std::collections::BTreeSet;
 
 use loom_codegen_ir::{
-    AwaitMode, BlockTarget, CheckedProgram, CoroutinePlan, CoroutineSuspension, Effects,
-    InstanceId, InstructionKind, ManagedSafepoint, Origin, Program, ProgramBuilder, ResultTarget,
-    Signature, TASK_FAULT_TYPE_ID, TASK_OUTCOME_TYPE_ID, TargetLayout, Terminator, TerminatorKind,
+    AwaitMode, BlockTarget, CanonicalTypeCatalog, CheckedProgram, CoroutinePlan,
+    CoroutineSuspension, Effects, InstanceId, InstructionKind, ManagedSafepoint, Origin, Program,
+    ProgramBuilder, ResultTarget, Signature, TargetLayout, Terminator, TerminatorKind,
     UnwindTarget, ValidationCode, ValueDefinition, ValueId, check_program, dump_program,
     plan_managed_roots, validate_program,
 };
 use loom_mir::{FunctionId, Type, TypeId};
+
+const TASK_FAULT_TYPE_ID: TypeId = TypeId(104);
+const TASK_OUTCOME_TYPE_ID: TypeId = TypeId(105);
+
+fn task_catalog() -> CanonicalTypeCatalog {
+    CanonicalTypeCatalog {
+        task_fault: Some(TASK_FAULT_TYPE_ID),
+        task_outcome: Some(TASK_OUTCOME_TYPE_ID),
+        ..CanonicalTypeCatalog::default()
+    }
+}
 
 #[derive(Clone, Copy)]
 enum FaultShape {
@@ -59,7 +70,10 @@ fn outcome_program(
 ) -> OutcomeProgram {
     let root_origin = Origin::synthetic(FunctionId(0));
     let child_origin = Origin::synthetic(FunctionId(1));
-    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut builder = ProgramBuilder::with_canonical_types(
+        TargetLayout::new(64).expect("target"),
+        task_catalog(),
+    );
     let integer = builder.type_id(&Type::Int).expect("Int");
     let text = builder
         .add_managed_text_type()
@@ -301,7 +315,10 @@ fn canonical_program(source: TakeSource) -> OutcomeProgram {
 fn terminal_prefix_program(mode: AwaitMode, prefix: TakePrefix) -> Program {
     let root_origin = Origin::synthetic(FunctionId(0));
     let child_origin = Origin::synthetic(FunctionId(1));
-    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut builder = ProgramBuilder::with_canonical_types(
+        TargetLayout::new(64).expect("target"),
+        task_catalog(),
+    );
     let unit = builder.type_id(&Type::Unit).expect("Unit");
     let integer = builder.type_id(&Type::Int).expect("Int");
     let text = builder
@@ -647,12 +664,12 @@ fn outcome_take_rechecks_the_complete_canonical_nominal_shapes() {
         (
             FaultShape::Canonical,
             OutcomeShape::WrongNominal,
-            "Nominal#5[T]",
+            "TaskOutcome[T]",
         ),
         (
             FaultShape::WrongMessageType,
             OutcomeShape::Canonical,
-            "Nominal#4",
+            "TaskFault",
         ),
         (
             FaultShape::Canonical,

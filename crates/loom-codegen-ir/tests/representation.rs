@@ -1,8 +1,20 @@
 use loom_codegen_ir::{
-    BYTES_TYPE_ID, BuildErrorCode, Effects, Origin, ProgramBuilder, Repr, RepresentationPlan,
-    ScalarRepr, Signature, TargetLayout,
+    BuildErrorCode, CanonicalTypeCatalog, Effects, Origin, ProgramBuilder, Repr,
+    RepresentationPlan, ScalarRepr, Signature, TargetLayout,
 };
 use loom_mir::{FunctionId, Type, TypeId};
+
+const BYTES_TYPE_ID: TypeId = TypeId(109);
+
+fn bytes_builder(pointer_bits: u16) -> ProgramBuilder {
+    ProgramBuilder::with_canonical_types(
+        TargetLayout::new(pointer_bits).expect("target"),
+        CanonicalTypeCatalog {
+            bytes: Some(BYTES_TYPE_ID),
+            ..CanonicalTypeCatalog::default()
+        },
+    )
+}
 
 #[test]
 fn direct_representation_catalog_is_canonical() {
@@ -65,6 +77,44 @@ fn target_pointer_width_is_validated_at_the_boundary() {
 }
 
 #[test]
+fn canonical_type_catalog_rejects_duplicate_source_identities() {
+    let builder = ProgramBuilder::with_canonical_types(
+        TargetLayout::new(64).expect("target"),
+        CanonicalTypeCatalog {
+            file: Some(TypeId(107)),
+            socket: Some(TypeId(107)),
+            ..CanonicalTypeCatalog::default()
+        },
+    );
+    let errors = builder
+        .finish_checked()
+        .expect_err("distinct canonical types cannot share one source identity");
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code() == loom_codegen_ir::ValidationCode::CanonicalTypeCatalog
+            && error.path() == "canonical_types.socket"
+    }));
+}
+
+#[test]
+fn managed_text_map_registration_requires_its_exact_catalog_identity() {
+    let mut builder = ProgramBuilder::with_canonical_types(
+        TargetLayout::new(64).expect("target"),
+        CanonicalTypeCatalog {
+            text_map: Some(TypeId(113)),
+            ..CanonicalTypeCatalog::default()
+        },
+    );
+    builder.add_managed_text_type().expect("managed Text");
+    assert_eq!(
+        builder
+            .add_managed_text_map_type(Type::Nominal(TypeId(213), vec![Type::Int]))
+            .expect_err("same-shaped noncanonical TextMap must be rejected")
+            .code(),
+        BuildErrorCode::InvalidTextMapType
+    );
+}
+
+#[test]
 fn managed_lists_are_distinct_direct_pointers_and_64_bit_only() {
     let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
     let integers = Type::List(Box::new(Type::Int));
@@ -108,7 +158,7 @@ fn managed_lists_are_distinct_direct_pointers_and_64_bit_only() {
 #[test]
 fn managed_bytes_registration_is_exact_canonical_and_64_bit_only() {
     let semantic = Type::Nominal(BYTES_TYPE_ID, Vec::new());
-    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut builder = bytes_builder(64);
     let bytes = builder
         .add_managed_bytes_type(semantic.clone())
         .expect("canonical Bytes");
@@ -121,7 +171,11 @@ fn managed_bytes_registration_is_exact_canonical_and_64_bit_only() {
         builder.representations().repr(value_type.repr()),
         Some(&Repr::ManagedPointer)
     );
-    assert!(builder.representations().is_managed_bytes_type(bytes));
+    assert!(
+        builder
+            .representations()
+            .is_managed_bytes_type(Some(BYTES_TYPE_ID), bytes)
+    );
     builder
         .add_tuple_type(std::slice::from_ref(&semantic))
         .expect("Bytes is one managed-pointer aggregate leaf");
@@ -133,7 +187,7 @@ fn managed_bytes_registration_is_exact_canonical_and_64_bit_only() {
         BuildErrorCode::InvalidBytesType
     );
 
-    let mut wrong = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut wrong = bytes_builder(64);
     assert_eq!(
         wrong
             .add_managed_bytes_type(Type::Nominal(TypeId(12), Vec::new()))
@@ -149,7 +203,7 @@ fn managed_bytes_registration_is_exact_canonical_and_64_bit_only() {
         BuildErrorCode::InvalidBytesType
     );
 
-    let mut narrow = ProgramBuilder::new(TargetLayout::new(32).expect("target"));
+    let mut narrow = bytes_builder(32);
     assert_eq!(
         narrow
             .add_managed_bytes_type(semantic)

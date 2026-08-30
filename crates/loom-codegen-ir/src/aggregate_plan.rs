@@ -3,20 +3,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use loom_mir::{self as mir, Type, TypeId};
 
 use crate::dyn_plan::DynConceptPlan;
-use crate::{BYTES_TYPE_ID, BuildError, ProgramBuilder, ValueTypeId};
+use crate::{BuildError, ProgramBuilder, ValueTypeId};
 
 pub(crate) const fn is_direct_scalar(ty: &Type) -> bool {
     matches!(ty, Type::Unit | Type::Bool | Type::Int | Type::Float)
 }
 
-const fn is_direct_product_leaf(ty: &Type) -> bool {
+fn is_direct_product_leaf(ty: &Type, canonical_bytes: Option<TypeId>) -> bool {
     is_direct_scalar(ty)
         || matches!(ty, Type::Text | Type::View { .. })
-        || is_managed_bytes_semantic(ty)
+        || is_managed_bytes_semantic(ty, canonical_bytes)
 }
 
-const fn is_managed_bytes_semantic(ty: &Type) -> bool {
-    matches!(ty, Type::Nominal(id, arguments) if id.0 == BYTES_TYPE_ID.0 && arguments.is_empty())
+fn is_managed_bytes_semantic(ty: &Type, canonical_bytes: Option<TypeId>) -> bool {
+    matches!(ty, Type::Nominal(id, arguments) if Some(*id) == canonical_bytes && arguments.is_empty())
 }
 
 /// Upper bound for every semantic-type tree copied into the direct aggregate
@@ -516,7 +516,9 @@ fn direct_aggregate_shape(
             }
             physical_types(dyn_concepts, fields.into_vec()).map(AggregateShape::InvariantProduct)
         }
-        Type::Nominal(id, arguments) if *id == BYTES_TYPE_ID && arguments.is_empty() => {
+        Type::Nominal(id, arguments)
+            if program.prelude.bytes == Some(*id) && arguments.is_empty() =>
+        {
             Some(AggregateShape::ManagedBytes)
         }
         Type::Nominal(id, arguments) if program.prelude.text_map == Some(*id) => {
@@ -952,6 +954,7 @@ impl AggregatePlan {
         self,
         builder: &mut ProgramBuilder,
     ) -> Result<(), AggregateRegistrationError> {
+        let canonical_bytes = builder.canonical_types().bytes;
         let mut remaining_dependencies = BTreeMap::new();
         let mut dependents: BTreeMap<Type, Vec<Type>> = BTreeMap::new();
         let mut ready = BTreeSet::new();
@@ -965,7 +968,7 @@ impl AggregatePlan {
                 )));
             }
             if let AggregateShape::ManagedList(element) = shape
-                && !is_direct_product_leaf(element)
+                && !is_direct_product_leaf(element, canonical_bytes)
                 && !self.entries.contains_key(element)
             {
                 return Err(AggregateRegistrationError::Inconsistent(format!(
@@ -973,7 +976,7 @@ impl AggregatePlan {
                 )));
             }
             if let AggregateShape::ManagedTextMap(value) = shape
-                && !is_direct_product_leaf(value)
+                && !is_direct_product_leaf(value, canonical_bytes)
                 && !self.entries.contains_key(value)
             {
                 return Err(AggregateRegistrationError::Inconsistent(format!(
@@ -982,17 +985,17 @@ impl AggregatePlan {
             }
             if let AggregateShape::ManagedDynamic(candidates) = shape
                 && candidates.iter().any(|candidate| {
-                    !is_direct_product_leaf(candidate) && !self.entries.contains_key(candidate)
+                    !is_direct_product_leaf(candidate, canonical_bytes)
+                        && !self.entries.contains_key(candidate)
                 })
             {
                 return Err(AggregateRegistrationError::Inconsistent(format!(
                     "managed dynamic View {semantic:?} has an unplanned candidate value type"
                 )));
             }
-            if shape
-                .dependencies()
-                .any(|field| !is_direct_product_leaf(field) && !self.entries.contains_key(field))
-            {
+            if shape.dependencies().any(|field| {
+                !is_direct_product_leaf(field, canonical_bytes) && !self.entries.contains_key(field)
+            }) {
                 return Err(AggregateRegistrationError::Inconsistent(format!(
                     "direct type {semantic:?} depends on an unplanned value type"
                 )));
@@ -1038,7 +1041,7 @@ impl AggregatePlan {
                     builder.add_sum_type(semantic.clone(), variants)
                 }
                 (Type::Nominal(id, arguments), AggregateShape::ManagedBytes)
-                    if *id == BYTES_TYPE_ID && arguments.is_empty() =>
+                    if Some(*id) == canonical_bytes && arguments.is_empty() =>
                 {
                     builder.add_managed_bytes_type(semantic.clone())
                 }
@@ -1190,7 +1193,10 @@ mod tests {
             !planner.supports_value_type(&Type::List(Box::new(Type::Task(Box::new(Type::Int),))))
         );
 
-        let mut builder = ProgramBuilder::new(crate::TargetLayout::new(64).expect("target"));
+        let mut builder = ProgramBuilder::with_canonical_types(
+            crate::TargetLayout::new(64).expect("target"),
+            crate::CanonicalTypeCatalog::from_prelude(&program.prelude),
+        );
         planner
             .finish()
             .register(&mut builder)
@@ -1446,7 +1452,10 @@ mod tests {
         assert!(planner.supports_value_type(&guarded_text));
         assert!(planner.supports_value_type(&refined_int));
         assert!(planner.supports_value_type(&map_int));
-        let mut builder = ProgramBuilder::new(crate::TargetLayout::new(64).expect("target"));
+        let mut builder = ProgramBuilder::with_canonical_types(
+            crate::TargetLayout::new(64).expect("target"),
+            crate::CanonicalTypeCatalog::from_prelude(&program.prelude),
+        );
         builder
             .add_managed_text_type()
             .expect("register managed Text before products");

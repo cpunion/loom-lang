@@ -32,16 +32,16 @@ use inkwell::values::{
 use inkwell::{FloatPredicate as LlvmFloatPredicate, IntPredicate};
 use llvm_sys::debuginfo::LLVMDIBuilderInsertDbgValueRecordBefore;
 use loom_codegen_ir::{
-    AwaitMode, BYTES_TYPE_ID, BlockId, BlockTarget, BoolPredicate, CheckedArtifact,
-    CheckedIntBinaryOp, Constant, ContractFaultBlame, ContractFaultMetadata, CoroutinePlan,
-    CoroutineSuspension, Effects, FaultCode, FaultMetadata, FloatBinaryOp,
-    FloatPredicate as LcirFloatPredicate, Function, InstanceId, Instruction, InstructionId,
-    InstructionKind, IntPredicate as LcirIntPredicate, IoTaskOperation,
-    MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE, ManagedRootPlan, ManagedRootProjection,
-    ManagedRootSlot, ManagedSafepoint, Origin, Repr, ResourceKind, ResultTarget, ScalarRepr,
-    SumRepr, SumTagRepr, TASK_OUTCOME_CANCELLED_VARIANT, TASK_OUTCOME_COMPLETED_VARIANT,
-    TASK_OUTCOME_FAULTED_VARIANT, Terminator, TerminatorKind, TestOutcomePlan, UnwindTarget,
-    ValueDefinition, ValueId, ValueTypeId, ValueTypeKind, plan_managed_roots,
+    AwaitMode, BlockId, BlockTarget, BoolPredicate, CheckedArtifact, CheckedIntBinaryOp, Constant,
+    ContractFaultBlame, ContractFaultMetadata, CoroutinePlan, CoroutineSuspension, Effects,
+    FaultCode, FaultMetadata, FloatBinaryOp, FloatPredicate as LcirFloatPredicate, Function,
+    InstanceId, Instruction, InstructionId, InstructionKind, IntPredicate as LcirIntPredicate,
+    IoTaskOperation, MANAGED_ROOT_MAX_CANDIDATE_SLOTS_PER_VALUE, ManagedRootPlan,
+    ManagedRootProjection, ManagedRootSlot, ManagedSafepoint, Origin, Repr, ResourceKind,
+    ResultTarget, ScalarRepr, SumRepr, SumTagRepr, TASK_OUTCOME_CANCELLED_VARIANT,
+    TASK_OUTCOME_COMPLETED_VARIANT, TASK_OUTCOME_FAULTED_VARIANT, Terminator, TerminatorKind,
+    TestOutcomePlan, UnwindTarget, ValueDefinition, ValueId, ValueTypeId, ValueTypeKind,
+    plan_managed_roots,
 };
 use loom_core::runtime_fault::{
     ARTIFACT_PROOF_REJECTED_FAULT_CODE, ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
@@ -655,7 +655,15 @@ impl<'ctx> DebugState<'ctx> {
             .ok_or_else(|| {
                 CodegenError::new("LlvmDebugInfoFailed", format!("missing LCIR type {ty}"))
             })?;
-        if backend.artifact.representations().is_managed_bytes_type(ty) {
+        if backend.artifact.representations().is_managed_bytes_type(
+            backend
+                .artifact
+                .program()
+                .as_program()
+                .canonical_types()
+                .bytes,
+            ty,
+        ) {
             Ok(("Bytes", self.bytes_type))
         } else if value_type.kind() == ValueTypeKind::ManagedTextMap {
             Ok(("TextMap", self.text_map_type))
@@ -1912,11 +1920,18 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             .value_types()
             .iter()
             .any(|value| value.semantic() == &Type::Text);
-        let bytes_semantic = Type::Nominal(BYTES_TYPE_ID, Vec::new());
-        let has_bytes = artifact
-            .representations()
-            .type_id(&bytes_semantic)
-            .is_some_and(|ty| artifact.representations().is_managed_bytes_type(ty));
+        let canonical_bytes = artifact.program().as_program().canonical_types().bytes;
+        let has_bytes = canonical_bytes
+            .and_then(|bytes| {
+                artifact
+                    .representations()
+                    .type_id(&Type::Nominal(bytes, Vec::new()))
+            })
+            .is_some_and(|ty| {
+                artifact
+                    .representations()
+                    .is_managed_bytes_type(canonical_bytes, ty)
+            });
         if has_text || has_bytes {
             let actual_size = target_data.get_abi_size(&text_object_type);
             let actual_alignment = u64::from(target_data.get_abi_alignment(&text_object_type));

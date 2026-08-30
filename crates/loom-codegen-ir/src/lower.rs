@@ -18,18 +18,17 @@ use crate::instance_closure::{
     InstanceClosureError, InstanceClosureOutcome, InstanceClosureUnsupportedKind,
     InstanceSubstitution, InstantiationError, plan_instance_closure,
 };
-use crate::ir::BYTES_TYPE_ID;
 use crate::match_plan::{MatchNode, MatchPlan, plan_contract_match, plan_match};
 use crate::place_plan::{PlaceBudget, PlacePlan, PlaceUse};
 use crate::text_plan::TextLiteralBudget;
 use crate::{
     ArtifactRootRequest, AwaitMode, BlockId, BlockTarget, BoolPredicate, BuildError,
-    BuildErrorCode, CheckedArtifact, CheckedIntBinaryOp, Constant, ContractFaultKind,
-    ContractFaultMetadata, CoroutinePlan, CoroutineSuspension, Effects, FaultCode, FaultMetadata,
-    FloatBinaryOp, FloatPredicate, FunctionBuilder, InstanceId, InstanceKey, InstancePlan,
-    InstanceRole, InstructionKind, IntPredicate, IoTaskOperation, Origin, ProgramBuilder,
-    ResourceKind, ResultTarget, Signature, SourceRoots, SumCase, TargetLayout, Terminator,
-    TerminatorKind, TestOutcomePlan, UnwindTarget, ValueId, ValueTypeId,
+    BuildErrorCode, CanonicalTypeCatalog, CheckedArtifact, CheckedIntBinaryOp, Constant,
+    ContractFaultKind, ContractFaultMetadata, CoroutinePlan, CoroutineSuspension, Effects,
+    FaultCode, FaultMetadata, FloatBinaryOp, FloatPredicate, FunctionBuilder, InstanceId,
+    InstanceKey, InstancePlan, InstanceRole, InstructionKind, IntPredicate, IoTaskOperation,
+    Origin, ProgramBuilder, ResourceKind, ResultTarget, Signature, SourceRoots, SumCase,
+    TargetLayout, Terminator, TerminatorKind, TestOutcomePlan, UnwindTarget, ValueId, ValueTypeId,
     analyze_source_reachability,
 };
 
@@ -545,7 +544,10 @@ pub fn lower_typed_artifact(
     // flow. A literal pointer remains a valid typed managed-root cell value.
     let managed_text = managed_text || aggregates.uses_text_aggregate_leaf();
     let aggregate_plan = aggregates.finish();
-    let mut builder = ProgramBuilder::new(target);
+    let mut builder = ProgramBuilder::with_canonical_types(
+        target,
+        CanonicalTypeCatalog::from_prelude(&mir.as_program().prelude),
+    );
     if managed_text {
         builder
             .add_managed_text_type()
@@ -1545,7 +1547,11 @@ fn direct_structural_equality_children(program: &mir::Program, ty: &Type) -> Opt
             program.prelude.option?,
             vec![(**element).clone()],
         )],
-        Type::Nominal(id, arguments) if *id == BYTES_TYPE_ID && arguments.is_empty() => Vec::new(),
+        Type::Nominal(id, arguments)
+            if program.prelude.bytes == Some(*id) && arguments.is_empty() =>
+        {
+            Vec::new()
+        }
         Type::Nominal(id, arguments) if program.prelude.text_map == Some(*id) => {
             let [value] = arguments.as_slice() else {
                 return None;
@@ -1725,7 +1731,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     .all(|element| visit(program, dyn_concepts, element, false, active, remaining)),
                 Type::Task(_) => allow_task_handle,
                 Type::Nominal(id, arguments)
-                    if (*id == BYTES_TYPE_ID && arguments.is_empty())
+                    if (program.prelude.bytes == Some(*id) && arguments.is_empty())
                         || program.prelude.text_map == Some(*id) =>
                 {
                     true
@@ -9490,7 +9496,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     origin,
                 )
             }
-            crate::Repr::ManagedPointer if matches!(value_type.semantic(), Type::Nominal(id, arguments) if *id == BYTES_TYPE_ID && arguments.is_empty()) =>
+            crate::Repr::ManagedPointer if matches!(value_type.semantic(), Type::Nominal(id, arguments) if self.program.prelude.bytes == Some(*id) && arguments.is_empty()) =>
             {
                 let condition = match self.one_instruction(
                     flow,

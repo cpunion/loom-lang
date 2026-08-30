@@ -5,7 +5,7 @@ use std::fmt;
 use loom_mir::Type;
 
 use crate::ids::ProgramBrand;
-use crate::{BYTES_TYPE_ID, ProductReprId, ReprId, SumReprId, ValueTypeId};
+use crate::{ProductReprId, ReprId, SumReprId, ValueTypeId};
 
 pub(crate) const DIRECT_PRODUCT_MAX_NESTING_DEPTH: usize = 256;
 pub(crate) const DIRECT_PRODUCT_MAX_STRUCTURAL_NODES: usize = 256;
@@ -488,8 +488,13 @@ impl RepresentationPlan {
     /// Returns whether `ty` is the canonical direct managed representation of
     /// the compiler-known immutable Bytes type.
     #[must_use]
-    pub fn is_managed_bytes_type(&self, ty: ValueTypeId) -> bool {
-        self.type_id(&Type::Nominal(BYTES_TYPE_ID, Vec::new())) == Some(ty)
+    pub fn is_managed_bytes_type(
+        &self,
+        canonical_bytes: Option<loom_mir::TypeId>,
+        ty: ValueTypeId,
+    ) -> bool {
+        canonical_bytes.and_then(|bytes| self.type_id(&Type::Nominal(bytes, Vec::new())))
+            == Some(ty)
             && self.value_type(ty).is_some_and(|value_type| {
                 value_type.kind() == ValueTypeKind::Direct
                     && self.repr(value_type.repr()) == Some(&Repr::ManagedPointer)
@@ -658,9 +663,13 @@ impl RepresentationPlan {
         Some(ty)
     }
 
-    pub(crate) fn add_managed_bytes(&mut self, semantic: Type) -> Option<ValueTypeId> {
+    pub(crate) fn add_managed_bytes(
+        &mut self,
+        semantic: Type,
+        canonical_bytes: loom_mir::TypeId,
+    ) -> Option<ValueTypeId> {
         if self.target.pointer_bits() != 64
-            || semantic != Type::Nominal(BYTES_TYPE_ID, Vec::new())
+            || semantic != Type::Nominal(canonical_bytes, Vec::new())
             || self.type_id(&semantic).is_some()
         {
             return None;
@@ -704,12 +713,17 @@ impl RepresentationPlan {
         Some(ty)
     }
 
-    pub(crate) fn add_managed_text_map(&mut self, semantic: Type) -> Option<ValueTypeId> {
-        let Type::Nominal(_, arguments) = &semantic else {
+    pub(crate) fn add_managed_text_map(
+        &mut self,
+        semantic: Type,
+        canonical_text_map: loom_mir::TypeId,
+    ) -> Option<ValueTypeId> {
+        let Type::Nominal(identity, arguments) = &semantic else {
             return None;
         };
         if self.target.pointer_bits() != 64
             || self.type_id(&semantic).is_some()
+            || *identity != canonical_text_map
             || arguments.len() != 1
         {
             return None;
@@ -1019,11 +1033,18 @@ mod tests {
 
     fn canonical_file_close_program() -> (Program, ValueTypeId, ValueTypeId) {
         let origin = Origin::synthetic(MirFunctionId(93));
-        let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
-        let file_semantic = Type::Nominal(TypeId(7), Vec::new());
+        let file_id = TypeId(107);
+        let mut builder = ProgramBuilder::with_canonical_types(
+            TargetLayout::new(64).expect("target"),
+            crate::CanonicalTypeCatalog {
+                file: Some(file_id),
+                ..crate::CanonicalTypeCatalog::default()
+            },
+        );
+        let file_semantic = Type::Nominal(file_id, Vec::new());
         let file = builder
             .add_pod_record_type(file_semantic, &[Type::Int])
-            .expect("canonical File#7");
+            .expect("canonical File");
         let unit = builder.type_id(&Type::Unit).expect("Unit");
         let function = builder
             .declare_function(
@@ -1070,7 +1091,7 @@ mod tests {
         assert!(errors.as_slice().iter().any(|error| {
             error.code() == ValidationCode::TypeMismatch
                 && error.path() == "function[0].instruction[0].resource"
-                && error.message().contains("canonical File#7")
+                && error.message().contains("canonical File")
         }));
     }
 
@@ -1099,11 +1120,15 @@ mod tests {
     fn resource_close_rejects_a_duplicate_file_registration() {
         let (program, _, _) = canonical_file_close_program();
         let mut duplicate_registration = program.clone();
+        let file_id = duplicate_registration
+            .canonical_types
+            .file
+            .expect("canonical File identity");
         let duplicate = duplicate_registration
             .representations
             .registrations
             .iter()
-            .find(|registration| registration.semantic == Type::Nominal(TypeId(7), Vec::new()))
+            .find(|registration| registration.semantic == Type::Nominal(file_id, Vec::new()))
             .cloned()
             .expect("File registration");
         duplicate_registration
@@ -1147,7 +1172,13 @@ mod tests {
 
     #[test]
     fn coroutine_frames_reject_noncanonical_managed_collection_alternatives() {
-        let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        let mut builder = ProgramBuilder::with_canonical_types(
+            TargetLayout::new(64).expect("target"),
+            crate::CanonicalTypeCatalog {
+                text_map: Some(TypeId(96)),
+                ..crate::CanonicalTypeCatalog::default()
+            },
+        );
         builder
             .add_managed_text_type()
             .expect("register managed Text");
@@ -1237,7 +1268,16 @@ mod tests {
     #[test]
     fn text_utf8_units_reject_a_noncanonical_managed_list_alternative() {
         let origin = Origin::synthetic(MirFunctionId(98));
-        let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        let result_id = TypeId(101);
+        let decode_error_id = TypeId(111);
+        let mut builder = ProgramBuilder::with_canonical_types(
+            TargetLayout::new(64).expect("target"),
+            crate::CanonicalTypeCatalog {
+                result: Some(result_id),
+                decode_text_error: Some(decode_error_id),
+                ..crate::CanonicalTypeCatalog::default()
+            },
+        );
         builder
             .add_managed_text_type()
             .expect("canonical managed Text");
@@ -1245,13 +1285,13 @@ mod tests {
         let list = builder
             .add_managed_list_type(list_semantic)
             .expect("canonical List[Int]");
-        let decode_error_semantic = Type::Nominal(TypeId(11), Vec::new());
+        let decode_error_semantic = Type::Nominal(decode_error_id, Vec::new());
         builder
             .add_sum_type(decode_error_semantic.clone(), &[Box::new([])])
             .expect("DecodeTextError");
         let decode_result = builder
             .add_sum_type(
-                Type::Nominal(TypeId(1), vec![Type::Text, decode_error_semantic.clone()]),
+                Type::Nominal(result_id, vec![Type::Text, decode_error_semantic.clone()]),
                 &[Box::new([Type::Text]), Box::from([decode_error_semantic])],
             )
             .expect("Result[Text, DecodeTextError]");
@@ -1333,20 +1373,30 @@ mod tests {
     )]
     fn path_opcodes_reject_noncanonical_path_and_result_alternatives() {
         let origin = Origin::synthetic(MirFunctionId(99));
-        let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        let result_id = TypeId(101);
+        let path_id = TypeId(110);
+        let path_error_id = TypeId(112);
+        let catalog = crate::CanonicalTypeCatalog {
+            result: Some(result_id),
+            path: Some(path_id),
+            path_error: Some(path_error_id),
+            ..crate::CanonicalTypeCatalog::default()
+        };
+        let mut builder =
+            ProgramBuilder::with_canonical_types(TargetLayout::new(64).expect("target"), catalog);
         let text = builder
             .add_managed_text_type()
             .expect("canonical managed Text");
-        let path_semantic = Type::Nominal(crate::PATH_TYPE_ID, Vec::new());
+        let path_semantic = Type::Nominal(path_id, Vec::new());
         let path = builder
             .add_invariant_record_type(path_semantic.clone(), &[Type::Text])
             .expect("Path");
-        let error_semantic = Type::Nominal(TypeId(12), Vec::new());
+        let error_semantic = Type::Nominal(path_error_id, Vec::new());
         builder
             .add_sum_type(error_semantic.clone(), &[Box::new([]), Box::new([])])
             .expect("PathError");
         let result_semantic = Type::Nominal(
-            TypeId(1),
+            result_id,
             vec![path_semantic.clone(), error_semantic.clone()],
         );
         let result = builder
@@ -1504,7 +1554,7 @@ mod tests {
                 error.code() == ValidationCode::TypeMismatch
                     && error
                         .message()
-                        .contains("canonical prelude Result#1[Path#10, PathError#12]")
+                        .contains("cataloged canonical Result[Path, PathError]")
             }),
             "{errors:#?}"
         );

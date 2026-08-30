@@ -4,18 +4,12 @@ use std::fmt;
 
 use loom_mir::Type;
 
-use crate::ir::{
-    BYTES_TYPE_ID, DECODE_TEXT_ERROR_TYPE_ID, FILE_TYPE_ID, IO_ERROR_KIND_TYPE_ID,
-    IO_ERROR_TYPE_ID, JSON_ERROR_TYPE_ID, JSON_TYPE_ID, LOG_LEVEL_TYPE_ID, OPTION_TYPE_ID,
-    PATH_ERROR_TYPE_ID, PATH_TYPE_ID, RESULT_TYPE_ID, SOCKET_TYPE_ID, TEXT_MAP_TYPE_ID,
-};
 use crate::{
     AwaitMode, BlockId, Constant, Effects, Function, InstanceId, InstanceRole, Instruction,
     InstructionId, InstructionKind, IoTaskOperation, Origin, ProductReprId, Program, Repr,
-    RepresentationPlan, ResultTarget, SumReprId, SumTagRepr, TASK_FAULT_TYPE_ID,
-    TASK_OUTCOME_CANCELLED_VARIANT, TASK_OUTCOME_COMPLETED_VARIANT, TASK_OUTCOME_FAULTED_VARIANT,
-    TASK_OUTCOME_TYPE_ID, Terminator, TerminatorKind, UnwindTarget, Value, ValueDefinition,
-    ValueId, ValueTypeId, ValueTypeKind,
+    RepresentationPlan, ResultTarget, SumReprId, SumTagRepr, TASK_OUTCOME_CANCELLED_VARIANT,
+    TASK_OUTCOME_COMPLETED_VARIANT, TASK_OUTCOME_FAULTED_VARIANT, Terminator, TerminatorKind,
+    UnwindTarget, Value, ValueDefinition, ValueId, ValueTypeId, ValueTypeKind,
 };
 
 fn representation_pointer_kinds(
@@ -85,6 +79,7 @@ fn representation_contains_task_handle(
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ValidationCode {
+    CanonicalTypeCatalog,
     RepresentationPlan,
     InstancePlan,
     InstanceKeyStructureBudget,
@@ -126,6 +121,7 @@ impl ValidationCode {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::CanonicalTypeCatalog => "LcirCanonicalTypeCatalog",
             Self::RepresentationPlan => "LcirRepresentationPlan",
             Self::InstancePlan => "LcirInstancePlan",
             Self::InstanceKeyStructureBudget => "LcirInstanceKeyStructureBudget",
@@ -325,6 +321,7 @@ impl<'a> Validator<'a> {
     }
 
     fn run(mut self) -> Vec<ValidationError> {
+        self.validate_canonical_types();
         self.validate_instances();
         self.validate_representations();
         for (index, function) in self.program.functions.iter().enumerate() {
@@ -360,6 +357,45 @@ impl<'a> Validator<'a> {
             self.validate_function(function, index);
         }
         self.errors
+    }
+
+    fn validate_canonical_types(&mut self) {
+        let canonical = *self.program.canonical_types();
+        let mut identities = BTreeMap::new();
+        for (name, identity) in [
+            ("result", canonical.result),
+            ("option", canonical.option),
+            ("constraint_error", canonical.constraint_error),
+            ("task_fault", canonical.task_fault),
+            ("task_outcome", canonical.task_outcome),
+            ("duration", canonical.duration),
+            ("file", canonical.file),
+            ("socket", canonical.socket),
+            ("bytes", canonical.bytes),
+            ("path", canonical.path),
+            ("decode_text_error", canonical.decode_text_error),
+            ("path_error", canonical.path_error),
+            ("text_map", canonical.text_map),
+            ("json", canonical.json),
+            ("json_error", canonical.json_error),
+            ("io_error", canonical.io_error),
+            ("io_error_kind", canonical.io_error_kind),
+            ("log_level", canonical.log_level),
+        ] {
+            let Some(identity) = identity else {
+                continue;
+            };
+            if let Some(previous) = identities.insert(identity, name) {
+                self.error(
+                    ValidationCode::CanonicalTypeCatalog,
+                    format!("canonical_types.{name}"),
+                    format!(
+                        "canonical type identity #{} is already assigned to {previous}",
+                        identity.0
+                    ),
+                );
+            }
+        }
     }
 
     fn validate_instances(&mut self) {
@@ -531,11 +567,18 @@ impl<'a> Validator<'a> {
         }
         let mut product_value_uses = vec![0_usize; product_count];
         let mut sum_value_uses = vec![0_usize; sum_count];
+        let canonical_bytes_semantic = self
+            .program
+            .canonical_types
+            .bytes
+            .map(|bytes| Type::Nominal(bytes, Vec::new()));
         for (index, value_type) in representations.value_types().iter().enumerate() {
             match value_type.kind() {
                 ValueTypeKind::Direct => {}
                 ValueTypeKind::ManagedTextMap => {
-                    let valid = matches!(value_type.semantic(), Type::Nominal(_, arguments) if arguments.len() == 1)
+                    let valid = matches!(value_type.semantic(), Type::Nominal(identity, arguments)
+                        if Some(*identity) == self.program.canonical_types.text_map
+                            && arguments.len() == 1)
                         && matches!(
                             representations.repr(value_type.repr()),
                             Some(Repr::ManagedPointer)
@@ -634,7 +677,7 @@ impl<'a> Validator<'a> {
                     "transparent values must retain a pointer-free base representation",
                 );
             }
-            if value_type.semantic() == &Type::Nominal(BYTES_TYPE_ID, Vec::new())
+            if canonical_bytes_semantic.as_ref() == Some(value_type.semantic())
                 && (value_type.kind() != ValueTypeKind::Direct
                     || representations.repr(value_type.repr()) != Some(&Repr::ManagedPointer)
                     || representations.target().pointer_bits() != 64)
@@ -719,7 +762,8 @@ impl<'a> Validator<'a> {
                     let valid_semantic = match value_type.semantic() {
                         Type::Text => value_type.kind() == ValueTypeKind::Direct,
                         Type::Nominal(id, arguments)
-                            if *id == BYTES_TYPE_ID && arguments.is_empty() =>
+                            if Some(*id) == self.program.canonical_types.bytes
+                                && arguments.is_empty() =>
                         {
                             value_type.kind() == ValueTypeKind::Direct
                         }
@@ -748,8 +792,9 @@ impl<'a> Validator<'a> {
                                         })
                                 })
                         }
-                        Type::Nominal(_, arguments)
-                            if value_type.kind() == ValueTypeKind::ManagedTextMap =>
+                        Type::Nominal(identity, arguments)
+                            if value_type.kind() == ValueTypeKind::ManagedTextMap
+                                && Some(*identity) == self.program.canonical_types.text_map =>
                         {
                             let [value] = arguments.as_slice() else {
                                 unreachable!("managed TextMap kind was checked above")
@@ -818,7 +863,7 @@ impl<'a> Validator<'a> {
                 }
                 Some(Repr::Uninhabited | Repr::Zst | Repr::Scalar(_)) | None => {
                     if value_type.semantic() == &Type::Text
-                        || value_type.semantic() == &Type::Nominal(BYTES_TYPE_ID, Vec::new())
+                        || canonical_bytes_semantic.as_ref() == Some(value_type.semantic())
                         || matches!(value_type.semantic(), Type::List(_))
                         || value_type.kind() == ValueTypeKind::ManagedTextMap
                         || matches!(value_type.semantic(), Type::Task(_))
@@ -2000,9 +2045,12 @@ impl<'a> Validator<'a> {
                 .map(crate::ValueType::semantic)
                 .cloned()
         });
-        let outcome_semantic = output_semantic
-            .as_ref()
-            .map(|output| Type::Nominal(TASK_OUTCOME_TYPE_ID, vec![output.clone()]));
+        let outcome_semantic = self
+            .program
+            .canonical_types
+            .task_outcome
+            .zip(output_semantic.as_ref())
+            .map(|(outcome, output)| Type::Nominal(outcome, vec![output.clone()]));
         let expected_outcome = outcome_semantic
             .as_ref()
             .and_then(|semantic| self.program.representations.type_id(semantic));
@@ -2010,7 +2058,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::TypeMismatch,
                 format!("{path}.result[0]"),
-                "task.outcome_take requires the canonical Nominal#5[T] result type",
+                "task.outcome_take requires the cataloged canonical TaskOutcome[T] result type",
             );
         }
         self.require_results(function, instruction, &[expected_outcome], path);
@@ -2035,7 +2083,7 @@ impl<'a> Validator<'a> {
                 self.error(
                     ValidationCode::TypeMismatch,
                     format!("{path}.result[0]"),
-                    "task.outcome_take result must use the canonical direct Nominal#5[T] value type",
+                    "task.outcome_take result must use the cataloged canonical direct TaskOutcome[T] value type",
                 );
             }
         }
@@ -2060,12 +2108,18 @@ impl<'a> Validator<'a> {
             );
         }
 
-        let fault_semantic = Type::Nominal(TASK_FAULT_TYPE_ID, Vec::new());
-        let fault = self.program.representations.type_id(&fault_semantic);
+        let fault_semantic = self
+            .program
+            .canonical_types
+            .task_fault
+            .map(|fault| Type::Nominal(fault, Vec::new()));
+        let fault = fault_semantic
+            .as_ref()
+            .and_then(|semantic| self.program.representations.type_id(semantic));
         let fault_fields = fault.and_then(|fault| {
             let value = self.program.representations.value_type(fault)?;
             (value.kind() == ValueTypeKind::Direct
-                && value.semantic() == &fault_semantic
+                && Some(value.semantic()) == fault_semantic.as_ref()
                 && self.program.representations.type_id(value.semantic()) == Some(fault))
             .then(|| self.product_fields(fault).map(<[ValueTypeId]>::to_vec))
             .flatten()
@@ -2075,7 +2129,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::TypeMismatch,
                 format!("{path}.task_fault"),
-                "task.outcome_take requires canonical Nominal#4 as direct product (Text, Text)",
+                "task.outcome_take requires cataloged TaskFault as direct product (Text, Text)",
             );
         }
 
@@ -2664,15 +2718,16 @@ impl<'a> Validator<'a> {
                         .is_some_and(|value_type| {
                             matches!(
                                 value_type.semantic(),
-                                Type::Nominal(_, arguments)
-                                    if arguments.as_slice() == [Type::Text]
+                                Type::Nominal(identity, arguments)
+                                    if Some(*identity) == self.program.canonical_types.option
+                                        && arguments.as_slice() == [Type::Text]
                             )
                         });
                     if !semantic_is_option_text {
                         self.error(
                             ValidationCode::TypeMismatch,
                             format!("{path}.result[0]"),
-                            "Text selection result must be a nominal Option[Text]",
+                            "Text selection result must use the cataloged canonical Option[Text] identity",
                         );
                     }
                     let Some(sum) = self.sum_repr(result_ty) else {
@@ -2801,7 +2856,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.result[0]"),
-                        "UTF-8 encoding requires canonical managed Bytes#9",
+                        "UTF-8 encoding requires cataloged canonical managed Bytes",
                     );
                 }
                 self.require_known_value_type(
@@ -2838,7 +2893,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.text"),
-                        "Path construction requires canonical Path#10 as one managed Text field",
+                        "Path construction requires cataloged canonical Path as one managed Text field",
                     );
                 }
                 self.require_known_value_type(
@@ -2864,7 +2919,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.path"),
-                        "Path projection requires canonical Path#10 as one managed Text field",
+                        "Path projection requires cataloged canonical Path as one managed Text field",
                     );
                 }
                 self.require_known_value_type(
@@ -2893,7 +2948,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.base"),
-                        "Path join requires canonical Path#10 as one managed Text field",
+                        "Path join requires cataloged canonical Path as one managed Text field",
                     );
                 }
                 for (name, value) in [("base", base), ("child", child)] {
@@ -2920,7 +2975,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.bytes"),
-                        "Bytes length requires canonical managed Bytes#9",
+                        "Bytes length requires cataloged canonical managed Bytes",
                     );
                 }
                 self.require_known_value_type(
@@ -2942,7 +2997,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.bytes"),
-                        "Bytes selection requires canonical managed Bytes#9",
+                        "Bytes selection requires cataloged canonical managed Bytes",
                     );
                 }
                 self.require_known_value_type(
@@ -2973,13 +3028,18 @@ impl<'a> Validator<'a> {
                     .and_then(|result| function.value(*result))
                     .map(Value::ty)
                 {
-                    let option_int = Type::Nominal(OPTION_TYPE_ID, vec![Type::Int]);
-                    let exact_semantic = self
+                    let option_int = self
                         .program
-                        .representations
-                        .value_type(result_ty)
-                        .is_some_and(|value_type| value_type.semantic() == &option_int)
-                        && self.scalar_type(&option_int) == Some(result_ty);
+                        .canonical_types
+                        .option
+                        .map(|option| Type::Nominal(option, vec![Type::Int]));
+                    let exact_semantic = option_int.as_ref().is_some_and(|option_int| {
+                        self.program
+                            .representations
+                            .value_type(result_ty)
+                            .is_some_and(|value_type| value_type.semantic() == option_int)
+                            && self.scalar_type(option_int) == Some(result_ty)
+                    });
                     let exact_shape = self.sum_repr(result_ty).is_some_and(|sum| {
                         self.program.representations.sum(sum).is_some_and(|sum| {
                             sum.variants().len() == 2
@@ -2992,7 +3052,7 @@ impl<'a> Validator<'a> {
                         self.error(
                             ValidationCode::TypeMismatch,
                             format!("{path}.result[0]"),
-                            "Bytes selection result must be canonical prelude Option#0[Int] with None=0 and Some(Int)=1",
+                            "Bytes selection result must be the cataloged canonical Option[Int] with None=0 and Some(Int)=1",
                         );
                     }
                 }
@@ -3002,7 +3062,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.result[0]"),
-                        "Bytes append requires canonical managed Bytes#9",
+                        "Bytes append requires cataloged canonical managed Bytes",
                     );
                 }
                 for (name, value) in [("left", left), ("right", right)] {
@@ -3035,7 +3095,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.left"),
-                        "Bytes comparison requires canonical managed Bytes#9",
+                        "Bytes comparison requires cataloged canonical managed Bytes",
                     );
                 }
                 for (name, value) in [("left", left), ("right", right)] {
@@ -4105,23 +4165,26 @@ impl<'a> Validator<'a> {
                         "typed I/O requires the canonical IoError and IoErrorKind representations",
                     );
                 }
-                let result = success.zip(io_error).and_then(|(success, io_error)| {
-                    let success = self
-                        .program
-                        .representations
-                        .value_type(success)?
-                        .semantic()
-                        .clone();
-                    let error = self
-                        .program
-                        .representations
-                        .value_type(io_error)?
-                        .semantic()
-                        .clone();
-                    self.program
-                        .representations
-                        .type_id(&Type::Nominal(RESULT_TYPE_ID, vec![success, error]))
-                });
+                let result = success
+                    .zip(io_error)
+                    .zip(self.program.canonical_types.result)
+                    .and_then(|((success, io_error), result)| {
+                        let success = self
+                            .program
+                            .representations
+                            .value_type(success)?
+                            .semantic()
+                            .clone();
+                        let error = self
+                            .program
+                            .representations
+                            .value_type(io_error)?
+                            .semantic()
+                            .clone();
+                        self.program
+                            .representations
+                            .type_id(&Type::Nominal(result, vec![success, error]))
+                    });
                 if success.is_some() && io_error.is_some() && result.is_none() {
                     self.error(
                         ValidationCode::InstructionShape,
@@ -4173,8 +4236,8 @@ impl<'a> Validator<'a> {
                 let valid_resource = resource_type == self.canonical_resource_type(*kind);
                 if resource_type.is_some() && !valid_resource {
                     let expected = match kind {
-                        crate::ResourceKind::File => "File#7",
-                        crate::ResourceKind::Socket => "Socket#8",
+                        crate::ResourceKind::File => "File",
+                        crate::ResourceKind::Socket => "Socket",
                     };
                     self.error(
                         ValidationCode::TypeMismatch,
@@ -4865,14 +4928,20 @@ impl<'a> Validator<'a> {
                 normal,
                 fault,
             } => {
-                let level_semantic = Type::Nominal(LOG_LEVEL_TYPE_ID, Vec::new());
-                let level_type = self.program.representations.type_id(&level_semantic);
+                let level_semantic = self
+                    .program
+                    .canonical_types
+                    .log_level
+                    .map(|level| Type::Nominal(level, Vec::new()));
+                let level_type = level_semantic
+                    .as_ref()
+                    .and_then(|semantic| self.program.representations.type_id(semantic));
                 let canonical_level = level_type.is_some_and(|ty| {
                     let Some(value_type) = self.program.representations.value_type(ty) else {
                         return false;
                     };
                     if value_type.kind() != ValueTypeKind::Direct
-                        || value_type.semantic() != &level_semantic
+                        || Some(value_type.semantic()) != level_semantic.as_ref()
                         || self.program.representations.type_id(value_type.semantic()) != Some(ty)
                     {
                         return false;
@@ -4899,7 +4968,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.level"),
-                        "typed logging requires canonical Nominal#18 LogLevel with four empty ordered variants",
+                        "typed logging requires the cataloged canonical LogLevel with four empty ordered variants",
                     );
                 }
                 self.require_known_value_type(
@@ -4918,15 +4987,21 @@ impl<'a> Validator<'a> {
                     ValidationCode::TypeMismatch,
                     format!("{path}.message"),
                 );
-                let fields_semantic = Type::Nominal(TEXT_MAP_TYPE_ID, vec![Type::Text]);
-                let fields_type = self.program.representations.type_id(&fields_semantic);
+                let fields_semantic = self
+                    .program
+                    .canonical_types
+                    .text_map
+                    .map(|text_map| Type::Nominal(text_map, vec![Type::Text]));
+                let fields_type = fields_semantic
+                    .as_ref()
+                    .and_then(|semantic| self.program.representations.type_id(semantic));
                 let canonical_fields = fields_type.is_some_and(|ty| {
                     self.program
                         .representations
                         .value_type(ty)
                         .is_some_and(|value_type| {
                             value_type.kind() == ValueTypeKind::ManagedTextMap
-                                && value_type.semantic() == &fields_semantic
+                                && Some(value_type.semantic()) == fields_semantic.as_ref()
                                 && self.program.representations.type_id(value_type.semantic())
                                     == Some(ty)
                                 && self.program.representations.repr(value_type.repr())
@@ -4938,7 +5013,7 @@ impl<'a> Validator<'a> {
                     self.error(
                         ValidationCode::TypeMismatch,
                         format!("{path}.fields"),
-                        "typed structured logging requires canonical Nominal#13[Text] managed TextMap fields",
+                        "typed structured logging requires cataloged canonical TextMap[Text] fields",
                     );
                 }
                 self.require_known_value_type(
@@ -5855,13 +5930,14 @@ impl<'a> Validator<'a> {
     }
 
     fn managed_bytes_type(&self) -> Option<ValueTypeId> {
+        let canonical = self.program.canonical_types.bytes?;
         let bytes = self
             .program
             .representations
-            .type_id(&Type::Nominal(BYTES_TYPE_ID, Vec::new()))?;
+            .type_id(&Type::Nominal(canonical, Vec::new()))?;
         self.program
             .representations
-            .is_managed_bytes_type(bytes)
+            .is_managed_bytes_type(Some(canonical), bytes)
             .then_some(bytes)
     }
 
@@ -5873,7 +5949,7 @@ impl<'a> Validator<'a> {
         {
             return None;
         }
-        let semantic = Type::Nominal(PATH_TYPE_ID, Vec::new());
+        let semantic = Type::Nominal(self.program.canonical_types.path?, Vec::new());
         let path = self.scalar_type(&semantic)?;
         let path_type = self.program.representations.value_type(path)?;
         (path_type.kind() == ValueTypeKind::InvariantProduct
@@ -5882,13 +5958,11 @@ impl<'a> Validator<'a> {
     }
 
     fn canonical_resource_type(&self, kind: crate::ResourceKind) -> Option<ValueTypeId> {
-        let semantic = Type::Nominal(
-            match kind {
-                crate::ResourceKind::File => FILE_TYPE_ID,
-                crate::ResourceKind::Socket => SOCKET_TYPE_ID,
-            },
-            Vec::new(),
-        );
+        let identity = match kind {
+            crate::ResourceKind::File => self.program.canonical_types.file?,
+            crate::ResourceKind::Socket => self.program.canonical_types.socket?,
+        };
+        let semantic = Type::Nominal(identity, Vec::new());
         let resource = self.scalar_type(&semantic)?;
         let mut registrations = self
             .program
@@ -5909,10 +5983,10 @@ impl<'a> Validator<'a> {
     }
 
     fn canonical_io_error_type(&self) -> Option<ValueTypeId> {
-        let semantic = Type::Nominal(IO_ERROR_TYPE_ID, Vec::new());
+        let semantic = Type::Nominal(self.program.canonical_types.io_error?, Vec::new());
         let error = self.program.representations.type_id(&semantic)?;
         let error_value = self.program.representations.value_type(error)?;
-        let kind_semantic = Type::Nominal(IO_ERROR_KIND_TYPE_ID, Vec::new());
+        let kind_semantic = Type::Nominal(self.program.canonical_types.io_error_kind?, Vec::new());
         let kind = self.program.representations.type_id(&kind_semantic)?;
         let text = self.scalar_type(&Type::Text)?;
         let text_value = self.program.representations.value_type(text)?;
@@ -5952,12 +6026,10 @@ impl<'a> Validator<'a> {
             .representations
             .value_type(ty)
             .is_some_and(|value_type| {
-                matches!(
-                    value_type.semantic(),
-                    Type::Nominal(id, arguments)
-                        if arguments.is_empty()
-                            && (*id == FILE_TYPE_ID || *id == SOCKET_TYPE_ID)
-                )
+                matches!(value_type.semantic(), Type::Nominal(id, arguments)
+                    if arguments.is_empty()
+                        && (Some(*id) == self.program.canonical_types.file
+                            || Some(*id) == self.program.canonical_types.socket))
             })
     }
 
@@ -6028,9 +6100,12 @@ impl<'a> Validator<'a> {
         {
             return None;
         }
-        let Type::Nominal(_, arguments) = value_type.semantic() else {
+        let Type::Nominal(identity, arguments) = value_type.semantic() else {
             return None;
         };
+        if Some(*identity) != self.program.canonical_types.text_map {
+            return None;
+        }
         let [value] = arguments.as_slice() else {
             return None;
         };
@@ -6067,10 +6142,14 @@ impl<'a> Validator<'a> {
             return None;
         }
         let value_semantic = semantic_value.clone();
-        let map_semantic = Type::Nominal(TEXT_MAP_TYPE_ID, vec![value_semantic]);
+        let map_semantic =
+            Type::Nominal(self.program.canonical_types.text_map?, vec![value_semantic]);
         let map = self.program.representations.type_id(&map_semantic)?;
         self.text_map_value(map)?;
-        let result_semantic = Type::Nominal(RESULT_TYPE_ID, vec![map_semantic, Type::Text]);
+        let result_semantic = Type::Nominal(
+            self.program.canonical_types.result?,
+            vec![map_semantic, Type::Text],
+        );
         let result = self.program.representations.type_id(&result_semantic)?;
         let sum = self.sum_repr(result)?;
         let variants = self.program.representations.sum(sum)?.variants();
@@ -6080,9 +6159,12 @@ impl<'a> Validator<'a> {
 
     fn option_element(&self, ty: ValueTypeId) -> Option<ValueTypeId> {
         let value_type = self.program.representations.value_type(ty)?;
-        let Type::Nominal(_, arguments) = value_type.semantic() else {
+        let Type::Nominal(identity, arguments) = value_type.semantic() else {
             return None;
         };
+        if Some(*identity) != self.program.canonical_types.option {
+            return None;
+        }
         let [element] = arguments.as_slice() else {
             return None;
         };
@@ -6188,13 +6270,27 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::TypeMismatch,
                 format!("{path}.result[0]"),
-                "Path operation requires canonical Path#10 as one managed Text field",
+                "Path operation requires the cataloged canonical Path as one managed Text field",
             );
         }
-        let path_semantic = Type::Nominal(PATH_TYPE_ID, Vec::new());
-        let error_semantic = Type::Nominal(PATH_ERROR_TYPE_ID, Vec::new());
-        let result_semantic =
-            Type::Nominal(RESULT_TYPE_ID, vec![path_semantic, error_semantic.clone()]);
+        let Some((path_id, error_id, result_id)) = self
+            .program
+            .canonical_types
+            .path
+            .zip(self.program.canonical_types.path_error)
+            .zip(self.program.canonical_types.result)
+            .map(|((path, error), result)| (path, error, result))
+        else {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.result[0]"),
+                "Path operation requires cataloged Path, PathError, and Result identities",
+            );
+            return;
+        };
+        let path_semantic = Type::Nominal(path_id, Vec::new());
+        let error_semantic = Type::Nominal(error_id, Vec::new());
+        let result_semantic = Type::Nominal(result_id, vec![path_semantic, error_semantic.clone()]);
         let Some(result_ty) = instruction
             .results
             .first()
@@ -6213,7 +6309,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::TypeMismatch,
                 format!("{path}.result[0]"),
-                "Path operation result must be canonical prelude Result#1[Path#10, PathError#12]",
+                "Path operation result must be the cataloged canonical Result[Path, PathError]",
             );
         }
 
@@ -6250,7 +6346,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::InstructionShape,
                 format!("{path}.ok_variant"),
-                "Path success variant must carry exactly canonical Path#10",
+                "Path success variant must carry exactly canonical Path",
             );
         }
 
@@ -6270,7 +6366,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::InstructionShape,
                 format!("{path}.error_variant"),
-                "Path error variant must carry exactly canonical direct PathError#12",
+                "Path error variant must carry exactly canonical direct PathError",
             );
             return;
         }
@@ -6278,7 +6374,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::TypeMismatch,
                 format!("{path}.error_variant"),
-                "PathError#12 must use a closed sum representation",
+                "PathError must use a closed sum representation",
             );
             return;
         };
@@ -6297,7 +6393,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::InstructionShape,
                 format!("{path}.error_variant"),
-                "PathError#12 must contain only ContainsNul=0 and AbsoluteJoin=1 without payload",
+                "PathError must contain only ContainsNul=0 and AbsoluteJoin=1 without payload",
             );
         }
         if path_error_variant != expected_path_error_variant {
@@ -6333,7 +6429,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::TypeMismatch,
                 format!("{path}.bytes"),
-                "UTF-8 decoding requires canonical managed Bytes#9",
+                "UTF-8 decoding requires cataloged canonical managed Bytes",
             );
         }
         self.require_known_value_type(
@@ -6394,9 +6490,21 @@ impl<'a> Validator<'a> {
         else {
             return;
         };
-        let error_semantic = Type::Nominal(DECODE_TEXT_ERROR_TYPE_ID, Vec::new());
-        let result_semantic =
-            Type::Nominal(RESULT_TYPE_ID, vec![Type::Text, error_semantic.clone()]);
+        let Some((error_id, result_id)) = self
+            .program
+            .canonical_types
+            .decode_text_error
+            .zip(self.program.canonical_types.result)
+        else {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.result[0]"),
+                "UTF-8 decoding requires cataloged DecodeTextError and Result identities",
+            );
+            return;
+        };
+        let error_semantic = Type::Nominal(error_id, Vec::new());
+        let result_semantic = Type::Nominal(result_id, vec![Type::Text, error_semantic.clone()]);
         if self
             .program
             .representations
@@ -6407,7 +6515,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::TypeMismatch,
                 format!("{path}.result[0]"),
-                "UTF-8 decoding result must be canonical prelude Result#1[Text, DecodeTextError#11]",
+                "UTF-8 decoding result must be the cataloged canonical Result[Text, DecodeTextError]",
             );
         }
 
@@ -6463,7 +6571,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::InstructionShape,
                 format!("{path}.error_variant"),
-                "UTF-8 decoding error variant must carry exactly canonical direct DecodeTextError#11",
+                "UTF-8 decoding error variant must carry exactly canonical direct DecodeTextError",
             );
             return;
         }
@@ -6471,7 +6579,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::TypeMismatch,
                 format!("{path}.error_variant"),
-                "DecodeTextError#11 must use a closed sum representation",
+                "DecodeTextError must use a closed sum representation",
             );
             return;
         };
@@ -6489,7 +6597,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::InstructionShape,
                 format!("{path}.invalid_utf8_variant"),
-                "DecodeTextError#11 must contain only canonical InvalidUtf8=0 without payload",
+                "DecodeTextError must contain only canonical InvalidUtf8=0 without payload",
             );
         }
     }
@@ -6518,7 +6626,23 @@ impl<'a> Validator<'a> {
         let Some(json_ty) = function.value(json).map(Value::ty) else {
             return;
         };
-        let canonical_json_semantic = Type::Nominal(JSON_TYPE_ID, Vec::new());
+        let Some((json_id, text_map_id, json_error_id, result_id)) = self
+            .program
+            .canonical_types
+            .json
+            .zip(self.program.canonical_types.text_map)
+            .zip(self.program.canonical_types.json_error)
+            .zip(self.program.canonical_types.result)
+            .map(|(((json, text_map), json_error), result)| (json, text_map, json_error, result))
+        else {
+            self.error(
+                ValidationCode::TypeMismatch,
+                format!("{path}.json"),
+                "JSON formatting requires cataloged Json, TextMap, JsonError, and Result identities",
+            );
+            return;
+        };
+        let canonical_json_semantic = Type::Nominal(json_id, Vec::new());
         let json_semantic = self
             .program
             .representations
@@ -6538,7 +6662,7 @@ impl<'a> Validator<'a> {
             self.error(
                 ValidationCode::TypeMismatch,
                 format!("{path}.json"),
-                "JSON formatting requires canonical prelude Json#14",
+                "JSON formatting requires the cataloged canonical Json type",
             );
         }
         let variants = self
@@ -6550,8 +6674,7 @@ impl<'a> Validator<'a> {
         let float = self.scalar_type(&Type::Float);
         let text = self.scalar_type(&Type::Text);
         let array_semantic = Type::List(Box::new(canonical_json_semantic.clone()));
-        let object_semantic =
-            Type::Nominal(TEXT_MAP_TYPE_ID, vec![canonical_json_semantic.clone()]);
+        let object_semantic = Type::Nominal(text_map_id, vec![canonical_json_semantic.clone()]);
         let exact_scalar_variant = |validator: &Self, variant: usize, expected| {
             validator.sum_variant_field_count(json_sum, variant) == Some(1)
                 && validator.sum_variant_field(json_sum, variant, 0) == expected
@@ -6590,16 +6713,16 @@ impl<'a> Validator<'a> {
             .representations
             .value_type(result_ty)
             .map(|value_type| value_type.semantic().clone());
-        let error_semantic = Type::Nominal(JSON_ERROR_TYPE_ID, Vec::new());
+        let error_semantic = Type::Nominal(json_error_id, Vec::new());
         let canonical_result_semantic =
-            Type::Nominal(RESULT_TYPE_ID, vec![Type::Text, error_semantic.clone()]);
+            Type::Nominal(result_id, vec![Type::Text, error_semantic.clone()]);
         if result_semantic.as_ref() != Some(&canonical_result_semantic)
             || self.scalar_type(&canonical_result_semantic) != Some(result_ty)
         {
             self.error(
                 ValidationCode::TypeMismatch,
                 format!("{path}.result[0]"),
-                "JSON formatting result must be canonical prelude Result#1[Text, JsonError#15]",
+                "JSON formatting result must be the cataloged canonical Result[Text, JsonError]",
             );
         }
 

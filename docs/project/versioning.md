@@ -27,12 +27,12 @@ writers for unreleased formats. Development history belongs in
 | Interpreted final-cache layer | `final-artifact-v3` |
 | Interpreted artifact writer | `loom-interpreted-artifact-writer-v3` |
 | Portable-library final-cache layer | `portable-library-artifact-v3` |
-| LCIR textual dump | `lcir 42` |
-| LCIR artifact identity | schema `44` |
+| LCIR textual dump | `lcir 43` |
+| LCIR artifact identity | schema `45` |
 | LCIR artifact route | `typed-lcir-whole-artifact` |
-| LCIR native-object domain | `loom-lcir-native-object-v40` |
+| LCIR native-object domain | `loom-lcir-native-object-v41` |
 | Checked-MIR native-object domain | `loom-checked-mir-native-object-v2` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v45` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v46` |
 | Controlled quality evidence | schema `4` |
 | Runtime bundle manifest | schema `2` |
 | Native runtime ABI component | `32` |

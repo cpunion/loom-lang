@@ -1,15 +1,27 @@
 use loom_codegen_ir::{
-    AwaitMode, BlockTarget, Constant, CoroutinePlan, CoroutineSuspension, Effects, InstructionKind,
-    IoTaskOperation, Origin, Program, ProgramBuilder, ResultTarget, Signature, TargetLayout,
-    Terminator, TerminatorKind, UnwindTarget, ValidationCode, validate_program,
+    AwaitMode, BlockTarget, CanonicalTypeCatalog, Constant, CoroutinePlan, CoroutineSuspension,
+    Effects, InstructionKind, IoTaskOperation, Origin, Program, ProgramBuilder, ResultTarget,
+    Signature, TargetLayout, Terminator, TerminatorKind, UnwindTarget, ValidationCode,
+    validate_program,
 };
 use loom_mir::{FunctionId, Type, TypeId};
 
-const RESULT_TYPE_ID: TypeId = TypeId(1);
-const FILE_TYPE_ID: TypeId = TypeId(7);
-const SOCKET_TYPE_ID: TypeId = TypeId(8);
-const IO_ERROR_TYPE_ID: TypeId = TypeId(16);
-const IO_ERROR_KIND_TYPE_ID: TypeId = TypeId(17);
+const RESULT_TYPE_ID: TypeId = TypeId(101);
+const FILE_TYPE_ID: TypeId = TypeId(107);
+const SOCKET_TYPE_ID: TypeId = TypeId(108);
+const IO_ERROR_TYPE_ID: TypeId = TypeId(116);
+const IO_ERROR_KIND_TYPE_ID: TypeId = TypeId(117);
+
+fn io_catalog() -> CanonicalTypeCatalog {
+    CanonicalTypeCatalog {
+        result: Some(RESULT_TYPE_ID),
+        file: Some(FILE_TYPE_ID),
+        socket: Some(SOCKET_TYPE_ID),
+        io_error: Some(IO_ERROR_TYPE_ID),
+        io_error_kind: Some(IO_ERROR_KIND_TYPE_ID),
+        ..CanonicalTypeCatalog::default()
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Defect {
@@ -51,7 +63,8 @@ fn empty_variants(count: usize) -> Vec<Box<[Type]>> {
 )]
 fn io_task_program(operation: IoTaskOperation, defect: Defect) -> Program {
     let origin = Origin::synthetic(FunctionId(500));
-    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut builder =
+        ProgramBuilder::with_canonical_types(TargetLayout::new(64).expect("target"), io_catalog());
     let unit = builder.type_id(&Type::Unit).expect("Unit");
     let integer = builder.type_id(&Type::Int).expect("Int");
     let text = builder
@@ -315,7 +328,8 @@ fn resource_product_program(
     operation: ResourceProductOperation,
 ) -> Program {
     let origin = Origin::synthetic(FunctionId(501));
-    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let mut builder =
+        ProgramBuilder::with_canonical_types(TargetLayout::new(64).expect("target"), io_catalog());
     let unit = builder.type_id(&Type::Unit).expect("Unit");
     let integer = builder.type_id(&Type::Int).expect("Int");
     let resource = builder
