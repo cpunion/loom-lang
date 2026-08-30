@@ -153,15 +153,16 @@ and uses the typed LCIR emitter. A valid `Unsupported` result selects the
 checked-MIR source graph and universal-value emitter for the complete artifact
 only when the reachable graph contains no LCIR-only primitive. Reachable File
 or Socket I/O instead makes preparation fail closed; a dead private I/O helper
-does not affect route selection. Invalid roots, resource exhaustion, compiler
-defects, and LCIR emission failures never select fallback.
+does not affect route selection. Invalid programs, invalid roots, resource
+exhaustion, compiler defects, and LCIR emission failures never select fallback.
 
 Tooling can select `NativeRoutePolicy::LcirOnly` at the same preparation
 boundary. It performs the identical whole-artifact classification but returns
 `NativePreparationUnsupportedLcir` with the ordered `SupportReport` instead of
-constructing a checked-MIR plan. `CheckedMirOnly` remains available for focused
-checked-MIR backend validation. Route policy never changes the identity of an
-otherwise identical selected object.
+constructing a checked-MIR plan. `CheckedMirOnly` remains an internal focused
+backend-validation escape: it deliberately bypasses LCIR classification and is
+not selected by a production command. Route policy never changes the identity
+of an otherwise identical selected object.
 
 The prepared plan owns its `EmitOptions` and exact target machine. Cache
 identity, runtime-bundle validation, optimization, and object emission reuse
@@ -171,6 +172,12 @@ artifact keeps the typed route in development debug builds; an unsupported
 reachable construct selects the complete checked-MIR route only when the graph
 contains no LCIR-only primitive. Linking remains a separate step.
 
-Source diagnostics exit before either backend executes. Errors discovered
-after checked MIR—missing MIR references, LLVM verifier failures, or malformed
-compiler-generated ABI metadata—are reported as defects, not source errors.
+Source diagnostics exit before either backend executes. `loom check` stops at
+this source and checked-MIR boundary and does not select executable roots.
+Concrete native artifact closure for LLVM `build`, `run`, `test`, or `debug`
+may then discover the root-dependent `MissingDynamicConceptWitness` error;
+Automatic and `LcirOnly` preparation report it as an invalid program before
+selecting an emitter. The internal `CheckedMirOnly` escape does not perform that
+artifact validity check. Other errors discovered after checked MIR—missing MIR
+references, LLVM verifier failures, or malformed compiler-generated ABI
+metadata—are reported as defects, not source errors.

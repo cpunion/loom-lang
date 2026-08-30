@@ -40,13 +40,14 @@ gates in this record are not complete.
 The production LLVM backend still lowers artifacts outside current direct LCIR
 coverage through a universal value implementation and several closed-world
 native specializations. Unsupported managed and projected shapes,
-nonregular generic expansion, dynamic producers whose proofs still contain
-unresolved parameters or projections, runtime-checked generic constraints,
-cleanup shapes outside the direct lexical slice, async shapes outside the
-checked coroutine slice, and private-list paths still repeat representation, proof,
-call-compatibility, and runtime-requirement decisions inside the checked-MIR target
-emitter. Some checked-MIR functions may acquire universal, checked-native, and
-assumption-specialized bodies.
+nonregular generic expansion, runtime-checked generic constraints, cleanup
+shapes outside the direct lexical slice, async shapes outside the checked
+coroutine slice, and private-list paths still repeat representation, proof,
+call-compatibility, and runtime-requirement decisions inside the checked-MIR
+target emitter. Some checked-MIR functions may acquire universal,
+checked-native, and assumption-specialized bodies. A missing exact dynamic
+producer in the closed concrete catalog is not part of that fallback debt:
+artifact closure rejects it with `MissingDynamicConceptWitness`.
 
 That structure makes a correct fast path depend on exact MIR shapes and makes
 each additional type or operation multiply the number of lowering choices.
@@ -504,8 +505,10 @@ conformance, provided its concrete types and prerequisite proof tree are fully
 closed. This admits the value in coroutine parameters, results, and nested
 product, sum, and suspension-frame shapes. A finite multi-candidate View keeps
 its exact one-pointer managed catalog representation in the same positions,
-including inside Lists. A producer whose proof still contains an unresolved
-parameter or projection has no coroutine-frame representation.
+including inside Lists. A reachable concrete dynamic use with no exact producer
+in the closed catalog reports `MissingDynamicConceptWitness` before
+coroutine-frame representation planning. Open producers in unreachable generic
+instances do not affect the artifact.
 
 An immediately awaited fixed tuple or fixed Task-policy call evaluates its
 children left to right and lowers directly to one multi-child `AwaitTasks`, with
@@ -587,11 +590,13 @@ name or maps the source `DefId` back to `TaskIntrinsic`. LCIR therefore still
 receives exact child types and explicit control flow without acquiring public
 Task policy operators.
 
-The remaining fallback boundary includes dynamic-concept frame producers with
-unresolved parameters or projections, raw readiness, and unsupported managed
-projected operations. Mutation or moves through a constrained or protected
-record interior are rejected at the source and checked-MIR boundaries; the
-owning synchronous `mut self` record receiver remains an admitted top-level reconstruction. Concrete closed
+The remaining fallback boundary includes raw readiness and unsupported managed
+projected operations. A reachable dynamic-concept frame use with no exact
+producer in the closed catalog instead reports `MissingDynamicConceptWitness`
+and never selects fallback. Mutation or moves
+through a constrained or protected record interior are rejected at the source
+and checked-MIR boundaries; the owning synchronous `mut self` record receiver
+remains an admitted top-level reconstruction. Concrete closed
 `List[T]` and compiler-private `TextMap[V]` values are canonical one-pointer
 frame carriers in parameters, results, nested products, and suspension-live
 rows. Fixed argument joins and homogeneous runtime-width List joins are
