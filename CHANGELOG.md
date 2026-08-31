@@ -35,6 +35,9 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   unreachable functions and conformances.
 - Exact typed LLVM representations for scalars, products, closed sums, managed
   Text, Bytes, Lists, TextMaps, dynamic concepts, Tasks, and typed async I/O.
+  Structural equality compares closed-sum tags once and enters one matching
+  paired-payload case, so wide enums generate linear LCIR and LLVM control flow
+  instead of a Cartesian pair of exhaustive switches.
   File and Socket operations in both the recoverable `Result` family and the
   faulting family lower only through typed LCIR. Resource close is a normal
   LCIR instruction; generated I/O callbacks publish the exact direct result or

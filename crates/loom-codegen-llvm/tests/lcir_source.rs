@@ -5569,7 +5569,7 @@ fn wide_payload_enum_equality_executes_one_linear_typed_dispatch() {
         writeln!(variants, "    V{index}(Int)").expect("variant declaration");
     }
     let source = format!(
-        "enum Wide {{\n{variants}}}\n\npub fn main() {{\n    let left = Wide.V0(7)\n    let same = Wide.V0(7)\n    let changed = Wide.V0(8)\n    let other = Wide.V63(7)\n    assert left == same\n    assert left != changed\n    assert left != other\n}}\n"
+        "enum Solo {{\n    Value(Int)\n}}\n\nenum Flag {{\n    A\n    B\n    C\n}}\n\nenum Wide {{\n{variants}}}\n\npub fn main() {{\n    let solo = Solo.Value(5)\n    let sameSolo = Solo.Value(5)\n    let flag = Flag.B\n    let sameFlag = Flag.B\n    let otherFlag = Flag.C\n    let left = Wide.V0(7)\n    let same = Wide.V0(7)\n    let changed = Wide.V0(8)\n    let other = Wide.V63(7)\n    let sameOther = Wide.V63(7)\n    assert solo == sameSolo\n    assert flag == sameFlag\n    assert flag != otherFlag\n    assert left == same\n    assert left != changed\n    assert left != other\n    assert other == sameOther\n}}\n"
     );
     let program = compile_source(&source);
     assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
@@ -5587,20 +5587,21 @@ fn wide_payload_enum_equality_executes_one_linear_typed_dispatch() {
         },
     );
     let dump = dump_program(artifact.program());
-    assert_eq!(dump.matches("sum.zip_switch").count(), 1, "{dump}");
+    assert_eq!(dump.matches("sum.zip_switch").count(), 3, "{dump}");
     let helper = artifact
         .functions()
         .iter()
-        .find(|function| {
+        .filter(|function| {
             artifact
                 .program()
                 .as_program()
                 .instance_key(function.id())
                 .is_some_and(|key| key.role() == InstanceRole::StructuralEquality)
         })
+        .max_by_key(|function| function.blocks().len())
         .expect("wide equality helper");
     assert!(
-        helper.blocks().len() < VARIANTS * 2,
+        (VARIANTS..VARIANTS * 2).contains(&helper.blocks().len()),
         "wide equality helper grew beyond a linear CFG:\n{dump}"
     );
 
