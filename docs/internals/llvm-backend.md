@@ -740,11 +740,14 @@ GC, and executor symbols for pure sums, and indirect calls. The output-only
 `loom_runtime_stdout_write_v1` harness declaration is allowed and does not
 weaken the pure source-function check.
 
-Structural sum equality is a pair of checked `SumSwitch` trees. Each operand's
-payload is decoded only on its active case edge; mismatched tags branch false,
-while matching tags compare their exact payload fields. No comparison reads
-the carrier as raw bytes, so padding and inactive managed-pointer candidates do
-not participate in language equality.
+Structural sum equality uses one checked `SumZipSwitch`. LLVM extracts both
+tags once, branches unequal tags directly to false, and switches once on the
+shared matching tag. Only the selected case decodes the left and right carriers
+into their exact typed payload fields, in that order. Tag-only enums need no
+carrier decode, and a single-variant tagless sum enters its sole case directly.
+The CFG and emitted dispatch are linear in the variant count. No comparison
+reads the carrier as raw bytes, so padding and inactive managed-pointer
+candidates do not participate in language equality.
 
 The test harness consumes the checked artifact's `TestOutcomePlan`. `Unit`
 tests pass after a successful call. `Result[Unit, E]` tests compare the physical
