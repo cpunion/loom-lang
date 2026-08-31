@@ -40,7 +40,10 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   Text, Bytes, Lists, TextMaps, dynamic concepts, Tasks, and typed async I/O.
   Structural equality compares closed-sum tags once and enters one matching
   paired-payload case, so wide enums generate linear LCIR and LLVM control flow
-  instead of a Cartesian pair of exhaustive switches.
+  instead of a Cartesian pair of exhaustive switches. Functional `mut self`
+  writeback retains the exact direct representation for scalars, products, and
+  task-free closed sums, including `Option` and `Result`, on normal and fault
+  exits.
   File and Socket operations in both the recoverable `Result` family and the
   faulting family lower only through typed LCIR. Resource close is a normal
   LCIR instruction; generated I/O callbacks publish the exact direct result or
@@ -59,7 +62,8 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   enums, the public `std.time.milliseconds` wrapper, and the complete public
   `std.log` graph. Time construction now resolves through an ordinary source
   `DefId`; only its exact-owner private primitive remains below source. Logging
-  resolves through ordinary source `DefId` values and has no universal-value native fallback;
+  resolves through ordinary source `DefId` values and has no universal-value
+  native fallback;
   only its exact-owner private typed write primitive remains compiler-owned.
   `IoErrorKind` is now an ordinary `std.io` source enum whose exact definition
   is made available through the prelude; its ten compiler builtin constructors

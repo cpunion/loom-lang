@@ -436,9 +436,9 @@ record construction, whole-value copy and move, nested field read/write,
 tuple/record nesting, product block parameters, parameters, returns, and
 loop-carried products lower directly to SSA. Compile-time-proven
 refined construction, exact unrefinement, and compile-time-proven record
-invariants are representation-preserving typed operations. Unknown task-free
-nongeneric refined predicates and fully concrete task-free nongeneric or generic
-record invariants remain normal typed `Result[..., ConstraintError]`
+invariants are representation-preserving typed operations. Unknown fully
+instantiated task-free refined predicates and record invariants remain normal
+typed `Result[..., ConstraintError]`
 constructions. Open or unsupported-shape runtime construction rejects native
 preparation. A
 decoded `.loomi` MIR
@@ -476,10 +476,12 @@ All limits are checked before the lowerer allocates any match LCIR; exceeding a
 limit reports unsupported native coverage. A synchronous mutable method receiver is
 a functional inout parameter: the callee returns its current exact receiver
 value on both normal and fault exits. Direct `Bool`, `Int`, and `Float`
-receivers retain their scalar representation. A call may borrow a local or an
-admitted projected place when its leaf has the exact primitive or supported
-task-free record receiver type. A projected writeback is rebuilt into the
-current aggregate root on both exits. The same plan may cross the current
+receivers retain their scalar representation. Concrete task-free closed sums,
+including `Option` and `Result`, retain their exact direct sum representation.
+A call may borrow a local or an admitted projected place when its leaf has the
+exact primitive, supported task-free record, or supported task-free closed-sum
+receiver type. A projected writeback is rebuilt into the current aggregate
+root on both exits. The same plan may cross the current
 function's own top-level invariant product when that root is its synchronous
 `mut self` parameter. The reconstructed receiver reaches its invariant check
 only on the normal function continuation. Source analysis and checked MIR
@@ -489,7 +491,8 @@ cleanup suffix. Cleanup therefore cannot observe a partially updated product.
 Checked MIR fail-closes the complete borrowed root when its type contains a
 nested invariant or is an open parameter or associated projection. A dynamic
 view is opaque, and exact witness dispatch checks its hidden receiver invariant
-before method entry. Unsupported receiver shapes reject native preparation. The
+before method entry. Task-bearing sums and other unsupported receiver shapes
+reject native preparation. The
 same synchronous call ABI is valid inside an async body. Its normal edge installs
 the result and writebacks before ordinary continuation. Its fault bridge
 installs every writeback before requesting the coroutine's fault target;
@@ -1121,8 +1124,8 @@ enum instantiations, runtime constructions with open, affine, or unsupported
 shapes, affine or unsupported-shape proof replay, operations over otherwise
 closed dynamic catalogs outside the admitted flow, derived dynamic proof
 conversion, contracts over resource or otherwise unsupported value shapes, and coroutine forms
-outside the bounded typed slice are not implemented. Nongeneric task-free
-refined and fully concrete task-free invariant-record runtime
+outside the bounded typed slice are not implemented. Fully instantiated
+task-free refined and invariant-record runtime
 construction is direct typed CFG returning the exact
 `Result[..., ConstraintError]`; portable task-free refined and concrete
 task-free invariant-record proof replay uses a canonical runtime-fault

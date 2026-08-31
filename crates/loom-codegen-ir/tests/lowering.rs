@@ -6793,6 +6793,154 @@ pub fn main() {
 }
 
 #[test]
+fn task_free_enum_option_and_result_receivers_use_exact_functional_writeback() {
+    let source = r#"concept Replace {
+    method replace(mut self, fail Bool)
+}
+
+record Pair {
+    left Text
+    right Text
+}
+
+enum Problem { Wrong }
+enum Envelope {
+    Empty
+    Wrapped(Text)
+}
+
+impl Replace for Envelope {
+    method replace(mut self, fail Bool) {
+        self = Envelope.Wrapped("enum")
+        assert !fail
+    }
+}
+
+impl Replace for Option[Text] {
+    method replace(mut self, fail Bool) {
+        self = Some("option")
+        assert !fail
+    }
+}
+
+impl Replace for Result[Pair, Problem] {
+    method replace(mut self, fail Bool) {
+        self = Ok(Pair { left = "result", right = "result" })
+        assert !fail
+    }
+}
+
+fn initialResult() Result[Pair, Problem] { Err(Problem.Wrong) }
+
+pub fn main() {
+    var envelope = Envelope.Empty
+    var optional = Some("before")
+    var outcome = initialResult()
+    envelope.replace(false)
+    optional.replace(false)
+    outcome.replace(false)
+    let envelopeOk = match envelope {
+        Wrapped(value) => value == "enum"
+        Empty => false
+    }
+    let optionalOk = match optional {
+        Some(value) => value == "option"
+        None => false
+    }
+    let outcomeOk = match outcome {
+        Ok(pair) => pair.left == "result" && pair.right == "result"
+        Err(_) => false
+    }
+    assert envelopeOk
+    assert optionalOk
+    assert outcomeOk
+}
+"#;
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("task-free closed-sum receivers must lower completely")
+    };
+    let inout = artifact
+        .functions()
+        .iter()
+        .filter(|function| function.signature().inout_params() == [0])
+        .collect::<Vec<_>>();
+    assert_eq!(inout.len(), 3, "{}", dump_program(artifact.program()));
+    for function in &inout {
+        let receiver = function.signature().params()[0];
+        let value_type = artifact
+            .representations()
+            .value_type(receiver)
+            .expect("receiver value type");
+        assert!(
+            matches!(
+                artifact.representations().repr(value_type.repr()),
+                Some(loom_codegen_ir::Repr::Sum(_))
+            ),
+            "{}",
+            dump_program(artifact.program())
+        );
+    }
+    let inout_ids = inout
+        .into_iter()
+        .map(loom_codegen_ir::Function::id)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        artifact
+            .functions()
+            .iter()
+            .flat_map(loom_codegen_ir::Function::blocks)
+            .filter_map(loom_codegen_ir::Block::terminator)
+            .filter(|terminator| matches!(
+                terminator.kind(),
+                TerminatorKind::Invoke { callee, .. } if inout_ids.contains(callee)
+            ))
+            .count(),
+        3,
+        "{}",
+        dump_program(artifact.program())
+    );
+}
+
+#[test]
+fn managed_closed_sum_receivers_fail_closed_on_32_bit_targets() {
+    let source = r#"enum Envelope {
+    Empty
+    Wrapped(Text)
+}
+
+impl Envelope {
+    method replace(mut self) {
+        self = Envelope.Wrapped("managed")
+    }
+}
+
+pub fn main() {
+    var envelope = Envelope.Empty
+    envelope.replace()
+}
+"#;
+    let mir = compile(source);
+    let outcome = lower_typed_artifact(
+        &mir,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(32).expect("32-bit target"),
+    )
+    .expect("classify managed sum receiver on 32-bit");
+    let LoweringOutcome::Unsupported(report) = outcome else {
+        panic!("a managed sum receiver must fail closed on 32-bit")
+    };
+    assert!(
+        report
+            .items()
+            .iter()
+            .any(|item| item.feature() == UnsupportedFeature::MutableReceiver),
+        "{report:?}"
+    );
+}
+
+#[test]
 fn closed_pod_records_lower_to_products_with_direct_and_fault_writebacks() {
     let dump = complete_dump(
         r"record Counter { total Int, calls Int }

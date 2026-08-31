@@ -204,10 +204,11 @@ behavior. Failure raises the canonical `ArtifactProofRejected` `RuntimeFault`;
 it cannot become a source `Result` or a nominal value. Direct calls, `.await`,
 and `Task.all` propagate it normally. `Task.settled` and `Task.race` observe a
 faulted child through the same `TaskFault` terminal-state rules as every other
-child fault. Only OOM is a process-level exception. Typed LCIR replays
-supported nongeneric predicates through an explicit `ArtifactProofRejected`
-fault guard and publishes the nominal SSA value only in the accepted block;
-generic or otherwise unsupported shapes reject native preparation.
+child fault. Only OOM is a process-level exception. Typed LCIR replays supported
+fully instantiated predicates and invariants through an explicit
+`ArtifactProofRejected` fault guard and publishes the nominal SSA value only in
+the accepted block; open or otherwise unsupported shapes reject native
+preparation.
 
 The canonical prelude `ConstraintError` is a non-generic record with exactly
 six fields, in order: `target_type Text`, `code Text`, `predicate Text`, `path

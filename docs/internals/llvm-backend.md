@@ -40,9 +40,9 @@ The LCIR emitter accepts only a closed `CheckedArtifact`: its roots, callable
 closure, representations, CFG, types, proof-boundary shapes, and exact fault
 effects have already crossed independent validation. Predicate truth itself is
 a process-local conclusion supplied by fresh checked MIR. Supported `.loomi`
-nongeneric `Recheck` constructions re-evaluate their serialized predicate in
-LCIR and publish the nominal value only on the accepted path; unsupported replay
-is a native compilation error. The emitter
+fully instantiated `Recheck` constructions re-evaluate their serialized
+predicate or invariant in LCIR and publish the nominal value only on the
+accepted path; unsupported replay is a native compilation error. The emitter
 declares every source function with its typed LCIR ABI, keeps source symbols
 internal, emits a run or ordered test harness, verifies before and after
 optimization, and writes a relocatable object.
@@ -210,16 +210,19 @@ writebacks `W...` returns `{ T, W... }`. A fallible call returns
 normal and fault exits carry the current receiver value, so a mutation completed
 before a later fault remains visible to the caller. Direct `Bool`, `Int`, and
 `Float` receivers remain ordinary `i1`, `i64`, and `double` SSA values. An
-admitted projected primitive or record receiver is extracted from and inserted
-back through its statically typed aggregate path on the normal edge and before
-fault propagation on the unwind edge. LLVM uses the existing scalar or
-aggregate SSA representation and functional return ABI; no receiver pointer,
-proxy allocation, universal value, or runtime writeback helper is introduced.
+admitted task-free closed-sum receiver, including `Option` or `Result`, remains
+its exact direct sum SSA value. An admitted projected primitive, record, or sum
+receiver is extracted from and inserted back through its statically typed
+aggregate path on the normal edge and before fault propagation on the unwind
+edge. LLVM uses the existing scalar or aggregate SSA representation and
+functional return ABI; no receiver pointer, proxy allocation, universal value,
+or runtime writeback helper is introduced.
 The owning synchronous `mut self` body may
 reconstruct through its own top-level invariant product before its exit check;
 the frontend and checked MIR reject every external or nested invariant
-crossing. Unsupported projection shapes reject native preparation. Nongeneric task-free refined and fully concrete
-task-free invariant-record runtime construction instead returns the exact typed
+crossing. Unsupported projection shapes reject native preparation. Fully
+instantiated task-free refined and invariant-record runtime construction
+instead returns the exact typed
 `Result[..., ConstraintError]`; open or unsupported-shape construction is a
 coverage error.
 
@@ -228,8 +231,8 @@ wrapper or check. LCIR retains their distinct semantic types and proof opcodes,
 while the emitter forwards the already established physical SSA value. A
 refined scalar therefore uses the base scalar ABI; a refined product uses the
 base product ABI; and an invariant record uses its field product ABI. Supported
-nongeneric task-free refined and closed task-free invariant-record runtime
-construction returns the exact language `Result` value on typed LCIR; open or
+fully instantiated task-free refined and invariant-record runtime construction
+returns the exact language `Result` value on typed LCIR; open or
 unsupported-shape runtime construction rejects native preparation.
 Serialized task-free refined and concrete task-free invariant-record proof
 rechecks retain their nominal result shape on typed LCIR, guard publication with

@@ -1832,13 +1832,14 @@ impl<'a> Validator<'a> {
             };
             if !self.is_direct_mutable_scalar(ty)
                 && self.product_fields(ty).is_none()
+                && !self.is_direct_task_free_sum(ty)
                 && self.program.representations.dynamic(ty).is_none()
             {
                 self.error(
                     ValidationCode::InOutShape,
                     format!("{base}.signature.inout[{writeback_index}]"),
                     format!(
-                        "inout parameter {parameter} must use canonical direct Bool, Int, or Float, a direct product, or a closed dynamic value type"
+                        "inout parameter {parameter} must use canonical direct Bool, Int, or Float, a direct product, a canonical task-free direct sum, or a closed dynamic value type"
                     ),
                 );
             }
@@ -7050,6 +7051,19 @@ impl<'a> Validator<'a> {
         value_type.kind() == ValueTypeKind::Direct
             && matches!(value_type.semantic(), Type::Bool | Type::Int | Type::Float)
             && self.program.representations.type_id(value_type.semantic()) == Some(ty)
+    }
+
+    fn is_direct_task_free_sum(&self, ty: ValueTypeId) -> bool {
+        self.program
+            .representations
+            .value_type(ty)
+            .is_some_and(|value_type| {
+                value_type.kind() == ValueTypeKind::Direct
+                    && self.program.representations.type_id(value_type.semantic()) == Some(ty)
+                    && self.sum_repr(ty).is_some()
+                    && representation_contains_task_handle(&self.program.representations, ty)
+                        == Some(false)
+            })
     }
 
     fn sum_repr(&self, ty: ValueTypeId) -> Option<SumReprId> {

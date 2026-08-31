@@ -61,6 +61,89 @@ fn functional_inout_does_not_admit_unit_or_transparent_scalars() {
 }
 
 #[test]
+fn functional_inout_admits_canonical_task_free_sums() {
+    let mut builder = ProgramBuilder::new(target());
+    let unit = builder.type_id(&Type::Unit).expect("Unit type");
+    let choice = builder
+        .add_sum_type(
+            Type::Nominal(TypeId(105), Vec::new()),
+            &[Box::new([]), Box::from([Type::Int])],
+        )
+        .expect("closed task-free sum");
+    let origin = Origin::synthetic(FunctionId(105));
+    let function = builder
+        .declare_function(
+            origin,
+            "replace_choice",
+            Signature::with_inout_params([choice], unit, [0_u32]),
+            Effects::NONE,
+        )
+        .expect("declare sum inout");
+    {
+        let mut body = builder.function(function).expect("function body");
+        let entry = body.create_block().expect("entry");
+        body.set_entry(entry).expect("set entry");
+        let receiver = body
+            .append_block_parameter(entry, choice)
+            .expect("receiver");
+        let result = body
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Unit),
+                &[unit],
+                origin,
+            )
+            .expect("Unit result")[0];
+        body.terminate(
+            entry,
+            Terminator::with_writebacks(TerminatorKind::Return(result), origin, [receiver]),
+        )
+        .expect("return receiver writeback");
+    }
+
+    builder
+        .finish_checked()
+        .expect("canonical task-free sum inout must validate");
+}
+
+#[test]
+fn functional_inout_rejects_task_hidden_behind_a_managed_sum_payload() {
+    let mut builder = ProgramBuilder::new(target());
+    let unit = builder.type_id(&Type::Unit).expect("Unit type");
+    let task_semantic = Type::Task(Box::new(Type::Int));
+    builder
+        .add_task_handle_type(task_semantic.clone())
+        .expect("Task[Int]");
+    let task_list_semantic = Type::List(Box::new(task_semantic));
+    builder
+        .add_managed_list_type(task_list_semantic.clone())
+        .expect("List[Task[Int]]");
+    let carrier = builder
+        .add_sum_type(
+            Type::Nominal(TypeId(106), Vec::new()),
+            &[Box::new([]), Box::from([task_list_semantic])],
+        )
+        .expect("sum containing a managed Task list");
+    builder
+        .declare_function(
+            Origin::synthetic(FunctionId(106)),
+            "invalid_task_sum_inout",
+            Signature::with_inout_params([carrier], unit, [0_u32]),
+            Effects::NONE,
+        )
+        .expect("declare invalid sum inout");
+
+    let errors = validate_program(&builder.finish()).expect_err("Task-bearing sum must fail");
+    assert!(
+        errors
+            .as_slice()
+            .iter()
+            .any(|error| error.code() == ValidationCode::InOutShape),
+        "{errors:?}"
+    );
+}
+
+#[test]
 fn public_raw_builder_cannot_mint_frontend_proof_certificates() {
     let money = Type::Nominal(TypeId(101), Vec::new());
     let protected = Type::Nominal(TypeId(102), Vec::new());
