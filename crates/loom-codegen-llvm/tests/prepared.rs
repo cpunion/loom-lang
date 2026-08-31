@@ -2,9 +2,9 @@
 
 use loom_codegen_ir::INSTANCE_KEY_STRUCTURE_BUDGET;
 use loom_codegen_llvm::{
-    DebugSource, EmitOptions, NativePreparationErrorKind, NativeRouteKind, NativeRoutePolicy,
-    OptimizationProfile, emit_prepared_native_object, prepare_native_object,
-    prepared_native_object_fingerprint, prepared_native_target_identity, target_identity,
+    DebugSource, EmitOptions, NativePreparationErrorKind, OptimizationProfile,
+    emit_prepared_native_object, prepare_native_object, prepared_native_object_fingerprint,
+    prepared_native_target_identity, target_identity,
 };
 
 mod support;
@@ -45,6 +45,34 @@ fn scalar_program() -> CheckedProgram {
 
 pub fn main() {
     discard choose(true)
+}
+",
+    )
+}
+
+fn projected_product_program() -> CheckedProgram {
+    compile_source(
+        r"record Inner { left Int, right Int }
+record Outer { inner Inner, enabled Bool }
+
+impl Inner {
+    method add(mut self, amount Int) Int {
+        self.right = self.right + amount
+        self.right
+    }
+}
+
+fn projected() Int {
+    var outer = Outer {
+        inner = Inner { left = 1, right = 2 },
+        enabled = true
+    }
+    discard outer.inner.add(3)
+    outer.inner.right
+}
+
+pub fn main() {
+    discard projected()
 }
 ",
     )
@@ -171,34 +199,7 @@ fn oversized_generic_instance_program() -> CheckedProgram {
 }
 
 #[test]
-fn automatic_route_is_atomic_over_the_reachable_artifact() {
-    let scalar = scalar_program();
-    let prepared = prepare_native_object(
-        &scalar,
-        EmitOptions::run("main"),
-        NativeRoutePolicy::Automatic,
-    )
-    .expect("prepare typed artifact");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
-
-    let text = allocating_text_program();
-    let prepared = prepare_native_object(
-        &text,
-        EmitOptions::run("main"),
-        NativeRoutePolicy::Automatic,
-    )
-    .expect("prepare managed Text artifact");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
-
-    let text_get = text_get_program();
-    let prepared = prepare_native_object(
-        &text_get,
-        EmitOptions::run("main"),
-        NativeRoutePolicy::LcirOnly,
-    )
-    .expect("prepare typed Text.get artifact");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
-
+fn preparation_is_atomic_over_the_reachable_typed_artifact() {
     let managed_tuple = compile_source(
         r#"fn make() (Int, Text) { (1, "value") }
 
@@ -209,14 +210,6 @@ pub fn main() {
 }
 "#,
     );
-    let prepared = prepare_native_object(
-        &managed_tuple,
-        EmitOptions::run("main"),
-        NativeRoutePolicy::Automatic,
-    )
-    .expect("prepare tuple with a direct managed Text leaf");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
-
     let managed_sum = compile_source(
         r#"record Label { value Text }
 
@@ -227,27 +220,23 @@ pub fn main() {
 }
 "#,
     );
-    let prepared = prepare_native_object(
-        &managed_sum,
-        EmitOptions::run("main"),
-        NativeRoutePolicy::Automatic,
-    )
-    .expect("prepare sum whose payload transitively contains managed Text");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
-
     let dead_text = compile_source(
         r#"pub fn main() {}
 
 fn dead() Text { "unreachable" }
 "#,
     );
-    let prepared = prepare_native_object(
-        &dead_text,
-        EmitOptions::run("main"),
-        NativeRoutePolicy::Automatic,
-    )
-    .expect("prepare artifact with unreachable unsupported code");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    for program in [
+        scalar_program(),
+        allocating_text_program(),
+        text_get_program(),
+        managed_tuple,
+        managed_sum,
+        dead_text,
+    ] {
+        prepare_native_object(&program, EmitOptions::run("main"))
+            .expect("prepare complete typed artifact");
+    }
 }
 
 #[test]
@@ -261,11 +250,8 @@ test async fn timer() {
 }
 ",
     );
-    for policy in [NativeRoutePolicy::Automatic, NativeRoutePolicy::LcirOnly] {
-        let prepared = prepare_native_object(&program, EmitOptions::tests(), policy)
-            .expect("prepare typed timer test artifact");
-        assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
-    }
+    prepare_native_object(&program, EmitOptions::tests())
+        .expect("prepare typed timer test artifact");
 }
 
 #[test]
@@ -279,9 +265,9 @@ fn sync_task_creation_uses_the_typed_hidden_executor_abi() {
         let object = directory.path().join(format!("sync-task-{name}.o"));
         let mut options = EmitOptions::run("main");
         options.emit_ir = Some(ir.clone());
-        let prepared = prepare_native_object(&program, options, NativeRoutePolicy::Automatic)
-            .expect("prepare typed sync Task helper");
-        assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+        let prepared =
+            prepare_native_object(&program, options).expect("prepare typed sync Task helper");
+
         emit_prepared_native_object(&prepared, &object).expect("emit typed LCIR artifact");
         assert!(object.is_file());
         let ir = std::fs::read_to_string(ir).expect("read selected LCIR IR");
@@ -297,19 +283,11 @@ fn sync_task_creation_uses_the_typed_hidden_executor_abi() {
             helper_count,
             "{ir}"
         );
-
-        let forced = prepare_native_object(
-            &program,
-            EmitOptions::run("main"),
-            NativeRoutePolicy::LcirOnly,
-        )
-        .expect("forced LCIR must accept typed sync executor threading");
-        assert_eq!(forced.route_kind(), NativeRouteKind::Lcir);
     }
 }
 
 #[test]
-fn sync_executor_roots_never_fallback_around_unsupported_sites() {
+fn sync_executor_roots_reject_unsupported_sites_atomically() {
     for (name, program) in [
         (
             "classifier",
@@ -320,15 +298,11 @@ fn sync_executor_roots_never_fallback_around_unsupported_sites() {
             sync_executor_root_with_nonregular_instance_program(),
         ),
     ] {
-        for policy in [NativeRoutePolicy::Automatic, NativeRoutePolicy::LcirOnly] {
-            let error = prepare_native_object(&program, EmitOptions::run("main"), policy)
-                .err()
-                .unwrap_or_else(|| {
-                    panic!("{name} executor-dependent synchronous root selected fallback")
-                });
-            assert_eq!(error.kind(), NativePreparationErrorKind::InvalidRoot);
-            assert_eq!(error.code(), "NativePreparationRootCapability");
-        }
+        let error = prepare_native_object(&program, EmitOptions::run("main"))
+            .err()
+            .unwrap_or_else(|| panic!("{name} executor-dependent synchronous root was accepted"));
+        assert_eq!(error.kind(), NativePreparationErrorKind::InvalidRoot);
+        assert_eq!(error.code(), "NativePreparationRootCapability");
     }
 }
 
@@ -336,9 +310,7 @@ fn sync_executor_roots_never_fallback_around_unsupported_sites() {
 fn empty_tests_are_a_complete_lcir_artifact() {
     let program = scalar_program();
     let prepared =
-        prepare_native_object(&program, EmitOptions::tests(), NativeRoutePolicy::Automatic)
-            .expect("prepare empty tests");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+        prepare_native_object(&program, EmitOptions::tests()).expect("prepare empty tests");
 
     let directory = tempfile::tempdir().expect("create output directory");
     let object = directory.path().join("empty-tests.o");
@@ -348,78 +320,43 @@ fn empty_tests_are_a_complete_lcir_artifact() {
 }
 
 #[test]
-fn invalid_roots_are_structured_and_never_fallback() {
+fn invalid_roots_are_structured() {
     let program = scalar_program();
-    for policy in [
-        NativeRoutePolicy::Automatic,
-        NativeRoutePolicy::LcirOnly,
-        NativeRoutePolicy::CheckedMirOnly,
-    ] {
-        let error = prepare_native_object(&program, EmitOptions::run("missing"), policy)
-            .err()
-            .expect("missing root must fail preparation");
-        assert_eq!(error.kind(), NativePreparationErrorKind::InvalidRoot);
-        assert_eq!(error.code(), "NativePreparationUnknownEntry");
-        assert!(error.message().contains("missing"));
-    }
+    let error = prepare_native_object(&program, EmitOptions::run("missing"))
+        .err()
+        .expect("missing root must fail preparation");
+    assert_eq!(error.kind(), NativePreparationErrorKind::InvalidRoot);
+    assert_eq!(error.code(), "NativePreparationUnknownEntry");
+    assert!(error.message().contains("missing"));
 }
 
 #[test]
-fn lcir_only_accepts_a_complete_typed_artifact() {
-    let program = scalar_program();
-    let prepared = prepare_native_object(
-        &program,
-        EmitOptions::run("main"),
-        NativeRoutePolicy::LcirOnly,
-    )
-    .expect("prepare required LCIR artifact");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
-}
-
-#[test]
-fn nonregular_generic_recursion_never_selects_a_native_fallback() {
+fn nonregular_generic_recursion_is_rejected_before_native_lowering() {
     let program = nonregular_generic_program();
-    for policy in [NativeRoutePolicy::Automatic, NativeRoutePolicy::LcirOnly] {
-        let prepare = || {
-            prepare_native_object(&program, EmitOptions::run("main"), policy)
-                .err()
-                .expect("non-regular generic recursion must fail before route selection")
-        };
-        let first = prepare();
-        let second = prepare();
-
-        assert_eq!(first, second);
-        assert_eq!(first.kind(), NativePreparationErrorKind::InvalidProgram);
-        assert_eq!(first.code(), "NonRegularGenericRecursion");
-        assert!(first.support_report().is_none());
-        assert!(first.message().contains(".body.tail.instance"), "{first}");
-    }
-}
-
-#[test]
-fn generic_instance_budget_never_selects_a_native_fallback() {
-    let program = oversized_generic_instance_program();
-    for policy in [NativeRoutePolicy::Automatic, NativeRoutePolicy::LcirOnly] {
-        let error = prepare_native_object(&program, EmitOptions::run("main"), policy)
+    let prepare = || {
+        prepare_native_object(&program, EmitOptions::run("main"))
             .err()
-            .expect("generic instance exhaustion must fail before route selection");
-        assert_eq!(error.kind(), NativePreparationErrorKind::Resource);
-        assert_eq!(error.code(), "NativePreparationProgramTooLarge");
-        assert!(error.support_report().is_none());
-        assert!(error.message().contains(".body.tail"), "{error}");
-    }
+            .expect("non-regular generic recursion must fail before native preparation")
+    };
+    let first = prepare();
+    let second = prepare();
+    assert_eq!(first, second);
+    assert_eq!(first.kind(), NativePreparationErrorKind::InvalidProgram);
+    assert_eq!(first.code(), "NonRegularGenericRecursion");
+    assert!(first.support_report().is_none());
+    assert!(first.message().contains(".body.tail.instance"), "{first}");
 }
 
 #[test]
-fn checked_mir_only_never_attempts_the_lcir_route() {
-    let program = scalar_program();
-    let prepared = prepare_native_object(
-        &program,
-        EmitOptions::run("main"),
-        NativeRoutePolicy::CheckedMirOnly,
-    )
-    .expect("prepare forced checked-MIR artifact");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::CheckedMir);
+fn generic_instance_budget_is_a_native_resource_error() {
+    let program = oversized_generic_instance_program();
+    let error = prepare_native_object(&program, EmitOptions::run("main"))
+        .err()
+        .expect("generic instance exhaustion must fail before native preparation");
+    assert_eq!(error.kind(), NativePreparationErrorKind::Resource);
+    assert_eq!(error.code(), "NativePreparationProgramTooLarge");
+    assert!(error.support_report().is_none());
+    assert!(error.message().contains(".body.tail"), "{error}");
 }
 
 #[test]
@@ -430,8 +367,7 @@ fn selected_lcir_emitters_publish_typed_scalar_and_timer_surfaces() {
     let mut scalar_options = EmitOptions::run("main");
     scalar_options.emit_ir = Some(scalar_ir.clone());
     let scalar_prepared =
-        prepare_native_object(&scalar, scalar_options, NativeRoutePolicy::Automatic)
-            .expect("prepare typed artifact");
+        prepare_native_object(&scalar, scalar_options).expect("prepare typed artifact");
     emit_prepared_native_object(&scalar_prepared, &directory.path().join("scalar.o"))
         .expect("emit typed LCIR");
     let scalar_ir = std::fs::read_to_string(scalar_ir).expect("read scalar IR");
@@ -442,9 +378,9 @@ fn selected_lcir_emitters_publish_typed_scalar_and_timer_surfaces() {
     let timer_ir = directory.path().join("timer.ll");
     let mut timer_options = EmitOptions::run("main");
     timer_options.emit_ir = Some(timer_ir.clone());
-    let timer_prepared = prepare_native_object(&timer, timer_options, NativeRoutePolicy::LcirOnly)
-        .expect("prepare typed timer artifact");
-    assert_eq!(timer_prepared.route_kind(), NativeRouteKind::Lcir);
+    let timer_prepared =
+        prepare_native_object(&timer, timer_options).expect("prepare typed timer artifact");
+
     emit_prepared_native_object(&timer_prepared, &directory.path().join("timer.o"))
         .expect("emit typed timer LCIR");
     let timer_ir = std::fs::read_to_string(timer_ir).expect("read typed timer IR");
@@ -467,47 +403,32 @@ fn selected_lcir_emitters_publish_typed_scalar_and_timer_surfaces() {
 }
 
 #[test]
-fn lcir_emission_failure_does_not_change_the_prepared_route() {
+fn emission_failure_preserves_the_prepared_artifact() {
     let program = scalar_program();
     let directory = tempfile::tempdir().expect("create output directory");
     let mut options = EmitOptions::run("main");
     options.emit_ir = Some(directory.path().to_path_buf());
-    let prepared = prepare_native_object(&program, options, NativeRoutePolicy::Automatic)
-        .expect("prepare typed artifact");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    let prepared = prepare_native_object(&program, options).expect("prepare typed artifact");
 
     let object = directory.path().join("must-not-exist.o");
     let error = emit_prepared_native_object(&prepared, &object)
         .expect_err("invalid IR side path must fail LCIR emission");
     assert_eq!(error.code(), "LlvmIrWriteFailed");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+
     assert!(!object.exists());
 }
 
 #[test]
-fn fingerprints_separate_routes_and_all_codegen_inputs() {
+fn fingerprints_include_all_codegen_inputs() {
     let program = scalar_program();
-    let fingerprint = |options, policy| {
-        let prepared = prepare_native_object(&program, options, policy).expect("prepare object");
+    let fingerprint = |options| {
+        let prepared = prepare_native_object(&program, options).expect("prepare object");
         prepared_native_object_fingerprint(&prepared).expect("fingerprint object")
     };
-    let baseline = fingerprint(EmitOptions::run("main"), NativeRoutePolicy::Automatic);
-    assert_eq!(
-        baseline,
-        fingerprint(EmitOptions::run("main"), NativeRoutePolicy::LcirOnly),
-        "route policy must not perturb the selected LCIR object identity"
-    );
+    let baseline = fingerprint(EmitOptions::run("main"));
     assert_ne!(
         baseline,
-        fingerprint(EmitOptions::run("main"), NativeRoutePolicy::CheckedMirOnly),
-        "LCIR and checked-MIR routes need disjoint identity domains"
-    );
-    assert_ne!(
-        baseline,
-        fingerprint(
-            EmitOptions::run("main").with_optimization(OptimizationProfile::Release),
-            NativeRoutePolicy::Automatic,
-        )
+        fingerprint(EmitOptions::run("main").with_optimization(OptimizationProfile::Release),)
     );
     assert_ne!(
         baseline,
@@ -517,17 +438,13 @@ fn fingerprints_separate_routes_and_all_codegen_inputs() {
                 "main.loom",
                 "Unit\n",
             )]),
-            NativeRoutePolicy::Automatic,
         )
     );
 
     let host = target_identity(None, OptimizationProfile::Development).expect("host target");
     assert_ne!(
         baseline,
-        fingerprint(
-            EmitOptions::run("main").with_target_triple(Some(host.triple)),
-            NativeRoutePolicy::Automatic,
-        ),
+        fingerprint(EmitOptions::run("main").with_target_triple(Some(host.triple)),),
         "an explicit portable target differs from the implicit tuned host"
     );
 
@@ -537,12 +454,8 @@ fn fingerprints_separate_routes_and_all_codegen_inputs() {
 }
 ",
     );
-    let changed = prepare_native_object(
-        &changed,
-        EmitOptions::run("main"),
-        NativeRoutePolicy::Automatic,
-    )
-    .expect("prepare changed object");
+    let changed =
+        prepare_native_object(&changed, EmitOptions::run("main")).expect("prepare changed object");
     assert_ne!(
         baseline,
         prepared_native_object_fingerprint(&changed).expect("fingerprint changed object")
@@ -553,13 +466,9 @@ fn fingerprints_separate_routes_and_all_codegen_inputs() {
 fn tuple_semantics_participate_in_the_lcir_object_cache_identity() {
     let fingerprint = |source| {
         let program = compile_source(source);
-        let prepared = prepare_native_object(
-            &program,
-            EmitOptions::run("main"),
-            NativeRoutePolicy::Automatic,
-        )
-        .expect("prepare tuple artifact");
-        assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+        let prepared = prepare_native_object(&program, EmitOptions::run("main"))
+            .expect("prepare tuple artifact");
+
         prepared_native_object_fingerprint(&prepared).expect("fingerprint tuple artifact")
     };
     let boolean = fingerprint(
@@ -582,13 +491,9 @@ pub fn main() { consume((1, 1.0)) }
 fn closed_sum_semantics_participate_in_the_lcir_object_cache_identity() {
     let fingerprint = |source| {
         let program = compile_source(source);
-        let prepared = prepare_native_object(
-            &program,
-            EmitOptions::run("main"),
-            NativeRoutePolicy::Automatic,
-        )
-        .expect("prepare closed-sum artifact");
-        assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+        let prepared = prepare_native_object(&program, EmitOptions::run("main"))
+            .expect("prepare closed-sum artifact");
+
         prepared_native_object_fingerprint(&prepared).expect("fingerprint closed-sum artifact")
     };
     let boolean = fingerprint(
@@ -613,8 +518,7 @@ fn fingerprint_excludes_output_and_ir_side_artifact_paths() {
     let fingerprint = |path| {
         let mut options = EmitOptions::run("main");
         options.emit_ir = Some(path);
-        let prepared = prepare_native_object(&program, options, NativeRoutePolicy::Automatic)
-            .expect("prepare object");
+        let prepared = prepare_native_object(&program, options).expect("prepare object");
         prepared_native_object_fingerprint(&prepared).expect("fingerprint object")
     };
     assert_eq!(
@@ -624,7 +528,7 @@ fn fingerprint_excludes_output_and_ir_side_artifact_paths() {
 }
 
 #[test]
-fn checked_mir_fingerprint_separates_run_and_test_harnesses_for_the_same_root() {
+fn fingerprint_separates_run_and_test_harnesses_for_the_same_root() {
     let mut program = scalar_program().into_program();
     let root = program.exports["main"];
     program.tests.push(root);
@@ -632,9 +536,8 @@ fn checked_mir_fingerprint_separates_run_and_test_harnesses_for_the_same_root() 
         .into_checked()
         .expect("shared run and test root is valid checked MIR");
     let fingerprint = |options| {
-        let prepared = prepare_native_object(&program, options, NativeRoutePolicy::CheckedMirOnly)
-            .expect("prepare checked-MIR object");
-        prepared_native_object_fingerprint(&prepared).expect("fingerprint checked-MIR object")
+        let prepared = prepare_native_object(&program, options).expect("prepare typed object");
+        prepared_native_object_fingerprint(&prepared).expect("fingerprint typed object")
     };
 
     assert_ne!(
@@ -651,66 +554,62 @@ fn prepared_target_identity_matches_the_machine_policy() {
     let options = EmitOptions::run("main")
         .with_target_triple(Some(host.triple.clone()))
         .with_optimization(OptimizationProfile::Release);
-    let prepared = prepare_native_object(&program, options, NativeRoutePolicy::Automatic)
-        .expect("prepare explicit release object");
+    let prepared =
+        prepare_native_object(&program, options).expect("prepare explicit release object");
     let expected = target_identity(Some(&host.triple), OptimizationProfile::Release)
         .expect("explicit release target");
     assert_eq!(prepared_native_target_identity(&prepared), &expected);
 }
 
 #[test]
-fn missing_dynamic_concept_witness_is_the_same_non_fallback_error_for_both_typed_policies() {
+fn missing_dynamic_concept_witness_is_an_invalid_program_error() {
     let program = missing_dynamic_witness_program();
-    let errors = [NativeRoutePolicy::Automatic, NativeRoutePolicy::LcirOnly].map(|policy| {
-        prepare_native_object(&program, EmitOptions::run("main"), policy)
-            .err()
-            .unwrap_or_else(|| panic!("{policy:?} must reject a missing dynamic concept witness"))
-    });
-
-    assert_eq!(errors[0], errors[1]);
-    for error in errors {
-        assert_eq!(error.kind(), NativePreparationErrorKind::InvalidProgram);
-        assert_eq!(error.code(), "MissingDynamicConceptWitness");
-        assert!(error.support_report().is_none());
-        assert!(
-            error.message().contains("closed concept witness"),
-            "{error}"
-        );
-    }
+    let error = prepare_native_object(&program, EmitOptions::run("main"))
+        .err()
+        .expect("a missing dynamic concept witness must be rejected");
+    assert_eq!(error.kind(), NativePreparationErrorKind::InvalidProgram);
+    assert_eq!(error.code(), "MissingDynamicConceptWitness");
+    assert!(error.support_report().is_none());
+    assert!(
+        error.message().contains("closed concept witness"),
+        "{error}"
+    );
 }
 
 #[test]
 fn thirty_two_bit_targets_are_allowed_only_for_complete_lcir() {
-    let scalar = scalar_program();
-    let options =
-        EmitOptions::run("main").with_target_triple(Some("i686-unknown-linux-gnu".to_owned()));
-    let prepared = prepare_native_object(&scalar, options, NativeRoutePolicy::Automatic)
-        .expect("32-bit typed LCIR is representable");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
     let directory = tempfile::tempdir().expect("create output directory");
-    let object = directory.path().join("scalar-i686.o");
-    emit_prepared_native_object(&prepared, &object).expect("emit 32-bit typed LCIR object");
+    let object = directory.path().join("projected-product-i686.o");
+    let ir_path = directory.path().join("projected-product-i686.ll");
+    let mut options =
+        EmitOptions::run("main").with_target_triple(Some("i686-unknown-linux-gnu".to_owned()));
+    options.emit_ir = Some(ir_path.clone());
+    let projected = projected_product_program();
+    let prepared = prepare_native_object(&projected, options)
+        .expect("32-bit nested product projection is representable");
+    emit_prepared_native_object(&prepared, &object)
+        .expect("emit 32-bit nested product projection object");
     assert!(
         std::fs::read(object)
             .expect("read 32-bit object")
             .starts_with(b"\x7fELF")
     );
+    let ir = std::fs::read_to_string(ir_path).expect("read 32-bit projected-product LLVM IR");
+    assert!(
+        ir.contains("target triple = \"i686-unknown-linux-gnu\""),
+        "{ir}"
+    );
+    assert!(
+        ir.matches("insertvalue").count() >= 2,
+        "nested projected writeback must rebuild both product levels:\n{ir}"
+    );
 
     let text = allocating_text_program();
     let options =
         EmitOptions::run("main").with_target_triple(Some("i686-unknown-linux-gnu".to_owned()));
-    let error = prepare_native_object(&text, options, NativeRoutePolicy::LcirOnly)
+    let error = prepare_native_object(&text, options)
         .err()
-        .expect("LCIR-only must preserve unsupported coverage before checked-MIR ABI validation");
+        .expect("32-bit Text must fail at the typed representation boundary");
     assert_eq!(error.kind(), NativePreparationErrorKind::Unsupported);
     assert!(error.support_report().is_some());
-
-    let text = allocating_text_program();
-    let options =
-        EmitOptions::run("main").with_target_triple(Some("i686-unknown-linux-gnu".to_owned()));
-    let error = prepare_native_object(&text, options, NativeRoutePolicy::Automatic)
-        .err()
-        .expect("checked-MIR Value ABI must reject 32-bit targets");
-    assert_eq!(error.kind(), NativePreparationErrorKind::Target);
-    assert_eq!(error.code(), "UnsupportedNativePointerWidth");
 }

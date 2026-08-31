@@ -1,52 +1,28 @@
-//! One-shot native route preparation shared by cache identity and emission.
+//! One-shot typed native preparation shared by cache identity and emission.
 
-use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{self, Write};
 use std::path::Path;
 
 use loom_codegen_ir::{
     CheckedArtifact, InvalidRootCode, LoweringDefectCode, LoweringError, LoweringOutcome,
-    ReachableSourceGraph, ResourceLimitCode, SourceArtifactRequest, SourceRoots, SupportReport,
-    TargetLayout, analyze_source_reachability, lower_typed_artifact, write_artifact_identity,
+    ResourceLimitCode, SourceArtifactRequest, SupportReport, TargetLayout, lower_typed_artifact,
+    write_artifact_identity,
 };
-use loom_mir::{Builtin, CheckedProgram};
+use loom_mir::CheckedProgram;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::codegen::{
     DebugSource, EmitKind, EmitOptions, NativeObjectArtifact, NativeObjectOptions,
-    checked_mir_object_fingerprint_with_target, validate_checked_mir_root_signatures,
 };
-use crate::emitter::Emitter;
 use crate::lcir_emitter::LcirEmitter;
 use crate::target::{NATIVE_RUNTIME_ABI, NativeTargetMachine, create_llvm_target_machine};
-use crate::{CodegenError, NativeTargetIdentity, builtin_requires_typed_io, trace_llvm_stage};
+use crate::{CodegenError, NativeTargetIdentity, trace_llvm_stage};
 
-const LCIR_NATIVE_OBJECT_FORMAT: &str = "loom-lcir-native-object-v44";
+const LCIR_NATIVE_OBJECT_FORMAT: &str = "loom-lcir-native-object-v45";
 
-/// Policy controlling the whole-artifact native route.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NativeRoutePolicy {
-    /// Prefer typed LCIR and use checked-MIR code generation only when the
-    /// complete reachable artifact is outside current LCIR coverage.
-    Automatic,
-    /// Require complete typed LCIR coverage and reject the complete artifact
-    /// with its deterministic support report instead of selecting checked-MIR
-    /// code generation.
-    LcirOnly,
-    /// Use the checked-MIR backend without attempting LCIR lowering.
-    CheckedMirOnly,
-}
-
-/// The immutable route selected for one prepared native object.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NativeRouteKind {
-    Lcir,
-    CheckedMir,
-}
-
-/// Stable class for a failure before a native route can be prepared.
+/// Stable class for a failure before a typed native object can be prepared.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativePreparationErrorKind {
     InvalidProgram,
@@ -106,38 +82,9 @@ impl NativePreparationError {
         let message = unsupported_message(&report);
         Self {
             kind: NativePreparationErrorKind::Unsupported,
-            code: "NativePreparationUnsupportedLcir",
+            code: "NativePreparationUnsupportedFeature",
             message,
             support_report: Some(report),
-        }
-    }
-
-    fn process_requires_lcir(report: Option<SupportReport>) -> Self {
-        Self {
-            kind: NativePreparationErrorKind::Unsupported,
-            code: "NativePreparationProcessRequiresLcir",
-            message: "reachable std.process primitives require complete typed LCIR lowering"
-                .to_owned(),
-            support_report: report,
-        }
-    }
-
-    fn log_requires_lcir(report: Option<SupportReport>) -> Self {
-        Self {
-            kind: NativePreparationErrorKind::Unsupported,
-            code: "NativePreparationLogRequiresLcir",
-            message: "reachable std.log output requires complete typed LCIR lowering".to_owned(),
-            support_report: report,
-        }
-    }
-
-    fn io_requires_lcir(report: Option<SupportReport>) -> Self {
-        Self {
-            kind: NativePreparationErrorKind::Unsupported,
-            code: "NativePreparationIoRequiresLcir",
-            message: "reachable file or socket I/O requires complete typed LCIR lowering"
-                .to_owned(),
-            support_report: report,
         }
     }
 
@@ -173,14 +120,6 @@ impl NativePreparationError {
             ),
         }
     }
-
-    fn invalid_root(code: &'static str, message: impl Into<String>) -> Self {
-        Self::new(NativePreparationErrorKind::InvalidRoot, code, message)
-    }
-
-    fn defect(code: &'static str, message: impl Into<String>) -> Self {
-        Self::new(NativePreparationErrorKind::Defect, code, message)
-    }
 }
 
 impl fmt::Display for NativePreparationError {
@@ -193,7 +132,7 @@ impl Error for NativePreparationError {}
 
 fn unsupported_message(report: &SupportReport) -> String {
     let mut message = format!(
-        "typed LCIR is required, but reachable MIR uses {} unsupported LCIR feature site(s)",
+        "the native backend does not yet lower {} reachable feature site(s)",
         report.len()
     );
     for item in report.items() {
@@ -243,46 +182,26 @@ const fn lowering_defect_error_code(code: LoweringDefectCode) -> &'static str {
     }
 }
 
-enum PreparedRoute<'mir> {
-    Lcir(CheckedArtifact),
-    CheckedMir {
-        mir: &'mir CheckedProgram,
-        roots: SourceRoots,
-        reachable: ReachableSourceGraph,
-    },
-}
-
-/// Opaque native object plan prepared exactly once and consumed on the same
-/// thread for fingerprinting and emission.
-pub struct PreparedNativeObject<'mir> {
+/// Opaque typed-LCIR native object plan prepared exactly once and consumed on
+/// the same thread for fingerprinting and emission.
+pub struct PreparedNativeObject {
     target: NativeTargetMachine,
     target_identity: NativeTargetIdentity,
     options: EmitOptions,
-    route: PreparedRoute<'mir>,
+    artifact: CheckedArtifact,
 }
 
-impl PreparedNativeObject<'_> {
-    #[must_use]
-    pub const fn route_kind(&self) -> NativeRouteKind {
-        match self.route {
-            PreparedRoute::Lcir(_) => NativeRouteKind::Lcir,
-            PreparedRoute::CheckedMir { .. } => NativeRouteKind::CheckedMir,
-        }
-    }
-}
-
-/// Prepares one immutable whole-artifact route and its exact LLVM target.
+/// Prepares one immutable typed-LCIR artifact and its exact LLVM target.
 ///
 /// # Errors
 ///
 /// Returns a structured invalid-program, invalid-root, unsupported, resource,
-/// target, or compiler-defect error. Valid but unsupported LCIR selects one
-/// whole checked-MIR plan only under [`NativeRoutePolicy::Automatic`].
+/// target, or compiler-defect error. Unsupported LCIR is always an explicit
+/// compile error; native preparation never changes representation or backend.
 pub fn prepare_native_object(
     mir: &CheckedProgram,
     options: EmitOptions,
-    policy: NativeRoutePolicy,
-) -> Result<PreparedNativeObject<'_>, NativePreparationError> {
+) -> Result<PreparedNativeObject, NativePreparationError> {
     trace_llvm_stage("prepare.target.begin");
     let target = create_llvm_target_machine(options.target_triple.as_deref(), options.optimization)
         .map_err(|error| NativePreparationError::target(&error))?;
@@ -290,189 +209,87 @@ pub fn prepare_native_object(
     trace_llvm_stage("prepare.identity.begin");
     let target_identity = target.identity();
     trace_llvm_stage("prepare.identity.end");
-    let route = match policy {
-        NativeRoutePolicy::Automatic | NativeRoutePolicy::LcirOnly => {
-            let llvm_pointer_bits = target
-                .pointer_bits()
-                .map_err(|error| NativePreparationError::target(&error))?;
-            let pointer_bits = u16::try_from(llvm_pointer_bits).map_err(|_| {
-                NativePreparationError::new(
-                    NativePreparationErrorKind::Target,
-                    "LcirTargetLayoutUnavailable",
-                    format!(
-                        "LLVM target {} pointer width does not fit LCIR target layout",
-                        target.triple
-                    ),
-                )
-            })?;
-            let layout = TargetLayout::new(pointer_bits).map_err(|error| {
-                NativePreparationError::new(
-                    NativePreparationErrorKind::Target,
-                    "LcirTargetLayoutUnavailable",
-                    error.to_string(),
-                )
-            })?;
-            let request = source_request(&options);
-            trace_llvm_stage("prepare.lcir-lowering.begin");
-            match lower_typed_artifact(mir, &request, layout)
-                .map_err(NativePreparationError::lowering)?
-            {
-                LoweringOutcome::Complete(artifact) => {
-                    trace_llvm_stage("prepare.lcir-lowering.complete");
-                    PreparedRoute::Lcir(artifact)
-                }
-                LoweringOutcome::Unsupported(report) => {
-                    trace_llvm_stage("prepare.lcir-lowering.unsupported");
-                    if policy == NativeRoutePolicy::LcirOnly {
-                        return Err(NativePreparationError::unsupported(report));
-                    }
-                    let (roots, reachable) =
-                        checked_mir_graph_after_validated_lowering(mir, &options)?;
-                    if reachable_uses_process(&reachable) {
-                        return Err(NativePreparationError::process_requires_lcir(Some(report)));
-                    }
-                    if reachable_uses_log(&reachable) {
-                        return Err(NativePreparationError::log_requires_lcir(Some(report)));
-                    }
-                    if reachable_uses_io(&reachable) {
-                        return Err(NativePreparationError::io_requires_lcir(Some(report)));
-                    }
-                    target
-                        .validate_checked_mir_value_abi()
-                        .map_err(|error| NativePreparationError::target(&error))?;
-                    PreparedRoute::CheckedMir {
-                        mir,
-                        roots,
-                        reachable,
-                    }
-                }
-            }
+    let llvm_pointer_bits = target
+        .pointer_bits()
+        .map_err(|error| NativePreparationError::target(&error))?;
+    let pointer_bits = u16::try_from(llvm_pointer_bits).map_err(|_| {
+        NativePreparationError::new(
+            NativePreparationErrorKind::Target,
+            "LcirTargetLayoutUnavailable",
+            format!(
+                "LLVM target {} pointer width does not fit LCIR target layout",
+                target.triple
+            ),
+        )
+    })?;
+    let layout = TargetLayout::new(pointer_bits).map_err(|error| {
+        NativePreparationError::new(
+            NativePreparationErrorKind::Target,
+            "LcirTargetLayoutUnavailable",
+            error.to_string(),
+        )
+    })?;
+    let request = source_request(&options);
+    trace_llvm_stage("prepare.lcir-lowering.begin");
+    let artifact = match lower_typed_artifact(mir, &request, layout)
+        .map_err(NativePreparationError::lowering)?
+    {
+        LoweringOutcome::Complete(artifact) => {
+            trace_llvm_stage("prepare.lcir-lowering.complete");
+            artifact
         }
-        NativeRoutePolicy::CheckedMirOnly => {
-            let roots = validated_checked_mir_roots(mir, &options)?;
-            let reachable = analyze_source_reachability(mir, &roots).map_err(|error| {
-                NativePreparationError::defect(
-                    "NativePreparationSourceGraphDefect",
-                    format!("checked-MIR reachability failed: {error}"),
-                )
-            })?;
-            if reachable_uses_process(&reachable) {
-                return Err(NativePreparationError::process_requires_lcir(None));
-            }
-            if reachable_uses_log(&reachable) {
-                return Err(NativePreparationError::log_requires_lcir(None));
-            }
-            if reachable_uses_io(&reachable) {
-                return Err(NativePreparationError::io_requires_lcir(None));
-            }
-            target
-                .validate_checked_mir_value_abi()
-                .map_err(|error| NativePreparationError::target(&error))?;
-            PreparedRoute::CheckedMir {
-                mir,
-                roots,
-                reachable,
-            }
+        LoweringOutcome::Unsupported(report) => {
+            trace_llvm_stage("prepare.lcir-lowering.unsupported");
+            return Err(NativePreparationError::unsupported(report));
         }
     };
     Ok(PreparedNativeObject {
         target,
         target_identity,
         options,
-        route,
+        artifact,
     })
-}
-
-fn reachable_uses_process(reachable: &ReachableSourceGraph) -> bool {
-    reachable.builtins.iter().any(|builtin| {
-        matches!(
-            builtin,
-            Builtin::ProcessArgumentCount
-                | Builtin::ProcessArgumentAt
-                | Builtin::ProcessEnvironment
-        )
-    })
-}
-
-fn reachable_uses_log(reachable: &ReachableSourceGraph) -> bool {
-    reachable.builtins.contains(&Builtin::LogWrite)
-}
-
-fn reachable_uses_io(reachable: &ReachableSourceGraph) -> bool {
-    reachable
-        .builtins
-        .iter()
-        .copied()
-        .any(builtin_requires_typed_io)
 }
 
 /// Returns the exact target identity owned by a prepared object plan.
 #[must_use]
-pub const fn prepared_native_target_identity<'prepared>(
-    prepared: &'prepared PreparedNativeObject<'_>,
-) -> &'prepared NativeTargetIdentity {
+pub const fn prepared_native_target_identity(
+    prepared: &PreparedNativeObject,
+) -> &NativeTargetIdentity {
     &prepared.target_identity
 }
 
-/// Computes the route-separated semantic identity without repeating lowering,
+/// Computes the typed native semantic identity without repeating lowering,
 /// root selection, reachability, or target-machine creation.
 ///
 /// # Errors
 ///
 /// Returns an object-identity error if canonical encoding fails.
 pub fn prepared_native_object_fingerprint(
-    prepared: &PreparedNativeObject<'_>,
+    prepared: &PreparedNativeObject,
 ) -> Result<String, CodegenError> {
     trace_llvm_stage("prepare.fingerprint.begin");
-    let fingerprint = match &prepared.route {
-        PreparedRoute::Lcir(artifact) => lcir_object_fingerprint(prepared, artifact),
-        PreparedRoute::CheckedMir {
-            mir,
-            roots,
-            reachable,
-        } => checked_mir_object_fingerprint_with_target(
-            mir,
-            &prepared.options,
-            roots,
-            reachable,
-            &prepared.target,
-        ),
-    }?;
+    let fingerprint = lcir_object_fingerprint(prepared, &prepared.artifact)?;
     trace_llvm_stage("prepare.fingerprint.end");
     Ok(fingerprint)
 }
 
-/// Emits the route selected during preparation using the same target machine.
+/// Emits the artifact selected during preparation using the same target machine.
 ///
 /// # Errors
 ///
-/// Returns the selected emitter's error directly. Emission failures never
-/// trigger a route change or fallback.
+/// Returns the typed emitter's error directly.
 pub fn emit_prepared_native_object(
-    prepared: &PreparedNativeObject<'_>,
+    prepared: &PreparedNativeObject,
     output: &Path,
 ) -> Result<NativeObjectArtifact, CodegenError> {
     trace_llvm_stage("prepare.emission.begin");
-    let artifact = match &prepared.route {
-        PreparedRoute::Lcir(artifact) => LcirEmitter::emit_object_with_target(
-            artifact,
-            output,
-            &lcir_options(&prepared.options),
-            &prepared.target,
-        ),
-        PreparedRoute::CheckedMir {
-            mir,
-            roots,
-            reachable,
-        } => Emitter::emit_object_with_target(
-            mir.as_program(),
-            reachable,
-            roots,
-            output,
-            &prepared.options,
-            &prepared.target,
-        ),
-    }?;
+    let artifact = LcirEmitter::emit_object_with_target(
+        &prepared.artifact,
+        output,
+        &lcir_options(&prepared.options),
+        &prepared.target,
+    )?;
     trace_llvm_stage("prepare.emission.end");
     Ok(artifact)
 }
@@ -483,67 +300,6 @@ fn source_request(options: &EmitOptions) -> SourceArtifactRequest {
             entry: entry.clone(),
         },
         EmitKind::Tests => SourceArtifactRequest::Tests,
-    }
-}
-
-fn checked_mir_graph_after_validated_lowering(
-    mir: &CheckedProgram,
-    options: &EmitOptions,
-) -> Result<(SourceRoots, ReachableSourceGraph), NativePreparationError> {
-    let roots = raw_roots(mir, options).ok_or_else(|| {
-        NativePreparationError::defect(
-            "NativePreparationInconsistentPlan",
-            "LCIR classification accepted a root which disappeared before checked-MIR preparation",
-        )
-    })?;
-    let reachable = analyze_source_reachability(mir, &roots).map_err(|error| {
-        NativePreparationError::defect(
-            "NativePreparationSourceGraphDefect",
-            format!("checked-MIR reachability failed after LCIR classification: {error}"),
-        )
-    })?;
-    Ok((roots, reachable))
-}
-
-fn validated_checked_mir_roots(
-    mir: &CheckedProgram,
-    options: &EmitOptions,
-) -> Result<SourceRoots, NativePreparationError> {
-    let roots = match &options.kind {
-        EmitKind::Run { entry } => SourceRoots::for_entry(mir, entry).ok_or_else(|| {
-            NativePreparationError::invalid_root(
-                "NativePreparationUnknownEntry",
-                format!("run entry `{entry}` is not exported"),
-            )
-        })?,
-        EmitKind::Tests => {
-            let mut seen = BTreeSet::new();
-            for (index, root) in mir.tests.iter().copied().enumerate() {
-                if !seen.insert(root) {
-                    return Err(NativePreparationError::invalid_root(
-                        "NativePreparationDuplicateTestRoot",
-                        format!("test root #{} at index {index} is duplicated", root.0),
-                    ));
-                }
-            }
-            SourceRoots::for_tests(mir)
-        }
-    };
-    if let Err(error) = validate_checked_mir_root_signatures(mir, options, &roots) {
-        let code = if error.code() == "InvalidFunctionReference" {
-            "NativePreparationInvalidRootFunction"
-        } else {
-            "NativePreparationRootSignature"
-        };
-        return Err(NativePreparationError::invalid_root(code, error.message()));
-    }
-    Ok(roots)
-}
-
-fn raw_roots(mir: &CheckedProgram, options: &EmitOptions) -> Option<SourceRoots> {
-    match &options.kind {
-        EmitKind::Run { entry } => SourceRoots::for_entry(mir, entry),
-        EmitKind::Tests => Some(SourceRoots::for_tests(mir)),
     }
 }
 
@@ -569,7 +325,7 @@ struct LcirFingerprintHeader<'a> {
 }
 
 fn lcir_object_fingerprint(
-    prepared: &PreparedNativeObject<'_>,
+    prepared: &PreparedNativeObject,
     artifact: &CheckedArtifact,
 ) -> Result<String, CodegenError> {
     let header = LcirFingerprintHeader {
@@ -611,7 +367,7 @@ mod tests {
     fn lcir_object_fingerprint_domain_is_pinned() {
         assert_eq!(
             super::LCIR_NATIVE_OBJECT_FORMAT,
-            "loom-lcir-native-object-v44"
+            "loom-lcir-native-object-v45"
         );
     }
 }

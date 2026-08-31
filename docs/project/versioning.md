@@ -27,13 +27,11 @@ writers for unreleased formats. Development history belongs in
 | Interpreted final-cache layer | `final-artifact-v3` |
 | Interpreted artifact writer | `loom-interpreted-artifact-writer-v3` |
 | Portable-library final-cache layer | `portable-library-artifact-v4` |
-| LCIR textual dump | `lcir 49` |
-| LCIR artifact identity | schema `51` |
-| LCIR artifact route | `typed-lcir-whole-artifact` |
-| LCIR native-object domain | `loom-lcir-native-object-v44` |
-| Checked-MIR native-object domain | `loom-checked-mir-native-object-v4` |
+| LCIR textual dump | `lcir 50` |
+| LCIR artifact identity | schema `52` |
+| LCIR native-object domain | `loom-lcir-native-object-v45` |
 | LLVM object-cache domain | `loom-llvm-object-cache-v48` |
-| Controlled quality evidence | schema `4` |
+| Controlled quality evidence | schema `5` |
 | Runtime bundle manifest | schema `2` |
 | Native runtime ABI component | `36` |
 | Coroutine ABI component | `2` |
@@ -43,10 +41,6 @@ writers for unreleased formats. Development history belongs in
 | Wait ABI component | `1` |
 | Typed process ABI component | `1` |
 | Standard-library ABI component | `7` |
-
-The checked-MIR native-object domain identifies the checked-MIR LLVM route. It
-is a compiler-private invalidation boundary, not an artifact compatibility
-layer or a supported public ABI.
 
 The compiler-owned standard library uses the content identity
 `loom-source-stdlib-v2/<sha256>`. The digest covers the Loom language version
@@ -69,9 +63,23 @@ bundle is therefore rejected instead of crossing the removed symbol boundary.
 
 Interpreted MIR 43 rejects postconditions that inspect current or `old`
 Task-bearing inputs after the body may have transferred them, and defines
-read-only receiver invariants as entry-only. LCIR native-object domain 44 and
-checked-MIR native-object domain 4 pin the corresponding emitters. Their route
-fingerprints already feed the unchanged compiler-wide LLVM object-cache key.
+read-only receiver invariants as entry-only. LCIR native-object domain 45 pins
+the sole native emitter. Its fingerprint already feeds the unchanged
+compiler-wide LLVM object-cache key.
+
+LCIR dump 50 and artifact identity schema 52 add atomic
+`TaskCarrierProject` and `TaskCarrierUpdate` operations for accessing a
+Task-free leaf inside a Task-bearing product. The native-object domain advances
+to 45 because LLVM now lowers those paths as nested `extractvalue` and
+`insertvalue` operations while preserving affine sibling ownership. The same
+versions raise the checked list-construction guard to 65,536 elements; the
+typed emitter allocates one backing object and emits iterative stores, so large
+list literals no longer require another backend. No runtime ABI or physical
+value layout changes.
+
+Quality evidence schema 5 removes the former per-scenario route comparison.
+Native preparation has only the typed LCIR backend, so each successful native
+build gate is itself the nonredundant backend evidence.
 
 LCIR dump 49 and artifact identity schema 51 add compiler-private
 `TaskCarrierBorrow`, `UnrefineBorrow`, `ProductBorrow`, and `SumBorrowSwitch`
@@ -138,7 +146,7 @@ boundaries, and every affected boundary must advance together.
 | Final-cache layer or writer identity | Artifact selection, closure, dense remapping, writing, or final-byte derivation changes even when the underlying artifact schema does not. |
 | LCIR dump | Serialized LCIR syntax, field set, instruction set, type encoding, control-flow meaning, or validation contract changes. |
 | LCIR artifact identity schema | Canonical identity encoding or any semantic input included in that identity changes. |
-| Route-specific native-object domain | The corresponding emitter's input assumptions, lowering meaning, object format, or route-specific fingerprint changes. |
+| LCIR native-object domain | The native emitter's input assumptions, lowering meaning, object format, or fingerprint changes. |
 | LLVM object-cache domain | Object-cache key composition or compiler-wide native reuse policy changes. |
 | Quality evidence schema | The machine-readable evidence record or its interpretation changes. |
 | Runtime bundle schema | The manifest envelope, file-tree contract, target metadata, archive metadata, or linker-input representation changes. |
@@ -170,7 +178,7 @@ When a boundary advances:
 | `.loomi` | Reject format, artifact version, language version, or envelope-kind mismatch before execution; matching headers still undergo exact deserialization and complete MIR validation. |
 | `.loomlib` | Reject format, artifact version, or language mismatch before import; matching input still undergoes bounded graph, path, identity, source, and interface validation. |
 | Compiler cache | Treat the entry as a miss and recompute from authoritative inputs. |
-| LCIR or native object | Do not reuse it outside its exact identity, route, target, and optimization domain. |
+| LCIR or native object | Do not reuse it outside its exact identity, target, and optimization domain. |
 | Runtime bundle | Reject before linking on schema, tree shape, target, data layout, CPU policy, complete ABI identity, archive digest, or linker-input mismatch. |
 | Native executable | Run only on its target platform with the runtime already linked into that artifact; no cross-toolchain ABI compatibility is promised. |
 

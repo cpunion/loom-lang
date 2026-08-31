@@ -31,12 +31,14 @@ Acceptance requires:
 - each migrated API deletes its former builtin/catalog path in the same change,
   without aliases, compatibility readers, or parallel implementations.
 
-### Finish typed LCIR and delete the checked-MIR LLVM route
+### Remove the unreachable universal runtime ABI
 
-Close the remaining whole-artifact LCIR gaps using the canonical typed layout
-plan. Once every maintained language and `std` fixture lowers directly, delete
-the checked-MIR LLVM emitter, its universal value ABI, route selector, cache
-domain, and tests. It is an implementation gap, not a compatibility surface.
+Native compilation now has one typed LCIR emitter. Delete the runtime-only
+`ValueSlot` heap, shadow-root, witness, legacy Task, value-operations, and Int
+list surfaces that no generated object can call. Preserve only helpers used by
+typed LCIR, moving shared Text/JSON utilities to representation-neutral modules
+before removing their old containers. Advance the runtime identity once, with
+no aliases or dormant compatibility exports.
 
 ### Strengthen reproducible evidence
 

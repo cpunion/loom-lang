@@ -2,8 +2,7 @@ use std::path::Path;
 use std::process::Command;
 
 use loom_codegen_llvm::{
-    EmitOptions, NativeRouteKind, NativeRoutePolicy, emit_native_object,
-    emit_prepared_native_object, native_object_fingerprint, prepare_native_object,
+    EmitOptions, emit_prepared_native_object, native_object_fingerprint, prepare_native_object,
 };
 use loom_mir::{Builtin, CallTarget, ExprKind, Function, FunctionId};
 use loom_runtime_abi::{
@@ -16,9 +15,9 @@ mod support;
 #[test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one vertical test pins source ownership, route selection, LLVM ABI, and native behavior"
+    reason = "one vertical test pins source ownership, LLVM ABI, and native behavior"
 )]
-fn process_primitives_are_typed_lcir_only_and_run_natively() {
+fn process_primitives_use_typed_lcir_and_run_natively() {
     let source = r#"import std.process.arguments
 import std.process.environment
 
@@ -100,39 +99,14 @@ pub fn main() {
     );
 
     let options = EmitOptions::run("main");
-    assert_eq!(
-        native_object_fingerprint(program, &options)
-            .expect_err("checked-MIR fingerprint must reject process primitives")
-            .code(),
-        "NativeProcessRequiresLcir"
-    );
-    assert_eq!(
-        emit_native_object(program, &project.path().join("checked.o"), &options)
-            .expect_err("checked-MIR object emission must reject process primitives")
-            .code(),
-        "NativeProcessRequiresLcir"
-    );
-    assert_eq!(
-        support::emit_native(program, &project.path().join("checked"), &options)
-            .expect_err("checked-MIR executable emission must reject process primitives")
-            .code(),
-        "NativeProcessRequiresLcir"
-    );
-    let checked_only =
-        prepare_native_object(program, options.clone(), NativeRoutePolicy::CheckedMirOnly);
-    let Err(error) = checked_only else {
-        panic!("checked-MIR route must reject process primitives");
-    };
-    assert_eq!(error.code(), "NativePreparationProcessRequiresLcir");
 
     let ir_path = project.path().join("process.ll");
     let object = project.path().join("process.o");
     let executable = project.path().join("process");
     let mut options = options;
     options.emit_ir = Some(ir_path.clone());
-    let prepared = prepare_native_object(program, options, NativeRoutePolicy::Automatic)
-        .expect("prepare typed process LCIR");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    let prepared = prepare_native_object(program, options).expect("prepare typed process LCIR");
+
     emit_prepared_native_object(&prepared, &object).expect("emit typed process object");
     support::link_native_object(&object, &executable).expect("link typed process executable");
 
@@ -257,9 +231,8 @@ pub fn main() {
     let object = project.path().join("environment.o");
     let mut options = EmitOptions::run("main");
     options.emit_ir = Some(ir_path.clone());
-    let prepared = prepare_native_object(program, options, NativeRoutePolicy::Automatic)
-        .expect("prepare environment-only LCIR");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    let prepared = prepare_native_object(program, options).expect("prepare environment-only LCIR");
+
     emit_prepared_native_object(&prepared, &object).expect("emit environment-only object");
     let ir = std::fs::read_to_string(ir_path).expect("read environment-only IR");
     assert!(ir.contains(PROCESS_ENVIRONMENT_TYPED_SYMBOL), "{ir}");
@@ -291,13 +264,8 @@ pub async fn main() {
     let program = snapshot
         .executable()
         .expect("lower unsupported process MIR");
-    let prepared = prepare_native_object(
-        program,
-        EmitOptions::run("main"),
-        NativeRoutePolicy::Automatic,
-    )
-    .expect("Task join and process access must share the typed LCIR route");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    prepare_native_object(program, EmitOptions::run("main"))
+        .expect("Task join and process access must share one typed artifact");
 }
 
 fn assert_dead_process_does_not_reject(directory: &Path) {
@@ -319,10 +287,9 @@ pub fn main() {}
     let program = snapshot.executable().expect("lower dead-process MIR");
     let options = EmitOptions::run("main");
     native_object_fingerprint(program, &options)
-        .expect("unreachable process primitives must not reject checked-MIR identity");
-    let prepared = prepare_native_object(program, options, NativeRoutePolicy::CheckedMirOnly)
-        .expect("unreachable process primitives must not reject checked-MIR preparation");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::CheckedMir);
+        .expect("unreachable process primitives must not affect the typed object identity");
+    prepare_native_object(program, options)
+        .expect("unreachable process primitives must not affect typed native preparation");
 }
 
 fn llvm_function_calling<'ir>(ir: &'ir str, symbol: &str) -> &'ir str {

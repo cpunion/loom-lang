@@ -9,11 +9,7 @@ use crate::{
 /// This is an invalidation boundary, not a compatibility promise. A change to
 /// the encoded LCIR meaning must change this number before the identity is used
 /// by a persistent object cache.
-pub const ARTIFACT_IDENTITY_SCHEMA: u32 = 51;
-
-/// Route tag which separates whole-artifact LCIR code generation from other
-/// native object pipelines.
-pub const ARTIFACT_IDENTITY_ROUTE: &str = "typed-lcir-whole-artifact";
+pub const ARTIFACT_IDENTITY_SCHEMA: u32 = 52;
 
 /// Returns the deterministic compiler-private identity of a checked artifact.
 ///
@@ -34,8 +30,8 @@ pub fn artifact_identity(artifact: &CheckedArtifact) -> String {
 
 /// Writes the deterministic compiler-private identity of a checked artifact.
 ///
-/// The schema and route tags make this suitable as one input to a backend
-/// object fingerprint. LCIR content reuses the single canonical dump encoder
+/// The schema tag makes this suitable as one input to a backend object
+/// fingerprint. LCIR content reuses the single canonical dump encoder
 /// rather than maintaining a second representation beside it.
 ///
 /// # Errors
@@ -44,7 +40,6 @@ pub fn artifact_identity(artifact: &CheckedArtifact) -> String {
 pub fn write_artifact_identity(artifact: &CheckedArtifact, output: &mut impl Write) -> fmt::Result {
     writeln!(output, "loom-checked-artifact-identity")?;
     writeln!(output, "schema={ARTIFACT_IDENTITY_SCHEMA}")?;
-    writeln!(output, "route={ARTIFACT_IDENTITY_ROUTE}")?;
     writeln!(output, "kind={}", artifact_kind(artifact.kind()))?;
     writeln!(output, "roots={}", artifact.roots().len())?;
     let outcomes = artifact.test_outcomes();

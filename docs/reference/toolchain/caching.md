@@ -34,12 +34,13 @@ normal artifact decoder and MIR validator.
 
 Construction proofs are process-local analysis conclusions, not cache
 certificates. The compiler therefore does not publish proof-bearing typed state
-or checked MIR to the persistent cache. Loads also reject a forged proof
-disposition. Such a layer is reported as a miss and rebuilt from source, so a
-warm command does not silently change from a proof-eliminated direct route to a
-runtime-recheck route. Parse, interface and other proof-free layers can still
-hit normally. Long-lived in-process analysis reuse has not crossed this disk
-boundary and remains available.
+or proof-bearing checked MIR to the persistent cache. Proof-free checked MIR is
+cacheable and is decoded and independently validated on every load. Loads also
+reject a forged proof disposition. Such a layer is reported as a miss and
+rebuilt from source, so a warm command cannot silently replace a
+proof-eliminated construction with a runtime recheck. Parse, interface, and
+other proof-free layers can still hit normally. Long-lived in-process analysis
+reuse remains available.
 
 Current namespaces include:
 
@@ -53,7 +54,7 @@ Current namespaces include:
 Native final executables are deliberately not cached. Linking depends on
 non-hermetic SDK, sysroot, CRT, system-library, linker-child, and debug
 companion inputs. A prepared target object is cacheable because its key includes
-the exact route, LLVM/codegen, target machine, optimization, roots, reachable
+the checked LCIR identity, LLVM/codegen, target machine, optimization, roots, reachable
 content, runtime ABI, and debug-source identity. A requested LLVM-IR side
 artifact bypasses the object cache so the requested file is always written.
 
@@ -94,15 +95,14 @@ That split permits unchanged package bodies to be reused when a body-only edit
 leaves the declaration graph compatible. Any incompatible shape falls back to
 fresh semantic analysis.
 
-LLVM object keys use separate LCIR and checked-MIR identity domains. Both include
-the exact linked LLVM identity, target triple and data layout, CPU policy and
+LLVM object keys use one typed-LCIR native identity domain. It includes the
+exact linked LLVM identity, target triple and data layout, CPU policy and
 features, implicit-versus-explicit target selection, optimization pipeline,
-PIC relocation, debug sources, and native runtime ABI. The LCIR identity
-streams the complete checked-artifact identity. The checked-MIR identity includes
-the run/test harness kind, selected roots, source reachability, reachable
-functions and witness slots, and the semantic tables consumed by checked-MIR
-lowering. Fingerprint errors disable neither validation nor correctness; they
-are reported instead of being converted into a cache miss.
+PIC relocation, debug sources, native runtime ABI, and complete checked-artifact
+identity. The latter already commits to selected roots, closed instances,
+representations, effects, and validated LCIR semantics. Fingerprint errors
+disable neither validation nor correctness; they are reported instead of being
+converted into a cache miss.
 
 These digests provide content integrity and deterministic identity. They do not
 authenticate a cache against an actor with the same filesystem permissions.

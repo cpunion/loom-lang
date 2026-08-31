@@ -32,15 +32,17 @@ managed allocation.
 
 ## Precise roots
 
-Checked-MIR synchronous generated frames link a shadow-stack record containing:
+Dormant legacy runtime support accepts a universal-value shadow-stack record
+containing:
 
 - a versioned immutable descriptor;
 - pointers to existing universal value slots;
 - one current state;
 - a bitmap row selecting the slots live in that state.
 
-The compiler publishes the state before a safepoint. Runtime helper operations
-use temporary precise root scopes when they hold partially constructed values.
+No current compiler path publishes that record; its exports remain only until
+the dedicated runtime-boundary cleanup. Runtime helper operations use temporary
+precise root scopes when they hold partially constructed values.
 
 Typed synchronous frames use the same state/bitmap model on a separate chain.
 Each live entry points to writable pointer-sized storage containing a direct
@@ -61,7 +63,7 @@ counter, trace, sweep, or move any allocation. One descriptor is limited to
 65,536 slots, 65,536 states, and 1,048,576 bitmap words in total across all
 states. Each independent chain is limited to 65,536 linked frames. The limits
 are shared ABI constants so compiler rejection and hostile-runtime-input
-validation agree. Both LLVM emitters reject an oversized root-map shape as
+validation agree. The typed LLVM emitter rejects an oversized root-map shape as
 `ProgramTooLarge` before emitting a descriptor; this is an emission error, not
 unsupported source coverage and never a fallback signal.
 

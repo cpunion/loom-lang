@@ -44,9 +44,7 @@ pub use artifact::{
     ArtifactValidationErrors, CheckedArtifact, TestOutcomePlan, check_artifact,
     validate_artifact_roots,
 };
-pub use artifact_identity::{
-    ARTIFACT_IDENTITY_ROUTE, ARTIFACT_IDENTITY_SCHEMA, artifact_identity, write_artifact_identity,
-};
+pub use artifact_identity::{ARTIFACT_IDENTITY_SCHEMA, artifact_identity, write_artifact_identity};
 pub use builder::{BuildError, BuildErrorCode, FunctionBuilder, ProgramBuilder};
 pub use dump::{DumpOptions, dump_program, write_program, write_program_with_options};
 pub use ids::{

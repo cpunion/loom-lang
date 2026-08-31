@@ -1,9 +1,6 @@
 use std::process::Command;
 
-use loom_codegen_llvm::{
-    EmitOptions, NativeRouteKind, NativeRoutePolicy, emit_prepared_native_object,
-    prepare_native_object,
-};
+use loom_codegen_llvm::{EmitOptions, emit_prepared_native_object, prepare_native_object};
 
 mod support;
 use support::{link_native_object, loom_text_literal};
@@ -157,10 +154,9 @@ test async fn path_file_round_trip() {{
     );
 
     let program = snapshot.executable().expect("lower standard-value MIR");
-    let prepared =
-        prepare_native_object(program, EmitOptions::tests(), NativeRoutePolicy::Automatic)
-            .expect("prepare typed standard-value tests");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    let prepared = prepare_native_object(program, EmitOptions::tests())
+        .expect("prepare typed standard-value tests");
+
     let object = project.path().join("native-tests.o");
     let executable = project.path().join("native-tests");
     emit_prepared_native_object(&prepared, &object).expect("emit typed standard-value test object");

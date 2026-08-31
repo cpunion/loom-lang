@@ -1,11 +1,10 @@
 # LLVM backend
 
-`loom-codegen-llvm` is the default native backend. Its production API prepares
-one opaque object plan from `loom_mir::CheckedProgram`, owned emission options,
-and an atomic route policy. The plan owns the exact LLVM target machine and
-either a complete checked LCIR artifact or the checked-MIR roots and reachable
-graph for one checked-MIR object. Fingerprinting and emission consume that same
-plan. Linking is a separate driver operation.
+`loom-codegen-llvm` is the native backend. Its production API prepares one
+opaque object from `loom_mir::CheckedProgram` and owned emission options. The
+preparation owns the exact LLVM target machine and one complete independently
+validated LCIR artifact. Fingerprinting and emission consume that same
+preparation. Linking is a separate driver operation.
 
 ## LLVM integration
 
@@ -15,10 +14,11 @@ The workspace currently targets LLVM 19 through:
 - `llvm-sys 191.1.0` with dynamic linking preferred.
 
 Most compiler crates forbid unsafe Rust. `loom-codegen-llvm` denies it by
-default and has one audited exception for Inkwell's typed GEP builder, whose
-pointee/index proof comes from the private native-storage plan. Runtime FFI
-implementation is isolated in `loom-runtime`, which explicitly permits the
-unsafe operations required by the compiler-private C ABI.
+default and allows small audited exceptions for raw LLVM C API calls and
+Inkwell's typed GEP builder. GEP pointee/index proofs come from independently
+validated LCIR layouts. Runtime FFI implementation is isolated in
+`loom-runtime`, which explicitly permits the unsafe operations required by the
+compiler-private C ABI.
 
 Contributors need LLVM 19 development files and a matching `llvm-config`. The
 workspace does not silently fall back to another LLVM major version.
@@ -41,45 +41,26 @@ closure, representations, CFG, types, proof-boundary shapes, and exact fault
 effects have already crossed independent validation. Predicate truth itself is
 a process-local conclusion supplied by fresh checked MIR. Supported `.loomi`
 nongeneric `Recheck` constructions re-evaluate their serialized predicate in
-LCIR and publish the nominal value only on the accepted path; generic or
-otherwise unsupported replay selects the complete checked-MIR route. The emitter
+LCIR and publish the nominal value only on the accepted path; unsupported replay
+is a native compilation error. The emitter
 declares every source function with its typed LCIR ABI, keeps source symbols
 internal, emits a run or ordered test harness, verifies before and after
 optimization, and writes a relocatable object.
 
-Ordinary `build`, `run`, and `test` use `NativeRoutePolicy::Automatic`. Route
-preparation creates one target machine and attempts the complete direct
-lowering exactly once. `Complete` retains only the checked artifact and selects
-LCIR. An eligible `Unsupported` result constructs and stores `SourceRoots` plus
-`ReachableSourceGraph` for a complete checked-MIR object; a graph containing an
-LCIR-only primitive is not eligible. Unsupported unreachable code cannot change
-the route; one unsupported reachable test changes the whole ordered-test
-artifact. Invalid programs, invalid roots, resource limits, compiler defects,
-and LCIR emitter failures never fall back.
+`build`, `run`, `test`, and `debug` create one target machine and attempt the
+complete lowering exactly once. `Complete` retains the checked artifact.
+`Unsupported` becomes a structured native-preparation error containing the
+ordered `SupportReport`, including stable feature, function, expression, span,
+and path facts for each unsupported reachable site. Unsupported unreachable
+code cannot affect the artifact; one unsupported reachable test rejects the
+whole ordered-test artifact. Invalid programs, invalid roots, resource limits,
+compiler defects, and LLVM emitter failures remain distinct hard errors.
 
-`NativeRoutePolicy::LcirOnly` uses the same target, roots, reachability, and
-whole-artifact classification, but an `Unsupported` result is a structured
-`NativePreparationUnsupportedLcir` error. The error owns the ordered
-`SupportReport`, including stable feature, function, expression, span, and path
-facts for every unsupported reachable site. An `InvalidProgram` preparation
-result instead preserves the lowerer's stable code and is reported before
-Automatic or `LcirOnly` preparation selects an emitter. `CheckedMirOnly` skips
-LCIR classification and exists only for focused backend validation. Reachable process
-input primitives are an explicit exception: they have no checked-MIR ABI, so
-`CheckedMirOnly` rejects them and `Automatic` never uses them as part of a
-checked-MIR fallback. This rejection is based on the reachable graph; a dead
-private process wrapper does not affect the selected route.
+File, Socket, and process operations use the same rule as every other native
+feature: they must lower completely to typed LCIR. An unreachable private
+helper does not affect native preparation.
 
-File and Socket I/O follows the same stronger routing rule for both its
-recoverable and faulting families. Direct checked-MIR fingerprinting and
-emission reject every reachable operation and close builtin with
-`NativeIoRequiresLcir`. `CheckedMirOnly` and an `Automatic` preparation whose
-complete LCIR attempt is unsupported report
-`NativePreparationIoRequiresLcir`; they do not link against a removed
-universal runtime entry point. An unreachable private I/O function does not
-affect route selection.
-
-Source contracts are part of the checked direct route. LCIR carries canonical
+Source contracts are part of the checked LCIR artifact. LCIR carries canonical
 assertion, precondition, postcondition, and invariant fault metadata, including
 bounded user code, message, contract span, and either a static blame span or the
 validated creation-site span carried by a coroutine frame. Synchronous callers
@@ -91,7 +72,7 @@ all contract faults through the active lexical cleanup suffix.
 
 The implemented crate boundary is documented in
 [Code generation IR](codegen-ir.md). The accepted pipeline design,
-whole-artifact migration rule, typed ABI, and deletion gates are in the
+whole-artifact rule and typed ABI are in the
 [typed code generation IR RFC](../rfcs/typed-codegen-ir.md).
 
 ## Prepared object boundary
@@ -99,32 +80,25 @@ whole-artifact migration rule, typed ABI, and deletion gates are in the
 The production facade consists of:
 
 - `prepare_native_object`, which owns `EmitOptions`, creates the target, and
-  selects one immutable route;
-- `prepared_native_object_fingerprint`, which hashes the stored route without
+  constructs one immutable checked LCIR artifact;
+- `prepared_native_object_fingerprint`, which hashes the stored artifact without
   repeating lowering or reachability;
 - `prepared_native_target_identity`, which exposes the exact read-only target
   identity to runtime-bundle validation;
 - `emit_prepared_native_object`, which borrows the same target machine and
-  selected representation.
+  checked artifact.
 
 `PreparedNativeObject` is opaque and remains on the thread that prepared it;
 the contained Inkwell target machine is not made artificially sendable. The
-checked-MIR and LCIR emitters retain low-level direct APIs for focused tests and
-library clients, but each is a thin create-target-then-emit wrapper. Production
-CLI paths use only the prepared facade.
+low-level typed emitter remains available for focused tests. Production CLI
+paths use only the prepared facade.
 
-Preparation failures have five structured classes: invalid root, unsupported
-LCIR under a strict policy, resource, target/configuration, and compiler defect.
+Preparation failures have six structured classes: invalid program, invalid
+root, unsupported feature, resource, target/configuration, and compiler defect.
 Unsupported errors and ordinary invalid/resource failures use the failure exit;
 target errors use the usage exit and defects use the defect exit.
-Classification never depends on matching diagnostic strings. A reachable
-process primitive that cannot remain on the complete LCIR route reports
-`NativePreparationProcessRequiresLcir`, including when another reachable
-feature caused the LCIR classification to be unsupported.
-Reachable File or Socket I/O analogously reports
-`NativePreparationIoRequiresLcir`; its support report is retained when another
-reachable LCIR coverage gap caused the attempted `Automatic` route to be
-unsupported.
+Classification never depends on matching diagnostic strings. Every unsupported
+reachable operation retains its support-report evidence.
 
 ## Target-machine policy
 
@@ -138,31 +112,20 @@ target's LLVM data layout.
 
 The target machine is created before representation selection. Its pointer
 width is converted with checked arithmetic into `TargetLayout`. A complete
-direct LCIR object whose representations are all width-independent can
+typed LCIR object whose representations are all width-independent can
 therefore be emitted for a matching 32-bit LLVM target. Both direct `Text`
-representations and the checked-MIR universal representation require 64-bit
-pointers; reachable text
-selects atomic checked-MIR fallback during 32-bit direct classification, and that
-checked-MIR route then reports its existing unsupported-target boundary. None of
-these cases establishes 32-bit runtime, linker, CI, or release support; LLVM
+representations require 64-bit pointers, so reachable Text makes 32-bit native
+preparation unsupported. This does not establish 32-bit runtime, linker, CI, or release support; LLVM
 target availability proves only object emission.
-
-Process input does not participate in that fallback. If a reachable argument
-or environment primitive makes the direct artifact unsupported, route
-preparation reports the process-requires-LCIR error before checked-MIR target
-validation. Direct checked-MIR fingerprint and emission APIs enforce the same
-reachable-graph rule.
-
-Under `LcirOnly`, the same unsupported 32-bit Text artifact returns its
-coverage report before any checked-MIR ABI validation. A complete width-independent
-LCIR artifact remains eligible for 32-bit object emission.
+A complete width-independent LCIR artifact remains eligible for 32-bit object
+emission.
 
 ## Verification and optimization
 
 The module triple and data layout are set before lowering. The pipeline is:
 
-1. emit reachable functions, live witnesses, runtime declarations, and debug
-   metadata;
+1. emit reachable function instances, typed descriptors, runtime declarations,
+   and debug metadata;
 2. run the LLVM verifier;
 3. run the selected pass pipeline;
 4. run the verifier again;
@@ -202,7 +165,7 @@ is rejected before emission.
 These requirements describe execution state, not compiler-generated harness
 output. Even a pure direct LCIR executable may declare the output-only
 `loom_runtime_stdout_write_v1(data, length)` symbol while constructing no Loom
-runtime or executor. Both native emitters build the complete UTF-8 harness line
+runtime or executor. The typed emitter builds the complete UTF-8 harness line
 with a literal LF, pass its exact byte length excluding the LLVM global's
 trailing NUL, and branch on the returned status where success could otherwise
 be reported. The Rust runtime writes and flushes that raw range without C
@@ -232,6 +195,13 @@ the same identity SSA or `extractvalue` operation as their task-free
 counterparts; the distinction is checked ownership meaning, not an ABI or
 runtime operation.
 
+Projected access to a Task-free leaf inside a Task-bearing product uses one
+atomic path operation. `TaskCarrierProject` lowers to nested `extractvalue`
+operations while borrowing the complete owner. `TaskCarrierUpdate` consumes
+that owner and lowers to nested `insertvalue` operations that produce the
+updated aggregate. No Task-bearing intermediate owner, stack slot, or runtime
+helper is introduced.
+
 A synchronous mutable receiver is represented as one exact functional inout
 value, independent of whether dispatch was inherent or selected through a
 concept witness. An infallible call with source result `T` and ordered
@@ -248,11 +218,10 @@ proxy allocation, universal value, or runtime writeback helper is introduced.
 The owning synchronous `mut self` body may
 reconstruct through its own top-level invariant product before its exit check;
 the frontend and checked MIR reject every external or nested invariant
-crossing. Task-bearing or otherwise unrepresentable projections still select
-atomic whole-artifact fallback. Nongeneric task-free refined and fully concrete
+crossing. Unsupported projection shapes reject native preparation. Nongeneric task-free refined and fully concrete
 task-free invariant-record runtime construction instead returns the exact typed
-`Result[..., ConstraintError]`; open, affine, or unsupported-shape construction
-remains fallback.
+`Result[..., ConstraintError]`; open or unsupported-shape construction is a
+coverage error.
 
 Fresh-source proven record invariants and refined predicates do not add an LLVM
 wrapper or check. LCIR retains their distinct semantic types and proof opcodes,
@@ -260,8 +229,8 @@ while the emitter forwards the already established physical SSA value. A
 refined scalar therefore uses the base scalar ABI; a refined product uses the
 base product ABI; and an invariant record uses its field product ABI. Supported
 nongeneric task-free refined and closed task-free invariant-record runtime
-construction returns the exact language `Result` value on typed LCIR; open,
-affine, or unsupported-shape runtime construction remains atomic fallback.
+construction returns the exact language `Result` value on typed LCIR; open or
+unsupported-shape runtime construction rejects native preparation.
 Serialized task-free refined and concrete task-free invariant-record proof
 rechecks retain their nominal result shape on typed LCIR, guard publication with
 the canonical `ArtifactProofRejected` runtime fault, and preserve concrete
@@ -333,13 +302,13 @@ at their own safepoint. Successor arguments are rooted only when the paired
 explicit block parameter is live. Functions with no live-across managed leaf
 emit no frame, descriptor, bitmap, push, or pop. Every normal, fault, and
 resumed-fault return pops a frame that was pushed. Root-map ABI-limit overflow
-is an emission-time `ProgramTooLarge` error and cannot select checked-MIR fallback.
+is an emission-time `ProgramTooLarge` error.
 
 The harness creates only a synchronous runtime when the root's exact effects
 require one. Managed concat/get introduces no universal root chain, executor,
 scheduler, suspension, or catchable fault channel. Transparent/refined carriers
 reuse their base LLVM type and managed-root projections without a runtime box.
-Other unsupported dynamic Text producers remain atomic whole-artifact fallback.
+Unsupported dynamic Text producers reject native preparation.
 
 ### Direct managed Bytes
 
@@ -401,9 +370,9 @@ helper stages them before its safepoint.
 The helper implements only Loom's portable lexical separator rule. It neither
 queries a filesystem nor normalizes `.`, `..`, repeated `/`, host drive syntax,
 or reverse solidus. It creates no runtime Path object, universal value, JSON
-policy, executor, or ownership/borrow surface. The untyped
-`loom_runtime_path_contains_nul` and `loom_runtime_path_join` declarations are
-confined to the complete checked-MIR emitter.
+policy, executor, or ownership/borrow surface. Typed LLVM objects declare and
+reference no untyped Path helper; removal of the unreachable legacy runtime
+exports is a separate runtime-boundary cleanup.
 
 ## Direct managed Lists
 
@@ -511,9 +480,8 @@ Json-specific condition, universal envelope, runtime tag registry, tracing
 callback, or executor. Unsupported 32-bit managed layouts fail closed.
 
 Canonical Json construction, copying, List/TextMap operations, exhaustive
-matching, exact moving-GC roots, and formatting are direct. Json equality and
-parsing remain separate coverage boundaries and still select whole-artifact
-fallback when reachable.
+matching, exact moving-GC roots, formatting, structural equality, and the
+source-backed parser lower through the same typed artifact.
 
 ## Direct JSON formatting
 
@@ -556,8 +524,7 @@ calls the selected source witness, whose private leaf uses
 The runtime wire remains `typed-io-v1` plus `typed-resource-v1`. It transports
 no source layout, universal value, or nominal type ID. The former
 `loom_file_*`, `loom_socket_*`, and `loom_io_close` symbols are absent from the
-runtime and emitter, so checked-MIR rejection is a hard boundary rather than a
-deprecated fallback.
+runtime and emitter.
 
 ## Direct typed Tasks and fixed joins
 
@@ -671,7 +638,7 @@ The fixed-row slice remains static and nonempty: a sole nonempty List literal
 is flattened into it without an input List allocation, and `all` or `settled`
 build their List result after resume. Stored, computed, empty, and
 runtime-sized homogeneous Lists use `TaskJoinList` instead of selecting the
-checked-MIR object. The frontend currently maps canonical, unshadowed Task API
+fixed-row operation. The frontend currently maps canonical, unshadowed Task API
 members through its temporary catalog to a compiler-private `TaskIntrinsic`
 before MIR construction; LLVM never inspects their source spelling. This enum
 is a transitional frontend bridge, not a standard-library identity or ABI.
@@ -773,46 +740,12 @@ Failure while writing an already failing diagnostic leaves the existing
 nonzero status intact; because a prefix may already be visible, the harness
 does not retry or add a second diagnostic.
 
-## Checked-MIR native specialization
-
-The universal value path remains the implementation for supported fallback
-artifacts that contain no LCIR-only primitive. Current
-closed-world fast paths include primitive scalar calls, eligible flat
-primitive-field records, narrowly proven checked integer recursion, and
-non-escaping local `List[Int]` shapes.
-
-Each optimization is fail-closed. Contracts, invariants, generic or managed
-shapes, escapes, suspension, unsupported expressions, or an incomplete proof
-fall back to universal lowering. File and Socket operations are excluded from
-this route and fail closed during checked-MIR identity, preparation, or
-emission. These optimizations are not language ABI
-promises and should not be copied into user reference material.
-
-An exact single-append range over private `List[Int]` storage keeps its length
-in SSA when the appended expression cannot reference the receiver. Generated
-code publishes that length before allocation growth and on normal loop exit,
-instead of writing the header on every iteration. Receiver-observing element
-expressions retain eager commits. A fault may clean up a header whose length is
-a safe lower bound: this is valid only for private contiguous `i64` elements,
-which have no destructor or source-visible partially built value.
-
-Optimization work requires both semantic differential tests and IR structure
-tests. A benchmark improvement alone is insufficient evidence that a fast path
-is correct.
-
 ## Object identity and linking
 
 The authoritative current LCIR dump, checked-artifact, native-object,
 object-cache, checked-MIR, and runtime ABI identities are maintained in
-[Versioning and compatibility](../project/versioning.md). Object identities
-remain route-separated:
-
-- the LCIR route streams the canonical complete checked-artifact identity;
-- the checked-MIR route includes the run/test harness kind, MIR format, exact roots
-  and source reachability, reachable functions, live witness slots, and the
-  semantic type, concept, and prelude tables used by checked-MIR lowering.
-
-Both identities include the compiler/backend build fingerprint, linked LLVM
+[Versioning and compatibility](../project/versioning.md). The native-object
+identity streams the canonical complete checked-artifact identity and includes the compiler/backend build fingerprint, linked LLVM
 version, native runtime ABI, exact normalized triple and data layout, CPU and
 feature policy, implicit-versus-explicit target selection, optimization
 pipeline, PIC relocation, and stable debug-source metadata. Output and LLVM-IR
@@ -832,16 +765,18 @@ publishes the exact typed value, while fault and cancellation use distinct
 scheduler step codes. Callback-local typed roots are popped on every terminal
 or pending exit.
 
-The runtime bundle exposes narrow typed helpers rather than a universal value
-boundary. Typed repeated allocation and shadow-root descriptors carry exact
+Generated typed LLVM objects use narrow typed runtime helpers rather than a
+universal value boundary. The archive still contains dormant universal GC/value
+exports pending the dedicated runtime-boundary cleanup; no current compiler
+path references them. Typed repeated allocation and shadow-root descriptors carry exact
 managed layouts. Text, Bytes, Path, JSON, and formatting helpers validate their
 direct inputs, stage every borrowed byte sequence before a possible collection,
 and publish only fully initialized managed results. Structured logging receives
 the canonical `LogLevel`, direct Text, and an optional contiguous
 `TextMap[Text]` entry view; it is non-collecting, maps status `2` to
-`LogWriteFault`, and traps on an invalid status. Reachable logging is required
-to lower through typed LCIR; the checked-MIR emitter and runtime export no
-universal-value logging fallback. The stdout helper remains an output-only
+`LogWriteFault`, and traps on an invalid status. Reachable logging lowers
+through typed LCIR; the runtime exports no universal-value logging boundary.
+The stdout helper remains an output-only
 boundary and does not create a runtime or executor requirement.
 
 Typed Task helpers create timer leaves, atomically adopt static join children,
@@ -867,14 +802,13 @@ The bundle exports only the versioned typed I/O and typed resource boundaries;
 there are no universal File/Socket wrappers, universal close function, or
 fixed runtime File/Socket nominal IDs.
 
-The focused I/O ABI test covers direct checked-MIR rejection, `CheckedMirOnly`
-rejection, `Automatic` no-fallback behavior, dead-I/O reachability, typed symbol
-presence, and obsolete-symbol absence. The dedicated source fixture runs real
-CLI `check/build/test/run`. The integrated standard-library native test uses
-the production preparation facade, requires `NativeRouteKind::Lcir`, and drives
+The focused I/O ABI test covers dead-I/O reachability, typed symbol presence,
+and obsolete-symbol absence. The dedicated source fixture runs real CLI
+`check/build/test/run`. The integrated standard-library native test uses the
+production preparation facade and drives
 real filesystem and loopback Socket operations on its host test platform.
 
-Integer parsing is ordinary `std.int` source. Neither native emitter retains an
+Integer parsing is ordinary `std.int` source. The native emitter retains no
 integer-parser instruction, special emission path, runtime symbol, tombstone,
 or compatibility decoder.
 
@@ -897,7 +831,7 @@ replacement. The compiler rechecks both file identity and SHA-256 after linking.
 
 ## Debug information
 
-The production checked-MIR backend emits source line information from stable
+The typed LCIR backend emits source line information from stable
 project-relative paths. Linux executables retain DWARF in the ELF output. On
 macOS, `dsymutil --verify` produces a sibling `.dSYM` bundle. `loom debug`
 keeps temporary executable and debug data alive for the debugger session and
@@ -924,9 +858,8 @@ returns `{ status, value, writebacks... }` and receives an artificial trailing
 These names describe compiler implementation types, not Loom source types or a
 stable native ABI. In particular, a debugger's step-out result is the complete
 physical aggregate; it must not interpret the status field as the logical
-result. `loom debug` uses the same atomic automatic route as build, run, and
-test. Development optimization alone is not a debugger contract and does not
-disable LCIR.
+result. `loom debug` uses the same typed preparation as build, run, and test.
+Development optimization alone is not a debugger contract.
 
 MSVC-targeted objects carry the LLVM `CodeView` module flag, and the linker is
 given `/DEBUG` and an explicit staged `/PDB:` output. The Windows release entry

@@ -8064,6 +8064,79 @@ pub fn main() {
 }
 
 #[test]
+fn projected_inout_atomically_preserves_task_bearing_siblings() {
+    let dump = complete_dump(
+        r"record Counter { value Int }
+
+record Inner {
+    queued Task[Int]
+    counter Counter
+}
+
+record Envelope {
+    pending Task[Int]
+    inner Inner
+}
+
+impl Counter {
+    method add(mut self, value Int) {
+        self.value = self.value + value
+    }
+}
+
+async fn child(value Int) Int { value }
+fn consume(value Envelope) { consume(value) }
+
+pub async fn main() {
+    var envelope = Envelope {
+        pending = child(1),
+        inner = Inner {
+            queued = child(2),
+            counter = Counter { value = 0 }
+        }
+    }
+    envelope.inner.counter.add(1)
+    consume(envelope)
+}
+",
+    );
+    assert!(dump.contains("task_carrier.project"), "{dump}");
+    assert!(dump.contains("path [1.1]"), "{dump}");
+    assert_eq!(dump.matches("task_carrier.update").count(), 2, "{dump}");
+}
+
+#[test]
+fn task_carrier_projection_reads_through_invariant_products() {
+    let dump = complete_dump(
+        r"record Counter {
+    value Int
+    invariant self.value >= 0
+}
+
+record Envelope {
+    pending Task[Int]
+    counter Counter
+}
+
+async fn child() Int { 1 }
+fn consume(value Envelope) { consume(value) }
+
+pub async fn main() {
+    let envelope = Envelope {
+        pending = child(),
+        counter = Counter { value = 1 }
+    }
+    let observed = envelope.counter.value
+    consume(envelope)
+    assert observed == 1
+}
+",
+    );
+    assert!(dump.contains("task_carrier.project"), "{dump}");
+    assert!(dump.contains("path [1.0]"), "{dump}");
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn checked_projected_move_extracts_the_leaf_and_consumes_its_root() {
     use loom_core::Span;

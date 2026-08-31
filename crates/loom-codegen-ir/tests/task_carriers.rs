@@ -719,3 +719,103 @@ fn nested_task_lists_and_repeated_affine_aggregates_are_rejected() {
         "repeated affine products, keyed affine products, and non-exact TaskHandle Lists must fail independently: {errors:#?}"
     );
 }
+
+fn resource_leaf_task_carrier_program(update: bool) -> Program {
+    let file_id = TypeId(120);
+    let file_semantic = Type::Nominal(file_id, Vec::new());
+    let task_semantic = Type::Task(Box::new(Type::Int));
+    let carrier_semantic = Type::Nominal(TypeId(121), Vec::new());
+    let mut builder = ProgramBuilder::with_canonical_types(
+        TargetLayout::new(64).expect("target"),
+        CanonicalTypeCatalog {
+            file: Some(file_id),
+            ..CanonicalTypeCatalog::default()
+        },
+    );
+    let file = builder
+        .add_pod_record_type(file_semantic.clone(), &[Type::Int])
+        .expect("canonical File");
+    builder
+        .add_task_handle_type(task_semantic.clone())
+        .expect("Task[Int]");
+    let carrier = builder
+        .add_pod_record_type(carrier_semantic, &[task_semantic, file_semantic])
+        .expect("Task carrier with File leaf");
+    let parameters = if update {
+        vec![carrier, file]
+    } else {
+        vec![carrier]
+    };
+    let function_id = builder
+        .declare_function(
+            origin(120),
+            "task_carrier.resource_leaf",
+            Signature::new(parameters.clone(), carrier),
+            Effects::NONE,
+        )
+        .expect("resource-leaf fixture");
+    {
+        let mut function = builder.function(function_id).expect("function builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("set entry");
+        let parameters = parameters
+            .into_iter()
+            .map(|ty| {
+                function
+                    .append_block_parameter(entry, ty)
+                    .expect("parameter")
+            })
+            .collect::<Vec<_>>();
+        let returned = if update {
+            function
+                .append_instruction(
+                    entry,
+                    InstructionKind::TaskCarrierUpdate {
+                        aggregate: parameters[0],
+                        path: Box::from([1]),
+                        value: parameters[1],
+                    },
+                    &[carrier],
+                    origin(120),
+                )
+                .expect("forge resource-dropping update")[0]
+        } else {
+            function
+                .append_instruction(
+                    entry,
+                    InstructionKind::TaskCarrierProject {
+                        aggregate: parameters[0],
+                        path: Box::from([1]),
+                    },
+                    &[file],
+                    origin(120),
+                )
+                .expect("forge resource-duplicating projection");
+            parameters[0]
+        };
+        function
+            .terminate(
+                entry,
+                Terminator::new(TerminatorKind::Return(returned), origin(120)),
+            )
+            .expect("return carrier");
+    }
+    builder.finish()
+}
+
+#[test]
+fn task_carrier_path_operations_reject_resource_capability_leaves() {
+    for (update, expected) in [
+        (false, "cannot duplicate a File, Socket"),
+        (true, "cannot replace and drop a File, Socket"),
+    ] {
+        let errors = validate_program(&resource_leaf_task_carrier_program(update))
+            .expect_err("Task-carrier path operation exposed a resource capability leaf");
+        assert!(
+            errors.as_slice().iter().any(|error| {
+                error.code() == ValidationCode::TypeMismatch && error.message().contains(expected)
+            }),
+            "missing `{expected}` rejection: {errors:#?}"
+        );
+    }
+}

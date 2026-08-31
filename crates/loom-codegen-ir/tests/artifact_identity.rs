@@ -1,10 +1,10 @@
 use std::fmt;
 
 use loom_codegen_ir::{
-    ARTIFACT_IDENTITY_ROUTE, ARTIFACT_IDENTITY_SCHEMA, ArtifactRootRequest, BlockTarget,
-    CanonicalTypeCatalog, CheckedArtifact, CheckedProgram, Constant, Effects, FloatBinaryOp,
-    InstructionKind, IntPredicate, Origin, ProgramBuilder, Repr, Signature, TargetLayout,
-    Terminator, TerminatorKind, artifact_identity, dump_program, write_artifact_identity,
+    ARTIFACT_IDENTITY_SCHEMA, ArtifactRootRequest, BlockTarget, CanonicalTypeCatalog,
+    CheckedArtifact, CheckedProgram, Constant, Effects, FloatBinaryOp, InstructionKind,
+    IntPredicate, Origin, ProgramBuilder, Repr, Signature, TargetLayout, Terminator,
+    TerminatorKind, artifact_identity, dump_program, write_artifact_identity,
 };
 use loom_core::{FileId, Span};
 use loom_mir::{ExprId, FunctionId as MirFunctionId, Type, TypeId};
@@ -28,7 +28,7 @@ impl BodyOrigins {
 
 #[test]
 fn identity_schema_is_pinned_for_the_current_lcir_contract() {
-    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 51);
+    assert_eq!(ARTIFACT_IDENTITY_SCHEMA, 52);
 }
 
 fn origin(expression: Option<u32>, file: u32, start: u32, end: u32) -> Origin {
@@ -525,11 +525,11 @@ fn identity_is_brand_independent_and_repeatable() {
     assert_eq!(identity, artifact_identity(&second));
     assert_eq!(identity, artifact_identity(&first));
     assert!(identity.starts_with(&format!(
-        "loom-checked-artifact-identity\nschema={ARTIFACT_IDENTITY_SCHEMA}\nroute={ARTIFACT_IDENTITY_ROUTE}\n"
+        "loom-checked-artifact-identity\nschema={ARTIFACT_IDENTITY_SCHEMA}\nkind=run\n"
     )));
     assert!(
-        identity.contains("payload=checked-lcir-with-origins\nlcir 49\n"),
-        "artifact schema 51 changes checked meaning with the LCIR text wire: {identity}"
+        identity.contains("payload=checked-lcir-with-origins\nlcir 50\n"),
+        "artifact schema 52 changes checked meaning with the LCIR text wire: {identity}"
     );
     assert!(!identity.contains("ProgramBrand"));
     assert!(!identity.contains("function-origin f41/e7 file1:10..20"));
@@ -608,7 +608,7 @@ fn complete_tuple_semantics_are_dump_and_artifact_identity_inputs() {
     assert_ne!(boolean_dump, floating_dump);
     assert_ne!(artifact_identity(&boolean), artifact_identity(&floating));
     assert_eq!(
-        ARTIFACT_IDENTITY_SCHEMA, 51,
+        ARTIFACT_IDENTITY_SCHEMA, 52,
         "complete tuple semantics use the current artifact identity schema"
     );
 }

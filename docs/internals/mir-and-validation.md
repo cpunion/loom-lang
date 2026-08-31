@@ -197,7 +197,7 @@ as appropriate.
 
 `Recheck` retains the direct nominal result type; it is not the source-facing
 `Result[T, ConstraintError]` produced by an ordinary runtime-checked
-construction. The interpreter and checked-MIR LLVM route replay the embedded
+construction. The interpreter and typed LCIR native backend replay the embedded
 predicate or invariant exactly once, using a private candidate and publishing
 the nominal destination only after acceptance. Success preserves source
 behavior. Failure raises the canonical `ArtifactProofRejected` `RuntimeFault`;
@@ -207,7 +207,7 @@ faulted child through the same `TaskFault` terminal-state rules as every other
 child fault. Only OOM is a process-level exception. Typed LCIR replays
 supported nongeneric predicates through an explicit `ArtifactProofRejected`
 fault guard and publishes the nominal SSA value only in the accepted block;
-generic or otherwise unsupported shapes atomically select the checked-MIR route.
+generic or otherwise unsupported shapes reject native preparation.
 
 The canonical prelude `ConstraintError` is a non-generic record with exactly
 six fields, in order: `target_type Text`, `code Text`, `predicate Text`, `path
@@ -220,7 +220,7 @@ The persistent compiler cache does not turn a cache hit into a replay build.
 Proof-bearing checked MIR and typed semantic state are not published, and a
 forged cached proof disposition is rejected as a miss. A later process rebuilds
 those layers from the exact source, obtains the same process-local `Proven`
-conclusion, and therefore preserves cold/warm diagnostics, route selection and
+conclusion, and therefore preserves cold/warm diagnostics, native identity, and
 check elimination. In-process semantic reuse remains available because it has
 not crossed a wire trust boundary.
 

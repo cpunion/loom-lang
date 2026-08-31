@@ -276,8 +276,7 @@ tag. For each reachable concrete compiler instance, every executable conversion
 to or call through `dyn C` must close to at least one exact producer proof. A
 dynamic use with no producer in that closed catalog reports the stable
 invalid-program error `MissingDynamicConceptWitness` during executable artifact
-preparation. It never produces an LCIR support report or selects checked-MIR
-fallback under the production Automatic policy. `loom check` does not perform
+preparation. It never produces an LCIR support report. `loom check` does not perform
 this root-dependent artifact closure. Open producers in unreachable functions
 or unreachable generic instances do not affect the artifact. Generic producers
 receive ordinary statically checked witness arguments when instantiated; a

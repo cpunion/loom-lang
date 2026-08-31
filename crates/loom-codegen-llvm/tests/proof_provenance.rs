@@ -3,8 +3,7 @@
 use std::process::Command;
 
 use loom_codegen_llvm::{
-    EmitOptions, NativeRouteKind, NativeRoutePolicy, OptimizationProfile,
-    emit_prepared_native_object, prepare_native_object,
+    EmitOptions, OptimizationProfile, emit_prepared_native_object, prepare_native_object,
 };
 use loom_core::Span;
 use loom_core::runtime_fault::{
@@ -19,7 +18,7 @@ use loom_mir::{
 use loom_runtime_abi::{FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX};
 
 mod support;
-use support::{emit_native, link_native_object};
+use support::link_native_object;
 
 fn compile_source(source: &str) -> CheckedProgram {
     let project = tempfile::tempdir().expect("create proof source project");
@@ -103,17 +102,11 @@ fn assert_canonical_proof_failure(failure: &ExecutionFailure, expected_span: Spa
 }
 
 fn assert_fresh_proof_uses_lcir(program: &CheckedProgram, entry: &str) {
-    let prepared = prepare_native_object(
+    prepare_native_object(
         program,
         EmitOptions::run(entry).with_optimization(OptimizationProfile::Release),
-        NativeRoutePolicy::Automatic,
     )
     .expect("prepare fresh process-local proof");
-    assert_eq!(
-        prepared.route_kind(),
-        NativeRouteKind::Lcir,
-        "fresh Proven must remain a zero-check direct LCIR construction"
-    );
 }
 
 fn native_json_failure(
@@ -124,8 +117,7 @@ fn native_json_failure(
 ) -> serde_json::Value {
     let executable = directory.join(stem);
     let options = EmitOptions::run(entry).with_optimization(OptimizationProfile::Release);
-    let route = emit_automatic_executable(program, &executable, options);
-    assert_eq!(route, NativeRouteKind::Lcir);
+    emit_prepared_executable(program, &executable, options);
     let output = Command::new(executable)
         .env(FAULT_FORMAT_ENV, FAULT_FORMAT_JSON)
         .output()
@@ -139,18 +131,15 @@ fn native_json_failure(
         .expect("native proof failure has a structured record")
 }
 
-fn emit_automatic_executable(
+fn emit_prepared_executable(
     program: &CheckedProgram,
     executable: &std::path::Path,
     options: EmitOptions,
-) -> NativeRouteKind {
+) {
     let object = executable.with_extension("o");
-    let prepared = prepare_native_object(program, options, NativeRoutePolicy::Automatic)
-        .expect("prepare automatic proof route");
-    let route = prepared.route_kind();
+    let prepared = prepare_native_object(program, options).expect("prepare typed proof object");
     emit_prepared_native_object(&prepared, &object).expect("emit prepared proof object");
     link_native_object(&object, executable).expect("link prepared proof executable");
-    route
 }
 
 #[test]
@@ -234,10 +223,7 @@ pub fn main() {
     let ir = directory.path().join("runtime-constraint.ll");
     let mut options = EmitOptions::run("main").with_optimization(OptimizationProfile::Release);
     options.emit_ir = Some(ir.clone());
-    assert_eq!(
-        emit_automatic_executable(&program, &executable, options),
-        NativeRouteKind::Lcir
-    );
+    emit_prepared_executable(&program, &executable, options);
     let llvm = std::fs::read_to_string(ir).expect("read runtime constraint LLVM IR");
     assert!(!llvm.contains("loom.Value"), "{llvm}");
     let output = Command::new(executable)
@@ -268,7 +254,7 @@ pub fn main() {
     let mut fresh_options =
         EmitOptions::run("main").with_optimization(OptimizationProfile::Release);
     fresh_options.emit_ir = Some(fresh_ir.clone());
-    emit_native(&fresh, &fresh_executable, &fresh_options).expect("emit fresh proven source");
+    emit_prepared_executable(&fresh, &fresh_executable, fresh_options);
     let fresh_llvm = std::fs::read_to_string(fresh_ir).expect("read fresh proof LLVM IR");
     assert!(!fresh_llvm.contains(ARTIFACT_PROOF_REJECTED_FAULT_CODE));
     assert!(!fresh_llvm.contains("artifact.proof.recheck"));
@@ -299,27 +285,12 @@ pub fn main() {
         .expect_err("forged refinement must not enter the interpreter as a nominal value");
     assert_canonical_proof_failure(&failure, expected_span);
 
-    let prepared = prepare_native_object(
-        &decoded,
-        EmitOptions::run(&entry).with_optimization(OptimizationProfile::Release),
-        NativeRoutePolicy::Automatic,
-    )
-    .expect("prepare decoded proof artifact");
-    assert_eq!(
-        prepared.route_kind(),
-        NativeRouteKind::Lcir,
-        "nongeneric proof replay must use an explicit typed LCIR fault guard"
-    );
-
     let decoded_ir = directory.path().join("decoded.ll");
     let decoded_executable = directory.path().join("decoded");
     let mut decoded_options =
         EmitOptions::run(&entry).with_optimization(OptimizationProfile::Release);
     decoded_options.emit_ir = Some(decoded_ir.clone());
-    assert_eq!(
-        emit_automatic_executable(&decoded, &decoded_executable, decoded_options),
-        NativeRouteKind::Lcir
-    );
+    emit_prepared_executable(&decoded, &decoded_executable, decoded_options);
     let decoded_llvm = std::fs::read_to_string(decoded_ir).expect("read decoded proof LLVM IR");
     assert!(
         decoded_llvm.contains(ARTIFACT_PROOF_REJECTED_FAULT_CODE),
@@ -372,22 +343,12 @@ pub fn main() {
     assert_canonical_proof_failure(&failure, expected_span);
 
     let directory = tempfile::tempdir().expect("create record proof output");
-    let prepared = prepare_native_object(
-        &decoded,
-        EmitOptions::run(&entry).with_optimization(OptimizationProfile::Development),
-        NativeRoutePolicy::Automatic,
-    )
-    .expect("prepare record proof replay");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
     let debug_executable = directory.path().join("record-proof-debug");
     let debug_ir = directory.path().join("record-proof-debug.ll");
     let mut debug_options =
         EmitOptions::run(&entry).with_optimization(OptimizationProfile::Development);
     debug_options.emit_ir = Some(debug_ir.clone());
-    assert_eq!(
-        emit_automatic_executable(&decoded, &debug_executable, debug_options),
-        NativeRouteKind::Lcir
-    );
+    emit_prepared_executable(&decoded, &debug_executable, debug_options);
     let llvm = std::fs::read_to_string(debug_ir).expect("read record proof replay LLVM IR");
     assert!(llvm.contains(ARTIFACT_PROOF_REJECTED_FAULT_CODE), "{llvm}");
     assert!(!llvm.contains("loom.Value"), "{llvm}");
@@ -435,23 +396,12 @@ pub fn main() {
         Value::Unit
     );
 
-    let prepared = prepare_native_object(
-        &decoded,
-        EmitOptions::run(&entry).with_optimization(OptimizationProfile::Release),
-        NativeRoutePolicy::Automatic,
-    )
-    .expect("prepare generic invariant recheck");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
-
     let directory = tempfile::tempdir().expect("create generic proof output");
     let executable = directory.path().join("generic-proof");
     let ir = directory.path().join("generic-proof.ll");
     let mut options = EmitOptions::run(&entry).with_optimization(OptimizationProfile::Development);
     options.emit_ir = Some(ir.clone());
-    assert_eq!(
-        emit_automatic_executable(&decoded, &executable, options),
-        NativeRouteKind::Lcir
-    );
+    emit_prepared_executable(&decoded, &executable, options);
     let llvm = std::fs::read_to_string(ir).expect("read generic proof LLVM IR");
     assert!(llvm.contains("@loom.lcir.fn."), "{llvm}");
     assert!(llvm.contains(ARTIFACT_PROOF_REJECTED_FAULT_CODE), "{llvm}");
@@ -496,24 +446,13 @@ pub fn main() {
         .expect_err("forged generic record must fail its replayed invariant");
     assert_canonical_proof_failure(&failure, expected_span);
 
-    let prepared = prepare_native_object(
-        &decoded,
-        EmitOptions::run(&entry).with_optimization(OptimizationProfile::Release),
-        NativeRoutePolicy::Automatic,
-    )
-    .expect("prepare rejected generic invariant replay");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
-
     let directory = tempfile::tempdir().expect("create rejected generic proof output");
     let debug_executable = directory.path().join("generic-proof-rejected-debug");
     let debug_ir = directory.path().join("generic-proof-rejected-debug.ll");
     let mut debug_options =
         EmitOptions::run(&entry).with_optimization(OptimizationProfile::Development);
     debug_options.emit_ir = Some(debug_ir.clone());
-    assert_eq!(
-        emit_automatic_executable(&decoded, &debug_executable, debug_options),
-        NativeRouteKind::Lcir
-    );
+    emit_prepared_executable(&decoded, &debug_executable, debug_options);
     let llvm = std::fs::read_to_string(debug_ir).expect("read rejected generic proof LLVM IR");
     assert!(llvm.contains("@loom.lcir.fn."), "{llvm}");
     assert!(llvm.contains(ARTIFACT_PROOF_REJECTED_FAULT_CODE), "{llvm}");
@@ -526,7 +465,7 @@ pub fn main() {
 }
 
 #[test]
-fn proof_bearing_disk_cache_reanalysis_preserves_native_route_and_ir() {
+fn proof_bearing_disk_cache_reanalysis_preserves_typed_native_ir() {
     let source = r"type Positive = Float where self >= 0.0
 
 pub fn main() {
@@ -571,17 +510,9 @@ pub fn main() {
     let mut warm_options = EmitOptions::run("main").with_optimization(OptimizationProfile::Release);
     warm_options.emit_ir = Some(warm_ir.clone());
     let cold_prepared =
-        prepare_native_object(cold_program, cold_options, NativeRoutePolicy::Automatic)
-            .expect("prepare cold proof object");
-    let warm_prepared =
-        prepare_native_object(warm_program, warm_options, NativeRoutePolicy::Automatic)
-            .expect("prepare rebuilt warm proof object");
-    assert_eq!(cold_prepared.route_kind(), warm_prepared.route_kind());
-    assert_eq!(
-        cold_prepared.route_kind(),
-        NativeRouteKind::Lcir,
-        "disk-cache reanalysis must recover the fresh Proven LCIR route"
-    );
+        prepare_native_object(cold_program, cold_options).expect("prepare cold proof object");
+    let warm_prepared = prepare_native_object(warm_program, warm_options)
+        .expect("prepare rebuilt warm proof object");
     emit_prepared_native_object(&cold_prepared, &output.path().join("cold.o"))
         .expect("emit cold proof object");
     emit_prepared_native_object(&warm_prepared, &output.path().join("warm.o"))
@@ -669,7 +600,7 @@ pub async fn main() {
     let directory = tempfile::tempdir().expect("create async proof output");
     let executable = directory.path().join("async-proof");
     let options = EmitOptions::run(&entry).with_optimization(OptimizationProfile::Release);
-    emit_native(&decoded, &executable, &options).expect("emit async proof containment");
+    emit_prepared_executable(&decoded, &executable, options);
     let output = Command::new(executable)
         .output()
         .expect("run async proof containment");

@@ -1359,7 +1359,7 @@ mod tests {
         );
         assert!(
             !planner.supports_value_type(&root),
-            "the rejected root must remain an atomic cached fallback"
+            "the rejected root must retain one cached negative decision"
         );
     }
 

@@ -38,7 +38,6 @@ fn emit_ir(artifact: &CheckedArtifact, directory: &tempfile::TempDir, stem: &str
     let emitted = emit_lcir_native_object(artifact, &object, &options).expect("emit LCIR object");
     assert_eq!(emitted.object, object);
     assert_eq!(emitted.functions, artifact.functions().len());
-    assert_eq!(emitted.witnesses, 0);
     assert!(object.is_file());
     std::fs::read_to_string(ir).expect("read emitted LCIR LLVM IR")
 }

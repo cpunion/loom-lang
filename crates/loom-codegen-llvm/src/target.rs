@@ -155,20 +155,6 @@ impl NativeTargetMachine {
         trace_llvm_stage("target.pointer-width.end");
         Ok(bits)
     }
-
-    pub(crate) fn validate_checked_mir_value_abi(&self) -> Result<(), CodegenError> {
-        let pointer_bits = self.pointer_bits()?;
-        if pointer_bits == 64 {
-            return Ok(());
-        }
-        Err(CodegenError::new(
-            "UnsupportedNativePointerWidth",
-            format!(
-                "target {} uses {pointer_bits}-bit pointers; the checked-MIR universal Value ABI requires 64-bit pointers",
-                self.triple
-            ),
-        ))
-    }
 }
 
 /// Returns the identity of the exact target-machine policy used for emission.
@@ -204,7 +190,7 @@ pub fn target_identity(
     triple: Option<&str>,
     optimization: OptimizationProfile,
 ) -> Result<NativeTargetIdentity, CodegenError> {
-    let target = create_target_machine(triple, optimization)?;
+    let target = create_llvm_target_machine(triple, optimization)?;
     Ok(target.identity())
 }
 
@@ -288,15 +274,6 @@ fn native_debug_bundle_path(executable: &Path) -> PathBuf {
     let mut name = executable.as_os_str().to_os_string();
     name.push(".dSYM");
     PathBuf::from(name)
-}
-
-pub(crate) fn create_target_machine(
-    requested: Option<&str>,
-    optimization: OptimizationProfile,
-) -> Result<NativeTargetMachine, CodegenError> {
-    let target = create_llvm_target_machine(requested, optimization)?;
-    target.validate_checked_mir_value_abi()?;
-    Ok(target)
 }
 
 /// Creates the representation-neutral LLVM target machine shared by emitters.

@@ -31,7 +31,6 @@ Use these terms consistently in code, diagnostics, and documentation.
 | Conformance | An explicit `impl C for T` proof that a type satisfies a concept. |
 | Witness | Compiler evidence for one conformance and its method/associated-type bindings. |
 | `dyn C` | A first-class value carrying a value and selected dynamic conformance behavior. “Interface value” may explain it, but is not syntax. |
-| Universal `Value` | Compiler-private fallback native envelope. It is not a source type named `any`. |
 | Native layout | A compiler-private machine representation chosen for an eligible static shape. |
 | Runtime | `LoomRuntime`: managed heap, synchronous roots, and collector state. |
 | Executor | Single-thread Task scheduler attached to one runtime when async execution needs it. |

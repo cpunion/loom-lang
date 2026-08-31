@@ -102,7 +102,7 @@ impl fmt::Display for InvalidProgramCode {
     }
 }
 
-/// Stable invalid-root categories. Invalid roots are errors, never fallback.
+/// Stable invalid-root categories reported before native lowering.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum InvalidRootCode {
     UnknownEntry,
@@ -131,7 +131,7 @@ impl fmt::Display for InvalidRootCode {
     }
 }
 
-/// Stable resource-limit categories. Exhaustion is an error, never fallback.
+/// Stable resource-limit categories reported before native lowering.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ResourceLimitCode {
     ProgramTooLarge,
@@ -152,7 +152,7 @@ impl fmt::Display for ResourceLimitCode {
     }
 }
 
-/// Stable compiler-defect categories. Defects are errors, never fallback.
+/// Stable compiler-defect categories reported before native lowering.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum LoweringDefectCode {
     SourceGraph,
@@ -424,11 +424,11 @@ struct SelectedRoots {
 /// Classifies and, only when complete, lowers one whole checked-MIR artifact.
 ///
 /// Classification always closes the source graph before allocating LCIR. An
-/// unsupported site therefore selects fallback for the entire run/test
-/// artifact. Missing dynamic evidence is an invalid program rather than an
-/// unsupported feature. Invalid programs, invalid roots, graph defects,
-/// resource exhaustion, and invalid compiler-generated LCIR are returned as
-/// errors and can never select a fallback route.
+/// unsupported site therefore rejects the complete run/test artifact without
+/// constructing partial target-typed SSA. Missing dynamic evidence is an
+/// invalid program rather than an unsupported feature. Invalid programs,
+/// invalid roots, graph defects, resource exhaustion, and invalid generated
+/// LCIR are returned as structured errors.
 ///
 /// # Errors
 ///
@@ -2706,10 +2706,8 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
         if !self.supported_value_type(&ty) {
             return None;
         }
-        if !place.projection.is_empty()
-            && matches!(usage, PlaceUse::Move | PlaceUse::Write | PlaceUse::InOut)
-            && !task_free_type(self.program, self.dyn_concepts, &ty)
-        {
+        let task_free_root = task_free_type(self.program, self.dyn_concepts, &ty);
+        if !place.projection.is_empty() && usage == PlaceUse::Move && !task_free_root {
             return None;
         }
         for field in &place.projection {
@@ -2723,10 +2721,18 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 .ok()
                 .and_then(|index| fields.get(index))
                 .cloned()?;
-            if !task_free_type(self.program, self.dyn_concepts, &next) {
-                return None;
-            }
             ty = next;
+        }
+        // An affine product remains one owner while a Task-free leaf is read
+        // or functionally replaced. Lowering uses atomic carrier projection
+        // and update instructions, so Task-bearing intermediate products never
+        // become independent owners. Partial moves and Task-bearing leaves
+        // remain unsupported.
+        if !place.projection.is_empty()
+            && !task_free_root
+            && !task_free_type(self.program, self.dyn_concepts, &ty)
+        {
+            return None;
         }
         self.supported_value_type(&ty).then_some(ty)
     }
@@ -6372,6 +6378,17 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     ),
                 )
             })?;
+        if !plan.steps().is_empty() && self.place_root_contains_task(plan)? {
+            return self.one_instruction(
+                flow,
+                InstructionKind::TaskCarrierProject {
+                    aggregate: value,
+                    path: plan.steps().iter().map(|step| step.field()).collect(),
+                },
+                plan.leaf_type(),
+                origin,
+            );
+        }
         for step in plan.steps().iter().copied() {
             value = match self.one_instruction(
                 flow,
@@ -6425,6 +6442,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     ),
                 )
             })?;
+        if self.place_root_contains_task(plan)? {
+            return self.write_task_carrier_place(flow, plan, root, value, origin);
+        }
         let mut aggregate = root;
         let mut parents = Vec::with_capacity(prefix.len());
         for step in prefix.iter().copied() {
@@ -6502,6 +6522,53 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         }
         flow.env = self.environments.set(flow.env, plan.local(), rebuilt)?;
         Ok(flow)
+    }
+
+    fn write_task_carrier_place(
+        &mut self,
+        flow: Flow,
+        plan: &PlacePlan,
+        root: ValueId,
+        value: ValueId,
+        origin: Origin,
+    ) -> Result<Flow, LoweringError> {
+        let EvalFlow::Continue {
+            mut flow,
+            value: rebuilt,
+        } = self.one_instruction(
+            flow,
+            InstructionKind::TaskCarrierUpdate {
+                aggregate: root,
+                path: plan.steps().iter().map(|step| step.field()).collect(),
+                value,
+            },
+            plan.root_type(),
+            origin,
+        )?
+        else {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::Builder,
+                "Task carrier update unexpectedly terminated",
+            ));
+        };
+        flow.env = self.environments.set(flow.env, plan.local(), rebuilt)?;
+        Ok(flow)
+    }
+
+    fn place_root_contains_task(&self, plan: &PlacePlan) -> Result<bool, LoweringError> {
+        self.builder
+            .representations()
+            .contains_task_handle(plan.root_type())
+            .ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    format!(
+                        "function #{} place root {} has an incomplete representation graph",
+                        self.source.id.0,
+                        plan.root_type()
+                    ),
+                )
+            })
     }
 
     fn product_insert(

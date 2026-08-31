@@ -113,9 +113,8 @@ Each source `Dispose.dispose` body calls its authenticated private close leaf;
 typed lowering turns that leaf into LCIR `ResourceClose` with functional
 receiver writeback. `scoped` carries only the ordinary selected witness and has
 no File/Socket-specific MIR action. Both recoverable and faulting I/O families
-must lower as typed LCIR. If another reachable feature prevents complete LCIR
-lowering, production `Automatic` preparation fails closed rather than restoring
-a second I/O implementation.
+must lower as typed LCIR. Any reachable LCIR coverage gap fails native
+preparation.
 
 The library owns reusable policy and algorithms, including:
 
@@ -217,9 +216,8 @@ rejects a leading `/` in the child, and publishes one Text after a possible
 moving collection. Status `0` is success, `-1` is the ordinary `AbsoluteJoin`
 outcome, and every other returned status is an ABI defect. It does not inspect
 filesystem state, recognize host path syntax, normalize `.` or `..`, collapse
-repeated separators, or carry JSON or ownership policy. The checked-MIR native
-route has its own whole-value Path operations; typed LCIR does not depend on
-them.
+repeated separators, or carry JSON or ownership policy. Native Path operations
+exist only in typed LCIR.
 
 ## Generated operations
 
@@ -236,7 +234,8 @@ Every source-backed standard algorithm must prove all of the following:
 
 1. `check`, `build`, `test`, and `run` succeed through both maintained terminal
    backends for the normative fixtures.
-2. `LcirOnly` accepts the complete reachable source implementation.
+2. Sole native preparation accepts the complete reachable LCIR implementation;
+   an unsupported reached operation is a compile error.
 3. Interpreter and native results agree for success, errors, depth limits,
    Unicode behavior, and allocation pressure.
 4. Reachability tests show that a program which does not import or call the

@@ -839,7 +839,6 @@ fn run_build(
                 program,
                 &output,
                 &emit_options,
-                loom_codegen_llvm::NativeRoutePolicy::Automatic,
                 options,
                 stdout,
             )? {
@@ -1044,7 +1043,6 @@ fn run_test(options: &Options, stdout: &mut dyn Write, stderr: &mut dyn Write) -
             program,
             &executable,
             &emit_options,
-            loom_codegen_llvm::NativeRoutePolicy::Automatic,
             options,
             stdout,
         )? {
@@ -1160,7 +1158,6 @@ fn run_program(
                 program,
                 &executable,
                 &emit_options,
-                loom_codegen_llvm::NativeRoutePolicy::Automatic,
                 options,
                 stdout,
             )? {
@@ -1247,7 +1244,6 @@ fn run_debug(
             program,
             &executable,
             &emit_options,
-            loom_codegen_llvm::NativeRoutePolicy::Automatic,
             options,
             stdout,
         )? {
@@ -1905,7 +1901,7 @@ fn library_artifact_key(compilation: &Compilation, target: &str) -> Option<Cache
 
 fn target_object_key(
     compilation: &Compilation,
-    prepared: &loom_codegen_llvm::PreparedNativeObject<'_>,
+    prepared: &loom_codegen_llvm::PreparedNativeObject,
     cacheable: bool,
 ) -> Result<Option<CacheKey>, loom_codegen_llvm::CodegenError> {
     if compilation.key().is_none() || !cacheable {
@@ -1929,8 +1925,7 @@ fn configured_emit_options(
 
 fn prepare_native_link_plan(
     options: &Options,
-    _emit_options: &loom_codegen_llvm::EmitOptions,
-    prepared: &loom_codegen_llvm::PreparedNativeObject<'_>,
+    prepared: &loom_codegen_llvm::PreparedNativeObject,
 ) -> Result<NativeLinkPlan, NativeConfigurationError> {
     let target = loom_codegen_llvm::prepared_native_target_identity(prepared);
     let host = loom_codegen_llvm::native_target_identity()?;
@@ -2048,18 +2043,16 @@ fn emit_native_with_cache(
     program: &loom_mir::CheckedProgram,
     output: &Path,
     emit_options: &loom_codegen_llvm::EmitOptions,
-    policy: loom_codegen_llvm::NativeRoutePolicy,
     options: &Options,
     stdout: &mut dyn Write,
 ) -> io::Result<Result<(), NativePipelineError>> {
     let complete_options = emit_options_with_debug(compilation, emit_options);
     let cacheable = complete_options.emit_ir.is_none();
-    let prepared = match loom_codegen_llvm::prepare_native_object(program, complete_options, policy)
-    {
+    let prepared = match loom_codegen_llvm::prepare_native_object(program, complete_options) {
         Ok(prepared) => prepared,
         Err(error) => return Ok(Err(NativePipelineError::Preparation(error))),
     };
-    let native_link = match prepare_native_link_plan(options, emit_options, &prepared) {
+    let native_link = match prepare_native_link_plan(options, &prepared) {
         Ok(link) => link,
         Err(error) => return Ok(Err(NativePipelineError::Configuration(error))),
     };
@@ -2105,11 +2098,7 @@ fn emit_object_with_cache(
 ) -> io::Result<Result<(), NativePipelineError>> {
     let complete_options = emit_options_with_debug(compilation, emit_options);
     let cacheable = complete_options.emit_ir.is_none();
-    let prepared = match loom_codegen_llvm::prepare_native_object(
-        program,
-        complete_options,
-        loom_codegen_llvm::NativeRoutePolicy::Automatic,
-    ) {
+    let prepared = match loom_codegen_llvm::prepare_native_object(program, complete_options) {
         Ok(prepared) => prepared,
         Err(error) => return Ok(Err(NativePipelineError::Preparation(error))),
     };
@@ -2118,7 +2107,7 @@ fn emit_object_with_cache(
 
 fn emit_prepared_object_with_cache(
     compilation: &Compilation,
-    prepared: &loom_codegen_llvm::PreparedNativeObject<'_>,
+    prepared: &loom_codegen_llvm::PreparedNativeObject,
     object: &Path,
     cacheable: bool,
     options: &Options,

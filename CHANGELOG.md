@@ -74,7 +74,7 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   public `std.file` and `std.net` functions resolve through ordinary source
   wrappers, and the Path forms reuse their Text counterparts. Only 16
   exact-owner resource/I/O/close leaves plus two protected error access leaves
-  remain below source. Interpreted MIR artifact 42 and persistent cache schema
+  remain below source. Interpreted MIR artifact 43 and persistent cache schema
   16 reject infinite value layouts, source-impossible mutable parameter slots
   and coroutine receivers, invariant-boundary bypasses, removed semantic types,
   fixed slots, and special cleanup tags instead of decoding them through
@@ -95,7 +95,7 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   runtime-bundle identity checks.
 - A dedicated typed-I/O fixture closes real `check`, `build`, `test`, and `run`
   commands and rejects universal I/O symbols in its object. The integrated
-  standard-library native test now uses the production route and exercises real
+  standard-library native test now uses the production backend and exercises real
   filesystem and loopback-socket I/O.
 - Cross-platform CI, release smoke gates, fuzz and conformance checks, and
   reproducible native benchmarks against C, C++, Go, and Rust.
@@ -106,16 +106,18 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   artifact, cache, and runtime-bundle formats. There are no aliases, upgrade
   readers, dual-format writers, deprecated runtime shims, or compatibility
   promises for unpublished formats.
-- Typed LCIR is the destination compiler path. A complete checked-MIR native
-  route still handles artifacts containing genuine LCIR coverage gaps; the
-  compiler never mixes both representations within one native artifact.
-- Reachable File or Socket I/O is an LCIR-only boundary. Direct checked-MIR
-  emission rejects it, and `Automatic` preparation fails closed instead of
-  selecting checked-MIR fallback when another reachable feature prevents a
-  complete LCIR artifact. Unreachable I/O does not affect route selection.
+- Typed LCIR is the destination compiler path. A complete checked LCIR
+  artifact is now the sole input to LLVM; the universal-value checked-MIR
+  emitter and route policy have been deleted. Unsupported reachable semantics
+  are explicit native compilation errors. Task-free fields inside Task-bearing
+  products use atomic typed projection/update operations, and list literals up
+  to 65,536 elements use one typed backing allocation with iterative stores.
+- Reachable File, Socket, logging, process, and Task operations follow the same
+  whole-artifact typed lowering rule. Unreachable helpers do not affect native
+  preparation or object identity.
 - `std.json.parse_json` is a source-backed, iterative, depth-bounded parser that
   lowers completely through typed LCIR. The controlled standard-library
-  fixture has no native-route exception.
+  fixture has no native-backend exception.
 - Live programming, AST editing, AOP/advice, operator runtimes, runtime
   conformance discovery, ownership/borrow syntax, and a multithreaded executor
   are outside the current language.

@@ -10,10 +10,9 @@ checked-MIR identities; they are intentionally distinct from the LCIR
 `InstanceId` roots stored in an independently validated `CheckedArtifact`. The
 production LLVM boundary maps structured `GraphError` values into native-backend
 diagnostics. Source root selection and closure accept only
-`loom_mir::CheckedProgram`; raw MIR cannot enter this production pass, and the
-automatic native router either lowers the complete reachable typed artifact
-to independently checked LCIR or stores this exact source graph for one
-whole-artifact checked-MIR emission.
+`loom_mir::CheckedProgram`; raw MIR cannot enter this production pass. Native
+preparation lowers the complete reachable typed artifact to independently
+checked LCIR. Unsupported reachable semantics fail before LLVM emission.
 
 ## Interpreted executable closure
 
@@ -37,7 +36,7 @@ definitions so a later command can select another entry without recompiling
 the frontend. Consequently, changing an unrelated dead body does not change
 the final `.loomi` bytes, while changing a live definition does.
 
-For the LCIR route, source reachability is followed by a second, more precise
+For native compilation, source reachability is followed by a second, more precise
 closure over concrete callable instances. It starts from the selected exported
 run function or every test root, substitutes exact type and static witness
 arguments at each executable direct call, and deduplicates the resulting
@@ -62,11 +61,10 @@ representation: each aggregate remains an unboxed exact SSA value. Concat/get's
 exact `MAY_COLLECT | NEEDS_RUNTIME` effect propagates through the reachable call
 graph, and generated typed root maps expand only live aggregate SSA values to
 their deterministic managed leaves. An unreachable concat or Text-bearing
-product, sum, or transparent/refined carrier cannot change representation or
-route selection. An established
+product, sum, or transparent/refined carrier cannot change representation. An established
 transparent/refined carrier reuses its base representation and root plan.
-Other unsupported dynamic Text producers still change the complete reachable
-artifact to the checked-MIR route before LCIR construction.
+Other unsupported dynamic Text producers reject native preparation before LCIR
+construction.
 
 ## Roots
 
@@ -120,9 +118,8 @@ after a return or diverging expression cannot create an instance. Exact
 recursive calls close back onto one key. Recursion that changes the key returns
 `NonRegularGenericRecursion`; exhausting the finite instance, edge, or key-
 structure budget returns `LcirLoweringProgramTooLarge`. Both fail during
-planning, before any partial LCIR is allocated, and neither may select the
-checked-MIR fallback. A generic function that is not reached cannot consume
-those budgets or change route selection.
+planning, before any partial LCIR is allocated. A generic function that is not
+reached cannot consume those budgets or change native preparation.
 Concrete signature and expression substitution shares the key-structure bound.
 Only substitution growth reports `LcirLoweringProgramTooLarge`; an already-wide
 source type remains a direct-LCIR coverage decision.
@@ -138,9 +135,8 @@ requirement slot that is actually called; unused slots and unrelated static
 conformances remain dead. LLVM receives a compiler-private finite tag switch,
 not an indirect call or witness table. A reachable concrete dynamic use with no
 exact producer in the closed catalog is an invalid program. Artifact closure
-reports `MissingDynamicConceptWitness`; it never emits a `SupportReport` or
-selects checked-MIR fallback. The compiler never guesses a target or consults
-all declared conformances.
+reports `MissingDynamicConceptWitness`; it never emits a `SupportReport`. The
+compiler never guesses a target or consults all declared conformances.
 
 The compiler computes this set as a least fixed point. It starts with root,
 direct-call, and static-dispatch instances while the dynamic catalog is empty,
@@ -150,7 +146,7 @@ producers reached by real dynamic calls without letting a conservatively seen
 or prerequisite-only witness method keep itself alive through a producer in
 its own body. An open producer in an unreachable function or unreachable generic
 instance is never scanned and cannot produce this diagnostic or change the
-artifact route.
+native artifact.
 
 View discovery walks both reachable expression/signature types and their
 bounded concrete record, enum, and refined schemas. A unique candidate is
@@ -203,7 +199,7 @@ Reachability changes need tests for:
 - direct and recursive call closure;
 - regular generic recursion, nonregular rejection, and planning budgets;
 - literal-only versus reachable-concat artifact-wide Text representation, plus
-  an unreachable concat that does not change route selection;
+  an unreachable concat that does not change representation;
 - duplicate concrete instances shared across calls and test roots;
 - deterministic instance order and artifact identity;
 - static and dynamic concept dispatch;

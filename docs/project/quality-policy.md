@@ -35,7 +35,7 @@ end-to-end suites by default.
 Language behavior shared by both backends needs one representative
 interpreter/native differential test. Runtime, ABI, and hostile-input changes
 need boundary tests proportional to the risk they introduce. Optimization
-changes need semantic evidence and a checked fallback; use an IR or object
+changes need semantic evidence for the general checked behavior; use an IR or object
 assertion only when machine structure is the claim being made.
 
 User-visible behavior and its documentation change in the same pull request.
@@ -63,10 +63,10 @@ C3 multi-module project, standard-library behavior, parser throughput,
 artifact decoding, and a 64-module incremental edit under generous upper
 bounds. It emits a versioned JSON evidence report.
 
-Every native object is prepared and emitted through the production prepared
-route. Schema 3 records the scenario, expected LCIR route, actual route, and
-whether they agree. Every controlled fixture must select LCIR; any other route
-fails the runner. The evidence schema has no exception or allowance field.
+Every native object is prepared and emitted through the sole production typed
+LCIR backend. In schema 5, each successful native build is the backend evidence;
+the report carries no redundant route comparison, exception, or allowance
+field.
 
 Run and test artifacts are judged independently because their exact reachable
 graphs may differ. The constraints-and-contracts fixture requires typed LCIR
