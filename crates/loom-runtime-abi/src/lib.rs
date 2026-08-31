@@ -4,21 +4,18 @@
 //! values crossing the runtime boundary are defined here once and consumed by
 //! both generated-code declarations and the Rust runtime implementation.
 
-pub const RUNTIME_ABI_VERSION: u32 = 36;
-pub const COROUTINE_ABI_VERSION: u32 = 2;
+pub const RUNTIME_ABI_VERSION: u32 = 37;
 pub const TYPED_TASK_ABI_VERSION: u32 = 1;
 pub const WAIT_ABI_VERSION: u32 = 1;
 pub const STDLIB_ABI_VERSION: u32 = 7;
 pub const LAYOUT_ABI_VERSION: u32 = 1;
-pub const SHADOW_STACK_ABI_VERSION: u32 = 1;
 pub const TYPED_GC_ABI_VERSION: u32 = 1;
 pub const TYPED_GC_REPEATED_ABI_VERSION: u32 = 1;
 pub const TYPED_SHADOW_STACK_ABI_VERSION: u32 = 1;
-pub const WITNESS_ABI_VERSION: u32 = 1;
 pub const TYPED_JSON_ABI_VERSION: u32 = 1;
 pub const TYPED_IO_ABI_VERSION: u32 = 1;
 pub const TYPED_PROCESS_ABI_VERSION: u32 = 1;
-pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/typed-process-v1/runtime-v30/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v7";
+pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/typed-process-v1/runtime-v31/gc-v9/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/stdlib-v7";
 
 /// Copies `argv[1..argc]` into the process-wide immutable argument snapshot.
 /// Generated `main` calls this only when the reachable program reads process
@@ -90,7 +87,7 @@ pub const TYPED_LOG_FIELD_VALUE_OFFSET: u64 = 8;
 /// object must be a complete, live, immutable value created for the supplied
 /// compiler descriptor. `output` must name writable, pointer-aligned storage
 /// whose address remains stable for the complete call, including the final
-/// moving-GC allocation; it must not reside in either moving heap. Generated
+/// moving-GC allocation; it must not reside in the moving heap. Generated
 /// code satisfies this contract with a stack output cell.
 pub const TYPED_JSON_FORMAT_SYMBOL: &str = "loom_runtime_json_format_typed_v1";
 pub const TYPED_JSON_FORMAT_OK: i32 = 0;
@@ -109,7 +106,7 @@ pub const GC_ROOT_STACK_NOT_EMPTY: i32 = 4;
 pub const GC_DESCRIPTOR_INVALID: i32 = 5;
 pub const GC_RESOURCE_LIMIT: i32 = 6;
 
-/// Hard limits shared by the universal and typed synchronous root ABIs.
+/// Hard limits for the typed synchronous root ABI.
 ///
 /// The compiler must reject a function whose root map exceeds these bounds.
 /// Runtime validation repeats the checks before linking an untrusted frame so
@@ -194,7 +191,7 @@ pub const TYPED_IO_FAULT_CLASS_SOCKET_RESOLVE: u64 = 2;
 ///
 /// `output` must name writable pointer-sized storage whose address remains
 /// stable for the complete call, including any collection triggered by the
-/// allocator. The output cell must not reside in either moving heap.
+/// allocator. The output cell must not reside in the moving heap.
 pub const TYPED_GC_ALLOC_SYMBOL: &str = "loom_gc_typed_alloc_v1";
 /// Zeroed repeated-element allocator taking `(descriptor, capacity, output)`.
 pub const TYPED_GC_REPEATED_ALLOC_SYMBOL: &str = "loom_gc_typed_repeated_alloc_v1";
@@ -258,102 +255,20 @@ pub const TYPED_RESOURCE_KIND_SOCKET: u32 = 2;
 pub const TYPED_RESOURCE_CLOSE_OK: i32 = 0;
 pub const TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT: i32 = 1;
 
-/// Runtime-owned state bit in [`LoomGcRootFrame::flags`].
+/// Runtime-owned state bit in [`LoomGcTypedRootFrame::flags`].
 ///
 /// Compiler-generated code must initialize `flags` to zero and must not
 /// inspect or modify the field between a successful push and pop.
 pub const GC_ROOT_FRAME_LINKED: u32 = 1;
 
-/// Number of machine words in the universal `Value` envelope.
-///
-/// The current native ABI is deliberately restricted to 64-bit targets, so a
-/// runtime word and an LLVM pointer have the same width. Concrete `Text`
-/// payloads use only the tag and data words; all other words are zero.
-pub const VALUE_SLOT_WORDS: usize = 6;
-pub const VALUE_WORD_TAG: usize = 0;
-pub const VALUE_WORD_NOMINAL: usize = 1;
-pub const VALUE_WORD_AUX: usize = 2;
-pub const VALUE_WORD_SCALAR: usize = 3;
-pub const VALUE_WORD_DATA: usize = 4;
-pub const VALUE_WORD_WITNESS: usize = 5;
-
-/// The owned copy of a mutable dynamic view remains mutable but never keeps a
-/// call-scoped writeback carrier.
-pub const DYN_FLAG_MUTABLE: u64 = 1;
-
-/// Immutable compiler-emitted dispatch metadata for one conformance.
-///
-/// `methods` is a dense concept-local table selected by the closed-world
-/// reachability plan. Descriptors and their method arrays are process-lifetime
-/// constants. They intentionally contain no runtime type or concept identity.
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct LoomWitnessDescriptor {
-    pub prerequisite_count: u64,
-    pub method_count: u64,
-    pub methods: *const *const core::ffi::c_void,
-}
-
-/// One immutable conformance proof and its recursively supplied prerequisites.
-///
-/// Instances may be compiler globals, synchronous stack temporaries, Task-owned
-/// captures, or allocations in the non-moving GC proof arena. A nonzero
-/// descriptor prerequisite count requires a contiguous, non-null
-/// `prerequisites` array of exactly that length.
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct LoomWitnessInstance {
-    pub descriptor: *const LoomWitnessDescriptor,
-    pub prerequisites: *const *const LoomWitnessInstance,
-}
-
-/// Description of the precise universal-value roots within one native stack
-/// frame.
+/// Description of precise direct-pointer roots in one typed native frame.
 ///
 /// `live_bitmaps` contains `state_count` rows of exactly `live_bitmap_words`
 /// words. Bit `n` identifies entry `n` in the frame's slot-pointer array. Bits
 /// beyond `slot_count` in the final word must be zero. Descriptors are
-/// runtime-private immutable metadata: generated frames normally reference
-/// compiler globals, while runtime helper scopes may own an address-stable
-/// descriptor dynamically. In both cases the descriptor and its bitmap must
-/// outlive every linked frame which references them.
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct LoomGcRootDescriptor {
-    pub abi_version: u32,
-    pub flags: u32,
-    pub slot_count: u64,
-    pub state_count: u64,
-    pub live_bitmap_words: u64,
-    pub live_bitmaps: *const u64,
-}
-
-/// Intrusive shadow-stack header embedded at the start of a generated native
-/// stack frame.
-///
-/// `slots` points to a caller-owned array of `slot_count` pointers to existing
-/// universal `Value` allocas. This keeps LLVM storage independent and lets
-/// SROA optimize the underlying allocas. Every entry must be non-null and the
-/// pointer array is immutable while linked. The compiler updates only `state`
-/// before a safepoint. `previous` and `flags` are maintained only by the
-/// runtime. Empty descriptors and frames are invalid and should be omitted.
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct LoomGcRootFrame {
-    pub abi_version: u32,
-    pub flags: u32,
-    pub state: u64,
-    pub descriptor: *const LoomGcRootDescriptor,
-    pub slots: *const *mut core::ffi::c_void,
-    pub previous: *mut LoomGcRootFrame,
-}
-
-/// Description of precise direct-pointer roots in one typed native frame.
-///
-/// The bitmap shape and lifetime rules match [`LoomGcRootDescriptor`], but a
-/// typed root slot is a pointer to a pointer-sized managed-reference cell, not
-/// a universal `Value` envelope. This descriptor belongs to an independent
-/// shadow-stack chain so the collector never guesses a slot representation.
+/// runtime-private immutable metadata and must outlive every linked frame
+/// which references them. Each root slot is a pointer to a pointer-sized
+/// managed-reference cell, so the collector never guesses a representation.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct LoomGcTypedRootDescriptor {
@@ -369,10 +284,10 @@ pub struct LoomGcTypedRootDescriptor {
 ///
 /// Each entry in `slots` points to writable pointer-sized storage containing
 /// only null, the exact base of a runtime-managed typed allocation, or a
-/// compiler-proven process-lifetime static/immortal pointer. A universal-value moving
-/// allocation, an interior pointer, and any other unregistered finite-lifetime
-/// pointer are invalid. Every slot cell address must remain stable from push
-/// through pop and must not itself reside in either moving heap. The runtime
+/// compiler-proven process-lifetime static/immortal pointer. An interior
+/// pointer and any other unregistered finite-lifetime pointer are invalid.
+/// Every slot cell address must remain stable from push through pop and must
+/// not itself reside in the moving heap. The runtime
 /// rewrites managed entries after a moving collection. The pointer array is
 /// immutable while linked; `previous` and `flags` are runtime-owned fields.
 #[repr(C)]
@@ -393,9 +308,9 @@ pub struct LoomGcTypedRootFrame {
 /// strictly increasing array of `pointer_count` byte offsets from the object
 /// base to aligned pointer-sized managed-reference cells. Each such cell obeys
 /// the same null/exact-typed-base/static-immortal target restriction as a typed
-/// root. In particular, typed metadata cannot hide a universal-value moving reference
-/// or an interior reference. Descriptor identity is compiler/runtime metadata
-/// and is not a source-visible type tag.
+/// root. In particular, typed metadata cannot hide an interior or other
+/// unregistered finite-lifetime reference. Descriptor identity is
+/// compiler/runtime metadata and is not a source-visible type tag.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct LoomGcObjectDescriptor {
@@ -594,21 +509,6 @@ pub struct LoomTypedTaskFaultView {
     pub detail: LoomByteView,
 }
 
-pub const VALUE_TAG_UNIT: u64 = 0;
-pub const VALUE_TAG_BOOL: u64 = 1;
-pub const VALUE_TAG_INT: u64 = 2;
-pub const VALUE_TAG_FLOAT: u64 = 3;
-pub const VALUE_TAG_TEXT: u64 = 4;
-pub const VALUE_TAG_RECORD: u64 = 5;
-pub const VALUE_TAG_ENUM: u64 = 6;
-pub const VALUE_TAG_REFINED: u64 = 7;
-pub const VALUE_TAG_CONSTRAINT_ERROR: u64 = 8;
-pub const VALUE_TAG_DYN: u64 = 9;
-pub const VALUE_TAG_TUPLE: u64 = 10;
-pub const VALUE_TAG_TASK: u64 = 11;
-pub const VALUE_TAG_LIST: u64 = 12;
-pub const VALUE_TAG_TASK_OUTCOME: u64 = 13;
-
 pub const LAYOUT_KIND_TEXT: u32 = 1;
 pub const LAYOUT_KIND_BYTES: u32 = 2;
 pub const LAYOUT_FLAG_MANAGED_POINTER: u32 = 1;
@@ -698,25 +598,23 @@ mod tests {
 
     use super::{
         BYTES_APPEND_TYPED_SYMBOL, BYTES_DECODE_UTF8_TYPED_INVALID_UTF8,
-        BYTES_DECODE_UTF8_TYPED_SYMBOL, BYTES_LAYOUT_SYMBOL, COROUTINE_ABI_VERSION,
-        FORMAT_FLOAT_TYPED_SYMBOL, GC_DESCRIPTOR_INVALID, GC_MAX_OBJECT_ALIGNMENT,
-        GC_MAX_OBJECT_BYTES, GC_MAX_OBJECT_POINTERS, GC_MAX_REPEATED_POINTER_CELLS,
-        GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_DEPTH, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES,
-        GC_RESOURCE_LIMIT, LAYOUT_ABI_VERSION, LoomByteView, LoomGcObjectDescriptor,
-        LoomGcRepeatedObjectDescriptor, LoomGcRootDescriptor, LoomGcRootFrame,
+        BYTES_DECODE_UTF8_TYPED_SYMBOL, BYTES_LAYOUT_SYMBOL, FORMAT_FLOAT_TYPED_SYMBOL,
+        GC_DESCRIPTOR_INVALID, GC_MAX_OBJECT_ALIGNMENT, GC_MAX_OBJECT_BYTES,
+        GC_MAX_OBJECT_POINTERS, GC_MAX_REPEATED_POINTER_CELLS, GC_MAX_ROOT_BITMAP_WORDS,
+        GC_MAX_ROOT_DEPTH, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, GC_RESOURCE_LIMIT,
+        LAYOUT_ABI_VERSION, LoomByteView, LoomGcObjectDescriptor, LoomGcRepeatedObjectDescriptor,
         LoomGcTypedRootDescriptor, LoomGcTypedRootFrame, LoomTypedCoroutineDescriptor,
         LoomTypedIoOutcome, LoomTypedIoRequest, LoomTypedJsonLayout, LoomTypedLogField,
-        LoomTypedTaskFaultView, LoomWitnessDescriptor, LoomWitnessInstance,
-        NATIVE_RUNTIME_ABI_IDENTITY, PARSE_FLOAT_STATUS_INVALID_SYNTAX, PARSE_FLOAT_STATUS_OK,
-        PARSE_FLOAT_STATUS_OUT_OF_RANGE, PARSE_FLOAT_SYMBOL, PATH_JOIN_TYPED_ABSOLUTE,
-        PATH_JOIN_TYPED_SYMBOL, PROCESS_ARGUMENT_AT_TYPED_SYMBOL,
+        LoomTypedTaskFaultView, NATIVE_RUNTIME_ABI_IDENTITY, PARSE_FLOAT_STATUS_INVALID_SYNTAX,
+        PARSE_FLOAT_STATUS_OK, PARSE_FLOAT_STATUS_OUT_OF_RANGE, PARSE_FLOAT_SYMBOL,
+        PATH_JOIN_TYPED_ABSOLUTE, PATH_JOIN_TYPED_SYMBOL, PROCESS_ARGUMENT_AT_TYPED_SYMBOL,
         PROCESS_ARGUMENT_COUNT_TYPED_INVALID, PROCESS_ARGUMENT_COUNT_TYPED_SYMBOL,
         PROCESS_ARGUMENT_TYPED_INVALID, PROCESS_ARGUMENT_TYPED_OK,
         PROCESS_ARGUMENTS_INITIALIZE_TYPED_SYMBOL, PROCESS_ENVIRONMENT_TYPED_FOUND,
         PROCESS_ENVIRONMENT_TYPED_INVALID, PROCESS_ENVIRONMENT_TYPED_MISSING,
-        PROCESS_ENVIRONMENT_TYPED_SYMBOL, RUNTIME_ABI_VERSION, SHADOW_STACK_ABI_VERSION,
-        STDLIB_ABI_VERSION, STDOUT_WRITE_FAILED, STDOUT_WRITE_INVALID_ARGUMENT, STDOUT_WRITE_OK,
-        STDOUT_WRITE_SYMBOL, TEXT_CONTAINS_SYMBOL, TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8,
+        PROCESS_ENVIRONMENT_TYPED_SYMBOL, RUNTIME_ABI_VERSION, STDLIB_ABI_VERSION,
+        STDOUT_WRITE_FAILED, STDOUT_WRITE_INVALID_ARGUMENT, STDOUT_WRITE_OK, STDOUT_WRITE_SYMBOL,
+        TEXT_CONTAINS_SYMBOL, TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8,
         TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_INVALID,
         TEXT_GET_TYPED_MISSING, TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT,
         TEXT_OBJECT_FIELD_ALLOCATION_SIZE, TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES,
@@ -742,16 +640,14 @@ mod tests {
         TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION, TYPED_TASK_CLEANUP_FAULTED,
         TYPED_TASK_INVALID_ARGUMENT, TYPED_TASK_MAX_FAULT_TEXT_BYTES, TYPED_TASK_NO_MEMORY,
         TYPED_TASK_OK, TYPED_TASK_PUBLISH_ADOPTING_SYMBOL, TYPED_TASK_STATUS_INVALID,
-        TYPED_TASK_TAKE_OUTCOME_SYMBOL, TYPED_TIMER_TASK_CREATE_SYMBOL, WITNESS_ABI_VERSION,
+        TYPED_TASK_TAKE_OUTCOME_SYMBOL, TYPED_TIMER_TASK_CREATE_SYMBOL,
     };
 
     #[test]
     fn native_runtime_identity_is_pinned() {
-        assert_eq!(RUNTIME_ABI_VERSION, 36);
-        assert_eq!(COROUTINE_ABI_VERSION, 2);
+        assert_eq!(RUNTIME_ABI_VERSION, 37);
         assert_eq!(TYPED_TASK_ABI_VERSION, 1);
         assert_eq!(LAYOUT_ABI_VERSION, 1);
-        assert_eq!(SHADOW_STACK_ABI_VERSION, 1);
         assert_eq!(TYPED_GC_ABI_VERSION, 1);
         assert_eq!(TYPED_GC_REPEATED_ABI_VERSION, 1);
         assert_eq!(TYPED_SHADOW_STACK_ABI_VERSION, 1);
@@ -831,11 +727,10 @@ mod tests {
             TYPED_TIMER_TASK_CREATE_SYMBOL,
             "loom_typed_timer_task_create_v1"
         );
-        assert_eq!(WITNESS_ABI_VERSION, 1);
         assert_eq!(STDLIB_ABI_VERSION, 7);
         assert_eq!(
             NATIVE_RUNTIME_ABI_IDENTITY,
-            "loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/typed-process-v1/runtime-v30/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v7",
+            "layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/typed-process-v1/runtime-v31/gc-v9/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/stdlib-v7",
         );
     }
 
@@ -1003,25 +898,7 @@ mod tests {
 
     #[test]
     #[cfg(target_pointer_width = "64")]
-    fn shadow_stack_layout_is_pinned_for_the_native_64_bit_abi() {
-        assert_eq!(size_of::<LoomGcRootDescriptor>(), 40);
-        assert_eq!(align_of::<LoomGcRootDescriptor>(), 8);
-        assert_eq!(offset_of!(LoomGcRootDescriptor, abi_version), 0);
-        assert_eq!(offset_of!(LoomGcRootDescriptor, flags), 4);
-        assert_eq!(offset_of!(LoomGcRootDescriptor, slot_count), 8);
-        assert_eq!(offset_of!(LoomGcRootDescriptor, state_count), 16);
-        assert_eq!(offset_of!(LoomGcRootDescriptor, live_bitmap_words), 24);
-        assert_eq!(offset_of!(LoomGcRootDescriptor, live_bitmaps), 32);
-
-        assert_eq!(size_of::<LoomGcRootFrame>(), 40);
-        assert_eq!(align_of::<LoomGcRootFrame>(), 8);
-        assert_eq!(offset_of!(LoomGcRootFrame, abi_version), 0);
-        assert_eq!(offset_of!(LoomGcRootFrame, flags), 4);
-        assert_eq!(offset_of!(LoomGcRootFrame, state), 8);
-        assert_eq!(offset_of!(LoomGcRootFrame, descriptor), 16);
-        assert_eq!(offset_of!(LoomGcRootFrame, slots), 24);
-        assert_eq!(offset_of!(LoomGcRootFrame, previous), 32);
-
+    fn typed_gc_layout_is_pinned_for_the_native_64_bit_abi() {
         assert_eq!(size_of::<LoomGcTypedRootDescriptor>(), 40);
         assert_eq!(align_of::<LoomGcTypedRootDescriptor>(), 8);
         assert_eq!(offset_of!(LoomGcTypedRootDescriptor, abi_version), 0);
@@ -1075,16 +952,5 @@ mod tests {
             offset_of!(LoomGcRepeatedObjectDescriptor, element_pointer_offsets),
             56
         );
-
-        assert_eq!(size_of::<LoomWitnessDescriptor>(), 24);
-        assert_eq!(align_of::<LoomWitnessDescriptor>(), 8);
-        assert_eq!(offset_of!(LoomWitnessDescriptor, prerequisite_count), 0);
-        assert_eq!(offset_of!(LoomWitnessDescriptor, method_count), 8);
-        assert_eq!(offset_of!(LoomWitnessDescriptor, methods), 16);
-
-        assert_eq!(size_of::<LoomWitnessInstance>(), 16);
-        assert_eq!(align_of::<LoomWitnessInstance>(), 8);
-        assert_eq!(offset_of!(LoomWitnessInstance, descriptor), 0);
-        assert_eq!(offset_of!(LoomWitnessInstance, prerequisites), 8);
     }
 }

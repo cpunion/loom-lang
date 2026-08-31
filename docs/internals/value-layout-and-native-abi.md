@@ -2,8 +2,8 @@
 
 The native layout described here is compiler-private. It exists so generated
 LLVM and the Rust runtime agree within one toolchain build. Source code cannot
-inspect tags, pointers, allocation addresses, witness descriptors, or calling
-conventions, and external code must not depend on them.
+inspect tags, pointers, allocation addresses, compile-time proof selection, or
+calling conventions, and external code must not depend on them.
 
 Production native compilation has one representation boundary for the entire
 reachable artifact: typed LCIR. It covers primitive values, direct `Text`,
@@ -435,9 +435,10 @@ as a spurious root.
 
 ## Dynamic concept values
 
-A `dyn C` value carries data plus an already selected conformance witness.
-Witness descriptors contain only prerequisite and live method-slot tables
-needed by generated code. Descriptor identity is not source RTTI.
+A `dyn C` value semantically carries data plus an already selected
+conformance. The checked artifact records that closed-world proof selection,
+but generated code passes no runtime witness descriptor or instance. Proof
+identity is not source RTTI.
 
 The compiler may represent a known dynamic value with fewer machine values or
 fold a witness into static code when that is unobservable. The semantic
@@ -483,8 +484,8 @@ tracing. Typed shadow-stack descriptors publish direct pointer cells with
 per-state bitmaps; the collector never guesses a slot representation. Typed
 coroutine and stored-join descriptors publish exact target byte offsets and
 state bitmaps for their statically known managed leaves. A typed root cell has a
-stable address for its complete linked interval, may not reside in either
-moving heap, and contains only null, an exact typed allocation base, or a
+stable address for its complete linked interval, may not reside in the moving
+heap, and contains only null, an exact typed allocation base, or a
 compiler-proven process-lifetime static/immortal pointer.
 
 Typed managed objects do not carry a universal tag. A
@@ -547,10 +548,9 @@ source `TaskOutcome[T]` layouts do not gain an extra runtime tag or pointer.
 The exact-length native harness stdout boundary is identified by `stdout-v1`
 and changes no source-value, Task, coroutine, wait, Text, or GC layout.
 
-Witness descriptors emitted by the compiler are immutable process-lifetime
-constants. Dynamically assembled witness instances live in a non-moving proof
-arena because generated hidden arguments can retain their address across a
-safepoint; the arena is still marked and swept.
+Closed static witnesses remain compiler and artifact metadata. They do not
+become runtime descriptors, hidden machine-ABI arguments, or managed proof
+objects.
 
 ## ABI change checklist
 

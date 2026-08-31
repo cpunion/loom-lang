@@ -8,7 +8,8 @@ future.
 ## Coroutine descriptor
 
 Typed LCIR uses the `typed-task-v1` runtime wire with an exact compiler-shaped
-descriptor. LLVM target data lays
+descriptor. Its representation-neutral join and fault operations retain the
+shared `task-v2` component. LLVM target data lays
 out one frame containing state, parameters, optional creation-site span
 coordinates for state-zero preconditions, the ordered children and live values
 for each suspension, and the result. The descriptor publishes frame
@@ -402,8 +403,7 @@ The typed-LCIR route implements fixed-argument and homogeneous List forms of all
 four APIs, both immediately awaited and stored as first-class composite Tasks.
 `all` and `settled` may preserve heterogeneous fixed outputs; `any` and `race`
 require one exact output type. Runtime-width List joins retain exact result
-layout and scheduler ownership rather than entering the checked-MIR universal
-join path.
+layout and scheduler ownership without a universal join representation.
 
 ## Current limits
 

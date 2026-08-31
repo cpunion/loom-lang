@@ -5,7 +5,7 @@ use std::ffi::c_void;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use loom_runtime_abi::{LoomGcRootFrame, LoomGcTypedRootFrame};
+use loom_runtime_abi::LoomGcTypedRootFrame;
 
 use crate::gc::LoomHeap;
 use crate::{GC_ROOT_STACK_NOT_EMPTY, WAIT_INVALID_ARGUMENT, WAIT_OK};
@@ -21,8 +21,6 @@ pub struct LoomRuntime {
     attached_executor: *mut c_void,
     pub(crate) active_depth: AtomicU32,
     sync_fault_latched: AtomicBool,
-    pub(crate) sync_root_top: *mut LoomGcRootFrame,
-    pub(crate) sync_root_depth: u64,
     pub(crate) typed_root_top: *mut LoomGcTypedRootFrame,
     pub(crate) typed_root_depth: u64,
 }
@@ -34,8 +32,6 @@ impl LoomRuntime {
             attached_executor: ptr::null_mut(),
             active_depth: AtomicU32::new(0),
             sync_fault_latched: AtomicBool::new(false),
-            sync_root_top: ptr::null_mut(),
-            sync_root_depth: 0,
             typed_root_top: ptr::null_mut(),
             typed_root_depth: 0,
         }
@@ -86,11 +82,8 @@ impl LoomRuntime {
             .is_ok()
     }
 
-    pub(crate) fn has_sync_roots(&self) -> bool {
-        !self.sync_root_top.is_null()
-            || self.sync_root_depth != 0
-            || !self.typed_root_top.is_null()
-            || self.typed_root_depth != 0
+    pub(crate) fn has_roots(&self) -> bool {
+        !self.typed_root_top.is_null() || self.typed_root_depth != 0
     }
 }
 
@@ -113,7 +106,7 @@ pub unsafe extern "C" fn runtime_destroy_v1(runtime: *mut LoomRuntime) -> i32 {
     if crate::gc::runtime_is_active(runtime) || unsafe { (*runtime).has_attached_executor() } {
         return WAIT_INVALID_ARGUMENT;
     }
-    if unsafe { (*runtime).has_sync_roots() } {
+    if unsafe { (*runtime).has_roots() } {
         return GC_ROOT_STACK_NOT_EMPTY;
     }
     // SAFETY: no executor is attached, so ownership can return to this call.
@@ -124,7 +117,8 @@ pub unsafe extern "C" fn runtime_destroy_v1(runtime: *mut LoomRuntime) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gc::{allocate_value, allocate_value_node};
+    use loom_runtime_abi::{LoomGcObjectDescriptor, TYPED_GC_ABI_VERSION};
+
     use crate::reactor::{executor_create_for_runtime_v1, executor_destroy};
 
     #[test]
@@ -144,17 +138,28 @@ mod tests {
     }
 
     #[test]
-    fn standalone_runtime_owns_allocations_without_an_executor() {
+    fn standalone_runtime_owns_typed_allocations_without_an_executor() {
         let runtime = runtime_create_v1();
         assert!(!runtime.is_null());
         unsafe {
             assert!(!(*runtime).has_attached_executor());
             assert_eq!(crate::gc::activate_runtime_v1(runtime), WAIT_OK);
-            assert!(!allocate_value().is_null());
-            assert!(!allocate_value_node().is_null());
+            let descriptor = LoomGcObjectDescriptor {
+                abi_version: TYPED_GC_ABI_VERSION,
+                flags: 0,
+                fixed_size: 8,
+                object_align: 8,
+                pointer_count: 0,
+                pointer_offsets: ptr::null(),
+            };
+            let mut allocation = ptr::null_mut();
+            assert_eq!(
+                crate::gc::allocate_typed_object(&raw const descriptor, 8, &raw mut allocation,),
+                WAIT_OK,
+            );
+            assert!(!allocation.is_null());
             assert_eq!(crate::gc::deactivate_runtime_v1(runtime), WAIT_OK);
-            assert_eq!((*runtime).heap.values.len(), 1);
-            assert_eq!((*runtime).heap.nodes.len(), 1);
+            assert_eq!((*runtime).heap.typed_object_count(), 1);
             assert_eq!(runtime_destroy_v1(runtime), WAIT_OK);
         }
     }
@@ -236,7 +241,22 @@ mod tests {
         let status = std::thread::spawn(move || {
             let runtime = address as *mut LoomRuntime;
             let status = unsafe { crate::gc::activate_runtime_v1(runtime) };
-            assert!(crate::gc::allocate_value().is_null());
+            let descriptor = LoomGcObjectDescriptor {
+                abi_version: TYPED_GC_ABI_VERSION,
+                flags: 0,
+                fixed_size: 8,
+                object_align: 8,
+                pointer_count: 0,
+                pointer_offsets: ptr::null(),
+            };
+            let mut allocation = ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    crate::gc::allocate_typed_object(&raw const descriptor, 8, &raw mut allocation)
+                },
+                WAIT_INVALID_ARGUMENT,
+            );
+            assert!(allocation.is_null());
             status
         })
         .join()

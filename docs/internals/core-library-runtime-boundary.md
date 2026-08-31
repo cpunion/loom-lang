@@ -183,7 +183,9 @@ wire and the `typed-resource-v1` close boundary. The compiler generates the
 exact `Task[Result[T, IoError]]` or `Task[T]` frame and owns result/fault
 construction. The runtime owns scheduling, host operations, readiness, and the
 resource ledger, but exports no universal File/Socket Task wrappers, universal
-close function, or fixed source nominal IDs.
+close function, or fixed source nominal IDs. More generally, the runtime
+archive has no universal-value GC, witness, legacy Task/value-operation, or
+Int-list compatibility surface.
 
 ## Bootstrap primitives
 

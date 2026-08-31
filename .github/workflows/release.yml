@@ -123,6 +123,11 @@ jobs:
         env:
           CARGO_ENCODED_RUSTFLAGS: -Ctarget-cpu=generic
         run: cargo build --locked --release -p loom-runtime
+      - name: Reject removed universal runtime ABI exports
+        shell: bash
+        env:
+          RUNTIME_ARCHIVE: ${{ matrix.runtime_archive }}
+        run: node .github/scripts/check-runtime-archive-symbols.mjs "$RUNTIME_ARCHIVE"
       - name: Build release tools
         shell: bash
         run: cargo build --locked --release -p loom-cli -p loom-lsp
@@ -186,6 +191,7 @@ jobs:
         shell: bash
         run: |
           cargo test --locked --release -p loom-runtime-abi --lib
+          cargo test --locked --release -p loom-runtime --lib
           cargo test --locked --release -p loom-codegen-llvm --test builtin_values
           cargo test --locked --release -p loom-codegen-llvm --test std_integration
           cargo test --locked --release -p loom-codegen-llvm --test logging_abi \

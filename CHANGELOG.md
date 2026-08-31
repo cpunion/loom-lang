@@ -79,10 +79,12 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   and coroutine receivers, invariant-boundary bypasses, removed semantic types,
   fixed slots, and special cleanup tags instead of decoding them through
   compatibility paths.
-  Native runtime ABI 36 (`runtime-v30`) records the removal of the former
-  universal File, Socket, and close entry points and their fixed File/Socket
-  nominal IDs; the complete identity also retains the earlier removal of
-  universal logging. The 16-byte `typed-io-v1` outcome uses its primitive
+  Native runtime ABI 37 (`runtime-v31`) records deletion of the unreachable
+  universal `ValueSlot` heap and root chain, runtime witness arena, legacy
+  Task/value operations, and Int-list implementation, following the earlier
+  removal of universal File, Socket, close, logging, and process boundaries.
+  The live shared join/fault scheduler operations retain `task-v2`.
+  The 16-byte `typed-io-v1` outcome uses its primitive
   payload for either a resource token or a closed fault class, preserving
   `InvalidPort`, `SocketResolveFault`, and operation-specific host faults; the
   `typed-resource-v1` close boundary remains unchanged.
@@ -114,7 +116,8 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   to 65,536 elements use one typed backing allocation with iterative stores.
 - Reachable File, Socket, logging, process, and Task operations follow the same
   whole-artifact typed lowering rule. Unreachable helpers do not affect native
-  preparation or object identity.
+  preparation or object identity. The runtime archive exports only the typed
+  native boundary; it retains no dormant universal-value compatibility ABI.
 - `std.json.parse_json` is a source-backed, iterative, depth-bounded parser that
   lowers completely through typed LCIR. The controlled standard-library
   fixture has no native-backend exception.

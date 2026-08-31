@@ -34,7 +34,8 @@ For each archive platform, the workflow:
 
 1. installs Rust 1.88.0 and LLVM 19, using the shared SHA-256-pinned LLVM
    bootstrap and verified `LLVM-C.dll` import pair on Windows;
-2. separately builds `loom-runtime` with the generic CPU policy;
+2. separately builds `loom-runtime` with the generic CPU policy and rejects
+   removed universal ABI exports from the resulting archive;
 3. builds `loom-cli` and `loom-lsp` in release mode with `--locked`;
 4. packs the explicit runtime archive into `runtime/` beside `loom`;
 5. runs the three semantic example check/build/test/run loops on LLVM and interpreter
@@ -42,7 +43,8 @@ For each archive platform, the workflow:
 6. runs the C3 check/build/test/run loop on both backends, including both
    emitted artifacts;
 7. verifies portable library artifact creation;
-8. runs standard-library and runtime-bundle differential tests;
+8. runs runtime ABI and runtime-library unit tests plus standard-library and
+   runtime-bundle differential tests;
 9. runs `loom-quality`;
 10. verifies both release tools expose their command boundary;
 11. stages the tools, runtime, and Windows LLVM C ABI dependency as siblings,

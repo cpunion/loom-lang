@@ -8,9 +8,9 @@ use loom_runtime_abi::{
     GC_MAX_REPEATED_POINTER_CELLS, LoomTypedLogField, TYPED_LOG_INVALID_ARGUMENT, TYPED_LOG_OK,
 };
 
+use crate::json::escape_json_text;
 use crate::output::write_process_stderr;
 use crate::text::text_bytes;
-use crate::value_ops::escape_json_text;
 
 const LOG_LEVELS: [&str; 4] = ["debug", "info", "warn", "error"];
 

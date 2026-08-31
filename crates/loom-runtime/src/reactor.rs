@@ -11,7 +11,7 @@ use polling::{Event, Events, Poller};
 use crate::platform::{OwnedWaitHandle, raw_poll_source, wait_handle_bits};
 use crate::runtime::LoomRuntime;
 use crate::scheduler::{
-    LoomJoinSpec, LoomTask, WorkerCompletion, drain_blocking_work_before_executor_drop,
+    LoomTask, WorkerCompletion, drain_blocking_work_before_executor_drop,
     retire_typed_frames_before_executor_drop,
 };
 use crate::{
@@ -101,7 +101,6 @@ pub struct LoomExecutor {
     /// callbacks may report faults and use GC roots, but must not re-enter
     /// scheduler or reactor operations which create work or change topology.
     pub(crate) cleanup_depth: u32,
-    pub(crate) join_specs: Vec<Box<LoomJoinSpec>>,
     pub(crate) tasks_reclaimed: u64,
     /// The worker mailbox is needed only by blocking file/socket operations.
     pub(crate) worker: Option<WorkerMailbox>,
@@ -181,7 +180,6 @@ impl LoomExecutor {
             runnable: VecDeque::new(),
             active_task: ptr::null_mut(),
             cleanup_depth: 0,
-            join_specs: Vec::new(),
             tasks_reclaimed: 0,
             worker: None,
             reactor_init_os_error: 0,
@@ -226,12 +224,6 @@ impl LoomExecutor {
         // SAFETY: attachment keeps the runtime live, and shared executor
         // access only requests shared heap access.
         unsafe { &(*self.runtime.as_ptr()).heap }
-    }
-
-    pub(crate) fn heap_mut(&mut self) -> &mut crate::gc::LoomHeap {
-        // SAFETY: the executor is the only allowed attachment and `&mut self`
-        // serializes mutation of its runtime heap.
-        unsafe { &mut (*self.runtime.as_ptr()).heap }
     }
 
     fn ensure_reactor(&mut self) -> io::Result<&mut Reactor> {
@@ -868,8 +860,20 @@ mod wait_set_tests {
             assert!((*executor).reactor.is_none());
             assert!((*executor).worker.is_none());
             assert_eq!(crate::gc::activate_runtime_v1(runtime), WAIT_OK);
-            assert!(!crate::gc::allocate_value().is_null());
-            assert!(!crate::gc::allocate_value_node().is_null());
+            let descriptor = loom_runtime_abi::LoomGcObjectDescriptor {
+                abi_version: loom_runtime_abi::TYPED_GC_ABI_VERSION,
+                flags: 0,
+                fixed_size: 8,
+                object_align: 8,
+                pointer_count: 0,
+                pointer_offsets: ptr::null(),
+            };
+            let mut allocation = ptr::null_mut();
+            assert_eq!(
+                crate::gc::allocate_typed_object(&raw const descriptor, 8, &raw mut allocation,),
+                WAIT_OK,
+            );
+            assert!(!allocation.is_null());
             assert_eq!(crate::gc::deactivate_runtime_v1(runtime), WAIT_OK);
             assert!((*executor).reactor.is_none());
             assert!((*executor).worker.is_none());

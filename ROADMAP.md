@@ -31,15 +31,6 @@ Acceptance requires:
 - each migrated API deletes its former builtin/catalog path in the same change,
   without aliases, compatibility readers, or parallel implementations.
 
-### Remove the unreachable universal runtime ABI
-
-Native compilation now has one typed LCIR emitter. Delete the runtime-only
-`ValueSlot` heap, shadow-root, witness, legacy Task, value-operations, and Int
-list surfaces that no generated object can call. Preserve only helpers used by
-typed LCIR, moving shared Text/JSON utilities to representation-neutral modules
-before removing their old containers. Advance the runtime identity once, with
-no aliases or dormant compatibility exports.
-
 ### Strengthen reproducible evidence
 
 Keep the macOS development gate, cross-platform release closure, explicit fuzz
