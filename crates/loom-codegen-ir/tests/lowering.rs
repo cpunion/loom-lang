@@ -6778,6 +6778,66 @@ fn canonical_direct_local_bytes_loop_carries_a_trusted_unique_certificate() {
 }
 
 #[test]
+fn readonly_bytes_length_and_get_preserve_unique_growth() {
+    let dump = complete_dump(
+        r#"pub fn main() {
+    var bytes = "".encode_utf8()
+    while bytes.length() < 128 {
+        bytes.add(120)
+    }
+    discard bytes.get(0)
+    bytes.add(255)
+}
+"#,
+    );
+    assert_eq!(dump.matches("bytes.push.unique").count(), 2, "{dump}");
+    assert!(!dump.contains("bytes.push %"), "{dump}");
+    assert!(!dump.contains("collection.share %"), "{dump}");
+}
+
+#[test]
+fn readonly_list_length_and_get_preserve_unique_growth() {
+    let dump = complete_dump(
+        r"pub fn main() {
+    var values = List[Int]()
+    while values.length() < 128 {
+        values.add(7)
+    }
+    discard values.get(0)
+    values.add(99)
+}
+",
+    );
+    assert_eq!(dump.matches("list.append.unique").count(), 2, "{dump}");
+    assert!(!dump.contains("list.append %"), "{dump}");
+    assert!(!dump.contains("collection.share %"), "{dump}");
+}
+
+#[test]
+fn get_receiver_reuse_remains_shared_during_argument_evaluation() {
+    let dump = complete_dump(
+        r#"record Holder { bytes Bytes }
+
+impl Holder {
+    method appendAndIndex(mut self) Int {
+        self.bytes.add(121)
+        1
+    }
+}
+
+pub fn main() {
+    var holder = Holder { bytes = "x".encode_utf8() }
+    discard holder.bytes.get(holder.appendAndIndex())
+    holder.bytes.add(122)
+}
+"#,
+    );
+    assert!(dump.contains("collection.share %"), "{dump}");
+    assert_eq!(dump.matches("bytes.push %").count(), 2, "{dump}");
+    assert!(!dump.contains("bytes.push.unique"), "{dump}");
+}
+
+#[test]
 fn copied_bytes_receiver_lowers_to_nonunique_push() {
     let dump = complete_dump(
         r#"pub fn main() {

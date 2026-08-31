@@ -175,8 +175,8 @@ File/Socket nominal IDs.
 The current exact runtime identity is defined in
 [Versioning and compatibility](../project/versioning.md). Typed-task ABI v1,
 typed-I/O v1, typed-resource v1, typed-process ABI v1, coroutine v2, wait v1,
-standard-library ABI v8, Text v3, and GC v9 identify the corresponding current
-components.
+standard-library ABI v9, Text v4, `typed-bytes-v2`, and GC v9 identify the
+corresponding current components.
 
 ## Typed LCIR representations
 

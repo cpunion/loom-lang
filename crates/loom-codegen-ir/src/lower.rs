@@ -12322,6 +12322,51 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         self.merge_statement_flows(flow.env, exits, origin)
     }
 
+    fn lower_nonescaping_collection_receiver(
+        &mut self,
+        flow: Flow,
+        receiver: &'function mir::Expr,
+        trailing_arguments: &'function [CallArgument],
+    ) -> Result<EvalFlow, LoweringError> {
+        let ExprKind::Copy(place) = &receiver.kind else {
+            return self.lower_expr(flow, receiver);
+        };
+        // Loom evaluates the receiver before later arguments. If one of those
+        // arguments reuses the receiver's root, retain the ordinary COW share
+        // so a mutation cannot change the already-evaluated snapshot.
+        let receiver_is_reused_while_evaluating_arguments =
+            trailing_arguments.iter().any(|argument| match argument {
+                CallArgument::Value(value) => expr_mentions_local(value, place.local),
+                CallArgument::InOut(argument) => argument.local == place.local,
+            });
+        if receiver_is_reused_while_evaluating_arguments {
+            return self.lower_expr(flow, receiver);
+        }
+
+        let plan = self.place_plan(place, PlaceUse::Read)?;
+        if plan.leaf_type() != self.type_id(&receiver.ty)? {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "non-escaping collection receiver has the wrong LCIR value type",
+            ));
+        }
+        let EvalFlow::Continue { flow, value } =
+            self.read_place(flow, &plan, self.expression_origin(receiver))?
+        else {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::Builder,
+                "non-escaping collection receiver read unexpectedly terminated",
+            ));
+        };
+        if !self.is_collection_value(value) {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "non-escaping collection receiver is not a List or Bytes value",
+            ));
+        }
+        Ok(EvalFlow::Continue { flow, value })
+    }
+
     #[allow(clippy::too_many_lines)]
     fn lower_call(
         &mut self,
@@ -13246,14 +13291,20 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         expression: &mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
         let mut values = Vec::with_capacity(arguments.len());
-        for argument in arguments {
+        for (index, argument) in arguments.iter().enumerate() {
             let CallArgument::Value(argument) = argument else {
                 return Err(self.unsupported_reached("builtin inout argument"));
             };
             let EvalFlow::Continue {
                 flow: next_flow,
                 value,
-            } = self.lower_expr(flow, argument)?
+            } = (if index == 0
+                && matches!(builtin, mir::Builtin::BytesLength | mir::Builtin::BytesGet)
+            {
+                self.lower_nonescaping_collection_receiver(flow, argument, &arguments[index + 1..])?
+            } else {
+                self.lower_expr(flow, argument)?
+            })
             else {
                 return Ok(EvalFlow::Terminated);
             };
@@ -13681,11 +13732,17 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let mut lowered = Vec::with_capacity(values.len());
-        for value in values {
+        for (index, value) in values.into_iter().enumerate() {
             let EvalFlow::Continue {
                 flow: next_flow,
                 value,
-            } = self.lower_expr(flow, value)?
+            } = (if index == 0
+                && matches!(builtin, mir::Builtin::ListLength | mir::Builtin::ListGet)
+            {
+                self.lower_nonescaping_collection_receiver(flow, value, &arguments[index + 1..])?
+            } else {
+                self.lower_expr(flow, value)?
+            })
             else {
                 return Ok(EvalFlow::Terminated);
             };

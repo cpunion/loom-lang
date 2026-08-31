@@ -98,11 +98,11 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   compatibility paths.
   Native runtime ABI 39 (`runtime-v33`, `stdlib-v9`, `text-v4`, and
   `typed-bytes-v2`) adds checked packed Bytes growth and non-collecting
-  ByteObject-to-Text decode. It follows ABI 38's deletion of the
-  unreachable universal `ValueSlot` heap and root chain, runtime witness arena,
-  legacy Task/value operations, Int-list implementation, and the former typed
-  JSON-formatting boundary, following the earlier removal of universal File,
-  Socket, close, logging, and process boundaries.
+  ByteObject-to-Text decode. ABI 38 removed the former typed JSON-formatting
+  boundary. ABI 37 deleted the unreachable universal `ValueSlot` heap and root
+  chain, runtime witness arena, legacy Task/value operations, and Int-list
+  implementation, following the earlier removal of universal File, Socket,
+  close, logging, and process boundaries.
   The live shared join/fault scheduler operations retain `task-v2`.
   The 16-byte `typed-io-v1` outcome uses its primitive
   payload for either a resource token or a closed fault class, preserving
