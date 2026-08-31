@@ -416,7 +416,136 @@ fn sum_switch_consumes_the_scrutinee_and_owns_the_selected_affine_payload() {
         .expect_err("sum.switch duplicated its affine scrutinee onto an explicit edge");
     assert!(errors.as_slice().iter().any(|error| {
         error.code() == ValidationCode::InvalidTaskOwnership
-            && error.message().contains("consumed more than once")
+            && error.message().contains("moved more than once")
+    }));
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "one fixture keeps the complete structural borrow chain and its rejected consuming use directly comparable"
+)]
+fn borrowed_sum_program(consume_borrowed: bool) -> Program {
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let integer = builder.type_id(&Type::Int).expect("Int");
+    let task_semantic = Type::Task(Box::new(Type::Int));
+    let task = builder
+        .add_task_handle_type(task_semantic.clone())
+        .expect("Task[Int]");
+    let pending_semantic = Type::Nominal(TypeId(91), Vec::new());
+    let pending = builder
+        .add_transparent_type(pending_semantic.clone(), &task_semantic)
+        .expect("transparent Task wrapper");
+    let carrier_semantic = Type::Nominal(TypeId(92), Vec::new());
+    let carrier = builder
+        .add_pod_record_type(carrier_semantic.clone(), &[pending_semantic, Type::Int])
+        .expect("Task-bearing product");
+    let sum = builder
+        .add_sum_type(
+            Type::Nominal(TypeId(93), Vec::new()),
+            &[Box::from([carrier_semantic])],
+        )
+        .expect("Task-bearing sum");
+    let result = if consume_borrowed { task } else { sum };
+    let function_id = builder
+        .declare_function(
+            origin(91),
+            "task_carrier.borrowed_inspection",
+            Signature::new([sum], result),
+            Effects::NONE,
+        )
+        .expect("borrowed inspection declaration");
+    {
+        let mut function = builder.function(function_id).expect("function builder");
+        let entry = function.create_block().expect("entry");
+        let selected = function.create_block().expect("selected case");
+        function.set_entry(entry).expect("set entry");
+        let owner = function
+            .append_block_parameter(entry, sum)
+            .expect("owned sum");
+        let borrowed_owner = function
+            .append_instruction(
+                entry,
+                InstructionKind::TaskCarrierBorrow { value: owner },
+                &[sum],
+                origin(91),
+            )
+            .expect("borrow whole carrier")[0];
+        let borrowed_carrier = function
+            .append_block_parameter(selected, carrier)
+            .expect("borrowed carrier");
+        function
+            .terminate(
+                entry,
+                Terminator::new(
+                    TerminatorKind::SumBorrowSwitch {
+                        scrutinee: borrowed_owner,
+                        cases: Box::from([SumCase::new(0, selected, [])]),
+                    },
+                    origin(91),
+                ),
+            )
+            .expect("borrowed switch");
+        let borrowed_pending = function
+            .append_instruction(
+                selected,
+                InstructionKind::ProductBorrow {
+                    aggregate: borrowed_carrier,
+                    field: 0,
+                },
+                &[pending],
+                origin(91),
+            )
+            .expect("borrow product field")[0];
+        let borrowed_task = function
+            .append_instruction(
+                selected,
+                InstructionKind::UnrefineBorrow {
+                    value: borrowed_pending,
+                },
+                &[task],
+                origin(91),
+            )
+            .expect("borrow transparent base")[0];
+        function
+            .append_instruction(
+                selected,
+                InstructionKind::ProductExtract {
+                    aggregate: borrowed_carrier,
+                    field: 1,
+                },
+                &[integer],
+                origin(91),
+            )
+            .expect("read task-free sibling");
+        function
+            .terminate(
+                selected,
+                Terminator::new(
+                    TerminatorKind::Return(if consume_borrowed {
+                        borrowed_task
+                    } else {
+                        owner
+                    }),
+                    origin(91),
+                ),
+            )
+            .expect("return");
+    }
+    builder.finish()
+}
+
+#[test]
+fn borrowed_affine_inspection_preserves_the_owner_and_cannot_regain_ownership() {
+    validate_program(&borrowed_sum_program(false))
+        .unwrap_or_else(|errors| panic!("valid borrowed inspection failed: {errors:#?}"));
+
+    let errors = validate_program(&borrowed_sum_program(true))
+        .expect_err("a borrowed Task alias regained ownership at return");
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code() == ValidationCode::InvalidTaskOwnership
+            && error
+                .message()
+                .contains("consumed more than once or is unavailable")
     }));
 }
 

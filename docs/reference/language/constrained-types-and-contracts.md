@@ -116,12 +116,14 @@ uses the same three-way classification as a constrained type:
 - disproven invariant: static `InvariantUnsatisfied` error;
 - unknown invariant: `Result[Range, ConstraintError]` and a runtime check.
 
-Every method call on an established record checks its receiver invariant at the
-method boundary. A `mut self` method may temporarily make the receiver invalid,
-but while it is invalid the receiver is isolated: it cannot be copied, passed,
-returned, stored, or used for another method call. A successful `assert` that
-re-establishes the invariant ends that isolation. Every normal method exit,
-including an `Err` result, must restore the invariant.
+Every method call on an established record checks its receiver invariant at
+entry. A `mut self` method may temporarily make the receiver invalid, but while
+it is invalid the receiver is isolated: it cannot be copied, passed, returned,
+stored, or used for another method call. A successful `assert` that
+re-establishes the invariant ends that isolation. Every normal mutable-method
+exit, including an `Err` result, must restore and recheck the invariant. A
+read-only method cannot mutate the established receiver and may transfer it, so
+it has no exit invariant replay.
 
 Mutation cannot bypass that boundary. Calling a mutable method on a projected
 field below an invariant-bearing record is `InvariantInteriorMutation`; call a
@@ -185,6 +187,12 @@ An interface parameter cannot be the operand of `old`; attempting to snapshot
 one is an `OldOfView` source error. Both concise `value C` and explicit
 `value dyn C` parameter spellings follow this rule.
 
+An `ensures` clause cannot inspect `self`, an argument, or an `old` snapshot
+whose type contains a `Task`; the body may already have transferred that affine
+input. The same structural inspection is valid in `requires`, and `ensures`
+may inspect a Task-bearing `result`. These reads are non-consuming compiler
+operations and introduce no source ownership or borrow syntax.
+
 `assert predicate` states an implementation obligation at a point in a body.
 It may also establish facts for the code that follows.
 
@@ -231,12 +239,12 @@ For a synchronous closed-world function call, the observable order is:
 evaluate arguments -> requires -> old snapshots -> body -> lexical cleanup -> ensures
 ```
 
-For a synchronous inherent or concept method, receiver invariants surround the
-same sequence:
+For a synchronous inherent or concept method, the entry invariant precedes the
+body and only a mutable receiver is rechecked at exit:
 
 ```text
 evaluate receiver and arguments -> requires -> entry invariant -> old snapshots
--> body -> lexical cleanup -> exit invariant -> ensures
+-> body -> lexical cleanup -> exit invariant (mut self only) -> ensures
 ```
 
 An async call has two observable phases:
@@ -244,7 +252,7 @@ An async call has two observable phases:
 ```text
 caller: evaluate receiver and arguments -> create child Task
 child state zero: entry invariant (method only) -> requires -> old snapshots
--> body -> lexical cleanup -> exit invariant (method only) -> ensures
+-> body -> lexical cleanup -> exit invariant (mut self only) -> ensures
 ```
 
 The child retains the creation expression as precondition blame. An exported
@@ -254,8 +262,9 @@ exists. A state-zero failure faults the child and does not unwind the creator.
 If the body returns normally through either a tail expression or `return`, the
 lexical cleanup suffix runs before exit checks. An `Err` is a normal return and
 therefore also follows this sequence. A cleanup fault remains primary and no
-exit contract runs. When both the exit invariant and postcondition would fail,
-the earlier invariant check determines the reported fault.
+exit contract runs. For a mutable receiver, when both the exit invariant and
+postcondition would fail, the earlier invariant check determines the reported
+fault.
 
 Conformance calls use the concept requirement's contract and the concrete
 receiver's invariant. Static dispatch, interface parameters, and first-class

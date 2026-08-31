@@ -11031,6 +11031,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
     /// dominates in a preorder rooted at entry, so all non-phi operands have an
     /// LLVM definition before they are consumed. The explicit stack also keeps
     /// large generated CFGs off the Rust call stack.
+    #[allow(clippy::too_many_lines)]
     fn compute_emission_order(source: &Function) -> Result<Vec<BlockId>, CodegenError> {
         let entry = source.entry().ok_or_else(|| {
             CodegenError::new(
@@ -11079,6 +11080,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     pending.push(then_target.block);
                 }
                 TerminatorKind::SumSwitch { cases, .. }
+                | TerminatorKind::SumBorrowSwitch { cases, .. }
                 | TerminatorKind::DynSwitch { cases, .. } => {
                     for case in cases.iter().rev() {
                         pending.push(case.block);
@@ -11646,7 +11648,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 }
                 one(aggregate.into())
             }
-            InstructionKind::ProductExtract { aggregate, field } => one(self
+            InstructionKind::ProductExtract { aggregate, field }
+            | InstructionKind::ProductBorrow { aggregate, field } => one(self
                 .backend
                 .builder
                 .build_extract_value(
@@ -11690,7 +11693,10 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 .map_err(builder_error)?
                 .into_struct_value()
                 .into()),
-            InstructionKind::RefineProven { value } | InstructionKind::Unrefine { value } => {
+            InstructionKind::TaskCarrierBorrow { value }
+            | InstructionKind::RefineProven { value }
+            | InstructionKind::Unrefine { value }
+            | InstructionKind::UnrefineBorrow { value } => {
                 // Checked LCIR requires both semantic types to select the exact
                 // same physical representation. Preserve the SSA value
                 // directly; the instruction exists to retain the nominal
@@ -15880,7 +15886,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 }
                 Ok(())
             }
-            TerminatorKind::SumSwitch { scrutinee, cases } => {
+            TerminatorKind::SumSwitch { scrutinee, cases }
+            | TerminatorKind::SumBorrowSwitch { scrutinee, cases } => {
                 self.emit_sum_switch(*scrutinee, cases)
             }
             TerminatorKind::SumZipSwitch {

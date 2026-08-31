@@ -2214,9 +2214,11 @@ impl<'program> Interpreter<'program> {
                     ));
                 }
             };
-            if function.call_plan.receiver_invariant.is_none()
-                && function.call_plan.ensures.is_empty()
-            {
+            let exit_invariant = match function.receiver {
+                Some(Receiver::Mutable) => function.call_plan.receiver_invariant.as_ref(),
+                Some(Receiver::Readonly) | None => None,
+            };
+            if exit_invariant.is_none() && function.call_plan.ensures.is_empty() {
                 return SyncStep::complete(result);
             }
 
@@ -2225,10 +2227,9 @@ impl<'program> Interpreter<'program> {
                     interpreter.read_parameter_values(frame, function)?;
                 let (current_receiver, current_arguments) =
                     interpreter.contract_arguments(function, &current_parameter_values)?;
-                if let (Some(contract), Some(receiver_value)) = (
-                    &function.call_plan.receiver_invariant,
-                    current_receiver.as_ref(),
-                ) {
+                if let (Some(contract), Some(receiver_value)) =
+                    (exit_invariant, current_receiver.as_ref())
+                {
                     interpreter.require_contract(
                         contract,
                         ContractFaultKind::Invariant,
@@ -2365,15 +2366,16 @@ impl<'program> Interpreter<'program> {
                 )
                 .into());
         }
-        if function.call_plan.receiver_invariant.is_none() && function.call_plan.ensures.is_empty()
-        {
+        let exit_invariant = match function.receiver {
+            Some(Receiver::Mutable) => function.call_plan.receiver_invariant.as_ref(),
+            Some(Receiver::Readonly) | None => None,
+        };
+        if exit_invariant.is_none() && function.call_plan.ensures.is_empty() {
             return Ok(());
         }
         let parameter_values = self.read_parameter_values(frame, function)?;
         let (receiver, arguments) = self.contract_arguments(function, &parameter_values)?;
-        if let (Some(contract), Some(receiver_value)) =
-            (&function.call_plan.receiver_invariant, receiver.as_ref())
-        {
+        if let (Some(contract), Some(receiver_value)) = (exit_invariant, receiver.as_ref()) {
             self.require_contract(
                 contract,
                 ContractFaultKind::Invariant,

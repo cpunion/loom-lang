@@ -20,18 +20,18 @@ writers for unreleased formats. Development history belongs in
 | Manifest schema | `2` |
 | Lockfile schema | `2` |
 | Registry protocol and bundle | `1` |
-| Interpreted MIR artifact | `loom.interpreted-mir`, version `42` |
+| Interpreted MIR artifact | `loom.interpreted-mir`, version `43` |
 | Portable library artifact | `loom-library`, source-and-interface version `4` |
 | Persistent compiler cache | schema `16` |
 | Compilation-cache domain | `loom-compilation-cache-v16` |
 | Interpreted final-cache layer | `final-artifact-v3` |
 | Interpreted artifact writer | `loom-interpreted-artifact-writer-v3` |
 | Portable-library final-cache layer | `portable-library-artifact-v4` |
-| LCIR textual dump | `lcir 48` |
-| LCIR artifact identity | schema `50` |
+| LCIR textual dump | `lcir 49` |
+| LCIR artifact identity | schema `51` |
 | LCIR artifact route | `typed-lcir-whole-artifact` |
-| LCIR native-object domain | `loom-lcir-native-object-v43` |
-| Checked-MIR native-object domain | `loom-checked-mir-native-object-v3` |
+| LCIR native-object domain | `loom-lcir-native-object-v44` |
+| Checked-MIR native-object domain | `loom-checked-mir-native-object-v4` |
 | LLVM object-cache domain | `loom-llvm-object-cache-v48` |
 | Controlled quality evidence | schema `4` |
 | Runtime bundle manifest | schema `2` |
@@ -66,6 +66,18 @@ the former universal File, Socket, and close entry points and their fixed
 source nominal IDs. The existing `typed-io-v1` request/outcome wire and
 `typed-resource-v1` close boundary did not change. An older compiler or runtime
 bundle is therefore rejected instead of crossing the removed symbol boundary.
+
+Interpreted MIR 43 rejects postconditions that inspect current or `old`
+Task-bearing inputs after the body may have transferred them, and defines
+read-only receiver invariants as entry-only. LCIR native-object domain 44 and
+checked-MIR native-object domain 4 pin the corresponding emitters. Their route
+fingerprints already feed the unchanged compiler-wide LLVM object-cache key.
+
+LCIR dump 49 and artifact identity schema 51 add compiler-private
+`TaskCarrierBorrow`, `UnrefineBorrow`, `ProductBorrow`, and `SumBorrowSwitch`
+inspection for Task-bearing carriers. These operations preserve the original
+affine owner and cannot feed a consuming LCIR boundary. No runtime ABI or
+physical layout changes.
 
 LCIR dump 48 and artifact identity schema 50 add the linear paired-sum switch
 used by structural equality. Earlier identities cannot be reused for checked

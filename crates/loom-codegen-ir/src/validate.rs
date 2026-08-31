@@ -3475,7 +3475,8 @@ impl<'a> Validator<'a> {
                     );
                 }
             }
-            InstructionKind::ProductExtract { aggregate, field } => {
+            InstructionKind::ProductExtract { aggregate, field }
+            | InstructionKind::ProductBorrow { aggregate, field } => {
                 let aggregate_type = function.value(*aggregate).map(|value| value.ty);
                 if aggregate_type.is_some_and(|ty| self.is_resource_capability_type(ty)) {
                     self.error(
@@ -3516,14 +3517,40 @@ impl<'a> Validator<'a> {
                     );
                 }
                 self.require_results(function, instruction, &[expected], &path);
-                if expected.is_some_and(|field| {
+                let task_bearing_field = expected.is_some_and(|field| {
                     representation_contains_task_handle(&self.program.representations, field)
                         == Some(true)
-                }) {
+                });
+                if matches!(instruction.kind(), InstructionKind::ProductExtract { .. })
+                    && task_bearing_field
+                {
                     self.error(
                         ValidationCode::InvalidTaskOwnership,
                         format!("{path}.field"),
                         "product.extract cannot split a Task-bearing field from its affine aggregate owner",
+                    );
+                }
+                if matches!(instruction.kind(), InstructionKind::ProductBorrow { .. })
+                    && !task_bearing_field
+                {
+                    self.error(
+                        ValidationCode::InvalidTaskOwnership,
+                        format!("{path}.field"),
+                        "product.borrow requires an exact Task-bearing field result",
+                    );
+                }
+            }
+            InstructionKind::TaskCarrierBorrow { value } => {
+                let operand_type = function.value(*value).map(|value| value.ty);
+                self.require_results(function, instruction, &[operand_type], &path);
+                if operand_type.is_some_and(|ty| {
+                    representation_contains_task_handle(&self.program.representations, ty)
+                        != Some(true)
+                }) {
+                    self.error(
+                        ValidationCode::InvalidTaskOwnership,
+                        format!("{path}.value"),
+                        "task_carrier.borrow requires an exact Task-bearing operand and result",
                     );
                 }
             }
@@ -3715,7 +3742,7 @@ impl<'a> Validator<'a> {
                     );
                 }
             }
-            InstructionKind::Unrefine { value } => {
+            InstructionKind::Unrefine { value } | InstructionKind::UnrefineBorrow { value } => {
                 let operand_type = function.value(*value).map(|value| value.ty);
                 let expected_result = operand_type
                     .and_then(|operand| self.program.representations.value_type(operand))
@@ -3733,6 +3760,18 @@ impl<'a> Validator<'a> {
                     );
                 }
                 self.require_results(function, instruction, &[expected_result], &path);
+                if matches!(instruction.kind(), InstructionKind::UnrefineBorrow { .. })
+                    && expected_result.is_some_and(|result| {
+                        representation_contains_task_handle(&self.program.representations, result)
+                            != Some(true)
+                    })
+                {
+                    self.error(
+                        ValidationCode::InvalidTaskOwnership,
+                        format!("{path}.value"),
+                        "unrefine.borrow requires an exact Task-bearing transparent value",
+                    );
+                }
             }
             InstructionKind::SumConstruct { variant, payload } => {
                 self.require_results(function, instruction, &[None], &path);
@@ -4957,7 +4996,8 @@ impl<'a> Validator<'a> {
                 self.validate_target(function, then_target, format!("{path}.then"));
                 self.validate_target(function, else_target, format!("{path}.else"));
             }
-            TerminatorKind::SumSwitch { scrutinee, cases } => {
+            TerminatorKind::SumSwitch { scrutinee, cases }
+            | TerminatorKind::SumBorrowSwitch { scrutinee, cases } => {
                 let scrutinee_type = function.value(*scrutinee).map(|value| value.ty);
                 let sum = scrutinee_type.and_then(|ty| self.sum_repr(ty));
                 if scrutinee_type.is_some() && sum.is_none() {
@@ -4970,6 +5010,18 @@ impl<'a> Validator<'a> {
                 let Some(sum) = sum else {
                     return;
                 };
+                if matches!(terminator.kind(), TerminatorKind::SumBorrowSwitch { .. })
+                    && scrutinee_type.is_some_and(|ty| {
+                        representation_contains_task_handle(&self.program.representations, ty)
+                            != Some(true)
+                    })
+                {
+                    self.error(
+                        ValidationCode::InvalidTaskOwnership,
+                        format!("{path}.scrutinee"),
+                        "sum.borrow_switch requires an exact Task-bearing closed sum",
+                    );
+                }
                 let variants = self
                     .program
                     .representations
@@ -7804,6 +7856,7 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                 | TerminatorKind::Jump(_)
                 | TerminatorKind::Branch { .. }
                 | TerminatorKind::SumSwitch { .. }
+                | TerminatorKind::SumBorrowSwitch { .. }
                 | TerminatorKind::SumZipSwitch { .. }
                 | TerminatorKind::DynSwitch { .. }
                 | TerminatorKind::Return(_)
@@ -8023,9 +8076,18 @@ impl TaskAvailability {
     const NONE: Self = Self(0);
     const AVAILABLE: Self = Self(1);
     const CONSUMED: Self = Self(2);
+    const BORROWED: Self = Self(4);
 
     const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
+    }
+
+    const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    const fn is_borrowable(self) -> bool {
+        self.0 != 0 && !self.contains(Self::CONSUMED)
     }
 }
 
@@ -8087,13 +8149,48 @@ fn borrow_task_carrier(
     if !task_values.get(value.index()).copied().unwrap_or(false) {
         return;
     }
-    if collect_issues && states.get(value.index()).copied() != Some(TaskAvailability::AVAILABLE) {
+    if collect_issues
+        && !states
+            .get(value.index())
+            .copied()
+            .is_some_and(TaskAvailability::is_borrowable)
+    {
         issues.push(TaskOwnershipIssue {
             site,
             value,
             message: "an affine Task carrier is borrowed after it was consumed or is unavailable on an incoming control-flow path",
         });
     }
+}
+
+fn move_task_handle(
+    value: ValueId,
+    site: TaskOwnershipSite,
+    states: &mut [TaskAvailability],
+    task_values: &[bool],
+    collect_issues: bool,
+    issues: &mut Vec<TaskOwnershipIssue>,
+) -> TaskAvailability {
+    if !task_values.get(value.index()).copied().unwrap_or(false) {
+        return TaskAvailability::NONE;
+    }
+    let Some(state) = states.get_mut(value.index()) else {
+        return TaskAvailability::NONE;
+    };
+    let incoming = *state;
+    if collect_issues && !incoming.is_borrowable() {
+        issues.push(TaskOwnershipIssue {
+            site,
+            value,
+            message: "an affine Task carrier is moved more than once or is unavailable on an incoming control-flow path",
+        });
+    }
+    if incoming.contains(TaskAvailability::AVAILABLE) {
+        *state = TaskAvailability(
+            (incoming.0 & !TaskAvailability::AVAILABLE.0) | TaskAvailability::CONSUMED.0,
+        );
+    }
+    incoming
 }
 
 #[expect(
@@ -8123,8 +8220,18 @@ fn transfer_task_ownership(
                 collect_issues,
                 &mut issues,
             ),
-            InstructionKind::ProductExtract { aggregate, .. } => borrow_task_carrier(
+            InstructionKind::ProductExtract { aggregate, .. }
+            | InstructionKind::ProductBorrow { aggregate, .. } => borrow_task_carrier(
                 *aggregate,
+                site,
+                &states,
+                task_values,
+                collect_issues,
+                &mut issues,
+            ),
+            InstructionKind::TaskCarrierBorrow { value }
+            | InstructionKind::UnrefineBorrow { value } => borrow_task_carrier(
+                *value,
                 site,
                 &states,
                 task_values,
@@ -8146,7 +8253,16 @@ fn transfer_task_ownership(
         }
         for result in instruction.results().iter().copied() {
             if task_values.get(result.index()).copied().unwrap_or(false) {
-                states[result.index()] = TaskAvailability::AVAILABLE;
+                states[result.index()] = if matches!(
+                    instruction.kind(),
+                    InstructionKind::TaskCarrierBorrow { .. }
+                        | InstructionKind::ProductBorrow { .. }
+                        | InstructionKind::UnrefineBorrow { .. }
+                ) {
+                    TaskAvailability::BORROWED
+                } else {
+                    TaskAvailability::AVAILABLE
+                };
             }
         }
     }
@@ -8199,6 +8315,14 @@ fn transfer_task_ownership(
             collect_issues,
             &mut issues,
         ),
+        TerminatorKind::SumBorrowSwitch { scrutinee, .. } => borrow_task_carrier(
+            *scrutinee,
+            site,
+            &states,
+            task_values,
+            collect_issues,
+            &mut issues,
+        ),
         TerminatorKind::SumZipSwitch { left, right, .. } => {
             for operand in [*left, *right] {
                 consume_task_handle(
@@ -8232,28 +8356,43 @@ fn transfer_task_ownership(
         let mut edge_states = states.clone();
         let implicit = target_block.params().len().saturating_sub(arguments.len());
 
-        // Consume every source before defining any destination. This ordering
-        // is essential for self-loop phis: forwarding one handle into two
-        // parameters must not let the first parameter definition resurrect it
-        // before the duplicate second move is checked.
-        for argument in arguments.iter().copied() {
-            consume_task_handle(
-                argument,
-                site,
-                &mut edge_states,
-                task_values,
-                collect_issues,
-                &mut issues,
-            );
-        }
+        // Move every source before defining any destination. This ordering is
+        // essential for self-loop phis: forwarding one owned handle into two
+        // parameters must not let the first definition resurrect it. Borrowed
+        // aliases may be duplicated, but can never regain ownership.
+        let moved = arguments
+            .iter()
+            .copied()
+            .map(|argument| {
+                move_task_handle(
+                    argument,
+                    site,
+                    &mut edge_states,
+                    task_values,
+                    collect_issues,
+                    &mut issues,
+                )
+            })
+            .collect::<Vec<_>>();
+        let borrowed_implicit = matches!(terminator.kind(), TerminatorKind::SumBorrowSwitch { .. });
         for parameter in target_block.params().iter().copied().take(implicit) {
             if task_values.get(parameter.index()).copied().unwrap_or(false) {
-                edge_states[parameter.index()] = TaskAvailability::AVAILABLE;
+                edge_states[parameter.index()] = if borrowed_implicit {
+                    TaskAvailability::BORROWED
+                } else {
+                    TaskAvailability::AVAILABLE
+                };
             }
         }
-        for parameter in target_block.params().iter().copied().skip(implicit) {
+        for (parameter, incoming) in target_block
+            .params()
+            .iter()
+            .copied()
+            .skip(implicit)
+            .zip(moved)
+        {
             if task_values.get(parameter.index()).copied().unwrap_or(false) {
-                edge_states[parameter.index()] = TaskAvailability::AVAILABLE;
+                edge_states[parameter.index()] = incoming;
             }
         }
         edges.push(TaskOwnershipEdge {
@@ -8532,7 +8671,9 @@ fn forwarded_list_edges(kind: &TerminatorKind) -> Vec<(BlockId, &[ValueId])> {
             (then_target.block, &then_target.arguments),
             (else_target.block, &else_target.arguments),
         ],
-        TerminatorKind::SumSwitch { cases, .. } | TerminatorKind::DynSwitch { cases, .. } => cases
+        TerminatorKind::SumSwitch { cases, .. }
+        | TerminatorKind::SumBorrowSwitch { cases, .. }
+        | TerminatorKind::DynSwitch { cases, .. } => cases
             .iter()
             .map(|case| (case.block, case.arguments.as_ref()))
             .collect(),

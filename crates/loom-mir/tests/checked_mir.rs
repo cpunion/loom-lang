@@ -1949,6 +1949,75 @@ fn expression_and_contract_type_shapes_are_checked() {
 }
 
 #[test]
+fn exit_contracts_reject_current_and_old_task_carrying_inputs() {
+    let carrier = Type::Nominal(TypeId(0), Vec::new());
+    let mut function = function(
+        0,
+        vec![local(0, carrier.clone(), false)],
+        Vec::new(),
+        carrier.clone(),
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(move_local(0, carrier.clone()))),
+            span: span(),
+        },
+    );
+    for value in [ContractValue::Argument(0), ContractValue::OldArgument(0)] {
+        function.call_plan.ensures.push(Contract {
+            code: "task_input".to_owned(),
+            span: span(),
+            expression: ContractExpr {
+                kind: ContractExprKind::Field(
+                    Box::new(ContractExpr {
+                        kind: ContractExprKind::Value(value),
+                        span: span(),
+                    }),
+                    1,
+                ),
+                span: span(),
+            },
+        });
+    }
+    let errors = validation_errors(&Program {
+        types: vec![TypeDef {
+            id: TypeId(0),
+            name: "Carrier".to_owned(),
+            span: span(),
+            type_parameters: 0,
+            kind: TypeDefKind::Record {
+                fields: vec![
+                    FieldDef {
+                        name: "task".to_owned(),
+                        ty: Type::Task(Box::new(Type::Int)),
+                        span: span(),
+                    },
+                    FieldDef {
+                        name: "allowed".to_owned(),
+                        ty: Type::Bool,
+                        span: span(),
+                    },
+                ],
+                invariant: None,
+            },
+        }],
+        functions: vec![function],
+        ..Program::default()
+    });
+    assert_eq!(
+        errors
+            .as_slice()
+            .iter()
+            .filter(|error| {
+                error.code == MirValidationCode::ContractShape
+                    && error.message.contains("exit contract cannot inspect")
+            })
+            .count(),
+        2,
+        "{errors:#?}"
+    );
+}
+
+#[test]
 fn prelude_ids_are_explicit_and_shape_checked() {
     let program = Program {
         types: shape_types(),

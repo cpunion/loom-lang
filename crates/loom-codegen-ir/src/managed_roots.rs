@@ -484,9 +484,9 @@ fn successors(kind: &TerminatorKind) -> Vec<BlockId> {
             else_target,
             ..
         } => vec![then_target.block, else_target.block],
-        TerminatorKind::SumSwitch { cases, .. } | TerminatorKind::DynSwitch { cases, .. } => {
-            cases.iter().map(|case| case.block).collect()
-        }
+        TerminatorKind::SumSwitch { cases, .. }
+        | TerminatorKind::SumBorrowSwitch { cases, .. }
+        | TerminatorKind::DynSwitch { cases, .. } => cases.iter().map(|case| case.block).collect(),
         TerminatorKind::SumZipSwitch {
             cases, mismatch, ..
         } => {
@@ -544,6 +544,7 @@ fn add_terminator_local_uses(
             vec![*condition]
         }
         TerminatorKind::SumSwitch { scrutinee, .. }
+        | TerminatorKind::SumBorrowSwitch { scrutinee, .. }
         | TerminatorKind::DynSwitch { scrutinee, .. }
         | TerminatorKind::Return(scrutinee)
         | TerminatorKind::CheckedIntNegate {
@@ -587,7 +588,9 @@ fn edge_live_values(
             (then_target.block, then_target.arguments.as_ref()),
             (else_target.block, else_target.arguments.as_ref()),
         ],
-        TerminatorKind::SumSwitch { cases, .. } | TerminatorKind::DynSwitch { cases, .. } => cases
+        TerminatorKind::SumSwitch { cases, .. }
+        | TerminatorKind::SumBorrowSwitch { cases, .. }
+        | TerminatorKind::DynSwitch { cases, .. } => cases
             .iter()
             .map(|case| (case.block, case.arguments.as_ref()))
             .collect(),

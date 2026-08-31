@@ -70,7 +70,9 @@ Validation covers:
   constrained-type predicate or record-invariant interior; non-move mutation
   may cross only the current synchronous `mut self` parameter's own top-level
   record invariant, never a constrained wrapper or nested invariant;
-- contract schemas and the types visible to each contract arm;
+- contract schemas and the types visible to each contract arm, including the
+  prohibition on reading current or `old` Task-bearing inputs from an exit
+  contract after the body may transfer their owner;
 - finite by-value layouts for record, enum, refined, tuple, nominal-argument,
   `Option`, `Result`, and `TaskOutcome` graphs;
 - concept definitions, requirement schemas, witnesses, associated bindings,
@@ -108,6 +110,13 @@ package-qualified HIR before MIR lowering observes the analysis.
 
 The validator accumulates independently discoverable failures with stable
 structural paths. It does not guess intent or repair malformed values.
+
+Receiver invariants are entry checks for every inherent method. Only a
+`mut self` method replays its invariant on normal exit; a read-only receiver is
+already immutable and may have been transferred by its body. Contract-aware
+async liveness therefore retains a receiver for an exit invariant only at a
+mutable receiver boundary, while parameters referenced by `ensures` remain
+live independently.
 
 A projected `Copy` observes only its leaf. A projected `Move` transfers that
 leaf and marks the complete root local moved. Consuming the root is intentional:
@@ -250,7 +259,7 @@ root merely because storage still exists.
 The interpreted MIR envelope currently uses:
 
 - format `loom.interpreted-mir`;
-- artifact version `42`;
+- artifact version `43`;
 - Loom language version `0.4`.
 
 Generic compiler-cache envelopes carry an explicit null `entry`. Executable

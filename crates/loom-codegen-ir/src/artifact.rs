@@ -663,6 +663,7 @@ impl ArtifactValidator<'_> {
                         );
                     }
                     TerminatorKind::SumSwitch { cases, .. }
+                    | TerminatorKind::SumBorrowSwitch { cases, .. }
                     | TerminatorKind::DynSwitch { cases, .. } => {
                         for case in cases {
                             let implicit = function

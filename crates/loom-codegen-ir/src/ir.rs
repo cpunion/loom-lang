@@ -827,10 +827,25 @@ pub enum InstructionKind {
         aggregate: ValueId,
         field: u32,
     },
+    /// Borrows one complete Task-bearing carrier without transferring its
+    /// affine ownership. The result has the exact operand type and may only
+    /// feed structural borrow operations or borrowed CFG forwarding.
+    TaskCarrierBorrow {
+        value: ValueId,
+    },
+    /// Borrows one field from an immutable Task-bearing product without
+    /// transferring the aggregate's affine ownership. A Task-bearing result
+    /// is a non-consuming alias which may only feed other structural borrow
+    /// operations; independent validation rejects every consuming use.
+    ProductBorrow {
+        aggregate: ValueId,
+        field: u32,
+    },
     /// Atomically consumes one ordinary structural tuple and produces all of
-    /// its fields in source order. Unlike [`Self::ProductExtract`], this is a
-    /// consuming decomposition boundary for affine Task-bearing aggregates;
-    /// the aggregate cannot be used again after the split.
+    /// its fields in source order. Unlike [`Self::ProductExtract`] and
+    /// [`Self::ProductBorrow`], this is a consuming decomposition boundary for
+    /// affine Task-bearing aggregates; the aggregate cannot be used again
+    /// after the split.
     ProductSplit {
         aggregate: ValueId,
     },
@@ -860,6 +875,12 @@ pub enum InstructionKind {
     /// base. This is representation-preserving and cannot target an arbitrary
     /// type with the same physical layout.
     Unrefine {
+        value: ValueId,
+    },
+    /// Borrows the exact base representation of a transparent Task-bearing
+    /// refined value. The result retains no ownership right and cannot cross
+    /// a consuming LCIR boundary.
+    UnrefineBorrow {
         value: ValueId,
     },
     /// Constructs one closed sum variant. The result type selects the sum
@@ -1085,17 +1106,19 @@ impl InstructionKind {
             Self::ProductConstruct { fields } | Self::InvariantRecordProven { fields } => {
                 fields.to_vec()
             }
-            Self::ProductExtract { aggregate, .. } | Self::ProductSplit { aggregate } => {
-                vec![*aggregate]
-            }
+            Self::ProductExtract { aggregate, .. }
+            | Self::ProductBorrow { aggregate, .. }
+            | Self::ProductSplit { aggregate } => vec![*aggregate],
             Self::ProductInsert {
                 aggregate, value, ..
             }
             | Self::InvariantReceiverInsert {
                 aggregate, value, ..
             } => vec![*aggregate, *value],
-            Self::RefineProven { value }
+            Self::TaskCarrierBorrow { value }
+            | Self::RefineProven { value }
             | Self::Unrefine { value }
+            | Self::UnrefineBorrow { value }
             | Self::BoolNot { value }
             | Self::FloatNegate { value }
             | Self::FloatFormat { value }
@@ -1160,11 +1183,13 @@ impl BlockTarget {
 
 /// One exhaustive closed-sum case edge.
 ///
-/// [`TerminatorKind::SumSwitch`] injects the selected variant payload into the
-/// destination's leading block parameters. [`TerminatorKind::SumZipSwitch`]
-/// injects the left payload followed by the right payload. Explicit
-/// `arguments` are forwarded after those implicit values, mirroring result
-/// edges without materializing payload values in the source block.
+/// [`TerminatorKind::SumSwitch`] injects the selected owned variant payload
+/// into the destination's leading block parameters.
+/// [`TerminatorKind::SumBorrowSwitch`] injects borrowed Task-bearing payload
+/// aliases instead. [`TerminatorKind::SumZipSwitch`] injects the left payload
+/// followed by the right payload. Explicit `arguments` are forwarded after
+/// those implicit values, mirroring result edges without materializing
+/// payload values in the source block.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SumCase {
     pub variant: u32,
@@ -1565,6 +1590,13 @@ pub enum TerminatorKind {
         scrutinee: ValueId,
         cases: Box<[SumCase]>,
     },
+    /// Exhaustively observes a closed Task-bearing sum without consuming it.
+    /// Selected Task-bearing payload parameters are borrowed aliases, while
+    /// explicit edge arguments retain their ordinary move semantics.
+    SumBorrowSwitch {
+        scrutinee: ValueId,
+        cases: Box<[SumCase]>,
+    },
     /// Compares two values with the same closed-sum type and dispatches once.
     /// A matching tag selects the ordered case and injects the left payload
     /// followed by the right payload. Different tags take `mismatch` without
@@ -1698,7 +1730,9 @@ impl TerminatorKind {
                 operands.extend_from_slice(&else_target.arguments);
                 operands
             }
-            Self::SumSwitch { scrutinee, cases } | Self::DynSwitch { scrutinee, cases } => {
+            Self::SumSwitch { scrutinee, cases }
+            | Self::SumBorrowSwitch { scrutinee, cases }
+            | Self::DynSwitch { scrutinee, cases } => {
                 let mut operands = Vec::with_capacity(
                     1 + cases.iter().map(|case| case.arguments.len()).sum::<usize>(),
                 );
@@ -1860,7 +1894,9 @@ impl TerminatorKind {
                 else_target,
                 ..
             } => vec![preserve(then_target.block), preserve(else_target.block)],
-            Self::SumSwitch { cases, .. } | Self::DynSwitch { cases, .. } => {
+            Self::SumSwitch { cases, .. }
+            | Self::SumBorrowSwitch { cases, .. }
+            | Self::DynSwitch { cases, .. } => {
                 cases.iter().map(|case| preserve(case.block)).collect()
             }
             Self::SumZipSwitch {

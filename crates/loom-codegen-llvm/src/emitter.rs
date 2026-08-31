@@ -32,9 +32,9 @@ use loom_core::runtime_fault::{
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, ConceptId, Constant, ConstructionMode,
     Contract, ContractArm, ContractExpr, ContractExprKind, ContractValue, Expr, ExprKind, Function,
-    FunctionId, LocalId, MatchArm, Pattern, Place, Program, ReceiverInvariantCheck, RequirementId,
-    ScopedDisposal, Statement, StatementKind, TaskJoinMode, Type, TypeDefKind, TypeId, UnaryOp,
-    WitnessId, WitnessRef, disclosure_type_summary,
+    FunctionId, LocalId, MatchArm, Pattern, Place, Program, Receiver, ReceiverInvariantCheck,
+    RequirementId, ScopedDisposal, Statement, StatementKind, TaskJoinMode, Type, TypeDefKind,
+    TypeId, UnaryOp, WitnessId, WitnessRef, disclosure_type_summary,
 };
 use loom_runtime_abi::{
     GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, PARSE_FLOAT_SYMBOL,
@@ -5827,7 +5827,9 @@ impl<'backend, 'ctx, 'program> FunctionCompiler<'backend, 'ctx, 'program> {
     }
 
     fn emit_exit_contracts(&self) -> Result<(), CodegenError> {
-        if let Some(contract) = &self.source.call_plan.receiver_invariant {
+        if self.source.receiver == Some(Receiver::Mutable)
+            && let Some(contract) = &self.source.call_plan.receiver_invariant
+        {
             self.emit_contract_check(contract, "InvariantFault", Some(self.output))?;
         }
         for contract in &self.source.call_plan.ensures {

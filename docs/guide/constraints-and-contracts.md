@@ -101,10 +101,12 @@ a proven literal has type `Range`, a statically false literal is an
 `InvariantUnsatisfied` error, and an unknown invariant produces
 `Result[Range, ConstraintError]`.
 
-An invariant is checked at method entry and normal method exit. A `mut self`
-method may temporarily invalidate it while executing, but cannot let the
-partially updated `self` escape or call another method through that invalid
-state. Normal exits, including a returned `Err`, re-establish the invariant.
+An invariant is checked at every method entry. A `mut self` method may
+temporarily invalidate it while executing, but cannot let the partially
+updated `self` escape or call another method through that invalid state. Its
+normal exits, including a returned `Err`, re-establish and recheck the
+invariant. A read-only method cannot mutate the established receiver and may
+forward or consume it, so it does not replay the invariant at exit.
 
 Call mutable methods on the complete invariant-bearing record. Loom rejects a
 mutable receiver call or assignment that reaches through such a record into a
@@ -162,11 +164,11 @@ in checked MIR so both interpreter and LLVM executions observe the same fault.
 
 For an inherent method, the receiver invariant is checked at callee entry. On
 a normal tail or explicit `return`, Loom first runs every active lexical
-cleanup in LIFO order, then checks the current receiver invariant, then the
-`ensures` clauses in source order. A cleanup fault therefore remains primary
-and exit contracts cannot observe a value that was never returned. The callee
-body may assume its preconditions have already passed; Loom does not repeat
-them inside the body.
+cleanup in LIFO order, then checks a mutable receiver's current invariant, then
+the `ensures` clauses in source order. Read-only methods omit the redundant exit
+invariant. A cleanup fault therefore remains primary and exit contracts cannot
+observe a value that was never returned. The callee body may assume its
+preconditions have already passed; Loom does not repeat them inside the body.
 
 ## Entry snapshots with `old`
 
@@ -190,7 +192,11 @@ ensures match result {
 
 Later mutation cannot alter the snapshot. `old` is not an address, reference,
 or lazy callback. Erased interface values and other unsupported shapes cannot
-be snapshotted.
+be snapshotted. An `ensures` clause also cannot inspect a current or `old`
+parameter whose type contains a `Task`, because the body may already have
+transferred that affine owner. Put such an input check in `requires`, or inspect
+a Task-bearing `result`; both use compiler-private non-consuming structural
+inspection without adding borrow syntax.
 
 ## The contract expression subset
 
