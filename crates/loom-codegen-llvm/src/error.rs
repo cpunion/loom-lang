@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fmt;
 
-/// A failure at the checked-MIR to native-artifact boundary.
+/// A failure at the checked typed-program to native-artifact boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CodegenError {
     code: &'static str,
@@ -38,6 +38,12 @@ impl Error for CodegenError {}
 impl From<loom_codegen_ir::GraphError> for CodegenError {
     fn from(error: loom_codegen_ir::GraphError) -> Self {
         Self::new(error.code().as_str(), error.message())
+    }
+}
+
+impl From<crate::NativePreparationError> for CodegenError {
+    fn from(error: crate::NativePreparationError) -> Self {
+        Self::new(error.code(), error.message())
     }
 }
 

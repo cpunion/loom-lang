@@ -14,11 +14,9 @@ validators, and a textual dump for tests and review.
 `loom-codegen-llvm` consumes the resulting `CheckedArtifact` directly and emits
 its typed functions and run/test harness without the universal value ABI.
 Synchronous artifacts do not construct an executor; a typed async root owns one
-executor for its Task lifecycle. Its production prepared router attempts that whole-artifact
-lowering once. `Complete` selects only typed LCIR; only `Unsupported` stores a
-source reachability graph and selects the complete checked-MIR emitter. Both routes
-have independent object identities. The remaining LCIR coverage and deletion
-gates are in the
+executor for its Task lifecycle. Native preparation attempts that whole-artifact
+lowering once. `Complete` proceeds to typed LLVM emission; `Unsupported` is a
+structured native compilation error. The remaining LCIR coverage is tracked in the
 [typed code generation IR RFC](../rfcs/typed-codegen-ir.md).
 
 LCIR is compiler-private and target-specific. It is not a source IR, a public
@@ -98,8 +96,11 @@ or sum payloads. Fully concrete generic records use the same plan.
 The frontend rejects direct and mutual by-value nominal cycles because they
 have no finite value layout; LCIR never receives them and no backend inserts a
 hidden box. Runtime-checked constructions, operations that rebuild
-Task-bearing products, closed dynamic values in unsupported surrounding shapes,
-and uninhabited fields are not selected. An ordinary direct structural tuple
+Task-bearing fields or partially move from Task-bearing products, closed
+dynamic values in unsupported surrounding shapes, and uninhabited fields are
+not selected. Atomic `TaskCarrierProject` and `TaskCarrierUpdate` operations do
+admit reads and functional replacement of an exact Task-free leaf while the
+complete affine carrier remains one owner. An ordinary direct structural tuple
 that contains a Task handle may instead be destructured by one atomic `ProductSplit`: the
 instruction consumes the complete tuple and produces every field in source
 order. It is not a general projected move and does not admit nominal,
@@ -146,14 +147,14 @@ projections and never add a runtime box. Allocation-free `TextLength`,
 content, never object addresses. `TextGet` returns the canonical closed `Option[Text]` sum;
 negative or out-of-range indices select `None` without allocating, while a
 found Unicode scalar is allocated through the typed helper. Other unsupported
-dynamic Text producers still select atomic whole-artifact fallback.
+dynamic Text producers reject native preparation.
 
 Text planning preflights every source literal before a match plan or LCIR
 instruction clones its storage. One UTF-8 literal may contain at most 1 MiB.
 The disposable artifact builder also charges every actual `TextLiteral`
 emission, including duplicated lexical-cleanup paths, against a 16 MiB total
 before cloning its bytes. Crossing either bound atomically discards the whole
-builder and selects the complete checked-MIR route. Independent LCIR validation
+builder and reports unsupported native coverage. Independent LCIR validation
 repeats both limits before LLVM constructs any constant object.
 
 Canonical `Bytes` has one tagless managed-pointer representation. The exact
@@ -292,7 +293,7 @@ Structural size counts every aggregate occurrence, sum variant, and payload or
 product field occurrence. A wide tuple, record, or enum and repeated nested
 aggregates therefore consume the same finite budget as a deep chain. Crossing
 either limit is stable unsupported
-coverage and selects the atomic checked-MIR route; it is not a lowering defect and
+coverage and rejects native preparation; it is not a lowering defect and
 cannot consume the compiler's call stack. Independent LCIR validation enforces
 the same limits for explicit builder clients.
 
@@ -303,8 +304,8 @@ unit per field, writes charge the forward extraction plus reverse insertion,
 and inout calls reserve reconstruction on both normal and fault edges. An
 invalid field path, a path through a protected or managed parent, excessive
 depth, or exhausted work budget produces `Unsupported(ProjectedPlace)` during
-classification. The whole artifact then selects the checked-MIR route before any
-LCIR value or block is allocated.
+classification. Native preparation then fails before any LCIR value or block is
+published.
 
 `ValueType` entries are representation alternatives, not a global uniqueness
 claim for a semantic type. A separate canonical registration table selects the
@@ -339,12 +340,12 @@ duplicate tests, the zero-parameter root signature and outcome shape, and
 exact direct/invoke callable closure. It then returns a `CheckedArtifact`
 which owns both the checked program and privately checked roots. The independent
 LLVM object API consumes that wrapper without accepting unchecked roots or
-falling back to checked MIR.
+accepting MIR directly.
 
 `artifact_identity` and `write_artifact_identity` expose a deterministic,
 compiler-private identity for the complete checked artifact. The identity
-carries the `typed-lcir-whole-artifact` route tag, artifact kind, ordered run
-or test roots, and the canonical LCIR dump with origins enabled. Its payload
+carries its schema, artifact kind, ordered run or test roots, and the canonical
+LCIR dump with origins enabled. Its payload
 therefore includes the target, representation and instance plans, checked
 functions and control flow, operations, and complete function, instruction,
 and terminator origins.
@@ -373,10 +374,9 @@ operation-specific Task fault. No mode uses a universal value envelope.
 
 File and Socket I/O is a typed-LCIR-only native boundary. Classification admits
 both public operation families, but production preparation may use them only
-when the complete reachable artifact lowers to LCIR. If another reachable site
-is unsupported, `Automatic` fails closed instead of handing the I/O graph to
-the checked-MIR emitter. Direct checked-MIR identity and emission reject the
-same reachable builtins; unreachable I/O does not change either route.
+when the complete reachable artifact lowers to LCIR. Any unsupported reachable
+site rejects the complete native artifact; unreachable I/O does not affect the
+selected closure.
 
 `lower_typed_artifact` accepts a checked MIR program, a source run/test
 request, and a target layout. It first selects the exported run root or ordered
@@ -389,7 +389,7 @@ A reachable dynamic use without fully closed producer evidence instead returns
 `LoweringError::InvalidProgram` with the stable code
 `MissingDynamicConceptWitness`. Invalid programs, invalid roots, resource
 limits, source-graph defects, and invalid generated LCIR are structured
-`LoweringError` values and never select fallback.
+`LoweringError` values rather than coverage results.
 
 The current lowering coverage includes synchronous scalar, direct `Text`,
 one-field direct `Path`, structural tuple, closed-record, concrete closed-enum,
@@ -439,8 +439,8 @@ refined construction, exact unrefinement, and compile-time-proven record
 invariants are representation-preserving typed operations. Unknown task-free
 nongeneric refined predicates and fully concrete task-free nongeneric or generic
 record invariants remain normal typed `Result[..., ConstraintError]`
-constructions. Open, affine, or unsupported-shape runtime construction selects
-whole-artifact fallback. A
+constructions. Open or unsupported-shape runtime construction rejects native
+preparation. A
 decoded `.loomi` MIR
 proof replay (`ConstructionMode::Recheck`) for a task-free refined type or
 concrete task-free invariant-record instantiation re-evaluates the embedded predicate in typed
@@ -448,8 +448,8 @@ LCIR, raises the canonical `ArtifactProofRejected` runtime fault on rejection,
 and creates the established nominal value only in the accepted block. Generic
 invariant records first apply the current function-instance substitution and then their
 independent definition-parameter substitution to fields and lexical contract
-bindings. Unsupported concrete representations or contract shapes remain an
-explicit `SerializedProofRecheck` fallback. A receiver-restoration `Proven`
+bindings. Unsupported concrete representations or contract shapes produce an
+explicit `SerializedProofRecheck` support-report entry. A receiver-restoration `Proven`
 marker is erased during lowering. The artifact `Recheck` form reads only the
 current receiver SSA value, derives its exact instantiated invariant from the
 nominal declaration, and lowers to the same `ArtifactProofRejected` guard; it
@@ -468,7 +468,7 @@ match and is removed from the decision plan. Pattern, decision-node, and
 abstract-value budgets are each 512, planning work is limited to 32,768 units,
 and the complete match may require at most 1,024 CFG blocks including its join.
 All limits are checked before the lowerer allocates any match LCIR; exceeding a
-limit selects whole-artifact fallback. A synchronous mutable method receiver is
+limit reports unsupported native coverage. A synchronous mutable method receiver is
 a functional inout parameter: the callee returns its current exact receiver
 value on both normal and fault exits. Direct `Bool`, `Int`, and `Float`
 receivers retain their scalar representation. A call may borrow a local or an
@@ -484,7 +484,7 @@ cleanup suffix. Cleanup therefore cannot observe a partially updated product.
 Checked MIR fail-closes the complete borrowed root when its type contains a
 nested invariant or is an open parameter or associated projection. A dynamic
 view is opaque, and exact witness dispatch checks its hidden receiver invariant
-before method entry. Unsupported receiver shapes select atomic fallback. The
+before method entry. Unsupported receiver shapes reject native preparation. The
 same synchronous call ABI is valid inside an async body. Its normal edge installs
 the result and writebacks before ordinary continuation. Its fault bridge
 installs every writeback before requesting the coroutine's fault target;
@@ -544,7 +544,7 @@ suppresses later cleanup faults, and still executes every older action. Branch
 bodies are independent lexical scopes; they cannot leak registrations into a
 join. At most 1,024 actions may be simultaneously active in a function and at
 most 65,536 action expansions may be materialized. Exceeding either bound is a
-stable `ProgramTooLarge` error rather than fallback.
+stable `ProgramTooLarge` error.
 
 At `AwaitTasks`, the lowerer snapshots one identical exact live-value row for
 the normal, child-fault, and cancellation edges. It expands the currently
@@ -589,8 +589,8 @@ zero-initialized `Option[Text]` carrier and traps on any other runtime status.
 Products and closed sums remain unboxed exact SSA aggregates. Concrete closed
 Lists and TextMaps use direct managed pointers and exact repeated descriptors.
 Established transparent/refined carriers reuse the base representation and
-managed-root projections. Other unsupported dynamic Text producers still
-select whole-artifact fallback.
+managed-root projections. Other unsupported dynamic Text producers reject
+native preparation.
 
 `plan_managed_roots` computes exact managed SSA liveness with a predecessor
 worklist. It records the live-after set at each collecting instruction or call,
@@ -605,13 +605,12 @@ only the active payload, including product fields nested inside it. Slot order
 is deterministic by value and lexicographic projection, bitmap row zero is
 empty, and identical rows are deduplicated. A function with no managed leaf
 live across a safepoint has no typed shadow frame. The runtime ABI limits are
-checked during LLVM emission; an excess is `ProgramTooLarge` and does not change
-route selection.
+checked during LLVM emission; an excess is `ProgramTooLarge`.
 
 `ListConstruct`, immutable `ListAppend`, `ListLength`, and `ListGet` are
 first-class typed instructions. Allocation sites root even otherwise-dead List
 and managed-element operands before calling `typed-repeated-v1`, then reload
-them before copying. The checked-MIR-only `ListAppendUnique` consumes a
+them before copying. The checked-MIR-proven `ListAppendUnique` consumes a
 greatest-fixed-point `Unique` ownership fact across CFG edges and loop phis;
 entry values, copies, calls, aggregate embedding, projections, and ambiguous
 joins are `Shared`. Raw LCIR builders cannot forge this certificate.
@@ -712,8 +711,8 @@ the exact result tuple, `settled` the corresponding outcome tuple, `any` one
 homogeneous winner, and `race` one homogeneous winner outcome. LLVM generates
 one exact typed composite frame for that static mode and result shape. Runtime
 adoption validates the complete ordered child set before transferring it from
-the current parent and publishing the composite; the checked-MIR universal
-join-result path is never called.
+the current parent and publishing the composite. No universal join-result path
+exists.
 
 A nonempty, immediately awaited, fixed-arity `Task.any` also lowers directly to
 `AwaitTasks` when every child has the same exact output type. The plan and frame
@@ -831,7 +830,7 @@ instead of growing the compiler stack. Raw readiness and cancellation-source
 operations have no current source or MIR form and are not counted as language
 coverage. A reachable dynamic-concept frame use
 with no exact producer in the closed catalog instead reports
-`MissingDynamicConceptWitness` before frame planning and cannot select fallback.
+`MissingDynamicConceptWitness` before frame planning.
 Fixed argument joins and runtime-width homogeneous List joins are admitted both
 as first-class Tasks and when consumed later by `.await`; `any` and `race`
 additionally require one homogeneous output type.
@@ -852,7 +851,7 @@ calls and invokes forward the caller's current executor in that fixed ABI
 order. The helper remains non-suspending: `.await`, terminal outcome taking,
 and cancellation dispatch still require a checked coroutine. A synchronous
 run or test root may not require the hidden capability; this is validated before
-an unsupported LCIR site can select fallback and proves every admitted helper
+LCIR construction and proves every admitted helper
 chain originates at an async-root executor.
 The callback forwards child fault/cancel terminal states without turning them
 into source `Result` values. Established cancellation remains primary if a
@@ -902,16 +901,20 @@ may cross an established constrained wrapper or invariant product. A move never
 may. Mutation may cross only the current function's own top-level invariant
 `mut self` record receiver, whose complete reconstructed value is checked at
 method exit; constrained wrappers and nested invariant products remain closed.
-These are checked-MIR rules rather than LCIR fallback
-cases. A Task-bearing root cannot be moved, written, or passed inout through a
-projected place. Structural tuple binding handles that case separately with one `ProductSplit`, which
-consumes the whole ordinary direct tuple and publishes all fields together;
-there is no partial Task projection. Assignment extracts the required parents
-and rebuilds them in reverse with `ProductInsert`. The reconstruction always
-begins from the latest root in the SSA environment, not the snapshot used to
-evaluate an earlier receiver. A later argument may therefore update a disjoint
-sibling without that update being overwritten when the receiver writeback
-returns.
+These are checked-MIR rules rather than alternative native lowering cases. A
+partial move from a Task-bearing root remains forbidden. Reading or passing a
+Task-free leaf inout through a Task-bearing product root is atomic instead:
+`TaskCarrierProject` borrows the exact leaf without materializing a
+Task-bearing intermediate owner, and `TaskCarrierUpdate` consumes the complete
+root and publishes a copy with that leaf replaced. The untouched affine
+siblings therefore move exactly once. Structural tuple binding handles a full
+destructure with one `ProductSplit`, which consumes the whole ordinary direct
+tuple and publishes all fields together. Task-free assignment extracts the
+required parents and rebuilds them in reverse with `ProductInsert`. Every
+reconstruction begins from the latest root in the SSA environment, not the
+snapshot used to evaluate an earlier receiver. A later argument may therefore
+update a disjoint sibling without that update being overwritten when the
+receiver writeback returns.
 
 Projected inout evaluation extracts the receiver at its source argument
 position. An infallible call returns the leaf writeback directly. A fallible
@@ -961,8 +964,8 @@ run root has no value, type, witness, or receiver inputs and returns `Unit`. A
 source test root has no inputs and returns `Unit` or `Result[Unit, E]`.
 Eligible closed `Result` instantiations carry an explicit checked outcome plan
 into the artifact and native harness. `Err` is a normal failed-test outcome;
-it is not a `RuntimeFault`. Unsupported error payloads still select atomic
-fallback.
+it is not a `RuntimeFault`. Unsupported error payloads reject native
+preparation.
 
 A function contains:
 
@@ -993,7 +996,7 @@ different test roots reuse the same key. Exact self and mutual recursion reuse
 the already planned instance; a recursive edge that reaches the same source
 function with a different key is nonregular and returns the stable invalid-
 program code `NonRegularGenericRecursion`. Generic declarations outside the
-selected closure do not affect route selection.
+selected closure do not affect native preparation.
 
 Planning is iterative and deterministic. It admits at most 4,096 concrete
 instances and 16,384 reachable direct-call edges, while each key retains the
@@ -1007,11 +1010,11 @@ normalizes from that same proof to the witness's concrete associated binding.
 An exhausted instance, call-edge, or key-structure budget returns
 `LcirLoweringProgramTooLarge`; a parameter, proof, or associated projection that
 cannot be closed after checked-MIR validation is an inconsistent-plan compiler
-defect. None of these planning failures can select the checked-MIR fallback.
+defect. None of these planning failures is a coverage result.
 The same structure budget covers concrete generic signature and expression
 substitution: growth beyond the bound is `ProgramTooLarge`, while a source type
-already beyond direct LCIR's representation bound remains ordinary coverage
-fallback.
+already beyond LCIR's representation bound is reported as unsupported native
+coverage.
 Completed keys are
 ordered by source function and canonical key identity, so discovery order,
 duplicate roots, and repeated compilation do not perturb the artifact.
@@ -1026,11 +1029,8 @@ member of a finite closed candidate catalog. Generic and conditional
 conformances participate when their concrete types and prerequisite proof trees
 are closed. A reachable concrete dynamic use with no exact producer in that
 catalog returns `LoweringError::InvalidProgram` with code
-`MissingDynamicConceptWitness`; production Automatic preparation does not turn
-that error into complete checked-MIR fallback. No universal value, runtime
-registry, or witness ABI can supply the missing evidence. The internal
-`CheckedMirOnly` backend-validation escape bypasses this LCIR artifact
-classification entirely.
+`MissingDynamicConceptWitness`. No universal value, runtime registry, or
+witness ABI can supply the missing evidence.
 
 One public `INSTANCE_KEY_STRUCTURE_BUDGET` limits the combined nested type and
 witness structure of a key to 256 nodes. Builders report
@@ -1073,8 +1073,9 @@ The current instruction set is deliberately small:
   shapes;
 - whole Task-bearing carrier borrowing, ordinary and invariant-proven product
   construction, task-free borrowed field extraction, Task-bearing
-  `ProductBorrow`, atomic consuming splits of ordinary direct structural tuples,
-  immutable field insertion, and checked-MIR-only transient protected-receiver
+  `ProductBorrow`, atomic `TaskCarrierProject`/`TaskCarrierUpdate` leaf access,
+  atomic consuming splits of ordinary direct structural tuples, immutable field
+  insertion, and checked-MIR-proven transient protected-receiver
   insertion before a mutable receiver's exit invariant check;
 - closed-sum construction and exhaustive owned or borrowed switching, including
   managed Text leaves guarded by active variants;
@@ -1145,7 +1146,7 @@ it with `Recheck`. For supported task-free concrete shapes the lowerer reconstru
 typed predicate CFG and emits an explicit runtime-fault guard before the
 crate-private established-value instruction. The raw builder still cannot mint
 that instruction, and a rejected path has no nominal SSA value. Unsupported
-generic or value shapes select the complete checked-MIR route.
+generic or value shapes reject native preparation.
 
 The validator reports independently discoverable `ValidationErrors`; it does
 not repair a malformed program. Current checks include:
@@ -1223,8 +1224,8 @@ physical edge blocks so each phi input has a unique LLVM predecessor. Ordinary
 distinct-target branches remain direct.
 
 These checks apply both to explicit clients and to the whole-artifact typed
-lowerer. The production automatic route consumes only the resulting checked
-artifact when the complete reachable graph is supported. Supported source
+lowerer. Production native preparation consumes only the resulting checked
+artifact. Supported source
 contracts use the same validated metadata and control flow as explicit LCIR
 clients. Assertions keep their exact source span. Synchronous preconditions keep
 their contract span plus a static closed-world call-expression blame span;
@@ -1232,8 +1233,8 @@ async preconditions keep the same contract span plus the validated creation-site
 span carried in the coroutine frame. Root async Tasks receive their declaration
 span from the harness. Their fault edges traverse the same lexical cleanup
 suffix as any other fault.
-Contracts over an unsupported representation or operation still select one
-atomic checked-MIR artifact rather than mixing the two native routes.
+Contracts over an unsupported representation or operation reject the complete
+native artifact.
 
 `ContractFaultMetadata` distinguishes assertion, precondition, postcondition,
 and invariant faults. Named contracts carry their source code and the derived
@@ -1311,8 +1312,8 @@ linear worklist convergence on a large loop, deterministic nested-product leaf
 projections, phis, calls, dead edges, forced relocation and alias rebuilds,
 cleanup-crossing returns under forced relocation, pointer-free product frame
 omission, transparent/refined managed carriers in synchronous and coroutine
-frames, host execution, Linux/MSVC object emission, and atomic fallback for
-unsupported dynamic Text producers.
+frames, host execution, Linux/MSVC object emission, and fail-closed coverage
+errors for unsupported dynamic Text producers.
 Path regressions cover the canonical one-field product, exact closed error
 selectors, non-collecting construction/extraction, collecting join effects,
 stable dumps, malformed shapes, live aliases through moving-GC pressure, and
@@ -1322,7 +1323,7 @@ typed Task construction, four ordered root suspension states, a nested
 two-state coroutine with a live Task handle and deterministic immediate-ready
 second child, scalar/Text/product results, exact managed frame bitmaps, parent
 Text relocation while a child allocates beyond the initial 64 KiB collection
-threshold, run/test root lifecycle, interpreter/checked-MIR/typed differential
+threshold, run/test root lifecycle, interpreter/typed-native differential
 execution, and Linux/MSVC objects. Fallible coroutine regressions additionally
 cover managed `Result[Text, E]` completion, exact completed and suspension
 carrier offsets/bitmaps, active-tag shadow-root rebuilds, inactive zero lanes,
@@ -1343,12 +1344,11 @@ suspension-live.
 
 Typed-I/O regressions cover all seven operations and both error modes, exact
 direct Task/result layouts, runtime request/outcome validation, resource-ledger
-transfer and cleanup, checked-MIR rejection, unreachable-I/O reachability, and
-the rule that an otherwise unsupported reachable I/O artifact may not select
-`Automatic` checked-MIR fallback. A dedicated source fixture closes real
+transfer and cleanup, unreachable-I/O reachability, and fail-closed native
+coverage. A dedicated source fixture closes real
 `check/build/test/run` commands and inspects its object for only the typed
 I/O/task/resource symbols. The integrated standard-library test prepares its
-native object through the production router, requires LCIR, and exercises real
+native object through the typed backend and exercises real
 filesystem and loopback-socket traffic on the host test platform.
 
 Malformed-LCIR tests prove that ordinary products cannot forge an invariant and
@@ -1358,21 +1358,18 @@ bounded persistent-map allocation, and sparse-map reference differentials.
 LLVM-side tests additionally cover typed ABIs, block insertion order independent
 of dominance order, same-target edge normalization, exact scalar predicates,
 checked arithmetic, proved successors, first-primary fault suppression, fatal
-runtime setup failures, ordered tests, atomic automatic/checked-MIR route selection,
+runtime setup failures, ordered tests, whole-artifact typed preparation,
 direct-product construction and mutation, closed-sum construction and ordered
 exhaustive matches, tagless/tag-only/tagged ABIs, unusual carrier alignment,
 `Result` test outcomes, normal and fault writebacks,
-source/interpreter/checked-MIR differentials, an explicit checked-MIR float-pattern
-differential across the interpreter and both native routes, shared typed arm
+source/interpreter/typed-native differentials, an explicit float-pattern
+differential across the interpreter and native backend, shared typed arm
 blocks for wide enums, managed Text-literal matches after moving collection,
 high-use validation against wide schemas, live
-optimized sum-carrier SSA, route-separated identity, object-cache
+optimized sum-carrier SSA, native-object identity, object-cache
 behavior, linking, execution, and verifier/optimization gates on Linux and
-macOS. The parameter-driven cross-language benchmark remains on the atomic
-checked-MIR route because its root also reaches dynamic text, List, parsing, and
-matching;
-the direct aggregate tests are the current closed-workload evidence. The
+macOS. The parameter-driven cross-language benchmark lowers its runtime-selected
+Text, List, parsing, matching, and workload graph through typed LCIR. The
 cross-platform release matrix builds `loom-codegen-ir`; cross-target LLVM tests
 also emit direct closed-sum MSVC
-COFF objects from the same live carrier fixture without selecting the checked-MIR
-route.
+COFF objects from the same live carrier fixture.

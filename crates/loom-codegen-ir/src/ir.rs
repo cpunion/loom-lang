@@ -626,7 +626,11 @@ pub enum FloatPredicate {
 /// Maximum operands copied into one typed List-construction instruction.
 /// Runtime byte limits are validated independently from this hostile-artifact
 /// structural bound.
-pub const LIST_LITERAL_MAX_ELEMENTS: usize = 4096;
+/// Maximum elements carried by one checked LCIR list-construction instruction.
+///
+/// The emitter allocates the backing once and streams stores iteratively, so
+/// this is an artifact-size guard rather than a stack or runtime-growth limit.
+pub const LIST_LITERAL_MAX_ELEMENTS: usize = 65_536;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InstructionKind {
@@ -841,6 +845,14 @@ pub enum InstructionKind {
         aggregate: ValueId,
         field: u32,
     },
+    /// Reads one exact Task-free leaf through a Task-bearing product without
+    /// transferring ownership of the aggregate or materializing affine
+    /// intermediate fields. `path` is nonempty and follows product fields from
+    /// the aggregate type to the result type.
+    TaskCarrierProject {
+        aggregate: ValueId,
+        path: Box<[u32]>,
+    },
     /// Atomically consumes one ordinary structural tuple and produces all of
     /// its fields in source order. Unlike [`Self::ProductExtract`] and
     /// [`Self::ProductBorrow`], this is a consuming decomposition boundary for
@@ -856,10 +868,19 @@ pub enum InstructionKind {
         field: u32,
         value: ValueId,
     },
+    /// Atomically consumes one Task-bearing product and replaces one exact
+    /// Task-free leaf. Affine siblings move into the result exactly once;
+    /// intermediate Task-bearing products never become independent values.
+    TaskCarrierUpdate {
+        aggregate: ValueId,
+        path: Box<[u32]>,
+        value: ValueId,
+    },
     /// Rebuilds a mutable receiver whose declared record invariant is checked
-    /// at the function boundary. This is a checked-MIR-only operation: the
-    /// intermediate SSA value is not an independently established invariant
-    /// proof and may leave the function only after the exit invariant passes.
+    /// at the function boundary. This compiler-proof operation is not source
+    /// constructible: the intermediate SSA value is not an independently
+    /// established invariant proof and may leave the function only after the
+    /// exit invariant passes.
     InvariantReceiverInsert {
         aggregate: ValueId,
         field: u32,
@@ -1108,11 +1129,15 @@ impl InstructionKind {
             }
             Self::ProductExtract { aggregate, .. }
             | Self::ProductBorrow { aggregate, .. }
+            | Self::TaskCarrierProject { aggregate, .. }
             | Self::ProductSplit { aggregate } => vec![*aggregate],
             Self::ProductInsert {
                 aggregate, value, ..
             }
             | Self::InvariantReceiverInsert {
+                aggregate, value, ..
+            }
+            | Self::TaskCarrierUpdate {
                 aggregate, value, ..
             } => vec![*aggregate, *value],
             Self::TaskCarrierBorrow { value }

@@ -5,31 +5,16 @@ LLVM and the Rust runtime agree within one toolchain build. Source code cannot
 inspect tags, pointers, allocation addresses, witness descriptors, or calling
 conventions, and external code must not depend on them.
 
-Production native compilation selects one representation boundary for an
-entire reachable artifact. A completely supported direct artifact uses typed
-LCIR for primitive values, direct `Text`, one-pointer typed `Bytes`, structural
-tuples, one-field typed `Path`, closed records, compile-time-established refined
-values, and eligible closed enums. Any reachable feature outside current LCIR
-coverage selects the complete checked-MIR layout below; the two callable ABIs are
-never mixed in one object. In particular, supported nongeneric `.loomi` MIR
-`Recheck`
-constructions replay their predicate in typed LCIR before entering the
-transparent representation. Generic or otherwise unsupported proof replay
-uses the checked-MIR checker.
-
-## Universal value envelope
-
-The complete fallback representation is `ValueSlot`: six 64-bit words.
-Current words carry a value tag, nominal metadata, auxiliary data, scalar data,
-a managed-data pointer, and a witness pointer. Different value kinds use
-different subsets and zero unused words.
-
-The tag lets shared runtime helpers clone, compare, trace, format, and destroy
-values whose static type has been erased by the current generic/universal
-lowering. It is not language reflection or a permanent per-value type ID.
-File and Socket operations are no longer admitted at this boundary: reachable
-I/O must lower completely through typed LCIR and cannot construct a universal
-Task result or resource record.
+Production native compilation has one representation boundary for the entire
+reachable artifact: typed LCIR. It covers primitive values, direct `Text`,
+one-pointer typed `Bytes`, structural tuples, one-field typed `Path`, closed
+records and sums, compile-time-established refined values, concrete
+collections, Tasks, and closed dynamic-concept catalogs. A reachable operation
+outside LCIR coverage is a native compilation error; LLVM never receives the
+checked-MIR universal-value representation. Supported nongeneric `.loomi` MIR
+`Recheck` constructions replay their predicate in typed LCIR before publishing
+the transparent representation. Unsupported proof replay is rejected during
+native preparation.
 
 The current runtime ABI identity is versioned as a whole in
 `loom-runtime-abi`. That identity is checked in runtime bundles and object
@@ -158,9 +143,7 @@ positive or unknown status is a compiler/runtime ABI defect. Exact managed-root
 liveness keeps only values live after the call in the typed shadow frame.
 
 The boundary is identified by `typed-path-v1`. It adds no filesystem lookup,
-host path normalization, JSON behavior, or ownership/borrow syntax. The
-whole-artifact MIR route uses its own path helper symbols; a native object never
-mixes the two routes.
+host path normalization, JSON behavior, or ownership/borrow syntax.
 
 ## Typed external resources
 
@@ -202,33 +185,6 @@ The current exact runtime identity is defined in
 typed-I/O v1, typed-resource v1, typed-process ABI v1, coroutine v2, wait v1,
 standard-library ABI v7, Text v3, and GC v9 identify the corresponding current
 components.
-
-## Checked-MIR primitive and aggregate specialization
-
-Within a complete checked-MIR object, `Unit`, `Bool`, `Int`, and `Float` can use
-direct private LLVM values in eligible internal calls. Monomorphic records with
-no invariant and only direct primitive fields can use a separate closed-world
-specialization:
-
-- ordinary by-value parameters and readonly receivers are aggregate values;
-- a mutable receiver uses a call-scoped in/out pointer;
-- results are returned directly when the closed-world fault requirements allow
-  it, or with an internal status when they do not.
-
-Unsupported specialization boundaries materialize the independent universal
-representation. This preserves value-copy semantics and prevents a private
-stack address from escaping. These layouts are checked-MIR emitter decisions and
-are not reused by typed LCIR.
-
-File and Socket I/O is an explicit exception to universal fallback. Direct
-checked-MIR fingerprinting and emission reject every reachable operation and
-close builtin, and production preparation fails closed if the complete I/O
-artifact cannot remain on typed LCIR.
-
-Records, enums, refined values, tuples, and generic lists on the universal path
-use GC-managed nodes. Logical copy is independent: mutating one value cannot
-write through an earlier copy merely because the runtime shares an allocation
-internally.
 
 ## Typed LCIR representations
 
@@ -280,23 +236,21 @@ values in their exact direct representations, including scalar `Bool`, `Int`,
 and `Float`; the source result is zero-filled on a fault. This is a
 compiler-private object ABI, not a native library ABI.
 
-The production automatic route uses this typed ABI for eligible build, run,
-and test artifacts. Tuple construction and `let` destructuring are direct SSA
+The production backend uses this typed ABI for build, run, test, and debug
+artifacts. Tuple construction and `let` destructuring are direct SSA
 construction and extraction; they do not allocate tuple nodes. Invariant-free
 record projections, eligible projected mutable receivers, and reconstruction
 through the current synchronous `mut self` receiver's own top-level invariant
 use exact typed extraction and functional writeback on normal and fault edges.
 Source analysis and checked MIR reject mutation or moves that bypass a
 constrained-type predicate or record-invariant boundary. Shapes outside the
-current typed-LCIR SupportReport—including Task-bearing or otherwise
-unrepresentable projections and unsupported contract/cleanup forms—still
-select the complete checked-MIR route. Non-regular generic recursion is an
+current typed-LCIR support report are rejected before object emission.
+Non-regular generic recursion is an
 invalid program, generic planning-budget exhaustion is `ProgramTooLarge`, and
-inconsistent checked generic metadata is a compiler defect; none can select
-fallback. A reachable dynamic coroutine carrier with no exact producer in the
+inconsistent checked generic metadata is a compiler defect. A reachable
+dynamic coroutine carrier with no exact producer in the
 closed catalog likewise reports `MissingDynamicConceptWitness`. Typed
-LCIR does not change the checked-MIR runtime ABI or make either object ABI
-public.
+LCIR's object ABI remains compiler-private.
 
 See [Code generation IR](codegen-ir.md) for the implemented foundation and the
 [typed code generation IR RFC](../rfcs/typed-codegen-ir.md) for the accepted
@@ -315,12 +269,15 @@ Products, closed sums, and statically proven transparent constrained wrappers
 may carry that exact handle by value. The complete containing value is affine:
 calls, returns, branches, and sum construction transfer it, while `SumSwitch`
 consumes the sum and transfers the selected payload fields. Reading a
-task-free product field is a borrow through `ProductExtract`. Destructuring an
+task-free leaf inside a Task-bearing product uses atomic `TaskCarrierProject`;
+replacing such a leaf uses consuming `TaskCarrierUpdate`, which transfers every
+affine sibling into the rebuilt result without exposing an intermediate owner.
+Destructuring an
 ordinary direct structural tuple that contains a Task uses one `ProductSplit`:
 the instruction consumes the complete tuple and produces every field in order.
 It cannot partially project a Task field or split nominal, transparent,
-invariant-protected, or resource values. Rebuilding a Task-bearing product
-remains unavailable. `List[Task[T]]` stays a distinct top-level affine carrier
+invariant-protected, or resource values. Partial Task projection remains
+unavailable. `List[Task[T]]` stays a distinct top-level affine carrier
 and cannot be nested in these aggregates.
 
 Contracts and assertions observe these carriers without taking ownership.
@@ -397,12 +354,9 @@ the resource ledger unchanged.
 
 ## `Text`
 
-A universal `Text` slot contains its tag and one pointer to a `TextObject`.
-The object has a versioned layout descriptor, allocation size, UTF-8 byte
-length, Unicode scalar length, and trailing UTF-8 bytes. Dynamically created
-text is moved by the GC.
-
-Typed LCIR uses one opaque pointer with that object shape. In a literal-only
+Typed LCIR uses one opaque pointer to a `TextObject` with a versioned layout
+descriptor, allocation size, UTF-8 byte length, Unicode scalar length, and
+trailing UTF-8 bytes. In a literal-only
 artifact, `ImmortalText` points at compiler-emitted immutable globals with
 process lifetime. If concat/get or a Text-bearing product/sum is reachable,
 representation planning selects `ManagedPointer` for every Text in the
@@ -430,9 +384,9 @@ guard sum publication, definitions and phis publish the projections, and later
 aggregate uses are rebuilt from possibly moved leaf reloads. Per-site bitmaps
 are exact and results are excluded at their defining safepoint. Functions with
 no live-across managed leaf emit no frame. Established transparent/refined
-carriers reuse the base layout and root projections. Other unsupported dynamic
-producers and managed shapes remain complete checked-MIR fallback. Concrete
-closed Lists instead use direct managed pointers and typed repeated descriptors.
+carriers reuse the base layout and root projections. Unsupported dynamic
+producers and managed shapes fail native preparation. Concrete closed Lists
+instead use direct managed pointers and typed repeated descriptors.
 
 All payload-bearing tagged sums use a target-data-derived byte-class plan.
 Recursive managed cells classify pointer-width ranges; scalar, aggregate, and
@@ -514,12 +468,9 @@ through its ordinary inout ABI, then allocates and writes back a fresh exact box
 on both normal and fault exits. The old box is never modified, so independently
 copied dynamic values retain logical value semantics across moving collection.
 A reachable view with no exact producer in the closed catalog reports the
-stable invalid-program error `MissingDynamicConceptWitness` before Automatic or
-`LcirOnly` preparation selects an emitter. The universal `Value` route cannot
-recover missing conformance evidence. The internal `CheckedMirOnly`
-backend-validation escape does not run this artifact classification. Open
-producers outside the reachable concrete instance closure do not affect the
-artifact.
+stable invalid-program error `MissingDynamicConceptWitness` before LLVM
+emission. Open producers outside the reachable concrete instance closure do
+not affect the artifact.
 
 Loom does not support runtime conversion from an untyped universal value to
 `dyn C` by searching every conformance. This keeps witness reachability
@@ -528,14 +479,10 @@ closed-world.
 ## Managed layout and GC metadata
 
 Managed allocations have static layout metadata sufficient for precise
-tracing. Synchronous native frames publish pointers to live universal slots
-through a versioned shadow-stack descriptor and per-state bitmaps. A separate
-typed shadow-stack descriptor uses the same state/bitmap shape but its entries
-point to direct pointer cells; the collector never guesses which slot
-representation is present. Checked-MIR coroutine descriptors continue to publish
-live universal Task-frame slots and captured witnesses. Typed coroutine and
-stored-join descriptors instead publish exact target byte offsets and state
-bitmaps for their statically known managed leaves. A typed root cell has a
+tracing. Typed shadow-stack descriptors publish direct pointer cells with
+per-state bitmaps; the collector never guesses a slot representation. Typed
+coroutine and stored-join descriptors publish exact target byte offsets and
+state bitmaps for their statically known managed leaves. A typed root cell has a
 stable address for its complete linked interval, may not reside in either
 moving heap, and contains only null, an exact typed allocation base, or a
 compiler-proven process-lifetime static/immortal pointer.
@@ -547,8 +494,8 @@ cell in that prefix. Pointer-free trailing bytes may extend the allocation.
 The runtime validates and copies this metadata into a side table before an
 allocation can become visible. At a moving collection it follows only those
 cells and rewrites them together with typed root cells. Null and unregistered
-static or immortal pointers remain unchanged. Checked-MIR moving pointers, interior
-pointers, and unregistered finite-lifetime pointers are not legal typed cell
+static or immortal pointers remain unchanged. Interior pointers and
+unregistered finite-lifetime pointers are not legal typed cell
 contents. The typed allocator's output cell likewise has a stable non-heap
 address throughout its call and any collection that call triggers.
 
@@ -604,26 +551,6 @@ Witness descriptors emitted by the compiler are immutable process-lifetime
 constants. Dynamically assembled witness instances live in a non-moving proof
 arena because generated hidden arguments can retain their address across a
 safepoint; the arena is still marked and swept.
-
-## Specialized local storage
-
-The checked-MIR LLVM route retains a narrow non-escaping local `List[Int]` layout
-using contiguous `i64` storage with length and capacity. It applies only when a
-closed-world use scan proves no copy, escape, generic/witness boundary,
-suspension, or cleanup hazard. All other list shapes use the complete generic
-representation.
-
-Element access on this proved layout retains the allocation's pointer
-provenance through typed LLVM GEP instructions. Exact range scans can therefore
-be vectorized without weakening the source bounds rules. The append lowering
-also carries its range induction value and non-observable length in SSA so the
-private allocation cannot make LLVM conservatively reload or update the header
-on every iteration. Length is synchronized at allocation-growth boundaries and
-normal loop exit; an element expression that references its receiver keeps
-eager length updates.
-
-Similarly, checked integer and flat-record optimizations are private lowering
-choices. They must never appear as requirements in the language reference.
 
 ## ABI change checklist
 

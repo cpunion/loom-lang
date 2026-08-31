@@ -129,7 +129,7 @@ check, include:
 - a statically proved case;
 - a source rejection when the boundary is statically invalid;
 - a dynamic failure when proof is unavailable;
-- a case that must retain the checked fallback.
+- a case that must retain the runtime check.
 
 ### MIR
 
@@ -142,7 +142,7 @@ produce bad MIR; artifacts and caches are untrusted inputs.
 Use differential tests for observable output, returned values, contracts,
 faults, cleanup order, dynamic dispatch, and Task results. LLVM fast paths also
 need IR assertions that prove the intended machine structure is present and
-the checked fallback remains where required.
+the typed checked behavior remains intact.
 
 ### Runtime
 

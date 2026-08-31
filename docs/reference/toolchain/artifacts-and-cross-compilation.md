@@ -109,9 +109,9 @@ all-target initializer for explicit cross-target requests. Partial
 installations select exactly one of Loom's bounded AArch64, ARM, and X86
 initializers from the normalized triple; a different partial target set is not
 currently a supported toolchain. An implicit host build uses LLVM's native
-initializer on either kind of installation. The complete checked-MIR value route
-and both typed LCIR `Text` representations require 64-bit pointers. A completely
-supported typed LCIR artifact that does not require that representation may
+initializer on either kind of installation. Both typed LCIR `Text`
+representations require 64-bit pointers. A completely supported typed LCIR
+artifact that does not require a 64-bit representation may
 emit a matching 32-bit relocatable object, but that is not evidence of a
 supported 32-bit Loom runtime or executable toolchain. Object emission does
 not prove that a target operating system, C runtime, system linker, or Loom

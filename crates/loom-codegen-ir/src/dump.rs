@@ -53,7 +53,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 49")?;
+    writeln!(output, "lcir 50")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -403,6 +403,10 @@ fn write_instruction(
         InstructionKind::ProductBorrow { aggregate, field } => {
             write!(output, "product.borrow %{aggregate}, field {field}")
         }
+        InstructionKind::TaskCarrierProject { aggregate, path } => {
+            write!(output, "task_carrier.project %{aggregate}, path ")?;
+            write_field_path(output, path)
+        }
         InstructionKind::ProductSplit { aggregate } => {
             write!(output, "product.split %{aggregate}")
         }
@@ -414,6 +418,15 @@ fn write_instruction(
             output,
             "product.insert %{aggregate}, field {field}, %{value}"
         ),
+        InstructionKind::TaskCarrierUpdate {
+            aggregate,
+            path,
+            value,
+        } => {
+            write!(output, "task_carrier.update %{aggregate}, path ")?;
+            write_field_path(output, path)?;
+            write!(output, ", %{value}")
+        }
         InstructionKind::InvariantReceiverInsert {
             aggregate,
             field,
@@ -561,6 +574,17 @@ fn write_instruction(
             write!(output, "task.outcome_take %{task}")
         }
     }
+}
+
+fn write_field_path(output: &mut impl Write, path: &[u32]) -> fmt::Result {
+    output.write_char('[')?;
+    for (index, field) in path.iter().enumerate() {
+        if index != 0 {
+            output.write_char('.')?;
+        }
+        write!(output, "{field}")?;
+    }
+    output.write_char(']')
 }
 
 const fn io_task_error_mode_name(mode: crate::IoTaskErrorMode) -> &'static str {

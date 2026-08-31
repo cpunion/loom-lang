@@ -3554,6 +3554,57 @@ impl<'a> Validator<'a> {
                     );
                 }
             }
+            InstructionKind::TaskCarrierProject {
+                aggregate,
+                path: fields,
+            } => {
+                let aggregate_type = function.value(*aggregate).map(|value| value.ty);
+                let expected =
+                    aggregate_type.and_then(|ty| self.readable_product_path_leaf(ty, fields));
+                self.require_results(function, instruction, &[expected], &path);
+                if fields.is_empty() {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        format!("{path}.path"),
+                        "Task carrier projection requires a nonempty product path",
+                    );
+                } else if aggregate_type.is_some() && expected.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.path"),
+                        "Task carrier projection path must traverse readable product fields",
+                    );
+                }
+                if aggregate_type.is_some_and(|ty| {
+                    representation_contains_task_handle(&self.program.representations, ty)
+                        != Some(true)
+                }) {
+                    self.error(
+                        ValidationCode::InvalidTaskOwnership,
+                        format!("{path}.aggregate"),
+                        "Task carrier projection requires a Task-bearing aggregate",
+                    );
+                }
+                if expected.is_some_and(|ty| {
+                    representation_contains_task_handle(&self.program.representations, ty)
+                        != Some(false)
+                }) {
+                    self.error(
+                        ValidationCode::InvalidTaskOwnership,
+                        format!("{path}.result[0]"),
+                        "Task carrier projection must produce an exact Task-free leaf",
+                    );
+                }
+                if expected
+                    .is_some_and(|ty| self.type_contains_resource_capability(ty) != Some(false))
+                {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.result[0]"),
+                        "Task carrier projection cannot duplicate a File, Socket, or containing resource value",
+                    );
+                }
+            }
             InstructionKind::ProductSplit { aggregate } => {
                 let aggregate_type = function.value(*aggregate).map(|value| value.ty);
                 if aggregate_type.is_some_and(|ty| self.is_resource_capability_type(ty)) {
@@ -3739,6 +3790,67 @@ impl<'a> Validator<'a> {
                         ValidationCode::TypeMismatch,
                         format!("{path}.value"),
                         "refine.proven operand must have the transparent type's exact declared base",
+                    );
+                }
+            }
+            InstructionKind::TaskCarrierUpdate {
+                aggregate,
+                path: fields,
+                value,
+            } => {
+                let aggregate_type = function.value(*aggregate).map(|value| value.ty);
+                let leaf_type =
+                    aggregate_type.and_then(|ty| self.direct_product_path_leaf(ty, fields));
+                self.require_results(function, instruction, &[aggregate_type], &path);
+                if fields.is_empty() {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        format!("{path}.path"),
+                        "Task carrier update requires a nonempty product path",
+                    );
+                }
+                if let Some(leaf_type) = leaf_type {
+                    self.require_value_type(
+                        function,
+                        *value,
+                        leaf_type,
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.value"),
+                    );
+                } else if aggregate_type.is_some() && !fields.is_empty() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.path"),
+                        "Task carrier update path must traverse direct product fields",
+                    );
+                }
+                if aggregate_type.is_some_and(|ty| {
+                    representation_contains_task_handle(&self.program.representations, ty)
+                        != Some(true)
+                }) {
+                    self.error(
+                        ValidationCode::InvalidTaskOwnership,
+                        format!("{path}.aggregate"),
+                        "Task carrier update requires a Task-bearing aggregate",
+                    );
+                }
+                if leaf_type.is_some_and(|ty| {
+                    representation_contains_task_handle(&self.program.representations, ty)
+                        != Some(false)
+                }) {
+                    self.error(
+                        ValidationCode::InvalidTaskOwnership,
+                        format!("{path}.value"),
+                        "Task carrier update must replace an exact Task-free leaf",
+                    );
+                }
+                if leaf_type
+                    .is_some_and(|ty| self.type_contains_resource_capability(ty) != Some(false))
+                {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.value"),
+                        "Task carrier update cannot replace and drop a File, Socket, or containing resource value",
                     );
                 }
             }
@@ -6800,6 +6912,70 @@ impl<'a> Validator<'a> {
             })
     }
 
+    fn type_contains_resource_capability(&self, root: ValueTypeId) -> Option<bool> {
+        let mut pending = vec![root];
+        let mut visited = BTreeSet::new();
+        while let Some(ty) = pending.pop() {
+            if !visited.insert(ty) {
+                continue;
+            }
+            if self.is_resource_capability_type(ty) {
+                return Some(true);
+            }
+            let value_type = self.program.representations.value_type(ty)?;
+            if let ValueTypeKind::Transparent { base } = value_type.kind() {
+                pending.push(base);
+            }
+            match value_type.semantic() {
+                Type::List(element) => {
+                    pending.push(self.program.representations.type_id(element)?);
+                }
+                Type::Nominal(_, arguments)
+                    if value_type.kind() == ValueTypeKind::ManagedTextMap =>
+                {
+                    let [element] = arguments.as_slice() else {
+                        return None;
+                    };
+                    pending.push(self.program.representations.type_id(element)?);
+                }
+                Type::View { .. } => pending.extend(
+                    self.program
+                        .representations
+                        .dynamic(ty)?
+                        .candidates()
+                        .iter()
+                        .copied(),
+                ),
+                _ => {}
+            }
+            match self.program.representations.repr(value_type.repr())? {
+                Repr::Product(product) => pending.extend(
+                    self.program
+                        .representations
+                        .product(*product)?
+                        .fields()
+                        .iter()
+                        .copied(),
+                ),
+                Repr::Sum(sum) => pending.extend(
+                    self.program
+                        .representations
+                        .sum(*sum)?
+                        .variants()
+                        .iter()
+                        .flat_map(|variant| variant.fields().iter().copied()),
+                ),
+                Repr::Uninhabited
+                | Repr::Zst
+                | Repr::Scalar(_)
+                | Repr::ImmortalText
+                | Repr::ManagedPointer
+                | Repr::TaskHandle => {}
+            }
+        }
+        Some(false)
+    }
+
     fn canonical_io_result_shape(
         &self,
         result: ValueTypeId,
@@ -6832,6 +7008,39 @@ impl<'a> Validator<'a> {
             .representations
             .product(product)
             .map(crate::ProductRepr::fields)
+    }
+
+    fn direct_product_path_leaf(&self, root: ValueTypeId, path: &[u32]) -> Option<ValueTypeId> {
+        self.product_path_leaf(root, path, false)
+    }
+
+    fn readable_product_path_leaf(&self, root: ValueTypeId, path: &[u32]) -> Option<ValueTypeId> {
+        self.product_path_leaf(root, path, true)
+    }
+
+    fn product_path_leaf(
+        &self,
+        root: ValueTypeId,
+        path: &[u32],
+        allow_invariant_reads: bool,
+    ) -> Option<ValueTypeId> {
+        if path.is_empty() {
+            return None;
+        }
+        let mut current = root;
+        for field in path {
+            let value_type = self.program.representations.value_type(current)?;
+            let readable_kind = value_type.kind() == ValueTypeKind::Direct
+                || (allow_invariant_reads && value_type.kind() == ValueTypeKind::InvariantProduct);
+            if !readable_kind || self.is_resource_capability_type(current) {
+                return None;
+            }
+            current = usize::try_from(*field)
+                .ok()
+                .and_then(|field| self.product_fields(current)?.get(field))
+                .copied()?;
+        }
+        Some(current)
     }
 
     fn is_direct_mutable_scalar(&self, ty: ValueTypeId) -> bool {
@@ -8221,7 +8430,8 @@ fn transfer_task_ownership(
                 &mut issues,
             ),
             InstructionKind::ProductExtract { aggregate, .. }
-            | InstructionKind::ProductBorrow { aggregate, .. } => borrow_task_carrier(
+            | InstructionKind::ProductBorrow { aggregate, .. }
+            | InstructionKind::TaskCarrierProject { aggregate, .. } => borrow_task_carrier(
                 *aggregate,
                 site,
                 &states,

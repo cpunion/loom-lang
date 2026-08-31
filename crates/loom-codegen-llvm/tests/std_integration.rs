@@ -3,8 +3,7 @@ use std::process::Command;
 use std::{io::Read as _, net::TcpListener};
 
 use loom_codegen_llvm::{
-    EmitOptions, NATIVE_RUNTIME_ABI, NativeRouteKind, NativeRoutePolicy,
-    emit_prepared_native_object, prepare_native_object,
+    EmitOptions, NATIVE_RUNTIME_ABI, emit_prepared_native_object, prepare_native_object,
 };
 
 mod support;
@@ -122,10 +121,9 @@ fn structured_values_match_in_interpreter_and_native_runtime() {
     let snapshot = snapshot(project.path());
     assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
     let program = snapshot.executable().expect("lower standard-library MIR");
-    let prepared =
-        prepare_native_object(program, EmitOptions::tests(), NativeRoutePolicy::Automatic)
-            .expect("prepare typed standard-library tests");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    let prepared = prepare_native_object(program, EmitOptions::tests())
+        .expect("prepare typed standard-library tests");
+
     let object = project.path().join("native-tests.o");
     let executable = project.path().join("native-tests");
     emit_prepared_native_object(&prepared, &object)

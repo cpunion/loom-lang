@@ -7,20 +7,8 @@ future.
 
 ## Coroutine descriptor
 
-The complete checked-MIR route uses a compiler-private descriptor containing:
-
-- resume, cancel, and trace functions;
-- value-slot and witness-slot counts;
-- the result slot;
-- state count and per-state live bitmaps.
-
-Locals that survive a suspension are stored in the Task frame. The MIR
-validator recomputes suspension liveness, and the GC traces only slots live in
-the current state. Captured witnesses have separate slots and an owned proof
-arena.
-
-The first typed-LCIR coroutine slice uses the existing `typed-task-v1` runtime
-wire with a different, exact compiler-shaped descriptor. LLVM target data lays
+Typed LCIR uses the `typed-task-v1` runtime wire with an exact compiler-shaped
+descriptor. LLVM target data lays
 out one frame containing state, parameters, optional creation-site span
 coordinates for state-zero preconditions, the ordered children and live values
 for each suspension, and the result. The descriptor publishes frame
@@ -118,9 +106,8 @@ propagates a child's `Faulted` or `Cancelled` state; it never
 converts either state into a source `Result`. Task handles may be live only as
 suspension bookkeeping.
 
-For reachable graphs with no LCIR-only primitive, raw readiness still selects
-the complete checked-MIR route. An unbound reachable dynamic-concept frame
-producer is an invalid program rather than a fallback condition. Finite closed
+Raw readiness has no source or MIR producer. An unbound reachable
+dynamic-concept frame producer is an invalid program. Finite closed
 catalogs remain on typed LCIR and use the exact managed dynamic pointer
 described above.
 Async roots with `requires` use the same typed state-zero check as child Tasks.
@@ -353,8 +340,7 @@ The runtime retains `typed-io-v1`, `typed-resource-v1`, the worker mailbox, and
 both completion and platform-I/O `WaitSource` kinds. It no longer exports
 universal `loom_file_*`, `loom_socket_*`, or `loom_io_close` functions and no
 longer shares compiler-fixed File/Socket nominal IDs. Consequently, a reachable
-I/O graph that cannot lower completely through LCIR fails native preparation;
-the checked-MIR route cannot reinterpret it through a universal Task result.
+I/O graph that cannot lower completely through LCIR fails native preparation.
 
 ## Blocking I/O
 

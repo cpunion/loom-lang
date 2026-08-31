@@ -1,8 +1,0 @@
-import std.io.write
-import std.io.write_line
-
-pub fn main() {
-    write("loom")
-    write_line(" stdout 界")
-    write("")
-}

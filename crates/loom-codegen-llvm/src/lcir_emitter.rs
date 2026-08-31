@@ -1,7 +1,7 @@
 //! Mechanical typed LCIR to LLVM emission.
 //!
-//! This module intentionally has no dependency on the checked-MIR emitter,
-//! native-layout planning, universal values, or runtime-requirement analysis.
+//! This module emits checked, target-typed SSA without native-layout planning,
+//! universal values, erased call nodes, or runtime-requirement analysis.
 //! Every source function has exactly the ABI selected by its checked LCIR
 //! signature and effects.
 
@@ -27,7 +27,7 @@ use inkwell::types::{
 };
 use inkwell::values::{
     ArrayValue, AsValueRef, BasicMetadataValueEnum, BasicValueEnum, FunctionValue,
-    InstructionValue, IntValue, PhiValue, PointerValue, UnnamedAddress,
+    InstructionValue, IntValue, PhiValue, PointerValue, StructValue, UnnamedAddress,
 };
 use inkwell::{FloatPredicate as LlvmFloatPredicate, IntPredicate};
 use llvm_sys::debuginfo::LLVMDIBuilderInsertDbgValueRecordBefore;
@@ -189,7 +189,6 @@ impl LcirEmitter {
         Ok(NativeObjectArtifact {
             object: output.to_path_buf(),
             functions: artifact.functions().len(),
-            witnesses: 0,
         })
     }
 }
@@ -8540,7 +8539,7 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             })?;
         // This is a target-emission resource boundary, not unsupported source
         // coverage. Exceeding it is a deterministic ProgramTooLarge failure
-        // and must never select the checked-MIR route.
+        // and must remain on the exact typed primitive ABI.
         if u64::try_from(root_plan.slots().len()).unwrap_or(u64::MAX) > GC_MAX_ROOT_SLOTS
             || u64::try_from(root_plan.state_count()).unwrap_or(u64::MAX) > GC_MAX_ROOT_STATES
             || u64::try_from(root_plan.bitmaps().len()).unwrap_or(u64::MAX)
@@ -11658,6 +11657,9 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     "product.extract",
                 )
                 .map_err(builder_error)?),
+            InstructionKind::TaskCarrierProject { aggregate, path } => {
+                one(self.emit_task_carrier_project(*aggregate, path)?)
+            }
             InstructionKind::ProductSplit { aggregate } => {
                 let aggregate = self.value(*aggregate)?.into_struct_value();
                 (0..instruction.results().len())
@@ -11693,6 +11695,11 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 .map_err(builder_error)?
                 .into_struct_value()
                 .into()),
+            InstructionKind::TaskCarrierUpdate {
+                aggregate,
+                path,
+                value,
+            } => one(self.emit_task_carrier_update(*aggregate, path, *value)?),
             InstructionKind::TaskCarrierBorrow { value }
             | InstructionKind::RefineProven { value }
             | InstructionKind::Unrefine { value }
@@ -12146,6 +12153,73 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 .into_struct_value();
         }
         Ok(value.into())
+    }
+
+    fn emit_task_carrier_project(
+        &self,
+        aggregate: ValueId,
+        path: &[u32],
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let mut value = self.value(aggregate)?;
+        if path.is_empty() {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "Task carrier projection has an empty field path",
+            ));
+        }
+        for field in path {
+            value = self
+                .backend
+                .builder
+                .build_extract_value(value.into_struct_value(), *field, "task_carrier.project")
+                .map_err(builder_error)?;
+        }
+        Ok(value)
+    }
+
+    fn emit_task_carrier_update(
+        &self,
+        aggregate: ValueId,
+        path: &[u32],
+        replacement: ValueId,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let Some((leaf, prefix)) = path.split_last() else {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "Task carrier update has an empty field path",
+            ));
+        };
+        let mut current = self.value(aggregate)?.into_struct_value();
+        let mut parents: Vec<(StructValue<'ctx>, u32)> = Vec::with_capacity(prefix.len());
+        for field in prefix {
+            parents.push((current, *field));
+            current = self
+                .backend
+                .builder
+                .build_extract_value(current, *field, "task_carrier.update.extract")
+                .map_err(builder_error)?
+                .into_struct_value();
+        }
+        let mut rebuilt = self
+            .backend
+            .builder
+            .build_insert_value(
+                current,
+                self.value(replacement)?,
+                *leaf,
+                "task_carrier.update.leaf",
+            )
+            .map_err(builder_error)?
+            .into_struct_value();
+        for (parent, field) in parents.into_iter().rev() {
+            rebuilt = self
+                .backend
+                .builder
+                .build_insert_value(parent, rebuilt, field, "task_carrier.update.parent")
+                .map_err(builder_error)?
+                .into_struct_value();
+        }
+        Ok(rebuilt.into())
     }
 
     #[expect(
@@ -19177,7 +19251,7 @@ impl<'ctx> Backend<'ctx, '_> {
         let (code, message) = fault_properties(fault);
         let display = format!("{code}: {message}");
         // Language-defined fault families expose the same stable RuntimeFault
-        // payload as the interpreter and checked-MIR emitter. Other LCIR-private
+        // payload as the interpreter. Other LCIR-private
         // families retain their existing backend detail until their source
         // diagnostic contracts are specified separately.
         let detail = if matches!(

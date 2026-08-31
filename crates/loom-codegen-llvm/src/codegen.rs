@@ -1,20 +1,17 @@
 use std::path::{Path, PathBuf};
 
-use loom_codegen_ir::{
-    CheckedArtifact, ReachableSourceGraph, SourceRoots, analyze_source_reachability,
-};
-use loom_mir::{Builtin, CheckedProgram, Type};
+use loom_codegen_ir::CheckedArtifact;
+use loom_mir::CheckedProgram;
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 
 use crate::{
-    CodegenError, NATIVE_RUNTIME_ABI, OptimizationProfile, builtin_requires_typed_io,
-    emitter::Emitter,
+    CodegenError, OptimizationProfile,
     lcir_emitter::LcirEmitter,
-    target::{NativeTargetMachine, create_target_machine},
+    prepared::{
+        emit_prepared_native_object, prepare_native_object, prepared_native_object_fingerprint,
+        prepared_native_target_identity,
+    },
 };
-
-const NATIVE_OBJECT_FORMAT: &str = "loom-checked-mir-native-object-v4";
 
 /// Native executable harness selected by the CLI command.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -80,40 +77,6 @@ pub struct DebugSource {
     pub file: u32,
     pub path: String,
     pub line_starts: Vec<u32>,
-}
-
-#[derive(Serialize)]
-struct ObjectFingerprint<'a> {
-    format: &'static str,
-    harness: &'static str,
-    backend_version: &'static str,
-    backend_build: &'static str,
-    llvm_version: (u32, u32, u32),
-    runtime_abi: &'static str,
-    mir_format: &'static str,
-    mir_version: u32,
-    target: crate::NativeTargetIdentity,
-    target_selection: &'static str,
-    roots: &'a SourceRoots,
-    reachable: &'a ReachableSourceGraph,
-    types: &'a [loom_mir::TypeDef],
-    concepts: &'a [loom_mir::ConceptDef],
-    requirements: &'a [loom_mir::RequirementDef],
-    prelude: &'a loom_mir::PreludeIds,
-    functions: Vec<&'a loom_mir::Function>,
-    witnesses: Vec<LiveWitness<'a>>,
-    debug_sources: &'a [DebugSource],
-}
-
-#[derive(Serialize)]
-struct LiveWitness<'a> {
-    id: loom_mir::WitnessId,
-    concept: loom_mir::ConceptId,
-    concrete: &'a loom_mir::Type,
-    associated: &'a std::collections::BTreeMap<String, loom_mir::Type>,
-    type_parameters: u32,
-    prerequisites: &'a [loom_mir::WitnessParam],
-    methods: Vec<(loom_mir::RequirementId, loom_mir::FunctionId)>,
 }
 
 impl DebugSource {
@@ -183,7 +146,6 @@ impl EmitOptions {
 pub struct NativeArtifact {
     pub executable: PathBuf,
     pub functions: usize,
-    pub witnesses: usize,
 }
 
 /// Relocatable target object emitted from one closed-world root set.
@@ -191,119 +153,6 @@ pub struct NativeArtifact {
 pub struct NativeObjectArtifact {
     pub object: PathBuf,
     pub functions: usize,
-    pub witnesses: usize,
-}
-
-pub(crate) fn select_roots(
-    program: &CheckedProgram,
-    options: &EmitOptions,
-) -> Result<(SourceRoots, ReachableSourceGraph), CodegenError> {
-    let roots = match &options.kind {
-        EmitKind::Run { entry } => SourceRoots::for_entry(program, entry).ok_or_else(|| {
-            CodegenError::new("UnknownEntry", format!("no exported entry named `{entry}`"))
-        })?,
-        EmitKind::Tests => SourceRoots::for_tests(program),
-    };
-    validate_checked_mir_root_signatures(program, options, &roots)?;
-    let reachable = analyze_source_reachability(program, &roots)?;
-    Ok((roots, reachable))
-}
-
-fn reject_checked_mir_process(reachable: &ReachableSourceGraph) -> Result<(), CodegenError> {
-    if reachable.builtins.iter().any(|builtin| {
-        matches!(
-            builtin,
-            Builtin::ProcessArgumentCount
-                | Builtin::ProcessArgumentAt
-                | Builtin::ProcessEnvironment
-        )
-    }) {
-        return Err(CodegenError::new(
-            "NativeProcessRequiresLcir",
-            "reachable std.process primitives require the typed LCIR native route",
-        ));
-    }
-    Ok(())
-}
-
-fn reject_checked_mir_log(reachable: &ReachableSourceGraph) -> Result<(), CodegenError> {
-    if reachable.builtins.contains(&Builtin::LogWrite) {
-        return Err(CodegenError::new(
-            "NativeLogRequiresLcir",
-            "reachable std.log output requires the typed LCIR native route",
-        ));
-    }
-    Ok(())
-}
-
-fn reject_checked_mir_io(reachable: &ReachableSourceGraph) -> Result<(), CodegenError> {
-    if reachable
-        .builtins
-        .iter()
-        .copied()
-        .any(builtin_requires_typed_io)
-    {
-        return Err(CodegenError::new(
-            "NativeIoRequiresLcir",
-            "reachable file or socket I/O requires the typed LCIR native route",
-        ));
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_checked_mir_root_signatures(
-    program: &CheckedProgram,
-    options: &EmitOptions,
-    roots: &SourceRoots,
-) -> Result<(), CodegenError> {
-    let tests = matches!(options.kind, EmitKind::Tests);
-    for root in roots.functions() {
-        let function = program.function(*root).ok_or_else(|| {
-            CodegenError::new(
-                "InvalidFunctionReference",
-                format!("artifact root function #{} does not exist", root.0),
-            )
-        })?;
-        let hidden_inputs = function.type_parameters != 0
-            || !function.witness_params.is_empty()
-            || function.witness_prefix_count != 0
-            || function.receiver.is_some();
-        let invalid = if tests {
-            hidden_inputs
-                || !function.params.is_empty()
-                || !is_valid_test_return(program, &function.return_ty)
-        } else {
-            hidden_inputs || !function.params.is_empty() || function.return_ty != Type::Unit
-        };
-        if invalid {
-            let expected = if tests {
-                "have no inputs and return Unit or Result[Unit, E]"
-            } else {
-                "have signature () -> Unit"
-            };
-            return Err(CodegenError::new(
-                "InvalidRootSignature",
-                format!("artifact root `{}` must {expected}", function.name),
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn is_valid_test_return(program: &CheckedProgram, ty: &Type) -> bool {
-    if *ty == Type::Unit {
-        return true;
-    }
-    let Some(result) = program.prelude.result else {
-        return false;
-    };
-    matches!(
-        ty,
-        Type::Nominal(type_id, arguments)
-            if *type_id == result
-                && arguments.len() == 2
-                && arguments.first() == Some(&Type::Unit)
-    )
 }
 
 /// Computes the closed-world semantic identity of the target object.
@@ -319,94 +168,8 @@ pub fn native_object_fingerprint(
     program: &CheckedProgram,
     options: &EmitOptions,
 ) -> Result<String, CodegenError> {
-    let (roots, reachable) = select_roots(program, options)?;
-    reject_checked_mir_process(&reachable)?;
-    reject_checked_mir_log(&reachable)?;
-    reject_checked_mir_io(&reachable)?;
-    let target = create_target_machine(options.target_triple.as_deref(), options.optimization)?;
-    checked_mir_object_fingerprint_with_target(program, options, &roots, &reachable, &target)
-}
-
-pub(crate) fn checked_mir_object_fingerprint_with_target(
-    program: &CheckedProgram,
-    options: &EmitOptions,
-    roots: &SourceRoots,
-    reachable: &ReachableSourceGraph,
-    target: &NativeTargetMachine,
-) -> Result<String, CodegenError> {
-    let functions = reachable
-        .functions
-        .iter()
-        .map(|id| {
-            program.function(*id).ok_or_else(|| {
-                CodegenError::new(
-                    "InvalidFunctionReference",
-                    format!("reachable function #{} does not exist", id.0),
-                )
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let witnesses = reachable
-        .witnesses
-        .iter()
-        .map(|id| {
-            let witness = program.witness(*id).ok_or_else(|| {
-                CodegenError::new(
-                    "InvalidWitnessReference",
-                    format!("reachable witness #{} does not exist", id.0),
-                )
-            })?;
-            let methods = reachable
-                .witness_methods
-                .get(id)
-                .into_iter()
-                .flatten()
-                .filter_map(|requirement| {
-                    witness
-                        .methods
-                        .get(requirement)
-                        .copied()
-                        .map(|function| (*requirement, function))
-                })
-                .collect();
-            Ok(LiveWitness {
-                id: witness.id,
-                concept: witness.concept,
-                concrete: &witness.concrete,
-                associated: &witness.associated,
-                type_parameters: witness.type_parameters,
-                prerequisites: &witness.prerequisites,
-                methods,
-            })
-        })
-        .collect::<Result<Vec<_>, CodegenError>>()?;
-    let identity = ObjectFingerprint {
-        format: NATIVE_OBJECT_FORMAT,
-        harness: match options.kind {
-            EmitKind::Run { .. } => "run",
-            EmitKind::Tests => "tests",
-        },
-        backend_version: crate::BACKEND_VERSION,
-        backend_build: crate::LLVM_OBJECT_BUILD_FINGERPRINT,
-        llvm_version: inkwell::support::get_llvm_version(),
-        runtime_abi: NATIVE_RUNTIME_ABI,
-        mir_format: loom_mir::INTERPRETED_ARTIFACT_FORMAT,
-        mir_version: loom_mir::INTERPRETED_ARTIFACT_VERSION,
-        target: target.identity(),
-        target_selection: target.target_selection(),
-        roots,
-        reachable,
-        types: &program.types,
-        concepts: &program.concepts,
-        requirements: &program.requirements,
-        prelude: &program.prelude,
-        functions,
-        witnesses,
-        debug_sources: &options.debug_sources,
-    };
-    let bytes = serde_json::to_vec(&identity)
-        .map_err(|error| CodegenError::new("ObjectIdentityFailed", error.to_string()))?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    let prepared = prepare_native_object(program, options.clone()).map_err(CodegenError::from)?;
+    prepared_native_object_fingerprint(&prepared)
 }
 
 /// Emits a verified, optimized target object without invoking the native linker.
@@ -423,28 +186,14 @@ pub fn emit_native_object(
     output: &Path,
     options: &EmitOptions,
 ) -> Result<NativeObjectArtifact, CodegenError> {
-    let (roots, reachable) = select_roots(program, options)?;
-    reject_checked_mir_process(&reachable)?;
-    reject_checked_mir_log(&reachable)?;
-    reject_checked_mir_io(&reachable)?;
-    emit_checked_mir_object(program, output, options, &roots, &reachable)
-}
-
-fn emit_checked_mir_object(
-    program: &CheckedProgram,
-    output: &Path,
-    options: &EmitOptions,
-    roots: &SourceRoots,
-    reachable: &ReachableSourceGraph,
-) -> Result<NativeObjectArtifact, CodegenError> {
-    Emitter::emit_object(program.as_program(), reachable, roots, output, options)
+    let prepared = prepare_native_object(program, options.clone()).map_err(CodegenError::from)?;
+    emit_prepared_native_object(&prepared, output)
 }
 
 /// Emits a verified, optimized target object directly from checked typed LCIR.
 ///
-/// This boundary has no checked-MIR fallback and does not infer roots from
-/// function names or backend options. The artifact's validated roots select
-/// the generated executable harness.
+/// This boundary does not infer roots from function names or backend options.
+/// The artifact's validated roots select the generated executable harness.
 ///
 /// # Errors
 ///
@@ -459,7 +208,7 @@ pub fn emit_lcir_native_object(
     LcirEmitter::emit_object(artifact, output, options)
 }
 
-/// Emits and links a native executable from checked MIR.
+/// Emits and links a native executable through typed LCIR.
 ///
 /// # Errors
 ///
@@ -472,11 +221,8 @@ pub fn emit_native(
     runtime: &crate::RuntimeBundle,
     linker: &crate::RuntimeLinker,
 ) -> Result<NativeArtifact, CodegenError> {
-    let (roots, reachable) = select_roots(program, options)?;
-    reject_checked_mir_process(&reachable)?;
-    reject_checked_mir_log(&reachable)?;
-    reject_checked_mir_io(&reachable)?;
-    let expected = crate::target_identity(options.target_triple.as_deref(), options.optimization)?;
+    let prepared = prepare_native_object(program, options.clone()).map_err(CodegenError::from)?;
+    let expected = prepared_native_target_identity(&prepared);
     if runtime.target_triple() != expected.triple || runtime.data_layout() != expected.data_layout {
         return Err(CodegenError::new(
             "RuntimeBundleTargetMismatch",
@@ -494,7 +240,7 @@ pub fn emit_native(
         .suffix(&object_suffix)
         .tempfile()
         .map_err(|error| CodegenError::new("ArtifactWriteFailed", error.to_string()))?;
-    let emitted = emit_checked_mir_object(program, object.path(), options, &roots, &reachable)?;
+    let emitted = emit_prepared_native_object(&prepared, object.path())?;
     // MSVC linkers must reopen the object and Windows temporary files do not
     // grant that access while NamedTempFile still owns its creation handle.
     // Keep deletion ownership while closing the handle before link execution.
@@ -506,20 +252,11 @@ pub fn emit_native(
     Ok(NativeArtifact {
         executable: output.to_path_buf(),
         functions: emitted.functions,
-        witnesses: emitted.witnesses,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn native_object_fingerprint_domain_is_pinned() {
-        assert_eq!(
-            super::NATIVE_OBJECT_FORMAT,
-            "loom-checked-mir-native-object-v4"
-        );
-    }
-
     #[test]
     fn object_build_identity_and_loaded_llvm_are_pinned() {
         let build = crate::LLVM_OBJECT_BUILD_FINGERPRINT;

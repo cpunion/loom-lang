@@ -1,10 +1,10 @@
 # Typed code generation IR
 
-Status: **Accepted; implementation in progress**
+Status: **Accepted; native migration implemented**
 
 ## Decision
 
-Loom will place a target-aware, typed SSA representation between checked MIR
+Loom places a target-aware, typed SSA representation between checked MIR
 and native target emitters. This representation is Loom Codegen IR (LCIR).
 Checked MIR remains the backend-neutral semantic boundary shared with the
 interpreter; LCIR owns callable instances, physical value representations,
@@ -19,38 +19,29 @@ The authoritative current LCIR dump, checked-artifact, native-object,
 object-cache, checked-MIR, and runtime ABI identities are maintained in
 [Versioning and compatibility](../project/versioning.md).
 
-The direct foundation and its first production route are described in the
-current [Code generation IR internals](../internals/codegen-ir.md). Ordinary
-native build, run, and test preparation now selects complete supported
+The current implementation is described in
+[Code generation IR internals](../internals/codegen-ir.md). Native build, run,
+test, and debug preparation lowers complete
 primitive, direct Text, one-pointer typed Bytes, structural-tuple, one-field
 typed Path, closed-record, and compile-time-established refined artifacts, plus
 bounded concrete direct generic instances over those representations and
 eligible concrete closed-enum artifacts including managed Text payloads, lexical
 cleanup, and the supported source-contract subset, plus checked stackless
-coroutines with typed Task handles, `Task.sleep`, and nonempty static forms of
+coroutines with typed Task handles, `Task.sleep`, and static forms of
 the standard `Task.all`, `Task.any`, `Task.settled`, and `Task.race` APIs into
 typed LCIR. Coroutine coverage includes exact terminal-outcome capture, static
 lexical cleanup across suspension and cancellation, plus synchronous
 functional inout calls from coroutine bodies. Reachable unsupported features
-fall back atomically. The broader representation migration and checked-MIR deletion
-gates in this record are not complete.
+are explicit native compilation errors. The checked-MIR universal-value LLVM
+emitter and its exact-shape specializations have been deleted.
 
 ## Motivation
 
-The production LLVM backend still lowers artifacts outside current direct LCIR
-coverage through a universal value implementation and several closed-world
-native specializations. Unsupported managed and projected shapes,
-runtime-checked generic constraints, cleanup
-shapes outside the direct lexical slice, async shapes outside the checked
-coroutine slice, and private-list paths still repeat representation, proof,
-call-compatibility, and runtime-requirement decisions inside the checked-MIR
-target emitter. Some checked-MIR functions may acquire universal,
-checked-native, and assumption-specialized bodies. A missing exact dynamic
-producer or a nonregular generic instance chain is not part of that fallback
-debt: artifact closure rejects it with `MissingDynamicConceptWitness` or
-`NonRegularGenericRecursion`, respectively. Planning-budget exhaustion and
-inconsistent checked generic metadata are likewise errors rather than route
-choices.
+The former LLVM backend lowered LCIR coverage gaps through a universal value
+implementation and several closed-world native specializations. That repeated
+representation, proof, call-compatibility, and runtime-requirement decisions
+inside a second target emitter. A single source function could acquire
+universal, checked-native, and assumption-specialized bodies.
 
 That structure makes a correct fast path depend on exact MIR shapes and makes
 each additional type or operation multiply the number of lowering choices.
@@ -59,7 +50,7 @@ being asked to recover them from a tagged value representation.
 
 ## Accepted pipeline
 
-The native pipeline will become:
+The native pipeline is:
 
 ```text
 checked MIR
@@ -112,8 +103,8 @@ with `Recheck`, and decoding normalizes a forged `Proven` spelling the same
 way. Supported nongeneric `Recheck` executes the predicate or invariant in
 typed LCIR before publishing a nominal value and raises the canonical
 `ArtifactProofRejected` runtime fault when replay fails. Generic or otherwise
-unsupported replay selects atomic checked-MIR fallback. A checked-MIR wrapper is
-neither a portable proof certificate nor publisher authentication.
+unsupported replay rejects native preparation. Checked MIR remains neither a
+portable proof certificate nor publisher authentication.
 
 ## Representation policy
 
@@ -181,8 +172,8 @@ leaf cells and a deduplicated bitmap state for every collecting site. Values
 are live after the call, so its not-yet-defined result is excluded; explicit
 edge arguments map only to live explicit destination parameters. Empty plans
 emit no frame. Established transparent/refined carriers reuse the base root
-projections without a runtime box. Other unsupported dynamic producers remain
-whole-artifact fallback. Concrete closed managed Lists are
+projections without a runtime box. Other unsupported dynamic producers reject
+native preparation. Concrete closed managed Lists are
 direct repeated allocations. Literal planning is bounded to
 1 MiB of UTF-8 for one literal and 16 MiB across one LCIR artifact.
 
@@ -212,9 +203,7 @@ the exact Result success variant, `-1` selects `PathError.AbsoluteJoin`, and
 every other returned status is an ABI defect. The helper implements only the
 portable lexical `/` rule. It adds no runtime Path object, filesystem query,
 normalization, JSON behavior, executor, or source ownership syntax.
-The untyped `loom_runtime_path_contains_nul` and
-`loom_runtime_path_join` symbols remain exclusive to the complete checked-MIR
-emitter.
+No untyped Path helper is declared or linked.
 
 Concrete structural equality is generated from this same representation plan.
 Products compare exact fields, transparent values compare their declared base,
@@ -231,43 +220,42 @@ records the exact base type, `RefineProven` requires that base and a distinct
 transparent result, and `Unrefine` returns only that base. Likewise,
 `InvariantRecordProven` is the only product constructor for a protected record;
 ordinary construction and insertion cannot forge its invariant. Unknown
-constraint proofs remain normal language `Result` construction and currently
-select whole-artifact fallback.
+constraint proofs remain normal language `Result` construction when their
+shape is supported; other shapes reject native preparation.
 
 Every representation change is explicit in LCIR. Genuine erased boundaries,
 including `dyn C`, use purpose-specific representations. They do not preserve a
 universal value envelope for ordinary typed code.
 
-## Whole-artifact migration
+## Whole-artifact native rule
 
-Migration selection is atomic for one complete reachable artifact:
+Native preparation is atomic for one complete reachable artifact:
 
 1. Compute roots, reachability, target layout, instances, representations, and
    support without mutating an LLVM module.
 2. If every reachable item is supported, construct and validate the complete
-   LCIR artifact, then emit only the LCIR route.
+   LCIR artifact, then emit it through the typed target emitter.
 3. If valid checked MIR contains a reachable feature outside current LCIR
-   coverage, emit the complete artifact through the checked-MIR route.
-4. Never connect an LCIR function to a checked-MIR function through a universal
-   wrapper.
+   coverage, report the ordered support evidence and stop before target
+   emission.
 
-An unsupported unreachable function does not affect route selection. For a
+An unsupported unreachable function does not affect native preparation. For a
 test artifact, the union reachable from every selected test is one artifact;
-one unsupported reachable test dependency selects checked-MIR emission for all of
-it.
+one unsupported reachable test dependency rejects that artifact.
 
 The implementation must distinguish unsupported coverage from defects:
 
 - `Complete` means every reachable callable, witness edge, builtin, root
   harness, representation, and operation is supported.
-- `Unsupported` means valid input lies outside migration coverage and permits
-  whole-artifact fallback.
+- `Unsupported` means valid input lies outside native LCIR coverage and is a
+  compilation error.
 - Missing checked-MIR references, inconsistent plans, invalid generated LCIR,
   target-emitter failures, verifier failures, and object-write failures are
-  compiler defects and must not fall back.
+  compiler defects rather than coverage errors.
 
-Route selection and every input that can change it are part of native-object
-identity. The backend build fingerprint includes the LCIR implementation.
+Every input that can change the checked LCIR artifact or target emission is part
+of native-object identity. The backend build fingerprint includes the LCIR
+implementation.
 
 ## Edge-result control flow
 
@@ -382,7 +370,7 @@ apply to suspension and resume data.
 
 ## Direct LLVM ABI
 
-The first LLVM emitter uses one compiler-private ABI family for every LCIR
+The LLVM emitter uses one compiler-private ABI family for every LCIR
 source function:
 
 | LCIR representation | LLVM representation |
@@ -462,15 +450,14 @@ or C text-mode translation. Output failure may leave a prefix, so generated
 code never retries it: an otherwise successful `Unit` or passed-test path
 becomes nonzero, while an already failing path retains its nonzero status. A
 synchronous faulting or collecting root creates a runtime but no executor. A
-synchronous root requiring `NEEDS_EXECUTOR` is rejected before unsupported
-classification may select a fallback; every admitted executor-dependent helper
-is therefore reached from a checked coroutine. An
+synchronous root requiring `NEEDS_EXECUTOR` is rejected before LCIR
+construction; every admitted executor-dependent helper is therefore reached
+from a checked coroutine. An
 async root creates one executor, constructs the root Task, runs it to a terminal
 state, takes its exact typed result, and destroys the executor. When the async
 root has preconditions, construction supplies its declaration span as
-state-zero blame. Both raw object-emission routes independently validate the
-complete executable root as `() -> Unit`; the checked-MIR arbitrary-value root
-printer is not part of this boundary.
+state-zero blame. Native preparation validates the complete executable root as
+`() -> Unit` before LCIR construction.
 
 Each admitted async instance has a checked `CoroutinePlan` with an exact output
 type, an optional carried creation span for state-zero preconditions, and dense
@@ -598,12 +585,11 @@ name or maps the source `DefId` back to `TaskIntrinsic`. LCIR therefore still
 receives exact child types and explicit control flow without acquiring public
 Task policy operators.
 
-The remaining fallback boundary includes unsupported managed projected inout
-operations and affine runtime proof replay whose failure path cannot yet
-dispose of the carried obligation. Raw readiness has no current source or MIR
+Remaining native coverage gaps include affine runtime proof replay whose
+failure path cannot yet dispose of the carried obligation. Raw readiness has no current source or MIR
 producer and is therefore not a language coverage item. A reachable
 dynamic-concept frame use with no exact producer in the closed catalog instead
-reports `MissingDynamicConceptWitness` and never selects fallback. Mutation or moves
+reports `MissingDynamicConceptWitness`. Mutation or moves
 through a constrained or protected record interior are rejected at the source
 and checked-MIR boundaries; the owning synchronous `mut self` record receiver
 remains an admitted top-level reconstruction. Concrete closed
@@ -626,7 +612,7 @@ for every variant, conjoins nested tag predicates, publishes only the active
 variant, and clears all inactive candidates. Definitions and phis publish the
 leaves, aggregate uses are reconstructed from post-safepoint reloads, and every
 nonempty frame is popped on all source exits. Root-map ABI-limit excess is
-`ProgramTooLarge`, not fallback. No universal root chain or executor
+`ProgramTooLarge`. No universal root chain or executor
 participates in this path.
 
 The authenticated private close leaves in the source File and Socket disposal
@@ -726,7 +712,7 @@ resource. Open, create, and connect completion install the concrete RAII owner
 in the child Task's result ledger before publishing its monotonic capability
 token. The polling boundary publishes managed Text through an exact rooted
 scratch cell, and a compiler-generated callback constructs the direct Result
-without an intervening safepoint or universal value fallback.
+without an intervening safepoint or universal value.
 
 Calls to the C process entry, libc, and versioned Loom runtime functions are
 explicit external boundaries. They do not permit two source-function ABIs in
@@ -761,21 +747,19 @@ Target-machine creation, module triple and data layout, debug-source mapping,
 LLVM verification, optimization, object writing, runtime-bundle linking, and
 host linking remain shared infrastructure.
 
-## Migration and deletion gates
+## Completed migration gates
 
-Checked-MIR implementation is removed by demonstrated semantic coverage:
+The checked-MIR universal source-function emitter, universal scalar and
+aggregate ABI, assumed-body specializations, and private native `List[Int]`
+path have been deleted. All maintained native fixtures lower through one
+checked LCIR artifact. Runtime, collection, executor, and fault requirements
+are derived from that artifact and its closed instance graph.
 
-| Checked-MIR area | Gate before deletion |
-| --- | --- |
-| Scalar native wrappers and universal scalar locals | LCIR covers reachable scalar signatures, locals, CFG, direct and fallible calls, checked faults, scalar contracts and cleanup exits, synchronous scalar mutable-receiver bodies with exact normal/fault writeback, and run/test harnesses with zero eligible fallback. |
-| Assumed integer bodies | General LCIR proofs preserve checked behavior inside and outside proved domains, recursive benchmarks remain competitive, and no emitted body depends on one recursion pattern. |
-| Duplicated universal/native/assumed requirement scans | Runtime, collection, executor, and fault requirements are derived from checked LCIR and its closed instance graph. |
-| Aggregate and private-storage specializations | Direct products cover structural tuple construction and destructuring, tuple/record nesting, closed POD record construction, copy/move, bounded typed nested places, functional mutation, aggregate phis/loops, typed calls, invariant-free projected receiver writeback, reconstruction through the current synchronous `mut self` receiver's own top-level invariant on normal and fault edges, and non-consuming contract inspection of Task-bearing transparent/product/sum carriers. Finite dynamic leaves add fresh immutable-box writeback through admitted nested places. Direct sums cover closed concrete enum construction, ordered exhaustive owned and borrowed match decisions, typed payload edges, nested products/sums, and `Result` test outcomes. General managed representation, escape, range, and scalar-replacement planning must still cover GC, cleanup, suspension, and otherwise unrepresentable projected behavior. |
-| Universal function ABI and `ValueSlot` | LCIR covers aggregates, enums, refined values, generics, witnesses, `dyn`, contracts, builtins, moving GC, cleanup, async functions, Tasks, and all maintained native fixtures without fallback. |
-
-New exact-shape native specializations are not accepted migration work. Range,
-escape, liveness, devirtualization, and scalar-replacement facts belong in
-planning or validated LCIR transforms.
+New exact-source-shape native specializations are not accepted. Range, escape,
+liveness, devirtualization, and scalar-replacement facts belong in planning or
+validated LCIR transforms. Extending native language coverage means adding an
+LCIR representation or operation and its independent validation, not adding a
+second emitter.
 
 ## Acceptance criteria
 
@@ -792,17 +776,17 @@ Every LCIR slice requires:
   wrapper; pure and runtime-only synchronous slices require no executor, while
   Task-producing synchronous helpers may only forward the checked executor
   owned by their async caller;
-- reachable-unsupported and unreachable-unsupported route tests;
-- tests proving that lowering, validation, and target defects do not fall back;
+- reachable-unsupported and unreachable-unsupported preparation tests;
+- tests distinguishing coverage errors from lowering, validation, and target
+  defects;
 - macOS development verification and release verification on each release host;
-- object-identity tests for LCIR format, planning, target-layout, root,
-  reachability, or route-selection changes;
-- controlled direct-value benchmarks against the checked-MIR compiler and the
-  maintained Go, Rust, C, and C++ cases when a measured hot path changes.
+- object-identity tests for LCIR format, planning, target layout, roots, and
+  reachability changes;
+- controlled native benchmarks against the maintained Go, Rust, C, and C++
+  cases when a measured hot path changes.
 
-The migration is complete only after the checked-MIR universal source-function ABI
-and its exact-shape specializations are deleted. LLVM optimization output alone
-is not evidence that typed lowering is complete.
+LLVM optimization output alone is not evidence that typed lowering is correct;
+the checked artifact and differential execution remain the semantic evidence.
 
 ## Non-goals
 

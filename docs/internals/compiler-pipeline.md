@@ -16,21 +16,18 @@ project input
   -> MIR validation
   -> interpreter
      or
-     native route preparation
+     native preparation
        -> exact LLVM target machine and target layout
-       -> whole-artifact direct classification/lowering
-          -> complete checked LCIR -> typed LLVM emitter
-          or
-          -> unsupported
-             -> Automatic -> checked-MIR reachability -> universal-value LLVM emitter
-             -> LcirOnly -> structured support-report error
+       -> whole-artifact MIR-to-LCIR lowering
+       -> independent LCIR validation
+       -> typed LLVM emitter
        -> object cache -> linker
 ```
 
 This diagram is the current production pipeline. `loom-codegen-ir` owns both
-checked-MIR source reachability and whole-artifact direct MIR-to-LCIR
-lowering. `loom-codegen-llvm` prepares one opaque route, target machine, and
-route-specific object identity for the cache and emitter. See
+checked-MIR source reachability and whole-artifact MIR-to-LCIR lowering.
+`loom-codegen-llvm` prepares one checked LCIR artifact and exact target machine;
+the cache fingerprint and emitter consume that same preparation. See
 [Code generation IR](codegen-ir.md) for the implemented boundary and the
 [typed code generation IR RFC](../rfcs/typed-codegen-ir.md) for the remaining
 migration gates.
@@ -145,40 +142,28 @@ descriptors all contribute edges. See
 The interpreter executes MIR deterministically and provides an independent
 semantic oracle for end-to-end tests. The production LLVM path prepares one
 representation-neutral target machine, derives LCIR's pointer-width layout
-from its target data, and attempts one atomic whole-artifact direct lowering
+from its target data, and performs one atomic whole-artifact lowering
 for primitive values, literal or concat-produced direct `Text` on 64-bit targets,
 structural tuples, closed records, and established transparent refined values,
 including eligible closed concrete enums.
 A complete result retains only the independently validated `CheckedArtifact`
-and uses the typed LCIR emitter. A valid `Unsupported` result selects the
-checked-MIR source graph and universal-value emitter for the complete artifact
-only when the reachable graph contains no LCIR-only primitive. Reachable File
-or Socket I/O instead makes preparation fail closed; a dead private I/O helper
-does not affect route selection. Invalid programs, invalid roots, resource
-exhaustion, compiler defects, and LCIR emission failures never select fallback.
+and uses the typed LCIR emitter. `Unsupported` is a structured native
+compilation error with the ordered support report; it never selects another
+emitter. Dead private helpers outside the selected closure do not affect
+lowering. Invalid programs, invalid roots, resource exhaustion, compiler
+defects, and LLVM emission failures remain distinct hard errors.
 
-Tooling can select `NativeRoutePolicy::LcirOnly` at the same preparation
-boundary. It performs the identical whole-artifact classification but returns
-`NativePreparationUnsupportedLcir` with the ordered `SupportReport` instead of
-constructing a checked-MIR plan. `CheckedMirOnly` remains an internal focused
-backend-validation escape: it deliberately bypasses LCIR classification and is
-not selected by a production command. Route policy never changes the identity
-of an otherwise identical selected object.
-
-The prepared plan owns its `EmitOptions` and exact target machine. Cache
+The prepared object owns its `EmitOptions`, checked LCIR artifact, and exact target machine. Cache
 identity, runtime-bundle validation, optimization, and object emission reuse
-that plan instead of reconstructing target or reachability state. Ordinary
-`build`, `run`, `test`, and `debug` use automatic selection. A complete LCIR
-artifact keeps the typed route in development debug builds; an unsupported
-reachable construct selects the complete checked-MIR route only when the graph
-contains no LCIR-only primitive. Linking remains a separate step.
+that preparation instead of reconstructing target or reachability state.
+`build`, `run`, `test`, and `debug` all use this same boundary. Linking remains
+a separate step.
 
 Source diagnostics exit before either backend executes. `loom check` stops at
 this source and checked-MIR boundary and does not select executable roots.
 Concrete native artifact closure for LLVM `build`, `run`, `test`, or `debug`
 may then discover the root-dependent `MissingDynamicConceptWitness` error;
-Automatic and `LcirOnly` preparation report it as an invalid program before
-selecting an emitter. The internal `CheckedMirOnly` escape does not perform that
-artifact validity check. Other errors discovered after checked MIR—missing MIR
+native preparation reports it as an invalid program before LLVM emission.
+Other errors discovered after checked MIR—missing MIR
 references, LLVM verifier failures, or malformed compiler-generated ABI
 metadata—are reported as defects, not source errors.

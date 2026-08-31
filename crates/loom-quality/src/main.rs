@@ -10,10 +10,10 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use loom_codegen_llvm::{
-    EmitOptions, NativeArtifactKind, NativeRouteKind, NativeRoutePolicy, NativeTargetIdentity,
-    OptimizationProfile, RuntimeBundle, RuntimeLinker, emit_native_debug_companion,
-    emit_prepared_native_object, link_object_with_runtime_bundle, native_artifact_path,
-    prepare_native_object, prepared_native_target_identity, target_identity,
+    EmitOptions, NativeArtifactKind, NativeTargetIdentity, OptimizationProfile, RuntimeBundle,
+    RuntimeLinker, emit_native_debug_companion, emit_prepared_native_object,
+    link_object_with_runtime_bundle, native_artifact_path, prepare_native_object,
+    prepared_native_target_identity, target_identity,
 };
 use loom_core::{FileId, Span};
 use loom_driver::{AnalysisHost, ProjectOptions};
@@ -52,7 +52,7 @@ const TYPED_TASK_OUTCOMES_FIXTURE: &str = "fixtures/lcir-typed-task-outcomes";
 const TYPED_ASYNC_CLEANUP_FIXTURE: &str = "fixtures/lcir-async-cleanup";
 const TYPED_ASYNC_WRITEBACK_FIXTURE: &str = "fixtures/lcir-async-writeback";
 const FALLIBLE_TYPED_ASYNC_FIXTURE: &str = "fixtures/lcir-fallible-async";
-const QUALITY_EVIDENCE_SCHEMA_VERSION: u32 = 4;
+const QUALITY_EVIDENCE_SCHEMA_VERSION: u32 = 5;
 
 const TASKS: &[TaskSpec] = &[
     TaskSpec {
@@ -219,18 +219,8 @@ struct EvidenceReport {
     optimization: String,
     tasks: Vec<TaskEvidence>,
     repository: Option<RepositoryEvidence>,
-    native_routes: Vec<NativeRouteEvidence>,
     gates: Vec<GateEvidence>,
     failures: Vec<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct NativeRouteEvidence {
-    scenario: String,
-    expected: &'static str,
-    actual: &'static str,
-    passed: bool,
 }
 
 #[derive(Serialize)]
@@ -311,44 +301,26 @@ fn main() {
         optimization: target.optimization,
         tasks: Vec::new(),
         repository: None,
-        native_routes: Vec::new(),
         gates: Vec::new(),
         failures: Vec::new(),
     };
 
     for task in TASKS {
-        match run_task(
-            &workspace,
-            task,
-            &runtime,
-            &mut report.gates,
-            &mut report.native_routes,
-        ) {
+        match run_task(&workspace, task, &runtime, &mut report.gates) {
             Ok(evidence) => report.tasks.push(evidence),
             Err(error) => report.failures.push(format!("{}: {error}", task.name)),
         }
     }
-    if let Err(error) = typed_lcir_gate(
-        &workspace,
-        &runtime,
-        &mut report.gates,
-        &mut report.native_routes,
-    ) {
+    if let Err(error) = typed_lcir_gate(&workspace, &runtime, &mut report.gates) {
         report.failures.push(format!("typed-lcir: {error}"));
     }
-    if let Err(error) = typed_logging_gate(
-        &workspace,
-        &runtime,
-        &mut report.gates,
-        &mut report.native_routes,
-    ) {
+    if let Err(error) = typed_logging_gate(&workspace, &runtime, &mut report.gates) {
         report.failures.push(format!("typed-logging: {error}"));
     }
     if let Err(error) = typed_async_gate(
         &workspace,
         &runtime,
         &mut report.gates,
-        &mut report.native_routes,
         TYPED_JSON_FORMAT_FIXTURE,
         "typed-json-format",
     ) {
@@ -358,7 +330,6 @@ fn main() {
         &workspace,
         &runtime,
         &mut report.gates,
-        &mut report.native_routes,
         TYPED_ASYNC_FIXTURE,
         "typed-async",
     ) {
@@ -368,7 +339,6 @@ fn main() {
         &workspace,
         &runtime,
         &mut report.gates,
-        &mut report.native_routes,
         ASYNC_MANAGED_COLLECTIONS_FIXTURE,
         "async-managed-collections",
     ) {
@@ -380,7 +350,6 @@ fn main() {
         &workspace,
         &runtime,
         &mut report.gates,
-        &mut report.native_routes,
         FALLIBLE_TYPED_ASYNC_FIXTURE,
         "fallible-typed-async",
     ) {
@@ -392,7 +361,6 @@ fn main() {
         &workspace,
         &runtime,
         &mut report.gates,
-        &mut report.native_routes,
         TYPED_SLEEP_FIXTURE,
         "typed-sleep",
     ) {
@@ -402,7 +370,6 @@ fn main() {
         &workspace,
         &runtime,
         &mut report.gates,
-        &mut report.native_routes,
         SYNC_TASK_HELPERS_FIXTURE,
         "sync-task-helpers",
     ) {
@@ -412,7 +379,6 @@ fn main() {
         &workspace,
         &runtime,
         &mut report.gates,
-        &mut report.native_routes,
         TYPED_TASK_ALL_FIXTURE,
         "typed-task-all",
     ) {
@@ -422,7 +388,6 @@ fn main() {
         &workspace,
         &runtime,
         &mut report.gates,
-        &mut report.native_routes,
         TYPED_TASK_ANY_FIXTURE,
         "typed-task-any",
     ) {
@@ -432,7 +397,6 @@ fn main() {
         &workspace,
         &runtime,
         &mut report.gates,
-        &mut report.native_routes,
         TYPED_TASK_OUTCOMES_FIXTURE,
         "typed-task-outcomes",
     ) {
@@ -444,7 +408,6 @@ fn main() {
         &workspace,
         &runtime,
         &mut report.gates,
-        &mut report.native_routes,
         TYPED_ASYNC_CLEANUP_FIXTURE,
         "typed-async-cleanup",
     ) {
@@ -456,7 +419,6 @@ fn main() {
         &workspace,
         &runtime,
         &mut report.gates,
-        &mut report.native_routes,
         TYPED_ASYNC_WRITEBACK_FIXTURE,
         "typed-async-writeback",
     ) {
@@ -464,31 +426,16 @@ fn main() {
             .failures
             .push(format!("typed-async-writeback: {error}"));
     }
-    match run_c3_repository(
-        &workspace,
-        &runtime,
-        &mut report.gates,
-        &mut report.native_routes,
-    ) {
+    match run_c3_repository(&workspace, &runtime, &mut report.gates) {
         Ok(evidence) => report.repository = Some(evidence),
         Err(error) => report.failures.push(format!("c3-repository: {error}")),
     }
-    if let Err(error) = async_generic_contract_gate(
-        &workspace,
-        &runtime,
-        &mut report.gates,
-        &mut report.native_routes,
-    ) {
+    if let Err(error) = async_generic_contract_gate(&workspace, &runtime, &mut report.gates) {
         report
             .failures
             .push(format!("async-generic-contracts: {error}"));
     }
-    if let Err(error) = std_gate(
-        &workspace,
-        &runtime,
-        &mut report.gates,
-        &mut report.native_routes,
-    ) {
+    if let Err(error) = std_gate(&workspace, &runtime, &mut report.gates) {
         report.failures.push(format!("std: {error}"));
     }
     if let Err(error) = parser_throughput_gate(&workspace, &mut report.gates) {
@@ -536,49 +483,17 @@ fn load_native_runtime(target: &NativeTargetIdentity) -> Result<NativeRuntime, S
     Ok(NativeRuntime { bundle, linker })
 }
 
-fn native_route_name(route: NativeRouteKind) -> &'static str {
-    match route {
-        NativeRouteKind::Lcir => "lcir",
-        NativeRouteKind::CheckedMir => "checked-mir",
-    }
-}
-
-fn emit_routed_native(
+fn emit_native_executable(
     program: &CheckedProgram,
     output: &Path,
     options: EmitOptions,
     runtime: &NativeRuntime,
     scenario: impl Into<String>,
-    routes: &mut Vec<NativeRouteEvidence>,
 ) -> Result<NativeBuild, String> {
     let scenario = scenario.into();
     let has_debug_sources = !options.debug_sources.is_empty();
-    let diagnostic_options = options.clone();
-    let prepared = prepare_native_object(program, options, NativeRoutePolicy::Automatic)
+    let prepared = prepare_native_object(program, options)
         .map_err(|error| format!("{scenario} native preparation failed: {error}"))?;
-    let actual = prepared.route_kind();
-    let expected = NativeRouteKind::Lcir;
-    let passed = actual == expected;
-    routes.push(NativeRouteEvidence {
-        scenario: scenario.clone(),
-        expected: native_route_name(expected),
-        actual: native_route_name(actual),
-        passed,
-    });
-    if !passed {
-        let detail =
-            match prepare_native_object(program, diagnostic_options, NativeRoutePolicy::LcirOnly) {
-                Ok(_) => {
-                    "LcirOnly unexpectedly prepared after automatic checked-MIR routing".into()
-                }
-                Err(error) => error.to_string(),
-            };
-        return Err(format!(
-            "{scenario} selected native route `{}`, expected `{}`: {detail}",
-            native_route_name(actual),
-            native_route_name(expected),
-        ));
-    }
 
     let target = prepared_native_target_identity(&prepared);
     if runtime.bundle.target_triple() != target.triple
@@ -611,7 +526,6 @@ fn typed_lcir_gate(
     workspace: &Path,
     runtime: &NativeRuntime,
     gates: &mut Vec<GateEvidence>,
-    routes: &mut Vec<NativeRouteEvidence>,
 ) -> Result<(), String> {
     let project = workspace.join(TYPED_LCIR_FIXTURE);
     let snapshot = AnalysisHost::new(&project)
@@ -625,13 +539,12 @@ fn typed_lcir_gate(
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let executable = directory.path().join("main");
     let build_started = Instant::now();
-    emit_routed_native(
+    emit_native_executable(
         program,
         &executable,
         EmitOptions::run("main").with_optimization(OptimizationProfile::Release),
         runtime,
         "typed-lcir.main",
-        routes,
     )?;
     upper_gate(
         gates,
@@ -666,7 +579,6 @@ fn typed_logging_gate(
     workspace: &Path,
     runtime: &NativeRuntime,
     gates: &mut Vec<GateEvidence>,
-    routes: &mut Vec<NativeRouteEvidence>,
 ) -> Result<(), String> {
     let project = workspace.join(TYPED_LOGGING_FIXTURE);
     let analysis_started = Instant::now();
@@ -689,21 +601,19 @@ fn typed_logging_gate(
     let tests = directory.path().join("tests");
 
     let build_started = Instant::now();
-    emit_routed_native(
+    emit_native_executable(
         program,
         &executable,
         EmitOptions::run("main").with_optimization(OptimizationProfile::Release),
         runtime,
         "typed-logging.main",
-        routes,
     )?;
-    emit_routed_native(
+    emit_native_executable(
         program,
         &tests,
         EmitOptions::tests().with_optimization(OptimizationProfile::Release),
         runtime,
         "typed-logging.tests",
-        routes,
     )?;
     upper_gate(
         gates,
@@ -757,7 +667,6 @@ fn typed_async_gate(
     workspace: &Path,
     runtime: &NativeRuntime,
     gates: &mut Vec<GateEvidence>,
-    routes: &mut Vec<NativeRouteEvidence>,
     fixture: &str,
     scenario: &str,
 ) -> Result<(), String> {
@@ -774,21 +683,19 @@ fn typed_async_gate(
     let executable = directory.path().join("main");
     let tests = directory.path().join("tests");
     let build_started = Instant::now();
-    emit_routed_native(
+    emit_native_executable(
         program,
         &executable,
         EmitOptions::run("main").with_optimization(OptimizationProfile::Release),
         runtime,
         format!("{scenario}.main"),
-        routes,
     )?;
-    emit_routed_native(
+    emit_native_executable(
         program,
         &tests,
         EmitOptions::tests().with_optimization(OptimizationProfile::Release),
         runtime,
         format!("{scenario}.tests"),
-        routes,
     )?;
     upper_gate(
         gates,
@@ -840,7 +747,6 @@ fn std_gate(
     workspace: &Path,
     runtime: &NativeRuntime,
     gates: &mut Vec<GateEvidence>,
-    routes: &mut Vec<NativeRouteEvidence>,
 ) -> Result<(), String> {
     let interpreter_project = tempfile::tempdir().map_err(|error| error.to_string())?;
     let interpreter_fixture = prepare_std_fixture(workspace, interpreter_project.path())?;
@@ -890,7 +796,6 @@ fn std_gate(
         native_fixture,
         runtime,
         gates,
-        routes,
     )
 }
 
@@ -942,17 +847,15 @@ fn run_std_native(
     fixture: StdFixture,
     runtime: &NativeRuntime,
     gates: &mut Vec<GateEvidence>,
-    routes: &mut Vec<NativeRouteEvidence>,
 ) -> Result<(), String> {
     let executable = project.join("native-tests");
     let native_build_started = Instant::now();
-    emit_routed_native(
+    emit_native_executable(
         program,
         &executable,
         EmitOptions::tests().with_optimization(OptimizationProfile::Release),
         runtime,
         "std.tests",
-        routes,
     )
     .map_err(|error| format!("native test build failed: {error}"))?;
     upper_gate(
@@ -1116,7 +1019,6 @@ fn async_generic_contract_gate(
     workspace: &Path,
     runtime: &NativeRuntime,
     gates: &mut Vec<GateEvidence>,
-    routes: &mut Vec<NativeRouteEvidence>,
 ) -> Result<(), String> {
     let snapshot = AnalysisHost::new_with_options(
         workspace.join(ASYNC_GENERIC_FIXTURE),
@@ -1151,13 +1053,12 @@ fn async_generic_contract_gate(
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let executable = directory.path().join("tests");
     let native_build_started = Instant::now();
-    emit_routed_native(
+    emit_native_executable(
         program,
         &executable,
         EmitOptions::tests().with_optimization(OptimizationProfile::Release),
         runtime,
         "async-generic-contracts.tests",
-        routes,
     )
     .map_err(|error| format!("native test build failed: {error}"))?;
     upper_gate(
@@ -1197,7 +1098,6 @@ fn run_c3_repository(
     workspace: &Path,
     runtime: &NativeRuntime,
     gates: &mut Vec<GateEvidence>,
-    routes: &mut Vec<NativeRouteEvidence>,
 ) -> Result<RepositoryEvidence, String> {
     let analysis_started = Instant::now();
     let snapshot =
@@ -1262,23 +1162,21 @@ fn run_c3_repository(
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let native_build_started = Instant::now();
     let executable = directory.path().join("main");
-    let main_artifact = emit_routed_native(
+    let main_artifact = emit_native_executable(
         program,
         &executable,
         EmitOptions::run(&entry).with_optimization(OptimizationProfile::Release),
         runtime,
         "c3-repository.main",
-        routes,
     )
     .map_err(|error| format!("native main build failed: {error}"))?;
     let test_executable = directory.path().join("tests");
-    let test_artifact = emit_routed_native(
+    let test_artifact = emit_native_executable(
         program,
         &test_executable,
         EmitOptions::tests().with_optimization(OptimizationProfile::Release),
         runtime,
         "c3-repository.tests",
-        routes,
     )
     .map_err(|error| format!("native test build failed: {error}"))?;
     let native_build_elapsed = native_build_started.elapsed();
@@ -1373,7 +1271,6 @@ fn run_task(
     task: &'static TaskSpec,
     runtime: &NativeRuntime,
     gates: &mut Vec<GateEvidence>,
-    routes: &mut Vec<NativeRouteEvidence>,
 ) -> Result<TaskEvidence, String> {
     let source = std::fs::read_to_string(workspace.join(task.source))
         .map_err(|error| format!("read {}: {error}", task.source))?;
@@ -1441,23 +1338,21 @@ fn run_task(
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let native_build_started = Instant::now();
     let executable = directory.path().join("main");
-    let main_artifact = emit_routed_native(
+    let main_artifact = emit_native_executable(
         program,
         &executable,
         EmitOptions::run("main").with_optimization(OptimizationProfile::Release),
         runtime,
         format!("{}.main", task.name),
-        routes,
     )
     .map_err(|error| format!("native main build failed: {error}"))?;
     let test_executable = directory.path().join("tests");
-    let test_artifact = emit_routed_native(
+    let test_artifact = emit_native_executable(
         program,
         &test_executable,
         EmitOptions::tests().with_optimization(OptimizationProfile::Release),
         runtime,
         format!("{}.tests", task.name),
-        routes,
     )
     .map_err(|error| format!("native test build failed: {error}"))?;
     let native_build_elapsed = native_build_started.elapsed();

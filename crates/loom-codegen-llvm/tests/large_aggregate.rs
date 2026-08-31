@@ -96,11 +96,14 @@ fn copying_and_comparing_a_large_list_is_stack_bounded_on_both_backends() {
     assert_eq!(
         llvm_ir
             .lines()
-            .filter(|line| line.contains("call i32 @loom_runtime_list_add"))
+            .filter(|line| {
+                line.contains("list.construct.element.data") && line.contains("getelementptr")
+            })
             .count(),
         ELEMENT_COUNT,
-        "List literal did not stream every source element through the bounded append path"
+        "List literal did not stream every source element into one typed backing allocation"
     );
+    assert!(!llvm_ir.contains("loom_runtime_list_add"), "{llvm_ir}");
     let native = Command::new(executable)
         .output()
         .expect("run native regression executable");

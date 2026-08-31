@@ -5,8 +5,8 @@ use std::fs;
 
 use loom_codegen_ir::{SourceRoots, analyze_source_reachability};
 use loom_codegen_llvm::{
-    EmitOptions, NativeRouteKind, NativeRoutePolicy, native_object_fingerprint,
-    prepare_native_object, prepared_native_object_fingerprint,
+    EmitOptions, native_object_fingerprint, prepare_native_object,
+    prepared_native_object_fingerprint,
 };
 
 mod support;
@@ -436,9 +436,9 @@ fn dead(text Text) {
 }
 
 fn typed_native_fingerprint(program: &CheckedProgram, options: &EmitOptions) -> String {
-    let prepared = prepare_native_object(program, options.clone(), NativeRoutePolicy::Automatic)
-        .expect("prepare typed native identity");
-    assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    let prepared =
+        prepare_native_object(program, options.clone()).expect("prepare typed native identity");
+
     prepared_native_object_fingerprint(&prepared).expect("typed native identity")
 }
 

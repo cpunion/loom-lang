@@ -26,12 +26,11 @@ semantics have not yet been specified across all five implementations.
 
 The current Loom benchmark executable is intentionally one runtime-selected
 program: its root parses `List[Text]`, matches the requested case, and keeps all
-workloads reachable. Automatic native routing is whole-artifact atomic, so the
-remaining Text/List/parse/match coverage selects the checked-MIR native route for
-this executable, including `record_method`. Do not cite this suite as direct
-LCIR record performance yet. Separate source/interpreter/LLVM differential
-tests build and run a closed record-method workload through direct LCIR; moving
-the parameter-driven benchmark itself requires a future per-case build protocol.
+workloads reachable. Native compilation lowers that complete reachable program
+to typed LCIR before LLVM emission. An LCIR coverage gap is a compilation error;
+there is no alternate universal-value backend that can silently change the code
+being measured. The suite therefore measures the production native pipeline,
+including its real argument parsing and dispatch overhead.
 
 ## Run the suite
 
