@@ -442,10 +442,15 @@ record invariants remain normal typed `Result[..., ConstraintError]`
 constructions. Open or unsupported-shape runtime construction rejects native
 preparation. A
 decoded `.loomi` MIR
-proof replay (`ConstructionMode::Recheck`) for a task-free refined type or
-concrete task-free invariant-record instantiation re-evaluates the embedded predicate in typed
-LCIR, raises the canonical `ArtifactProofRejected` runtime fault on rejection,
-and creates the established nominal value only in the accepted block. Generic
+proof replay (`ConstructionMode::Recheck`) for a supported refined type or
+concrete invariant-record instantiation re-evaluates the embedded predicate in
+typed LCIR, raises the canonical `ArtifactProofRejected` runtime fault on rejection,
+and creates the established nominal value only in the accepted block. This
+includes exact by-value Task leaves in bounded tuple, record, closed-sum, and
+transparent-wrapper carriers: predicate inspection borrows the candidate,
+success establishes the original carrier once, and rejection reaches the owning
+coroutine's structured cancellation-and-drain path. Repeated Task carriers
+remain unsupported, and Task obligations cannot be erased. Generic
 invariant records first apply the current function-instance substitution and then their
 independent definition-parameter substitution to fields and lexical contract
 bindings. Unsupported concrete representations or contract shapes produce an
