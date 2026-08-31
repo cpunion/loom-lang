@@ -233,13 +233,15 @@ directly. With ordered functional writebacks `W...`, it returns `{ T, W... }`.
 A faulting function returns `{ i32 status, T, W... }` and receives one hidden
 fault-context pointer. Normal and fault exits both return the latest inout
 values in their exact direct representations, including scalar `Bool`, `Int`,
-and `Float`; the source result is zero-filled on a fault. This is a
+and `Float` and task-free closed sums such as `Option` and `Result`; the source
+result is zero-filled on a fault. This is a
 compiler-private object ABI, not a native library ABI.
 
 The production backend uses this typed ABI for build, run, test, and debug
 artifacts. Tuple construction and `let` destructuring are direct SSA
 construction and extraction; they do not allocate tuple nodes. Invariant-free
-record projections, eligible projected mutable receivers, and reconstruction
+record projections, eligible projected primitive, record, and closed-sum
+mutable receivers, and reconstruction
 through the current synchronous `mut self` receiver's own top-level invariant
 use exact typed extraction and functional writeback on normal and fault edges.
 Source analysis and checked MIR reject mutation or moves that bypass a

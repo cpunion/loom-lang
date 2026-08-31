@@ -2365,6 +2365,8 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             && (matches!(ty, Type::Bool | Type::Int | Type::Float)
                 || self.supported_record_type(ty)
                 || (is_invariant_record_type(self.program, ty)
+                    && self.aggregates.supports_value_type(ty))
+                || (closed_enum_variants(self.program, ty).is_some()
                     && self.aggregates.supports_value_type(ty)))
     }
 

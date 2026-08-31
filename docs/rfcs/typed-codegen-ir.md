@@ -91,8 +91,9 @@ construction. Proof-only witness identity remains compile-time data; it does
 not force a runtime witness parameter. The implemented concrete static slice
 infers a selected conformance head from checked dispatch type, appends exact
 method type/proof arguments, normalizes associated projections, and closes the
-witness method as an ordinary direct edge. Dynamic calls remain a later
-whole-artifact slice.
+witness method as an ordinary direct edge. A finite closed dynamic catalog
+devirtualizes one candidate or emits direct switch dispatch across multiple
+candidates; open or producer-incomplete catalogs fail native preparation.
 
 For a statically established source predicate, fresh checked MIR is also the
 process-local proof boundary. The public raw LCIR builder cannot mint
@@ -100,9 +101,9 @@ proof-bearing instructions, and LCIR validation checks their exact typed
 construction shape; it does not claim to reconstruct and re-prove a predicate
 that LCIR does not encode. Portable `.loomi` serialization replaces `Proven`
 with `Recheck`, and decoding normalizes a forged `Proven` spelling the same
-way. Supported nongeneric `Recheck` executes the predicate or invariant in
-typed LCIR before publishing a nominal value and raises the canonical
-`ArtifactProofRejected` runtime fault when replay fails. Generic or otherwise
+way. Supported fully instantiated `Recheck` executes the predicate or invariant
+in typed LCIR before publishing a nominal value and raises the canonical
+`ArtifactProofRejected` runtime fault when replay fails. Open or otherwise
 unsupported replay rejects native preparation. Checked MIR remains neither a
 portable proof certificate nor publisher authentication.
 
@@ -599,7 +600,9 @@ dynamic-concept frame use with no exact producer in the closed catalog instead
 reports `MissingDynamicConceptWitness`. Mutation or moves
 through a constrained or protected record interior are rejected at the source
 and checked-MIR boundaries; the owning synchronous `mut self` record receiver
-remains an admitted top-level reconstruction. Concrete closed
+remains an admitted top-level reconstruction. Concrete task-free closed sums,
+including `Option` and `Result`, are admitted as whole-value functional `mut
+self` receivers; Task-bearing sums remain excluded. Concrete closed
 `List[T]` and compiler-private `TextMap[V]` values are canonical one-pointer
 frame carriers in parameters, results, nested products, and suspension-live
 rows. Fixed argument joins and homogeneous runtime-width List joins are

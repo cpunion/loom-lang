@@ -7,6 +7,31 @@ record Pair {
 
 enum Envelope { Wrapped(Text) }
 
+concept ReplaceSum {
+    method replaceSum(mut self, fail Bool)
+}
+
+impl ReplaceSum for Envelope {
+    method replaceSum(mut self, fail Bool) {
+        self = Envelope.Wrapped("Keep")
+        assert !fail
+    }
+}
+
+impl ReplaceSum for Option[Text] {
+    method replaceSum(mut self, fail Bool) {
+        self = Some("Keep")
+        assert !fail
+    }
+}
+
+impl ReplaceSum for Result[Pair, Problem] {
+    method replaceSum(mut self, fail Bool) {
+        self = Ok(Pair { left = "Keep", right = "Keep" })
+        assert !fail
+    }
+}
+
 enum Nested {
     Optional(Option[Text])
     Outcome(Result[Pair, Problem])
@@ -123,6 +148,21 @@ fn pointerFree(input Plain) Int {
     }
 }
 
+fn initialPairResult() Result[Pair, Problem] { Err(Problem.WrongText) }
+
+fn verifyMutableSumReceivers() Bool {
+    var envelope = Envelope.Wrapped("Before")
+    var optional = Some("Before")
+    var outcome = initialPairResult()
+    envelope.replaceSum(false)
+    optional.replaceSum(false)
+    outcome.replaceSum(false)
+    let envelopeMatches = envelopeText(envelope) == "Keep"
+    let optionMatches = optionText(optional) == "Keep"
+    let pair = resultPair(outcome)
+    envelopeMatches && optionMatches && pair.left == "Keep" && pair.right == "Keep"
+}
+
 fn verify() Result[Unit, Problem] {
     let kept = join("K", "eep")
     let contracted = retainContract(Some(kept), collectPressure())
@@ -138,7 +178,7 @@ fn verify() Result[Unit, Problem] {
     let fromAlias = nestedPair(holder.state)
     let fromNestedOption = nestedPair(retainNested(Nested.Optional(Some(kept)), true))
     let fromNestedResult = nestedPair(retainNested(Nested.Outcome(Ok(Pair { left = kept, right = kept })), true))
-    if fromContract == "Keep" && fromOption == "Keep" && fromResult.left == "Keep" && fromResult.right == "Keep" && fromEnvelope == "Keep" && fromAlias.left == "Keep" && fromAlias.right == "Keep" && fromNestedOption.left == "Keep" && fromNestedOption.right == "Keep" && fromNestedResult.left == "Keep" && fromNestedResult.right == "Keep" && pointerFree(Plain.One(42)) == 42 {
+    if fromContract == "Keep" && fromOption == "Keep" && fromResult.left == "Keep" && fromResult.right == "Keep" && fromEnvelope == "Keep" && fromAlias.left == "Keep" && fromAlias.right == "Keep" && fromNestedOption.left == "Keep" && fromNestedOption.right == "Keep" && fromNestedResult.left == "Keep" && fromNestedResult.right == "Keep" && pointerFree(Plain.One(42)) == 42 && verifyMutableSumReceivers() {
         Ok(Unit)
     } else {
         Err(Problem.WrongText)

@@ -79,7 +79,7 @@ The following repository fixtures are run through real compiler stages:
 | `fixtures/lcir-managed-bytes` | one-pointer typed `Bytes`, zero-allocation Text-backed UTF-8 sharing, content equality, Unicode byte indexing, checked negative and upper-bound misses, append, decode, moving-GC publication, and real check/build/test/run commands |
 | `fixtures/lcir-typed-path` | exact invariant-protected one-field Text-backed Path values, non-collecting construction/extraction, portable lexical join, rejected raw MIR/LCIR construction and mutation, preserved Unicode and `.`/`..`/repeated-separator spelling, ordinary `ContainsNul`/`AbsoluteJoin` errors, live aliases and joined results through moving-GC pressure, and real check/build/test/run commands without checked-MIR path helpers or an executor |
 | `fixtures/lcir-managed-products` | unboxed nested record/tuple products with managed Text leaves, direct product calls/returns, semantic aliases, and real check/build/test/run commands |
-| `fixtures/lcir-managed-sums` | closed unboxed sums with active-variant Text roots, nested product payloads, contract matches over managed leaves, forced collection between call arguments, and real check/build/test/run commands |
+| `fixtures/lcir-managed-sums` | closed unboxed sums with active-variant Text roots, nested product payloads, task-free enum/Option/Result functional receiver writeback, contract matches over managed leaves, forced collection between call arguments, and real check/build/test/run commands |
 | `fixtures/lcir-managed-lists` | direct repeated storage for scalar/Text/product/sum/nested-List elements, immutable aliases, checked reads, geometric unique append, moving-GC roots, and real check/build/test/run commands |
 | `fixtures/lcir-typed-textmap` | compiler-private direct `TextMap[V]` storage for scalar/Text/product/sum/List/nested-map values, immutable insertion/replacement/removal, containment, exact `Option[V]` lookup, insertion-order-independent structural equality, removal during forced moving-GC relocation, interpreter/typed-native differential execution, release IR, Linux/MSVC objects, 32-bit fail-close classification, real `check/build/test/run` commands, and a one-MiB compiler-stack closure for its long logical chain |
 | `fixtures/lcir-typed-async` | checked stackless coroutine frames for infallible scalar/product/Text and managed-refined Text/Bytes async functions, typed Task handles and one-child await joins, exact suspension root maps, forced parent-Text relocation, debug metadata, interpreter/typed-native differential execution, Linux/MSVC objects, and real `check/build/test/run` commands |
@@ -154,8 +154,9 @@ direct coverage includes:
 - scalar, managed Text, typed Bytes, and one-field typed Path operations,
   structural tuples, concrete records, refined values, closed sums, Lists,
   compiler-private TextMaps, bounded concrete generic instances, and
-  synchronous direct-primitive `mut self` bodies with exact local or projected
-  functional writeback on normal and fault exits; closed-sum structural
+  synchronous task-free primitive, record, and closed-sum `mut self` bodies
+  with exact local or projected functional writeback on normal and fault exits;
+  closed-sum structural
   equality uses one linear paired dispatch for both narrow and wide enums;
 - canonical recursive Json formatting into the exact
   `Result[Text, JsonError]`, including typed Text publication and ordinary
