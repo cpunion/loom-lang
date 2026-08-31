@@ -196,6 +196,11 @@ raw readiness, and otherwise unrepresentable projected inout shapes. A reachable
 dynamic use with no exact producer in the closed catalog reports
 `MissingDynamicConceptWitness`; open producers in unreachable functions or
 generic instances do not affect the artifact.
+Non-regular generic recursion reports an invalid program; concrete-instance
+planning or substitution-growth exhaustion reports `ProgramTooLarge`; and
+unresolved checked generic metadata reports a compiler defect. These generic-
+closure failures cannot select the checked-MIR route during `Automatic` native
+preparation.
 Finite closed dynamic catalogs are exact managed-pointer coroutine parameters,
 results, and suspension-live values, including nested aggregate and List
 carriers. Pure reads through already-established

@@ -16,7 +16,7 @@ use crate::aggregate_plan::{
 };
 use crate::dyn_plan::{DynConceptPlan, DynConceptPlanIssue, DynConceptPlanIssueKind};
 use crate::instance_closure::{
-    InstanceClosureError, InstanceClosureOutcome, InstanceClosureUnsupportedKind,
+    InstanceClosureError, InstanceClosureIssue, InstanceClosureIssueKind, InstanceClosureOutcome,
     InstanceSubstitution, InstantiationError, plan_instance_closure,
 };
 use crate::match_plan::{MatchNode, MatchPlan, plan_contract_match, plan_match};
@@ -83,6 +83,7 @@ pub enum LoweringOutcome {
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum InvalidProgramCode {
     MissingDynamicConceptWitness,
+    NonRegularGenericRecursion,
 }
 
 impl InvalidProgramCode {
@@ -90,6 +91,7 @@ impl InvalidProgramCode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::MissingDynamicConceptWitness => "MissingDynamicConceptWitness",
+            Self::NonRegularGenericRecursion => "NonRegularGenericRecursion",
         }
     }
 }
@@ -305,9 +307,6 @@ pub enum UnsupportedFeature {
     RefinedValue,
     SerializedProofRecheck,
     BuiltinCall,
-    GenericInstanceBudget,
-    NonRegularGenericRecursion,
-    UnresolvedGenericInstantiation,
     InOutArgument,
     View,
     Suspension,
@@ -330,9 +329,6 @@ impl UnsupportedFeature {
             Self::RefinedValue => "RefinedValue",
             Self::SerializedProofRecheck => "SerializedProofRecheck",
             Self::BuiltinCall => "BuiltinCall",
-            Self::GenericInstanceBudget => "GenericInstanceBudget",
-            Self::NonRegularGenericRecursion => "NonRegularGenericRecursion",
-            Self::UnresolvedGenericInstantiation => "UnresolvedGenericInstantiation",
             Self::InOutArgument => "InOutArgument",
             Self::View => "View",
             Self::Suspension => "Suspension",
@@ -464,36 +460,46 @@ pub fn lower_typed_artifact(
                 .map_err(instance_closure_error)?
             {
                 InstanceClosureOutcome::Complete(closure) => closure,
-                InstanceClosureOutcome::Unsupported(issue) => {
-                    reject_executor_dependent_roots_before_fallback(mir, &selected, &graph)?;
-                    let feature = match issue.kind {
-                        InstanceClosureUnsupportedKind::InstanceBudget => {
-                            UnsupportedFeature::GenericInstanceBudget
-                        }
-                        InstanceClosureUnsupportedKind::NonRegularRecursion => {
-                            UnsupportedFeature::NonRegularGenericRecursion
-                        }
-                        InstanceClosureUnsupportedKind::Instantiation => {
-                            UnsupportedFeature::UnresolvedGenericInstantiation
-                        }
-                    };
-                    return Ok(LoweringOutcome::Unsupported(SupportReport {
-                        items: vec![UnsupportedItem {
-                            feature,
-                            function: issue.function,
-                            expression: issue.expression,
-                            span: issue.span,
-                            path: issue.path,
-                        }],
-                    }));
-                }
+                InstanceClosureOutcome::Issue(issue) => match issue.kind {
+                    InstanceClosureIssueKind::InstanceBudget => {
+                        validate_executor_root_capability_from_source_graph(
+                            mir, &selected, &graph,
+                        )?;
+                        return Err(instance_closure_resource_error(&issue));
+                    }
+                    InstanceClosureIssueKind::NonRegularRecursion => {
+                        validate_executor_root_capability_from_source_graph(
+                            mir, &selected, &graph,
+                        )?;
+                        return Err(nonregular_generic_recursion_error(&issue));
+                    }
+                    InstanceClosureIssueKind::Instantiation => {
+                        return Err(instance_closure_instantiation_error(&issue));
+                    }
+                    InstanceClosureIssueKind::ProjectedPlace => {
+                        validate_executor_root_capability_from_source_graph(
+                            mir, &selected, &graph,
+                        )?;
+                        return Ok(LoweringOutcome::Unsupported(SupportReport {
+                            items: vec![UnsupportedItem {
+                                feature: UnsupportedFeature::ProjectedPlace,
+                                function: issue.function,
+                                expression: issue.expression,
+                                span: issue.span,
+                                path: issue.path,
+                            }],
+                        }));
+                    }
+                },
             };
         let exact =
             match DynConceptPlan::from_instances(mir.as_program(), &graph, closure.entries()) {
                 Ok(exact) => exact,
                 Err(issue) => {
                     if issue.kind() == DynConceptPlanIssueKind::ProgramTooLarge {
-                        reject_executor_dependent_roots_before_fallback(mir, &selected, &graph)?;
+                        validate_executor_root_capability_from_source_graph(
+                            mir, &selected, &graph,
+                        )?;
                     }
                     return Err(dynamic_concept_plan_error(&issue));
                 }
@@ -519,6 +525,15 @@ pub fn lower_typed_artifact(
             )
         })?;
         classifier.classify_function(source, key);
+    }
+    classifier.instantiation_failures.sort_by(|left, right| {
+        left.function
+            .cmp(&right.function)
+            .then(left.expression.cmp(&right.expression))
+            .then(left.path.cmp(&right.path))
+    });
+    if let Some(site) = classifier.instantiation_failures.first() {
+        return Err(classifier_instantiation_error(site));
     }
     let root_keys = selected
         .ordered
@@ -1020,6 +1035,83 @@ fn instance_closure_error(error: InstanceClosureError) -> LoweringError {
     LoweringError::defect(LoweringDefectCode::InconsistentPlan, message)
 }
 
+fn instance_closure_resource_error(issue: &InstanceClosureIssue) -> LoweringError {
+    LoweringError::ResourceLimit {
+        code: ResourceLimitCode::ProgramTooLarge,
+        message: format!(
+            "concrete generic instance closure exceeded compiler limits at {} (function #{}, file #{}, bytes {}..{})",
+            issue.path,
+            issue.function.0,
+            issue.span.file.0,
+            issue.span.range.start,
+            issue.span.range.end,
+        ),
+    }
+}
+
+fn instance_closure_instantiation_error(issue: &InstanceClosureIssue) -> LoweringError {
+    LoweringError::defect(
+        LoweringDefectCode::InconsistentPlan,
+        format!(
+            "checked MIR generic instance could not be closed at {} (function #{}, file #{}, bytes {}..{})",
+            issue.path,
+            issue.function.0,
+            issue.span.file.0,
+            issue.span.range.start,
+            issue.span.range.end,
+        ),
+    )
+}
+
+fn nonregular_generic_recursion_error(issue: &InstanceClosureIssue) -> LoweringError {
+    LoweringError::invalid_program(
+        InvalidProgramCode::NonRegularGenericRecursion,
+        format!(
+            "generic recursion changes its concrete instance at {} (function #{}, expression #{}, file #{}, bytes {}..{}); recursive generic calls must return to the same concrete instance",
+            issue.path,
+            issue.function.0,
+            issue
+                .expression
+                .expect("non-regular recursion always originates at a call")
+                .0,
+            issue.span.file.0,
+            issue.span.range.start,
+            issue.span.range.end,
+        ),
+    )
+}
+
+fn classifier_instantiation_error(site: &InstantiationFailureSite) -> LoweringError {
+    let expression = site.expression.map_or_else(String::new, |expression| {
+        format!(", expression #{}", expression.0)
+    });
+    let message = format!(
+        "checked MIR type substitution failed at {} (function #{}{expression}, file #{}, bytes {}..{}): {:?}",
+        site.path,
+        site.function.0,
+        site.span.file.0,
+        site.span.range.start,
+        site.span.range.end,
+        site.error,
+    );
+    match site.error {
+        InstantiationError::StructureBudget => LoweringError::ResourceLimit {
+            code: ResourceLimitCode::ProgramTooLarge,
+            message,
+        },
+        InstantiationError::ProjectionDepth => LoweringError::defect(
+            LoweringDefectCode::InconsistentPlan,
+            format!("projected-place coverage failure escaped classification: {message}"),
+        ),
+        InstantiationError::UnboundTypeParameter
+        | InstantiationError::UnboundWitnessParameter
+        | InstantiationError::UnresolvedAssociatedProjection
+        | InstantiationError::InvalidCheckedWitnessMetadata => {
+            LoweringError::defect(LoweringDefectCode::InconsistentPlan, message)
+        }
+    }
+}
+
 fn dynamic_concept_plan_error(issue: &DynConceptPlanIssue) -> LoweringError {
     match issue.kind() {
         DynConceptPlanIssueKind::ProgramTooLarge => LoweringError::ResourceLimit {
@@ -1104,6 +1196,59 @@ fn task_output_type(ty: &Type) -> Option<Type> {
         Type::Task(output) => Some(output.as_ref().clone()),
         _ => None,
     }
+}
+
+fn source_types_fit_instance_structure_budget(types: &[Type]) -> bool {
+    let limit = crate::INSTANCE_KEY_STRUCTURE_BUDGET;
+    if types.len() > limit {
+        return false;
+    }
+    let mut pending = types.iter().collect::<Vec<_>>();
+    let mut nodes = 0_usize;
+    while let Some(ty) = pending.pop() {
+        let Some(next_nodes) = nodes.checked_add(1) else {
+            return false;
+        };
+        nodes = next_nodes;
+        if nodes > limit {
+            return false;
+        }
+        let children = match ty {
+            Type::Tuple(elements) | Type::Nominal(_, elements) => elements.as_slice(),
+            Type::List(element) | Type::Task(element) | Type::TaskOutcome(element) => {
+                std::slice::from_ref(element.as_ref())
+            }
+            Type::View { bindings, .. } => {
+                if nodes
+                    .checked_add(pending.len())
+                    .and_then(|used| used.checked_add(bindings.len()))
+                    .is_none_or(|used| used > limit)
+                {
+                    return false;
+                }
+                pending.extend(bindings.values());
+                continue;
+            }
+            Type::Never
+            | Type::Unit
+            | Type::Bool
+            | Type::Int
+            | Type::Float
+            | Type::Text
+            | Type::Parameter(_)
+            | Type::AssociatedProjection { .. }
+            | Type::Error => continue,
+        };
+        if nodes
+            .checked_add(pending.len())
+            .and_then(|used| used.checked_add(children.len()))
+            .is_none_or(|used| used > limit)
+        {
+            return false;
+        }
+        pending.extend(children);
+    }
+    true
 }
 
 fn task_list_child_output(ty: &Type) -> Option<Type> {
@@ -1578,7 +1723,7 @@ fn select_roots(
     })
 }
 
-fn reject_executor_dependent_roots_before_fallback(
+fn validate_executor_root_capability_from_source_graph(
     checked: &mir::CheckedProgram,
     selected: &SelectedRoots,
     reachable: &crate::ReachableSourceGraph,
@@ -1958,6 +2103,7 @@ struct Classifier<'program, 'plan> {
     dyn_concepts: &'plan DynConceptPlan,
     target: TargetLayout,
     items: Vec<UnsupportedItem>,
+    instantiation_failures: Vec<InstantiationFailureSite>,
     missing_dynamic_witnesses: Vec<InvalidProgramSite>,
     aggregates: AggregatePlanner<'program, 'plan>,
     match_plans: BTreeMap<String, BTreeMap<ExprId, MatchPlan<'program>>>,
@@ -1968,6 +2114,15 @@ struct Classifier<'program, 'plan> {
     managed_text: bool,
     task_handles: BTreeSet<Type>,
     equality_dependencies: BTreeMap<Type, BTreeSet<Type>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct InstantiationFailureSite {
+    error: InstantiationError,
+    function: FunctionId,
+    expression: Option<ExprId>,
+    span: Span,
+    path: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2021,6 +2176,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             dyn_concepts,
             target,
             items: Vec::new(),
+            instantiation_failures: Vec::new(),
             missing_dynamic_witnesses: Vec::new(),
             aggregates: AggregatePlanner::new(program, dyn_concepts, target.pointer_bits() == 64),
             match_plans: BTreeMap::new(),
@@ -2402,17 +2558,94 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
         span: Span,
         path: &str,
     ) -> Option<Type> {
-        let Ok(ty) = InstanceSubstitution::new(self.program, key).instantiate_type(ty) else {
-            self.item(
-                UnsupportedFeature::UnresolvedGenericInstantiation,
-                function.id,
-                expression.map(|expression| expression.id),
-                span,
-                path.to_owned(),
-            );
-            return None;
-        };
-        Some(ty)
+        match InstanceSubstitution::new(self.program, key).instantiate_type(ty) {
+            Ok(ty) => Some(ty),
+            Err(error) => {
+                self.instantiation_failure(
+                    error,
+                    source_types_fit_instance_structure_budget(std::slice::from_ref(ty)),
+                    function.id,
+                    expression.map(|expression| expression.id),
+                    span,
+                    path,
+                );
+                None
+            }
+        }
+    }
+
+    fn instantiation_failure(
+        &mut self,
+        error: InstantiationError,
+        source_structure_within_budget: bool,
+        function: FunctionId,
+        expression: Option<ExprId>,
+        span: Span,
+        path: &str,
+    ) {
+        if error == InstantiationError::StructureBudget && !source_structure_within_budget {
+            // A source type which already exceeds the current direct LCIR
+            // structure bound is a representation coverage gap. Only growth
+            // caused while closing a concrete generic instance is a planning
+            // resource failure.
+            return;
+        }
+        self.instantiation_failures.push(InstantiationFailureSite {
+            error,
+            function,
+            expression,
+            span,
+            path: path.to_owned(),
+        });
+    }
+
+    fn instantiated_types(
+        &mut self,
+        function: &mir::Function,
+        key: &InstanceKey,
+        expression: Option<&mir::Expr>,
+        types: &[Type],
+        span: Span,
+        path: &str,
+    ) -> Option<Vec<Type>> {
+        match InstanceSubstitution::new(self.program, key).instantiate_types(types) {
+            Ok(types) => Some(types),
+            Err(error) => {
+                self.instantiation_failure(
+                    error,
+                    source_types_fit_instance_structure_budget(types),
+                    function.id,
+                    expression.map(|expression| expression.id),
+                    span,
+                    path,
+                );
+                None
+            }
+        }
+    }
+
+    fn instantiated_witness(
+        &mut self,
+        function: &mir::Function,
+        key: &InstanceKey,
+        expression: &mir::Expr,
+        witness: &mir::WitnessRef,
+        path: &str,
+    ) -> Option<crate::InstanceWitnessArgument> {
+        match InstanceSubstitution::new(self.program, key).instantiate_witness(witness) {
+            Ok(witness) => Some(witness),
+            Err(error) => {
+                self.instantiation_failure(
+                    error,
+                    true,
+                    function.id,
+                    Some(expression.id),
+                    expression.span,
+                    path,
+                );
+                None
+            }
+        }
     }
 
     fn call_argument_type(
@@ -2433,19 +2666,25 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 path,
             ),
             CallArgument::InOut(place) => {
-                let Ok(ty) = InstanceSubstitution::new(self.program, key)
+                match InstanceSubstitution::new(self.program, key)
                     .instantiate_place_type(function, place)
-                else {
-                    self.item(
-                        UnsupportedFeature::UnresolvedGenericInstantiation,
-                        function.id,
-                        Some(expression.id),
-                        expression.span,
-                        path.to_owned(),
-                    );
-                    return None;
-                };
-                ty
+                {
+                    Ok(ty) => ty,
+                    Err(
+                        InstantiationError::StructureBudget | InstantiationError::ProjectionDepth,
+                    ) => None,
+                    Err(error) => {
+                        self.instantiation_failure(
+                            error,
+                            true,
+                            function.id,
+                            Some(expression.id),
+                            expression.span,
+                            path,
+                        );
+                        None
+                    }
+                }
             }
         }
     }
@@ -2610,19 +2849,9 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
             .map(|parameter| substitution.instantiate_type(&parameter.ty))
             .collect::<Result<Vec<_>, _>>()
         else {
-            self.function_item(
-                UnsupportedFeature::UnresolvedGenericInstantiation,
-                function,
-                &format!("{base}.call_plan"),
-            );
             return;
         };
         let Ok(result) = substitution.instantiate_type(&function.return_ty) else {
-            self.function_item(
-                UnsupportedFeature::UnresolvedGenericInstantiation,
-                function,
-                &format!("{base}.call_plan"),
-            );
             return;
         };
         let (receiver, arguments) = if function.receiver.is_some() {
@@ -2935,12 +3164,14 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 let mut result = None;
                 for (index, arm) in arms.iter().enumerate() {
                     let mut nested = context.clone();
-                    let bindings = arm
-                        .bindings
-                        .iter()
-                        .map(|ty| InstanceSubstitution::new(self.program, key).instantiate_type(ty))
-                        .collect::<Result<Vec<_>, _>>()
-                        .ok()?;
+                    let bindings = self.instantiated_types(
+                        function,
+                        key,
+                        None,
+                        &arm.bindings,
+                        expression.span,
+                        &format!("{path}.arms[{index}].bindings"),
+                    )?;
                     nested.bindings.extend(bindings);
                     let arm_ty = self.classify_contract_expr(
                         function,
@@ -3408,9 +3639,15 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     expression.span,
                     &format!("{path}.ty"),
                 );
-                let semantic = InstanceSubstitution::new(self.program, key)
-                    .instantiate_types(type_arguments)
-                    .ok()
+                let semantic = self
+                    .instantiated_types(
+                        function,
+                        key,
+                        Some(expression),
+                        type_arguments,
+                        expression.span,
+                        &format!("{path}.type_arguments"),
+                    )
                     .map(|arguments| Type::Nominal(*ty, arguments));
                 if *construction == mir::ConstructionMode::Runtime {
                     let program = self.program;
@@ -3573,9 +3810,15 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     expression.span,
                     &format!("{path}.ty"),
                 );
-                let semantic = InstanceSubstitution::new(self.program, key)
-                    .instantiate_types(type_arguments)
-                    .ok()
+                let semantic = self
+                    .instantiated_types(
+                        function,
+                        key,
+                        Some(expression),
+                        type_arguments,
+                        expression.span,
+                        &format!("{path}.type_arguments"),
+                    )
                     .map(|arguments| Type::Nominal(*ty, arguments));
                 if expression_ty != semantic
                     || semantic
@@ -4097,9 +4340,13 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     value.span,
                     &format!("{path}.value.ty"),
                 );
-                let proof = InstanceSubstitution::new(self.program, key)
-                    .instantiate_witness(witness)
-                    .ok();
+                let proof = self.instantiated_witness(
+                    function,
+                    key,
+                    expression,
+                    witness,
+                    &format!("{path}.witness"),
+                );
                 let choice = view
                     .as_ref()
                     .and_then(|view| self.dyn_concepts.choice(view));

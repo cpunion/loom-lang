@@ -43,7 +43,8 @@ impl DynConceptPlanIssue {
     ) -> Self {
         let kind = match error {
             InstantiationError::StructureBudget => DynConceptPlanIssueKind::ProgramTooLarge,
-            InstantiationError::UnboundTypeParameter
+            InstantiationError::ProjectionDepth
+            | InstantiationError::UnboundTypeParameter
             | InstantiationError::UnboundWitnessParameter
             | InstantiationError::UnresolvedAssociatedProjection => {
                 DynConceptPlanIssueKind::InvalidInstantiation

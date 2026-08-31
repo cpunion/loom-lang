@@ -40,14 +40,17 @@ gates in this record are not complete.
 The production LLVM backend still lowers artifacts outside current direct LCIR
 coverage through a universal value implementation and several closed-world
 native specializations. Unsupported managed and projected shapes,
-nonregular generic expansion, runtime-checked generic constraints, cleanup
+runtime-checked generic constraints, cleanup
 shapes outside the direct lexical slice, async shapes outside the checked
 coroutine slice, and private-list paths still repeat representation, proof,
 call-compatibility, and runtime-requirement decisions inside the checked-MIR
 target emitter. Some checked-MIR functions may acquire universal,
 checked-native, and assumption-specialized bodies. A missing exact dynamic
-producer in the closed concrete catalog is not part of that fallback debt:
-artifact closure rejects it with `MissingDynamicConceptWitness`.
+producer or a nonregular generic instance chain is not part of that fallback
+debt: artifact closure rejects it with `MissingDynamicConceptWitness` or
+`NonRegularGenericRecursion`, respectively. Planning-budget exhaustion and
+inconsistent checked generic metadata are likewise errors rather than route
+choices.
 
 That structure makes a correct fast path depend on exact MIR shapes and makes
 each additional type or operation multiply the number of lowering choices.

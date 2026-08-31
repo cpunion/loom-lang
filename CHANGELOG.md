@@ -32,7 +32,10 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
 - A complete frontend pipeline from source through syntax, HIR, semantic
   analysis, checked MIR, typed LCIR, and LLVM object generation. Entrypoint
   closure starts from the selected main, tests, or export and excludes
-  unreachable functions and conformances.
+  unreachable functions and conformances. Non-regular generic recursion,
+  concrete-instance planning or substitution-growth exhaustion, and
+  inconsistent checked generic metadata are compile failures rather than
+  reasons to select the universal-value backend.
 - Exact typed LLVM representations for scalars, products, closed sums, managed
   Text, Bytes, Lists, TextMaps, dynamic concepts, Tasks, and typed async I/O.
   Structural equality compares closed-sum tags once and enters one matching
