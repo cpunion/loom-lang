@@ -766,6 +766,7 @@ impl FunctionBuilder<'_> {
                 | InstructionKind::InvariantRecordProven { .. }
                 | InstructionKind::InvariantReceiverInsert { .. }
                 | InstructionKind::ListAppendUnique { .. }
+                | InstructionKind::BytesPushUnique { .. }
         ) {
             return Err(BuildError::new(
                 BuildErrorCode::TrustedInstruction,
@@ -792,6 +793,7 @@ impl FunctionBuilder<'_> {
                 | InstructionKind::InvariantRecordProven { .. }
                 | InstructionKind::InvariantReceiverInsert { .. }
                 | InstructionKind::ListAppendUnique { .. }
+                | InstructionKind::BytesPushUnique { .. }
         ) {
             return Err(BuildError::new(
                 BuildErrorCode::TrustedInstruction,

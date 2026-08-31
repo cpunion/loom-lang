@@ -17,7 +17,7 @@ names still recognized by semantic builtin tables.
 | --- | --- | --- | --- |
 | `std.int` | `ParseIntError`, `minimum`, `maximum`, `parse_int`, and the complete parser helper graph | none for the current package API | source-backed |
 | `std.io` | public `IoError`, `IoErrorKind`, their accessors, `write`, and `write_line` | exact-owner error access/output primitives and runtime byte boundary | source-backed |
-| `std.json` | `parse_json` and its bounded iterative parser helper graph | `Json`, `JsonError`, and `format_json` | partial |
+| `std.json` | `parse_json`, `format_json`, and both helper graphs | `Json` and `JsonError` | partial |
 | `std.log` | `LogLevel`, `write`, `debug`, `info`, `warn`, `error`, and their helper graph | only the exact-owner private typed write primitive and runtime byte boundary | source-backed |
 | `std.resource` | `Dispose`, `MustScope`, and `NoSuspend` declarations | their fixed language-item meaning and static enforcement intentionally remain language core | source declarations complete |
 | `std.float` | `ParseFloatError`, `FloatToIntError`, parsing, formatting, finiteness, and both explicit Int conversions | only exact-owner private scalar primitives and the runtime parse/format boundary | source-backed |
@@ -76,7 +76,7 @@ The following repository fixtures are run through real compiler stages:
 | `fixtures/lcir-projected-places` | exact nested and generic-instance projected receiver writeback, sibling evaluation order, aggregate loop phis, and real `check/build/test/run` commands |
 | `fixtures/lcir-text` | literal-proven one-pointer `Text`, allocation-free length/containment/content comparison, direct generic flow, host execution, and direct 64-bit Linux/MSVC object emission |
 | `fixtures/lcir-managed-text` | artifact-wide direct managed `Text`, dynamic concat, executable literal matching, exact typed shadow roots, semantic alias preservation, and real check/build/test/run commands |
-| `fixtures/lcir-managed-bytes` | one-pointer typed `Bytes`, zero-allocation Text-backed UTF-8 sharing, content equality, Unicode byte indexing, checked negative and upper-bound misses, append, decode, moving-GC publication, and real check/build/test/run commands |
+| `fixtures/lcir-managed-bytes` | one-pointer typed `Bytes`, zero-allocation Text-backed UTF-8 sharing, content equality, Unicode byte indexing, checked negative and upper-bound misses, copy-on-write append/push with independently validated unique storage reuse, decode, moving-GC publication, and real check/build/test/run commands |
 | `fixtures/lcir-typed-path` | exact invariant-protected one-field Text-backed Path values, non-collecting construction/extraction, portable lexical join, rejected raw MIR/LCIR construction and mutation, preserved Unicode and `.`/`..`/repeated-separator spelling, ordinary `ContainsNul`/`AbsoluteJoin` errors, live aliases and joined results through moving-GC pressure, and real check/build/test/run commands without checked-MIR path helpers or an executor |
 | `fixtures/lcir-managed-products` | unboxed nested record/tuple products with managed Text leaves, direct product calls/returns, semantic aliases, and real check/build/test/run commands |
 | `fixtures/lcir-managed-sums` | closed unboxed sums with active-variant Text roots, nested product payloads, task-free enum/Option/Result functional receiver writeback, contract matches over managed leaves, forced collection between call arguments, and real check/build/test/run commands |
@@ -93,8 +93,8 @@ The following repository fixtures are run through real compiler stages:
 | `fixtures/lcir-affine-task-carriers` | direct and proven transparent Task handles moved inside structural tuples, closed sums, and Options across synchronous calls, returns, suspension, atomic tuple splitting, exhaustive matches, and non-consuming pre/postcondition inspection; exact managed-sibling frame roots and real `check/build/test/run` commands without universal values |
 | `fixtures/lcir-async-cleanup` | typed-LCIR `defer` and static-concept `scoped` cleanup across suspension, exact normal/fault/cancel live rows, LIFO normal cleanup, child-fault propagation, sibling cancellation, source-callback cancellation dispatch, interpreter/typed-native differentials, Linux/MSVC objects, and real `check/build/test/run` commands |
 | `fixtures/lcir-async-writeback` | synchronous functional inout calls inside typed coroutines, managed-Text writeback across moving collection, normal/fault/cancellation cleanup, fault writeback before lexical cleanup, by-value dynamic View parameters under mutable dispatch, unique-witness `dyn` erasure and finite multi-witness managed catalogs across async parameters, results, and suspension frames, interpreter/typed differentials, Linux/MSVC objects, and real `check/build/test/run` commands |
-| `fixtures/lcir-typed-json` | canonical recursive `Json` construction and matching through `List[Json]`/`TextMap[Json]` cycle breakers, source-backed parsing, generated structural equality, canonical typed formatting, exact repeated tracing, immutable map aliases, forced moving-GC relocation, interpreter/MIR/LCIR differential execution, Linux/MSVC objects, and real `check/build/test/run` commands |
-| `fixtures/lcir-json-format` | direct typed formatting of all six canonical `Json` variants, canonical TextMap key order, exact string escaping and negative-zero spelling, ordinary `DepthLimit`/`NonFiniteNumber` errors for deep, NaN, and infinite inputs, and real main/test `check/build/test/run` commands without a universal value or executor |
+| `fixtures/lcir-typed-json` | canonical recursive `Json` construction and matching through `List[Json]`/`TextMap[Json]` cycle breakers, source-backed parsing and formatting, generated structural equality, exact repeated tracing, immutable map aliases, forced moving-GC relocation, interpreter/MIR/LCIR differential execution, Linux/MSVC objects, and real `check/build/test/run` commands |
+| `fixtures/lcir-json-format` | ordinary source formatting of all six canonical `Json` variants, canonical TextMap key order, exact string escaping and negative-zero spelling, bounded-depth traversal of wide containers, ordinary `DepthLimit`/`NonFiniteNumber` errors for deep, NaN, and infinite inputs, and real main/test `check/build/test/run` commands without a universal value or executor |
 | `fixtures/lcir-json-parse` | ordinary source-backed iterative JSON parsing, complete-document and Unicode escape checks, numeric range errors, canonical bulk TextMap construction, and lexicographically smallest duplicate-key selection; LCIR-only real `check/build/test/run` commands and object inspection without a universal value or executor |
 | `fixtures/lcir-sum-layout-collisions` | source-to-LCIR-to-LLVM host test execution under moving-GC pressure for unrelated and nested sums with opposing pointer/scalar field order; exact repeated pointer-offset descriptors and Linux/MSVC object emission |
 | `fixtures/lcir-fallible-async` | checked fallible stackless coroutines, ordinary managed `Result` completion, exact child source/contract fault propagation, cancellation, collision-free completed/live sum roots, balanced callback roots, forced moving-GC relocation, interpreter/typed-native differential execution, Linux/MSVC objects, 32-bit fail-closed behavior, and real `check/build/test/run` commands |
@@ -151,16 +151,17 @@ Production native preparation performs one whole-artifact MIR-to-LCIR attempt
 and independently validates the result before typed LLVM emission. Current
 direct coverage includes:
 
-- scalar, managed Text, typed Bytes, and one-field typed Path operations,
+- scalar, managed Text, typed Bytes including checked mutable byte push and
+  unique packed growth, and one-field typed Path operations,
   structural tuples, concrete records, refined values, closed sums, Lists,
   compiler-private TextMaps, bounded concrete generic instances, and
   synchronous task-free primitive, record, and closed-sum `mut self` bodies
   with exact local or projected functional writeback on normal and fault exits;
   closed-sum structural
   equality uses one linear paired dispatch for both narrow and wide enums;
-- canonical recursive Json formatting into the exact
-  `Result[Text, JsonError]`, including typed Text publication and ordinary
-  depth/non-finite error values;
+- ordinary recursive Json parsing and formatting source graphs into the exact
+  `Result` shapes, including typed Text publication and ordinary
+  depth/non-finite formatting errors;
 - canonical structured logging with direct Text and `TextMap[Text]` values;
 - all seven File/Socket operations in both recoverable
   `Task[Result[T, IoError]]` and faulting `Task[T]` forms, using one typed runtime
@@ -229,15 +230,15 @@ jobs.
 The controlled runner prepares every native object through the sole typed-LCIR
 backend, and requires the constraints/contracts, concepts/polymorphism,
 async/resources, async generic-contract,
-typed logging, typed JSON formatting, and complete C3 fixtures to select LCIR
+typed logging, source JSON formatting, and complete C3 fixtures to select LCIR
 for their prepared main or test artifacts. The typed logging gate also checks
 the exact JSONL standard-error bytes for both run and test artifacts; the typed
-JSON gate executes all canonical formatting and error cases through each
+source JSON gate executes all canonical formatting and error cases through each
 artifact.
-The broader standard-library fixture, including JSON parsing, lowers completely
-to LCIR. `std.json.parse_json` and its bounded helper graph are
-ordinary Loom source; the compiler and runtime contain no parser builtin,
-opcode, or ABI. Recoverable file and socket operations create typed Tasks with
+The broader standard-library fixture, including JSON parsing and formatting,
+lowers completely to LCIR. Both `std.json` APIs and their bounded helper graphs
+are ordinary Loom source; the compiler and runtime contain no JSON parser or
+formatter builtin, opcode, or ABI. Recoverable file and socket operations create typed Tasks with
 exact `Result[T, IoError]` coroutine frames, and `IoError.kind()` and
 `IoError.message()` are ordinary direct product projections in LCIR.
 The dedicated typed-I/O CLI fixture closes real `check`, object `build`,
@@ -246,9 +247,12 @@ symbols and the absence of every former universal I/O symbol. The integrated
 standard-library native test prepares one checked LCIR artifact and runs real file round trips and
 loopback Socket reads and writes. These are host test results, not a new
 cross-platform release claim.
-The format-neutral `Text.from_utf8_units(List[Int])` source API, interpreter
-semantics, typed LCIR instruction, direct LLVM lowering, and typed runtime ABI
-support efficient source-defined text construction.
+The format-neutral `Text.from_utf8_units(List[Int])` source API and the packed
+`Bytes.add(Int)` builder have interpreter semantics, typed LCIR instructions,
+direct LLVM lowering, and typed runtime ABI support for efficient
+source-defined text construction. Byte push performs its language range check
+before mutation; LCIR separately proves when a unique ByteObject may reuse
+hidden capacity.
 The typed Path slice likewise closes `Path.from_text`, `Path.as_text`, and
 `Path.join` without a runtime Path object: construction and extraction are
 non-collecting, join stages both Text inputs before moving-GC allocation, and

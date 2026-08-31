@@ -63,23 +63,6 @@ UTF-8, field ordering, and bounds before producing one compact JSONL line. The
 call does not enter the Loom collector or scheduler. `typed-log-v1` identifies
 this compiler-private boundary.
 
-## Typed JSON formatting
-
-Direct Json formatting uses the synchronous
-`loom_runtime_json_format_typed_v1` boundary. The compiler publishes one
-immutable `LoomTypedJsonLayout` whose target-derived offsets describe the
-complete recursive Json carrier plus its Text,
-`List[Json]`, and `TextMap[Json]` leaves. The call borrows the descriptor and
-input carrier and receives its managed Text through a stable output cell; it
-does not retain either input or consult a nominal type registry.
-
-The runtime validates the descriptor, traverses all six canonical variants,
-and stages the complete compact JSON byte sequence outside the moving heap.
-Only success allocates and publishes Text. Depth exhaustion and non-finite
-numbers return distinct statuses which LLVM maps into the exact direct
-`JsonError` variants. `typed-json-v1` identifies this compiler-private
-boundary.
-
 ## Typed Bytes
 
 Canonical `Bytes` uses one direct managed pointer on supported 64-bit targets.
@@ -88,28 +71,37 @@ conversion allocates nothing and the resulting Bytes retains the Text layout
 descriptor. Bytes materialized by append instead use a distinct ByteObject and
 `loom_layout_bytes_v1` descriptor. Both forms have the same checked 32-byte
 prefix and trailing-byte position, but only the Text descriptor carries a
-validated Unicode-scalar count. Arbitrary byte storage therefore cannot
-masquerade as Text.
+validated Unicode-scalar count. A ByteObject may reserve compiler-private
+trailing capacity; its logical byte length remains authoritative. Arbitrary
+byte storage therefore cannot masquerade as Text, and source cannot observe
+capacity or allocation identity.
 
 Length and checked indexing load the immutable header and trailing byte range
 directly. Content comparison examines byte lengths and contents rather than
 pointer identity. None of these operations reaches a moving-GC safepoint.
-Append calls `loom_runtime_bytes_append_typed_v1`; decode calls
+Append calls `loom_runtime_bytes_append_typed_v1`; a mutable `Bytes.add` calls
+one of `loom_runtime_bytes_push_typed_v1` and
+`loom_runtime_bytes_push_unique_typed_v1` after LCIR proves the byte range and,
+for the latter, validates unshared SSA ownership. Decode calls
 `loom_runtime_bytes_decode_utf8_typed_v1`. Each runtime boundary validates its
 admitted descriptor forms and stages every source byte before an allocation can
-move the heap. Append publishes a fully initialized ByteObject last through a
+move the heap. The ordinary push copies; the unique push reuses storage only
+for a distinct ByteObject with sufficient capacity and never mutates Text-backed
+storage. Append publishes a fully initialized ByteObject last through a
 stable output cell, which generated code may reuse as the result's direct root
-cell when one exists. Decode publishes through a stable temporary, then
-generated code constructs and publishes the exact Result without an intervening
-safepoint. It returns the shared pointer for a valid Text-backed value, allocates
-canonical Text for a valid standalone ByteObject, and reports invalid UTF-8 as
-the ordinary `DecodeTextError.InvalidUtf8` result.
+cell when one exists. Push publishes through stable rooted output storage.
+Decode cannot allocate, publishes through a stable temporary, and generated
+code constructs the exact Result without an intervening safepoint. Decode
+returns the shared pointer for a valid Text-backed value and
+may relabel a validated standalone ByteObject as Text in place; Bytes aliases
+remain valid because both descriptors are admitted. It reports invalid UTF-8
+as the ordinary `DecodeTextError.InvalidUtf8` result.
 
-Generated objects reference the two operation symbols and the established
+Generated objects reference these operation symbols and the established
 typed-root wire. The Bytes descriptor and typed allocator remain runtime
 implementation details rather than code-generation dependencies. The current
-boundary is identified by `typed-bytes-v1`. Bytes adds neither a JSON policy nor
-ownership or borrow syntax.
+boundary is identified by the versioned `typed-bytes` identity. Bytes adds
+neither a JSON policy nor ownership or borrow syntax.
 
 `Text.from_utf8_units` borrows a direct `List[Int]` as a contiguous `i64`
 range only for one synchronous call. The runtime narrows and stages every unit
@@ -183,8 +175,8 @@ File/Socket nominal IDs.
 The current exact runtime identity is defined in
 [Versioning and compatibility](../project/versioning.md). Typed-task ABI v1,
 typed-I/O v1, typed-resource v1, typed-process ABI v1, coroutine v2, wait v1,
-standard-library ABI v7, Text v3, and GC v9 identify the corresponding current
-components.
+standard-library ABI v9, Text v4, `typed-bytes-v2`, and GC v9 identify the
+corresponding current components.
 
 ## Typed LCIR representations
 

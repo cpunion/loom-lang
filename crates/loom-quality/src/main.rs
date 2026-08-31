@@ -41,7 +41,7 @@ const TYPED_LCIR_FIXTURE: &str = "fixtures/typed-lcir";
 const TYPED_LOGGING_FIXTURE: &str = "fixtures/lcir-typed-logging";
 const TYPED_LOGGING_STDERR: &[u8] =
     include_bytes!("../../../fixtures/lcir-typed-logging/expected.stderr");
-const TYPED_JSON_FORMAT_FIXTURE: &str = "fixtures/lcir-json-format";
+const SOURCE_JSON_FORMAT_FIXTURE: &str = "fixtures/lcir-json-format";
 const TYPED_ASYNC_FIXTURE: &str = "fixtures/lcir-typed-async";
 const ASYNC_MANAGED_COLLECTIONS_FIXTURE: &str = "fixtures/lcir-async-managed-collections";
 const TYPED_SLEEP_FIXTURE: &str = "fixtures/lcir-typed-sleep";
@@ -321,10 +321,10 @@ fn main() {
         &workspace,
         &runtime,
         &mut report.gates,
-        TYPED_JSON_FORMAT_FIXTURE,
-        "typed-json-format",
+        SOURCE_JSON_FORMAT_FIXTURE,
+        "source-json-format",
     ) {
-        report.failures.push(format!("typed-json-format: {error}"));
+        report.failures.push(format!("source-json-format: {error}"));
     }
     if let Err(error) = typed_async_gate(
         &workspace,

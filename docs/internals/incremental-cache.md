@@ -48,7 +48,7 @@ larger graph.
 
 ## Persistent layers
 
-The persistent cache schema is `16`. Current layers include source parse,
+The persistent cache schema is `18`. Current layers include source parse,
 package-interface presence, typed package state, complete checked MIR, target
 objects, and deterministic final artifacts.
 
@@ -80,11 +80,13 @@ rederived before signature and body checking; cached semantic bytes never grant
 a same-named function, record, or enum canonical authority.
 
 Task policy and timer calls currently store a resolved `TaskIntrinsic` in typed
-body facts. Cache schema `16` and the `loom-compilation-cache-v16` domain cover
+body facts. Cache schema `18` and the `loom-compilation-cache-v18` domain cover
 that identity, the current compiler-private Float, logging, file, and network
-primitive sets, and exact source identities for standard types. They also
-exclude Path-specific file builtin tags: the source wrappers convert Path to
-Text before the private primitive.
+primitive sets, the exact mutable `Bytes.add` builtin, and exact source
+identities for standard types. They also
+exclude the removed public-name JSON formatter and Path-specific file builtin
+tags: ordinary source resolves JSON formatting, while the file wrappers convert
+Path to Text before the private primitive.
 Whether a body is reused or conservatively reanalyzed, MIR lowering consumes
 only the resolved identity; it never reconstructs a policy or canonical
 standard-library item from source spelling. The same schema removes the
@@ -94,7 +96,7 @@ resource methods, and disposal witnesses use exact ordinary source definitions.
 The Task cache identity disappears when the temporary catalog is replaced by
 ordinary source definitions.
 
-Checked-MIR cache envelopes use artifact version `43` and its exact current
+Checked-MIR cache envelopes use artifact version `45` and its exact current
 MIR shape. The artifact profile requires the complete compiler-known resource
 identity trio, all matching prelude ids, the canonical six-field
 `ConstraintError`, the exact source-backed decoding/path error identities and

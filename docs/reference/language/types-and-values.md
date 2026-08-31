@@ -16,7 +16,7 @@ The core type vocabulary includes:
 | `Int` | checked signed 64-bit integer |
 | `Float` | IEEE 754 binary64 number |
 | `Text` | immutable sequence of Unicode scalar values |
-| `Bytes` | immutable sequence of bytes |
+| `Bytes` | byte sequence with copy-on-write value semantics |
 | `Path` | immutable portable lexical path |
 | `Unit` | the single value `Unit` |
 

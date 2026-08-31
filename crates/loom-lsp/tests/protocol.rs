@@ -349,21 +349,23 @@ async fn inspect_resources(path Text) {
     ] {
         assert!(labels.contains(&expected), "missing {expected}: {labels:?}");
     }
-    let parser_items = completion_items
-        .iter()
-        .filter(|item| item.get("label") == Some(&json!("parse_json")))
-        .collect::<Vec<_>>();
-    assert_eq!(parser_items.len(), 1, "{parser_items:#?}");
-    assert_eq!(
-        parser_items[0].get("detail"),
-        Some(&json!("function · std.json")),
-        "{parser_items:#?}"
-    );
-    assert_eq!(
-        parser_items[0].get("sortText"),
-        Some(&json!("0-parse_json-std.json")),
-        "parse_json must come from the semantic source index"
-    );
+    for name in ["parse_json", "format_json"] {
+        let source_items = completion_items
+            .iter()
+            .filter(|item| item.get("label") == Some(&json!(name)))
+            .collect::<Vec<_>>();
+        assert_eq!(source_items.len(), 1, "{name}: {source_items:#?}");
+        assert_eq!(
+            source_items[0].get("detail"),
+            Some(&json!("function · std.json")),
+            "{name}: {source_items:#?}"
+        );
+        assert_eq!(
+            source_items[0].get("sortText"),
+            Some(&json!(format!("0-{name}-std.json"))),
+            "{name} must come from the semantic source index"
+        );
+    }
     for (name, kind, module) in [
         ("IoError", "record", "std.io"),
         ("IoErrorKind", "enum", "std.io"),

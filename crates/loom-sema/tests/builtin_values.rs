@@ -178,38 +178,49 @@ fn definition_named(program: &Program, package: &PackageId, module: &str, name: 
         .unwrap_or_else(|| panic!("missing {package:?} {module}.{name}"))
 }
 
-fn assert_builtin_error_result_types(analysis: &Analysis, decode_error: DefId, path_error: DefId) {
+fn assert_builtin_error_result_types(
+    program: &Program,
+    analysis: &Analysis,
+    owner: DefId,
+    decode_error: DefId,
+    path_error: DefId,
+) {
+    let DefinitionKind::Function(function) = &program.definitions[owner].kind else {
+        panic!("builtin result owner must be a function");
+    };
+    let body = analysis
+        .typed
+        .body(function.body)
+        .expect("builtin result owner must have checked semantics");
     let mut decode_results = 0_usize;
     let mut path_results = 0_usize;
-    for body in analysis.typed.bodies.values() {
-        for (expression, call) in body.calls.iter() {
-            let expected = match call.target {
-                CallTarget::Builtin(BuiltinValue::BytesDecodeUtf8) => {
-                    decode_results = decode_results.saturating_add(1);
-                    decode_error
-                }
-                CallTarget::Builtin(BuiltinValue::PathFromText | BuiltinValue::PathJoin) => {
-                    path_results = path_results.saturating_add(1);
-                    path_error
-                }
-                _ => continue,
-            };
-            let result = *body
-                .expression_types
-                .get(expression)
-                .expect("builtin call result type");
-            let TyData::Result { error, .. } = analysis.typed.types.data(result) else {
-                panic!("builtin error operation must return Result");
-            };
-            assert_eq!(
-                analysis.typed.types.data(*error),
-                &TyData::Nominal {
-                    definition: expected,
-                    arguments: Vec::new(),
-                },
-                "builtin result must use the exact compiler-owned source enum"
-            );
-        }
+    for (expression, call) in body.calls.iter() {
+        let expected = match call.target {
+            CallTarget::Builtin(BuiltinValue::BytesDecodeUtf8) => {
+                decode_results = decode_results.saturating_add(1);
+                decode_error
+            }
+            CallTarget::Builtin(BuiltinValue::PathFromText | BuiltinValue::PathJoin) => {
+                path_results = path_results.saturating_add(1);
+                path_error
+            }
+            _ => continue,
+        };
+        let result = *body
+            .expression_types
+            .get(expression)
+            .expect("builtin call result type");
+        let TyData::Result { error, .. } = analysis.typed.types.data(result) else {
+            panic!("builtin error operation must return Result");
+        };
+        assert_eq!(
+            analysis.typed.types.data(*error),
+            &TyData::Nominal {
+                definition: expected,
+                arguments: Vec::new(),
+            },
+            "builtin result must use the exact compiler-owned source enum"
+        );
     }
     assert_eq!(decode_results, 1);
     assert_eq!(path_results, 2);
@@ -247,6 +258,9 @@ fn values(text Text, bytes Bytes, base Path, child Path, index Int) {
     let byte = bytes.get(index)
     let appended = bytes.append(encoded)
     let decoded = appended.decode_utf8()
+    var output = text.encode_utf8()
+    output.add(0)
+    output.add(255)
     let rendered = base.as_text()
     let joined = base.join(child)
     let parsed = Path.from_text(text)
@@ -284,6 +298,34 @@ async fn pathFiles(path Path) {
 "#,
     );
     assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+}
+
+#[test]
+fn bytes_add_requires_a_mutable_receiver_and_an_int_value() {
+    let diagnostics = analyze_source(
+        r#"
+fn wrong(text Text) {
+    let immutable = text.encode_utf8()
+    immutable.add(1)
+    text.encode_utf8().add(2)
+    var mutable = text.encode_utf8()
+    mutable.add("not a byte")
+}
+"#,
+    );
+    let codes = diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        codes
+            .iter()
+            .filter(|code| **code == "MutReceiverRequiresVar")
+            .count(),
+        2,
+        "{diagnostics:#?}"
+    );
+    assert!(codes.contains(&"TypeMismatch"), "{diagnostics:#?}");
 }
 
 #[test]
@@ -326,8 +368,10 @@ fn pathOutcome(value Result[Path, PathError]) {
     );
 
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+    let application = PackageId::new("sema-test", "0");
     let decode_error = definition_named(&program, &std, "std.text", "DecodeTextError");
     let path_error = definition_named(&program, &std, "std.path", "PathError");
+    let values = definition_named(&program, &application, "sema_test", "values");
     assert_eq!(
         analysis.canonical_std_items.decode_text_error,
         Some(decode_error)
@@ -365,7 +409,7 @@ fn pathOutcome(value Result[Path, PathError]) {
         );
     }
 
-    assert_builtin_error_result_types(&analysis, decode_error, path_error);
+    assert_builtin_error_result_types(&program, &analysis, values, decode_error, path_error);
 }
 
 #[test]
@@ -497,7 +541,7 @@ fn incomplete(error PathError) {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn text_map_json_typed_io_and_logging_type_check() {
-    let diagnostics = analyze_source(
+    let (program, analysis) = analyze_source_program(
         r#"
 import std.file.try_open_read
 import std.file.try_create
@@ -609,7 +653,30 @@ async fn network(host Text, port Int) Result[Unit, IoError] {
 }
 "#,
     );
-    assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "{:#?}",
+        analysis.diagnostics
+    );
+
+    let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+    let application = PackageId::new("sema-test", "0");
+    let format_json = definition_named(&program, &std, "std.json", "format_json");
+    let values = definition_named(&program, &application, "sema_test", "values");
+    let DefinitionKind::Function(values) = &program.definitions[values].kind else {
+        panic!("values must be a function")
+    };
+    let values_body = analysis
+        .typed
+        .body(values.body)
+        .expect("checked values body");
+    assert!(
+        values_body.calls.values().any(
+            |call| matches!(call.target, CallTarget::Function(target) if target == format_json)
+        ),
+        "format_json must resolve to its ordinary std source definition: {:#?}",
+        values_body.calls
+    );
 }
 
 #[test]

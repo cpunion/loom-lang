@@ -8,11 +8,37 @@ use loom_runtime_abi::{
     GC_MAX_REPEATED_POINTER_CELLS, LoomTypedLogField, TYPED_LOG_INVALID_ARGUMENT, TYPED_LOG_OK,
 };
 
-use crate::json::escape_json_text;
 use crate::output::write_process_stderr;
 use crate::text::text_bytes;
 
 const LOG_LEVELS: [&str; 4] = ["debug", "info", "warn", "error"];
+
+fn escape_log_text(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let mut output = String::with_capacity(value.len() + 2);
+    output.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\u{08}' => output.push_str("\\b"),
+            '\u{0c}' => output.push_str("\\f"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            control if control <= '\u{1f}' => {
+                let value = u32::from(control) as usize;
+                output.push_str("\\u00");
+                output.push(char::from(HEX[value >> 4]));
+                output.push(char::from(HEX[value & 0x0f]));
+            }
+            character => output.push(character),
+        }
+    }
+    output.push('"');
+    output
+}
 
 unsafe fn field_slice<'fields>(
     fields: *const LoomTypedLogField,
@@ -57,9 +83,9 @@ unsafe fn format_typed_log_line(
     let fields = unsafe { field_slice(fields, field_count) }?;
 
     let mut line = String::from("{\"level\":");
-    line.push_str(&escape_json_text(level));
+    line.push_str(&escape_log_text(level));
     line.push_str(",\"message\":");
-    line.push_str(&escape_json_text(message));
+    line.push_str(&escape_log_text(message));
     line.push_str(",\"fields\":{");
     let mut previous_key = None;
     for (index, field) in fields.iter().enumerate() {
@@ -75,9 +101,9 @@ unsafe fn format_typed_log_line(
         if index != 0 {
             line.push(',');
         }
-        line.push_str(&escape_json_text(key_text));
+        line.push_str(&escape_log_text(key_text));
         line.push(':');
-        line.push_str(&escape_json_text(value_text));
+        line.push_str(&escape_log_text(value_text));
         previous_key = Some(key);
     }
     line.push_str("}}\n");

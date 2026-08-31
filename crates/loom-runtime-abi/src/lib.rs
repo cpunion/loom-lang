@@ -4,18 +4,17 @@
 //! values crossing the runtime boundary are defined here once and consumed by
 //! both generated-code declarations and the Rust runtime implementation.
 
-pub const RUNTIME_ABI_VERSION: u32 = 37;
+pub const RUNTIME_ABI_VERSION: u32 = 39;
 pub const TYPED_TASK_ABI_VERSION: u32 = 1;
 pub const WAIT_ABI_VERSION: u32 = 1;
-pub const STDLIB_ABI_VERSION: u32 = 7;
+pub const STDLIB_ABI_VERSION: u32 = 9;
 pub const LAYOUT_ABI_VERSION: u32 = 1;
 pub const TYPED_GC_ABI_VERSION: u32 = 1;
 pub const TYPED_GC_REPEATED_ABI_VERSION: u32 = 1;
 pub const TYPED_SHADOW_STACK_ABI_VERSION: u32 = 1;
-pub const TYPED_JSON_ABI_VERSION: u32 = 1;
 pub const TYPED_IO_ABI_VERSION: u32 = 1;
 pub const TYPED_PROCESS_ABI_VERSION: u32 = 1;
-pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/typed-process-v1/runtime-v31/gc-v9/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/stdlib-v7";
+pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "layout-v1/text-v4/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v2/typed-text-units-v1/typed-path-v1/typed-log-v1/stdout-v1/typed-process-v1/runtime-v33/gc-v9/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/stdlib-v9";
 
 /// Initializes the process-wide immutable argument snapshot. Generated `main`
 /// calls this only when the reachable program reads process arguments. Unix
@@ -73,32 +72,6 @@ pub const TYPED_LOG_FIELD_SIZE: u64 = 16;
 pub const TYPED_LOG_FIELD_ALIGNMENT: u64 = 8;
 pub const TYPED_LOG_FIELD_KEY_OFFSET: u64 = 0;
 pub const TYPED_LOG_FIELD_VALUE_OFFSET: u64 = 8;
-
-/// Formats one compiler-shaped direct `Json` value as canonical managed Text.
-///
-/// The synchronous boundary takes `(json, layout, output)`. `json` points to
-/// the complete direct sum value. The descriptor supplies every target-data
-/// offset needed to read that sum plus its direct `List[Json]` and
-/// `TextMap[Json]` objects; variant tags are fixed to Null, Bool, Number, Text,
-/// Array, and Object as `0..=5`. The runtime copies the descriptor, stages the
-/// complete result without entering Loom GC, and publishes Text only after all
-/// validation and formatting succeeds.
-///
-/// This is a trusted compiler/runtime boundary, not a memory-safety validator
-/// for arbitrary foreign pointers. The input and every recursively reachable
-/// object must be a complete, live, immutable value created for the supplied
-/// compiler descriptor. `output` must name writable, pointer-aligned storage
-/// whose address remains stable for the complete call, including the final
-/// moving-GC allocation; it must not reside in the moving heap. Generated
-/// code satisfies this contract with a stack output cell.
-pub const TYPED_JSON_FORMAT_SYMBOL: &str = "loom_runtime_json_format_typed_v1";
-pub const TYPED_JSON_FORMAT_OK: i32 = 0;
-pub const TYPED_JSON_FORMAT_INVALID_ARGUMENT: i32 = 1;
-pub const TYPED_JSON_FORMAT_ABI_MISMATCH: i32 = 2;
-pub const TYPED_JSON_FORMAT_DESCRIPTOR_INVALID: i32 = 3;
-pub const TYPED_JSON_FORMAT_DEPTH_LIMIT: i32 = 4;
-pub const TYPED_JSON_FORMAT_NON_FINITE_NUMBER: i32 = 5;
-pub const TYPED_JSON_FORMAT_RESOURCE_LIMIT: i32 = 6;
 
 pub const GC_OK: i32 = 0;
 pub const GC_INVALID_ARGUMENT: i32 = 1;
@@ -222,11 +195,20 @@ pub const TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8: i32 = -1;
 /// allocated direct Bytes pointer. Success and defects use the shared `GC_*`
 /// status domain.
 pub const BYTES_APPEND_TYPED_SYMBOL: &str = "loom_runtime_bytes_append_typed_v1";
+/// Copies one immutable byte sequence, appends one checked byte unit, and
+/// publishes a direct Bytes pointer. The signed unit is checked defensively by
+/// the runtime even though checked LCIR proves `0..=255` before this boundary.
+pub const BYTES_PUSH_TYPED_SYMBOL: &str = "loom_runtime_bytes_push_typed_v1";
+/// Appends one checked byte unit to a compiler-certified unique Bytes value.
+/// Only a distinct `ByteObject` with spare capacity may be updated in place;
+/// Text-backed byte views always fall back to a fresh `ByteObject`.
+pub const BYTES_PUSH_UNIQUE_TYPED_SYMBOL: &str = "loom_runtime_bytes_push_unique_typed_v1";
 /// Validates one immutable byte sequence as UTF-8, then publishes a direct
-/// Text pointer on success. Canonical Text-backed input may be reused; distinct
-/// Bytes input is staged before allocation. `GC_OK` is success, positive
-/// `GC_*` values are ABI/runtime defects, and this negative status is the sole
-/// ordinary invalid-UTF-8 outcome.
+/// Text pointer on success. Canonical Text-backed input is reused; a distinct
+/// `ByteObject` is relabelled in place after validation because immutable Bytes
+/// aliases accept either canonical leaf descriptor. `GC_OK` is success,
+/// positive `GC_*` values are ABI/runtime defects, and this negative status is
+/// the sole ordinary invalid-UTF-8 outcome.
 pub const BYTES_DECODE_UTF8_TYPED_SYMBOL: &str = "loom_runtime_bytes_decode_utf8_typed_v1";
 pub const BYTES_DECODE_UTF8_TYPED_INVALID_UTF8: i32 = -1;
 /// Lexically joins two canonical direct Text values and publishes one direct
@@ -461,38 +443,6 @@ pub struct LoomTypedLogField {
     pub value: *const core::ffi::c_void,
 }
 
-/// Target-data layout of direct `Json`, `List[Json]`, and `TextMap[Json]`.
-///
-/// Every offset is in bytes from the start of the value or object named by
-/// its prefix. Payload offsets name the first field of the corresponding Json
-/// variant, list offsets name the list object base, and map key/value offsets
-/// name one entry base. The descriptor contains no pointers and is copied at
-/// the ABI boundary before any direct value is inspected.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct LoomTypedJsonLayout {
-    pub abi_version: u32,
-    pub flags: u32,
-    pub json_size: u64,
-    pub json_alignment: u64,
-    pub tag_offset: u64,
-    pub tag_size: u64,
-    pub bool_payload_offset: u64,
-    pub number_payload_offset: u64,
-    pub text_payload_offset: u64,
-    pub array_payload_offset: u64,
-    pub object_payload_offset: u64,
-    pub list_length_offset: u64,
-    pub list_capacity_offset: u64,
-    pub list_data_offset: u64,
-    pub list_element_stride: u64,
-    pub map_length_offset: u64,
-    pub map_data_offset: u64,
-    pub map_entry_stride: u64,
-    pub map_key_offset: u64,
-    pub map_value_offset: u64,
-}
-
 impl Default for LoomByteView {
     fn default() -> Self {
         Self {
@@ -600,23 +550,23 @@ mod tests {
 
     use super::{
         BYTES_APPEND_TYPED_SYMBOL, BYTES_DECODE_UTF8_TYPED_INVALID_UTF8,
-        BYTES_DECODE_UTF8_TYPED_SYMBOL, BYTES_LAYOUT_SYMBOL, FORMAT_FLOAT_TYPED_SYMBOL,
-        GC_DESCRIPTOR_INVALID, GC_MAX_OBJECT_ALIGNMENT, GC_MAX_OBJECT_BYTES,
-        GC_MAX_OBJECT_POINTERS, GC_MAX_REPEATED_POINTER_CELLS, GC_MAX_ROOT_BITMAP_WORDS,
-        GC_MAX_ROOT_DEPTH, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, GC_RESOURCE_LIMIT,
-        LAYOUT_ABI_VERSION, LoomByteView, LoomGcObjectDescriptor, LoomGcRepeatedObjectDescriptor,
-        LoomGcTypedRootDescriptor, LoomGcTypedRootFrame, LoomTypedCoroutineDescriptor,
-        LoomTypedIoOutcome, LoomTypedIoRequest, LoomTypedJsonLayout, LoomTypedLogField,
-        LoomTypedTaskFaultView, NATIVE_RUNTIME_ABI_IDENTITY, PARSE_FLOAT_STATUS_INVALID_SYNTAX,
-        PARSE_FLOAT_STATUS_OK, PARSE_FLOAT_STATUS_OUT_OF_RANGE, PARSE_FLOAT_SYMBOL,
-        PATH_JOIN_TYPED_ABSOLUTE, PATH_JOIN_TYPED_SYMBOL, PROCESS_ARGUMENT_AT_TYPED_SYMBOL,
-        PROCESS_ARGUMENT_COUNT_TYPED_INVALID, PROCESS_ARGUMENT_COUNT_TYPED_SYMBOL,
-        PROCESS_ARGUMENT_TYPED_INVALID, PROCESS_ARGUMENT_TYPED_OK,
-        PROCESS_ARGUMENTS_INITIALIZE_TYPED_SYMBOL, PROCESS_ENVIRONMENT_TYPED_FOUND,
-        PROCESS_ENVIRONMENT_TYPED_INVALID, PROCESS_ENVIRONMENT_TYPED_MISSING,
-        PROCESS_ENVIRONMENT_TYPED_SYMBOL, RUNTIME_ABI_VERSION, STDLIB_ABI_VERSION,
-        STDOUT_WRITE_FAILED, STDOUT_WRITE_INVALID_ARGUMENT, STDOUT_WRITE_OK, STDOUT_WRITE_SYMBOL,
-        TEXT_CONTAINS_SYMBOL, TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8,
+        BYTES_DECODE_UTF8_TYPED_SYMBOL, BYTES_LAYOUT_SYMBOL, BYTES_PUSH_TYPED_SYMBOL,
+        BYTES_PUSH_UNIQUE_TYPED_SYMBOL, FORMAT_FLOAT_TYPED_SYMBOL, GC_DESCRIPTOR_INVALID,
+        GC_MAX_OBJECT_ALIGNMENT, GC_MAX_OBJECT_BYTES, GC_MAX_OBJECT_POINTERS,
+        GC_MAX_REPEATED_POINTER_CELLS, GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_DEPTH,
+        GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, GC_RESOURCE_LIMIT, LAYOUT_ABI_VERSION, LoomByteView,
+        LoomGcObjectDescriptor, LoomGcRepeatedObjectDescriptor, LoomGcTypedRootDescriptor,
+        LoomGcTypedRootFrame, LoomTypedCoroutineDescriptor, LoomTypedIoOutcome, LoomTypedIoRequest,
+        LoomTypedLogField, LoomTypedTaskFaultView, NATIVE_RUNTIME_ABI_IDENTITY,
+        PARSE_FLOAT_STATUS_INVALID_SYNTAX, PARSE_FLOAT_STATUS_OK, PARSE_FLOAT_STATUS_OUT_OF_RANGE,
+        PARSE_FLOAT_SYMBOL, PATH_JOIN_TYPED_ABSOLUTE, PATH_JOIN_TYPED_SYMBOL,
+        PROCESS_ARGUMENT_AT_TYPED_SYMBOL, PROCESS_ARGUMENT_COUNT_TYPED_INVALID,
+        PROCESS_ARGUMENT_COUNT_TYPED_SYMBOL, PROCESS_ARGUMENT_TYPED_INVALID,
+        PROCESS_ARGUMENT_TYPED_OK, PROCESS_ARGUMENTS_INITIALIZE_TYPED_SYMBOL,
+        PROCESS_ENVIRONMENT_TYPED_FOUND, PROCESS_ENVIRONMENT_TYPED_INVALID,
+        PROCESS_ENVIRONMENT_TYPED_MISSING, PROCESS_ENVIRONMENT_TYPED_SYMBOL, RUNTIME_ABI_VERSION,
+        STDLIB_ABI_VERSION, STDOUT_WRITE_FAILED, STDOUT_WRITE_INVALID_ARGUMENT, STDOUT_WRITE_OK,
+        STDOUT_WRITE_SYMBOL, TEXT_CONTAINS_SYMBOL, TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8,
         TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_INVALID,
         TEXT_GET_TYPED_MISSING, TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT,
         TEXT_OBJECT_FIELD_ALLOCATION_SIZE, TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES,
@@ -631,13 +581,10 @@ mod tests {
         TYPED_IO_OPERATION_SOCKET_READ_TEXT, TYPED_IO_OPERATION_SOCKET_WRITE_TEXT,
         TYPED_IO_OUTCOME_ERROR, TYPED_IO_OUTCOME_RESOURCE, TYPED_IO_OUTCOME_TEXT,
         TYPED_IO_OUTCOME_UNIT, TYPED_IO_POLL_SYMBOL, TYPED_IO_TASK_CREATE_SYMBOL,
-        TYPED_JSON_ABI_VERSION, TYPED_JSON_FORMAT_ABI_MISMATCH, TYPED_JSON_FORMAT_DEPTH_LIMIT,
-        TYPED_JSON_FORMAT_DESCRIPTOR_INVALID, TYPED_JSON_FORMAT_INVALID_ARGUMENT,
-        TYPED_JSON_FORMAT_NON_FINITE_NUMBER, TYPED_JSON_FORMAT_OK,
-        TYPED_JSON_FORMAT_RESOURCE_LIMIT, TYPED_JSON_FORMAT_SYMBOL, TYPED_LOG_FIELD_ALIGNMENT,
-        TYPED_LOG_FIELD_KEY_OFFSET, TYPED_LOG_FIELD_SIZE, TYPED_LOG_FIELD_VALUE_OFFSET,
-        TYPED_LOG_INVALID_ARGUMENT, TYPED_LOG_OK, TYPED_LOG_WRITE_FAILED, TYPED_LOG_WRITE_SYMBOL,
-        TYPED_PROCESS_ABI_VERSION, TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT, TYPED_RESOURCE_CLOSE_OK,
+        TYPED_LOG_FIELD_ALIGNMENT, TYPED_LOG_FIELD_KEY_OFFSET, TYPED_LOG_FIELD_SIZE,
+        TYPED_LOG_FIELD_VALUE_OFFSET, TYPED_LOG_INVALID_ARGUMENT, TYPED_LOG_OK,
+        TYPED_LOG_WRITE_FAILED, TYPED_LOG_WRITE_SYMBOL, TYPED_PROCESS_ABI_VERSION,
+        TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT, TYPED_RESOURCE_CLOSE_OK,
         TYPED_RESOURCE_CLOSE_SYMBOL, TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET,
         TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION, TYPED_TASK_CLEANUP_FAULTED,
         TYPED_TASK_INVALID_ARGUMENT, TYPED_TASK_MAX_FAULT_TEXT_BYTES, TYPED_TASK_NO_MEMORY,
@@ -647,7 +594,7 @@ mod tests {
 
     #[test]
     fn native_runtime_identity_is_pinned() {
-        assert_eq!(RUNTIME_ABI_VERSION, 37);
+        assert_eq!(RUNTIME_ABI_VERSION, 39);
         assert_eq!(TYPED_TASK_ABI_VERSION, 1);
         assert_eq!(LAYOUT_ABI_VERSION, 1);
         assert_eq!(TYPED_GC_ABI_VERSION, 1);
@@ -685,6 +632,11 @@ mod tests {
             BYTES_APPEND_TYPED_SYMBOL,
             "loom_runtime_bytes_append_typed_v1"
         );
+        assert_eq!(BYTES_PUSH_TYPED_SYMBOL, "loom_runtime_bytes_push_typed_v1");
+        assert_eq!(
+            BYTES_PUSH_UNIQUE_TYPED_SYMBOL,
+            "loom_runtime_bytes_push_unique_typed_v1"
+        );
         assert_eq!(
             BYTES_DECODE_UTF8_TYPED_SYMBOL,
             "loom_runtime_bytes_decode_utf8_typed_v1"
@@ -708,18 +660,6 @@ mod tests {
         assert_eq!(TYPED_LOG_FIELD_ALIGNMENT, 8);
         assert_eq!(TYPED_LOG_FIELD_KEY_OFFSET, 0);
         assert_eq!(TYPED_LOG_FIELD_VALUE_OFFSET, 8);
-        assert_eq!(TYPED_JSON_ABI_VERSION, 1);
-        assert_eq!(
-            TYPED_JSON_FORMAT_SYMBOL,
-            "loom_runtime_json_format_typed_v1"
-        );
-        assert_eq!(TYPED_JSON_FORMAT_OK, 0);
-        assert_eq!(TYPED_JSON_FORMAT_INVALID_ARGUMENT, 1);
-        assert_eq!(TYPED_JSON_FORMAT_ABI_MISMATCH, 2);
-        assert_eq!(TYPED_JSON_FORMAT_DESCRIPTOR_INVALID, 3);
-        assert_eq!(TYPED_JSON_FORMAT_DEPTH_LIMIT, 4);
-        assert_eq!(TYPED_JSON_FORMAT_NON_FINITE_NUMBER, 5);
-        assert_eq!(TYPED_JSON_FORMAT_RESOURCE_LIMIT, 6);
         assert_eq!(TYPED_RESOURCE_CLOSE_SYMBOL, "loom_typed_resource_close_v1");
         assert_eq!(TYPED_RESOURCE_KIND_FILE, 1);
         assert_eq!(TYPED_RESOURCE_KIND_SOCKET, 2);
@@ -729,10 +669,10 @@ mod tests {
             TYPED_TIMER_TASK_CREATE_SYMBOL,
             "loom_typed_timer_task_create_v1"
         );
-        assert_eq!(STDLIB_ABI_VERSION, 7);
+        assert_eq!(STDLIB_ABI_VERSION, 9);
         assert_eq!(
             NATIVE_RUNTIME_ABI_IDENTITY,
-            "layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/typed-process-v1/runtime-v31/gc-v9/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/stdlib-v7",
+            "layout-v1/text-v4/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v2/typed-text-units-v1/typed-path-v1/typed-log-v1/stdout-v1/typed-process-v1/runtime-v33/gc-v9/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/stdlib-v9",
         );
     }
 
@@ -839,28 +779,6 @@ mod tests {
         );
         assert_eq!(size_of::<LoomTypedTaskFaultView>(), 48);
         assert_eq!(align_of::<LoomTypedTaskFaultView>(), 8);
-        assert_eq!(size_of::<LoomTypedJsonLayout>(), 152);
-        assert_eq!(align_of::<LoomTypedJsonLayout>(), 8);
-        assert_eq!(offset_of!(LoomTypedJsonLayout, abi_version), 0);
-        assert_eq!(offset_of!(LoomTypedJsonLayout, flags), 4);
-        assert_eq!(offset_of!(LoomTypedJsonLayout, json_size), 8);
-        assert_eq!(offset_of!(LoomTypedJsonLayout, json_alignment), 16);
-        assert_eq!(offset_of!(LoomTypedJsonLayout, tag_offset), 24);
-        assert_eq!(offset_of!(LoomTypedJsonLayout, tag_size), 32);
-        assert_eq!(offset_of!(LoomTypedJsonLayout, bool_payload_offset), 40);
-        assert_eq!(offset_of!(LoomTypedJsonLayout, number_payload_offset), 48);
-        assert_eq!(offset_of!(LoomTypedJsonLayout, text_payload_offset), 56);
-        assert_eq!(offset_of!(LoomTypedJsonLayout, array_payload_offset), 64);
-        assert_eq!(offset_of!(LoomTypedJsonLayout, object_payload_offset), 72);
-        assert_eq!(offset_of!(LoomTypedJsonLayout, list_length_offset), 80);
-        assert_eq!(offset_of!(LoomTypedJsonLayout, list_capacity_offset), 88);
-        assert_eq!(offset_of!(LoomTypedJsonLayout, list_data_offset), 96);
-        assert_eq!(offset_of!(LoomTypedJsonLayout, list_element_stride), 104);
-        assert_eq!(offset_of!(LoomTypedJsonLayout, map_length_offset), 112);
-        assert_eq!(offset_of!(LoomTypedJsonLayout, map_data_offset), 120);
-        assert_eq!(offset_of!(LoomTypedJsonLayout, map_entry_stride), 128);
-        assert_eq!(offset_of!(LoomTypedJsonLayout, map_key_offset), 136);
-        assert_eq!(offset_of!(LoomTypedJsonLayout, map_value_offset), 144);
     }
 
     #[test]

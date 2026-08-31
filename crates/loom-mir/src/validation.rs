@@ -6612,17 +6612,6 @@ impl<'program> Validator<'program> {
             {
                 Some(types[0].clone()?)
             }
-            Builtin::JsonFormat
-                if Self::nominal_builtin_argument(&types, 0, self.program.prelude.json) =>
-            {
-                self.expected_result_type(
-                    Type::Text,
-                    self.program.prelude.json_error,
-                    "json_error",
-                    expression.span,
-                    path,
-                )
-            }
             Builtin::IoErrorKind
                 if Self::nominal_builtin_argument(&types, 0, self.program.prelude.io_error) =>
             {
@@ -6732,6 +6721,9 @@ impl<'program> Validator<'program> {
             {
                 self.expected_option_type(Type::Int, expression.span, path)
             }
+            Builtin::BytesAdd => {
+                self.validate_bytes_add_builtin(arguments, &types, expression.span, path)
+            }
             Builtin::BytesAppend
                 if Self::nominal_builtin_argument(&types, 0, self.program.prelude.bytes)
                     && Self::nominal_builtin_argument(&types, 1, self.program.prelude.bytes) =>
@@ -6829,6 +6821,7 @@ impl<'program> Validator<'program> {
             | Builtin::TextConcat
             | Builtin::TextContains
             | Builtin::BytesGet
+            | Builtin::BytesAdd
             | Builtin::BytesAppend
             | Builtin::PathJoin
             | Builtin::FileWriteText
@@ -6870,7 +6863,6 @@ impl<'program> Validator<'program> {
             | Builtin::SocketReadText
             | Builtin::SocketClose
             | Builtin::TextMapLength
-            | Builtin::JsonFormat
             | Builtin::IoErrorKind
             | Builtin::IoErrorMessage
             | Builtin::StdoutWrite
@@ -6888,6 +6880,20 @@ impl<'program> Validator<'program> {
             );
             return false;
         }
+        let mutable_receiver = matches!(
+            builtin,
+            Builtin::ListAdd | Builtin::BytesAdd | Builtin::FileClose | Builtin::SocketClose
+        );
+        for (index, argument) in arguments.iter().enumerate() {
+            if !(mutable_receiver && index == 0) && matches!(argument, CallArgument::InOut(_)) {
+                self.push(
+                    MirValidationCode::ReceiverShape,
+                    "only a mutable builtin receiver may use an inout argument",
+                    span,
+                    format!("{path}.arguments[{index}]"),
+                );
+            }
+        }
         if matches!(builtin, Builtin::FileClose | Builtin::SocketClose)
             && !matches!(arguments.first(), Some(CallArgument::InOut(_)))
         {
@@ -6899,6 +6905,36 @@ impl<'program> Validator<'program> {
             );
         }
         true
+    }
+
+    fn validate_bytes_add_builtin(
+        &mut self,
+        arguments: &[CallArgument],
+        types: &[Option<Type>],
+        span: Span,
+        path: &str,
+    ) -> Option<Type> {
+        if !Self::nominal_builtin_argument(types, 0, self.program.prelude.bytes) {
+            self.push(
+                MirValidationCode::BuiltinShape,
+                "BytesAdd receiver must be Bytes",
+                span,
+                path,
+            );
+            return None;
+        }
+        if !matches!(arguments.first(), Some(CallArgument::InOut(_))) {
+            self.push(
+                MirValidationCode::ReceiverShape,
+                "BytesAdd receiver must be passed inout",
+                span,
+                format!("{path}.arguments[0]"),
+            );
+        }
+        if !types_compatible(&Type::Int, types[1].as_ref()?) {
+            self.type_mismatch(&Type::Int, types[1].as_ref()?, span, path);
+        }
+        Some(Type::Unit)
     }
 
     fn validate_duration_builtin(&self, builtin: Builtin, types: &[Option<Type>]) -> Option<Type> {
@@ -9227,6 +9263,7 @@ impl<'program> Validator<'program> {
             | Builtin::TextFromUtf8Units
             | Builtin::BytesLength
             | Builtin::BytesGet
+            | Builtin::BytesAdd
             | Builtin::BytesAppend
             | Builtin::BytesDecodeUtf8
             | Builtin::PathFromText
@@ -9252,7 +9289,6 @@ impl<'program> Validator<'program> {
             | Builtin::TextMapEntryAt
             | Builtin::TextMapInsert
             | Builtin::TextMapRemove
-            | Builtin::JsonFormat
             | Builtin::IoErrorKind
             | Builtin::IoErrorMessage
             | Builtin::LogWrite

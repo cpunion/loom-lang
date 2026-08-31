@@ -318,11 +318,12 @@ Unsupported dynamic Text producers reject native preparation.
 Canonical `Bytes` is one opaque managed pointer. `Text.encode_utf8` forwards
 the exact immutable Text object pointer and performs no allocation. A Bytes
 value may therefore carry the Text descriptor, while bytes materialized by
-append carry the distinct `loom_layout_bytes_v1` ByteObject descriptor. The
-shared 32-byte prefix provides allocation and byte lengths; the descriptor and
-the ByteObject's required-zero reserved field prevent arbitrary byte storage
-from masquerading as Text. Descriptor identity remains compiler/runtime
-metadata and is not source RTTI.
+append or mutable push carry the distinct `loom_layout_bytes_v1` ByteObject
+descriptor. The shared 32-byte prefix provides allocation and byte lengths;
+for a ByteObject their difference is compiler-private spare capacity. The
+descriptor and the ByteObject's required-zero reserved field prevent arbitrary
+byte storage from masquerading as Text. Descriptor identity and capacity remain
+compiler/runtime metadata and are not source RTTI.
 
 Length and checked indexing load the header and trailing byte range directly.
 Equality and inequality compare byte lengths and contents, never pointer
@@ -334,18 +335,30 @@ Append calls
 `loom_runtime_bytes_append_typed_v1(left, right, out_bytes)`. The runtime
 validates both admitted descriptors, copies both complete immutable payloads to
 non-GC staging storage, then allocates and publishes one initialized ByteObject.
+Mutable `Bytes.add` first emits signed range checks and a RuntimeFault Assert,
+then calls either `loom_runtime_bytes_push_typed_v1` or the independently
+validated unique form `loom_runtime_bytes_push_unique_typed_v1`. The ordinary
+form copies. The unique form may grow or reuse only a distinct ByteObject; a
+Text-backed Bytes value always allocates, so Text remains immutable. Geometric
+growth is capped by the collector's maximum object size and has no source-level
+capacity contract.
+`CollectionShare` is representation-identical SSA bookkeeping for a source
+List or Bytes copy. LLVM reuses its input value directly and emits no machine
+instruction or runtime boundary.
 Decode calls
 `loom_runtime_bytes_decode_utf8_typed_v1(bytes, out_text)`. A valid Text-backed
 value returns the same pointer without allocation; a standalone ByteObject is
-staged and validated before a possible Text allocation; invalid UTF-8 selects
+validated and may be relabelled in place as Text because both descriptors are
+pointer-free and every existing Bytes alias admits either descriptor. Invalid UTF-8 selects
 the ordinary nested `DecodeTextError.InvalidUtf8` variant. Positive or unknown
-ABI statuses trap as compiler/runtime defects. LCIR conservatively treats both
-instructions as collection safepoints: the emitter publishes the exact live
-root state before the call and passes a stable output cell. Each runtime helper
+ABI statuses trap as compiler/runtime defects. LCIR treats append and both
+push instructions as collection safepoints: the emitter publishes
+the exact live root state before the call and passes a stable output cell.
+Decode is non-collecting. Each runtime helper
 publishes its fully initialized pointer as its final operation, so relocation
 cannot stale an input or expose a partial result. Append may reuse the result's
-direct root cell when one exists and otherwise uses a temporary. Decode always
-uses a stable temporary; after the call, LLVM constructs and publishes the
+direct root cell when one exists and otherwise uses a temporary. Push and decode
+use stable output storage; after decode, LLVM constructs and publishes the
 exact Result without an intervening safepoint. No universal value, executor,
 JSON policy, or ownership/borrow syntax is involved.
 
@@ -482,28 +495,12 @@ Json-specific condition, universal envelope, runtime tag registry, tracing
 callback, or executor. Unsupported 32-bit managed layouts fail closed.
 
 Canonical Json construction, copying, List/TextMap operations, exhaustive
-matching, exact moving-GC roots, formatting, structural equality, and the
-source-backed parser lower through the same typed artifact.
-
-## Direct JSON formatting
-
-`JsonFormat` receives the canonical 24-byte recursive Json carrier and returns
-the exact direct `Result[Text, JsonError]` sum. LLVM publishes one immutable
-`LoomTypedJsonLayout` containing the target-data-derived offsets needed to
-traverse Text, List, and TextMap
-payloads. LLVM passes that descriptor, the direct carrier, and one stable
-output cell to `loom_runtime_json_format_typed_v1`; the boundary does not
-inspect a source nominal identifier or a universal value tag.
-
-The runtime formats Null, Bool, finite Number, Text, Array, and Object values
-into non-GC staging storage. Object traversal preserves the map's canonical
-key order, strings use the standard JSON escapes, and finite numbers retain
-the standard formatter's canonical spelling, including `-0`. Only a successful
-format crosses the final typed Text-allocation safepoint. The LLVM emitter then
-constructs `Ok(Text)` directly; depth exhaustion and NaN or infinity construct
-the exact `Err(DepthLimit)` or `Err(NonFiniteNumber)` carrier without a source
-fault edge. Root liveness and relocation use the ordinary typed shadow-stack
-plan, and no executor is created.
+matching, exact moving-GC roots, structural equality, parsing, and formatting
+lower through the same typed artifact. Both public JSON functions are ordinary
+Loom source. Formatting reaches ordinary direct calls, matches, collection
+operations, Float primitives, unique packed byte pushes, and `BytesDecodeUtf8`;
+LLVM has no Json-specific instruction, layout descriptor, status mapping, or
+runtime declaration.
 
 ## Direct typed File and Socket I/O
 
@@ -771,7 +768,7 @@ Generated typed LLVM objects use narrow typed runtime helpers rather than a
 universal value boundary. The runtime archive exports no universal GC/value,
 witness, legacy Task, value-operation, or Int-list surface. Typed repeated
 allocation and shadow-root descriptors carry exact managed layouts. Text,
-Bytes, Path, JSON, and formatting helpers validate their direct inputs, stage
+Bytes, Path, and Float-formatting helpers validate their direct inputs, stage
 every borrowed byte sequence before a possible collection, and publish only
 fully initialized managed results. Structured logging receives
 the canonical `LogLevel`, direct Text, and an optional contiguous

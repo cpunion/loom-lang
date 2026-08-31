@@ -50,8 +50,8 @@ values, `std.log` convenience functions over the single output boundary, and
 the public resource concept declarations in `std.resource`. `Dispose`, `MustScope`, and
 `NoSuspend` pass through the ordinary source pipeline, while their canonical
 identity, required shapes, and lexical static rules remain compiler-enforced
-and require no runtime registry. JSON formatting remains one exact typed
-compiler/runtime operation; parsing has no special compiler or runtime path. See
+and require no runtime registry. JSON parsing and formatting are ordinary
+source functions and have no special compiler or runtime path. See
 [Core, standard library, and runtime boundary](core-library-runtime-boundary.md).
 
 The `std` identity is the only compiler-owned module identity in language

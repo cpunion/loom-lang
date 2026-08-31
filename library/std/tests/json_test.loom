@@ -1,4 +1,5 @@
 import std.json.parse_json
+import std.json.format_json
 
 test fn json_parsing() {
     let null_value = match parse_json("null") {
@@ -16,6 +17,50 @@ test fn json_parsing() {
 test fn json_rejects_trailing_input() {
     let rejected = match parse_json("null false") {
         Err(JsonError.InvalidSyntax(offset)) => offset == 5
+        _ => false
+    }
+    assert rejected
+}
+
+test fn json_formatting_is_canonical() {
+    let value = Json.Object(
+        TextMap[Json]()
+            .insert("z", Json.Number(-0.0))
+            .insert("a", Json.Text("line\n界"))
+    )
+    let formatted = match format_json(value) {
+        Ok(text) => text
+        Err(_) => "failed"
+    }
+    assert formatted == "{\"a\":\"line\\n界\",\"z\":-0}"
+}
+
+test fn json_formatting_escapes_ascii_controls() {
+    var bytes = "".encode_utf8()
+    bytes.add(0)
+    bytes.add(1)
+    bytes.add(31)
+    bytes.add(8)
+    bytes.add(12)
+    bytes.add(13)
+    bytes.add(9)
+    let controls = match bytes.decode_utf8() {
+        Ok(text) => text
+        Err(_) => {
+            assert false
+            ""
+        }
+    }
+    let formatted = match format_json(Json.Text(controls)) {
+        Ok(text) => text
+        Err(_) => "failed"
+    }
+    assert formatted == "\"\\u0000\\u0001\\u001f\\b\\f\\r\\t\""
+}
+
+test fn json_formatting_rejects_non_finite_numbers() {
+    let rejected = match format_json(Json.Number(1.0 / 0.0)) {
+        Err(JsonError.NonFiniteNumber) => true
         _ => false
     }
     assert rejected

@@ -2963,35 +2963,37 @@ fn typed_io_closes_real_check_build_test_and_run_commands() {
 }
 
 #[test]
-fn typed_json_format_closes_real_check_build_test_and_run_commands() {
+fn source_json_format_closes_real_check_build_test_and_run_commands() {
     let project = fixture_project!("lcir-json-format");
 
     let check = loom()
         .args(["--no-cache", "check"])
         .arg(&project.0)
         .output()
-        .expect("check typed JSON formatting source through the CLI");
+        .expect("check source JSON formatting through the CLI");
     assert_eq!(check.status.code(), Some(0), "{check:?}");
     assert!(check.stderr.is_empty(), "{check:?}");
 
-    let object_path = project.0.join("typed-json-format.o");
+    let object_path = project.0.join("source-json-format.o");
     let build = loom()
         .args(["--no-cache", "build", "--emit", "object", "--output"])
         .arg(&object_path)
         .arg(&project.0)
         .output()
-        .expect("build typed JSON formatting source through the CLI");
+        .expect("build source JSON formatting through the CLI");
     assert_eq!(build.status.code(), Some(0), "{build:?}");
-    let object = fs::read(object_path).expect("read typed JSON formatting object");
+    let object = fs::read(object_path).expect("read source JSON formatting object");
     for required in [
         b"loom.lcir.fn".as_slice(),
-        b"loom_runtime_json_format_typed_v1",
+        b"loom_runtime_format_float_typed_v1",
+        b"loom_runtime_bytes_push_unique_typed_v1",
+        b"loom_runtime_bytes_decode_utf8_typed_v1",
         b"loom_gc_typed_root_push_v1",
         b"loom_gc_typed_root_pop_v1",
     ] {
         assert!(
             contains_bytes(&object, required),
-            "typed JSON formatting object omitted `{}`",
+            "source JSON formatting object omitted `{}`",
             String::from_utf8_lossy(required)
         );
     }
@@ -3000,6 +3002,8 @@ fn typed_json_format_closes_real_check_build_test_and_run_commands() {
         b"loom.Value",
         b"ValueNode",
         b"loom_runtime_json_format\0",
+        b"loom_runtime_json_format_typed_v1",
+        b"loom_runtime_text_from_utf8_units_typed_v1",
         b"loom_runtime_list_",
         b"loom_runtime_text_map_",
         b"loom_gc_root_push_v1",
@@ -3008,7 +3012,7 @@ fn typed_json_format_closes_real_check_build_test_and_run_commands() {
     ] {
         assert!(
             !contains_bytes(&object, forbidden),
-            "typed JSON formatting object exposed `{}`",
+            "source JSON formatting object exposed `{}`",
             String::from_utf8_lossy(forbidden)
         );
     }
@@ -3017,16 +3021,16 @@ fn typed_json_format_closes_real_check_build_test_and_run_commands() {
         .args(["--no-cache", "test"])
         .arg(&project.0)
         .output()
-        .expect("test typed JSON formatting source through the CLI");
+        .expect("test source JSON formatting through the CLI");
     assert_eq!(tests.status.code(), Some(0), "{tests:?}");
-    assert_eq!(tests.stdout, b"passed standalone.typedJsonFormat\n");
+    assert_eq!(tests.stdout, b"passed standalone.sourceJsonFormat\n");
     assert!(tests.stderr.is_empty(), "{tests:?}");
 
     let run = loom()
         .args(["--no-cache", "run"])
         .arg(&project.0)
         .output()
-        .expect("run typed JSON formatting source through the CLI");
+        .expect("run source JSON formatting through the CLI");
     assert_eq!(run.status.code(), Some(0), "{run:?}");
     assert_eq!(run.stdout, b"Unit\n");
     assert!(run.stderr.is_empty(), "{run:?}");

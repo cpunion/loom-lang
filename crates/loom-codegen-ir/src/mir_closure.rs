@@ -679,7 +679,10 @@ impl SerializationClosure {
             | Builtin::ListGet => {
                 self.add_optional_type(prelude.option);
             }
-            Builtin::TextEncodeUtf8 | Builtin::BytesLength | Builtin::BytesAppend => {
+            Builtin::TextEncodeUtf8
+            | Builtin::BytesLength
+            | Builtin::BytesAdd
+            | Builtin::BytesAppend => {
                 self.add_optional_type(prelude.bytes);
             }
             Builtin::TextFromUtf8Units => {
@@ -746,11 +749,6 @@ impl SerializationClosure {
             Builtin::TextMapGet | Builtin::TextMapEntryAt => {
                 self.add_optional_type(prelude.text_map);
                 self.add_optional_type(prelude.option);
-            }
-            Builtin::JsonFormat => {
-                self.add_optional_type(prelude.json);
-                self.add_optional_type(prelude.result);
-                self.add_optional_type(prelude.json_error);
             }
             Builtin::IoErrorKind => {
                 self.add_optional_type(prelude.io_error);

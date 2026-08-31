@@ -2,8 +2,10 @@
 
 > Normative for Loom language version 0.4.
 
-`Text`, `Bytes`, and `Path` are immutable values. Their storage address,
-capacity, sharing, and allocation strategy are not observable.
+`Text`, `Bytes`, and `Path` have value semantics. Their storage address,
+capacity, sharing, and allocation strategy are not observable. `Text` and
+`Path` have no mutating operation. A mutable `Bytes` binding may be updated by
+`add`, but logical copies remain independent.
 
 The error types named below are ordinary compiler-distributed source enums:
 
@@ -63,12 +65,25 @@ UTF-8.
 bytes.length() Int
 bytes.get(index Int) Option[Int]
 bytes.append(other Bytes) Bytes
+bytes.add(unit Int)
 bytes.decode_utf8() Result[Text, DecodeTextError]
 ```
 
 `get` returns an Int in the range 0 through 255. A negative or out-of-range
 index returns `None`. `append` returns the receiver bytes followed by the
-argument bytes.
+argument bytes. `add` appends one unit to the receiver and requires a `var`
+binding:
+
+```loom
+var bytes = "Loom".encode_utf8()
+bytes.add(10)
+```
+
+The unit must be in the closed range 0 through 255. Any other value raises the
+uncatchable RuntimeFault `InvalidByte` with message
+`Bytes.add value is outside 0...255`; the receiver is not changed. Bytes use
+copy-on-write value semantics, so updating one binding never changes another
+logical copy. Capacity and whether an append reused storage are unobservable.
 
 `decode_utf8` validates the complete sequence. Success produces Text; any
 invalid sequence produces:

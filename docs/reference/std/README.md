@@ -34,15 +34,17 @@ open/create APIs, `File`, its I/O methods and resource conformances; all public
 `std.net` connect APIs, `Socket`, its I/O methods and resource conformances; and
 the public `Dispose`, `MustScope`, and `NoSuspend` declarations in
 `std.resource`.
+`std.json.parse_json` and `std.json.format_json` are ordinary source functions;
+their parser, traversal, escaping, and result construction use general Loom
+control flow and collection/Text operations rather than JSON-specific compiler
+or runtime hooks.
 `std.time.milliseconds` is likewise an ordinary source wrapper over one
 exact-owner primitive; `Duration` and its intrinsic inspection method remain
 core values.
 The public logging graph is ordinary Loom source over one compiler-private
 typed output primitive. Resource declarations are source-backed, but
 their fixed shapes and irreducible static rules remain part of the language
-core and add no runtime registry. JSON parsing is ordinary Loom source; JSON
-formatting uses the exact typed formatting boundary documented in the JSON
-reference. The target boundary permits only irreducible GC, scheduler,
+core and add no runtime registry. The target boundary permits only irreducible GC, scheduler,
 platform, output, and generic construction services to cross into the
 compiler-private runtime. The implementation rule is documented in
 [Core, standard library, and runtime boundary](../../internals/core-library-runtime-boundary.md).

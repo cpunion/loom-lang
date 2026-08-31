@@ -741,6 +741,13 @@ pub enum InstructionKind {
         error_variant: u32,
         absolute_join_variant: u32,
     },
+    /// Materializes one source-level copy of a canonical List or Bytes value.
+    /// The result is representation-identical to `value`; the instruction has
+    /// no runtime operation, but makes the COW alias boundary explicit so
+    /// checked ownership analysis marks both SSA values shared.
+    CollectionShare {
+        value: ValueId,
+    },
     /// Reads the exact byte length from a canonical managed Bytes object.
     BytesLength {
         bytes: ValueId,
@@ -760,10 +767,35 @@ pub enum InstructionKind {
         left: ValueId,
         right: ValueId,
     },
+    /// Produces a new canonical Bytes value containing all old units followed
+    /// by `unit`. `lower_proof` and `upper_proof` must be the exact checked
+    /// results of `unit >= 0` and `unit <= 255`; their successful guard edges
+    /// must dominate this instruction. The receiver remains independently
+    /// usable. A backend may allocate exact typed byte storage at this
+    /// moving-GC safepoint.
+    BytesPush {
+        bytes: ValueId,
+        unit: ValueId,
+        lower_proof: ValueId,
+        upper_proof: ValueId,
+    },
+    /// Pushes through a checked-MIR eligibility certificate and the same exact
+    /// byte-range proof contract as [`InstructionKind::BytesPush`]. The
+    /// receiver is consumed and the result carries the certificate forward.
+    /// Backends must still inspect the managed-object descriptor before
+    /// reusing storage: Text-backed UTF-8 views are never mutable, even when
+    /// this certificate proves that the Bytes SSA value itself has not been
+    /// shared.
+    BytesPushUnique {
+        bytes: ValueId,
+        unit: ValueId,
+        lower_proof: ValueId,
+        upper_proof: ValueId,
+    },
     /// Validates canonical Bytes as UTF-8 and constructs exact
-    /// `Result[Text, DecodeTextError]`. Successful decoding may allocate a
-    /// managed Text result, so this instruction is always a collection
-    /// safepoint; invalid UTF-8 selects the nested error variant.
+    /// `Result[Text, DecodeTextError]`. Successful decoding relabels canonical
+    /// byte storage as immutable Text without moving or allocating it; invalid
+    /// UTF-8 selects the nested error variant.
     BytesDecodeUtf8 {
         bytes: ValueId,
         ok_variant: u32,
@@ -801,18 +833,6 @@ pub enum InstructionKind {
     /// zero in the first field; that field is compiler-private and unobservable.
     FloatToIntStatus {
         value: ValueId,
-    },
-    /// Formats one canonical recursive `Json` sum into compact Text and
-    /// constructs its exact closed `Result[Text, JsonError]`. The runtime
-    /// stages the complete formatted byte sequence before the single typed
-    /// Text-allocation safepoint; `DepthLimit` and `NonFiniteNumber` remain
-    /// ordinary error values rather than fault edges.
-    JsonFormat {
-        json: ValueId,
-        ok_variant: u32,
-        error_variant: u32,
-        depth_limit_variant: u32,
-        non_finite_number_variant: u32,
     },
     /// Constructs an immutable product value from fields in representation
     /// order. The result's checked value type selects the product definition.
@@ -1110,17 +1130,44 @@ impl InstructionKind {
             | Self::TextLiteral { .. }
             | Self::TextMapConstruct
             | Self::ProcessArgumentCount => Vec::new(),
-            Self::TextLength { text }
-            | Self::TextEncodeUtf8 { text }
-            | Self::PathFromText { text, .. }
-            | Self::FloatParseStatus { text } => vec![*text],
-            Self::TextFromUtf8Units { units, .. } => vec![*units],
-            Self::ProcessArgumentAt { index } => vec![*index],
-            Self::ProcessEnvironment { name, .. } => vec![*name],
-            Self::PathAsText { path } => vec![*path],
+            Self::TextLength { text: value }
+            | Self::TextEncodeUtf8 { text: value }
+            | Self::PathFromText { text: value, .. }
+            | Self::FloatParseStatus { text: value }
+            | Self::CollectionShare { value }
+            | Self::TextFromUtf8Units { units: value, .. }
+            | Self::ProcessArgumentAt { index: value }
+            | Self::ProcessEnvironment { name: value, .. }
+            | Self::PathAsText { path: value }
+            | Self::BytesLength { bytes: value }
+            | Self::BytesDecodeUtf8 { bytes: value, .. }
+            | Self::TaskCarrierBorrow { value }
+            | Self::RefineProven { value }
+            | Self::Unrefine { value }
+            | Self::UnrefineBorrow { value }
+            | Self::BoolNot { value }
+            | Self::FloatNegate { value }
+            | Self::FloatFormat { value }
+            | Self::IntToFloat { value }
+            | Self::FloatToIntStatus { value }
+            | Self::DynConstruct { value, .. }
+            | Self::ResourceClose {
+                resource: value, ..
+            } => vec![*value],
             Self::TextGet { text, index, .. } => vec![*text, *index],
-            Self::BytesLength { bytes } | Self::BytesDecodeUtf8 { bytes, .. } => vec![*bytes],
             Self::BytesGet { bytes, index, .. } => vec![*bytes, *index],
+            Self::BytesPush {
+                bytes,
+                unit,
+                lower_proof,
+                upper_proof,
+            }
+            | Self::BytesPushUnique {
+                bytes,
+                unit,
+                lower_proof,
+                upper_proof,
+            } => vec![*bytes, *unit, *lower_proof, *upper_proof],
             Self::ListConstruct { elements } => elements.to_vec(),
             Self::ListLength { list } => vec![*list],
             Self::TextContains { text, needle } => vec![*text, *needle],
@@ -1140,20 +1187,6 @@ impl InstructionKind {
             | Self::TaskCarrierUpdate {
                 aggregate, value, ..
             } => vec![*aggregate, *value],
-            Self::TaskCarrierBorrow { value }
-            | Self::RefineProven { value }
-            | Self::Unrefine { value }
-            | Self::UnrefineBorrow { value }
-            | Self::BoolNot { value }
-            | Self::FloatNegate { value }
-            | Self::FloatFormat { value }
-            | Self::IntToFloat { value }
-            | Self::FloatToIntStatus { value }
-            | Self::DynConstruct { value, .. }
-            | Self::ResourceClose {
-                resource: value, ..
-            } => vec![*value],
-            Self::JsonFormat { json, .. } => vec![*json],
             Self::SumConstruct { payload, .. } => payload.to_vec(),
             Self::TextConcat { left, right }
             | Self::TextCompare { left, right, .. }
@@ -1287,6 +1320,7 @@ pub enum FaultCode {
     IntegerOverflow,
     IntegerDivisionByZero,
     IntegerDivisionOverflow,
+    InvalidByte,
     InvalidDuration,
     InvalidSleepDuration,
     SleepDurationOverflow,

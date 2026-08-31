@@ -9,12 +9,51 @@ fn formats(value Json, expected Text) Bool {
     }
 }
 
-fn deeplyNestedJson() Json {
+fn deeplyNestedJson(count Int) Json {
     var value = Json.Null
-    for index in 0..129 {
+    for index in 0..count {
         value = Json.Array([value])
     }
     value
+}
+
+fn wideJson(count Int, first Json) Json {
+    var values = [first]
+    for index in 1..count {
+        values.add(Json.Null)
+    }
+    Json.Array(values)
+}
+
+fn objectKey(index Int) Text {
+    let high = index / 676
+    let middle = index / 26 - high * 26
+    let low = index - (index / 26) * 26
+    var key = "".encode_utf8()
+    key.add(97 + high)
+    key.add(97 + middle)
+    key.add(97 + low)
+    match key.decode_utf8() {
+        Ok(text) => text
+        Err(_) => {
+            assert false
+            ""
+        }
+    }
+}
+
+fn wideObject(count Int) Json {
+    var entries = List[(Text, Json)]()
+    for index in 0..count {
+        entries.add((objectKey(index), Json.Null))
+    }
+    match entries.to_text_map() {
+        Ok(values) => Json.Object(values)
+        Err(_) => {
+            assert false
+            Json.Null
+        }
+    }
 }
 
 fn verify() Result[Unit, Problem] {
@@ -24,11 +63,13 @@ fn verify() Result[Unit, Problem] {
     Json.Text("line\n\"quoted\"\\tail")
     )
     )
-    let sixVariants = (
+    let variants = (
     formats(Json.Null, "null")
     && formats(Json.Bool(true), "true")
     && formats(Json.Number(42.5), "42.5")
     && formats(Json.Text("text"), "\"text\"")
+    && formats(Json.Array([]), "[]")
+    && formats(Json.Object(TextMap[Json]()), "{}")
     && formats(
     Json.Array([Json.Null, Json.Bool(false), Json.Number(1.25)]),
     "[null,false,1.25]"
@@ -38,8 +79,24 @@ fn verify() Result[Unit, Problem] {
     "{\"a\\n\\\"key\":\"line\\n\\\"quoted\\\"\\\\tail\",\"z\":-0}"
     )
     )
-    let depthLimit = match format_json(deeplyNestedJson()) {
+    let depthBoundary = match format_json(deeplyNestedJson(128)) {
+        Ok(text) => text.length() == 260
+        _ => false
+    }
+    let depthLimit = match format_json(deeplyNestedJson(129)) {
         Err(JsonError.DepthLimit) => true
+        _ => false
+    }
+    let wideFormatting = match format_json(wideJson(1024, Json.Null)) {
+        Ok(text) => text.length() == 5121
+        _ => false
+    }
+    let wideEarlyError = match format_json(wideJson(8192, Json.Number(1.0 / 0.0))) {
+        Err(JsonError.NonFiniteNumber) => true
+        _ => false
+    }
+    let wideObjectFormatting = match format_json(wideObject(512)) {
+        Ok(text) => text.length() == 5633
         _ => false
     }
     let nanRejected = match format_json(Json.Number(0.0 / 0.0)) {
@@ -55,8 +112,12 @@ fn verify() Result[Unit, Problem] {
         _ => false
     }
     if (
-    sixVariants
+    variants
+    && depthBoundary
     && depthLimit
+    && wideFormatting
+    && wideEarlyError
+    && wideObjectFormatting
     && nanRejected
     && positiveInfinityRejected
     && negativeInfinityRejected

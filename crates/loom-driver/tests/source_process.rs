@@ -1,9 +1,10 @@
 use loom_codegen_ir::{SourceRoots, analyze_source_reachability};
 use loom_core::{FileId, Span};
 use loom_driver::{AnalysisHost, format_source};
-use loom_interpreter::{Interpreter, Value};
+use loom_interpreter::{Interpreter, ListElements, Value};
 use loom_mir::{Builtin, CallTarget, CheckedProgram, ExprKind, Function, FunctionId, VariantId};
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn function_named<'a>(program: &'a CheckedProgram, name: &str) -> &'a Function {
@@ -181,7 +182,7 @@ pub fn environment_value(name Text) Option[Text] {
     assert_eq!(
         argument_result,
         Value::List {
-            elements: vec![
+            elements: Arc::new(ListElements::new(vec![
                 Value::Text {
                     value: "first".to_owned(),
                 },
@@ -191,7 +192,7 @@ pub fn environment_value(name Text) Option[Text] {
                 Value::Text {
                     value: "last".to_owned(),
                 },
-            ],
+            ])),
         }
     );
 

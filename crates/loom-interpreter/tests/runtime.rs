@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use loom_core::Span;
-use loom_interpreter::{ContractFaultKind, ExecutionFailure, Interpreter, TestStatus, Value};
+use loom_interpreter::{
+    ContractFaultKind, ExecutionFailure, Interpreter, RecordFields, TestStatus, Value,
+};
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallPlan, CallTarget, CheckedProgram, ConceptDef,
     ConceptId, ConceptIdentity, Constant, ConstructionMode, Contract, ContractExpr,
@@ -403,7 +406,10 @@ fn projected_move_consumes_the_root_and_returns_the_owned_leaf() {
             FunctionId(0),
             vec![Value::Record {
                 ty: TypeId(0),
-                fields: vec![Value::Int { value: 1 }, Value::Int { value: 7 }],
+                fields: Arc::new(RecordFields::new(vec![
+                    Value::Int { value: 1 },
+                    Value::Int { value: 7 },
+                ])),
             }],
             span(),
         )
@@ -652,7 +658,7 @@ fn receiver_invariant_restore_rechecks_artifact_proofs() {
     });
     let valid = Value::Record {
         ty: TypeId(0),
-        fields: vec![Value::Float { value: 1.0 }],
+        fields: Arc::new(RecordFields::new(vec![Value::Float { value: 1.0 }])),
     };
     let mut interpreter = Interpreter::new(&program);
 
@@ -900,7 +906,7 @@ fn mutable_receiver_is_an_inout_place_and_exit_invariant_wins() {
     };
     let initial = Value::Record {
         ty: TypeId(0),
-        fields: vec![Value::Float { value: 10.0 }],
+        fields: Arc::new(RecordFields::new(vec![Value::Float { value: 10.0 }])),
     };
 
     let program = checked(program);
@@ -985,6 +991,48 @@ fn early_return_propagates_through_nested_control_expression() {
             .expect("return"),
         Value::Int { value: 7 }
     );
+}
+
+#[test]
+fn explicit_execution_fuel_still_bounds_untrusted_evaluation() {
+    let function = Function {
+        id: FunctionId(0),
+        name: "bounded".into(),
+        span: span(),
+        type_parameters: 0,
+        is_async: false,
+        suspension_points: Vec::new(),
+        params: Vec::new(),
+        witness_params: Vec::new(),
+        witness_prefix_count: 0,
+        locals: Vec::new(),
+        return_ty: Type::Unit,
+        receiver: None,
+        body: Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(constant(Constant::Unit, Type::Unit))),
+            span: span(),
+        },
+        call_plan: CallPlan::default(),
+    };
+    let program = checked(Program {
+        functions: vec![function],
+        ..Program::default()
+    });
+    let failure = Interpreter::with_limits(
+        &program,
+        loom_interpreter::ExecutionLimits {
+            fuel: 0,
+            ..loom_interpreter::ExecutionLimits::default()
+        },
+    )
+    .invoke(FunctionId(0), Vec::new(), span())
+    .expect_err("an explicit zero fuel budget must reject evaluation");
+    assert!(matches!(
+        failure,
+        ExecutionFailure::Defect { defect }
+            if defect.message == "execution fuel was exhausted"
+    ));
 }
 
 #[test]
@@ -1121,12 +1169,149 @@ fn dyn_view_dispatches_only_through_its_embedded_witness() {
             FunctionId(1),
             vec![Value::Record {
                 ty: TypeId(0),
-                fields: vec![Value::Int { value: 21 }],
+                fields: Arc::new(RecordFields::new(vec![Value::Int { value: 21 }])),
             }],
             span(),
         )
         .expect("dynamic dispatch");
     assert_eq!(value, Value::Int { value: 42 });
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn owned_list_copy_clears_writeback_hidden_by_sync_callee() {
+    let view = Type::View {
+        mutable: true,
+        concept: ConceptId(0),
+        bindings: BTreeMap::new(),
+    };
+    let list = Type::List(Box::new(view.clone()));
+    let carrier = Function {
+        id: FunctionId(0),
+        name: "carry".into(),
+        span: span(),
+        type_parameters: 0,
+        is_async: false,
+        suspension_points: Vec::new(),
+        params: vec![local(0, "view", view.clone(), false)],
+        witness_params: Vec::new(),
+        witness_prefix_count: 0,
+        locals: Vec::new(),
+        return_ty: list.clone(),
+        receiver: None,
+        body: Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
+                kind: ExprKind::List(vec![Expr {
+                    id: ExprId::UNASSIGNED,
+                    kind: ExprKind::Move(Place::local(LocalId(0))),
+                    ty: view.clone(),
+                    span: span(),
+                }]),
+                ty: list.clone(),
+                span: span(),
+            })),
+            span: span(),
+        },
+        call_plan: CallPlan::default(),
+    };
+    let caller = Function {
+        id: FunctionId(1),
+        name: "caller".into(),
+        span: span(),
+        type_parameters: 0,
+        is_async: false,
+        suspension_points: Vec::new(),
+        params: Vec::new(),
+        witness_params: Vec::new(),
+        witness_prefix_count: 0,
+        locals: vec![
+            local(0, "owner", Type::Int, true),
+            local(1, "carried", list.clone(), false),
+        ],
+        return_ty: list.clone(),
+        receiver: None,
+        body: Block {
+            statements: vec![
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: constant(Constant::Int(7), Type::Int),
+                    },
+                    span: span(),
+                },
+                Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(1),
+                        value: Expr {
+                            id: ExprId::UNASSIGNED,
+                            kind: ExprKind::Call {
+                                target: CallTarget::Direct(FunctionId(0)),
+                                type_arguments: Vec::new(),
+                                arguments: vec![CallArgument::Value(Expr {
+                                    id: ExprId::UNASSIGNED,
+                                    kind: ExprKind::MakeView {
+                                        value: Box::new(copy(Place::local(LocalId(0)), Type::Int)),
+                                        writeback: Some(Place::local(LocalId(0))),
+                                        witness: WitnessRef::Concrete(WitnessId(0)),
+                                        mutable: true,
+                                        token: 1,
+                                    },
+                                    ty: view,
+                                    span: span(),
+                                })],
+                                witnesses: Vec::new(),
+                            },
+                            ty: list.clone(),
+                            span: span(),
+                        },
+                    },
+                    span: span(),
+                },
+            ],
+            tail: Some(Box::new(copy(Place::local(LocalId(1)), list))),
+            span: span(),
+        },
+        call_plan: CallPlan::default(),
+    };
+    let program = checked(Program {
+        concepts: vec![ConceptDef {
+            id: ConceptId(0),
+            module: "fixture".into(),
+            name: "Marker".into(),
+            span: span(),
+            identity: None,
+            dynamic: true,
+            associated_types: Vec::new(),
+            requirements: Vec::new(),
+        }],
+        functions: vec![carrier, caller],
+        witnesses: vec![Witness {
+            id: WitnessId(0),
+            concept: ConceptId(0),
+            concrete: Type::Int,
+            methods: BTreeMap::new(),
+            associated: BTreeMap::new(),
+            type_parameters: 0,
+            prerequisites: Vec::new(),
+        }],
+        ..Program::default()
+    });
+
+    let returned = Interpreter::new(&program)
+        .invoke(FunctionId(1), Vec::new(), span())
+        .expect("checked synchronous call");
+    let Value::List { elements } = returned else {
+        panic!("caller must return a List");
+    };
+    let [Value::DynView { writeback, .. }] = elements.as_slice() else {
+        panic!("List must contain the carried dynamic view");
+    };
+    assert!(
+        writeback.is_none(),
+        "owned List copy must not retain a loan"
+    );
 }
 
 #[test]
@@ -1316,7 +1501,7 @@ fn generic_static_concept_call_forwards_hidden_witness_parameter() {
                 FunctionId(2),
                 vec![Value::Record {
                     ty: TypeId(0),
-                    fields: vec![Value::Int { value: 21 }],
+                    fields: Arc::new(RecordFields::new(vec![Value::Int { value: 21 }])),
                 }],
                 span(),
             )
@@ -1439,9 +1624,9 @@ fn value_summaries_are_type_only_and_do_not_disclose_secrets_or_sizes() {
         ),
         (
             Value::List {
-                elements: vec![Value::Text {
+                elements: Arc::new(loom_interpreter::ListElements::new(vec![Value::Text {
                     value: "customer-secret".into(),
-                }],
+                }])),
             },
             "List",
         ),
@@ -1517,7 +1702,7 @@ fn method_contract_arguments_exclude_the_receiver() {
     };
     let receiver = Value::Record {
         ty: TypeId(0),
-        fields: Vec::new(),
+        fields: Arc::new(RecordFields::new(Vec::new())),
     };
     let program = checked(program);
     let mut interpreter = Interpreter::new(&program);
@@ -1602,7 +1787,7 @@ fn entry_contract_order_covers_sync_functions_methods_and_async_functions() {
     let mut interpreter = Interpreter::new(&program);
     let receiver = || Value::Record {
         ty: TypeId(0),
-        fields: Vec::new(),
+        fields: Arc::new(RecordFields::new(Vec::new())),
     };
 
     let failure = interpreter
@@ -1708,7 +1893,7 @@ fn projecting_a_refined_record_reaches_the_requested_field() {
         ty: TypeId(1),
         value: Box::new(Value::Record {
             ty: TypeId(0),
-            fields: vec![Value::Int { value: 42 }],
+            fields: Arc::new(RecordFields::new(vec![Value::Int { value: 42 }])),
         }),
     };
     let program = checked(program);

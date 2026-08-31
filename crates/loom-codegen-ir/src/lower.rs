@@ -4095,10 +4095,25 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                                                 if Some(*actual) == expected && arguments.is_empty()
                                         ) && self.supported_record_type(ty)
                                     })
-                            } else if matches!(target, CallTarget::Builtin(mir::Builtin::ListAdd)) {
+                            } else if let CallTarget::Builtin(
+                                builtin @ (mir::Builtin::ListAdd | mir::Builtin::BytesAdd),
+                            ) = target
+                            {
                                 index == 0
-                                    && place_type.as_ref().is_some_and(|ty| {
-                                        matches!(ty, Type::List(_)) && self.supported_value_type(ty)
+                                    && place_type.as_ref().is_some_and(|ty| match builtin {
+                                        mir::Builtin::ListAdd => {
+                                            matches!(ty, Type::List(_))
+                                                && self.supported_value_type(ty)
+                                        }
+                                        mir::Builtin::BytesAdd => {
+                                            matches!(
+                                                ty,
+                                                Type::Nominal(id, arguments)
+                                                    if Some(*id) == self.program.prelude.bytes
+                                                        && arguments.is_empty()
+                                            ) && self.supported_value_type(ty)
+                                        }
+                                        _ => unreachable!(),
                                     })
                             } else if matches!(target, CallTarget::Dynamic { requirement }
                                     if self.program.requirement(*requirement).is_some_and(|requirement| requirement.receiver == Some(mir::Receiver::Mutable)))
@@ -4186,6 +4201,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         | mir::Builtin::ProcessEnvironment
                         | mir::Builtin::BytesLength
                         | mir::Builtin::BytesGet
+                        | mir::Builtin::BytesAdd
                         | mir::Builtin::BytesAppend
                         | mir::Builtin::BytesDecodeUtf8
                         | mir::Builtin::PathFromText
@@ -4207,7 +4223,6 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         | mir::Builtin::FloatToIntStatus
                         | mir::Builtin::FloatParseStatus
                         | mir::Builtin::FloatFormat
-                        | mir::Builtin::JsonFormat
                         | mir::Builtin::IoErrorKind
                         | mir::Builtin::IoErrorMessage
                         | mir::Builtin::FileOpenRead
@@ -4239,7 +4254,6 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                                     | mir::Builtin::ProcessArgumentAt
                                     | mir::Builtin::ProcessEnvironment
                                     | mir::Builtin::FloatFormat
-                                    | mir::Builtin::JsonFormat
                                     | mir::Builtin::TextMapNew
                                     | mir::Builtin::TextMapInsert
                                     | mir::Builtin::ListToTextMap
@@ -5061,15 +5075,14 @@ fn scan_effect_expr(
                         | mir::Builtin::TextFromUtf8Units
                         | mir::Builtin::ProcessArgumentAt
                         | mir::Builtin::ProcessEnvironment
+                        | mir::Builtin::BytesAdd
                         | mir::Builtin::BytesAppend
-                        | mir::Builtin::BytesDecodeUtf8
                         | mir::Builtin::PathJoin
                         | mir::Builtin::ListAdd
                         | mir::Builtin::ListToTextMap
                         | mir::Builtin::TextMapInsert
                         | mir::Builtin::TextMapRemove
                         | mir::Builtin::FloatFormat
-                        | mir::Builtin::JsonFormat
                         | mir::Builtin::FileOpenRead
                         | mir::Builtin::FileCreate
                         | mir::Builtin::FileTryOpenRead
@@ -5108,6 +5121,9 @@ fn scan_effect_expr(
                     summary.include(Effects::NEEDS_EXECUTOR);
                 } else {
                     summary.include(Effects::MAY_COLLECT);
+                    if matches!(target, CallTarget::Builtin(mir::Builtin::BytesAdd)) {
+                        summary.include(Effects::MAY_FAULT);
+                    }
                 }
             } else if matches!(
                 target,
@@ -5178,47 +5194,167 @@ fn scan_effect_exprs(
         .all(|expression| scan_effect_expr(program, expression, summary))
 }
 
-fn canonical_unique_list_loop_body(block: &mir::Block, local: LocalId) -> bool {
-    let mut append_count = 0_usize;
-    for statement in &block.statements {
-        if let StatementKind::Evaluate(expression) = &statement.kind
-            && canonical_unique_list_add(expression, local)
-        {
-            append_count = append_count.saturating_add(1);
-            continue;
-        }
-        if statement_mentions_local(statement, local) {
-            return false;
-        }
-    }
-    let tail_append = block
-        .tail
-        .as_deref()
-        .is_some_and(|tail| canonical_unique_list_add(tail, local));
-    tail_append
-        || append_count != 0
-            && block
-                .tail
-                .as_deref()
-                .is_none_or(|tail| !expr_mentions_local(tail, local))
+fn loop_preserves_unique_collection(block: &mir::Block, local: LocalId) -> bool {
+    block
+        .statements
+        .iter()
+        .all(|statement| statement_preserves_unique_collection(statement, local))
+        && block
+            .tail
+            .as_deref()
+            .is_none_or(|tail| expression_preserves_unique_collection(tail, local))
 }
 
-fn canonical_unique_list_add(expression: &mir::Expr, local: LocalId) -> bool {
-    expression.ty == Type::Unit
-        && matches!(
-            &expression.kind,
-            ExprKind::Call {
-                target: CallTarget::Builtin(mir::Builtin::ListAdd),
-                arguments,
-                ..
-            } if matches!(
-                arguments.as_slice(),
-                [CallArgument::InOut(receiver), CallArgument::Value(value)]
-                    if receiver.local == local
-                        && receiver.projection.is_empty()
-                        && !expr_mentions_local(value, local)
-            )
-        )
+fn statement_preserves_unique_collection(statement: &mir::Statement, local: LocalId) -> bool {
+    match &statement.kind {
+        StatementKind::Let { value, .. }
+        | StatementKind::Scoped { value, .. }
+        | StatementKind::LetTuple { value, .. }
+        | StatementKind::Assert { condition: value }
+        | StatementKind::Evaluate(value) => expression_preserves_unique_collection(value, local),
+        StatementKind::ForRange {
+            local: induction,
+            start,
+            end,
+            body,
+        } => {
+            *induction != local
+                && expression_preserves_unique_collection(start, local)
+                && expression_preserves_unique_collection(end, local)
+                && loop_preserves_unique_collection(body, local)
+        }
+        StatementKind::While { condition, body } => {
+            expression_preserves_unique_collection(condition, local)
+                && loop_preserves_unique_collection(body, local)
+        }
+        StatementKind::Break
+        | StatementKind::Continue
+        | StatementKind::RestoreReceiverInvariant {
+            check: mir::ReceiverInvariantCheck::Proven,
+        } => true,
+        StatementKind::Assign { place, value } => {
+            place.local != local && expression_preserves_unique_collection(value, local)
+        }
+        StatementKind::RestoreReceiverInvariant {
+            check: mir::ReceiverInvariantCheck::Recheck,
+        } => local != LocalId(0),
+        // Cleanup expansion has additional unwind edges. Keep the uniqueness
+        // certificate local to ordinary loop control until cleanup ownership
+        // is modeled explicitly by the independent validator.
+        StatementKind::Defer(cleanup) => !block_mentions_local(cleanup, local),
+        StatementKind::Return(value) => value
+            .as_ref()
+            .is_none_or(|value| expression_preserves_unique_collection(value, local)),
+    }
+}
+
+fn block_mentions_local(block: &mir::Block, local: LocalId) -> bool {
+    block
+        .statements
+        .iter()
+        .any(|statement| statement_mentions_local(statement, local))
+        || block
+            .tail
+            .as_deref()
+            .is_some_and(|tail| expr_mentions_local(tail, local))
+}
+
+#[allow(clippy::too_many_lines)]
+fn expression_preserves_unique_collection(expression: &mir::Expr, local: LocalId) -> bool {
+    match &expression.kind {
+        ExprKind::Constant(_) => true,
+        ExprKind::Copy(place) | ExprKind::Move(place) => place.local != local,
+        ExprKind::Tuple(values) | ExprKind::List(values) => values
+            .iter()
+            .all(|value| expression_preserves_unique_collection(value, local)),
+        ExprKind::Unary(_, value)
+        | ExprKind::Refine { value, .. }
+        | ExprKind::Unrefine(value)
+        | ExprKind::Sleep {
+            milliseconds: value,
+        } => expression_preserves_unique_collection(value, local),
+        ExprKind::Binary(_, left, right) => {
+            expression_preserves_unique_collection(left, local)
+                && expression_preserves_unique_collection(right, local)
+        }
+        ExprKind::Block(block) => loop_preserves_unique_collection(block, local),
+        ExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            expression_preserves_unique_collection(condition, local)
+                && loop_preserves_unique_collection(then_branch, local)
+                && loop_preserves_unique_collection(else_branch, local)
+        }
+        ExprKind::Match { scrutinee, arms } => {
+            expression_preserves_unique_collection(scrutinee, local)
+                && arms
+                    .iter()
+                    .all(|arm| expression_preserves_unique_collection(&arm.value, local))
+        }
+        ExprKind::Record { fields, .. } => fields
+            .iter()
+            .all(|field| expression_preserves_unique_collection(field, local)),
+        ExprKind::Variant { payload, .. } => payload
+            .iter()
+            .all(|value| expression_preserves_unique_collection(value, local)),
+        ExprKind::Call {
+            target, arguments, ..
+        } => {
+            if matches!(
+                target,
+                CallTarget::Builtin(mir::Builtin::ListAdd | mir::Builtin::BytesAdd)
+            ) && let [CallArgument::InOut(receiver), CallArgument::Value(value)] =
+                arguments.as_slice()
+                && receiver.local == local
+            {
+                return receiver.projection.is_empty()
+                    && !expr_mentions_local(value, local)
+                    && expression_preserves_unique_collection(value, local);
+            }
+            if matches!(
+                target,
+                CallTarget::Builtin(
+                    mir::Builtin::ListLength
+                        | mir::Builtin::ListGet
+                        | mir::Builtin::BytesLength
+                        | mir::Builtin::BytesGet
+                )
+            ) && let Some(CallArgument::Value(receiver)) = arguments.first()
+                && matches!(
+                    &receiver.kind,
+                    ExprKind::Copy(place)
+                        if place.local == local && place.projection.is_empty()
+                )
+            {
+                return arguments.iter().skip(1).all(|argument| match argument {
+                    CallArgument::Value(value) => {
+                        expression_preserves_unique_collection(value, local)
+                    }
+                    CallArgument::InOut(place) => place.local != local,
+                });
+            }
+            arguments.iter().all(|argument| match argument {
+                CallArgument::Value(value) => expression_preserves_unique_collection(value, local),
+                CallArgument::InOut(place) => place.local != local,
+            })
+        }
+        ExprKind::MakeView {
+            value, writeback, ..
+        } => {
+            writeback.as_ref().is_none_or(|place| place.local != local)
+                && expression_preserves_unique_collection(value, local)
+        }
+        ExprKind::ReborrowView { owner, .. } => owner.local != local,
+        // A suspension materializes live locals in a coroutine frame. The
+        // current uniqueness validator deliberately treats that boundary as
+        // shared, so a loop certificate must not cross it speculatively.
+        ExprKind::Await { .. } => false,
+        ExprKind::TaskJoin { arguments, .. } => arguments
+            .iter()
+            .all(|value| expression_preserves_unique_collection(value, local)),
+    }
 }
 
 fn statement_mentions_local(statement: &mir::Statement, local: LocalId) -> bool {
@@ -6020,7 +6156,7 @@ struct FunctionLowerer<'function, 'builder, 'plan> {
     loops: Vec<LoopControl>,
     cleanup_expansions: usize,
     old_parameters: Vec<ContractOperand>,
-    unique_list_values: BTreeSet<ValueId>,
+    unique_collection_values: BTreeSet<ValueId>,
 }
 
 impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
@@ -6080,20 +6216,27 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             loops: Vec::new(),
             cleanup_expansions: 0,
             old_parameters: Vec::new(),
-            unique_list_values: BTreeSet::new(),
+            unique_collection_values: BTreeSet::new(),
         }
     }
 
-    fn is_list_value(&self, value: ValueId) -> bool {
+    fn is_collection_value(&self, value: ValueId) -> bool {
         self.builder
             .value_type(value)
             .and_then(|ty| self.builder.representations().value_type(ty))
-            .is_some_and(|ty| matches!(ty.semantic(), Type::List(_)))
+            .is_some_and(|ty| {
+                matches!(ty.semantic(), Type::List(_))
+                    || matches!(
+                        ty.semantic(),
+                        Type::Nominal(id, arguments)
+                            if Some(*id) == self.program.prelude.bytes && arguments.is_empty()
+                    )
+            })
     }
 
-    fn share_list_value(&mut self, value: ValueId) {
-        if self.is_list_value(value) {
-            self.unique_list_values.remove(&value);
+    fn share_collection_value(&mut self, value: ValueId) {
+        if self.is_collection_value(value) {
+            self.unique_collection_values.remove(&value);
         }
     }
 
@@ -8050,22 +8193,29 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         match &kind {
             InstructionKind::ListLength { .. }
             | InstructionKind::ListGet { .. }
+            | InstructionKind::BytesLength { .. }
+            | InstructionKind::BytesGet { .. }
             | InstructionKind::TextMapConstructEntries { .. } => {}
-            InstructionKind::ListAppend { value, .. } => self.share_list_value(*value),
+            InstructionKind::ListAppend { value, .. } => self.share_collection_value(*value),
+            InstructionKind::BytesPush { unit, .. } => self.share_collection_value(*unit),
             InstructionKind::ListConstruct { elements } => {
                 for element in elements.iter().copied() {
-                    self.share_list_value(element);
+                    self.share_collection_value(element);
                 }
             }
             _ => {
                 for operand in kind.operands() {
-                    self.share_list_value(operand);
+                    self.share_collection_value(operand);
                 }
             }
         }
-        let establishes_unique_list = matches!(
+        let establishes_unique_collection = matches!(
             &kind,
-            InstructionKind::ListConstruct { .. } | InstructionKind::ListAppend { .. }
+            InstructionKind::ListConstruct { .. }
+                | InstructionKind::ListAppend { .. }
+                | InstructionKind::TextEncodeUtf8 { .. }
+                | InstructionKind::BytesAppend { .. }
+                | InstructionKind::BytesPush { .. }
         );
         let results = self
             .builder
@@ -8077,8 +8227,8 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 "one-result instruction returned no value",
             )
         })?;
-        if establishes_unique_list {
-            self.unique_list_values.insert(value);
+        if establishes_unique_collection {
+            self.unique_collection_values.insert(value);
         }
         Ok(EvalFlow::Continue { flow, value })
     }
@@ -8139,14 +8289,21 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         ty: ValueTypeId,
         origin: Origin,
     ) -> Result<EvalFlow, LoweringError> {
-        let unique_append = if let InstructionKind::ListAppendUnique { list, value } = &kind {
-            self.share_list_value(*value);
-            Some(*list)
-        } else {
-            for operand in kind.operands() {
-                self.share_list_value(operand);
+        let consumed_collection = match &kind {
+            InstructionKind::ListAppendUnique { list, value } => {
+                self.share_collection_value(*value);
+                Some(*list)
             }
-            None
+            InstructionKind::BytesPushUnique { bytes, unit, .. } => {
+                self.share_collection_value(*unit);
+                Some(*bytes)
+            }
+            _ => {
+                for operand in kind.operands() {
+                    self.share_collection_value(operand);
+                }
+                None
+            }
         };
         let results = self
             .builder
@@ -8158,9 +8315,9 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 "one-result trusted instruction returned no value",
             )
         })?;
-        if let Some(list) = unique_append {
-            self.unique_list_values.remove(&list);
-            self.unique_list_values.insert(value);
+        if let Some(collection) = consumed_collection {
+            self.unique_collection_values.remove(&collection);
+            self.unique_collection_values.insert(value);
         }
         Ok(EvalFlow::Continue { flow, value })
     }
@@ -8877,7 +9034,14 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     ));
                 };
                 if matches!(expression.kind, ExprKind::Copy(_)) {
-                    self.share_list_value(value);
+                    if self.is_collection_value(value) {
+                        return self.one_instruction(
+                            flow,
+                            InstructionKind::CollectionShare { value },
+                            plan.leaf_type(),
+                            origin,
+                        );
+                    }
                 } else {
                     flow.env = self.environments.remove(flow.env, place.local)?;
                 }
@@ -11507,14 +11671,14 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 let incoming_unique = alternatives.iter().all(|environment| {
                     self.environments
                         .get(*environment, local)
-                        .is_some_and(|value| self.unique_list_values.contains(&value))
+                        .is_some_and(|value| self.unique_collection_values.contains(&value))
                 });
                 let parameter = self
                     .builder
                     .append_block_parameter(join, self.local_type(local)?)
                     .map_err(LoweringError::from)?;
                 if incoming_unique {
-                    self.unique_list_values.insert(parameter);
+                    self.unique_collection_values.insert(parameter);
                 }
                 merged = self.environments.set(merged, local, parameter)?;
                 varying.push(local);
@@ -11855,10 +12019,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 .builder
                 .append_block_parameter(header, self.local_type(*outer_local)?)
                 .map_err(LoweringError::from)?;
-            if self.unique_list_values.contains(&incoming)
-                && canonical_unique_list_loop_body(body, *outer_local)
+            if self.unique_collection_values.contains(&incoming)
+                && loop_preserves_unique_collection(body, *outer_local)
             {
-                self.unique_list_values.insert(parameter);
+                self.unique_collection_values.insert(parameter);
                 unique_carried.push(parameter);
             }
             header_env = self.environments.set(header_env, *outer_local, parameter)?;
@@ -12018,7 +12182,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         // and independent LCIR ownership validation rederives that fact from
         // the CFG.  Restore the lowering fact after visiting the body so a
         // direct-local append immediately after the loop can use it.
-        self.unique_list_values.extend(unique_carried);
+        self.unique_collection_values.extend(unique_carried);
         let mut exits = vec![Flow {
             block: natural_exit,
             env: header_env,
@@ -12046,6 +12210,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         let header = self.create_block()?;
         let mut header_env = flow.env;
         let mut preheader_arguments = Vec::with_capacity(carried.len());
+        let mut unique_carried = Vec::new();
         for local in &carried {
             let incoming = self.environments.get(flow.env, *local).ok_or_else(|| {
                 LoweringError::defect(
@@ -12057,6 +12222,13 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 .builder
                 .append_block_parameter(header, self.local_type(*local)?)
                 .map_err(LoweringError::from)?;
+            if self.unique_collection_values.contains(&incoming)
+                && expression_preserves_unique_collection(condition, *local)
+                && loop_preserves_unique_collection(body, *local)
+            {
+                self.unique_collection_values.insert(header_parameter);
+                unique_carried.push(*local);
+            }
             header_env = self
                 .environments
                 .set(header_env, *local, header_parameter)?;
@@ -12132,12 +12304,67 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 origin,
             )?;
         }
+        // Lowering another mutually exclusive iteration path may consume the
+        // same header SSA value while constructing a trusted append. The
+        // natural-exit edge still owns its current value; restore that
+        // path-local fact before merging it with explicit breaks. Independent
+        // LCIR validation rederives the same ownership from the CFG.
+        for local in unique_carried {
+            if let Some(value) = self.environments.get(condition_flow.env, local) {
+                self.unique_collection_values.insert(value);
+            }
+        }
         let mut exits = vec![Flow {
             block: natural_exit,
             env: condition_flow.env,
         }];
         exits.extend(loop_control.breaks);
         self.merge_statement_flows(flow.env, exits, origin)
+    }
+
+    fn lower_nonescaping_collection_receiver(
+        &mut self,
+        flow: Flow,
+        receiver: &'function mir::Expr,
+        trailing_arguments: &'function [CallArgument],
+    ) -> Result<EvalFlow, LoweringError> {
+        let ExprKind::Copy(place) = &receiver.kind else {
+            return self.lower_expr(flow, receiver);
+        };
+        // Loom evaluates the receiver before later arguments. If one of those
+        // arguments reuses the receiver's root, retain the ordinary COW share
+        // so a mutation cannot change the already-evaluated snapshot.
+        let receiver_is_reused_while_evaluating_arguments =
+            trailing_arguments.iter().any(|argument| match argument {
+                CallArgument::Value(value) => expr_mentions_local(value, place.local),
+                CallArgument::InOut(argument) => argument.local == place.local,
+            });
+        if receiver_is_reused_while_evaluating_arguments {
+            return self.lower_expr(flow, receiver);
+        }
+
+        let plan = self.place_plan(place, PlaceUse::Read)?;
+        if plan.leaf_type() != self.type_id(&receiver.ty)? {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "non-escaping collection receiver has the wrong LCIR value type",
+            ));
+        }
+        let EvalFlow::Continue { flow, value } =
+            self.read_place(flow, &plan, self.expression_origin(receiver))?
+        else {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::Builder,
+                "non-escaping collection receiver read unexpectedly terminated",
+            ));
+        };
+        if !self.is_collection_value(value) {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::InconsistentPlan,
+                "non-escaping collection receiver is not a List or Bytes value",
+            ));
+        }
+        Ok(EvalFlow::Continue { flow, value })
     }
 
     #[allow(clippy::too_many_lines)]
@@ -12152,6 +12379,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
     ) -> Result<EvalFlow, LoweringError> {
         if let CallTarget::Builtin(builtin) = target {
             return match builtin {
+                mir::Builtin::BytesAdd => self.lower_bytes_builtin(flow, arguments, expression),
                 mir::Builtin::ListAdd
                 | mir::Builtin::ListLength
                 | mir::Builtin::ListGet
@@ -13063,14 +13291,20 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         expression: &mir::Expr,
     ) -> Result<EvalFlow, LoweringError> {
         let mut values = Vec::with_capacity(arguments.len());
-        for argument in arguments {
+        for (index, argument) in arguments.iter().enumerate() {
             let CallArgument::Value(argument) = argument else {
                 return Err(self.unsupported_reached("builtin inout argument"));
             };
             let EvalFlow::Continue {
                 flow: next_flow,
                 value,
-            } = self.lower_expr(flow, argument)?
+            } = (if index == 0
+                && matches!(builtin, mir::Builtin::BytesLength | mir::Builtin::BytesGet)
+            {
+                self.lower_nonescaping_collection_receiver(flow, argument, &arguments[index + 1..])?
+            } else {
+                self.lower_expr(flow, argument)?
+            })
             else {
                 return Ok(EvalFlow::Terminated);
             };
@@ -13171,14 +13405,6 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             (mir::Builtin::FloatToIntStatus, [value]) => {
                 InstructionKind::FloatToIntStatus { value: *value }.into()
             }
-            (mir::Builtin::JsonFormat, [json]) => InstructionKind::JsonFormat {
-                json: *json,
-                ok_variant: 0,
-                error_variant: 1,
-                depth_limit_variant: 2,
-                non_finite_number_variant: 3,
-            }
-            .into(),
             (mir::Builtin::IoErrorKind, [error]) => InstructionKind::ProductExtract {
                 aggregate: *error,
                 field: 0,
@@ -13329,6 +13555,114 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         )
     }
 
+    fn lower_bytes_builtin(
+        &mut self,
+        flow: Flow,
+        arguments: &'function [CallArgument],
+        expression: &mir::Expr,
+    ) -> Result<EvalFlow, LoweringError> {
+        let [CallArgument::InOut(receiver), CallArgument::Value(unit)] = arguments else {
+            return Err(self.unsupported_reached("Bytes.add argument shape"));
+        };
+        let origin = self.expression_origin(expression);
+        let receiver = self.place_plan(receiver, PlaceUse::InOut)?;
+        let direct_local = receiver.steps().is_empty();
+        let EvalFlow::Continue { flow, value: bytes } = self.read_place(flow, &receiver, origin)?
+        else {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::Builder,
+                "typed Bytes.add receiver read unexpectedly terminated",
+            ));
+        };
+        let EvalFlow::Continue { flow, value: unit } = self.lower_expr(flow, unit)? else {
+            return Ok(EvalFlow::Terminated);
+        };
+        let EvalFlow::Continue { flow, value: zero } =
+            self.constant(flow, Constant::Int(0), &Type::Int, origin)?
+        else {
+            return Err(self.unsupported_reached("Bytes.add lower bound"));
+        };
+        let EvalFlow::Continue {
+            flow,
+            value: nonnegative,
+        } = self.one_instruction(
+            flow,
+            InstructionKind::IntCompare {
+                predicate: IntPredicate::GreaterEqual,
+                left: unit,
+                right: zero,
+            },
+            self.type_id(&Type::Bool)?,
+            origin,
+        )?
+        else {
+            return Err(self.unsupported_reached("Bytes.add lower-bound comparison"));
+        };
+        let flow = self.lower_runtime_assert(flow, nonnegative, FaultCode::InvalidByte, origin)?;
+
+        let EvalFlow::Continue {
+            flow,
+            value: maximum,
+        } = self.constant(flow, Constant::Int(255), &Type::Int, origin)?
+        else {
+            return Err(self.unsupported_reached("Bytes.add upper bound"));
+        };
+        let EvalFlow::Continue {
+            flow,
+            value: in_range,
+        } = self.one_instruction(
+            flow,
+            InstructionKind::IntCompare {
+                predicate: IntPredicate::LessEqual,
+                left: unit,
+                right: maximum,
+            },
+            self.type_id(&Type::Bool)?,
+            origin,
+        )?
+        else {
+            return Err(self.unsupported_reached("Bytes.add upper-bound comparison"));
+        };
+        let flow = self.lower_runtime_assert(flow, in_range, FaultCode::InvalidByte, origin)?;
+
+        let EvalFlow::Continue {
+            flow,
+            value: pushed,
+        } = (if direct_local && self.unique_collection_values.contains(&bytes) {
+            self.one_trusted_instruction(
+                flow,
+                InstructionKind::BytesPushUnique {
+                    bytes,
+                    unit,
+                    lower_proof: nonnegative,
+                    upper_proof: in_range,
+                },
+                receiver.leaf_type(),
+                origin,
+            )?
+        } else {
+            self.one_instruction(
+                flow,
+                InstructionKind::BytesPush {
+                    bytes,
+                    unit,
+                    lower_proof: nonnegative,
+                    upper_proof: in_range,
+                },
+                receiver.leaf_type(),
+                origin,
+            )?
+        })
+        else {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::Builder,
+                "typed Bytes.push unexpectedly terminated",
+            ));
+        };
+        let flow = self.write_place(flow, &receiver, pushed, origin)?;
+        self.constant(flow, Constant::Unit, &Type::Unit, origin)
+    }
+
     fn lower_list_builtin(
         &mut self,
         mut flow: Flow,
@@ -13363,7 +13697,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             let EvalFlow::Continue {
                 flow: next_flow,
                 value: appended,
-            } = (if direct_local && self.unique_list_values.contains(&list) {
+            } = (if direct_local && self.unique_collection_values.contains(&list) {
                 self.one_trusted_instruction(
                     next_flow,
                     InstructionKind::ListAppendUnique { list, value },
@@ -13398,11 +13732,17 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let mut lowered = Vec::with_capacity(values.len());
-        for value in values {
+        for (index, value) in values.into_iter().enumerate() {
             let EvalFlow::Continue {
                 flow: next_flow,
                 value,
-            } = self.lower_expr(flow, value)?
+            } = (if index == 0
+                && matches!(builtin, mir::Builtin::ListLength | mir::Builtin::ListGet)
+            {
+                self.lower_nonescaping_collection_receiver(flow, value, &arguments[index + 1..])?
+            } else {
+                self.lower_expr(flow, value)?
+            })
             else {
                 return Ok(EvalFlow::Terminated);
             };

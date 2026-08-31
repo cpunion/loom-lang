@@ -578,14 +578,13 @@ pub fn main() {
                         (0, 1, 0)
                     );
                     assert!(
-                        roots.as_ref().is_some_and(|roots| {
+                        roots.as_ref().is_none_or(|roots| {
                             roots
                                 .state(ManagedSafepoint::Instruction(instruction.id()))
-                                .is_some()
+                                .is_none()
                         }),
-                        "Bytes.decode_utf8 is an explicit managed safepoint"
+                        "Bytes.decode_utf8 must not introduce a managed safepoint"
                     );
-                    collecting_sites = collecting_sites.saturating_add(1);
                     saw_decode = true;
                 }
                 InstructionKind::BytesCompare { .. } => saw_compare = true,
@@ -598,7 +597,7 @@ pub fn main() {
         "{}",
         dump_program(artifact.program())
     );
-    assert!(collecting_sites >= 2, "append and decode are safepoints");
+    assert!(collecting_sites >= 1, "append is a safepoint");
 
     let dump = dump_program(artifact.program());
     for opcode in [
@@ -6740,6 +6739,121 @@ fn canonical_direct_local_list_loop_carries_a_trusted_unique_certificate() {
 }
 
 #[test]
+fn nested_loops_preserve_a_direct_local_list_unique_certificate() {
+    let dump = complete_dump(
+        r"pub fn main() {
+    var values = List[Int]()
+    var outer = 0
+    while outer < 4 {
+        for inner in 0..4 {
+            values.add(inner)
+        }
+        outer = outer + 1
+    }
+    values.add(99)
+    let count = values.length()
+}
+",
+    );
+    assert_eq!(dump.matches("list.append.unique").count(), 2, "{dump}");
+    assert!(!dump.contains("list.append %"), "{dump}");
+}
+
+#[test]
+fn canonical_direct_local_bytes_loop_carries_a_trusted_unique_certificate() {
+    let dump = complete_dump(
+        r#"pub fn main() {
+    var bytes = "".encode_utf8()
+    for unit in 0..128 {
+        bytes.add(unit)
+    }
+    bytes.add(255)
+    let count = bytes.length()
+}
+"#,
+    );
+    assert_eq!(dump.matches("bytes.push.unique").count(), 2, "{dump}");
+    assert!(!dump.contains("bytes.push %"), "{dump}");
+    assert_eq!(dump.matches("runtime InvalidByte").count(), 4, "{dump}");
+}
+
+#[test]
+fn readonly_bytes_length_and_get_preserve_unique_growth() {
+    let dump = complete_dump(
+        r#"pub fn main() {
+    var bytes = "".encode_utf8()
+    while bytes.length() < 128 {
+        bytes.add(120)
+    }
+    discard bytes.get(0)
+    bytes.add(255)
+}
+"#,
+    );
+    assert_eq!(dump.matches("bytes.push.unique").count(), 2, "{dump}");
+    assert!(!dump.contains("bytes.push %"), "{dump}");
+    assert!(!dump.contains("collection.share %"), "{dump}");
+}
+
+#[test]
+fn readonly_list_length_and_get_preserve_unique_growth() {
+    let dump = complete_dump(
+        r"pub fn main() {
+    var values = List[Int]()
+    while values.length() < 128 {
+        values.add(7)
+    }
+    discard values.get(0)
+    values.add(99)
+}
+",
+    );
+    assert_eq!(dump.matches("list.append.unique").count(), 2, "{dump}");
+    assert!(!dump.contains("list.append %"), "{dump}");
+    assert!(!dump.contains("collection.share %"), "{dump}");
+}
+
+#[test]
+fn get_receiver_reuse_remains_shared_during_argument_evaluation() {
+    let dump = complete_dump(
+        r#"record Holder { bytes Bytes }
+
+impl Holder {
+    method appendAndIndex(mut self) Int {
+        self.bytes.add(121)
+        1
+    }
+}
+
+pub fn main() {
+    var holder = Holder { bytes = "x".encode_utf8() }
+    discard holder.bytes.get(holder.appendAndIndex())
+    holder.bytes.add(122)
+}
+"#,
+    );
+    assert!(dump.contains("collection.share %"), "{dump}");
+    assert_eq!(dump.matches("bytes.push %").count(), 2, "{dump}");
+    assert!(!dump.contains("bytes.push.unique"), "{dump}");
+}
+
+#[test]
+fn copied_bytes_receiver_lowers_to_nonunique_push() {
+    let dump = complete_dump(
+        r#"pub fn main() {
+    var bytes = "x".encode_utf8()
+    let alias = bytes
+    bytes.add(33)
+    discard alias.length()
+}
+"#,
+    );
+    assert!(dump.contains("collection.share %"), "{dump}");
+    assert!(dump.contains("bytes.push %"), "{dump}");
+    assert!(!dump.contains("bytes.push.unique"), "{dump}");
+}
+
+#[test]
 fn assert_and_defer_lower_to_direct_lexical_cleanup_control_flow() {
     let dump = complete_dump(
         r"fn check(condition Bool) {
@@ -7385,8 +7499,8 @@ fn recursive_json_sum_registers_through_list_and_text_map_cycle_breakers() {
 }
 
 #[test]
-fn canonical_json_format_lowers_to_one_collecting_typed_instruction() {
-    let outcome = lower_run(
+fn canonical_json_format_lowers_through_source_operations() {
+    let outcome = lower_run_with_std_json(
         r"import std.json.format_json
 
 pub fn main() {
@@ -7401,6 +7515,21 @@ pub fn main() {
     let LoweringOutcome::Complete(artifact) = outcome else {
         panic!("canonical format_json must lower completely: {outcome:?}")
     };
+    assert!(
+        artifact
+            .functions()
+            .iter()
+            .any(|function| function.name().ends_with("format_json")),
+        "{}",
+        dump_program(artifact.program())
+    );
+    assert!(
+        artifact
+            .functions()
+            .iter()
+            .all(|function| !function.name().ends_with("parse_json")),
+        "unused source parser graph must be eliminated"
+    );
     let main = artifact
         .functions()
         .iter()
@@ -7408,34 +7537,25 @@ pub fn main() {
         .expect("main instance");
     assert_eq!(
         main.effects(),
-        Effects::MAY_COLLECT.with_implications(),
+        Effects::MAY_FAULT
+            .union(Effects::MAY_COLLECT)
+            .with_implications(),
         "{}",
         dump_program(artifact.program())
     );
-    let formats = main
-        .instructions()
-        .iter()
-        .filter_map(|instruction| match instruction.kind() {
-            InstructionKind::JsonFormat {
-                ok_variant,
-                error_variant,
-                depth_limit_variant,
-                non_finite_number_variant,
-                ..
-            } => Some((
-                *ok_variant,
-                *error_variant,
-                *depth_limit_variant,
-                *non_finite_number_variant,
-            )),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(formats, [(0, 1, 2, 3)]);
-    assert!(
-        dump_program(artifact.program())
-            .contains("json.format %v0, ok 0, error 1, depth_limit 2, non_finite_number 3")
-    );
+    let dump = dump_program(artifact.program());
+    for operation in [
+        "bytes.push.unique",
+        "list.get",
+        "text_map.entry_get",
+        "format.float",
+        "sum.switch",
+        "bytes.decode_utf8",
+    ] {
+        assert!(dump.contains(operation), "missing `{operation}`:\n{dump}");
+    }
+    assert_eq!(dump.matches("bytes.push.unique").count(), 5, "{dump}");
+    assert!(!dump.contains("bytes.push %"), "{dump}");
 }
 
 #[test]
@@ -7455,17 +7575,27 @@ pub fn main() {
     let LoweringOutcome::Complete(artifact) = outcome else {
         panic!("source JSON parsing must lower completely: {outcome:?}")
     };
+    assert!(
+        artifact
+            .functions()
+            .iter()
+            .all(|function| !function.name().ends_with("format_json")),
+        "unused source formatter graph must be eliminated"
+    );
     let dump = dump_program(artifact.program());
     for required in [
         "std.json.parse_json",
         "std.json.parse_value",
         "bytes.get",
+        "bytes.push.unique",
         "list.append.unique",
         "text_map.construct_entries",
     ] {
         assert!(dump.contains(required), "missing `{required}`:\n{dump}");
     }
-    assert_eq!(dump.matches("list.append.unique").count(), 6, "{dump}");
+    assert_eq!(dump.matches("bytes.push.unique").count(), 4, "{dump}");
+    assert_eq!(dump.matches("list.append.unique").count(), 2, "{dump}");
+    assert!(!dump.contains("bytes.push %"), "{dump}");
     assert!(!dump.contains("list.append %"), "{dump}");
 }
 

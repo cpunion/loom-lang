@@ -42,7 +42,7 @@ loom-driver = { path = "crates/loom-driver" }
 inkwell = { version = "0.10.0", default-features = false }
 libc = "0.2"
 llvm-sys = { version = "191.1.0", default-features = false }
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 tempfile = "3.20"
 unicode-ident = "1.0"

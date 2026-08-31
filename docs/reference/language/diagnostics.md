@@ -124,9 +124,10 @@ Test runners and task joins may report or capture it at their defined boundary.
 ## Runtime faults and defects
 
 A `RuntimeFault` reports a defined runtime failure outside ordinary Result data,
-such as checked integer overflow, integer division by zero, an invalid sleep
-duration, `TaskAnyFailed` when `Task.any` has no successful child, or a faulting
-I/O operation. It contains `code`, `message`, and `span`.
+such as checked integer overflow, integer division by zero, an out-of-range
+`Bytes.add` unit, an invalid sleep duration, `TaskAnyFailed` when `Task.any` has
+no successful child, or a faulting I/O operation. It contains `code`, `message`,
+and `span`.
 
 An execution defect reports a violation of the compiler/runtime contract rather
 than a user program condition. It uses the `defect` channel and contains a defect

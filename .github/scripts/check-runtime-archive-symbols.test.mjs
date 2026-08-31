@@ -22,7 +22,7 @@ test("accepts the live typed and shared Task runtime boundary", () => {
   assert.deepEqual(findRemovedRuntimeSymbols(archive), []);
 });
 
-test("reports every removed universal runtime symbol", () => {
+test("reports every removed runtime symbol", () => {
   for (const symbol of removedRuntimeSymbols) {
     const archive = Buffer.from(`_${symbol}\0`, "ascii");
     assert.deepEqual(findRemovedRuntimeSymbols(archive), [symbol], symbol);

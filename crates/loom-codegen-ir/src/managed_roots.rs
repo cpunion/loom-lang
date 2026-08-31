@@ -325,9 +325,12 @@ fn collect_safepoint_values(
             for result in instruction.results() {
                 live.remove(result);
             }
-            let list_allocation = matches!(
+            let repeated_allocation = matches!(
                 instruction.kind(),
-                InstructionKind::ListAppend { .. } | InstructionKind::ListAppendUnique { .. }
+                InstructionKind::ListAppend { .. }
+                    | InstructionKind::ListAppendUnique { .. }
+                    | InstructionKind::BytesPush { .. }
+                    | InstructionKind::BytesPushUnique { .. }
             ) || matches!(
                 instruction.kind(),
                 InstructionKind::ListConstruct { elements } if !elements.is_empty()
@@ -342,14 +345,12 @@ fn collect_safepoint_values(
                     | InstructionKind::ProcessEnvironment { .. }
                     | InstructionKind::PathJoin { .. }
                     | InstructionKind::BytesAppend { .. }
-                    | InstructionKind::BytesDecodeUtf8 { .. }
                     | InstructionKind::FloatFormat { .. }
-                    | InstructionKind::JsonFormat { .. }
                     | InstructionKind::TaskOutcomeTake { .. }
                     | InstructionKind::TextMapInsert { .. }
                     | InstructionKind::TextMapConstructEntries { .. }
                     | InstructionKind::TextMapRemove { .. }
-            ) || list_allocation
+            ) || repeated_allocation
                 || dyn_allocation
                 || matches!(
                     instruction.kind(),
@@ -359,11 +360,12 @@ fn collect_safepoint_values(
                         })
                 );
             if collecting {
-                // Unlike Text helpers and ordinary calls, typed repeated List
-                // allocation copies its operands only after the collector can
-                // relocate them. They therefore belong to this row even when
-                // dead after the instruction.
-                if list_allocation
+                // Unlike staged Text helpers and ordinary calls, typed
+                // repeated List/Bytes allocation may inspect or copy its
+                // managed receiver only after the collector can relocate it.
+                // Operands therefore belong to this row even when dead after
+                // the instruction.
+                if repeated_allocation
                     || matches!(
                         instruction.kind(),
                         InstructionKind::TextMapInsert { .. }

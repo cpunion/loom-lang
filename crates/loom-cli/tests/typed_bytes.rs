@@ -80,6 +80,8 @@ fn managed_bytes_close_typed_native_check_build_test_and_run() {
     for required in [
         b"loom.lcir.fn".as_slice(),
         b"loom_runtime_bytes_append_typed_v1",
+        b"loom_runtime_bytes_push_typed_v1",
+        b"loom_runtime_bytes_push_unique_typed_v1",
         b"loom_runtime_bytes_decode_utf8_typed_v1",
         b"loom_gc_typed_root_push_v1",
         b"loom_gc_typed_root_pop_v1",
