@@ -1,6 +1,6 @@
 # Task composition
 
-> Normative for Loom language version 0.3.
+> Normative for Loom language version 0.4.
 
 The standard Task source API provides policy-level composition over the
 language's structured `Task[T]` values. These names are not keywords, operators,
@@ -12,7 +12,7 @@ or a public coroutine protocol:
 - `Task.race` observes the first terminal state.
 
 The semantic boundary is a standard-library API declaration. HIR retains an
-ordinary method call. The current version 0.3 implementation temporarily
+ordinary method call. The current version 0.4 implementation temporarily
 resolves a canonical, unshadowed receiver namespace and member through an
 embedded compiler-owned catalog to `TaskIntrinsic`, and only that private
 identity may select a specialized fixed heterogeneous row. A local, parameter,

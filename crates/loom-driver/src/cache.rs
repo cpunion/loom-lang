@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256};
 use crate::incremental::ModuleQueryKey;
 use crate::{DiagnosticRecord, ModuleInterface, ProjectGraph, SourceMap};
 
-pub const CACHE_SCHEMA_VERSION: u32 = 15;
+pub const CACHE_SCHEMA_VERSION: u32 = 16;
 const MAX_REF_BYTES: u64 = 64 * 1024;
 const MAX_BLOB_BYTES: u64 = 1024 * 1024 * 1024;
 const CHECKED_MIR_NAMESPACE: &str = "checked-mir";
@@ -34,7 +34,7 @@ const MODULE_INTERFACE_NAMESPACE: &str = "module-interface";
 const TYPED_MODULE_STATE_NAMESPACE: &str = "typed-module-state";
 const TARGET_OBJECT_NAMESPACE: &str = "target-object";
 const ARTIFACT_NAMESPACE: &str = "artifact";
-const COMPILATION_CACHE_DOMAIN: &str = "loom-compilation-cache-v15";
+const COMPILATION_CACHE_DOMAIN: &str = "loom-compilation-cache-v16";
 
 /// Frontend facts which can change validated checked MIR.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -298,6 +298,7 @@ impl PersistentCache {
         }
         for source in sources.documents() {
             identity.field("source-path", source.relative_path());
+            identity.field("source-participation", source.participation().as_str());
             if let Some(text) = source.text() {
                 identity.bytes("source-bytes", text.as_bytes());
             } else {
@@ -454,7 +455,7 @@ impl PersistentCache {
         keys: &BTreeMap<String, ModuleQueryKey>,
         compiler_version: &str,
     ) -> CacheKey {
-        let mut identity = Identity::new("loom-typed-module-state-v2");
+        let mut identity = Identity::new("loom-typed-module-state-v3");
         identity.field("compiler-version", compiler_version);
         for (module, key) in keys {
             identity.field("module", module);

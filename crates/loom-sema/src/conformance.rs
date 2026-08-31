@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use loom_hir::{DefId, GenericParamId};
+use loom_hir::{DefId, GenericParamId, ModuleId, Program};
 use serde::{Deserialize, Serialize};
 
 use crate::{AssociatedTypeBinding, ConceptInstance, Substitution, TyData, TyId, TyInterner};
@@ -21,11 +21,51 @@ pub struct ParamEnv {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ImplHeader {
     pub definition: DefId,
+    pub scope: ImplScope,
     pub generic_params: Vec<GenericParamId>,
     pub concept: DefId,
     pub target: TyId,
     pub conditions: Vec<Goal>,
     pub associated_types: Vec<AssociatedTypeBinding>,
+}
+
+/// Visibility domain of one conformance implementation.
+///
+/// Production conformances preserve Loom's existing global lookup semantics.
+/// A test conformance is visible only while checking its own companion.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub enum ImplScope {
+    Production,
+    TestCompanion(ModuleId),
+}
+
+impl ImplScope {
+    #[must_use]
+    pub fn for_module(program: &Program, module: ModuleId) -> Self {
+        if program.is_test_companion(module) {
+            Self::TestCompanion(module)
+        } else {
+            Self::Production
+        }
+    }
+
+    #[must_use]
+    fn can_see(self, candidate: Self) -> bool {
+        match candidate {
+            Self::Production => true,
+            Self::TestCompanion(candidate) => {
+                matches!(self, Self::TestCompanion(scope) if scope == candidate)
+            }
+        }
+    }
+
+    #[must_use]
+    fn can_coexist(left: Self, right: Self) -> bool {
+        match (left, right) {
+            (Self::Production, _) | (_, Self::Production) => true,
+            (Self::TestCompanion(left), Self::TestCompanion(right)) => left == right,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -68,7 +108,9 @@ impl ImplIndex {
         for headers in self.by_concept.values() {
             for (index, left) in headers.iter().enumerate() {
                 for right in &headers[index + 1..] {
-                    if heads_may_unify(types, left.target, right.target) {
+                    if ImplScope::can_coexist(left.scope, right.scope)
+                        && heads_may_unify(types, left.target, right.target)
+                    {
                         overlaps.push((left.definition, right.definition));
                     }
                 }
@@ -108,14 +150,21 @@ pub enum SolveFailure {
 pub struct ConformanceSolver<'a> {
     index: &'a ImplIndex,
     types: &'a mut TyInterner,
+    scope: ImplScope,
     stack: Vec<Goal>,
 }
 
 impl<'a> ConformanceSolver<'a> {
     pub fn new(index: &'a ImplIndex, types: &'a mut TyInterner) -> Self {
+        Self::new_in_scope(index, types, ImplScope::Production)
+    }
+
+    #[must_use]
+    pub fn new_in_scope(index: &'a ImplIndex, types: &'a mut TyInterner, scope: ImplScope) -> Self {
         Self {
             index,
             types,
+            scope,
             stack: Vec::new(),
         }
     }
@@ -172,6 +221,9 @@ impl<'a> ConformanceSolver<'a> {
     ) -> Result<WitnessSelection, SolveFailure> {
         let mut successes = Vec::new();
         for header in self.index.for_concept(goal.concept.concept) {
+            if !self.scope.can_see(header.scope) {
+                continue;
+            }
             let mut substitution = Substitution::default();
             if !match_target(self.types, header.target, goal.self_ty, &mut substitution) {
                 continue;
@@ -406,7 +458,9 @@ fn bind_overlap_param(
 mod tests {
     use loom_hir::{DefId, GenericParamId};
 
-    use super::{ConformanceSolver, Goal, ImplHeader, ImplIndex, ParamEnv, SolveFailure};
+    use super::{
+        ConformanceSolver, Goal, ImplHeader, ImplIndex, ImplScope, ParamEnv, SolveFailure,
+    };
     use crate::{BuiltinType, ConceptInstance, TyData, TyInterner};
 
     #[test]
@@ -437,6 +491,7 @@ mod tests {
         let mut index = ImplIndex::default();
         index.insert(ImplHeader {
             definition: DefId::from_raw(10),
+            scope: ImplScope::Production,
             generic_params: vec![parameter],
             concept: equatable,
             target: boxed_parameter,
@@ -482,6 +537,7 @@ mod tests {
         for (implementation, concept) in [(10, 1), (11, 2)] {
             index.insert(ImplHeader {
                 definition: DefId::from_raw(implementation),
+                scope: ImplScope::Production,
                 generic_params: Vec::new(),
                 concept: DefId::from_raw(concept),
                 target: price,
@@ -506,6 +562,7 @@ mod tests {
         let mut index = ImplIndex::default();
         index.insert(ImplHeader {
             definition: implementation,
+            scope: ImplScope::Production,
             generic_params: vec![parameter],
             concept,
             target: map_parameter,

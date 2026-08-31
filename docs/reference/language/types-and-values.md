@@ -1,6 +1,6 @@
 # Types and values
 
-> Normative for Loom language version 0.3.
+> Normative for Loom language version 0.4.
 
 Loom is statically typed. Every expression has one type before execution, and
 ordinary operations do not perform runtime method lookup or implicit type

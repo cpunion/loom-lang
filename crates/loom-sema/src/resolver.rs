@@ -178,8 +178,10 @@ impl<'a> Resolver<'a> {
                 .map(module)
                 .and_then(|map| map.resolve_local(namespace, name)),
         )?;
-        if module != self.module
-            && self.program.definitions[definition].visibility != Visibility::Public
+        if self.program.definitions[definition].visibility != Visibility::Public
+            && !self
+                .program
+                .can_access_private(self.module, self.program.definitions[definition].module)
         {
             return Err(ResolveError::Private(definition));
         }

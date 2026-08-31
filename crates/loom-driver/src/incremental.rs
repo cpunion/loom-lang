@@ -9,7 +9,7 @@ use loom_syntax::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::SourceMap;
+use crate::{SourceMap, SourceParticipation};
 
 /// Source-independent public surface of one Loom module.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -34,6 +34,7 @@ pub(crate) fn module_interfaces(
 ) -> Vec<ModuleInterface> {
     module_query_data(sources, parses)
         .into_iter()
+        .filter(|module| !module.test_companion)
         .map(|module| module.interface)
         .collect()
 }
@@ -49,9 +50,11 @@ pub(crate) fn embedded_module_interfaces<'a>(
             path,
             path_is_package_relative: true,
             parse,
+            projection: SourceProjection::Production,
         },
     ))
     .into_iter()
+    .filter(|module| !module.test_companion)
     .map(|module| module.interface)
     .collect()
 }
@@ -78,15 +81,16 @@ struct ModuleQueryData {
     interface: ModuleInterface,
     shape_fingerprint: String,
     body_fingerprint: String,
+    test_companion: bool,
 }
 
 fn module_query_data(
     sources: &SourceMap,
     parses: &BTreeMap<FileId, Parse>,
 ) -> Vec<ModuleQueryData> {
-    module_query_data_from_sources(parses.iter().map(|(file, parse)| {
+    module_query_data_from_sources(parses.iter().flat_map(|(file, parse)| {
         let source = sources.document(*file);
-        ModuleSource {
+        let base = ModuleSource {
             file: *file,
             package: source.and_then(crate::SourceDocument::package),
             module: source.map_or_else(
@@ -96,10 +100,34 @@ fn module_query_data(
             path: source.map_or("", crate::SourceDocument::relative_path),
             path_is_package_relative: source.is_none_or(crate::SourceDocument::is_root_package),
             parse,
+            projection: SourceProjection::Production,
+        };
+        match source.map_or(SourceParticipation::Production, |source| {
+            source.participation()
+        }) {
+            SourceParticipation::ProductionAndTests
+                if parse.ast().declarations.iter().any(is_test_declaration) =>
+            {
+                vec![
+                    base.clone(),
+                    ModuleSource {
+                        projection: SourceProjection::InlineTests,
+                        ..base
+                    },
+                ]
+            }
+            SourceParticipation::Production | SourceParticipation::ProductionAndTests => {
+                vec![base]
+            }
+            SourceParticipation::TestCompanion => vec![ModuleSource {
+                projection: SourceProjection::TestCompanion,
+                ..base
+            }],
         }
     }))
 }
 
+#[derive(Clone)]
 struct ModuleSource<'a> {
     file: FileId,
     package: Option<&'a PackageId>,
@@ -107,13 +135,43 @@ struct ModuleSource<'a> {
     path: &'a str,
     path_is_package_relative: bool,
     parse: &'a Parse,
+    projection: SourceProjection,
+}
+
+#[derive(Clone, Copy)]
+enum SourceProjection {
+    Production,
+    InlineTests,
+    TestCompanion,
+}
+
+impl SourceProjection {
+    const fn test_companion(self) -> bool {
+        matches!(self, Self::InlineTests | Self::TestCompanion)
+    }
+
+    fn includes(self, declaration: &Decl) -> bool {
+        let is_test = is_test_declaration(declaration);
+        match self {
+            Self::Production => !is_test,
+            Self::InlineTests => is_test,
+            Self::TestCompanion => true,
+        }
+    }
+}
+
+fn is_test_declaration(declaration: &Decl) -> bool {
+    matches!(
+        &declaration.kind,
+        DeclKind::Function(function) if function.is_test
+    )
 }
 
 fn module_query_data_from_sources<'a>(
     sources: impl IntoIterator<Item = ModuleSource<'a>>,
 ) -> Vec<ModuleQueryData> {
     let mut modules = BTreeMap::<
-        String,
+        (String, bool),
         Vec<(
             String,
             serde_json::Value,
@@ -123,25 +181,27 @@ fn module_query_data_from_sources<'a>(
     >::new();
     for source in sources {
         let ast = source.parse.ast();
-        let source_module = source.module.as_str().to_owned();
-        let module = source.package.map_or(source_module.clone(), |package| {
-            format!(
-                "{}@{}+loom{}::{source_module}",
-                package.name(),
-                package.version(),
-                package.language()
-            )
-        });
+        let package = source.package.cloned().unwrap_or_default();
+        let test_companion = source.projection.test_companion();
+        let module =
+            loom_hir::package_module_query_identity(&package, &source.module, test_companion);
         let imports = serde_json::to_value(&ast.imports).unwrap_or(serde_json::Value::Null);
         let interface_declarations = ast
             .declarations
             .iter()
+            .filter(|declaration| source.projection.includes(declaration))
             .filter_map(project_declaration)
             .collect::<Vec<_>>();
         let shape_declarations = ast
             .declarations
             .iter()
+            .filter(|declaration| source.projection.includes(declaration))
             .map(project_shape_declaration)
+            .collect::<Vec<_>>();
+        let body_declarations = ast
+            .declarations
+            .iter()
+            .filter(|declaration| source.projection.includes(declaration))
             .collect::<Vec<_>>();
         let mut interface = serde_json::json!({
             "imports": imports,
@@ -153,7 +213,7 @@ fn module_query_data_from_sources<'a>(
         });
         let mut body = serde_json::json!({
             "imports": &ast.imports,
-            "declarations": &ast.declarations,
+            "declarations": body_declarations,
         });
         erase_source_ranges(&mut interface);
         erase_source_ranges(&mut shape);
@@ -170,14 +230,14 @@ fn module_query_data_from_sources<'a>(
             canonical_path.to_owned()
         };
         modules
-            .entry(module)
+            .entry((module, test_companion))
             .or_default()
             .push((path, interface, shape, body));
     }
 
     modules
         .into_iter()
-        .map(|(module, mut files)| {
+        .map(|((module, test_companion), mut files)| {
             files.sort_by(|left, right| left.0.cmp(&right.0));
             let paths = files.iter().map(|(path, ..)| path.clone()).collect();
             let interface_files = files
@@ -196,14 +256,15 @@ fn module_query_data_from_sources<'a>(
                 interface: ModuleInterface {
                     module: module.clone(),
                     files: paths,
-                    fingerprint: fingerprint("loom-module-interface-v3", &module, &interface_files),
+                    fingerprint: fingerprint("loom-module-interface-v4", &module, &interface_files),
                 },
                 shape_fingerprint: fingerprint(
-                    "loom-module-semantic-shape-v3",
+                    "loom-module-semantic-shape-v4",
                     &module,
                     &shape_files,
                 ),
-                body_fingerprint: fingerprint("loom-module-semantic-body-v3", &module, &body_files),
+                body_fingerprint: fingerprint("loom-module-semantic-body-v4", &module, &body_files),
+                test_companion,
             }
         })
         .collect()

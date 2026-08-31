@@ -126,7 +126,7 @@ version is already present as a fully validated cache entry.
 
 ## Portable library dependencies
 
-A version 3 `.loomlib` contains a resolved module graph, exact Loom source
+A version 4 `.loomlib` contains a resolved module graph, exact Loom source
 text, and canonical public-interface fingerprints. It deliberately contains no
 checked MIR, producer-local proof state, or compiler-owned standard-library
 implementation. The decoder rejects incompatible versions and languages,

@@ -1,6 +1,6 @@
 # Constrained types and contracts
 
-> Normative for Loom language version 0.3.
+> Normative for Loom language version 0.4.
 
 Loom distinguishes data validation from implementation correctness. A
 constrained constructor may return ordinary `Result` data; a violated function

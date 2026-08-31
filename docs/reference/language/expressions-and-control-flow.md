@@ -1,6 +1,6 @@
 # Expressions and control flow
 
-> Normative for Loom language version 0.3.
+> Normative for Loom language version 0.4.
 
 Loom evaluates expressions and call arguments from left to right. Each source
 expression is evaluated once unless control flow does not reach it.

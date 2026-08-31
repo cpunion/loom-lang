@@ -1895,7 +1895,7 @@ fn library_artifact_key(compilation: &Compilation, target: &str) -> Option<Cache
     Some(PersistentCache::derived_key(
         compilation.key()?,
         &[
-            ("layer", "portable-library-artifact-v3"),
+            ("layer", "portable-library-artifact-v4"),
             ("target", target),
             ("format", loom_driver::LIBRARY_ARTIFACT_FORMAT),
             ("version", &version),

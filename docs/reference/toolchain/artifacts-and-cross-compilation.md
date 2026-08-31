@@ -25,7 +25,7 @@ one way: every `Proven` marker decodes as `Recheck`, and the executable check is
 rebuilt from the receiver's nominal type rather than from serialized contract
 text.
 
-Portable libraries use source-and-interface format version `3`. They record the
+Portable libraries use source-and-interface format version `4`. They record the
 Loom language version, resolved module graph, exact non-standard-library Loom
 sources, and canonical public interfaces. The decoder enforces the format and
 language versions, structural and byte/count bounds, graph and identity rules,
@@ -35,9 +35,10 @@ and runs the normal parse, type-check, proof, and lowering pipeline. A
 `.loomlib` contains no checked MIR, producer-local proof state, or
 compiler-owned standard-library implementation. The compiler does not append
 the `.loomlib` extension automatically. Other portable-library versions are
-rejected rather than upgraded. Production source selection excludes
-`*_test.loom`, so dependency test declarations are not distributed in the
-artifact.
+rejected rather than upgraded. Portable-library encoding applies the
+production source projection: it omits `*_test.loom` and removes embedded
+`test fn` declarations from ordinary files. Dependency test code is therefore
+neither distributed nor recompiled by a consumer.
 
 A persistent interpreted artifact must contain the complete canonical
 `Dispose`, `MustScope`, and `NoSuspend` identity trio, their prelude ids, and

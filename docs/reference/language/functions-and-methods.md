@@ -1,6 +1,6 @@
 # Functions and methods
 
-> Normative for Loom language version 0.3.
+> Normative for Loom language version 0.4.
 
 ## Functions
 
@@ -159,7 +159,7 @@ async fn load(key Text) Loaded {
 Calling it produces `Task[Loaded]`; the body result is obtained with the
 postfix `.await` inside another async callable. An omitted async return type is
 `Unit`, so the call produces `Task[Unit]`. Async methods and async concept
-requirements have no declaration syntax in language version 0.3. As with
+requirements have no declaration syntax in language version 0.4. As with
 synchronous functions, ordinary parameters are immutable; a Task never aliases
 a caller parameter for later writeback.
 
@@ -167,7 +167,9 @@ See [Async functions and tasks](async-and-tasks.md).
 
 ## Tests
 
-Tests are private top-level callables declared in `*_test.loom` files:
+Tests are private top-level callables. They may be embedded beside production
+declarations in an ordinary `.loom` file or placed in a sibling
+`*_test.loom` file:
 
 ```loom
 test fn addition_is_exact() {
@@ -184,8 +186,12 @@ A test has no parameters, receiver, or generic parameters. It returns `Unit` or
 `Result[Unit, E]`. Normal `Unit` or `Ok(Unit)` completion passes. An `Err`,
 contract fault, runtime fault, or execution defect fails the test. Tests use the
 same type checker, contracts, resource rules, and task rules as other code.
-Production commands exclude test files. `loom test .` or `loom test PATH`
-includes one directory package; `loom test ./...` recursively includes every
-package in the root module. Dependency test files are neither loaded nor
-executed. There is no manifest test target and `loom test` does not accept
+The compiler checks selected tests in an internal companion package. That
+companion can use private production members and test-file helpers; the access
+does not work in the reverse direction.
+
+Production commands omit embedded tests and test files. `loom test .` or
+`loom test PATH` includes one directory package; `loom test ./...` recursively
+includes every package in the root module. Dependency tests are neither loaded
+nor executed. There is no manifest test target and `loom test` does not accept
 `--target`.

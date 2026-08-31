@@ -713,7 +713,7 @@ impl<'a> Compiler<'a> {
             .iter()
             .filter_map(|(definition, source)| {
                 (matches!(source.kind, DefinitionKind::Test(_))
-                    && self.hir.is_root_module(source.module))
+                    && self.hir.is_root_test_companion(source.module))
                 .then(|| self.indices.functions.get(&definition).copied())
                 .flatten()
             })
@@ -856,7 +856,9 @@ impl<'a> Compiler<'a> {
             }
             concepts.push(ConceptDef {
                 id,
-                module: self.hir.modules[source.module].name.to_string(),
+                module: self.hir.modules[self.hir.production_module(source.module)]
+                    .name
+                    .to_string(),
                 name: definition_name(self.hir, definition)?,
                 span,
                 identity: if self.analysis.canonical_concepts.dispose == Some(definition) {
@@ -1521,7 +1523,7 @@ impl<'a> Compiler<'a> {
 
     fn qualified_definition_name(&self, definition: DefId) -> LowerResult<String> {
         let source = &self.hir.definitions[definition];
-        let module = &self.hir.modules[source.module].name;
+        let module = &self.hir.modules[self.hir.production_module(source.module)].name;
         let name = definition_name(self.hir, definition)?;
         Ok(format!("{module}.{name}"))
     }
@@ -1532,7 +1534,7 @@ impl<'a> Compiler<'a> {
         for (definition, source) in self.hir.definitions.iter() {
             if source.visibility != Visibility::Public
                 || !matches!(source.kind, DefinitionKind::Function(_))
-                || !self.hir.is_root_module(source.module)
+                || !self.hir.is_root_production_module(source.module)
             {
                 continue;
             }
@@ -1542,7 +1544,7 @@ impl<'a> Compiler<'a> {
             let Some(name) = source.name.as_ref().map(ToString::to_string) else {
                 continue;
             };
-            let module = &self.hir.modules[source.module].name;
+            let module = &self.hir.modules[self.hir.production_module(source.module)].name;
             exports.insert(format!("{module}.{name}"), id);
             simple
                 .entry(name)

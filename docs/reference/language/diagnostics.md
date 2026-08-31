@@ -1,6 +1,6 @@
 # Diagnostics and failures
 
-> Normative for Loom language version 0.3 diagnostic and execution records.
+> Normative for Loom language version 0.4 diagnostic and execution records.
 
 Loom keeps source diagnostics, recoverable data errors, contract faults,
 runtime faults, and implementation defects separate. A program can handle only

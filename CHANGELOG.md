@@ -48,6 +48,11 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
 - `loom check`, `build`, `test`, `run`, `fmt`, package, cache, runtime-bundle,
   and artifact workflows. Persistent inputs are bounded, version-exact, and
   rejected rather than upgraded when their current identity does not match.
+  Ordinary source files may contain `test fn`, while `*_test.loom` files may
+  also contain test-only helpers. `loom test` places both forms in a
+  compiler-owned companion package with one-way access to the production
+  package's private declarations; production builds and portable libraries
+  exclude the companion completely.
 - Compiler-distributed `std` source modules compiled through the ordinary
   frontend, including integer and JSON parsing, logging wrappers, process
   wrappers, resource concepts, the public `DecodeTextError` and `PathError`
@@ -70,7 +75,7 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   wrappers, and the Path forms reuse their Text counterparts. Only 16
   exact-owner resource/I/O/close leaves plus two protected error access leaves
   remain below source. Interpreted MIR artifact 42 and persistent cache schema
-  15 reject infinite value layouts, source-impossible mutable parameter slots
+  16 reject infinite value layouts, source-impossible mutable parameter slots
   and coroutine receivers, invariant-boundary bypasses, removed semantic types,
   fixed slots, and special cleanup tags instead of decoding them through
   compatibility paths.

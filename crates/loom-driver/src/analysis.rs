@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 
 use loom_core::{Diagnostic, FileId, Severity, Span};
 use loom_hir::{
-    BodyId, BodyKind, Expr as HirExpr, LoweringResult, PackageSourceUnit,
-    Statement as HirStatement, lower_package_files,
+    BodyId, BodyKind, Expr as HirExpr, LoweringResult, PackageSourceMode, PackageSourceUnit,
+    SelectedPackageSourceUnit, Statement as HirStatement, lower_selected_package_files,
 };
 use loom_interpreter::{Interpreter, TestResult};
 use loom_lowering::lower_to_mir;
@@ -404,7 +404,6 @@ impl AnalysisHost {
             if let Some(text) = source.text() {
                 let parse = parse_with_file(source.id(), text);
                 diagnostics.extend(parse.diagnostics().iter().cloned());
-                validate_test_source(source, &parse, &mut diagnostics);
                 parses.insert(source.id(), parse);
             } else {
                 let start = source.invalid_utf8_at().unwrap_or(0);
@@ -454,7 +453,6 @@ impl AnalysisHost {
                     }
                 };
                 diagnostics.extend(parse.diagnostics().iter().cloned());
-                validate_test_source(source, &parse, &mut diagnostics);
                 parses.insert(source.id(), parse);
             } else {
                 stats.misses += 1;
@@ -500,15 +498,25 @@ impl AnalysisHost {
         let LoweringResult {
             program: mut hir,
             diagnostics: lowering_diagnostics,
-        } = lower_package_files(parses.iter().map(|(file, parse)| {
+        } = lower_selected_package_files(parses.iter().map(|(file, parse)| {
             let source = sources
                 .document(*file)
                 .expect("every parsed file belongs to the source map");
-            PackageSourceUnit {
-                file: *file,
-                package: source.package().cloned().unwrap_or_default(),
-                module: source.module().clone(),
-                syntax: parse.ast(),
+            let mode = match source.participation() {
+                crate::SourceParticipation::Production => PackageSourceMode::Production,
+                crate::SourceParticipation::ProductionAndTests => {
+                    PackageSourceMode::ProductionAndTests
+                }
+                crate::SourceParticipation::TestCompanion => PackageSourceMode::TestCompanion,
+            };
+            SelectedPackageSourceUnit {
+                source: PackageSourceUnit {
+                    file: *file,
+                    package: source.package().cloned().unwrap_or_default(),
+                    module: source.module().clone(),
+                    syntax: parse.ast(),
+                },
+                mode,
             }
         }));
         self.project.configure_hir_packages(&mut hir);
@@ -617,18 +625,7 @@ impl AnalysisHost {
                         return None;
                     }
                     let owner = &hir.definitions[definition.owner];
-                    let source_module = &hir.modules[owner.module];
-                    let module = if source_module.package.is_standalone() {
-                        source_module.name.to_string()
-                    } else {
-                        format!(
-                            "{}@{}+loom{}::{}",
-                            source_module.package.name(),
-                            source_module.package.version(),
-                            source_module.package.language(),
-                            source_module.name
-                        )
-                    };
+                    let module = hir.module_query_identity(owner.module);
                     reusable_modules.contains(&module).then_some(body)
                 })
                 .collect::<BTreeSet<BodyId>>()
@@ -694,31 +691,6 @@ fn body_may_elide_runtime_validation(body: &loom_hir::Body) -> bool {
                 .any(|statement| matches!(statement, HirStatement::Assert(_))),
             _ => false,
         })
-}
-
-fn validate_test_source(
-    source: &crate::SourceDocument,
-    parse: &Parse,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    if source.is_test_source() {
-        return;
-    }
-    for declaration in &parse.ast().declarations {
-        if matches!(
-            &declaration.kind,
-            loom_syntax::DeclKind::Function(function) if function.is_test
-        ) {
-            diagnostics.push(Diagnostic::error(
-                "TestDeclarationOutsideTestFile",
-                "a `test fn` must be declared in a `*_test.loom` file",
-                Span {
-                    file: source.id(),
-                    range: declaration.range,
-                },
-            ));
-        }
-    }
 }
 
 fn sort_diagnostics(diagnostics: &mut [Diagnostic], sources: &SourceMap) {

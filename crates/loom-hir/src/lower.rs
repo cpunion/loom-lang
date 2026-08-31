@@ -35,6 +35,27 @@ pub struct PackageSourceUnit<'a> {
     pub syntax: &'a syntax::SourceFile,
 }
 
+/// Effective participation of one package source in this compilation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PackageSourceMode {
+    /// Lower production declarations and omit every `test fn` before a HIR
+    /// definition or body is allocated.
+    Production,
+    /// Lower production declarations normally and route `test fn`
+    /// declarations into the directory package's test companion.
+    ProductionAndTests,
+    /// Route every declaration and import from a `*_test.loom` source into the
+    /// directory package's test companion.
+    TestCompanion,
+}
+
+/// A package source paired with caller-validated test participation.
+#[derive(Clone)]
+pub struct SelectedPackageSourceUnit<'a> {
+    pub source: PackageSourceUnit<'a>,
+    pub mode: PackageSourceMode,
+}
+
 /// HIR plus lowering-only diagnostics. Parser diagnostics remain owned by the
 /// caller so they are never duplicated or reordered here.
 #[derive(Clone, Debug, Default)]
@@ -63,49 +84,86 @@ pub fn lower_files<'a>(files: impl IntoIterator<Item = SourceUnit<'a>>) -> Lower
 pub fn lower_package_files<'a>(
     files: impl IntoIterator<Item = PackageSourceUnit<'a>>,
 ) -> LoweringResult {
+    lower_selected_package_files(files.into_iter().map(|source| SelectedPackageSourceUnit {
+        source,
+        mode: PackageSourceMode::ProductionAndTests,
+    }))
+}
+
+/// Lowers caller-selected production and test sources while preserving their
+/// compiler-owned module isolation.
+#[must_use]
+pub fn lower_selected_package_files<'a>(
+    files: impl IntoIterator<Item = SelectedPackageSourceUnit<'a>>,
+) -> LoweringResult {
     let mut files = files.into_iter().collect::<Vec<_>>();
-    files.sort_by_key(|unit| unit.file);
+    files.sort_by_key(|unit| unit.source.file);
 
     let mut context = LowerContext::default();
-    let mut modules = BTreeMap::new();
+    let mut modules = BTreeMap::<FileId, SelectedModules>::new();
     let mut seen_files = BTreeSet::new();
 
     for unit in &files {
-        if !seen_files.insert(unit.file) {
+        let source = &unit.source;
+        if !seen_files.insert(source.file) {
             context.diagnostics.push(Diagnostic::error(
                 "DuplicateFileInput",
-                format!("file id {} was supplied more than once", unit.file.0),
+                format!("file id {} was supplied more than once", source.file.0),
                 Span {
-                    file: unit.file,
-                    range: unit.syntax.range,
+                    file: source.file,
+                    range: source.syntax.range,
                 },
             ));
             continue;
         }
-        let module = context.program.intern_package_module(
-            unit.package.clone(),
-            unit.module.clone(),
-            unit.file,
-            span(unit.file, unit.syntax.range),
+        let production = context
+            .program
+            .ensure_package_module(source.package.clone(), source.module.clone());
+        let source_span = span(source.file, source.syntax.range);
+        let has_selected_tests = unit.mode == PackageSourceMode::TestCompanion
+            || unit.mode == PackageSourceMode::ProductionAndTests
+                && source.syntax.declarations.iter().any(declaration_is_test);
+        let companion = has_selected_tests.then(|| {
+            context
+                .program
+                .intern_test_companion(production, source.file, source_span)
+        });
+        if unit.mode != PackageSourceMode::TestCompanion {
+            context
+                .program
+                .add_module_file(production, source.file, source_span);
+        }
+        modules.insert(
+            source.file,
+            SelectedModules {
+                production,
+                companion,
+            },
         );
-        modules.insert(unit.file, module);
     }
 
     seen_files.clear();
     for unit in files {
-        if !seen_files.insert(unit.file) {
+        let source = unit.source;
+        if !seen_files.insert(source.file) {
             continue;
         }
-        let Some(module) = modules.get(&unit.file).copied() else {
+        let Some(selected) = modules.get(&source.file).copied() else {
             continue;
         };
-        context.lower_file(unit.file, module, unit.syntax);
+        context.lower_selected_file(source.file, selected, unit.mode, source.syntax);
     }
 
     LoweringResult {
         program: context.program,
         diagnostics: context.diagnostics,
     }
+}
+
+#[derive(Clone, Copy)]
+struct SelectedModules {
+    production: ModuleId,
+    companion: Option<ModuleId>,
 }
 
 #[derive(Default)]
@@ -115,16 +173,61 @@ struct LowerContext {
 }
 
 impl LowerContext {
-    fn lower_file(&mut self, file: FileId, module: ModuleId, source: &syntax::SourceFile) {
-        for import in &source.imports {
+    fn lower_selected_file(
+        &mut self,
+        file: FileId,
+        modules: SelectedModules,
+        mode: PackageSourceMode,
+        source: &syntax::SourceFile,
+    ) {
+        match mode {
+            PackageSourceMode::Production => {
+                self.lower_imports(file, modules.production, &source.imports);
+            }
+            PackageSourceMode::ProductionAndTests => {
+                self.lower_imports(file, modules.production, &source.imports);
+                if let Some(companion) = modules.companion {
+                    self.lower_imports(file, companion, &source.imports);
+                }
+            }
+            PackageSourceMode::TestCompanion => {
+                let companion = modules
+                    .companion
+                    .expect("a selected test source always has a companion");
+                self.lower_imports(file, companion, &source.imports);
+            }
+        }
+        for declaration in &source.declarations {
+            let module = if declaration_is_test(declaration) {
+                match mode {
+                    PackageSourceMode::Production => continue,
+                    PackageSourceMode::ProductionAndTests | PackageSourceMode::TestCompanion => {
+                        modules
+                            .companion
+                            .expect("a selected test declaration always has a companion")
+                    }
+                }
+            } else {
+                match mode {
+                    PackageSourceMode::Production | PackageSourceMode::ProductionAndTests => {
+                        modules.production
+                    }
+                    PackageSourceMode::TestCompanion => modules
+                        .companion
+                        .expect("a selected test source always has a companion"),
+                }
+            };
+            self.lower_declaration(file, module, declaration);
+        }
+    }
+
+    fn lower_imports(&mut self, file: FileId, module: ModuleId, imports: &[syntax::ImportDecl]) {
+        for import in imports {
             self.program.modules[module].imports.push(Import {
                 file,
                 path: lower_path(file, &import.path),
                 span: span(file, import.range),
             });
-        }
-        for declaration in &source.declarations {
-            self.lower_declaration(file, module, declaration);
         }
     }
 
@@ -615,6 +718,13 @@ impl LowerContext {
         let lowered = body.builder.finish(root);
         self.program.alloc_body(lowered, span(file, source.range))
     }
+}
+
+fn declaration_is_test(declaration: &syntax::Decl) -> bool {
+    matches!(
+        &declaration.kind,
+        syntax::DeclKind::Function(function) if function.is_test
+    )
 }
 
 struct BodyLower<'a> {

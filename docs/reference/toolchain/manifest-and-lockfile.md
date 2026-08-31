@@ -13,7 +13,7 @@ lockfile.
 
 ```toml
 schema = 2
-language = "0.3"
+language = "0.4"
 
 [module]
 name = "application"
@@ -37,7 +37,7 @@ only lowercase letters, digits, or `_`. Module versions are SemVer.
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `schema` | yes | Manifest schema. The current value is `2`. |
-| `language` | no | Source language version. Omission currently means `"0.3"`; writing it explicitly is recommended. |
+| `language` | no | Source language version. Omission currently means `"0.4"`; writing it explicitly is recommended. |
 | `module` | yes | Module name and version. |
 | `dependencies` | no | Direct dependency aliases. |
 | `registries` | no | Local or HTTP registry definitions. |
@@ -54,9 +54,11 @@ directory extends that package path. For module `application`, files directly
 beside the manifest belong to `application`, while files in `http/client/`
 belong to `application.http.client`. A file name never changes its package.
 
-Ordinary source selection excludes `*_test.loom`. `loom test PATH` includes
-tests from that directory package, and `loom test PATH/...` includes them from
-every package in that root module. Dependency test files are never selected.
+Production source selection excludes `*_test.loom` and ignores `test fn`
+declarations embedded in ordinary source files. `loom test PATH` enables both
+forms for that directory package, and `loom test PATH/...` enables them for
+every package in that root module. Tests declared by dependencies are never
+selected.
 
 ## Dependencies
 
@@ -129,7 +131,7 @@ The supported target kinds are:
 - `lib`: a portable source-and-interface module artifact with no entry.
 
 An `entry` is valid only on a binary target. Tests are not targets: `loom test`
-selects package `*_test.loom` files directly and does not accept `--target`.
+selects package test declarations directly and does not accept `--target`.
 
 ## Lockfile behavior
 

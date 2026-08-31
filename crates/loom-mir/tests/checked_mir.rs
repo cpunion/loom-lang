@@ -5013,16 +5013,16 @@ fn current_artifact_requires_the_exact_current_mir_shape() {
 fn artifact_rejects_language_version_mismatch_before_program_decode() {
     let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
     let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-    value["languageVersion"] = serde_json::json!("0.4");
+    value["languageVersion"] = serde_json::json!("0.5");
     value["program"] = serde_json::json!("future incompatible body");
     let error = decode_interpreted_artifact(&serde_json::to_vec(&value).expect("json"))
         .expect_err("language version must fail before body decode");
     assert!(matches!(
         error,
         ArtifactError::LanguageVersionMismatch {
-            expected: "0.3",
+            expected: "0.4",
             found
-        } if found == "0.4"
+        } if found == "0.5"
     ));
 }
 

@@ -12,11 +12,11 @@ The executable path-dependency example starts at
 ## Manifest format
 
 The current manifest schema is version 2 and the current language version is
-`0.3`:
+`0.4`:
 
 ```toml
 schema = 2
-language = "0.3"
+language = "0.4"
 
 [module]
 name = "application"
@@ -37,7 +37,7 @@ is no special `src/` directory and no `sources` field. A subdirectory containing
 relative directory segments. A nested `loom.toml` starts another module and is
 not traversed as part of its parent.
 
-Write `language` explicitly even though the current parser supplies `0.3` when
+Write `language` explicitly even though the current parser supplies `0.4` when
 it is absent. Language version is part of module identity, lockfiles, compiler
 caches, and portable artifacts.
 
@@ -69,7 +69,7 @@ the dependency's declared module name differs from that alias. The declared name
 requirement, language version, and resolved module identity must agree.
 
 An artifact dependency cannot combine with `path` or `registry`, and cannot
-request source features from the packaged graph. A version 3 `.loomlib`
+request source features from the packaged graph. A version 4 `.loomlib`
 contains the resolved module graph, exact Loom sources, and canonical public
 interfaces. It contains no checked MIR, producer-local proof state, or copy of
 the compiler-distributed standard library. The consumer validates the envelope
@@ -95,9 +95,9 @@ abstractions such as `Lazy` and `Once`. Fixed GC, executor, and Runtime ABI
 setup performed by the toolchain remains internal and does not make an import
 execute user code.
 
-Dependency `*_test.loom` files are not part of the resolved source graph.
-`loom test .` runs the current directory package, while `loom test ./...` runs
-every package below the selected root module.
+Dependency `*_test.loom` files and embedded test declarations are not part of
+the test build graph. `loom test .` runs the current directory package, while
+`loom test ./...` runs every package below the selected root module.
 
 ## Git and fork dependencies
 
@@ -253,7 +253,7 @@ loom test ./...
 loom build --target api --output target/api.loomlib .
 ```
 
-Tests are selected by the command and `_test.loom` suffix, not by a manifest
+Tests are selected by the command and source declarations, not by a manifest
 target. `loom test` therefore has no `--target` option. `run` rejects library
 targets; a library has no executable entry. Native build artifacts and
 compiler-private runtime interfaces are not promised to remain compatible
@@ -261,7 +261,7 @@ across Loom versions.
 
 ## Compiler cache
 
-The default project cache is `target/loom/cache/v15`. It caches versioned
+The default project cache is `target/loom/cache/v16`. It caches versioned
 parsing, interfaces, validated checked MIR, target objects, and supported
 portable final artifacts using content-derived keys. Reads validate envelopes
 and hashes; corrupt or incompatible entries degrade to misses rather than being

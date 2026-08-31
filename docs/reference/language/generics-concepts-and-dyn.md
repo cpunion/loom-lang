@@ -1,6 +1,6 @@
 # Generics, concepts, and `dyn`
 
-> Normative for Loom language version 0.3.
+> Normative for Loom language version 0.4.
 
 Loom uses one abstraction mechanism for behavior: a nominal `concept` with an
 explicit conformance. The same declaration supports generic bounds, interface

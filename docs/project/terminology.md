@@ -7,13 +7,14 @@ Use these terms consistently in code, diagnostics, and documentation.
 | Loom | The language and project. Use `loom-lang` for the repository only when disambiguation is needed. |
 | `loom` | The user-facing project and toolchain command. |
 | Toolchain version | The Cargo/package version of compiler tools, currently `0.1.0`. |
-| Language version | The source semantic version selected by `language` in `loom.toml`, currently `0.3`. |
+| Language version | The source semantic version selected by `language` in `loom.toml`, currently `0.4`. |
 | Manifest schema | The syntax/data version of `loom.toml`, independent of language version. |
 | Lockfile schema | The data version of `loom.lock`. |
 | Module | A named, versioned dependency unit rooted by `loom.toml`. The manifest directory is its source root. |
 | Package | One source directory inside a module. Its import path is the module name plus relative directory segments; file names do not contribute. |
 | Standalone input | A source file or directory compiled without `loom.toml`; it uses the synthetic `<standalone>@0` module identity and has no features, targets, or lockfile. |
-| Target | A named manifest output selection: `bin` or `lib`. Do not confuse it with an LLVM target triple. Tests are selected by `_test.loom`, not a target. |
+| Target | A named manifest output selection: `bin` or `lib`. Do not confuse it with an LLVM target triple. Tests are source declarations, not targets. |
+| Test companion | A compiler-owned package identity used only by `loom test`. It contains selected tests and test-only helpers and has one-way access to its production package's private members. |
 | Entry | The selected public zero-argument, `Unit`-returning function for an executable. |
 | Frontend | Discovery, syntax, HIR, semantic analysis, lowering, and MIR validation. |
 | HIR | Source-independent high-level identities and bodies used by semantic analysis. |

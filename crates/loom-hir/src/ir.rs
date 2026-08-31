@@ -61,9 +61,21 @@ pub struct Import {
 pub struct Module {
     pub package: PackageId,
     pub name: ModuleName,
+    pub role: ModuleRole,
     pub files: Vec<FileId>,
     pub imports: Vec<Import>,
     pub items: Vec<DefId>,
+}
+
+/// Compiler-owned role of a directory package in one compilation.
+///
+/// Test companions deliberately keep their production module's source name.
+/// Their nominal identity and private-access authority come only from this
+/// role, never from a user-spellable module-name suffix.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ModuleRole {
+    Production,
+    TestCompanion { production: ModuleId },
 }
 
 #[derive(Clone, Debug)]
@@ -553,7 +565,11 @@ pub struct Program {
     pub type_refs: Arena<TypeRefId, TypeRef>,
     pub bodies: Arena<BodyId, Body>,
     pub source_map: ProgramSourceMap,
+    /// Source paths resolve only through production modules. Test companions
+    /// live in a separate compiler-owned identity table and cannot be imported
+    /// or discovered by source module names.
     module_by_identity: BTreeMap<(PackageId, ModuleName), ModuleId>,
+    test_companion_by_production: BTreeMap<ModuleId, ModuleId>,
     packages: BTreeMap<PackageId, PackageInfo>,
     root_package: Option<PackageId>,
 }
@@ -572,6 +588,32 @@ pub enum ModuleResolution {
     /// dependency of the importing package.
     UndeclaredDependency(PackageId),
     Missing,
+}
+
+/// Builds the same stable query identity before or after HIR module interning.
+/// This is used by parse-based incremental projection, which knows package,
+/// source module, and selected role but does not yet have a [`ModuleId`].
+#[must_use]
+pub fn package_module_query_identity(
+    package: &PackageId,
+    name: &ModuleName,
+    test_companion: bool,
+) -> String {
+    let production = if package.is_standalone() {
+        name.to_string()
+    } else {
+        format!(
+            "{}@{}+loom{}::{name}",
+            package.name(),
+            package.version(),
+            package.language()
+        )
+    };
+    if test_companion {
+        format!("{production}#test-companion")
+    } else {
+        production
+    }
 }
 
 impl Program {
@@ -613,6 +655,63 @@ impl Program {
         self.root_package
             .as_ref()
             .is_none_or(|root| root == &self.modules[module].package)
+    }
+
+    #[must_use]
+    pub fn is_production_module(&self, module: ModuleId) -> bool {
+        matches!(self.modules[module].role, ModuleRole::Production)
+    }
+
+    #[must_use]
+    pub fn is_test_companion(&self, module: ModuleId) -> bool {
+        matches!(self.modules[module].role, ModuleRole::TestCompanion { .. })
+    }
+
+    #[must_use]
+    pub fn production_module(&self, module: ModuleId) -> ModuleId {
+        match self.modules[module].role {
+            ModuleRole::Production => module,
+            ModuleRole::TestCompanion { production } => production,
+        }
+    }
+
+    #[must_use]
+    pub fn test_companion(&self, module: ModuleId) -> Option<ModuleId> {
+        self.test_companion_by_production
+            .get(&self.production_module(module))
+            .copied()
+    }
+
+    /// Whether `from` may observe private declarations owned by `owner`.
+    ///
+    /// This relation is intentionally directional: a test companion may see
+    /// its production module, while production never sees its companion.
+    #[must_use]
+    pub fn can_access_private(&self, from: ModuleId, owner: ModuleId) -> bool {
+        from == owner
+            || matches!(
+                self.modules[from].role,
+                ModuleRole::TestCompanion { production } if production == owner
+            )
+    }
+
+    #[must_use]
+    pub fn is_root_production_module(&self, module: ModuleId) -> bool {
+        self.is_root_module(module) && self.is_production_module(module)
+    }
+
+    #[must_use]
+    pub fn is_root_test_companion(&self, module: ModuleId) -> bool {
+        self.is_root_module(module) && self.is_test_companion(module)
+    }
+
+    /// Stable internal identity used by incremental queries. Display names
+    /// remain unchanged, but companions must never share a cache slot with
+    /// their production owner.
+    #[must_use]
+    pub fn module_query_identity(&self, module: ModuleId) -> String {
+        let data = &self.modules[module];
+        package_module_query_identity(&data.package, &data.name, self.is_test_companion(module))
     }
 
     /// Resolves a module using only the current package and its declared
@@ -677,6 +776,78 @@ impl Program {
         self.intern_package_module(PackageId::standalone(), name, file, source)
     }
 
+    /// Ensures that the production identity for one directory package exists
+    /// without attributing a source file to it.
+    pub fn ensure_package_module(&mut self, package: PackageId, name: ModuleName) -> ModuleId {
+        let identity = (package.clone(), name.clone());
+        if let Some(module) = self.module_by_identity.get(&identity).copied() {
+            return module;
+        }
+
+        let module = self.modules.alloc(Module {
+            package,
+            name,
+            role: ModuleRole::Production,
+            files: Vec::new(),
+            imports: Vec::new(),
+            items: Vec::new(),
+        });
+        self.module_by_identity.insert(identity, module);
+        module
+    }
+
+    /// Adds a physical source file to a production module or test companion.
+    pub fn add_module_file(&mut self, module: ModuleId, file: FileId, source: Span) {
+        if self.modules[module].files.contains(&file) {
+            return;
+        }
+        self.modules[module].files.push(file);
+        self.modules[module].files.sort_unstable();
+        self.source_map.add_module_file(module, source);
+    }
+
+    /// Ensures the compiler-owned test companion of one production module.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `production` identifies another test companion rather than
+    /// a production module.
+    pub fn ensure_test_companion(&mut self, production: ModuleId) -> ModuleId {
+        assert!(
+            self.is_production_module(production),
+            "a test companion must be owned by a production module"
+        );
+        if let Some(companion) = self.test_companion_by_production.get(&production).copied() {
+            return companion;
+        }
+
+        let package = self.modules[production].package.clone();
+        let name = self.modules[production].name.clone();
+        let companion = self.modules.alloc(Module {
+            package,
+            name,
+            role: ModuleRole::TestCompanion { production },
+            files: Vec::new(),
+            imports: Vec::new(),
+            items: Vec::new(),
+        });
+        self.test_companion_by_production
+            .insert(production, companion);
+        companion
+    }
+
+    /// Interns a source file in the compiler-owned test companion.
+    pub fn intern_test_companion(
+        &mut self,
+        production: ModuleId,
+        file: FileId,
+        source: Span,
+    ) -> ModuleId {
+        let companion = self.ensure_test_companion(production);
+        self.add_module_file(companion, file, source);
+        companion
+    }
+
     /// Interns a package-qualified module, never merging equal source module
     /// names that originate from different resolved packages.
     pub fn intern_package_module(
@@ -686,25 +857,8 @@ impl Program {
         file: FileId,
         source: Span,
     ) -> ModuleId {
-        let identity = (package.clone(), name.clone());
-        if let Some(module) = self.module_by_identity.get(&identity).copied() {
-            if !self.modules[module].files.contains(&file) {
-                self.modules[module].files.push(file);
-                self.modules[module].files.sort_unstable();
-            }
-            self.source_map.add_module_file(module, source);
-            return module;
-        }
-
-        let module = self.modules.alloc(Module {
-            package,
-            name,
-            files: vec![file],
-            imports: Vec::new(),
-            items: Vec::new(),
-        });
-        self.module_by_identity.insert(identity, module);
-        self.source_map.add_module_file(module, source);
+        let module = self.ensure_package_module(package, name);
+        self.add_module_file(module, file, source);
         module
     }
 
@@ -793,9 +947,9 @@ impl Program {
 
 #[cfg(test)]
 mod tests {
-    use loom_core::{FileId, ModuleName, Span};
+    use loom_core::{FileId, ModuleName, PackageId, Span};
 
-    use super::Program;
+    use super::{ModuleRole, Program};
 
     #[test]
     fn modules_merge_files_without_using_file_order_as_identity() {
@@ -807,5 +961,54 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(program.modules[first].files, vec![FileId(2), FileId(7)]);
         assert_eq!(program.source_map.module_files(first).len(), 2);
+    }
+
+    #[test]
+    fn test_companion_has_nominal_role_without_claiming_a_source_module_name() {
+        let mut program = Program::default();
+        let package = PackageId::new("shop", "1.0.0");
+        let production = program.intern_package_module(
+            package.clone(),
+            ModuleName::new("shop"),
+            FileId(1),
+            Span::new(FileId(1), 0, 10),
+        );
+        let companion =
+            program.intern_test_companion(production, FileId(2), Span::new(FileId(2), 0, 10));
+        let real_test_directory = program.intern_package_module(
+            package,
+            ModuleName::new("shop.test"),
+            FileId(3),
+            Span::new(FileId(3), 0, 10),
+        );
+
+        assert_eq!(program.modules[production].role, ModuleRole::Production);
+        assert_eq!(
+            program.modules[companion].role,
+            ModuleRole::TestCompanion { production }
+        );
+        assert_eq!(
+            program.modules[companion].name,
+            program.modules[production].name
+        );
+        assert_eq!(
+            program.module_by_name(&ModuleName::new("shop")),
+            Some(production)
+        );
+        assert_eq!(
+            program.module_by_name(&ModuleName::new("shop.test")),
+            Some(real_test_directory)
+        );
+        assert!(program.can_access_private(companion, production));
+        assert!(!program.can_access_private(production, companion));
+        assert!(
+            program
+                .module_query_identity(companion)
+                .ends_with("#test-companion")
+        );
+        assert_ne!(
+            program.module_query_identity(production),
+            program.module_query_identity(companion)
+        );
     }
 }

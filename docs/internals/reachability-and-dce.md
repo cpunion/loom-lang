@@ -73,7 +73,7 @@ artifact to the checked-MIR route before LCIR construction.
 - A binary build/run/debug has the selected exported function as its root.
 - A test build has all MIR test functions as roots.
 - An empty test suite has no roots and emits an empty successful harness.
-- A portable library build has no MIR or code-generation roots. Its version 3
+- A portable library build has no MIR or code-generation roots. Its version 4
   artifact preserves the resolved package sources and canonical public
   interfaces; a consuming binary or test later compiles those sources and
   applies its own closed-world reachability and DCE.

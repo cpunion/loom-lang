@@ -1569,7 +1569,7 @@ fn incremental_query_gate(gates: &mut Vec<GateEvidence>) -> Result<(), String> {
     let project = tempfile::tempdir().map_err(|error| error.to_string())?;
     std::fs::write(
         project.path().join("loom.toml"),
-        "schema = 2\nlanguage = \"0.3\"\n\n[module]\nname = \"scale\"\nversion = \"0.1.0\"\n",
+        "schema = 2\nlanguage = \"0.4\"\n\n[module]\nname = \"scale\"\nversion = \"0.1.0\"\n",
     )
     .map_err(|error| error.to_string())?;
     for index in 0..MODULES {

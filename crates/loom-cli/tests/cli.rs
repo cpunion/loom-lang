@@ -558,7 +558,7 @@ fn check_rejects_an_unknown_language_version() {
     let project = TestProject::empty();
     project.write(
         "loom.toml",
-        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"future\"\nversion = \"1.0.0\"\n",
+        "schema = 2\nlanguage = \"0.5\"\n[module]\nname = \"future\"\nversion = \"1.0.0\"\n",
     );
     project.write("main.loom", "");
     let output = loom()
@@ -3362,7 +3362,14 @@ fn library_targets_build_portable_validated_artifacts() {
         "loom.toml",
         "schema = 2\n[module]\nname = \"sample\"\nversion = \"0.1.0\"\n[[target]]\nname = \"api\"\nkind = \"lib\"\n",
     );
-    project.write("lib.loom", "pub fn answer() Int {\n    42\n}\n");
+    project.write(
+        "lib.loom",
+        "pub fn answer() Int {\n    42\n}\n\ntest fn inlineLibraryTest() {\n    assert answer() == 42\n}\n",
+    );
+    project.write(
+        "lib_test.loom",
+        "fn testOnlyHelper() Int { 42 }\n\ntest fn fileLibraryTest() {\n    assert testOnlyHelper() == answer()\n}\n",
+    );
     let first_artifact = project.0.join("sample.loomlib");
     let first = loom()
         .args(["--json", "build", "--target", "api", "--output"])
@@ -3382,10 +3389,20 @@ fn library_targets_build_portable_validated_artifacts() {
         Some("miss")
     );
     let artifact_bytes = fs::read(&first_artifact).expect("read portable library");
+    let artifact_text = String::from_utf8(artifact_bytes.clone()).expect("library JSON is UTF-8");
+    assert!(
+        !artifact_text.contains("inlineLibraryTest"),
+        "{artifact_text}"
+    );
+    assert!(!artifact_text.contains("testOnlyHelper"), "{artifact_text}");
+    assert!(
+        !artifact_text.contains("fileLibraryTest"),
+        "{artifact_text}"
+    );
     let checked = loom_driver::decode_library_artifact(&artifact_bytes)
         .expect("decode and validate portable library");
     assert_eq!(checked.root_package().name(), "sample");
-    assert_eq!(checked.root_package().language(), "0.3");
+    assert_eq!(checked.root_package().language(), "0.4");
     assert_eq!(checked.interfaces().len(), 1);
 
     let second_artifact = project.0.join("sample-copy.loomlib");
@@ -3427,7 +3444,7 @@ fn library_targets_build_portable_validated_artifacts() {
 
     project.write(
         "consumer/loom.toml",
-        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"consumer\"\nversion = \"0.1.0\"\n[dependencies]\nsample = { artifact = \"../sample.loomlib\", version = \"^0.1\" }\n[[target]]\nname = \"consumer\"\nkind = \"bin\"\nentry = \"consumer.main\"\n",
+        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"consumer\"\nversion = \"0.1.0\"\n[dependencies]\nsample = { artifact = \"../sample.loomlib\", version = \"^0.1\" }\n[[target]]\nname = \"consumer\"\nkind = \"bin\"\nentry = \"consumer.main\"\n",
     );
     project.write(
         "consumer/main.loom",
@@ -3488,7 +3505,7 @@ fn git_fork_dependencies_lock_run_offline_and_update_as_one_cli_flow() {
     fs::create_dir_all(&repository).expect("create git dependency fixture");
     project.write(
         "utility-fork/loom.toml",
-        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"upstream_utility\"\nversion = \"1.0.0\"\n",
+        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"upstream_utility\"\nversion = \"1.0.0\"\n",
     );
     project.write(
         "utility-fork/lib.loom",
@@ -3500,7 +3517,7 @@ fn git_fork_dependencies_lock_run_offline_and_update_as_one_cli_flow() {
     let git_url = git_file_url(&repository);
 
     let old_field_manifest = format!(
-        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"consumer\"\nversion = \"1.0.0\"\n[dependencies]\nutility = {{ git = {git_url:?}, branch = \"main\", package = \"upstream_utility\" }}\n"
+        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"consumer\"\nversion = \"1.0.0\"\n[dependencies]\nutility = {{ git = {git_url:?}, branch = \"main\", package = \"upstream_utility\" }}\n"
     );
     project.write("old-field/loom.toml", &old_field_manifest);
     project.write("old-field/main.loom", "fn local() {}\n");
@@ -3519,7 +3536,7 @@ fn git_fork_dependencies_lock_run_offline_and_update_as_one_cli_flow() {
     assert!(old_field_output.contains("module"), "{old_field_output}");
 
     let consumer_manifest = format!(
-        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"consumer\"\nversion = \"1.0.0\"\n[dependencies]\nutility = {{ git = {git_url:?}, branch = \"main\", module = \"upstream_utility\" }}\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"consumer.main\"\n"
+        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"consumer\"\nversion = \"1.0.0\"\n[dependencies]\nutility = {{ git = {git_url:?}, branch = \"main\", module = \"upstream_utility\" }}\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"consumer.main\"\n"
     );
     assert!(!consumer_manifest.contains("replace"));
     assert!(!consumer_manifest.contains("package ="));
@@ -3668,7 +3685,7 @@ fn loopback_http_registry_publish_fetch_lock_and_offline_cache_close_the_loop() 
     project.write(
         "plaintext-token/loom.toml",
         &format!(
-            "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"utility\"\nversion = \"1.2.0\"\n[registries]\nremote = {{ url = {:?}, token-env = \"LOOM_TEST_REGISTRY_TOKEN\" }}\n",
+            "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"utility\"\nversion = \"1.2.0\"\n[registries]\nremote = {{ url = {:?}, token-env = \"LOOM_TEST_REGISTRY_TOKEN\" }}\n",
             fixture.url
         ),
     );
@@ -3693,7 +3710,7 @@ fn loopback_http_registry_publish_fetch_lock_and_offline_cache_close_the_loop() 
     project.write(
         "producer/loom.toml",
         &format!(
-            "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"utility\"\nversion = \"1.2.0\"\n[registries]\nremote = {{ url = {:?} }}\n",
+            "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"utility\"\nversion = \"1.2.0\"\n[registries]\nremote = {{ url = {:?} }}\n",
             fixture.url
         ),
     );
@@ -3731,7 +3748,7 @@ fn loopback_http_registry_publish_fetch_lock_and_offline_cache_close_the_loop() 
     assert!(!String::from_utf8_lossy(&published.stdout).contains("fixture-token"));
 
     let consumer_manifest = format!(
-        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"consumer\"\nversion = \"1.0.0\"\n[registries]\nremote = {{ url = {:?} }}\n[dependencies]\nutility = {{ registry = \"remote\", version = \"^1\" }}\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"consumer.main\"\n",
+        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"consumer\"\nversion = \"1.0.0\"\n[registries]\nremote = {{ url = {:?} }}\n[dependencies]\nutility = {{ registry = \"remote\", version = \"^1\" }}\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"consumer.main\"\n",
         fixture.url
     );
     let consumer_source = "import utility.answer\n\npub fn main() {\n    let value = answer()\n    assert value == 42\n}\n";
@@ -4094,22 +4111,71 @@ fn test_and_run_execute_native_code() {
 }
 
 #[test]
-fn check_rejects_test_declarations_outside_test_files() {
+fn ordinary_sources_can_embed_tests_without_joining_production_builds() {
     let project = TestProject::empty();
-    project.write("main.loom", "test fn misplaced() {\n    assert true\n}\n");
-    let output = loom_without_test_runtime()
+    project.write(
+        "main.loom",
+        "fn privateAnswer() Int { 42 }\n\npub fn main() {}\n\ntest fn embedded() {\n    let answer = privateAnswer()\n    assert answer == 42\n}\n",
+    );
+    let checked = loom_without_test_runtime()
         .args(["--json", "--no-cache", "--backend", "interpreter", "check"])
         .arg(&project.0)
         .output()
-        .expect("reject a test declaration in an ordinary source file");
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stdout = String::from_utf8(output.stdout).expect("UTF-8 stdout");
+        .expect("check a production view containing an embedded test");
+    assert_eq!(checked.status.code(), Some(0), "{checked:?}");
+
+    let tested = loom_without_test_runtime()
+        .args(["--no-cache", "--backend", "interpreter", "test"])
+        .arg(&project.0)
+        .output()
+        .expect("run an embedded test");
+    assert_eq!(tested.status.code(), Some(0), "{tested:?}");
+    let stdout = String::from_utf8(tested.stdout).expect("UTF-8 stdout");
+    assert!(stdout.contains("passed standalone.embedded"), "{stdout}");
+}
+
+#[test]
+fn production_does_not_type_check_an_embedded_test_body() {
+    let project = TestProject::new(
+        "pub fn main() {}\n\ntest fn testOnlyFailure() {\n    missingTestHelper()\n}\n",
+    );
+    let checked = loom_without_test_runtime()
+        .args(["--json", "--no-cache", "--backend", "interpreter", "check"])
+        .arg(&project.0)
+        .output()
+        .expect("check the production projection");
+    assert_eq!(checked.status.code(), Some(0), "{checked:?}");
+
+    let tested = loom_without_test_runtime()
+        .args(["--json", "--no-cache", "--backend", "interpreter", "test"])
+        .arg(&project.0)
+        .output()
+        .expect("check the test projection");
+    assert_eq!(tested.status.code(), Some(1), "{tested:?}");
     assert!(
-        stdout.contains("TestDeclarationOutsideTestFile"),
+        String::from_utf8_lossy(&tested.stdout).contains("UnknownName"),
+        "{tested:?}"
+    );
+}
+
+#[test]
+fn test_file_helpers_can_access_package_private_members() {
+    let project = TestProject::new("fn privateAnswer() Int { 42 }\n\npub fn main() {}\n");
+    project.write(
+        "main_test.loom",
+        "fn testAnswer() Int { privateAnswer() }\n\ntest fn companionAccessesPrivate() {\n    let answer = testAnswer()\n    assert answer == 42\n}\n",
+    );
+    let tested = loom_without_test_runtime()
+        .args(["--no-cache", "--backend", "interpreter", "test"])
+        .arg(&project.0)
+        .output()
+        .expect("run a companion helper");
+    assert_eq!(tested.status.code(), Some(0), "{tested:?}");
+    let stdout = String::from_utf8(tested.stdout).expect("UTF-8 stdout");
+    assert!(
+        stdout.contains("passed standalone.companionAccessesPrivate"),
         "{stdout}"
     );
-    assert!(project.0.join("main.loom").is_file());
-    assert!(!project.0.join("main_test.loom").exists());
 }
 
 #[test]
@@ -4119,7 +4185,10 @@ fn test_selects_one_directory_package_or_the_recursive_root_module() {
         "loom.toml",
         "schema = 2\n[module]\nname = \"application\"\nversion = \"1.0.0\"\n",
     );
-    project.write("main.loom", "pub fn main() {}\n");
+    project.write(
+        "main.loom",
+        "pub fn main() {}\n\ntest fn root_inline_test() { assert true }\n",
+    );
     project.write(
         "main_test.loom",
         "test fn root_package_test() { assert true }\n",
@@ -4127,6 +4196,10 @@ fn test_selects_one_directory_package_or_the_recursive_root_module() {
     project.write(
         "math/math_test.loom",
         "test fn math_package_test() { assert true }\n",
+    );
+    project.write(
+        "math/math.loom",
+        "test fn math_inline_test() { assert true }\n",
     );
 
     let run = |path: &Path| {
@@ -4141,13 +4214,17 @@ fn test_selects_one_directory_package_or_the_recursive_root_module() {
     assert_eq!(root.status.code(), Some(0), "{root:?}");
     let root_stdout = String::from_utf8(root.stdout).expect("UTF-8 root test output");
     assert!(root_stdout.contains("root_package_test"), "{root_stdout}");
+    assert!(root_stdout.contains("root_inline_test"), "{root_stdout}");
     assert!(!root_stdout.contains("math_package_test"), "{root_stdout}");
+    assert!(!root_stdout.contains("math_inline_test"), "{root_stdout}");
 
     let math = run(&project.0.join("math"));
     assert_eq!(math.status.code(), Some(0), "{math:?}");
     let math_stdout = String::from_utf8(math.stdout).expect("UTF-8 math test output");
     assert!(!math_stdout.contains("root_package_test"), "{math_stdout}");
+    assert!(!math_stdout.contains("root_inline_test"), "{math_stdout}");
     assert!(math_stdout.contains("math_package_test"), "{math_stdout}");
+    assert!(math_stdout.contains("math_inline_test"), "{math_stdout}");
 
     let recursive = run(&project.0.join("..."));
     assert_eq!(recursive.status.code(), Some(0), "{recursive:?}");
@@ -4159,6 +4236,14 @@ fn test_selects_one_directory_package_or_the_recursive_root_module() {
     );
     assert!(
         recursive_stdout.contains("math_package_test"),
+        "{recursive_stdout}"
+    );
+    assert!(
+        recursive_stdout.contains("root_inline_test"),
+        "{recursive_stdout}"
+    );
+    assert!(
+        recursive_stdout.contains("math_inline_test"),
         "{recursive_stdout}"
     );
 }
@@ -5234,7 +5319,7 @@ fn run_rejects_an_incompatible_artifact_language_version() {
     assert_eq!(build.status.code(), Some(0), "{build:?}");
     let bytes = fs::read(&artifact).expect("read artifact");
     let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("artifact JSON");
-    value["languageVersion"] = serde_json::json!("0.4");
+    value["languageVersion"] = serde_json::json!("0.5");
     fs::write(
         &artifact,
         serde_json::to_vec(&value).expect("artifact JSON"),

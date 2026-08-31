@@ -48,7 +48,7 @@ larger graph.
 
 ## Persistent layers
 
-The persistent cache schema is `15`. Current layers include source parse,
+The persistent cache schema is `16`. Current layers include source parse,
 package-interface presence, typed package state, complete checked MIR, target
 objects, and deterministic final artifacts.
 
@@ -80,7 +80,7 @@ rederived before signature and body checking; cached semantic bytes never grant
 a same-named function, record, or enum canonical authority.
 
 Task policy and timer calls currently store a resolved `TaskIntrinsic` in typed
-body facts. Cache schema `15` and the `loom-compilation-cache-v15` domain cover
+body facts. Cache schema `16` and the `loom-compilation-cache-v16` domain cover
 that identity, the current compiler-private Float, logging, file, and network
 primitive sets, and exact source identities for standard types. They also
 exclude Path-specific file builtin tags: the source wrappers convert Path to
@@ -117,8 +117,8 @@ instead of permanently replacing its process-local proof with serialized
 `.loomi` `Recheck`. Supported nongeneric replay is typed LCIR; generic or
 unsupported replay remains checked-MIR.
 
-A `.loomlib` version `3` final artifact is a separate source/interface blob, not
-a checked-MIR cache entry. Its `portable-library-artifact-v3` derived cache
+A `.loomlib` version `4` final artifact is a separate source/interface blob, not
+a checked-MIR cache entry. Its `portable-library-artifact-v4` derived cache
 identity includes the complete compilation key, selected library target,
 library format, and format version. Consequently a compiler or
 compiler-distributed standard-library identity change cannot restore an
