@@ -56,8 +56,10 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
 - Compiler-distributed `std` source modules compiled through the ordinary
   frontend, including integer and JSON parsing, logging wrappers, process
   wrappers, resource concepts, the public `DecodeTextError` and `PathError`
-  enums, and the complete public `std.log` graph. Logging now resolves through
-  ordinary source `DefId` values and has no universal-value native fallback;
+  enums, the public `std.time.milliseconds` wrapper, and the complete public
+  `std.log` graph. Time construction now resolves through an ordinary source
+  `DefId`; only its exact-owner private primitive remains below source. Logging
+  resolves through ordinary source `DefId` values and has no universal-value native fallback;
   only its exact-owner private typed write primitive remains compiler-owned.
   `IoErrorKind` is now an ordinary `std.io` source enum whose exact definition
   is made available through the prelude; its ten compiler builtin constructors

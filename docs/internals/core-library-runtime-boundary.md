@@ -145,6 +145,13 @@ definitions are ordinary Loom source, while only the exact compiler-owned
 primitive accepts Text bytes and returns no policy-bearing value; line-feed
 composition remains in `write_line` source.
 
+`std.time.milliseconds` is also an ordinary source function. Its body alone
+imports the exact-owner `__milliseconds` primitive that establishes the
+non-negative `Duration`; application imports resolve only the public source
+definition. The immutable `Duration` representation and
+`as_milliseconds` inspection remain irreducible core operations, while the
+public construction spelling has no builtin dispatch path.
+
 `DecodeTextError` and `PathError` are likewise ordinary public enums declared
 by compiler-distributed `std.text` and `std.path` source. Checked MIR retains
 their exact source `TypeId` values in its prelude catalog, and typed LCIR

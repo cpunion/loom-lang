@@ -1,0 +1,7 @@
+import std.time.milliseconds
+
+test fn constructsMillisecondDuration() {
+    let duration = milliseconds(42)
+    let observed = duration.as_milliseconds()
+    assert observed == 42
+}

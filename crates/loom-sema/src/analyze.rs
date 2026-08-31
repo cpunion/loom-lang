@@ -6155,6 +6155,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     crate::std_primitives::CompilerStdPrimitive::FloatToInt => {
                         BuiltinValue::FloatToIntStatus
                     }
+                    crate::std_primitives::CompilerStdPrimitive::DurationMilliseconds => {
+                        BuiltinValue::DurationMilliseconds
+                    }
                     crate::std_primitives::CompilerStdPrimitive::FileOpenRead => {
                         BuiltinValue::FileOpenRead
                     }
@@ -6227,9 +6230,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     "Some" => Some(BuiltinValue::Some),
                     "Ok" => Some(BuiltinValue::Ok),
                     "Err" => Some(BuiltinValue::Err),
-                    "milliseconds" if self.builtin_is_imported("std.time.milliseconds") => {
-                        Some(BuiltinValue::DurationMilliseconds)
-                    }
                     "format_json" if self.builtin_is_imported("std.json.format_json") => {
                         Some(BuiltinValue::JsonFormat)
                     }
