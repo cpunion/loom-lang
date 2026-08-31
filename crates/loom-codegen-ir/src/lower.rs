@@ -2998,36 +2998,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     context,
                     &format!("{path}.owner"),
                 )?;
-                let normalized = contract_base_type(self.program, &owner)?;
-                if normalized != owner && !task_free_type(self.program, self.dyn_concepts, &owner) {
-                    // Contract operands are borrowed, but typed LCIR must
-                    // currently consume a refined value to expose its base.
-                    // Do not let that implementation detail take an affine
-                    // Task away from the later callable body.
-                    self.item(
-                        UnsupportedFeature::TaskOperation,
-                        function.id,
-                        None,
-                        expression.span,
-                        path.to_owned(),
-                    );
-                    return None;
-                }
-                let projected = contract_projected_type(self.program, &owner, *field)?;
-                if !task_free_type(self.program, self.dyn_concepts, &projected) {
-                    // ProductExtract may borrow an affine aggregate while
-                    // reading a task-free field, but splitting out the affine
-                    // field itself is not a legal ownership operation.
-                    self.item(
-                        UnsupportedFeature::TaskOperation,
-                        function.id,
-                        None,
-                        expression.span,
-                        path.to_owned(),
-                    );
-                    return None;
-                }
-                projected
+                contract_projected_type(self.program, &owner, *field)?
             }
             ContractExprKind::Unary(UnaryOp::Not, operand) => {
                 self.classify_contract_expr(
@@ -3127,20 +3098,6 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     context,
                     &format!("{path}.scrutinee"),
                 )?;
-                if !task_free_type(self.program, self.dyn_concepts, &scrutinee_ty) {
-                    // SumSwitch owns its selected affine payload. Contract
-                    // matching is source-level borrowing, so a Task-bearing
-                    // scrutinee must stay on the atomic fallback route until
-                    // LCIR has an explicit borrowed-sum operation.
-                    self.item(
-                        UnsupportedFeature::TaskOperation,
-                        function.id,
-                        None,
-                        expression.span,
-                        path.to_owned(),
-                    );
-                    return None;
-                }
                 let planned_scrutinee = contract_base_type(self.program, &scrutinee_ty)
                     .unwrap_or_else(|| scrutinee_ty.clone());
                 let Some(plan) = plan_contract_match(
@@ -6932,9 +6889,11 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         mut flow: Flow,
         result: ValueId,
     ) -> Result<Flow, LoweringError> {
-        if self.source.call_plan.receiver_invariant.is_none()
-            && self.source.call_plan.ensures.is_empty()
-        {
+        let exit_invariant = match self.source.receiver {
+            Some(mir::Receiver::Mutable) => self.source.call_plan.receiver_invariant.as_ref(),
+            Some(mir::Receiver::Readonly) | None => None,
+        };
+        if exit_invariant.is_none() && self.source.call_plan.ensures.is_empty() {
             return Ok(flow);
         }
         // Explicit returns lower the full cleanup suffix while the lexical
@@ -6943,7 +6902,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         let saved_cleanups = std::mem::take(&mut self.cleanups);
         let lowered = (|| {
             let context = self.contract_context(flow.env, Some(result), true)?;
-            if let Some(contract) = &self.source.call_plan.receiver_invariant {
+            if let Some(contract) = exit_invariant {
                 flow = self.lower_contract_check(
                     flow,
                     contract,
@@ -7118,15 +7077,23 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 let (flow, operand) = self.normalize_contract_operand(operand, origin)?;
                 let aggregate = self.type_id(&operand.ty)?;
                 let field_ty = self.product_field_type(aggregate, *field)?;
-                self.one_instruction(
-                    flow,
+                let instruction = if task_free_type(
+                    self.program,
+                    self.dyn_concepts,
+                    &contract_projected_type(self.program, &operand.ty, *field)
+                        .ok_or_else(|| self.unsupported_reached("contract projected field type"))?,
+                ) {
                     InstructionKind::ProductExtract {
                         aggregate: operand.value,
                         field: *field,
-                    },
-                    field_ty,
-                    origin,
-                )
+                    }
+                } else {
+                    InstructionKind::ProductBorrow {
+                        aggregate: operand.value,
+                        field: *field,
+                    }
+                };
+                self.one_instruction(flow, instruction, field_ty, origin)
             }
             ContractExprKind::Unary(operator, operand) => {
                 let operand = self.lower_contract_operand(flow, operand, context)?;
@@ -7197,7 +7164,43 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 "contract operand unexpectedly terminated",
             ));
         };
-        Ok((flow, ContractOperand { value, ty }))
+        self.borrow_contract_operand(
+            flow,
+            ContractOperand { value, ty },
+            self.contract_origin(expression),
+        )
+    }
+
+    fn borrow_contract_operand(
+        &mut self,
+        flow: Flow,
+        operand: ContractOperand,
+        origin: Origin,
+    ) -> Result<(Flow, ContractOperand), LoweringError> {
+        if task_free_type(self.program, self.dyn_concepts, &operand.ty) {
+            return Ok((flow, operand));
+        }
+        let EvalFlow::Continue { flow, value } = self.one_instruction(
+            flow,
+            InstructionKind::TaskCarrierBorrow {
+                value: operand.value,
+            },
+            self.type_id(&operand.ty)?,
+            origin,
+        )?
+        else {
+            return Err(LoweringError::defect(
+                LoweringDefectCode::Builder,
+                "contract carrier borrow unexpectedly terminated",
+            ));
+        };
+        Ok((
+            flow,
+            ContractOperand {
+                value,
+                ty: operand.ty,
+            },
+        ))
     }
 
     fn normalize_contract_operand(
@@ -7220,17 +7223,19 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             };
             let base = concrete_refined_base(self.program, &operand.ty)
                 .ok_or_else(|| self.unsupported_reached("open refined contract operand"))?;
+            let instruction = if task_free_type(self.program, self.dyn_concepts, &operand.ty) {
+                InstructionKind::Unrefine {
+                    value: operand.value,
+                }
+            } else {
+                InstructionKind::UnrefineBorrow {
+                    value: operand.value,
+                }
+            };
             let EvalFlow::Continue {
                 flow: next_flow,
                 value,
-            } = self.one_instruction(
-                flow,
-                InstructionKind::Unrefine {
-                    value: operand.value,
-                },
-                self.type_id(&base)?,
-                origin,
-            )?
+            } = self.one_instruction(flow, instruction, self.type_id(&base)?, origin)?
             else {
                 return Err(LoweringError::defect(
                     LoweringDefectCode::Builder,
@@ -7587,23 +7592,17 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     })?;
                 nested.bindings.push(ContractOperand { value, ty });
             }
-            let EvalFlow::Continue {
-                flow: arm_flow,
-                value,
-            } = self.lower_contract_expr(
+            let (arm_flow, value) = self.lower_contract_operand(
                 Flow {
                     block: lowered.block,
                     env: flow.env,
                 },
                 &arm.value,
                 &nested,
-            )?
-            else {
-                return Err(self.unsupported_reached("terminating contract match arm"));
-            };
+            )?;
             self.terminate(
                 arm_flow.block,
-                TerminatorKind::Jump(BlockTarget::new(join, [value])),
+                TerminatorKind::Jump(BlockTarget::new(join, [value.value])),
                 self.contract_origin(&arm.value),
             )?;
         }
@@ -7641,9 +7640,10 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                         format!("contract match has no block for arm {arm}"),
                     )
                 })?;
-                let arguments = captures
-                    .iter()
-                    .map(|(_, capture)| {
+                let mut flow = flow;
+                let mut arguments = Vec::with_capacity(captures.len());
+                for (_, capture) in captures {
+                    let value =
                         values
                             .get(capture.index())
                             .copied()
@@ -7653,9 +7653,24 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                                     LoweringDefectCode::InconsistentPlan,
                                     "contract match capture value is unavailable",
                                 )
-                            })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+                            })?;
+                    let ty = plan.value_type(*capture).ok_or_else(|| {
+                        LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            "contract match capture has no type",
+                        )
+                    })?;
+                    let (next, borrowed) = self.borrow_contract_operand(
+                        flow,
+                        ContractOperand {
+                            value,
+                            ty: ty.clone(),
+                        },
+                        origin,
+                    )?;
+                    flow = next;
+                    arguments.push(borrowed.value);
+                }
                 self.terminate(
                     flow.block,
                     TerminatorKind::Jump(BlockTarget::new(lowered.block, arguments)),
@@ -7792,14 +7807,27 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                     lowered_cases.push(SumCase::new(case.variant, block, []));
                     case_flows.push((case.next, block, case_values));
                 }
-                self.terminate(
-                    flow.block,
+                let terminator = if task_free_type(
+                    self.program,
+                    self.dyn_concepts,
+                    plan.value_type(*value).ok_or_else(|| {
+                        LoweringError::defect(
+                            LoweringDefectCode::InconsistentPlan,
+                            "contract sum scrutinee has no type",
+                        )
+                    })?,
+                ) {
                     TerminatorKind::SumSwitch {
                         scrutinee,
                         cases: lowered_cases.into_boxed_slice(),
-                    },
-                    origin,
-                )?;
+                    }
+                } else {
+                    TerminatorKind::SumBorrowSwitch {
+                        scrutinee,
+                        cases: lowered_cases.into_boxed_slice(),
+                    }
+                };
+                self.terminate(flow.block, terminator, origin)?;
                 for (next, block, case_values) in case_flows {
                     self.lower_contract_match_node(
                         plan,

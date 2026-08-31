@@ -129,7 +129,8 @@ Frontend checking and backend roots are intentionally different:
 - a binary `build`, `run`, or `debug` selects one public entry;
 - `test PATH` adds the selected directory package's internal test companion,
   populated from embedded tests and `*_test.loom`; `test PATH/...` does the
-  same for every package in the root module; dependency tests are never added;
+  same for that package and every descendant package; dependency tests are
+  never added;
 - an empty test set produces a successful empty harness;
 - a library target packages the resolved module graph and public interfaces;
   it has no executable or code-generation root.

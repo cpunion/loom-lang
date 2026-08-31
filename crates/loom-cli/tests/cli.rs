@@ -4249,6 +4249,53 @@ fn test_selects_one_directory_package_or_the_recursive_root_module() {
 }
 
 #[test]
+fn recursive_test_selection_stays_below_the_requested_directory() {
+    let project = TestProject::empty();
+    project.write(
+        "loom.toml",
+        "schema = 2\n[module]\nname = \"application\"\nversion = \"1.0.0\"\n",
+    );
+    project.write(
+        "main.loom",
+        "pub fn main() {}\n\ntest fn root_inline_test() { missing_root_helper() }\n",
+    );
+    project.write(
+        "alpha/alpha.loom",
+        "test fn alpha_inline_test() { assert true }\n",
+    );
+    project.write(
+        "alpha/alpha_test.loom",
+        "test fn alpha_file_test() { assert true }\n",
+    );
+    project.write(
+        "alpha/nested/nested_test.loom",
+        "test fn alpha_nested_test() { assert true }\n",
+    );
+    project.write(
+        "beta/beta.loom",
+        "test fn beta_inline_test() { missing_beta_inline_helper() }\n",
+    );
+    project.write(
+        "beta/beta_test.loom",
+        "test fn beta_file_test() { missing_beta_file_helper() }\n",
+    );
+
+    let selected = loom_without_test_runtime()
+        .args(["--backend", "interpreter", "test"])
+        .arg(project.0.join("alpha").join("..."))
+        .output()
+        .expect("run one recursive package subtree");
+    assert_eq!(selected.status.code(), Some(0), "{selected:?}");
+    let stdout = String::from_utf8(selected.stdout).expect("UTF-8 recursive test output");
+    for expected in ["alpha_inline_test", "alpha_file_test", "alpha_nested_test"] {
+        assert!(stdout.contains(expected), "{stdout}");
+    }
+    for excluded in ["root_inline_test", "beta_inline_test", "beta_file_test"] {
+        assert!(!stdout.contains(excluded), "{stdout}");
+    }
+}
+
+#[test]
 fn explicit_discard_closes_both_backend_cli_loops() {
     let project = TestProject::new(
         r"fn answer() Int {

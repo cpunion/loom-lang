@@ -3426,6 +3426,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 }
             }
             if let Some((parameter, ty)) = self.environment.params.get(name).copied() {
+                self.reject_task_exit_contract_input(expression, ty);
                 self.semantics
                     .expression_resolutions
                     .insert(expression, Resolution::Param(parameter));
@@ -3501,6 +3502,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             self.error_at("UnknownName", "`self` is not available here", expression);
             return self.types().error();
         };
+        self.reject_task_exit_contract_input(expression, ty);
         if self.cleanup_depth > 0
             && !self.allow_dirty_self_projection
             && !self.checking_assignment_target
@@ -4577,7 +4579,11 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         context: ExpressionContext,
     ) -> TyId {
         let scrutinee_ty = self.check_expr(scrutinee, None, ExpressionContext::Value);
-        self.consume_task_obligation(scrutinee);
+        if self.environment.contract == ContractMode::None {
+            self.consume_task_obligation(scrutinee);
+        } else {
+            self.borrow_task_obligation(scrutinee);
+        }
         let mut result = expected;
         let mut pattern_rows = Vec::new();
         let entry = self.flow_state();
@@ -4600,10 +4606,14 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             }
             let arm_ty = self.check_expr(arm.value, result, context);
             if self.may_have_task_obligation(arm_ty) {
-                // Each reachable arm transfers its value into the match
-                // result. Direct binding arms do not pass through a nested
-                // block, so consume them before auditing arm-local bindings.
-                self.consume_task_obligation(arm.value);
+                // Each ordinary reachable arm transfers its value into the
+                // match result. Contract arms instead borrow-check that same
+                // value without changing the surrounding ownership state.
+                if self.environment.contract == ContractMode::None {
+                    self.consume_task_obligation(arm.value);
+                } else {
+                    self.borrow_task_obligation(arm.value);
+                }
             }
             let arm_locals = self
                 .scopes
@@ -4663,7 +4673,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                         self.pattern_span(pattern),
                     );
                 }
-                if self.may_have_task_obligation(expected) {
+                if self.environment.contract == ContractMode::None
+                    && self.may_have_task_obligation(expected)
+                {
                     self.error(
                         "TaskPatternDiscard",
                         "a pattern cannot discard a value carrying a Task obligation",
@@ -9033,6 +9045,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
     }
 
     fn register_task_local(&mut self, local: LocalId, ty: TyId) {
+        if self.environment.contract != ContractMode::None {
+            return;
+        }
         if self.has_task_obligation(ty, &mut BTreeSet::new(), 0) {
             self.task_obligations
                 .insert(TaskObligationOwner::Local(local), TaskObligationState::Live);
@@ -9095,6 +9110,47 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             return;
         };
         self.consume_task_obligation_with_type(expression, ty);
+    }
+
+    fn borrow_task_obligation(&mut self, expression: ExprId) {
+        let Some(ty) = self.semantics.expression_types.get(expression).copied() else {
+            return;
+        };
+        if !self.has_task_obligation(ty, &mut BTreeSet::new(), 0) {
+            return;
+        }
+        let Some(place) = self.semantics.expression_places.get(expression).cloned() else {
+            return;
+        };
+        let owner = match place.root {
+            PlaceRoot::Local(local) => TaskObligationOwner::Local(local),
+            PlaceRoot::Param(parameter) => TaskObligationOwner::Param(parameter),
+            PlaceRoot::SelfValue => TaskObligationOwner::SelfValue,
+        };
+        match self.task_obligations.get(&owner).copied() {
+            Some(TaskObligationState::Consumed) => self.error_at(
+                "TaskAlreadyConsumed",
+                "this Task-carrying value was already consumed",
+                expression,
+            ),
+            Some(TaskObligationState::Conditional) => self.error_at(
+                "TaskConditionallyConsumed",
+                "this Task-carrying value is live on only some control-flow paths",
+                expression,
+            ),
+            Some(TaskObligationState::Live) | None => {}
+        }
+    }
+
+    fn reject_task_exit_contract_input(&mut self, expression: ExprId, ty: TyId) {
+        if !matches!(self.source().kind, BodyKind::Ensures) || !self.may_have_task_obligation(ty) {
+            return;
+        }
+        self.error_at(
+            "TaskExitContractInputUnsupported",
+            "an exit contract cannot inspect a Task-carrying input after the body may transfer it; use requires or inspect result",
+            expression,
+        );
     }
 
     fn consume_task_obligation_with_type(&mut self, expression: ExprId, ty: TyId) {

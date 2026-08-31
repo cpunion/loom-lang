@@ -333,6 +333,7 @@ struct ContractEnv {
     arguments: Vec<Type>,
     bindings: Vec<Type>,
     allow_old: bool,
+    forbid_task_inputs: bool,
 }
 
 #[derive(Clone)]
@@ -1873,6 +1874,7 @@ impl<'program> Validator<'program> {
                             arguments: Vec::new(),
                             bindings: Vec::new(),
                             allow_old: false,
+                            forbid_task_inputs: false,
                         },
                         &format!("{path}.invariant"),
                     );
@@ -1955,6 +1957,7 @@ impl<'program> Validator<'program> {
                         arguments: Vec::new(),
                         bindings: Vec::new(),
                         allow_old: false,
+                        forbid_task_inputs: false,
                     },
                     &format!("{path}.predicate"),
                 );
@@ -3316,6 +3319,7 @@ impl<'program> Validator<'program> {
                     arguments: arguments.clone(),
                     bindings: Vec::new(),
                     allow_old: false,
+                    forbid_task_inputs: false,
                 },
                 &format!("{path}.call_plan.receiver_invariant"),
             );
@@ -3329,6 +3333,7 @@ impl<'program> Validator<'program> {
                     arguments: arguments.clone(),
                     bindings: Vec::new(),
                     allow_old: false,
+                    forbid_task_inputs: false,
                 },
                 &format!("{path}.call_plan.requires[{index}]"),
             );
@@ -3342,6 +3347,7 @@ impl<'program> Validator<'program> {
                     arguments: arguments.clone(),
                     bindings: Vec::new(),
                     allow_old: true,
+                    forbid_task_inputs: true,
                 },
                 &format!("{path}.call_plan.ensures[{index}]"),
             );
@@ -7746,38 +7752,50 @@ impl<'program> Validator<'program> {
             }
             ContractExprKind::Constant(constant) => Some(constant_type(constant)),
             ContractExprKind::Value(value) => match value {
-                ContractValue::SelfValue => self.contract_value(
-                    env.receiver.clone(),
-                    "`self` is unavailable in this contract",
-                    expression.span,
-                    path,
-                ),
+                ContractValue::SelfValue => {
+                    let value = self.contract_value(
+                        env.receiver.clone(),
+                        "`self` is unavailable in this contract",
+                        expression.span,
+                        path,
+                    );
+                    self.contract_input_value(value, env.forbid_task_inputs, expression.span, path)
+                }
                 ContractValue::Result => self.contract_value(
                     env.result.clone(),
                     "`result` is only available in an ensures contract",
                     expression.span,
                     path,
                 ),
-                ContractValue::Argument(index) => self.contract_value(
-                    env.arguments.get(*index as usize).cloned(),
-                    "contract argument index is out of bounds",
-                    expression.span,
-                    path,
-                ),
-                ContractValue::OldSelf => self.contract_old_value(
-                    env.allow_old.then(|| env.receiver.clone()).flatten(),
-                    "`old(self)` is only available in an ensures contract",
-                    expression.span,
-                    path,
-                ),
-                ContractValue::OldArgument(index) => self.contract_old_value(
-                    env.allow_old
-                        .then(|| env.arguments.get(*index as usize).cloned())
-                        .flatten(),
-                    "old argument is unavailable or its index is out of bounds",
-                    expression.span,
-                    path,
-                ),
+                ContractValue::Argument(index) => {
+                    let value = self.contract_value(
+                        env.arguments.get(*index as usize).cloned(),
+                        "contract argument index is out of bounds",
+                        expression.span,
+                        path,
+                    );
+                    self.contract_input_value(value, env.forbid_task_inputs, expression.span, path)
+                }
+                ContractValue::OldSelf => {
+                    let value = self.contract_old_value(
+                        env.allow_old.then(|| env.receiver.clone()).flatten(),
+                        "`old(self)` is only available in an ensures contract",
+                        expression.span,
+                        path,
+                    );
+                    self.contract_input_value(value, env.forbid_task_inputs, expression.span, path)
+                }
+                ContractValue::OldArgument(index) => {
+                    let value = self.contract_old_value(
+                        env.allow_old
+                            .then(|| env.arguments.get(*index as usize).cloned())
+                            .flatten(),
+                        "old argument is unavailable or its index is out of bounds",
+                        expression.span,
+                        path,
+                    );
+                    self.contract_input_value(value, env.forbid_task_inputs, expression.span, path)
+                }
             },
             ContractExprKind::Binding(index) => self.contract_value(
                 env.bindings.get(*index as usize).cloned(),
@@ -8262,6 +8280,30 @@ impl<'program> Validator<'program> {
         } else {
             Some(value)
         }
+    }
+
+    fn contract_input_value(
+        &mut self,
+        value: Option<Type>,
+        forbid_task_inputs: bool,
+        span: Span,
+        path: &str,
+    ) -> Option<Type> {
+        let value = value?;
+        if forbid_task_inputs {
+            let mut remaining = MAX_VALIDATION_TYPE_NODES;
+            let obligations =
+                self.value_obligations_inner(&value, &[], &mut Vec::new(), 0, &mut remaining);
+            if obligations.task || obligations.unresolved {
+                self.push(
+                    MirValidationCode::ContractShape,
+                    "an exit contract cannot inspect a Task-carrying input after the body may transfer it; use a precondition or inspect the result",
+                    span,
+                    path,
+                );
+            }
+        }
+        Some(value)
     }
 
     fn validate_place(

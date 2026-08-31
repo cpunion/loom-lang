@@ -31,16 +31,36 @@ fn forward(value Work) Work {
     value
 }
 
+fn inspectWork(value Work) Work
+    requires match (match value {
+        Queued(_, _) => value,
+        Idle => value,
+    }) {
+        Queued(_, payload) => payload.label == "queued"
+        Idle => true
+    }
+    requires match value {
+        Queued(_, payload) => payload.label == "queued"
+        Idle => true
+    }
+    ensures match result {
+        Queued(_, payload) => payload.label == "queued"
+        Idle => true
+    }
+{
+    value
+}
+
 fn forwardOption(value Option[Task[Int]]) Option[Task[Int]] {
     value
 }
 
 async fn exercise() {
     let pair = makePair(11)
-    let work = forward(Work.Queued(
+    let work = inspectWork(forward(Work.Queued(
         wrap(child(7)),
         Payload { label = "queued", values = [1, 2] }
-    ))
+    )))
 
     // The complete affine carrier crosses suspension. Task handles are owned
     // by the scheduler; only the Text and List leaves are GC roots.

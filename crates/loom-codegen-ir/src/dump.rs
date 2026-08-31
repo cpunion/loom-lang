@@ -53,7 +53,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 48")?;
+    writeln!(output, "lcir 49")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -397,6 +397,12 @@ fn write_instruction(
         InstructionKind::ProductExtract { aggregate, field } => {
             write!(output, "product.extract %{aggregate}, field {field}")
         }
+        InstructionKind::TaskCarrierBorrow { value } => {
+            write!(output, "task_carrier.borrow %{value}")
+        }
+        InstructionKind::ProductBorrow { aggregate, field } => {
+            write!(output, "product.borrow %{aggregate}, field {field}")
+        }
         InstructionKind::ProductSplit { aggregate } => {
             write!(output, "product.split %{aggregate}")
         }
@@ -418,6 +424,9 @@ fn write_instruction(
         ),
         InstructionKind::RefineProven { value } => write!(output, "refine.proven %{value}"),
         InstructionKind::Unrefine { value } => write!(output, "unrefine %{value}"),
+        InstructionKind::UnrefineBorrow { value } => {
+            write!(output, "unrefine.borrow %{value}")
+        }
         InstructionKind::SumConstruct { variant, payload } => {
             write!(output, "sum.construct variant {variant} (")?;
             write_arguments(output, payload)?;
@@ -607,8 +616,14 @@ fn write_terminator(
             write!(output, ", ")?;
             write_target(output, else_target)
         }
-        TerminatorKind::SumSwitch { scrutinee, cases } => {
-            write!(output, "sum.switch %{scrutinee}")?;
+        TerminatorKind::SumSwitch { scrutinee, cases }
+        | TerminatorKind::SumBorrowSwitch { scrutinee, cases } => {
+            let operation = if matches!(terminator.kind(), TerminatorKind::SumBorrowSwitch { .. }) {
+                "sum.borrow_switch"
+            } else {
+                "sum.switch"
+            };
+            write!(output, "{operation} %{scrutinee}")?;
             let payloads = program
                 .function(scrutinee.owner())
                 .and_then(|function| function.value(*scrutinee))

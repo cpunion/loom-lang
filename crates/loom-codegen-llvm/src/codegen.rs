@@ -14,7 +14,7 @@ use crate::{
     target::{NativeTargetMachine, create_target_machine},
 };
 
-const NATIVE_OBJECT_FORMAT: &str = "loom-checked-mir-native-object-v3";
+const NATIVE_OBJECT_FORMAT: &str = "loom-checked-mir-native-object-v4";
 
 /// Native executable harness selected by the CLI command.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -516,7 +516,7 @@ mod tests {
     fn native_object_fingerprint_domain_is_pinned() {
         assert_eq!(
             super::NATIVE_OBJECT_FORMAT,
-            "loom-checked-mir-native-object-v3"
+            "loom-checked-mir-native-object-v4"
         );
     }
 

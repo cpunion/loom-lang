@@ -7471,88 +7471,112 @@ pub fn main() {
 }
 
 #[test]
-fn task_bearing_contract_matches_select_atomic_fallback() {
-    let mut program = compile(
-        r"fn pending() Task[Int] { pending() }
+fn task_bearing_contract_matches_lower_as_borrowed_structural_inspection() {
+    let source = r"record Payload {
+    pending Option[Task[Int]]
+    allowed Bool
+}
+
+fn pending() Task[Int] { pending() }
+
+fn consume(value Option[Payload]) { consume(value) }
+
+fn inspect(value Option[Payload]) Option[Payload]
+    requires match value {
+        Some(payload) => match payload.pending {
+            Some(_) => payload.allowed
+            None => false
+        }
+        None => true
+    }
+{
+    value
+}
+
+pub fn main() {
+    consume(inspect(Some(Payload { pending = Some(pending()), allowed = true })))
+}
+";
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("borrowing contracts over Task carriers must use typed LCIR")
+    };
+    let dump = dump_program(artifact.program());
+    assert_eq!(dump.matches("sum.borrow_switch").count(), 2, "{dump}");
+    assert!(dump.contains("product.borrow"), "{dump}");
+    assert!(dump.contains("product.extract"), "{dump}");
+    assert!(dump.contains("contract PreconditionFault"), "{dump}");
+}
+
+#[test]
+fn nested_contract_matches_borrow_whole_task_carriers_across_cfg_edges() {
+    let source = r"enum Choice {
+    First
+    Second
+}
+
+fn pending() Task[Int] { pending() }
 
 fn consume(value Option[Task[Int]]) { consume(value) }
 
-fn inspect(value Option[Task[Int]]) { consume(value) }
+fn inspect(choice Choice, value Option[Task[Int]]) Option[Task[Int]]
+    requires match (match choice {
+        Choice.First => value,
+        Choice.Second => value,
+    }) {
+        Some(_) => true
+        None => true
+    }
+    requires match value {
+        whole => match whole {
+            Some(_) => true
+            None => true
+        }
+    }
+{
+    value
+}
 
 pub fn main() {
-    inspect(Some(pending()))
+    consume(inspect(Choice.First, Some(pending())))
 }
-",
-    )
-    .into_program();
-    let option = program.prelude.option.expect("canonical Option type");
-    let task = Type::Task(Box::new(Type::Int));
-    let contract_span = Span::new(FileId(0), 0, 1);
-    let inspect = program
-        .functions
-        .iter_mut()
-        .find(|function| function.name.ends_with(".inspect"))
-        .expect("inspect MIR function");
-    inspect.call_plan.requires.push(loom_mir::Contract {
-        code: "inspect.requires[0]".into(),
-        span: contract_span,
-        expression: loom_mir::ContractExpr {
-            kind: loom_mir::ContractExprKind::Match {
-                scrutinee: Box::new(loom_mir::ContractExpr {
-                    kind: loom_mir::ContractExprKind::Value(loom_mir::ContractValue::Argument(0)),
-                    span: contract_span,
-                }),
-                arms: vec![
-                    loom_mir::ContractArm {
-                        pattern: loom_mir::Pattern::Variant {
-                            ty: option,
-                            variant: loom_mir::VariantId(1),
-                            payload: vec![loom_mir::Pattern::Binding],
-                        },
-                        bindings: vec![task],
-                        value: loom_mir::ContractExpr {
-                            kind: loom_mir::ContractExprKind::Constant(Constant::Bool(true)),
-                            span: contract_span,
-                        },
-                    },
-                    loom_mir::ContractArm {
-                        pattern: loom_mir::Pattern::Variant {
-                            ty: option,
-                            variant: loom_mir::VariantId(0),
-                            payload: Vec::new(),
-                        },
-                        bindings: Vec::new(),
-                        value: loom_mir::ContractExpr {
-                            kind: loom_mir::ContractExprKind::Constant(Constant::Bool(true)),
-                            span: contract_span,
-                        },
-                    },
-                ],
-            },
-            span: contract_span,
-        },
-    });
-    let program = program
-        .into_checked()
-        .expect("forged borrowing contract remains structurally valid MIR");
-    let outcome = lower_typed_artifact(
-        &program,
-        &SourceArtifactRequest::Run {
-            entry: "main".into(),
-        },
-        TargetLayout::new(64).expect("test target"),
-    )
-    .expect("classify forged affine contract match");
-    let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("a borrowing contract match must not consume an affine sum in typed LCIR")
+";
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("whole Task carriers in nested contracts must remain borrowed")
     };
-    assert!(
-        report.items().iter().any(|item| {
-            item.feature() == UnsupportedFeature::TaskOperation
-                && item.path().contains("call_plan.requires")
-        }),
-        "{report:?}"
-    );
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("task_carrier.borrow"), "{dump}");
+    assert!(dump.contains("sum.borrow_switch"), "{dump}");
+}
+
+#[test]
+fn readonly_task_receiver_invariant_is_checked_only_at_entry() {
+    let source = r"record Envelope {
+    pending Option[Task[Int]]
+    allowed Bool
+    invariant self.allowed || match self.pending {
+        Some(_) => true
+        None => true
+    }
+}
+
+fn pending() Task[Int] { pending() }
+
+fn consume(value Envelope) { consume(value) }
+
+impl Envelope {
+    method drain(self) { consume(self) }
+}
+
+pub fn main() {
+    let value = Envelope { pending = Some(pending()), allowed = true }
+    value.drain()
+}
+";
+    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+        panic!("a consumed readonly receiver needs no redundant exit invariant replay")
+    };
+    let dump = dump_program(artifact.program());
+    assert_eq!(dump.matches("contract InvariantFault").count(), 1, "{dump}");
 }
 
 #[test]

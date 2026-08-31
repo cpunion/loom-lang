@@ -815,7 +815,9 @@ pub fn exit_contract_parameter_locals(
     call_plan: &CallPlan,
 ) -> Vec<LocalId> {
     let mut pending = Vec::<&ContractExpr>::new();
-    if let Some(invariant) = &call_plan.receiver_invariant {
+    if receiver == Some(Receiver::Mutable)
+        && let Some(invariant) = &call_plan.receiver_invariant
+    {
         pending.push(&invariant.expression);
     }
     pending.extend(
@@ -866,7 +868,7 @@ pub fn exit_contract_parameter_locals(
 }
 
 /// Computes suspension liveness including only parameters actually referenced
-/// by the receiver invariant or postconditions executed on normal exit.
+/// by a mutable receiver invariant or postconditions executed on normal exit.
 ///
 /// This is the canonical contract-aware query used both when constructing MIR
 /// suspension metadata and when independently validating serialized MIR.
@@ -1061,14 +1063,7 @@ mod tests {
                 kind: ContractExprKind::Binary(
                     BinaryOp::And,
                     Box::new(value(ContractValue::Argument(1))),
-                    Box::new(ContractExpr {
-                        kind: ContractExprKind::Binary(
-                            BinaryOp::And,
-                            Box::new(value(ContractValue::OldSelf)),
-                            Box::new(value(ContractValue::OldArgument(2))),
-                        ),
-                        span: Span::default(),
-                    }),
+                    Box::new(value(ContractValue::OldArgument(2))),
                 ),
                 span: Span::default(),
             })],
@@ -1082,7 +1077,7 @@ mod tests {
             span: Span::default(),
         };
 
-        let expected = [LocalId(0), LocalId(2), LocalId(3)];
+        let expected = [LocalId(2), LocalId(3)];
         assert_eq!(
             exit_contract_parameter_locals(&params, Some(Receiver::Readonly), &call_plan),
             expected
@@ -1096,6 +1091,13 @@ mod tests {
         assert_eq!(
             liveness[&1], expected,
             "requires-only and unreferenced parameters must not enter the frame"
+        );
+
+        let mutable_expected = [LocalId(0), LocalId(2), LocalId(3)];
+        assert_eq!(
+            exit_contract_parameter_locals(&params, Some(Receiver::Mutable), &call_plan),
+            mutable_expected,
+            "a mutable receiver remains live for its normal-exit invariant"
         );
     }
 

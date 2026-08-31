@@ -323,6 +323,15 @@ invariant-protected, or resource values. Rebuilding a Task-bearing product
 remains unavailable. `List[Task[T]]` stays a distinct top-level affine carrier
 and cannot be nested in these aggregates.
 
+Contracts and assertions observe these carriers without taking ownership.
+Compiler-private `TaskCarrierBorrow`, `UnrefineBorrow`, `ProductBorrow`, and
+`SumBorrowSwitch` preserve the original owner while exposing only a
+non-consuming structural alias. Independent LCIR validation tracks that alias
+through CFG edges: it may be inspected or forwarded again, but it cannot be
+passed to a consuming call, returned, awaited, reconstructed, or upgraded into
+an owned value. This adds no source ownership or borrow syntax and no runtime
+ABI representation.
+
 A typed coroutine frame is target-laid out from its checked plan. It contains
 state, parameters, optional creation-site span coordinates for async
 preconditions, one ordered child-handle row and exact live-value row per

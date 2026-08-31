@@ -523,9 +523,11 @@ checks `requires` in state zero before its body, using the creation-site span
 carried in the frame; an async root receives its declaration span from the
 harness. No source callable accepts a caller-span parameter, and Task creation
 does not become fallible because the child may fault. An inherent receiver
-invariant executes at body entry. `old` values are entry SSA values, while exit contracts read the current
-receiver writeback and logical result. Normal tails and explicit returns expand
-their cleanup suffix before checking the receiver invariant and `ensures`.
+invariant executes at body entry. `old` values are entry SSA values, while exit
+contracts read the current receiver writeback and logical result. Normal tails
+and explicit returns expand their cleanup suffix before checking a mutable
+receiver's invariant and `ensures`; a read-only receiver has no mutation
+boundary to re-establish, so its invariant is not replayed at exit.
 Contract predicates cover typed constants, values, bindings, fields, unary and
 checked numeric operations, short-circuit Boolean CFG, `is_finite`, and bounded
 exhaustive match DAGs. Managed Text leaves remain live through ordinary typed
@@ -825,13 +827,25 @@ locations. A finite closed catalog uses the existing exact one-pointer managed
 dynamic representation, including when nested in products, sums, Lists, or a
 completed Task result. The recursive frame walk consumes one shared bounded
 structural budget, so cyclic or non-regular generic expansion fails closed
-instead of growing the compiler stack. Raw readiness and cancellation sources
-remain atomic whole-artifact fallback. A reachable dynamic-concept frame use
+instead of growing the compiler stack. Raw readiness and cancellation-source
+operations have no current source or MIR form and are not counted as language
+coverage. A reachable dynamic-concept frame use
 with no exact producer in the closed catalog instead reports
 `MissingDynamicConceptWitness` before frame planning and cannot select fallback.
 Fixed argument joins and runtime-width homogeneous List joins are admitted both
 as first-class Tasks and when consumed later by `.await`; `any` and `race`
 additionally require one homogeneous output type.
+
+Contract and assertion matching uses an explicit non-consuming LCIR path for
+these affine carriers. `TaskCarrierBorrow`, `UnrefineBorrow`, `ProductBorrow`,
+and `SumBorrowSwitch` produce borrowed aliases tracked by the independent Task
+ownership dataflow. Borrowed aliases may be structurally observed and forwarded
+but can never feed a consuming call, return, await, construction, or ordinary
+owned switch. The source language gains no ownership annotation from this
+compiler-private distinction. Postconditions cannot inspect current or `old`
+Task-bearing inputs because the body may already have transferred their owner;
+they may inspect a Task-bearing `result`, while preconditions and assertions
+use the borrow-only path.
 An exact transitive `NEEDS_EXECUTOR` effect adds one compiler-private executor
 parameter to a synchronous function after its optional fault context. Direct
 calls and invokes forward the caller's current executor in that fixed ABI
@@ -1057,13 +1071,15 @@ The current instruction set is deliberately small:
 - closed integer/float parsing, managed float formatting, and Duration
   construction/extraction through existing scalar, sum, product, and fault
   shapes;
-- ordinary and invariant-proven product construction, borrowed field
-  extraction, atomic consuming splits of ordinary direct structural tuples,
+- whole Task-bearing carrier borrowing, ordinary and invariant-proven product
+  construction, task-free borrowed field extraction, Task-bearing
+  `ProductBorrow`, atomic consuming splits of ordinary direct structural tuples,
   immutable field insertion, and checked-MIR-only transient protected-receiver
-  insertion before an exit invariant check;
-- closed-sum construction and exhaustive switching, including managed Text
-  leaves guarded by active variants;
-- proven refinement and exact unrefinement across one registered transparent boundary;
+  insertion before a mutable receiver's exit invariant check;
+- closed-sum construction and exhaustive owned or borrowed switching, including
+  managed Text leaves guarded by active variants;
+- proven refinement, exact owned unrefinement, and non-consuming
+  `UnrefineBorrow` across one registered transparent boundary;
 - typed coroutine Task construction;
 - typed File/Socket `resource.close`, producing `Unit` and the closed resource;
 - direct calls to infallible typed functions.
@@ -1098,7 +1114,7 @@ Managed values outside the admitted Text, List, and TextMap graphs, open generic
 enum instantiations, runtime constructions with open, affine, or unsupported
 shapes, affine or unsupported-shape proof replay, operations over otherwise
 closed dynamic catalogs outside the admitted flow, derived dynamic proof
-conversion, contracts over unsupported value shapes, and coroutine forms
+conversion, contracts over resource or otherwise unsupported value shapes, and coroutine forms
 outside the bounded typed slice are not implemented. Nongeneric task-free
 refined and fully concrete task-free invariant-record runtime
 construction is direct typed CFG returning the exact
@@ -1146,9 +1162,10 @@ not repair a malformed program. Current checks include:
 - direct-call and invoke arity, types, result types, and exact callee effects;
 - edge argument arity and types;
 - ordered exhaustive sum cases, exact construction payloads, and typed implicit
-  payload parameters on every `SumSwitch` edge; `SumZipSwitch` additionally
-  requires two exact task-free operands, paired left/right payload parameters,
-  and one ordinary mismatch edge;
+  payload parameters on every `SumSwitch` or `SumBorrowSwitch` edge; borrowed
+  Task payload aliases remain non-consuming across CFG forwarding, while
+  `SumZipSwitch` additionally requires two exact task-free operands, paired
+  left/right payload parameters, and one ordinary mismatch edge;
 - one artifact-wide 64-bit `Text` registration, either `ImmortalText` for an
   allocation-free, aggregate-free graph or `ManagedPointer` when concat/get or
   a Text-bearing product, sum, transparent/refined carrier, or TextMap is

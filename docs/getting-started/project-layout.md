@@ -86,10 +86,11 @@ test fn messageIsHello() {
 }
 ```
 
-`loom test .` runs the current directory package; `loom test ./...` runs every
-package below the manifest root. Selected tests compile in an internal
-companion that can access private members of the package under test. Neither
-form includes or runs tests shipped with dependencies.
+`loom test PATH` runs one directory package; `loom test PATH/...` runs that
+package and every descendant directory package. From the manifest root,
+`loom test ./...` therefore runs the entire root module. Selected tests compile
+in an internal companion that can access private members of the package under
+test. Neither form includes or runs tests shipped with dependencies.
 
 Production commands—`check`, `build`, `run`, and library creation—exclude
 `*_test.loom` and embedded test declarations, so test-only code cannot enter a

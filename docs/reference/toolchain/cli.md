@@ -92,8 +92,9 @@ target; `test --target` is an invalid invocation.
 `check`, `build`, `run`, `debug`, library creation, and dependency compilation
 exclude `*_test.loom` and embedded `test fn` declarations. `loom test .` and
 `loom test PATH` enable both forms only for the selected directory package.
-`loom test ./...` enables them recursively for every package in the root
-module. No form loads or runs dependency tests.
+`loom test PATH/...` enables them recursively for that directory package and
+its descendants; `loom test ./...` therefore selects the entire root module.
+No form loads or runs dependency tests.
 
 An executable entry must be a public export in the root module, take no value,
 receiver, type, or witness parameters, and return `Unit`. Synchronous and

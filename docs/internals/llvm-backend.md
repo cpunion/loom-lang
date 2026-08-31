@@ -225,6 +225,13 @@ value, and block parameters become aggregate phi nodes. LCIR source functions
 do not allocate a universal value, tuple node, private record box, or GC object
 for this representation.
 
+Borrow-only contract inspection uses `TaskCarrierBorrow` for a complete
+Task-bearing carrier, `ProductBorrow` for one Task-bearing field, and
+`UnrefineBorrow` for a transparent Task-bearing wrapper. LLVM lowers these to
+the same identity SSA or `extractvalue` operation as their task-free
+counterparts; the distinction is checked ownership meaning, not an ABI or
+runtime operation.
+
 A synchronous mutable receiver is represented as one exact functional inout
 value, independent of whether dispatch was inherent or selected through a
 concept witness. An infallible call with source result `T` and ordered
@@ -739,6 +746,11 @@ detail: the release optimization gate requires SROA to remove every such
 GC, and executor symbols for pure sums, and indirect calls. The output-only
 `loom_runtime_stdout_write_v1` harness declaration is allowed and does not
 weaken the pure source-function check.
+
+`SumBorrowSwitch` emits the same tag dispatch and payload extraction, but LCIR
+marks Task-bearing payload parameters as borrowed aliases and keeps the
+scrutinee owner live. The validator prevents those aliases from reaching a
+consuming boundary, so LLVM needs neither a clone nor a runtime ownership call.
 
 Structural sum equality uses one checked `SumZipSwitch`. LLVM extracts both
 tags once, branches unequal tags directly to false, and switches once on the

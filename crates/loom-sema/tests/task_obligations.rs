@@ -639,6 +639,138 @@ fn unusedBinding(value Option[Task[Int]]) {
 }
 
 #[test]
+fn contract_matches_borrow_task_carriers_without_transferring_obligations() {
+    let diagnostics = analyze_source(
+        r"
+record Payload {
+    task Task[Int]
+    allowed Bool
+}
+
+async fn work() Int { 42 }
+
+fn forward(value Option[Task[Int]]) Option[Task[Int]]
+    requires match value {
+        Some(_) => true
+        None => true
+    }
+{
+    value
+}
+
+fn inspect(value Option[Payload]) Option[Payload]
+    requires match value {
+        Some(payload) => payload.allowed
+        None => true
+    }
+{
+    value
+}
+
+async fn consume() {
+    let pending = forward(Some(work()))
+    assert match pending {
+        Some(_) => true
+        None => true
+    }
+    match pending {
+        Some(task) => { discard task.await }
+        None => Unit
+    }
+}
+",
+    );
+    assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+}
+
+#[test]
+fn contract_match_rejects_borrowing_an_already_consumed_task_carrier() {
+    let diagnostics = analyze_source(
+        r"
+async fn consume(value Option[Task[Int]]) {
+    match value {
+        Some(task) => { discard task.await }
+        None => Unit
+    }
+    assert match value {
+        Some(_) => true
+        None => true
+    }
+}
+",
+    );
+    assert!(
+        codes(&diagnostics).contains(&"TaskAlreadyConsumed"),
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn nested_contract_matches_borrow_whole_task_carriers() {
+    let diagnostics = analyze_source(
+        r"
+enum Choice {
+    First
+    Second
+}
+
+fn inspect(choice Choice, value Option[Task[Int]]) Option[Task[Int]] {
+    assert match (match choice {
+        Choice.First => value,
+        Choice.Second => value,
+    }) {
+        Some(_) => true
+        None => true
+    }
+    assert match value {
+        whole => match whole {
+            Some(_) => true
+            None => true
+        }
+    }
+    value
+}
+",
+    );
+    assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+}
+
+#[test]
+fn exit_contracts_cannot_inspect_task_carrying_inputs() {
+    let diagnostics = analyze_source(
+        r"
+fn drain(value Option[Task[Int]]) { drain(value) }
+
+fn current(value Option[Task[Int]])
+    ensures match value {
+        Some(_) => true
+        None => true
+    }
+{
+    drain(value)
+}
+
+fn snapshot(value Option[Task[Int]])
+    ensures match old(value) {
+        Some(_) => true
+        None => true
+    }
+{
+    drain(value)
+}
+",
+    );
+    assert_eq!(
+        codes(&diagnostics)
+            .iter()
+            .filter(|code| **code == "TaskExitContractInputUnsupported")
+            .count(),
+        2,
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
 fn partial_projection_assignment_and_container_extraction_fail_closed() {
     let diagnostics = analyze_source(
         r#"

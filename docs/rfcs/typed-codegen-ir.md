@@ -340,11 +340,15 @@ and `requires` alone does not make an assumed synchronous body fallible.
 An inherent receiver invariant executes at assumed-body entry. Entry values
 for `old(self)` and `old(arguments)` remain typed SSA values. On every normal
 tail or explicit return, LCIR expands the active lexical cleanup suffix before
-checking the current receiver invariant and postconditions. Contract
-expressions lower directly from constants, values, bindings, product fields,
-unary and checked numeric operations, short-circuit Boolean control flow,
-`is_finite`, and bounded exhaustive match DAGs. Arithmetic faults retain their
-ordinary `RuntimeFault`; only a false predicate raises its exact contract
+checking a mutable receiver's current invariant and all postconditions. A
+read-only receiver cannot mutate its established value and therefore has no
+exit invariant replay. Postconditions cannot inspect current or `old`
+Task-bearing inputs after the body may transfer them; preconditions and a
+Task-bearing `result` use compiler-private structural borrow operations.
+Contract expressions lower directly from constants, values, bindings, product
+fields, unary and checked numeric operations, short-circuit Boolean control
+flow, `is_finite`, and bounded exhaustive match DAGs. Arithmetic faults retain
+their ordinary `RuntimeFault`; only a false predicate raises its exact contract
 metadata.
 
 `defer` and `scoped` are expanded by the MIR-to-LCIR lowerer, not represented by
@@ -594,10 +598,12 @@ name or maps the source `DefId` back to `TaskIntrinsic`. LCIR therefore still
 receives exact child types and explicit control flow without acquiring public
 Task policy operators.
 
-The remaining fallback boundary includes raw readiness and unsupported managed
-projected operations. A reachable dynamic-concept frame use with no exact
-producer in the closed catalog instead reports `MissingDynamicConceptWitness`
-and never selects fallback. Mutation or moves
+The remaining fallback boundary includes unsupported managed projected inout
+operations and affine runtime proof replay whose failure path cannot yet
+dispose of the carried obligation. Raw readiness has no current source or MIR
+producer and is therefore not a language coverage item. A reachable
+dynamic-concept frame use with no exact producer in the closed catalog instead
+reports `MissingDynamicConceptWitness` and never selects fallback. Mutation or moves
 through a constrained or protected record interior are rejected at the source
 and checked-MIR boundaries; the owning synchronous `mut self` record receiver
 remains an admitted top-level reconstruction. Concrete closed
@@ -764,7 +770,7 @@ Checked-MIR implementation is removed by demonstrated semantic coverage:
 | Scalar native wrappers and universal scalar locals | LCIR covers reachable scalar signatures, locals, CFG, direct and fallible calls, checked faults, scalar contracts and cleanup exits, synchronous scalar mutable-receiver bodies with exact normal/fault writeback, and run/test harnesses with zero eligible fallback. |
 | Assumed integer bodies | General LCIR proofs preserve checked behavior inside and outside proved domains, recursive benchmarks remain competitive, and no emitted body depends on one recursion pattern. |
 | Duplicated universal/native/assumed requirement scans | Runtime, collection, executor, and fault requirements are derived from checked LCIR and its closed instance graph. |
-| Aggregate and private-storage specializations | Direct products cover structural tuple construction and destructuring, tuple/record nesting, closed POD record construction, copy/move, bounded typed nested places, functional mutation, aggregate phis/loops, typed calls, invariant-free projected receiver writeback, and reconstruction through the current synchronous `mut self` receiver's own top-level invariant on normal and fault edges. Finite dynamic leaves add fresh immutable-box writeback through admitted nested places. Direct sums cover closed concrete enum construction, ordered exhaustive match decisions, typed payload edges, nested products/sums, and `Result` test outcomes. General managed representation, escape, range, and scalar-replacement planning must still cover GC, cleanup, suspension, and Task-bearing or otherwise unrepresentable projected behavior. |
+| Aggregate and private-storage specializations | Direct products cover structural tuple construction and destructuring, tuple/record nesting, closed POD record construction, copy/move, bounded typed nested places, functional mutation, aggregate phis/loops, typed calls, invariant-free projected receiver writeback, reconstruction through the current synchronous `mut self` receiver's own top-level invariant on normal and fault edges, and non-consuming contract inspection of Task-bearing transparent/product/sum carriers. Finite dynamic leaves add fresh immutable-box writeback through admitted nested places. Direct sums cover closed concrete enum construction, ordered exhaustive owned and borrowed match decisions, typed payload edges, nested products/sums, and `Result` test outcomes. General managed representation, escape, range, and scalar-replacement planning must still cover GC, cleanup, suspension, and otherwise unrepresentable projected behavior. |
 | Universal function ABI and `ValueSlot` | LCIR covers aggregates, enums, refined values, generics, witnesses, `dyn`, contracts, builtins, moving GC, cleanup, async functions, Tasks, and all maintained native fixtures without fallback. |
 
 New exact-shape native specializations are not accepted migration work. Range,
