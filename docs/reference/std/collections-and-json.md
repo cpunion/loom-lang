@@ -1,6 +1,6 @@
 # Collections and JSON
 
-> Normative for Loom language version 0.3.
+> Normative for Loom language version 0.4.
 
 ## `List[T]`
 

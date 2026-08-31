@@ -3,12 +3,12 @@ schema = 2
 [[module]]
 name = "application"
 version = "0.1.0"
-language = "0.3"
+language = "0.4"
 source = "root"
 dependencies = ["utility@1.2.0"]
 
 [[module]]
 name = "utility"
 version = "1.2.0"
-language = "0.3"
+language = "0.4"
 source = "path"

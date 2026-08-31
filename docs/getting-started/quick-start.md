@@ -22,11 +22,12 @@ target/release/loom test examples/constraints-contracts
 target/release/loom run examples/constraints-contracts
 ```
 
-`check` stops after parsing, lowering, and type checking. It excludes
-`*_test.loom`. `test` adds the selected directory package's test files,
-compiles them, and runs their `test fn` and `test async fn` declarations. Use
-`loom test ./...` to test every package in a manifest module. `run` selects the
-exported entry and, by default, compiles and executes a native LLVM artifact.
+`check` stops after parsing, lowering, and type checking. It uses the production
+projection, which excludes `*_test.loom` and embedded tests. `test` adds the
+selected directory package's test companion and runs its `test fn` and
+`test async fn` declarations. Use `loom test ./...` to test every package in a
+manifest module. `run` selects the exported entry and, by default, compiles and
+executes a native LLVM artifact.
 
 Build an artifact separately and run that exact artifact:
 

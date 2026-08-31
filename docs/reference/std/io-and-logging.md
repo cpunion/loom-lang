@@ -1,6 +1,6 @@
 # I/O and logging
 
-> Normative for Loom language version 0.3.
+> Normative for Loom language version 0.4.
 
 File and network operations are asynchronous. `File` and `Socket` are
 `MustScope` resources: a successful handle must be bound with `scoped`, and the

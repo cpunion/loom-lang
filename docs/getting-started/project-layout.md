@@ -21,7 +21,7 @@ hello/
 
 ```toml
 schema = 2
-language = "0.3"
+language = "0.4"
 
 [module]
 name = "hello"
@@ -35,7 +35,7 @@ entry = "hello.main"
 
 `schema` selects the manifest format. `language` selects the source-language
 semantics and should be written explicitly. The current compiler accepts
-language version `0.3`.
+language version `0.4`.
 
 The module name and version identify a node in the resolved dependency graph.
 Versions use Semantic Versioning. There is no `sources` field: the manifest
@@ -76,8 +76,9 @@ outer manifest does not descend into that nested module.
 
 ## Tests
 
-Tests live beside the code they exercise and use the suffix `_test.loom`.
-Create `main_test.loom`:
+Tests live beside the code they exercise. They can be embedded in an ordinary
+source file, or grouped with test-only helpers in a file whose name ends in
+`_test.loom`. Create `main_test.loom`:
 
 ```loom
 test fn messageIsHello() {
@@ -85,14 +86,15 @@ test fn messageIsHello() {
 }
 ```
 
-`test fn` and `test async fn` declarations are valid only in `*_test.loom`
-files. `loom test .` runs the current directory package; `loom test ./...`
-runs every package below the manifest root. Neither form includes or runs
-tests shipped with dependencies.
+`loom test .` runs the current directory package; `loom test ./...` runs every
+package below the manifest root. Selected tests compile in an internal
+companion that can access private members of the package under test. Neither
+form includes or runs tests shipped with dependencies.
 
 Production commands—`check`, `build`, `run`, and library creation—exclude
-`*_test.loom`, so test-only declarations cannot enter a production artifact.
-There is no test target and `loom test` does not accept `--target`.
+`*_test.loom` and embedded test declarations, so test-only code cannot enter a
+production artifact. There is no test target and `loom test` does not accept
+`--target`.
 
 ## Build targets
 
@@ -147,7 +149,7 @@ registry, artifact, feature, and offline behavior.
 
 ## Generated state
 
-The default persistent cache lives below `target/loom/cache/v15`. Build outputs
+The default persistent cache lives below `target/loom/cache/v16`. Build outputs
 also default below `target/loom`. These paths are implementation details and
 should not be committed.
 

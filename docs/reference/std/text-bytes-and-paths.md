@@ -1,6 +1,6 @@
 # Text, Bytes, and Path
 
-> Normative for Loom language version 0.3.
+> Normative for Loom language version 0.4.
 
 `Text`, `Bytes`, and `Path` are immutable values. Their storage address,
 capacity, sharing, and allocation strategy are not observable.

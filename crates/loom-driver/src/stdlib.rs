@@ -40,6 +40,7 @@ pub(crate) fn project_sources(root: &Path, language_version: &str) -> Vec<Projec
                 is_root_package: false,
                 embedded_text: Some(source.text.to_owned()),
                 origin: crate::SourceOrigin::CompilerStd,
+                participation: crate::SourceParticipation::Production,
             }
         })
         .collect()
@@ -84,30 +85,30 @@ mod tests {
 
     #[test]
     fn identity_tracks_language_paths_and_contents() {
-        let base = identity_for_sources("0.3", &[source("a/a.loom", "pub fn value() Int { 1 }\n")]);
+        let base = identity_for_sources("0.4", &[source("a/a.loom", "pub fn value() Int { 1 }\n")]);
         assert!(base.starts_with(&format!("{STDLIB_IDENTITY_DOMAIN}/")));
         assert_eq!(base.len(), STDLIB_IDENTITY_DOMAIN.len() + 1 + 64);
         assert_ne!(
             base,
-            identity_for_sources("0.4", &[source("a/a.loom", "pub fn value() Int { 1 }\n")],)
+            identity_for_sources("0.3", &[source("a/a.loom", "pub fn value() Int { 1 }\n")],)
         );
         assert_ne!(
             base,
-            identity_for_sources("0.3", &[source("b/b.loom", "pub fn value() Int { 1 }\n")],)
+            identity_for_sources("0.4", &[source("b/b.loom", "pub fn value() Int { 1 }\n")],)
         );
     }
 
     #[test]
     fn identity_tracks_exact_source_bytes_at_the_same_path_and_module() {
         let base = identity_for_sources(
-            "0.3",
+            "0.4",
             &[source(
                 "int/int.loom",
                 "pub fn parse_int(text Text) Int { 1 }\n",
             )],
         );
         let changed_body = identity_for_sources(
-            "0.3",
+            "0.4",
             &[source(
                 "int/int.loom",
                 "pub fn parse_int(text Text) Int { 2 }\n",

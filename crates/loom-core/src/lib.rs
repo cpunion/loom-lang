@@ -7,7 +7,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 /// Current source-semantics and proof-domain version.
-pub const LOOM_LANGUAGE_VERSION: &str = "0.3";
+pub const LOOM_LANGUAGE_VERSION: &str = "0.4";
 
 /// Reserved logical package name of the compiler-distributed Loom library.
 pub const STD_PACKAGE_NAME: &str = "std";
@@ -126,9 +126,9 @@ mod package_tests {
         assert_eq!(std.version(), LOOM_LANGUAGE_VERSION);
         assert_eq!(std.language(), LOOM_LANGUAGE_VERSION);
         assert!(std.is_compiler_std());
-        assert!(!PackageId::compiler_std("0.4").is_compiler_std());
-        assert!(!PackageId::with_language("std", "0.2", "0.3").is_compiler_std());
-        assert!(!PackageId::with_language("stdish", "0.3", "0.3").is_compiler_std());
+        assert!(!PackageId::compiler_std("0.3").is_compiler_std());
+        assert!(!PackageId::with_language("std", "0.2", "0.4").is_compiler_std());
+        assert!(!PackageId::with_language("stdish", "0.4", "0.4").is_compiler_std());
     }
 
     #[test]

@@ -15,10 +15,11 @@ use crate::proof::{
 use crate::{
     AssociatedTypeBinding, BodySemantics, Bound, BuiltinType, BuiltinValue, CallResolution,
     CallTarget, CallableSignature, Coercion, ConceptInstance, ConstantValue, ConstructionCheck,
-    DefMapBuild, Goal, ImplHeader, ModuleGraph, ModuleGraphBuild, Mutability, Namespace, ParamEnv,
-    Place, PlaceProjection, PlaceRoot, ReceiverPassing, RegionId, Resolution, ResolveError,
-    RuntimeCheck, ScopedDisposal, Signature, SolveFailure, Substitution, TaskIntrinsic, TyData,
-    TyId, TypedProgram, ViewResolution, ViewSource, ViewTokenId, WitnessSelection, WitnessSource,
+    DefMapBuild, Goal, ImplHeader, ImplScope, ModuleGraph, ModuleGraphBuild, Mutability, Namespace,
+    ParamEnv, Place, PlaceProjection, PlaceRoot, ReceiverPassing, RegionId, Resolution,
+    ResolveError, RuntimeCheck, ScopedDisposal, Signature, SolveFailure, Substitution,
+    TaskIntrinsic, TyData, TyId, TypedProgram, ViewResolution, ViewSource, ViewTokenId,
+    WitnessSelection, WitnessSource,
 };
 
 const RESOURCE_MODULE: &str = "std.resource";
@@ -1577,8 +1578,13 @@ impl Analyzer<'_> {
                         },
                     };
                     let result = {
-                        let mut solver =
-                            crate::ConformanceSolver::new(&self.impl_index, &mut self.typed.types);
+                        let module = self.program.definitions[definition].module;
+                        let scope = ImplScope::for_module(self.program, module);
+                        let mut solver = crate::ConformanceSolver::new_in_scope(
+                            &self.impl_index,
+                            &mut self.typed.types,
+                            scope,
+                        );
                         solver.solve(&goal, &environment)
                     };
                     if let Err(failure) = result {
@@ -1828,6 +1834,10 @@ impl Analyzer<'_> {
         if valid {
             self.impl_index.insert(ImplHeader {
                 definition,
+                scope: ImplScope::for_module(
+                    self.program,
+                    self.program.definitions[definition].module,
+                ),
                 generic_params: source.generic_params,
                 concept: concept_definition,
                 target,
@@ -7137,10 +7147,16 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             return result;
         }
         let mut candidates = Vec::new();
+        let current_module = self.analyzer.program.definitions[self.environment.owner].module;
         for (implementation, definition) in self.analyzer.program.definitions.iter() {
             let DefinitionKind::InherentImpl(inherent) = &definition.kind else {
                 continue;
             };
+            if self.analyzer.program.is_test_companion(definition.module)
+                && definition.module != current_module
+            {
+                continue;
+            }
             let Some(target) = self
                 .analyzer
                 .typed
@@ -7934,7 +7950,8 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             };
             let index = &self.analyzer.impl_index;
             let types = &mut self.analyzer.typed.types;
-            let mut solver = crate::ConformanceSolver::new(index, types);
+            let scope = ImplScope::for_module(self.analyzer.program, module);
+            let mut solver = crate::ConformanceSolver::new_in_scope(index, types, scope);
             if let Ok(witness) = solver.solve(&goal, &environment) {
                 let instance = ConceptInstance {
                     concept,
@@ -8634,9 +8651,11 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 .collect(),
         };
         let goal = Goal { self_ty, concept };
+        let module = self.analyzer.program.definitions[self.environment.owner].module;
+        let scope = ImplScope::for_module(self.analyzer.program, module);
         let index = &self.analyzer.impl_index;
         let types = &mut self.analyzer.typed.types;
-        let mut solver = crate::ConformanceSolver::new(index, types);
+        let mut solver = crate::ConformanceSolver::new_in_scope(index, types, scope);
         match solver.solve(&goal, &environment) {
             Ok(witness) => Some(witness),
             Err(failure) => {
@@ -8682,9 +8701,12 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 .collect(),
         };
         let goal = Goal { self_ty, concept };
-        let mut solver = crate::ConformanceSolver::new(
+        let module = self.analyzer.program.definitions[self.environment.owner].module;
+        let scope = ImplScope::for_module(self.analyzer.program, module);
+        let mut solver = crate::ConformanceSolver::new_in_scope(
             &self.analyzer.impl_index,
             &mut self.analyzer.typed.types,
+            scope,
         );
         solver.solve(&goal, &environment).ok()
     }
@@ -11427,6 +11449,7 @@ pub concept NoSuspend {}
 
     #[test]
     fn resource_language_items_require_the_exact_current_std_package() {
+        let non_current_version = "0.5";
         let (_, canonical) =
             analyze_resource_module(PackageId::compiler_std(LOOM_LANGUAGE_VERSION));
         assert!(
@@ -11441,9 +11464,9 @@ pub concept NoSuspend {}
 
         for wrong in [
             PackageId::standalone(),
-            PackageId::with_language("std", "0.4", "0.4"),
-            PackageId::with_language("std", "0.4", LOOM_LANGUAGE_VERSION),
-            PackageId::with_language("std", LOOM_LANGUAGE_VERSION, "0.4"),
+            PackageId::with_language("std", non_current_version, non_current_version),
+            PackageId::with_language("std", non_current_version, LOOM_LANGUAGE_VERSION),
+            PackageId::with_language("std", LOOM_LANGUAGE_VERSION, non_current_version),
         ] {
             let (_, ordinary) = analyze_resource_module(wrong);
             assert_eq!(

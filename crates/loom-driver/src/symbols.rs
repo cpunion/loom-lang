@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use loom_core::{FileId, ModuleName, Span};
 use loom_hir::{
     BodyId, ConceptRef, DefId, DefinitionKind, DefinitionTag, Expr, GenericParamId, LocalId,
@@ -129,19 +127,21 @@ impl AnalysisSnapshot {
     /// declarations preceding the cursor; global private names stay module-local.
     #[must_use]
     pub fn completion_symbols(&self, file: FileId, byte: u32) -> Vec<SymbolInfo> {
-        let modules = self
-            .hir()
-            .modules
-            .iter()
-            .filter_map(|(module, data)| data.files.contains(&file).then_some(module))
-            .collect::<BTreeSet<_>>();
+        let module = self.completion_module(file, byte);
         self.symbols()
             .into_iter()
             .filter(|symbol| match symbol.id {
                 SymbolId::Definition(definition) => {
                     let definition = &self.hir().definitions[definition];
-                    definition.visibility == Visibility::Public
-                        || modules.contains(&definition.module)
+                    if self.hir().is_test_companion(definition.module) {
+                        module == Some(definition.module)
+                    } else {
+                        definition.visibility == Visibility::Public
+                            || module.is_some_and(|module| {
+                                module == definition.module
+                                    || self.hir().can_access_private(module, definition.module)
+                            })
+                    }
                 }
                 SymbolId::Local { body, .. } => {
                     self.hir().source_map.body(body).is_some_and(|span| {
@@ -159,6 +159,44 @@ impl AnalysisSnapshot {
                 }
             })
             .collect()
+    }
+
+    /// Selects the logical module at the cursor rather than treating every
+    /// module which mentions the file as mutually visible. An ordinary source
+    /// can contribute production declarations and embedded tests to distinct
+    /// modules, while a `*_test.loom` source belongs to the test companion.
+    fn completion_module(&self, file: FileId, byte: u32) -> Option<ModuleId> {
+        if let Some(module) =
+            self.hir()
+                .definitions
+                .iter()
+                .filter_map(|(id, definition)| {
+                    let span = self.hir().source_map.definition(id)?;
+                    (span.file == file && span.range.start <= byte && byte <= span.range.end)
+                        .then_some((
+                            span.range.end.saturating_sub(span.range.start),
+                            definition.module,
+                        ))
+                })
+                .min_by_key(|(width, module)| (*width, *module))
+                .map(|(_, module)| module)
+        {
+            return Some(module);
+        }
+
+        let test_source = self
+            .sources()
+            .document(file)
+            .is_some_and(crate::SourceDocument::is_test_source);
+        self.hir().modules.iter().find_map(|(module, data)| {
+            (data.files.contains(&file)
+                && if test_source {
+                    self.hir().is_test_companion(module)
+                } else {
+                    self.hir().is_production_module(module)
+                })
+            .then_some(module)
+        })
     }
 
     fn owner_body_contains(&self, owner: DefId, file: FileId, byte: u32) -> bool {
@@ -217,7 +255,9 @@ impl AnalysisSnapshot {
         Some(SymbolInfo {
             id: target,
             name: name.to_owned(),
-            module: self.hir().modules[module].name.to_string(),
+            module: self.hir().modules[self.hir().production_module(module)]
+                .name
+                .to_string(),
             kind,
             definition: definition_span,
         })

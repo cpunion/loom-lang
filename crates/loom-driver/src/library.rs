@@ -28,7 +28,7 @@ const MAX_LIBRARY_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 /// Wire format name for portable package artifacts.
 pub const LIBRARY_ARTIFACT_FORMAT: &str = "loom-library";
 /// Version of the portable source package envelope.
-pub const LIBRARY_ARTIFACT_VERSION: u32 = 3;
+pub const LIBRARY_ARTIFACT_VERSION: u32 = 4;
 
 /// A decoded `.loomlib` which has crossed structural package validation.
 #[derive(Clone, Debug)]
@@ -207,6 +207,10 @@ pub fn encode_library_artifact(
                 source.relative_path()
             ))
         })?;
+        if source.is_test_source() {
+            continue;
+        }
+        let text = production_source_text(source.relative_path(), text)?;
         embedded_sources.push(LibrarySource {
             path: if source.is_root_package() {
                 source.relative_path().to_owned()
@@ -214,7 +218,7 @@ pub fn encode_library_artifact(
                 package_relative_path(source.relative_path(), &package)
             },
             package,
-            text: text.to_owned(),
+            text,
         });
     }
     embedded_sources.sort_by(|left, right| {
@@ -441,6 +445,12 @@ fn validate_sources(
                 source.path
             )));
         }
+        if is_test_source_path(&source.path) {
+            return Err(LibraryArtifactError::InvalidGraph(format!(
+                "test source `{}` is not permitted in a portable library",
+                source.path
+            )));
+        }
         if !source_paths.insert((source.package.clone(), source.path.clone())) {
             return Err(LibraryArtifactError::InvalidGraph(format!(
                 "duplicate source `{}` in package `{}`",
@@ -483,6 +493,17 @@ fn interfaces_from_sources(
                 source.path, diagnostic.message
             )));
         }
+        if parse.ast().declarations.iter().any(|declaration| {
+            matches!(
+                &declaration.kind,
+                loom_syntax::DeclKind::Function(function) if function.is_test
+            )
+        }) {
+            return Err(LibraryArtifactError::InvalidGraph(format!(
+                "source `{}` contains a test declaration",
+                source.path
+            )));
+        }
         let module = crate::project::package_module_name(
             &source.package,
             std::path::Path::new(&source.path),
@@ -504,6 +525,67 @@ fn interfaces_from_sources(
             },
         ),
     ))
+}
+
+fn production_source_text(path: &str, text: &str) -> Result<String, LibraryArtifactError> {
+    let parse = parse_with_file(FileId(0), text);
+    if let Some(diagnostic) = parse.diagnostics().first() {
+        return Err(LibraryArtifactError::InvalidGraph(format!(
+            "source `{path}` does not parse: {}",
+            diagnostic.message
+        )));
+    }
+    let test_ranges = parse
+        .ast()
+        .declarations
+        .iter()
+        .filter_map(|declaration| {
+            matches!(
+                &declaration.kind,
+                loom_syntax::DeclKind::Function(function) if function.is_test
+            )
+            .then_some(declaration.range)
+        })
+        .collect::<Vec<_>>();
+    if test_ranges.is_empty() {
+        return Ok(text.to_owned());
+    }
+
+    let mut projected = String::with_capacity(text.len());
+    let mut cursor = 0_usize;
+    for range in test_ranges {
+        let start = usize::try_from(range.start).map_err(|_| {
+            LibraryArtifactError::InvalidGraph(format!(
+                "source `{path}` has an invalid test declaration range"
+            ))
+        })?;
+        let end = usize::try_from(range.end).map_err(|_| {
+            LibraryArtifactError::InvalidGraph(format!(
+                "source `{path}` has an invalid test declaration range"
+            ))
+        })?;
+        let Some(prefix) = text.get(cursor..start) else {
+            return Err(LibraryArtifactError::InvalidGraph(format!(
+                "source `{path}` has an invalid test declaration range"
+            )));
+        };
+        projected.push_str(prefix);
+        cursor = end;
+    }
+    let Some(suffix) = text.get(cursor..) else {
+        return Err(LibraryArtifactError::InvalidGraph(format!(
+            "source `{path}` has an invalid test declaration range"
+        )));
+    };
+    projected.push_str(suffix);
+    Ok(projected)
+}
+
+fn is_test_source_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|stem| stem.ends_with("_test"))
 }
 
 fn validate_closed_acyclic_graph(

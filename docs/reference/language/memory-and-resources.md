@@ -1,6 +1,6 @@
 # Memory and resources
 
-> Normative for Loom language version 0.3.
+> Normative for Loom language version 0.4.
 
 ## Automatic memory management
 
@@ -13,7 +13,7 @@ Automatic memory management does not change value equality, constrained-type
 predicates, contracts, or concept dispatch. An implementation may share
 immutable storage as long as logical value semantics remain unchanged.
 
-Language version 0.3 has no finalizer, weak-reference, destructor declaration,
+Language version 0.4 has no finalizer, weak-reference, destructor declaration,
 or stable-address API. Files, sockets, locks, transactions, and other external
 resources therefore require lexical cleanup. They must not rely on memory
 collection. Allocation failure is a non-recoverable runtime fault, not a

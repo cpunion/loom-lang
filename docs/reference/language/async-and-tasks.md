@@ -1,6 +1,6 @@
 # Async functions and tasks
 
-> Normative for Loom language version 0.3.
+> Normative for Loom language version 0.4.
 
 Loom async is structured and explicit. Core defines `Task[T]`, async functions,
 postfix suspension, structured task obligations, and terminal task outcomes.
@@ -40,7 +40,7 @@ a `defer` cleanup and while a `NoSuspend` scoped resource or active interface
 access crosses the suspension point.
 
 An omitted async return type is `Unit`, making the call type `Task[Unit]`.
-Language version 0.3 has async functions and async tests, but no async method or
+Language version 0.4 has async functions and async tests, but no async method or
 async concept-requirement declaration form.
 
 ## Task obligations
@@ -62,7 +62,7 @@ The obligation is recursive through tuples, lists, maps, options, results,
 records, enums, task outcomes, and constrained wrappers. Whole-value structured
 binding and exhaustive pattern matching can transfer that obligation. Partial
 field extraction and task-carrying `List.get` or `TextMap` extraction are
-rejected because version 0.3 does not expose partial ownership.
+rejected because version 0.4 does not expose partial ownership.
 
 A Task-carrying value cannot be passed into an async callable, and an async
 callable's logical result cannot itself contain a Task. These restrictions keep
@@ -76,7 +76,7 @@ source API. They are not reserved syntax and user code cannot invoke the
 compiler/runtime join protocol directly. The semantic boundary is a
 standard-library API item, which implementations may specialize without
 changing the source types, evaluation order, or fault semantics below. Version
-0.3 resolves the canonical, unshadowed Task namespace and member through an
+0.4 resolves the canonical, unshadowed Task namespace and member through an
 embedded compiler-owned catalog before applying its variadic type rule. Future
 source-library declarations will map their trusted definition identities to the
 same stable items. Same-spelled methods on ordinary values do not acquire Task

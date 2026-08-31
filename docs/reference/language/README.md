@@ -1,6 +1,6 @@
 # Loom language reference
 
-> Normative for Loom language version 0.3.
+> Normative for Loom language version 0.4.
 
 This reference defines the behavior of Loom source programs. It describes the
 language as observed by a program: syntax, static typing, contracts, resources,
@@ -53,7 +53,7 @@ implicitly converted to `Result` values.
 
 ## Language boundary
 
-Version 0.3 has no source forms for inheritance, exceptions, `null`, operator
+Version 0.4 has no source forms for inheritance, exceptions, `null`, operator
 overloading, reflection, downcasting, a universal `any`, raw pointers,
 finalizers, weak references, detached tasks, generators, or user-defined async
 destructors. Names such as `view`, `box`, and `shared` are ordinary identifiers,

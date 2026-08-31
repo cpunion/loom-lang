@@ -1,6 +1,6 @@
 # Standard library reference
 
-> Normative for Loom language version 0.3.
+> Normative for Loom language version 0.4.
 
 The standard library is deliberately small. Its value types follow the same
 static typing, value semantics, contracts, resource obligations, and task rules

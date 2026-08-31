@@ -248,6 +248,7 @@ pub(crate) struct ProjectSource {
     pub is_root_package: bool,
     pub embedded_text: Option<String>,
     pub origin: crate::SourceOrigin,
+    pub participation: crate::SourceParticipation,
 }
 
 impl ProjectGraph {
@@ -505,7 +506,14 @@ impl ProjectGraph {
             ProjectKind::Manifest { root_package } => {
                 let mut sources = BTreeMap::<
                     PathBuf,
-                    (String, PackageId, ModuleName, bool, Option<String>),
+                    (
+                        String,
+                        PackageId,
+                        ModuleName,
+                        bool,
+                        Option<String>,
+                        crate::SourceParticipation,
+                    ),
                 >::new();
                 for package in self.packages.values() {
                     let is_root = &package.id == root_package;
@@ -526,7 +534,7 @@ impl ProjectGraph {
                             Path::new(&source.path),
                             &package.manifest,
                         )?;
-                        if let Some((previous, _, _, _, _)) = sources.insert(
+                        if let Some((previous, _, _, _, _, _)) = sources.insert(
                             path.clone(),
                             (
                                 stable_path.clone(),
@@ -534,6 +542,7 @@ impl ProjectGraph {
                                 module,
                                 is_root,
                                 Some(source.text.clone()),
+                                crate::SourceParticipation::Production,
                             ),
                         ) && previous != stable_path
                         {
@@ -550,9 +559,9 @@ impl ProjectGraph {
                         continue;
                     }
                     for path in discover_package_sources(&package.root)? {
-                        if is_test_source(&path) && !self.includes_test_source(&path, is_root) {
+                        let Some(participation) = self.source_participation(&path, is_root) else {
                             continue;
-                        }
+                        };
                         let relative = relative_key(&package.root, &path)
                             .ok_or_else(|| DriverError::NonUtf8Path(path.clone()))?;
                         let module = source_module_name(
@@ -565,7 +574,7 @@ impl ProjectGraph {
                         } else {
                             format!("deps/{}/{relative}", package.id)
                         };
-                        if let Some((previous, _, _, _, _)) = sources.insert(
+                        if let Some((previous, _, _, _, _, _)) = sources.insert(
                             path.clone(),
                             (
                                 stable_path.clone(),
@@ -573,6 +582,7 @@ impl ProjectGraph {
                                 module,
                                 is_root,
                                 None,
+                                participation,
                             ),
                         ) && previous != stable_path
                         {
@@ -591,7 +601,14 @@ impl ProjectGraph {
                     .map(
                         |(
                             absolute,
-                            (stable_path, package, module, is_root_package, embedded_text),
+                            (
+                                stable_path,
+                                package,
+                                module,
+                                is_root_package,
+                                embedded_text,
+                                participation,
+                            ),
                         )| {
                             let origin = if embedded_text.is_some() {
                                 crate::SourceOrigin::PortableLibrary
@@ -606,6 +623,7 @@ impl ProjectGraph {
                                 is_root_package,
                                 embedded_text,
                                 origin,
+                                participation,
                             }
                         },
                     )
@@ -622,7 +640,7 @@ impl ProjectGraph {
     pub(crate) fn overlay_source(
         &self,
         path: &Path,
-    ) -> Result<Option<(String, ModuleName)>, DriverError> {
+    ) -> Result<Option<(String, ModuleName, crate::SourceParticipation)>, DriverError> {
         if !has_loom_extension(path) || is_ignored_relative(&self.root, path) {
             return Ok(None);
         }
@@ -631,10 +649,19 @@ impl ProjectGraph {
                 let Ok(metadata) = fs::metadata(input) else {
                     return Ok(None);
                 };
-                if metadata.is_file() && normalize_absolute(input) != normalize_absolute(path) {
+                let normalized = normalize_absolute(path);
+                if normalized.parent() != Some(self.root.as_path())
+                    || metadata.is_file()
+                        && self.tests == TestSelection::None
+                        && normalize_absolute(input) != normalized
+                {
                     return Ok(None);
                 }
-                relative_key(&self.root, path).map(|stable| (stable, ModuleName::new("standalone")))
+                let Some(participation) = self.source_participation(&normalized, true) else {
+                    return Ok(None);
+                };
+                relative_key(&self.root, &normalized)
+                    .map(|stable| (stable, ModuleName::new("standalone"), participation))
             }
             ProjectKind::Manifest { root_package } => {
                 let Some(package) = self.packages.get(root_package) else {
@@ -642,12 +669,13 @@ impl ProjectGraph {
                 };
                 let normalized = normalize_absolute(path);
                 let selected = normalized.strip_prefix(&package.root).is_ok()
-                    && !is_nested_module_source(&package.root, &normalized)
-                    && (!is_test_source(&normalized)
-                        || self.includes_test_source(&normalized, true));
+                    && !is_nested_module_source(&package.root, &normalized);
                 if !selected {
                     return Ok(None);
                 }
+                let Some(participation) = self.source_participation(&normalized, true) else {
+                    return Ok(None);
+                };
                 let Some(stable) = relative_key(&package.root, &normalized) else {
                     return Err(DriverError::NonUtf8Path(normalized));
                 };
@@ -658,7 +686,7 @@ impl ProjectGraph {
                         .unwrap_or(&normalized),
                     &package.manifest,
                 )?;
-                Some((stable, module))
+                Some((stable, module, participation))
             }
         };
         Ok(source)
@@ -698,18 +726,17 @@ impl ProjectGraph {
         }
     }
 
-    fn includes_test_source(&self, path: &Path, is_root_package: bool) -> bool {
-        if !is_root_package {
-            return false;
-        }
-        match self.tests {
-            TestSelection::None => false,
-            TestSelection::Recursive => true,
-            TestSelection::Package => self
-                .test_package_directory
-                .as_deref()
-                .is_some_and(|directory| path.parent().is_some_and(|parent| parent == directory)),
-        }
+    fn source_participation(
+        &self,
+        path: &Path,
+        is_root_package: bool,
+    ) -> Option<crate::SourceParticipation> {
+        classify_source_participation(
+            self.tests,
+            self.test_package_directory.as_deref(),
+            path,
+            is_root_package,
+        )
     }
 
     pub(crate) fn configure_hir_packages(&self, program: &mut loom_hir::Program) {
@@ -2265,7 +2292,7 @@ fn standalone_sources(
     tests: TestSelection,
     test_package_directory: Option<&Path>,
 ) -> Result<Vec<ProjectSource>, DriverError> {
-    let paths = if input.is_file() {
+    let paths = if input.is_file() && tests == TestSelection::None {
         vec![input.to_path_buf()]
     } else {
         let entries = fs::read_dir(root).map_err(|source| DriverError::Io {
@@ -2292,22 +2319,12 @@ fn standalone_sources(
     };
     paths
         .into_iter()
-        .filter(|path| {
-            if !is_test_source(path) {
-                return true;
-            }
-            match tests {
-                TestSelection::None => false,
-                TestSelection::Recursive => true,
-                TestSelection::Package => test_package_directory.is_some_and(|directory| {
-                    path.parent().is_some_and(|parent| parent == directory)
-                }),
-            }
-        })
-        .map(|absolute| {
+        .filter_map(|absolute| {
+            let participation =
+                classify_source_participation(tests, test_package_directory, &absolute, true)?;
             let stable_path = relative_key(root, &absolute)
-                .ok_or_else(|| DriverError::NonUtf8Path(absolute.clone()))?;
-            Ok(ProjectSource {
+                .ok_or_else(|| DriverError::NonUtf8Path(absolute.clone()));
+            Some(stable_path.map(|stable_path| ProjectSource {
                 absolute,
                 stable_path,
                 package: None,
@@ -2315,7 +2332,8 @@ fn standalone_sources(
                 is_root_package: true,
                 embedded_text: None,
                 origin: crate::SourceOrigin::FileSystem,
-            })
+                participation,
+            }))
         })
         .collect()
 }
@@ -2365,6 +2383,29 @@ fn is_test_source(path: &Path) -> bool {
     path.file_stem()
         .and_then(std::ffi::OsStr::to_str)
         .is_some_and(|stem| stem.ends_with("_test"))
+}
+
+fn classify_source_participation(
+    tests: TestSelection,
+    test_package_directory: Option<&Path>,
+    path: &Path,
+    is_root_package: bool,
+) -> Option<crate::SourceParticipation> {
+    let tests_enabled = is_root_package
+        && match tests {
+            TestSelection::None => false,
+            TestSelection::Recursive => true,
+            TestSelection::Package => test_package_directory
+                .is_some_and(|directory| path.parent().is_some_and(|parent| parent == directory)),
+        };
+    if is_test_source(path) {
+        return tests_enabled.then_some(crate::SourceParticipation::TestCompanion);
+    }
+    Some(if tests_enabled {
+        crate::SourceParticipation::ProductionAndTests
+    } else {
+        crate::SourceParticipation::Production
+    })
 }
 
 fn is_nested_module_source(root: &Path, path: &Path) -> bool {

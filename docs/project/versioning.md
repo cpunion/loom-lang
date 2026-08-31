@@ -16,17 +16,17 @@ writers for unreleased formats. Development history belongs in
 | Boundary | Current version or identity |
 | --- | --- |
 | Cargo toolchain packages | `0.1.0` |
-| Loom language | `0.3` |
+| Loom language | `0.4` |
 | Manifest schema | `2` |
 | Lockfile schema | `2` |
 | Registry protocol and bundle | `1` |
 | Interpreted MIR artifact | `loom.interpreted-mir`, version `42` |
-| Portable library artifact | `loom-library`, source-and-interface version `3` |
-| Persistent compiler cache | schema `15` |
-| Compilation-cache domain | `loom-compilation-cache-v15` |
+| Portable library artifact | `loom-library`, source-and-interface version `4` |
+| Persistent compiler cache | schema `16` |
+| Compilation-cache domain | `loom-compilation-cache-v16` |
 | Interpreted final-cache layer | `final-artifact-v3` |
 | Interpreted artifact writer | `loom-interpreted-artifact-writer-v3` |
-| Portable-library final-cache layer | `portable-library-artifact-v3` |
+| Portable-library final-cache layer | `portable-library-artifact-v4` |
 | LCIR textual dump | `lcir 48` |
 | LCIR artifact identity | schema `50` |
 | LCIR artifact route | `typed-lcir-whole-artifact` |
@@ -99,7 +99,7 @@ changed.
 
 ## Source language
 
-`language = "0.3"` selects the only source language accepted by the current
+`language = "0.4"` selects the only source language accepted by the current
 compiler. A manifest that omits `language` currently selects that same version,
 but generated and reviewed manifests should state it explicitly. An unknown or
 different language version is rejected; it is never silently reinterpreted as

@@ -1,6 +1,6 @@
 # Lexical structure
 
-> Normative for Loom language version 0.3.
+> Normative for Loom language version 0.4.
 
 ## Source text
 

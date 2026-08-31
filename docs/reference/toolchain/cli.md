@@ -86,13 +86,14 @@ If exactly one target of the required kind exists, it is selected
 automatically. When several are available, pass `--target NAME`. For a
 standalone source file or directory, the default binary entry is `main`.
 `--entry` selects an exported function directly and is mutually exclusive with
-`--target`. Tests are selected by their file suffix, not a manifest target;
-`test --target` is an invalid invocation.
+`--target`. Tests are selected from source declarations rather than a manifest
+target; `test --target` is an invalid invocation.
 
 `check`, `build`, `run`, `debug`, library creation, and dependency compilation
-exclude `*_test.loom`. `loom test .` and `loom test PATH` add tests only from
-the selected directory package. `loom test ./...` adds tests recursively from
-every package in the root module. No form loads or runs dependency test files.
+exclude `*_test.loom` and embedded `test fn` declarations. `loom test .` and
+`loom test PATH` enable both forms only for the selected directory package.
+`loom test ./...` enables them recursively for every package in the root
+module. No form loads or runs dependency tests.
 
 An executable entry must be a public export in the root module, take no value,
 receiver, type, or witness parameters, and return `Unit`. Synchronous and

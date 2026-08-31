@@ -58,9 +58,9 @@ compiler/runtime operation; parsing has no special compiler or runtime path. See
 [Core, standard library, and runtime boundary](core-library-runtime-boundary.md).
 
 The `std` identity is the only compiler-owned module identity in language
-version 0.3.
+version 0.4.
 
-A version 3 `.loomlib` dependency enters at this same source boundary. Its
+A version 4 `.loomlib` dependency enters at this same source boundary. Its
 decoder validates the bounded module/package/source structure and recomputes
 the stored public interfaces, then exposes the embedded files as read-only package
 sources. It does not supply checked MIR, producer proof decisions, or a
@@ -127,9 +127,9 @@ Frontend checking and backend roots are intentionally different:
 
 - `check` validates the full resolved source graph and emits no object.
 - a binary `build`, `run`, or `debug` selects one public entry;
-- `test PATH` adds one directory package's `*_test.loom` sources, while
-  `test PATH/...` adds every package in the root module; dependency test
-  sources are never loaded;
+- `test PATH` adds the selected directory package's internal test companion,
+  populated from embedded tests and `*_test.loom`; `test PATH/...` does the
+  same for every package in the root module; dependency tests are never added;
 - an empty test set produces a successful empty harness;
 - a library target packages the resolved module graph and public interfaces;
   it has no executable or code-generation root.

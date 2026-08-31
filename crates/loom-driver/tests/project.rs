@@ -74,7 +74,7 @@ fn relative(root: &Path, path: &Path) -> String {
 
 fn portable_cache_context() -> CacheContext {
     CacheContext {
-        language_version: "0.3".to_owned(),
+        language_version: "0.4".to_owned(),
         frontend_identity: "test-frontend-v1".to_owned(),
         stdlib_identity: "test-stdlib-v1".to_owned(),
         contract_mode: "checked".to_owned(),
@@ -92,7 +92,7 @@ fn constrained_proof_project() -> TestProject {
     let project = TestProject::new();
     project.write(
         "loom.toml",
-        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"proofs\"\nversion = \"1.0.0\"\n",
+        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"proofs\"\nversion = \"1.0.0\"\n",
     );
     project.write(
         "main.loom",
@@ -282,7 +282,7 @@ fn compiler_std_sources_have_protected_authority() {
         std_source.package().expect("std package").version(),
         loom_core::LOOM_LANGUAGE_VERSION
     );
-    assert_eq!(std_source.relative_path(), "deps/std@0.3/int/int.loom");
+    assert_eq!(std_source.relative_path(), "deps/std@0.4/int/int.loom");
 
     let std_path = std_source.absolute_path().to_path_buf();
     drop(snapshot);
@@ -357,7 +357,7 @@ fn std_module_name_and_dependency_alias_are_reserved() {
     let named_std = TestProject::new();
     named_std.write(
         "loom.toml",
-        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"std\"\nversion = \"1.0.0\"\n",
+        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"std\"\nversion = \"1.0.0\"\n",
     );
     named_std.write("main.loom", "pub fn main() {}\n");
     let error = ProjectGraph::load(&named_std.root).expect_err("reserved module name");
@@ -366,7 +366,7 @@ fn std_module_name_and_dependency_alias_are_reserved() {
     let aliased_std = TestProject::new();
     aliased_std.write(
         "loom.toml",
-        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"application\"\nversion = \"1.0.0\"\n[dependencies]\nstd = { path = \"../dependency\" }\n",
+        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"application\"\nversion = \"1.0.0\"\n[dependencies]\nstd = { path = \"../dependency\" }\n",
     );
     aliased_std.write("main.loom", "pub fn main() {}\n");
     let error = ProjectGraph::load(&aliased_std.root).expect_err("reserved dependency alias");
@@ -620,11 +620,11 @@ fn manifest_resolves_directory_packages_and_targets() {
         .map(loom_driver::SourceDocument::relative_path)
         .collect::<Vec<_>>();
     for expected in [
-        "deps/std@0.3/int/int.loom",
-        "deps/std@0.3/json/json.loom",
-        "deps/std@0.3/log/log.loom",
-        "deps/std@0.3/process/process.loom",
-        "deps/std@0.3/resource/resource.loom",
+        "deps/std@0.4/int/int.loom",
+        "deps/std@0.4/json/json.loom",
+        "deps/std@0.4/log/log.loom",
+        "deps/std@0.4/process/process.loom",
+        "deps/std@0.4/resource/resource.loom",
     ] {
         assert!(std_paths.contains(&expected), "{std_paths:?}");
     }
@@ -733,7 +733,7 @@ fn constants_cross_package_files_and_public_imports_as_folded_values() {
     let project = TestProject::new();
     project.write(
         "loom.toml",
-        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"application\"\nversion = \"1.0.0\"\n",
+        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"application\"\nversion = \"1.0.0\"\n",
     );
     project.write("values/base.loom", "const base Int = 40\n");
     project.write("values/answer.loom", "pub const answer Int = base + 2\n");
@@ -760,7 +760,7 @@ fn private_constants_are_not_importable_from_another_package() {
     let project = TestProject::new();
     project.write(
         "loom.toml",
-        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"application\"\nversion = \"1.0.0\"\n",
+        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"application\"\nversion = \"1.0.0\"\n",
     );
     project.write("values/hidden.loom", "const hidden Int = 42\n");
     project.write(
@@ -789,11 +789,15 @@ fn portable_library_is_a_consumable_versioned_dependency() {
     let project = TestProject::new();
     project.write(
         "utility/loom.toml",
-        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"utility\"\nversion = \"1.2.0\"\n",
+        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"utility\"\nversion = \"1.2.0\"\n",
     );
     project.write(
         "utility/math/math.loom",
-        "pub fn increment(value Int) Int { value + 1 }\n\nfn private_value() Int { 99 }\n",
+        "pub fn increment(value Int) Int { value + 1 }\n\nfn private_value() Int { 99 }\n\ntest fn inline_artifact_test() { assert private_value() == 99 }\n",
+    );
+    project.write(
+        "utility/math/math_test.loom",
+        "fn artifact_test_helper() Int { private_value() }\n\ntest fn file_artifact_test() { assert artifact_test_helper() == 99 }\n",
     );
     project.write(
         "utility/nested/nested.loom",
@@ -809,6 +813,10 @@ fn portable_library_is_a_consumable_versioned_dependency() {
     let bytes = encode_library_artifact(producer_snapshot.project(), producer_snapshot.sources())
         .expect("encode package artifact");
     let envelope: serde_json::Value = serde_json::from_slice(&bytes).expect("library JSON");
+    let artifact_text = String::from_utf8(bytes.clone()).expect("library JSON is UTF-8");
+    assert!(!artifact_text.contains("inline_artifact_test"));
+    assert!(!artifact_text.contains("artifact_test_helper"));
+    assert!(!artifact_text.contains("file_artifact_test"));
     assert!(
         envelope["sources"]
             .as_array()
@@ -906,6 +914,25 @@ fn portable_library_is_a_consumable_versioned_dependency() {
     .expect_err("portable paths reject reserved Windows components");
     assert!(error.to_string().contains("not portable"), "{error}");
 
+    let mut test_source = envelope.clone();
+    test_source["sources"][0]["path"] = serde_json::json!("math/math_test.loom");
+    let error = decode_library_artifact(
+        &serde_json::to_vec(&test_source).expect("encode injected test source path"),
+    )
+    .expect_err("portable libraries reject test source paths");
+    assert!(error.to_string().contains("test source"), "{error}");
+
+    let mut test_declaration = envelope.clone();
+    test_declaration["sources"][0]["text"] = serde_json::json!("test fn injected_test() {}\n");
+    let error = decode_library_artifact(
+        &serde_json::to_vec(&test_declaration).expect("encode injected test declaration"),
+    )
+    .expect_err("portable libraries reject embedded test declarations");
+    assert!(
+        error.to_string().contains("contains a test declaration"),
+        "{error}"
+    );
+
     let mut invalid_semver = envelope.clone();
     invalid_semver["rootPackage"]["version"] = serde_json::json!("invalid");
     invalid_semver["packages"][0]["id"]["version"] = serde_json::json!("invalid");
@@ -927,14 +954,14 @@ fn portable_library_is_a_consumable_versioned_dependency() {
     absent_dependency["packages"][0]["dependencies"] = serde_json::json!([{
         "alias": "absent",
         "requirement": null,
-        "package": {"name": "absent", "version": "1.0.0", "language": "0.3"},
+        "package": {"name": "absent", "version": "1.0.0", "language": "0.4"},
     }]);
     let mut unreachable_package = envelope.clone();
     unreachable_package["packages"]
         .as_array_mut()
         .expect("artifact packages")
         .push(serde_json::json!({
-            "id": {"name": "orphan", "version": "1.0.0", "language": "0.3"},
+            "id": {"name": "orphan", "version": "1.0.0", "language": "0.4"},
             "dependencies": [],
         }));
     let mut dependency_cycle = envelope.clone();
@@ -989,7 +1016,7 @@ fn portable_library_is_a_consumable_versioned_dependency() {
     let decoded = decode_library_artifact(&bytes).expect("decode package artifact");
     assert_eq!(decoded.root_package().name(), "utility");
     assert_eq!(decoded.root_package().version(), "1.2.0");
-    assert_eq!(decoded.root_package().language(), "0.3");
+    assert_eq!(decoded.root_package().language(), "0.4");
     assert!(
         decoded
             .interfaces()
@@ -1011,7 +1038,7 @@ fn portable_library_is_a_consumable_versioned_dependency() {
 
     project.write(
         "application/loom.toml",
-        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"application\"\nversion = \"0.1.0\"\n[dependencies]\nutility = { artifact = \"../utility.loomlib\", version = \"^1\" }\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"application.main\"\n",
+        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"application\"\nversion = \"0.1.0\"\n[dependencies]\nutility = { artifact = \"../utility.loomlib\", version = \"^1\" }\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"application.main\"\n",
     );
     project.write(
         "application/main.loom",
@@ -1121,7 +1148,7 @@ fn portable_library_is_a_consumable_versioned_dependency() {
     let (first_cached, _) = first_process.snapshot_from_sources_with_parse_cache(
         first_sources,
         &cache,
-        "test-compiler-language-0.3",
+        "test-compiler-language-0.4",
     );
     assert!(
         !first_cached.has_errors(),
@@ -1141,7 +1168,7 @@ fn portable_library_is_a_consumable_versioned_dependency() {
     let (incremental, _) = second_process.snapshot_from_sources_with_parse_cache(
         second_sources,
         &cache,
-        "test-compiler-language-0.3",
+        "test-compiler-language-0.4",
     );
     assert!(
         !incremental.has_errors(),
@@ -1234,7 +1261,7 @@ fn portable_library_carries_source_instead_of_process_local_proofs() {
     fs::write(project.root.join("proofs.loomlib"), library).expect("write proof artifact");
     project.write(
         "consumer/loom.toml",
-        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"consumer\"\nversion = \"1.0.0\"\n[dependencies]\nproofs = { artifact = \"../proofs.loomlib\", version = \"^1\" }\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"consumer.main\"\n",
+        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"consumer\"\nversion = \"1.0.0\"\n[dependencies]\nproofs = { artifact = \"../proofs.loomlib\", version = \"^1\" }\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"consumer.main\"\n",
     );
     project.write(
         "consumer/main.loom",
@@ -1268,12 +1295,12 @@ fn portable_libraries_compose_shared_transitive_package_content() {
     let project = TestProject::new();
     project.write(
         "leaf/loom.toml",
-        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"leaf\"\nversion = \"1.0.0\"\n",
+        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"leaf\"\nversion = \"1.0.0\"\n",
     );
     project.write("leaf/lib.loom", "pub fn base() Int { 40 }\n");
     project.write(
         "left/loom.toml",
-        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"left\"\nversion = \"1.0.0\"\n[dependencies]\nleaf = { path = \"../leaf\", version = \"^1\" }\n",
+        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"left\"\nversion = \"1.0.0\"\n[dependencies]\nleaf = { path = \"../leaf\", version = \"^1\" }\n",
     );
     project.write(
         "left/lib.loom",
@@ -1281,7 +1308,7 @@ fn portable_libraries_compose_shared_transitive_package_content() {
     );
     project.write(
         "right/loom.toml",
-        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"right\"\nversion = \"1.0.0\"\n[dependencies]\nleaf = { path = \"../leaf\", version = \"^1\" }\n",
+        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"right\"\nversion = \"1.0.0\"\n[dependencies]\nleaf = { path = \"../leaf\", version = \"^1\" }\n",
     );
     project.write(
         "right/lib.loom",
@@ -1303,7 +1330,7 @@ fn portable_libraries_compose_shared_transitive_package_content() {
 
     project.write(
         "consumer/loom.toml",
-        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"consumer\"\nversion = \"1.0.0\"\n[dependencies]\nleaf = { artifact = \"../leaf.loomlib\", version = \"^1\" }\nleft = { artifact = \"../left.loomlib\", version = \"^1\" }\nright = { artifact = \"../right.loomlib\", version = \"^1\" }\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"consumer.main\"\n",
+        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"consumer\"\nversion = \"1.0.0\"\n[dependencies]\nleaf = { artifact = \"../leaf.loomlib\", version = \"^1\" }\nleft = { artifact = \"../left.loomlib\", version = \"^1\" }\nright = { artifact = \"../right.loomlib\", version = \"^1\" }\n[[target]]\nname = \"app\"\nkind = \"bin\"\nentry = \"consumer.main\"\n",
     );
     project.write(
         "consumer/main.loom",
@@ -1333,12 +1360,12 @@ fn portable_library_lock_closes_over_transitive_source_content() {
     let project = TestProject::new();
     project.write(
         "leaf/loom.toml",
-        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"leaf\"\nversion = \"1.0.0\"\n",
+        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"leaf\"\nversion = \"1.0.0\"\n",
     );
     project.write("leaf/lib.loom", "pub fn base() Int { 40 }\n");
     project.write(
         "bundle/loom.toml",
-        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"bundle\"\nversion = \"1.0.0\"\n[dependencies]\nleaf = { path = \"../leaf\", version = \"^1\" }\n",
+        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"bundle\"\nversion = \"1.0.0\"\n[dependencies]\nleaf = { path = \"../leaf\", version = \"^1\" }\n",
     );
     project.write(
         "bundle/lib.loom",
@@ -1356,7 +1383,7 @@ fn portable_library_lock_closes_over_transitive_source_content() {
     fs::write(&artifact_path, build_artifact()).expect("write original bundle");
     project.write(
         "consumer/loom.toml",
-        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"consumer\"\nversion = \"1.0.0\"\n[dependencies]\nbundle = { artifact = \"../bundle.loomlib\", version = \"^1\" }\n",
+        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"consumer\"\nversion = \"1.0.0\"\n[dependencies]\nbundle = { artifact = \"../bundle.loomlib\", version = \"^1\" }\n",
     );
     project.write("consumer/main.loom", "");
     let locked =
@@ -1380,7 +1407,7 @@ fn portable_library_is_bounded_before_file_allocation() {
         .expect("size sparse artifact beyond the limit");
     project.write(
         "consumer/loom.toml",
-        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"consumer\"\nversion = \"1.0.0\"\n[dependencies]\noversized = { artifact = \"../oversized.loomlib\" }\n",
+        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"consumer\"\nversion = \"1.0.0\"\n[dependencies]\noversized = { artifact = \"../oversized.loomlib\" }\n",
     );
     project.write("consumer/main.loom", "");
 
@@ -1597,25 +1624,25 @@ fn language_version_defaults_to_current_and_rejects_unknown_versions() {
     );
     defaulted.write("lib.loom", "");
     let graph = ProjectGraph::load(&defaulted.root).expect("default language version");
-    assert_eq!(graph.language_version(), "0.3");
+    assert_eq!(graph.language_version(), "0.4");
     assert_eq!(
         graph.root_package().expect("root package").id().language(),
-        "0.3"
+        "0.4"
     );
     assert!(graph.write_lockfile().expect("write versioned lockfile"));
     let lock = fs::read_to_string(defaulted.root.join("loom.lock")).expect("read lockfile");
-    assert!(lock.contains("language = \"0.3\""), "{lock}");
+    assert!(lock.contains("language = \"0.4\""), "{lock}");
 
     let future = TestProject::new();
     future.write(
         "loom.toml",
-        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"future\"\nversion = \"1.0.0\"\n",
+        "schema = 2\nlanguage = \"0.5\"\n[module]\nname = \"future\"\nversion = \"1.0.0\"\n",
     );
     future.write("lib.loom", "");
     let error = ProjectGraph::load(&future.root).expect_err("future language must fail closed");
     assert_eq!(error.code(), "UnsupportedLanguageVersion");
     assert!(
-        error.to_string().contains("`0.4`") && error.to_string().contains("`0.3`"),
+        error.to_string().contains("`0.5`") && error.to_string().contains("`0.4`"),
         "{error}"
     );
 }
@@ -1669,7 +1696,7 @@ fn language_version_changes_compilation_cache_identity() {
     let sources = host.load_sources().expect("load cache sources");
     let current = portable_cache_context();
     let mut future = current.clone();
-    future.language_version = "0.4".to_owned();
+    future.language_version = "0.5".to_owned();
     assert_ne!(
         PersistentCache::compilation_key(host.project(), &sources, &current),
         PersistentCache::compilation_key(host.project(), &sources, &future)
@@ -2359,11 +2386,11 @@ fn snapshot_assigns_file_ids_by_stable_relative_path_and_builds_executable_mir()
     assert_eq!(paths[0], (FileId(0), "a.loom"));
     assert_eq!(paths[1], (FileId(1), "b.loom"));
     for expected in [
-        "deps/std@0.3/int/int.loom",
-        "deps/std@0.3/json/json.loom",
-        "deps/std@0.3/log/log.loom",
-        "deps/std@0.3/process/process.loom",
-        "deps/std@0.3/resource/resource.loom",
+        "deps/std@0.4/int/int.loom",
+        "deps/std@0.4/json/json.loom",
+        "deps/std@0.4/log/log.loom",
+        "deps/std@0.4/process/process.loom",
+        "deps/std@0.4/resource/resource.loom",
     ] {
         assert!(paths.iter().any(|(_, path)| *path == expected), "{paths:?}");
     }
@@ -3029,4 +3056,129 @@ fn semantic_symbol_index_covers_generics_parameters_and_locals() {
             .all(|expected| completions.iter().any(|name| name == expected)),
         "{completions:?}"
     );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn completion_keeps_test_companion_visibility_directional() {
+    let project = TestProject::new();
+    let production = r"fn productionPrivate() Int { 1 }
+pub fn productionPublic() Int { productionPrivate() }
+
+test fn embeddedTest() {
+    let value = productionPrivate()
+    assert value == 1
+}
+";
+    let companion = r"pub fn companionPublic() Int { productionPrivate() }
+fn companionPrivate() Int { companionPublic() }
+
+test fn fileTest() {
+    let value = companionPrivate()
+    assert value == 1
+}
+";
+    project.write("main.loom", production);
+    project.write("main_test.loom", companion);
+
+    let snapshot = AnalysisHost::new_with_options(&project.root, &test_project_options())
+        .expect("open companion symbol project")
+        .snapshot()
+        .expect("analyze companion symbol project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let mir = snapshot
+        .executable()
+        .expect("lower companion project to MIR");
+    assert!(mir.exports.contains_key("standalone.productionPublic"));
+    assert!(!mir.exports.contains_key("standalone.companionPublic"));
+    assert!(!mir.exports.contains_key("companionPublic"));
+    let test_names = mir
+        .tests
+        .iter()
+        .map(|test| {
+            mir.function(*test)
+                .expect("test root function")
+                .name
+                .as_str()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        test_names,
+        ["standalone.embeddedTest", "standalone.fileTest"]
+    );
+    let production_file = snapshot
+        .sources()
+        .documents()
+        .iter()
+        .find(|source| source.relative_path() == "main.loom")
+        .expect("production source")
+        .id();
+    let companion_file = snapshot
+        .sources()
+        .documents()
+        .iter()
+        .find(|source| source.relative_path() == "main_test.loom")
+        .expect("companion source")
+        .id();
+
+    let names_at = |file, byte| {
+        snapshot
+            .completion_symbols(file, u32::try_from(byte).expect("source offset fits u32"))
+            .into_iter()
+            .map(|symbol| (symbol.name, symbol.module))
+            .collect::<Vec<_>>()
+    };
+    let production_names = names_at(
+        production_file,
+        production
+            .find("productionPrivate() }")
+            .expect("production body"),
+    );
+    for visible in ["productionPrivate", "productionPublic"] {
+        assert!(
+            production_names.iter().any(|(name, _)| name == visible),
+            "{production_names:?}"
+        );
+    }
+    for hidden in [
+        "embeddedTest",
+        "companionPublic",
+        "companionPrivate",
+        "fileTest",
+    ] {
+        assert!(
+            production_names.iter().all(|(name, _)| name != hidden),
+            "{production_names:?}"
+        );
+    }
+
+    let embedded_names = names_at(
+        production_file,
+        production
+            .rfind("productionPrivate()")
+            .expect("embedded body"),
+    );
+    let companion_names = names_at(
+        companion_file,
+        companion
+            .rfind("companionPrivate()")
+            .expect("companion body"),
+    );
+    for names in [&embedded_names, &companion_names] {
+        for visible in [
+            "productionPrivate",
+            "productionPublic",
+            "embeddedTest",
+            "companionPublic",
+            "companionPrivate",
+            "fileTest",
+        ] {
+            assert!(
+                names
+                    .iter()
+                    .any(|(name, module)| name == visible && module == "standalone"),
+                "{names:?}"
+            );
+        }
+    }
 }

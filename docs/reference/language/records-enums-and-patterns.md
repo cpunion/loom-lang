@@ -1,6 +1,6 @@
 # Records, enums, and patterns
 
-> Normative for Loom language version 0.3.
+> Normative for Loom language version 0.4.
 
 ## Records
 
@@ -116,7 +116,7 @@ The expected scrutinee type resolves short variant names in patterns, so
 
 ## Patterns and exhaustiveness
 
-Language version 0.3 supports:
+Language version 0.4 supports:
 
 - `_` wildcard patterns;
 - `Bool`, `Int`, `Float`, and `Text` literal patterns;
@@ -137,7 +137,7 @@ scrutinee type; otherwise it introduces an immutable binding. A negative number
 is a unary expression and therefore cannot be used as a literal pattern.
 
 Record, tuple, list, range, or-pattern, and guarded patterns have no syntax in
-language version 0.3.
+language version 0.4.
 
 Matches over closed finite types are checked for exhaustiveness and usefulness.
 This includes `Bool`, `Unit`, `Option`, `Result`, user enums, `TaskOutcome`, and

@@ -1,6 +1,6 @@
 # Packages and declarations
 
-> Normative for Loom language version 0.3.
+> Normative for Loom language version 0.4.
 
 ## Source-file structure
 
@@ -63,7 +63,7 @@ library module.
 
 ## Package initialization
 
-Importing a package never executes user code. Loom 0.3 has no `init`
+Importing a package never executes user code. Loom 0.4 has no `init`
 declaration or block, no executable top-level statements, no mutable globals,
 and no runtime-initialized package values. A function named `init` is an
 ordinary function and is never discovered or called implicitly.
@@ -125,17 +125,27 @@ impl[...] Type { ... }
 impl[...] Concept for Type { ... }
 ```
 
-A file whose name ends in `_test.loom` may additionally contain:
+Any ordinary `.loom` file may contain:
 
 ```text
 test fn name() { ... }
 test async fn name() { ... }
 ```
 
-Test declarations are rejected in every other file. Production compilation
-excludes all `*_test.loom` files. `loom test .` or `loom test PATH` selects one
-directory package; appending `/...` selects every package below the root
-module. Dependency test files are neither loaded nor run.
+In an ordinary source file, non-test declarations belong to the production
+package and test declarations belong to its compiler-owned test companion. A
+`*_test.loom` file belongs entirely to that companion, so it may also contain
+private helper functions, fixture types, and imports used only by tests.
+
+The companion has a distinct, non-importable identity. It can access private
+members of its production package, while production code cannot name companion
+members. A real source directory named `test` remains an ordinary package and
+does not receive this authority.
+
+Production compilation omits test declarations and all `*_test.loom` files.
+`loom test .` or `loom test PATH` selects one directory package; appending
+`/...` selects every package below the root module. Dependency tests are
+neither loaded nor run.
 
 The bracketed parts above denote optional generic parameter lists; they are not
 literal ellipses in Loom source. Concept declarations themselves do not accept

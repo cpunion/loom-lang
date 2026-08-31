@@ -37,7 +37,9 @@ pub use project::{
 };
 pub use registry::{RegistryPublish, publish_registry_package};
 pub use report::{DiagnosticRecord, Position, Range, RelatedDiagnostic, SpanRecord};
-pub use source::{DriverError, SourceDocument, SourceMap, SourceOrigin, discover_loom_files};
+pub use source::{
+    DriverError, SourceDocument, SourceMap, SourceOrigin, SourceParticipation, discover_loom_files,
+};
 pub use stdlib::identity as stdlib_identity;
 pub use symbols::{SymbolId, SymbolInfo, SymbolReference, is_valid_identifier};
 

@@ -214,7 +214,7 @@ The source names `Task.all`, `Task.any`, `Task.settled`, and `Task.race` define
 standard-library policies. Source lowering emits ordinary method-call HIR.
 Semantic resolution first excludes local, parameter, and module value bindings,
 imports, generic parameters, and user types, then maps a canonical Task member
-through the version 0.3 embedded standard-item catalog. Type checking and MIR
+through the version 0.4 embedded standard-item catalog. Type checking and MIR
 specialization consume only that stable identity. Source-compiled standard
 library declarations will replace this catalog lookup with trusted definition
 identity; the downstream boundary does not change.

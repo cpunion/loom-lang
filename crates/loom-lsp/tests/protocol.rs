@@ -1138,7 +1138,7 @@ fn portable_dependency_implementations_are_opaque_and_read_only() {
     let project = TestProject::new("");
     project.write(
         "utility/loom.toml",
-        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"utility\"\nversion = \"1.0.0\"\n",
+        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"utility\"\nversion = \"1.0.0\"\n",
     );
     project.write(
         "utility/lib.loom",
@@ -1154,7 +1154,7 @@ fn portable_dependency_implementations_are_opaque_and_read_only() {
 
     project.write(
         "consumer/loom.toml",
-        "schema = 2\nlanguage = \"0.3\"\n[module]\nname = \"consumer\"\nversion = \"1.0.0\"\n[dependencies]\nutility = { artifact = \"../utility.loomlib\", version = \"^1\" }\n",
+        "schema = 2\nlanguage = \"0.4\"\n[module]\nname = \"consumer\"\nversion = \"1.0.0\"\n[dependencies]\nutility = { artifact = \"../utility.loomlib\", version = \"^1\" }\n",
     );
     let consumer_source = "import utility.increment\n\npub fn main() {\n    let value = increment(41)\n    assert value == 42\n}\n";
     project.write("consumer/main.loom", consumer_source);

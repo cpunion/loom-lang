@@ -97,8 +97,12 @@ impl ScopeMap {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct DefMap {
+    /// Declarations owned by this nominal module. For a test companion these
+    /// remain separate from the production fallback so companion helpers can
+    /// shadow production names without creating duplicate bindings.
     local: ScopeMap,
     files: BTreeMap<FileId, ScopeMap>,
+    production_fallback: Option<ScopeMap>,
 }
 
 impl DefMap {
@@ -110,6 +114,11 @@ impl DefMap {
             .get(&file)
             .unwrap_or(&self.local)
             .resolve(namespace, name)
+            .or_else(|| {
+                self.production_fallback
+                    .as_ref()
+                    .and_then(|fallback| fallback.resolve(namespace, name))
+            })
     }
 
     pub fn entries(
@@ -117,15 +126,22 @@ impl DefMap {
         namespace: Namespace,
         file: FileId,
     ) -> impl Iterator<Item = (&Name, &Binding)> {
-        self.files
-            .get(&file)
-            .unwrap_or(&self.local)
-            .entries(namespace)
+        let primary = self.files.get(&file).unwrap_or(&self.local);
+        primary.entries(namespace).chain(
+            self.production_fallback
+                .iter()
+                .flat_map(move |fallback| fallback.entries(namespace))
+                .filter(move |(name, _)| primary.resolve(namespace, name).is_none()),
+        )
     }
 
     #[must_use]
     pub fn resolve_local(&self, namespace: Namespace, name: &Name) -> Option<&Binding> {
-        self.local.resolve(namespace, name)
+        self.local.resolve(namespace, name).or_else(|| {
+            self.production_fallback
+                .as_ref()
+                .and_then(|fallback| fallback.resolve(namespace, name))
+        })
     }
 
     fn local_entries(&self, namespace: Namespace) -> impl Iterator<Item = (&Name, &Binding)> {
@@ -156,6 +172,7 @@ impl DefMapBuild {
     pub fn build(program: &Program) -> Self {
         let mut build = Self::default();
         build.collect_local_definitions(program);
+        build.attach_test_companion_fallbacks(program);
         build.report_local_duplicates(program);
         build.resolve_imports(program);
         build
@@ -185,6 +202,24 @@ impl DefMapBuild {
                     map.insert_local(namespace, name, definition);
                 }
             }
+        }
+    }
+
+    fn attach_test_companion_fallbacks(&mut self, program: &Program) {
+        for (module, data) in program.modules.iter() {
+            if !program.is_test_companion(module) {
+                continue;
+            }
+            let production = program.production_module(module);
+            let fallback = self
+                .maps
+                .get(&production)
+                .map_or_else(ScopeMap::default, |map| map.local.clone());
+            self.maps.entry(module).or_default().production_fallback = Some(fallback);
+            debug_assert_eq!(
+                data.package, program.modules[production].package,
+                "a test companion belongs to its production package"
+            );
         }
     }
 
@@ -251,7 +286,10 @@ impl DefMapBuild {
                     };
                     found = true;
                     for definition in binding.candidates() {
-                        if program.definitions[*definition].visibility == Visibility::Public {
+                        if program.definitions[*definition].visibility == Visibility::Public
+                            || program
+                                .can_access_private(module, program.definitions[*definition].module)
+                        {
                             self.maps.entry(module).or_default().insert_import(
                                 import.file,
                                 namespace,

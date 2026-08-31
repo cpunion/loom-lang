@@ -144,6 +144,32 @@ pub enum SourceOrigin {
     CompilerStd,
 }
 
+/// Effective participation of one source document in this compilation.
+///
+/// This remains separate from [`SourceOrigin`]: provenance controls trust and
+/// editability, while participation controls the production/test projection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SourceParticipation {
+    /// Production declarations participate and inline tests do not.
+    Production,
+    /// Production declarations participate and inline tests enter the companion.
+    ProductionAndTests,
+    /// Every declaration in this `*_test.loom` source belongs to the companion.
+    TestCompanion,
+}
+
+impl SourceParticipation {
+    /// Stable spelling used by diagnostics and cache identities.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Production => "production",
+            Self::ProductionAndTests => "production_and_tests",
+            Self::TestCompanion => "test_companion",
+        }
+    }
+}
+
 fn is_authoritative_compiler_std(origin: SourceOrigin, package: Option<&PackageId>) -> bool {
     matches!(origin, SourceOrigin::CompilerStd) && package.is_some_and(PackageId::is_compiler_std)
 }
@@ -158,6 +184,7 @@ pub struct SourceDocument {
     module: ModuleName,
     is_root_package: bool,
     origin: SourceOrigin,
+    participation: SourceParticipation,
     text: Option<String>,
     byte_len: u32,
     line_starts: Vec<u32>,
@@ -194,11 +221,8 @@ impl SourceDocument {
 
     /// Whether this document follows the package test-source naming rule.
     #[must_use]
-    pub fn is_test_source(&self) -> bool {
-        Path::new(&self.relative_path)
-            .file_stem()
-            .and_then(std::ffi::OsStr::to_str)
-            .is_some_and(|stem| stem.ends_with("_test"))
+    pub const fn is_test_source(&self) -> bool {
+        matches!(self.participation, SourceParticipation::TestCompanion)
     }
 
     /// Whether this source belongs to the selected root package.
@@ -215,6 +239,12 @@ impl SourceDocument {
     #[must_use]
     pub const fn origin(&self) -> SourceOrigin {
         self.origin
+    }
+
+    /// How this document participates in the current production/test projection.
+    #[must_use]
+    pub const fn participation(&self) -> SourceParticipation {
+        self.participation
     }
 
     /// Whether this document was decoded from a portable `.loomlib` dependency.
@@ -414,6 +444,7 @@ impl SourceMap {
                         source.is_root_package,
                         source.embedded_text,
                         source.origin,
+                        source.participation,
                     ),
                 )
             })
@@ -426,7 +457,7 @@ impl SourceMap {
                     path: overlay,
                 });
             }
-            if let Some((stable_path, module)) = project.overlay_source(&overlay)? {
+            if let Some((stable_path, module, participation)) = project.overlay_source(&overlay)? {
                 let package = project.root_package().map(|package| package.id().clone());
                 paths.insert(
                     overlay,
@@ -437,6 +468,7 @@ impl SourceMap {
                         true,
                         None,
                         SourceOrigin::FileSystem,
+                        participation,
                     ),
                 );
             }
@@ -452,7 +484,18 @@ impl SourceMap {
         let mut by_path = BTreeMap::new();
         for (
             index,
-            (path, (relative_path, package, module, is_root_package, embedded_text, origin)),
+            (
+                path,
+                (
+                    relative_path,
+                    package,
+                    module,
+                    is_root_package,
+                    embedded_text,
+                    origin,
+                    participation,
+                ),
+            ),
         ) in paths.into_iter().enumerate()
         {
             let id = FileId(u32::try_from(index).expect("file count was checked"));
@@ -497,6 +540,7 @@ impl SourceMap {
                 module,
                 is_root_package,
                 origin,
+                participation,
                 text,
                 byte_len,
                 line_starts,

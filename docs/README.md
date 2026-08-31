@@ -30,7 +30,7 @@ compiler-private unless the page explicitly says otherwise.
 ## Reference
 
 - The [language reference](reference/language/README.md) defines observable
-  version 0.3 syntax, typing, contracts, resources, tasks, and failures.
+  version 0.4 syntax, typing, contracts, resources, tasks, and failures.
 - The [standard library reference](reference/std/README.md)
   catalogs implemented values and imported operations.
 - The [toolchain reference](reference/toolchain/README.md) defines CLI,

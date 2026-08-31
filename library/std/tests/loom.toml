@@ -1,5 +1,5 @@
 schema = 2
-language = "0.3"
+language = "0.4"
 
 [module]
 name = "std_tests"
