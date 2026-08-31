@@ -487,6 +487,13 @@ fn successors(kind: &TerminatorKind) -> Vec<BlockId> {
         TerminatorKind::SumSwitch { cases, .. } | TerminatorKind::DynSwitch { cases, .. } => {
             cases.iter().map(|case| case.block).collect()
         }
+        TerminatorKind::SumZipSwitch {
+            cases, mismatch, ..
+        } => {
+            let mut successors = cases.iter().map(|case| case.block).collect::<Vec<_>>();
+            successors.push(mismatch.block);
+            successors
+        }
         TerminatorKind::CheckedIntNegate { normal, fault, .. }
         | TerminatorKind::CheckedIntBinary { normal, fault, .. }
         | TerminatorKind::TaskSleep { normal, fault, .. }
@@ -546,7 +553,8 @@ fn add_terminator_local_uses(
             milliseconds: scrutinee,
             ..
         } => vec![*scrutinee],
-        TerminatorKind::CheckedIntBinary { left, right, .. } => vec![*left, *right],
+        TerminatorKind::SumZipSwitch { left, right, .. }
+        | TerminatorKind::CheckedIntBinary { left, right, .. } => vec![*left, *right],
         TerminatorKind::Invoke { arguments, .. } => arguments.to_vec(),
         TerminatorKind::AwaitTasks { tasks, .. } => tasks.to_vec(),
         TerminatorKind::LogWrite {
@@ -582,6 +590,16 @@ fn edge_live_values(
         TerminatorKind::SumSwitch { cases, .. } | TerminatorKind::DynSwitch { cases, .. } => cases
             .iter()
             .map(|case| (case.block, case.arguments.as_ref()))
+            .collect(),
+        TerminatorKind::SumZipSwitch {
+            cases, mismatch, ..
+        } => cases
+            .iter()
+            .map(|case| (case.block, case.arguments.as_ref()))
+            .chain(std::iter::once((
+                mismatch.block,
+                mismatch.arguments.as_ref(),
+            )))
             .collect(),
         TerminatorKind::CheckedIntNegate { normal, fault, .. }
         | TerminatorKind::CheckedIntBinary { normal, fault, .. }

@@ -6755,7 +6755,7 @@ pub fn main() {
 
     let dump = dump_program(artifact.program());
     assert!(dump.contains("product.extract"), "{dump}");
-    assert!(dump.matches("sum.switch").count() >= 4, "{dump}");
+    assert!(dump.matches("sum.zip_switch").count() >= 4, "{dump}");
     assert!(dump.contains("unrefine"), "{dump}");
     assert!(dump.contains("int.compare.equal"), "{dump}");
     assert!(dump.contains("bool.compare.equal"), "{dump}");
@@ -6766,23 +6766,35 @@ pub fn main() {
 }
 
 #[test]
-fn wide_sum_structural_equality_fails_closed_before_a_quadratic_helper_cfg() {
+fn wide_sum_structural_equality_uses_one_linear_paired_dispatch() {
     const VARIANTS: usize = 64;
     let mut variants = String::new();
     for index in 0..VARIANTS {
-        writeln!(variants, "    V{index}").expect("variant declaration");
+        writeln!(variants, "    V{index}(Int)").expect("variant declaration");
     }
     let source = format!(
-        "enum Wide {{\n{variants}}}\n\npub fn main() {{\n    let left = Wide.V0\n    let right = Wide.V63\n    discard left == right\n}}\n"
+        "enum Wide {{\n{variants}}}\n\npub fn main() {{\n    let left = Wide.V0(7)\n    let same = Wide.V0(7)\n    let changed = Wide.V0(8)\n    let other = Wide.V63(7)\n    assert left == same\n    assert left != changed\n    assert left != other\n}}\n"
     );
     let outcome = lower_run(&source);
-    let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("quadratic wide-sum equality must fail closed before LCIR allocation")
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("wide-sum equality must lower through one linear paired dispatch: {outcome:?}")
     };
-    assert_eq!(report.len(), 1, "{report:?}");
-    assert_eq!(
-        report.items()[0].feature(),
-        UnsupportedFeature::NominalValue
+    let dump = dump_program(artifact.program());
+    assert_eq!(dump.matches("sum.zip_switch").count(), 1, "{dump}");
+    let helper = artifact
+        .functions()
+        .iter()
+        .find(|function| {
+            artifact
+                .program()
+                .as_program()
+                .instance_key(function.id())
+                .is_some_and(|key| key.role() == InstanceRole::StructuralEquality)
+        })
+        .expect("wide-sum equality helper");
+    assert!(
+        helper.blocks().len() < VARIANTS * 2,
+        "wide equality helper grew beyond a linear CFG:\n{dump}"
     );
 }
 

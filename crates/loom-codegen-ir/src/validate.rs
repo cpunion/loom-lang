@@ -5007,6 +5007,80 @@ impl<'a> Validator<'a> {
                     );
                 }
             }
+            TerminatorKind::SumZipSwitch {
+                left,
+                right,
+                cases,
+                mismatch,
+            } => {
+                let left_type = function.value(*left).map(|value| value.ty);
+                let right_type = function.value(*right).map(|value| value.ty);
+                let sum = left_type.and_then(|ty| self.sum_repr(ty));
+                if left_type.is_some() && sum.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.left"),
+                        "sum zip switch operands must use one exact sum representation",
+                    );
+                }
+                if left_type.is_some() && right_type != left_type {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.right"),
+                        "sum zip switch operands must have the same exact value type",
+                    );
+                }
+                self.validate_target(function, mismatch, format!("{path}.mismatch"));
+                let Some(sum) = sum else {
+                    return;
+                };
+                if left_type.is_some_and(|ty| {
+                    representation_contains_task_handle(&self.program.representations, ty)
+                        != Some(false)
+                }) {
+                    self.error(
+                        ValidationCode::InvalidTaskOwnership,
+                        format!("{path}.left"),
+                        "sum zip switch cannot discard a task-bearing payload on its mismatch edge",
+                    );
+                }
+                let variants = self
+                    .program
+                    .representations
+                    .sum(sum)
+                    .map(|sum| sum.variants().len())
+                    .unwrap_or_default();
+                if cases.len() != variants {
+                    self.error(
+                        ValidationCode::InstructionShape,
+                        format!("{path}.cases"),
+                        format!(
+                            "sum zip switch has {} case(s), representation requires {}",
+                            cases.len(),
+                            variants
+                        ),
+                    );
+                }
+                for (index, case) in cases.iter().take(variants).enumerate() {
+                    if usize::try_from(case.variant).ok() != Some(index) {
+                        self.error(
+                            ValidationCode::InstructionShape,
+                            format!("{path}.case[{index}].variant"),
+                            format!(
+                                "sum zip switch cases must be ordered 0..n, found variant {}",
+                                case.variant
+                            ),
+                        );
+                    }
+                    self.validate_sum_zip_case(
+                        function,
+                        case,
+                        sum,
+                        index,
+                        &format!("{path}.case[{index}]"),
+                    );
+                }
+            }
             TerminatorKind::DynSwitch { scrutinee, cases } => {
                 let scrutinee_type = function.value(*scrutinee).map(|value| value.ty);
                 let candidates = scrutinee_type
@@ -5627,6 +5701,58 @@ impl<'a> Validator<'a> {
                 ValidationCode::BlockArgument,
                 format!("{path}.payload[{index}]"),
             );
+        }
+    }
+
+    fn validate_sum_zip_case(
+        &mut self,
+        function: &Function,
+        case: &crate::SumCase,
+        sum: SumReprId,
+        variant: usize,
+        path: &str,
+    ) {
+        let field_count = self
+            .sum_variant_field_count(sum, variant)
+            .unwrap_or_default();
+        let Some(implicit_count) = field_count.checked_mul(2) else {
+            self.error(
+                ValidationCode::InstructionShape,
+                path,
+                "sum zip switch payload arity overflowed",
+            );
+            return;
+        };
+        self.validate_forwarded_target_shape(
+            function,
+            case.block,
+            &case.arguments,
+            implicit_count,
+            path.to_owned(),
+        );
+        let Some(block) = function.block(case.block) else {
+            return;
+        };
+        for (side, offset) in [("left", 0_usize), ("right", field_count)] {
+            for (index, parameter) in block
+                .params
+                .iter()
+                .copied()
+                .skip(offset)
+                .take(field_count)
+                .enumerate()
+            {
+                let Some(expected) = self.sum_variant_field(sum, variant, index) else {
+                    continue;
+                };
+                self.require_value_type(
+                    function,
+                    parameter,
+                    expected,
+                    ValidationCode::BlockArgument,
+                    format!("{path}.{side}_payload[{index}]"),
+                );
+            }
         }
     }
 
@@ -7678,6 +7804,7 @@ fn compute_exact_effects(program: &Program, fault_states: &[Vec<FaultStateSet>])
                 | TerminatorKind::Jump(_)
                 | TerminatorKind::Branch { .. }
                 | TerminatorKind::SumSwitch { .. }
+                | TerminatorKind::SumZipSwitch { .. }
                 | TerminatorKind::DynSwitch { .. }
                 | TerminatorKind::Return(_)
                 | TerminatorKind::TaskCancelled
@@ -8072,6 +8199,18 @@ fn transfer_task_ownership(
             collect_issues,
             &mut issues,
         ),
+        TerminatorKind::SumZipSwitch { left, right, .. } => {
+            for operand in [*left, *right] {
+                consume_task_handle(
+                    operand,
+                    site,
+                    &mut states,
+                    task_values,
+                    collect_issues,
+                    &mut issues,
+                );
+            }
+        }
         _ => {}
     }
     for writeback in terminator.writebacks().iter().copied() {
@@ -8396,6 +8535,16 @@ fn forwarded_list_edges(kind: &TerminatorKind) -> Vec<(BlockId, &[ValueId])> {
         TerminatorKind::SumSwitch { cases, .. } | TerminatorKind::DynSwitch { cases, .. } => cases
             .iter()
             .map(|case| (case.block, case.arguments.as_ref()))
+            .collect(),
+        TerminatorKind::SumZipSwitch {
+            cases, mismatch, ..
+        } => cases
+            .iter()
+            .map(|case| (case.block, case.arguments.as_ref()))
+            .chain(std::iter::once((
+                mismatch.block,
+                mismatch.arguments.as_ref(),
+            )))
             .collect(),
         TerminatorKind::CheckedIntNegate { normal, fault, .. }
         | TerminatorKind::CheckedIntBinary { normal, fault, .. }

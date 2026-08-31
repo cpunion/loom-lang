@@ -1160,10 +1160,11 @@ impl BlockTarget {
 
 /// One exhaustive closed-sum case edge.
 ///
-/// The selected variant payload is injected into the destination's leading
-/// block parameters. Explicit `arguments` are forwarded after that implicit
-/// payload, mirroring result edges without materializing payload values in the
-/// source block.
+/// [`TerminatorKind::SumSwitch`] injects the selected variant payload into the
+/// destination's leading block parameters. [`TerminatorKind::SumZipSwitch`]
+/// injects the left payload followed by the right payload. Explicit
+/// `arguments` are forwarded after those implicit values, mirroring result
+/// edges without materializing payload values in the source block.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SumCase {
     pub variant: u32,
@@ -1564,6 +1565,17 @@ pub enum TerminatorKind {
         scrutinee: ValueId,
         cases: Box<[SumCase]>,
     },
+    /// Compares two values with the same closed-sum type and dispatches once.
+    /// A matching tag selects the ordered case and injects the left payload
+    /// followed by the right payload. Different tags take `mismatch` without
+    /// exposing either inactive payload. Task-bearing sums are not valid here
+    /// because the mismatch edge would discard affine values.
+    SumZipSwitch {
+        left: ValueId,
+        right: ValueId,
+        cases: Box<[SumCase]>,
+        mismatch: BlockTarget,
+    },
     /// Exhaustively switches over one artifact-closed dynamic candidate set.
     /// Each edge injects the selected concrete payload as its leading block
     /// parameter, then forwards the explicit case arguments.
@@ -1694,6 +1706,24 @@ impl TerminatorKind {
                 for case in cases {
                     operands.extend_from_slice(&case.arguments);
                 }
+                operands
+            }
+            Self::SumZipSwitch {
+                left,
+                right,
+                cases,
+                mismatch,
+            } => {
+                let mut operands = Vec::with_capacity(
+                    2 + mismatch.arguments.len()
+                        + cases.iter().map(|case| case.arguments.len()).sum::<usize>(),
+                );
+                operands.push(*left);
+                operands.push(*right);
+                for case in cases {
+                    operands.extend_from_slice(&case.arguments);
+                }
+                operands.extend_from_slice(&mismatch.arguments);
                 operands
             }
             Self::Return(value) => vec![*value],
@@ -1832,6 +1862,16 @@ impl TerminatorKind {
             } => vec![preserve(then_target.block), preserve(else_target.block)],
             Self::SumSwitch { cases, .. } | Self::DynSwitch { cases, .. } => {
                 cases.iter().map(|case| preserve(case.block)).collect()
+            }
+            Self::SumZipSwitch {
+                cases, mismatch, ..
+            } => {
+                let mut edges = cases
+                    .iter()
+                    .map(|case| preserve(case.block))
+                    .collect::<Vec<_>>();
+                edges.push(preserve(mismatch.block));
+                edges
             }
             Self::AwaitTasks {
                 normal,

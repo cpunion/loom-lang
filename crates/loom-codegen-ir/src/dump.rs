@@ -53,7 +53,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 47")?;
+    writeln!(output, "lcir 48")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -636,6 +636,52 @@ fn write_terminator(
                         write!(output, ", ")?;
                     }
                     write!(output, "payload{payload}")?;
+                }
+                if payload_count != 0 && !case.arguments.is_empty() {
+                    write!(output, "; ")?;
+                }
+                write_arguments(output, &case.arguments)?;
+                write!(output, ")")?;
+            }
+            Ok(())
+        }
+        TerminatorKind::SumZipSwitch {
+            left,
+            right,
+            cases,
+            mismatch,
+        } => {
+            write!(output, "sum.zip_switch %{left}, %{right}, mismatch => ")?;
+            write_target(output, mismatch)?;
+            let payloads = program
+                .function(left.owner())
+                .and_then(|function| function.value(*left))
+                .and_then(|value| program.representations().value_type(value.ty()))
+                .and_then(|value_type| program.representations().repr(value_type.repr()))
+                .and_then(|repr| match repr {
+                    Repr::Sum(sum) => program.representations().sum(*sum),
+                    Repr::Uninhabited
+                    | Repr::Zst
+                    | Repr::Scalar(_)
+                    | Repr::ImmortalText
+                    | Repr::ManagedPointer
+                    | Repr::TaskHandle
+                    | Repr::Product(_) => None,
+                })
+                .map(crate::SumRepr::variants);
+            for (index, case) in cases.iter().enumerate() {
+                write!(output, ", case {} => {}(", case.variant, case.block)?;
+                let payload_count = payloads
+                    .and_then(|variants| variants.get(index))
+                    .map(|variant| variant.fields().len())
+                    .unwrap_or_default();
+                for side in ["left", "right"] {
+                    for payload in 0..payload_count {
+                        if side == "right" || payload != 0 {
+                            write!(output, ", ")?;
+                        }
+                        write!(output, "{side}.payload{payload}")?;
+                    }
                 }
                 if payload_count != 0 && !case.arguments.is_empty() {
                     write!(output, "; ")?;

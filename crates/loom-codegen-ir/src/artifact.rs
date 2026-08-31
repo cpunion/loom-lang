@@ -681,6 +681,34 @@ impl ArtifactValidator<'_> {
                             );
                         }
                     }
+                    TerminatorKind::SumZipSwitch {
+                        cases, mismatch, ..
+                    } => {
+                        for case in cases {
+                            let implicit = function
+                                .block(case.block)
+                                .map(|target| {
+                                    target.params().len().saturating_sub(case.arguments.len())
+                                })
+                                .unwrap_or_default();
+                            mark_text_target(
+                                function,
+                                text,
+                                &mut supplied,
+                                case.block,
+                                &case.arguments,
+                                implicit,
+                            );
+                        }
+                        mark_text_target(
+                            function,
+                            text,
+                            &mut supplied,
+                            mismatch.block,
+                            &mismatch.arguments,
+                            0,
+                        );
+                    }
                     TerminatorKind::CheckedIntNegate { normal, fault, .. }
                     | TerminatorKind::CheckedIntBinary { normal, fault, .. }
                     | TerminatorKind::TaskSleep { normal, fault, .. }

@@ -1915,13 +1915,11 @@ fn direct_structural_equality_children(program: &mir::Program, ty: &Type) -> Opt
                 vec![base]
             } else {
                 let variants = closed_enum_variants(program, ty)?;
-                // `branch_on_sum_equality` emits one complete right-hand
-                // switch for every left-hand variant. Keep that quadratic
-                // one-helper CFG inside the same explicit 4096-node gate that
-                // bounded the former inline lowering. Payload comparisons are
-                // delegated to child helpers, but their branch sites still
+                // `branch_on_sum_equality` compares both tags once and emits
+                // one paired case per matching variant. Payload comparisons
+                // are delegated to child helpers, but their branch sites still
                 // contribute one bounded node each in this helper.
-                let case_cost = variants.len().checked_mul(variants.len())?;
+                let case_cost = variants.len();
                 let payload_cost = variants
                     .iter()
                     .try_fold(0_usize, |cost, variant| cost.checked_add(variant.len()))?;
@@ -10980,7 +10978,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         )
     }
 
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments)]
     fn branch_on_sum_equality(
         &mut self,
         flow: Flow,
@@ -10991,19 +10989,27 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
         not_equal: BlockId,
         origin: Origin,
     ) -> Result<(), LoweringError> {
-        let mut left_cases = Vec::with_capacity(variants.len());
-        let mut left_payloads = Vec::with_capacity(variants.len());
+        let mut cases = Vec::with_capacity(variants.len());
+        let mut payloads = Vec::with_capacity(variants.len());
         for (variant, fields) in variants.iter().enumerate() {
             let block = self.create_block()?;
-            let mut payload = Vec::with_capacity(fields.len());
+            let mut left_payload = Vec::with_capacity(fields.len());
             for field in fields {
-                payload.push(
+                left_payload.push(
                     self.builder
                         .append_block_parameter(block, *field)
                         .map_err(LoweringError::from)?,
                 );
             }
-            left_cases.push(SumCase::new(
+            let mut right_payload = Vec::with_capacity(fields.len());
+            for field in fields {
+                right_payload.push(
+                    self.builder
+                        .append_block_parameter(block, *field)
+                        .map_err(LoweringError::from)?,
+                );
+            }
+            cases.push(SumCase::new(
                 u32::try_from(variant).map_err(|_| LoweringError::ResourceLimit {
                     code: ResourceLimitCode::ProgramTooLarge,
                     message: "structural equality sum variant index exceeds u32".into(),
@@ -11011,89 +11017,49 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 block,
                 [],
             ));
-            left_payloads.push((block, payload));
+            payloads.push((block, left_payload, right_payload));
         }
         self.terminate(
             flow.block,
-            TerminatorKind::SumSwitch {
-                scrutinee: left,
-                cases: left_cases.into_boxed_slice(),
+            TerminatorKind::SumZipSwitch {
+                left,
+                right,
+                cases: cases.into_boxed_slice(),
+                mismatch: BlockTarget::new(not_equal, []),
             },
             origin,
         )?;
 
-        for (left_variant, (left_block, left_payload)) in left_payloads.into_iter().enumerate() {
-            let mut right_cases = Vec::with_capacity(variants.len());
-            let mut right_payloads = Vec::with_capacity(variants.len());
-            for (right_variant, fields) in variants.iter().enumerate() {
-                let block = self.create_block()?;
-                let mut payload = Vec::with_capacity(fields.len());
-                for field in fields {
-                    payload.push(
-                        self.builder
-                            .append_block_parameter(block, *field)
-                            .map_err(LoweringError::from)?,
-                    );
-                }
-                right_cases.push(SumCase::new(
-                    u32::try_from(right_variant).map_err(|_| LoweringError::ResourceLimit {
-                        code: ResourceLimitCode::ProgramTooLarge,
-                        message: "structural equality sum variant index exceeds u32".into(),
-                    })?,
-                    block,
-                    [],
+        for (variant, (block, left_payload, right_payload)) in payloads.into_iter().enumerate() {
+            let fields = variants.get(variant).ok_or_else(|| {
+                LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    "structural equality lost a sum variant plan",
+                )
+            })?;
+            if left_payload.len() != fields.len() || right_payload.len() != fields.len() {
+                return Err(LoweringError::defect(
+                    LoweringDefectCode::InconsistentPlan,
+                    "structural equality sum payload shape changed during lowering",
                 ));
-                right_payloads.push((block, payload));
             }
-            self.terminate(
-                left_block,
-                TerminatorKind::SumSwitch {
-                    scrutinee: right,
-                    cases: right_cases.into_boxed_slice(),
+            let pairs = left_payload
+                .iter()
+                .copied()
+                .zip(right_payload.iter().copied())
+                .zip(fields.iter().copied())
+                .map(|((left, right), ty)| (left, right, ty))
+                .collect::<Vec<_>>();
+            self.branch_on_equal_fields(
+                Flow {
+                    block,
+                    env: flow.env,
                 },
+                &pairs,
+                equal,
+                not_equal,
                 origin,
             )?;
-            for (right_variant, (right_block, right_payload)) in
-                right_payloads.into_iter().enumerate()
-            {
-                if left_variant != right_variant {
-                    self.terminate(
-                        right_block,
-                        TerminatorKind::Jump(BlockTarget::new(not_equal, [])),
-                        origin,
-                    )?;
-                    continue;
-                }
-                let fields = variants.get(left_variant).ok_or_else(|| {
-                    LoweringError::defect(
-                        LoweringDefectCode::InconsistentPlan,
-                        "structural equality lost a sum variant plan",
-                    )
-                })?;
-                if left_payload.len() != fields.len() || right_payload.len() != fields.len() {
-                    return Err(LoweringError::defect(
-                        LoweringDefectCode::InconsistentPlan,
-                        "structural equality sum payload shape changed during lowering",
-                    ));
-                }
-                let pairs = left_payload
-                    .iter()
-                    .copied()
-                    .zip(right_payload.iter().copied())
-                    .zip(fields.iter().copied())
-                    .map(|((left, right), ty)| (left, right, ty))
-                    .collect::<Vec<_>>();
-                self.branch_on_equal_fields(
-                    Flow {
-                        block: right_block,
-                        env: flow.env,
-                    },
-                    &pairs,
-                    equal,
-                    not_equal,
-                    origin,
-                )?;
-            }
         }
         Ok(())
     }
