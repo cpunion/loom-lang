@@ -233,7 +233,11 @@ Planning admits at most 4,096 concrete equality-helper types and registers
 every implicit `Option[T]` or `Option[(Text, V)]` before LCIR construction.
 Each compiler-generated `StructuralEquality` instance has the exact signature
 `(T, T) -> Bool`, no effects, no coroutine plan, and expands one representation
-layer. Non-leaf children use ordinary direct calls to their own exact helpers.
+layer. A closed sum uses one `SumZipSwitch`: both tags are compared once,
+different tags take the false edge, and a matching case receives the left
+payload followed by the right payload. The helper therefore grows linearly in
+the number of variants and payload fields instead of building a Cartesian pair
+of exhaustive switches. Non-leaf children use ordinary direct calls to their own exact helpers.
 A nominal type reached again through List or TextMap therefore closes a finite
 call-graph cycle instead of cloning an unbounded CFG. Helpers are planned only
 from reachable equality sites, participate in normal artifact reachability and
@@ -1136,7 +1140,9 @@ not repair a malformed program. Current checks include:
 - direct-call and invoke arity, types, result types, and exact callee effects;
 - edge argument arity and types;
 - ordered exhaustive sum cases, exact construction payloads, and typed implicit
-  payload parameters on every `SumSwitch` edge;
+  payload parameters on every `SumSwitch` edge; `SumZipSwitch` additionally
+  requires two exact task-free operands, paired left/right payload parameters,
+  and one ordinary mismatch edge;
 - one artifact-wide 64-bit `Text` registration, either `ImmortalText` for an
   allocation-free, aggregate-free graph or `ManagedPointer` when concat/get or
   a Text-bearing product, sum, transparent/refined carrier, or TextMap is
@@ -1267,6 +1273,9 @@ dumps for structurally different recursive and iterative Fibonacci programs,
 plus zero-cost proven refinements and invariant records. A source regression
 keeps `Bool`, `Int`, and `Float` whole-receiver replacement, projected scalar
 writeback, fallible and infallible calls, and native execution on typed LCIR.
+Wide payload-enum regressions keep structural equality on one linear paired-sum
+dispatch and execute the same checked result through LLVM without a universal
+value or runtime type switch.
 Generic regressions
 cover exact regular recursion, duplicate-instance elimination, cross-test-root
 reuse, witness-bearing identity, nonregular recursion, bounded key expansion,

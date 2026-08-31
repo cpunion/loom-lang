@@ -125,6 +125,100 @@ fn exhaustive_sum_switch_carries_typed_payload_edge_parameters() {
 }
 
 #[test]
+fn sum_zip_switch_injects_both_payloads_in_left_then_right_order() {
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let sum = builder
+        .add_sum_type(
+            nominal(21),
+            &[Box::from([Type::Int, Type::Bool]), Box::new([])],
+        )
+        .expect("sum");
+    let unit = builder.type_id(&Type::Unit).expect("Unit");
+    let integer = builder.type_id(&Type::Int).expect("Int");
+    let boolean = builder.type_id(&Type::Bool).expect("Bool");
+    let origin = Origin::synthetic(FunctionId(21));
+    let root = builder
+        .declare_function(
+            origin,
+            "sum.zip.valid",
+            Signature::new([sum, sum, boolean], unit),
+            Effects::NONE,
+        )
+        .expect("declare");
+    {
+        let mut function = builder.function(root).expect("builder");
+        let entry = function.create_block().expect("entry");
+        let payload = function.create_block().expect("payload case");
+        let empty = function.create_block().expect("empty case");
+        let mismatch = function.create_block().expect("mismatch");
+        function.set_entry(entry).expect("set entry");
+        let left = function
+            .append_block_parameter(entry, sum)
+            .expect("left sum");
+        let right = function
+            .append_block_parameter(entry, sum)
+            .expect("right sum");
+        let forwarded = function
+            .append_block_parameter(entry, boolean)
+            .expect("forwarded value");
+        for ty in [integer, boolean, integer, boolean] {
+            function
+                .append_block_parameter(payload, ty)
+                .expect("paired payload");
+        }
+        function
+            .append_block_parameter(payload, boolean)
+            .expect("payload forwarded value");
+        function
+            .append_block_parameter(empty, boolean)
+            .expect("empty forwarded value");
+        function
+            .append_block_parameter(mismatch, boolean)
+            .expect("mismatch forwarded value");
+        function
+            .terminate(
+                entry,
+                Terminator::new(
+                    TerminatorKind::SumZipSwitch {
+                        left,
+                        right,
+                        cases: Box::from([
+                            SumCase::new(0, payload, [forwarded]),
+                            SumCase::new(1, empty, [forwarded]),
+                        ]),
+                        mismatch: loom_codegen_ir::BlockTarget::new(mismatch, [forwarded]),
+                    },
+                    origin,
+                ),
+            )
+            .expect("zip switch");
+        for block in [payload, empty, mismatch] {
+            let result = function
+                .append_instruction(
+                    block,
+                    InstructionKind::Constant(loom_codegen_ir::Constant::Unit),
+                    &[unit],
+                    origin,
+                )
+                .expect("Unit")[0];
+            function
+                .terminate(
+                    block,
+                    Terminator::new(TerminatorKind::Return(result), origin),
+                )
+                .expect("return");
+        }
+    }
+    let checked = builder.finish_checked().expect("valid paired sum CFG");
+    let dump = loom_codegen_ir::dump_program(&checked);
+    assert!(
+        dump.contains("left.payload0, left.payload1, right.payload0, right.payload1;"),
+        "{dump}"
+    );
+    assert!(dump.contains("mismatch =>"), "{dump}");
+}
+
+#[test]
 fn malformed_sum_construction_and_switch_are_rejected_independently() {
     let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
     let sum = builder

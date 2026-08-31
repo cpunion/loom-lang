@@ -156,7 +156,8 @@ direct coverage includes:
   structural tuples, concrete records, refined values, closed sums, Lists,
   compiler-private TextMaps, bounded concrete generic instances, and
   synchronous direct-primitive `mut self` bodies with exact local or projected
-  functional writeback on normal and fault exits;
+  functional writeback on normal and fault exits; closed-sum structural
+  equality uses one linear paired dispatch for both narrow and wide enums;
 - canonical recursive Json formatting into the exact
   `Result[Text, JsonError]`, including typed Text publication and ordinary
   depth/non-finite error values;

@@ -11084,6 +11084,14 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                         pending.push(case.block);
                     }
                 }
+                TerminatorKind::SumZipSwitch {
+                    cases, mismatch, ..
+                } => {
+                    pending.push(mismatch.block);
+                    for case in cases.iter().rev() {
+                        pending.push(case.block);
+                    }
+                }
                 TerminatorKind::CheckedIntNegate { normal, fault, .. }
                 | TerminatorKind::CheckedIntBinary { normal, fault, .. }
                 | TerminatorKind::TaskSleep { normal, fault, .. }
@@ -15875,6 +15883,12 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             TerminatorKind::SumSwitch { scrutinee, cases } => {
                 self.emit_sum_switch(*scrutinee, cases)
             }
+            TerminatorKind::SumZipSwitch {
+                left,
+                right,
+                cases,
+                mismatch,
+            } => self.emit_sum_zip_switch(*left, *right, cases, mismatch),
             TerminatorKind::DynSwitch { scrutinee, cases } => {
                 self.emit_dyn_switch(*scrutinee, cases)
             }
@@ -16991,10 +17005,6 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         self.emit_coroutine_resume_state(plan_row, &suspension, normal, fault, cancel, origin)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "exhaustive sum dispatch keeps tag extraction, per-case payload decoding, and phi-edge construction together"
-    )]
     fn emit_sum_switch(
         &self,
         scrutinee: ValueId,
@@ -17018,7 +17028,8 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             })
             .collect::<Vec<_>>();
 
-        let carrier = match layout.tag {
+        let (tag, carrier) = self.sum_switch_value_parts(value, &layout, "sum.switch")?;
+        match layout.tag {
             SumTagRepr::Tagless => {
                 let [edge] = edges.as_slice() else {
                     return Err(CodegenError::new(
@@ -17030,92 +17041,29 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                     .builder
                     .build_unconditional_branch(*edge)
                     .map_err(builder_error)?;
-                None
             }
             SumTagRepr::I8 | SumTagRepr::I16 | SumTagRepr::I32 => {
-                let (tag, carrier) = if layout.carrier.is_some() {
-                    let aggregate = value.into_struct_value();
-                    let tag = self
-                        .backend
-                        .builder
-                        .build_extract_value(aggregate, 0, "sum.switch.tag")
-                        .map_err(builder_error)?
-                        .into_int_value();
-                    let carrier = self
-                        .backend
-                        .builder
-                        .build_extract_value(aggregate, 1, "sum.switch.carrier")
-                        .map_err(builder_error)?;
-                    (tag, Some(carrier))
-                } else {
-                    (value.into_int_value(), None)
-                };
-                let default = self
-                    .backend
-                    .context
-                    .append_basic_block(self.function, "sum.switch.invalid");
-                let llvm_cases = cases
-                    .iter()
-                    .zip(&edges)
-                    .map(|(case, edge)| {
-                        (
-                            tag.get_type().const_int(u64::from(case.variant), false),
-                            *edge,
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                self.backend
-                    .builder
-                    .build_switch(tag, default, &llvm_cases)
-                    .map_err(builder_error)?;
-                self.backend.builder.position_at_end(default);
-                self.backend
-                    .builder
-                    .build_unreachable()
-                    .map_err(builder_error)?;
-                carrier
+                self.emit_sum_tag_switch(
+                    tag.ok_or_else(|| {
+                        CodegenError::new("LlvmAbiDefect", "tagged sum switch has no tag")
+                    })?,
+                    cases,
+                    &edges,
+                    "sum.switch",
+                )?;
             }
-        };
+        }
 
         for (case, edge) in cases.iter().zip(edges) {
             self.backend.builder.position_at_end(edge);
-            let variant_index = usize::try_from(case.variant).map_err(|_| {
-                CodegenError::new("ProgramTooLarge", "sum case variant is too wide")
-            })?;
-            let payload_type = layout.payloads.get(variant_index).copied().ok_or_else(|| {
-                CodegenError::new(
-                    "LlvmAbiDefect",
-                    format!("sum type {ty} has no case variant {}", case.variant),
-                )
-            })?;
-            let payload = match layout.tag {
-                SumTagRepr::Tagless => value.into_struct_value(),
-                SumTagRepr::I8 | SumTagRepr::I16 | SumTagRepr::I32 => {
-                    if let Some(carrier_type) = layout.carrier {
-                        self.unpack_sum_carrier(
-                            carrier.ok_or_else(|| {
-                                CodegenError::new(
-                                    "LlvmAbiDefect",
-                                    "tagged sum switch has no carrier value",
-                                )
-                            })?,
-                            carrier_type,
-                            payload_type,
-                            layout.payload_byte_offset(variant_index)?,
-                        )?
-                    } else {
-                        payload_type.const_zero()
-                    }
-                }
-            };
-            let implicit = (0..payload_type.count_fields())
-                .map(|field| {
-                    self.backend
-                        .builder
-                        .build_extract_value(payload, field, "sum.switch.field")
-                        .map_err(builder_error)
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+            let implicit = self.sum_switch_payload_fields(
+                ty,
+                value,
+                carrier,
+                &layout,
+                case.variant,
+                "sum.switch",
+            )?;
             let predecessor = self.current_block()?;
             self.add_implicit_incoming(case.block, &implicit, &case.arguments, predecessor)?;
             self.backend
@@ -17124,6 +17072,242 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 .map_err(builder_error)?;
         }
         Ok(())
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "paired sum dispatch keeps the single tag comparison, selected payload decoding, and phi construction together"
+    )]
+    fn emit_sum_zip_switch(
+        &self,
+        left: ValueId,
+        right: ValueId,
+        cases: &[loom_codegen_ir::SumCase],
+        mismatch: &BlockTarget,
+    ) -> Result<(), CodegenError> {
+        let left_ty = self
+            .source
+            .value(left)
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", format!("missing left sum {left}")))?
+            .ty();
+        let right_ty = self
+            .source
+            .value(right)
+            .ok_or_else(|| {
+                CodegenError::new("LlvmAbiDefect", format!("missing right sum {right}"))
+            })?
+            .ty();
+        if left_ty != right_ty {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                format!("sum zip switch operands have different types {left_ty} and {right_ty}"),
+            ));
+        }
+
+        let layout = self.backend.sum_layout(left_ty)?;
+        let left_value = self.value(left)?;
+        let right_value = self.value(right)?;
+        let (left_tag, left_carrier) =
+            self.sum_switch_value_parts(left_value, &layout, "sum.zip.left")?;
+        let (right_tag, right_carrier) =
+            self.sum_switch_value_parts(right_value, &layout, "sum.zip.right")?;
+        let edges = cases
+            .iter()
+            .map(|case| {
+                self.backend
+                    .context
+                    .append_basic_block(self.function, &format!("sum.zip.case.{}", case.variant))
+            })
+            .collect::<Vec<_>>();
+
+        match layout.tag {
+            SumTagRepr::Tagless => {
+                let [edge] = edges.as_slice() else {
+                    return Err(CodegenError::new(
+                        "LlvmAbiDefect",
+                        format!("tagless sum zip switch for {left_ty} does not have one case"),
+                    ));
+                };
+                self.backend
+                    .builder
+                    .build_unconditional_branch(*edge)
+                    .map_err(builder_error)?;
+            }
+            SumTagRepr::I8 | SumTagRepr::I16 | SumTagRepr::I32 => {
+                let left_tag = left_tag.ok_or_else(|| {
+                    CodegenError::new("LlvmAbiDefect", "tagged sum zip switch has no left tag")
+                })?;
+                let right_tag = right_tag.ok_or_else(|| {
+                    CodegenError::new("LlvmAbiDefect", "tagged sum zip switch has no right tag")
+                })?;
+                let matching = self
+                    .backend
+                    .context
+                    .append_basic_block(self.function, "sum.zip.matching");
+                let mismatch_edge = self
+                    .backend
+                    .context
+                    .append_basic_block(self.function, "sum.zip.mismatch");
+                let tags_equal = self
+                    .backend
+                    .builder
+                    .build_int_compare(IntPredicate::EQ, left_tag, right_tag, "sum.zip.tags.equal")
+                    .map_err(builder_error)?;
+                self.backend
+                    .builder
+                    .build_conditional_branch(tags_equal, matching, mismatch_edge)
+                    .map_err(builder_error)?;
+
+                self.backend.builder.position_at_end(mismatch_edge);
+                self.branch(mismatch)?;
+
+                self.backend.builder.position_at_end(matching);
+                self.emit_sum_tag_switch(left_tag, cases, &edges, "sum.zip")?;
+            }
+        }
+
+        for (case, edge) in cases.iter().zip(edges) {
+            self.backend.builder.position_at_end(edge);
+            let mut implicit = self.sum_switch_payload_fields(
+                left_ty,
+                left_value,
+                left_carrier,
+                &layout,
+                case.variant,
+                "sum.zip.left",
+            )?;
+            implicit.extend(self.sum_switch_payload_fields(
+                right_ty,
+                right_value,
+                right_carrier,
+                &layout,
+                case.variant,
+                "sum.zip.right",
+            )?);
+            let predecessor = self.current_block()?;
+            self.add_implicit_incoming(case.block, &implicit, &case.arguments, predecessor)?;
+            self.backend
+                .builder
+                .build_unconditional_branch(self.block(case.block)?)
+                .map_err(builder_error)?;
+        }
+        Ok(())
+    }
+
+    fn sum_switch_value_parts(
+        &self,
+        value: BasicValueEnum<'ctx>,
+        layout: &SumLayout<'ctx>,
+        name: &str,
+    ) -> Result<(Option<IntValue<'ctx>>, Option<BasicValueEnum<'ctx>>), CodegenError> {
+        match layout.tag {
+            SumTagRepr::Tagless => Ok((None, None)),
+            SumTagRepr::I8 | SumTagRepr::I16 | SumTagRepr::I32 => {
+                if layout.carrier.is_some() {
+                    let aggregate = value.into_struct_value();
+                    let tag = self
+                        .backend
+                        .builder
+                        .build_extract_value(aggregate, 0, &format!("{name}.tag"))
+                        .map_err(builder_error)?
+                        .into_int_value();
+                    let carrier = self
+                        .backend
+                        .builder
+                        .build_extract_value(aggregate, 1, &format!("{name}.carrier"))
+                        .map_err(builder_error)?;
+                    Ok((Some(tag), Some(carrier)))
+                } else {
+                    Ok((Some(value.into_int_value()), None))
+                }
+            }
+        }
+    }
+
+    fn emit_sum_tag_switch(
+        &self,
+        tag: IntValue<'ctx>,
+        cases: &[loom_codegen_ir::SumCase],
+        edges: &[BasicBlock<'ctx>],
+        name: &str,
+    ) -> Result<(), CodegenError> {
+        if cases.len() != edges.len() {
+            return Err(CodegenError::new(
+                "LlvmAbiDefect",
+                "sum switch case and edge counts differ",
+            ));
+        }
+        let invalid = self
+            .backend
+            .context
+            .append_basic_block(self.function, &format!("{name}.invalid"));
+        let llvm_cases = cases
+            .iter()
+            .zip(edges)
+            .map(|(case, edge)| {
+                (
+                    tag.get_type().const_int(u64::from(case.variant), false),
+                    *edge,
+                )
+            })
+            .collect::<Vec<_>>();
+        self.backend
+            .builder
+            .build_switch(tag, invalid, &llvm_cases)
+            .map_err(builder_error)?;
+        self.backend.builder.position_at_end(invalid);
+        self.backend
+            .builder
+            .build_unreachable()
+            .map_err(builder_error)?;
+        Ok(())
+    }
+
+    fn sum_switch_payload_fields(
+        &self,
+        ty: ValueTypeId,
+        value: BasicValueEnum<'ctx>,
+        carrier: Option<BasicValueEnum<'ctx>>,
+        layout: &SumLayout<'ctx>,
+        variant: u32,
+        name: &str,
+    ) -> Result<Vec<BasicValueEnum<'ctx>>, CodegenError> {
+        let variant_index = usize::try_from(variant)
+            .map_err(|_| CodegenError::new("ProgramTooLarge", "sum case variant is too wide"))?;
+        let payload_type = layout.payloads.get(variant_index).copied().ok_or_else(|| {
+            CodegenError::new(
+                "LlvmAbiDefect",
+                format!("sum type {ty} has no case variant {variant}"),
+            )
+        })?;
+        let payload = match layout.tag {
+            SumTagRepr::Tagless => value.into_struct_value(),
+            SumTagRepr::I8 | SumTagRepr::I16 | SumTagRepr::I32 => {
+                if let Some(carrier_type) = layout.carrier {
+                    self.unpack_sum_carrier(
+                        carrier.ok_or_else(|| {
+                            CodegenError::new(
+                                "LlvmAbiDefect",
+                                "tagged sum switch has no carrier value",
+                            )
+                        })?,
+                        carrier_type,
+                        payload_type,
+                        layout.payload_byte_offset(variant_index)?,
+                    )?
+                } else {
+                    payload_type.const_zero()
+                }
+            }
+        };
+        (0..payload_type.count_fields())
+            .map(|field| {
+                self.backend
+                    .builder
+                    .build_extract_value(payload, field, &format!("{name}.field"))
+                    .map_err(builder_error)
+            })
+            .collect()
     }
 
     fn checked_intrinsic(

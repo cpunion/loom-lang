@@ -421,6 +421,91 @@ fn sum_switch_consumes_the_scrutinee_and_owns_the_selected_affine_payload() {
 }
 
 #[test]
+fn sum_zip_switch_rejects_task_bearing_operands_before_mismatch_can_drop_them() {
+    let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+    let unit = builder.type_id(&Type::Unit).expect("Unit");
+    let task_semantic = Type::Task(Box::new(Type::Int));
+    let task = builder
+        .add_task_handle_type(task_semantic.clone())
+        .expect("Task[Int]");
+    let sum = builder
+        .add_sum_type(
+            Type::Nominal(TypeId(86), Vec::new()),
+            &[Box::from([task_semantic]), Box::new([])],
+        )
+        .expect("task-bearing sum");
+    let function_id = builder
+        .declare_function(
+            origin(86),
+            "task_sum.zip_rejected",
+            Signature::new([sum, sum], unit),
+            Effects::NONE,
+        )
+        .expect("declare");
+    {
+        let mut function = builder.function(function_id).expect("function builder");
+        let entry = function.create_block().expect("entry");
+        let payload = function.create_block().expect("payload case");
+        let empty = function.create_block().expect("empty case");
+        let mismatch = function.create_block().expect("mismatch");
+        function.set_entry(entry).expect("set entry");
+        let left = function
+            .append_block_parameter(entry, sum)
+            .expect("left sum");
+        let right = function
+            .append_block_parameter(entry, sum)
+            .expect("right sum");
+        function
+            .append_block_parameter(payload, task)
+            .expect("left task payload");
+        function
+            .append_block_parameter(payload, task)
+            .expect("right task payload");
+        function
+            .terminate(
+                entry,
+                Terminator::new(
+                    TerminatorKind::SumZipSwitch {
+                        left,
+                        right,
+                        cases: Box::from([
+                            SumCase::new(0, payload, []),
+                            SumCase::new(1, empty, []),
+                        ]),
+                        mismatch: BlockTarget::new(mismatch, []),
+                    },
+                    origin(86),
+                ),
+            )
+            .expect("unchecked zip switch");
+        for block in [payload, empty, mismatch] {
+            let result = function
+                .append_instruction(
+                    block,
+                    InstructionKind::Constant(loom_codegen_ir::Constant::Unit),
+                    &[unit],
+                    origin(86),
+                )
+                .expect("Unit")[0];
+            function
+                .terminate(
+                    block,
+                    Terminator::new(TerminatorKind::Return(result), origin(86)),
+                )
+                .expect("return");
+        }
+    }
+
+    let errors = validate_program(&builder.finish()).expect_err("task-bearing zip must fail");
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code() == ValidationCode::InvalidTaskOwnership
+            && error
+                .message()
+                .contains("cannot discard a task-bearing payload")
+    }));
+}
+
+#[test]
 fn nested_task_lists_and_repeated_affine_aggregates_are_rejected() {
     let text_map_id = TypeId(85);
     let mut builder = ProgramBuilder::with_canonical_types(

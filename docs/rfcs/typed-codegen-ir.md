@@ -215,7 +215,8 @@ emitter.
 
 Concrete structural equality is generated from this same representation plan.
 Products compare exact fields, transparent values compare their declared base,
-and sums dispatch both tags before observing a matching active payload. Lists
+and sums compare both tags once through one linear paired dispatch before
+observing the matching active payloads. Lists
 compare length and then canonical `Option[T]` reads in a nonallocating proved
 loop. Ordinary expressions and contracts share the lowering. Recursive nominal
 equality that re-enters through a List or TextMap closes through finite,

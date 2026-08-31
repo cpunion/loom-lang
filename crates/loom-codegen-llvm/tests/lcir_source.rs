@@ -5495,7 +5495,7 @@ fn structural_equality_executes_products_sums_contracts_and_lists_through_typed_
     let dump = dump_program(artifact.program());
     for expected in [
         "product.extract",
-        "sum.switch",
+        "sum.zip_switch",
         "unrefine",
         "list.length",
         "list.get",
@@ -5559,6 +5559,61 @@ fn structural_equality_executes_products_sums_contracts_and_lists_through_typed_
         .unwrap_or_else(|error| panic!("emit structural equality for {target}: {error}"));
         assert!(object.is_file(), "missing object for {target}");
     }
+}
+
+#[test]
+fn wide_payload_enum_equality_executes_one_linear_typed_dispatch() {
+    const VARIANTS: usize = 64;
+    let mut variants = String::new();
+    for index in 0..VARIANTS {
+        writeln!(variants, "    V{index}(Int)").expect("variant declaration");
+    }
+    let source = format!(
+        "enum Solo {{\n    Value(Int)\n}}\n\nenum Flag {{\n    A\n    B\n    C\n}}\n\nenum Wide {{\n{variants}}}\n\npub fn main() {{\n    let solo = Solo.Value(5)\n    let sameSolo = Solo.Value(5)\n    let flag = Flag.B\n    let sameFlag = Flag.B\n    let otherFlag = Flag.C\n    let left = Wide.V0(7)\n    let same = Wide.V0(7)\n    let changed = Wide.V0(8)\n    let other = Wide.V63(7)\n    let sameOther = Wide.V63(7)\n    assert solo == sameSolo\n    assert flag == sameFlag\n    assert flag != otherFlag\n    assert left == same\n    assert left != changed\n    assert left != other\n    assert other == sameOther\n}}\n"
+    );
+    let program = compile_source(&source);
+    assert_eq!(interpret_run(&program, "main"), Ok(Value::Unit));
+
+    for policy in [NativeRoutePolicy::Automatic, NativeRoutePolicy::LcirOnly] {
+        let prepared = prepare_native_object(&program, EmitOptions::run("main"), policy)
+            .unwrap_or_else(|error| panic!("prepare wide enum equality with {policy:?}: {error}"));
+        assert_eq!(prepared.route_kind(), NativeRouteKind::Lcir);
+    }
+
+    let artifact = lower_source_artifact(
+        &program,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+    );
+    let dump = dump_program(artifact.program());
+    assert_eq!(dump.matches("sum.zip_switch").count(), 3, "{dump}");
+    let helper = artifact
+        .functions()
+        .iter()
+        .filter(|function| {
+            artifact
+                .program()
+                .as_program()
+                .instance_key(function.id())
+                .is_some_and(|key| key.role() == InstanceRole::StructuralEquality)
+        })
+        .max_by_key(|function| function.blocks().len())
+        .expect("wide equality helper");
+    assert!(
+        (VARIANTS..VARIANTS * 2).contains(&helper.blocks().len()),
+        "wide equality helper grew beyond a linear CFG:\n{dump}"
+    );
+
+    let native = emit_and_run_lcir_with_options(
+        &artifact,
+        "wide-payload-enum-equality",
+        NativeObjectOptions::default().with_optimization(OptimizationProfile::Release),
+    );
+    assert!(native.output.status.success(), "{:?}", native.output);
+    assert_eq!(native.output.stdout, b"Unit\n");
+    assert!(!native.ir.contains("%loom.Value"), "{}", native.ir);
+    assert!(!native.ir.contains("loom_executor_"), "{}", native.ir);
 }
 
 #[test]
