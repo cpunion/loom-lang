@@ -117,11 +117,15 @@ Missing references in checked MIR are backend defects.
 
 The LCIR instance traversal applies the same executable-order rule. A call
 after a return or diverging expression cannot create an instance. Exact
-recursive calls close back onto one key, while recursion that changes the key
-is rejected as unsupported under finite instance, edge, and key-structure
-budgets. This rejection occurs during planning, before any partial LCIR is
-allocated. A generic function that is not reached cannot consume those budgets
-or change direct-versus-checked-MIR route selection.
+recursive calls close back onto one key. Recursion that changes the key returns
+`NonRegularGenericRecursion`; exhausting the finite instance, edge, or key-
+structure budget returns `LcirLoweringProgramTooLarge`. Both fail during
+planning, before any partial LCIR is allocated, and neither may select the
+checked-MIR fallback. A generic function that is not reached cannot consume
+those budgets or change route selection.
+Concrete signature and expression substitution shares the key-structure bound.
+Only substitution growth reports `LcirLoweringProgramTooLarge`; an already-wide
+source type remains a direct-LCIR coverage decision.
 
 For a concrete `dyn C` view, LCIR additionally groups executable conversion
 producers by the exact concept and associated-type bindings. One closed

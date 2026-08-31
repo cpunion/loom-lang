@@ -1,6 +1,6 @@
 #![allow(clippy::default_trait_access)]
 
-use loom_codegen_ir::UnsupportedFeature;
+use loom_codegen_ir::INSTANCE_KEY_STRUCTURE_BUDGET;
 use loom_codegen_llvm::{
     DebugSource, EmitOptions, NativePreparationErrorKind, NativeRouteKind, NativeRoutePolicy,
     OptimizationProfile, emit_prepared_native_object, prepare_native_object,
@@ -148,7 +148,7 @@ fn missing() dyn Truth { missing() }
     )
 }
 
-fn unsupported_nonregular_generic_program() -> CheckedProgram {
+fn nonregular_generic_program() -> CheckedProgram {
     compile_source(
         r"fn spiral[T](value T) {
     spiral((value, value))
@@ -159,6 +159,15 @@ pub fn main() {
 }
 ",
     )
+}
+
+fn oversized_generic_instance_program() -> CheckedProgram {
+    let values = std::iter::repeat_n("value", INSTANCE_KEY_STRUCTURE_BUDGET)
+        .collect::<Vec<_>>()
+        .join(", ");
+    compile_source(&format!(
+        "fn expand[T](value T) {{\n    expand(({values}))\n}}\n\npub fn main() {{\n    expand(1)\n}}\n"
+    ))
 }
 
 #[test]
@@ -368,42 +377,37 @@ fn lcir_only_accepts_a_complete_typed_artifact() {
 }
 
 #[test]
-fn lcir_only_preserves_a_deterministic_structured_support_report() {
-    let program = unsupported_nonregular_generic_program();
-    let prepare = || {
-        prepare_native_object(
-            &program,
-            EmitOptions::run("main"),
-            NativeRoutePolicy::LcirOnly,
-        )
-        .err()
-        .expect("unsupported LCIR must fail instead of selecting checked-MIR")
-    };
-    let first = prepare();
-    let second = prepare();
+fn nonregular_generic_recursion_never_selects_a_native_fallback() {
+    let program = nonregular_generic_program();
+    for policy in [NativeRoutePolicy::Automatic, NativeRoutePolicy::LcirOnly] {
+        let prepare = || {
+            prepare_native_object(&program, EmitOptions::run("main"), policy)
+                .err()
+                .expect("non-regular generic recursion must fail before route selection")
+        };
+        let first = prepare();
+        let second = prepare();
 
-    assert_eq!(first, second);
-    assert_eq!(first.kind(), NativePreparationErrorKind::Unsupported);
-    assert_eq!(first.code(), "NativePreparationUnsupportedLcir");
-    let report = first
-        .support_report()
-        .expect("unsupported preparation carries its support report");
-    assert!(!report.is_empty());
-    assert!(
-        report
-            .items()
-            .iter()
-            .any(|item| item.feature() == UnsupportedFeature::NonRegularGenericRecursion),
-        "{report:#?}"
-    );
-    assert!(
-        first.message().contains("NonRegularGenericRecursion"),
-        "{first}"
-    );
-    assert!(
-        first.message().contains(report.items()[0].path()),
-        "{first}"
-    );
+        assert_eq!(first, second);
+        assert_eq!(first.kind(), NativePreparationErrorKind::InvalidProgram);
+        assert_eq!(first.code(), "NonRegularGenericRecursion");
+        assert!(first.support_report().is_none());
+        assert!(first.message().contains(".body.tail.instance"), "{first}");
+    }
+}
+
+#[test]
+fn generic_instance_budget_never_selects_a_native_fallback() {
+    let program = oversized_generic_instance_program();
+    for policy in [NativeRoutePolicy::Automatic, NativeRoutePolicy::LcirOnly] {
+        let error = prepare_native_object(&program, EmitOptions::run("main"), policy)
+            .err()
+            .expect("generic instance exhaustion must fail before route selection");
+        assert_eq!(error.kind(), NativePreparationErrorKind::Resource);
+        assert_eq!(error.code(), "NativePreparationProgramTooLarge");
+        assert!(error.support_report().is_none());
+        assert!(error.message().contains(".body.tail"), "{error}");
+    }
 }
 
 #[test]

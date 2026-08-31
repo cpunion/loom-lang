@@ -288,11 +288,13 @@ through the current synchronous `mut self` receiver's own top-level invariant
 use exact typed extraction and functional writeback on normal and fault edges.
 Source analysis and checked MIR reject mutation or moves that bypass a
 constrained-type predicate or record-invariant boundary. Shapes outside the
-current typed-LCIR SupportReport—including non-regular generic expansion,
-Task-bearing or otherwise unrepresentable projections, unsupported
-contract/cleanup forms—still select the complete checked-MIR route. A reachable
-dynamic coroutine carrier with no exact producer in the closed catalog instead
-reports `MissingDynamicConceptWitness` and cannot select fallback. Typed
+current typed-LCIR SupportReport—including Task-bearing or otherwise
+unrepresentable projections and unsupported contract/cleanup forms—still
+select the complete checked-MIR route. Non-regular generic recursion is an
+invalid program, generic planning-budget exhaustion is `ProgramTooLarge`, and
+inconsistent checked generic metadata is a compiler defect; none can select
+fallback. A reachable dynamic coroutine carrier with no exact producer in the
+closed catalog likewise reports `MissingDynamicConceptWitness`. Typed
 LCIR does not change the checked-MIR runtime ABI or make either object ABI
 public.
 

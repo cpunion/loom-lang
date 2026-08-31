@@ -977,9 +977,9 @@ reachable body is keyed by its source `FunctionId`, exact substituted type
 arguments, and the complete static witness-argument tree. Duplicate calls and
 different test roots reuse the same key. Exact self and mutual recursion reuse
 the already planned instance; a recursive edge that reaches the same source
-function with a different key is nonregular and selects whole-artifact
-`Unsupported`. Generic declarations outside the selected closure do not affect
-route selection.
+function with a different key is nonregular and returns the stable invalid-
+program code `NonRegularGenericRecursion`. Generic declarations outside the
+selected closure do not affect route selection.
 
 Planning is iterative and deterministic. It admits at most 4,096 concrete
 instances and 16,384 reachable direct-call edges, while each key retains the
@@ -990,9 +990,15 @@ concrete dispatch type, then appends conformance type arguments, conditional
 prerequisites, method type arguments, and method proofs in the method
 function's declared order. A projection through a function witness parameter
 normalizes from that same proof to the witness's concrete associated binding.
-An unresolved parameter, unresolved proof, nonregular recursive expansion, or
-exhausted planning budget selects one atomic unsupported result before an LCIR
-builder exists. Completed keys are
+An exhausted instance, call-edge, or key-structure budget returns
+`LcirLoweringProgramTooLarge`; a parameter, proof, or associated projection that
+cannot be closed after checked-MIR validation is an inconsistent-plan compiler
+defect. None of these planning failures can select the checked-MIR fallback.
+The same structure budget covers concrete generic signature and expression
+substitution: growth beyond the bound is `ProgramTooLarge`, while a source type
+already beyond direct LCIR's representation bound remains ordinary coverage
+fallback.
+Completed keys are
 ordered by source function and canonical key identity, so discovery order,
 duplicate roots, and repeated compilation do not perturb the artifact.
 

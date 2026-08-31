@@ -4,12 +4,12 @@ use std::{
 };
 
 use loom_codegen_ir::{
-    AwaitMode, CheckedIntBinaryOp, Effects, FaultCode, FaultMetadata, InstanceKey, InstanceRole,
-    InstructionKind, IntPredicate, InvalidProgramCode, InvalidRootCode, IoTaskErrorMode,
-    IoTaskOperation, LoweringErrorCode, LoweringOutcome, ManagedSafepoint, ResourceKind,
-    ResourceLimitCode, SourceArtifactRequest, TEXT_LITERAL_MAX_TOTAL_BYTES, TargetLayout,
-    TerminatorKind, UnsupportedFeature, ValueDefinition, artifact_identity, dump_program,
-    lower_typed_artifact, plan_managed_roots,
+    AwaitMode, CheckedIntBinaryOp, Effects, FaultCode, FaultMetadata,
+    INSTANCE_KEY_STRUCTURE_BUDGET, InstanceKey, InstanceRole, InstructionKind, IntPredicate,
+    InvalidProgramCode, InvalidRootCode, IoTaskErrorMode, IoTaskOperation, LoweringErrorCode,
+    LoweringOutcome, ManagedSafepoint, ResourceKind, ResourceLimitCode, SourceArtifactRequest,
+    TEXT_LITERAL_MAX_TOTAL_BYTES, TargetLayout, TerminatorKind, UnsupportedFeature,
+    ValueDefinition, artifact_identity, dump_program, lower_typed_artifact, plan_managed_roots,
 };
 use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId, Span};
 use loom_hir::{PackageSourceUnit, lower_package_files};
@@ -4812,8 +4812,8 @@ pub fn main() {
 }
 
 #[test]
-fn nonregular_generic_recursion_selects_atomic_unsupported() {
-    let outcome = lower_run(
+fn nonregular_generic_recursion_is_a_stable_invalid_program_error() {
+    let mir = compile(
         r"fn spiral[T](value T) {
     spiral((value, value))
 }
@@ -4823,33 +4823,101 @@ pub fn main() {
 }
 ",
     );
-    let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("nonregular generic recursion must select whole-artifact fallback")
+    let lower = || {
+        lower_typed_artifact(
+            &mir,
+            &SourceArtifactRequest::Run {
+                entry: "main".into(),
+            },
+            TargetLayout::new(64).expect("test target"),
+        )
+        .expect_err("non-regular generic recursion cannot select fallback")
     };
-    assert_eq!(report.len(), 1, "{report:?}");
+    let first = lower();
+    let second = lower();
+    assert_eq!(first, second);
     assert_eq!(
-        report.items()[0].feature(),
-        UnsupportedFeature::NonRegularGenericRecursion
+        first.code(),
+        LoweringErrorCode::InvalidProgram(InvalidProgramCode::NonRegularGenericRecursion)
     );
+    assert!(first.message().contains("function[0].body.tail"), "{first}");
+    assert!(first.message().contains("expression #"), "{first}");
 }
 
 #[test]
 fn oversized_generic_call_key_is_rejected_before_lcir_allocation() {
-    let values = std::iter::repeat_n("value", 256)
+    let values = std::iter::repeat_n("value", INSTANCE_KEY_STRUCTURE_BUDGET)
         .collect::<Vec<_>>()
         .join(", ");
     let source = format!(
         "fn expand[T](value T) {{\n    expand(({values}))\n}}\n\npub fn main() {{\n    expand(1)\n}}\n"
     );
-    let outcome = lower_run(&source);
-    let LoweringOutcome::Unsupported(report) = outcome else {
-        panic!("oversized concrete instance key must select atomic fallback")
-    };
-    assert_eq!(report.len(), 1, "{report:?}");
+    let mir = compile(&source);
+    let error = lower_typed_artifact(
+        &mir,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect_err("oversized concrete instance keys are a resource error, not fallback");
     assert_eq!(
-        report.items()[0].feature(),
-        UnsupportedFeature::GenericInstanceBudget
+        error.code(),
+        LoweringErrorCode::ResourceLimit(ResourceLimitCode::ProgramTooLarge)
     );
+    assert!(error.message().contains("function[0].body"), "{error}");
+}
+
+#[test]
+fn oversized_instantiated_signature_is_a_resource_error() {
+    let result_width = INSTANCE_KEY_STRUCTURE_BUDGET / 2;
+    let argument_width = 3;
+    let fields = std::iter::repeat_n("T", result_width)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let values = std::iter::repeat_n("value", result_width)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let argument = std::iter::repeat_n("1", argument_width)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source = format!(
+        "fn spread[T](value T) ({fields}) {{\n    ({values})\n}}\n\npub fn main() {{\n    discard spread(({argument}))\n}}\n"
+    );
+    let mir = compile(&source);
+    let error = lower_typed_artifact(
+        &mir,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect_err("expanded concrete signatures must stay within the structure budget");
+    assert_eq!(
+        error.code(),
+        LoweringErrorCode::ResourceLimit(ResourceLimitCode::ProgramTooLarge)
+    );
+    assert!(error.message().contains("function[0].return_ty"), "{error}");
+}
+
+#[test]
+fn fixed_wide_source_type_in_a_generic_function_remains_a_coverage_gap() {
+    let fields = std::iter::repeat_n("Int", INSTANCE_KEY_STRUCTURE_BUDGET)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let values = std::iter::repeat_n("0", INSTANCE_KEY_STRUCTURE_BUDGET)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source = format!(
+        "fn fixed[T](value T) ({fields}) {{\n    ({values})\n}}\n\npub fn main() {{\n    discard fixed(1)\n}}\n"
+    );
+    let LoweringOutcome::Unsupported(report) = lower_run(&source) else {
+        panic!("a raw source type over the direct LCIR budget remains fallback coverage")
+    };
+    assert!(report.items().iter().any(|item| matches!(
+        item.feature(),
+        UnsupportedFeature::SignatureType | UnsupportedFeature::ExpressionType
+    )));
 }
 
 #[test]
@@ -7584,7 +7652,7 @@ pub fn main() {
     );
     let wide = lower_run(&source);
     let LoweringOutcome::Unsupported(wide) = wide else {
-        panic!("an expanded tuple over the direct-product budget must select fallback")
+        panic!("a source tuple over the direct-product budget must select fallback")
     };
     assert!(wide.items().iter().any(|item| matches!(
         item.feature(),

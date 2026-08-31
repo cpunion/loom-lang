@@ -22,15 +22,16 @@ pub const INSTANCE_CLOSURE_MAX_INSTANCES: usize = 4_096;
 pub const INSTANCE_CLOSURE_MAX_CALL_EDGES: usize = 16_384;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum InstanceClosureUnsupportedKind {
+pub(crate) enum InstanceClosureIssueKind {
     InstanceBudget,
     NonRegularRecursion,
     Instantiation,
+    ProjectedPlace,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct InstanceClosureUnsupported {
-    pub(crate) kind: InstanceClosureUnsupportedKind,
+pub(crate) struct InstanceClosureIssue {
+    pub(crate) kind: InstanceClosureIssueKind,
     pub(crate) function: FunctionId,
     pub(crate) expression: Option<ExprId>,
     pub(crate) span: Span,
@@ -73,12 +74,13 @@ impl InstanceClosure {
 
 pub(crate) enum InstanceClosureOutcome {
     Complete(InstanceClosure),
-    Unsupported(InstanceClosureUnsupported),
+    Issue(InstanceClosureIssue),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum InstantiationError {
     StructureBudget,
+    ProjectionDepth,
     UnboundTypeParameter,
     UnboundWitnessParameter,
     UnresolvedAssociatedProjection,
@@ -118,7 +120,7 @@ impl<'program, 'key> InstanceSubstitution<'program, 'key> {
         // clone even its root type. The place planner enforces the same shared
         // limit later for physical reconstruction.
         if place.projection.len() > PLACE_MAX_PROJECTION_DEPTH {
-            return Err(InstantiationError::StructureBudget);
+            return Err(InstantiationError::ProjectionDepth);
         }
         let Some(local) = function
             .params
@@ -994,10 +996,10 @@ impl CallCollector<'_> {
         function: &mir::Function,
         expression: &mir::Expr,
         path: &str,
-    ) -> Result<(), InstanceClosureUnsupported> {
+    ) -> Result<(), InstanceClosureIssue> {
         if self.calls.len() >= self.remaining {
-            return Err(InstanceClosureUnsupported {
-                kind: InstanceClosureUnsupportedKind::InstanceBudget,
+            return Err(InstanceClosureIssue {
+                kind: InstanceClosureIssueKind::InstanceBudget,
                 function: function.id,
                 expression: Some(expression.id),
                 span: expression.span,
@@ -1064,18 +1066,16 @@ pub(crate) fn plan_instance_closure(
                     .is_some_and(|active| active != &identity)
                 {
                     let site = site.expect("a root cannot recurse into another instance");
-                    return Ok(InstanceClosureOutcome::Unsupported(
-                        InstanceClosureUnsupported {
-                            kind: InstanceClosureUnsupportedKind::NonRegularRecursion,
-                            function: site.function,
-                            expression: Some(site.expression),
-                            span: site.span,
-                            path: site.path,
-                        },
-                    ));
+                    return Ok(InstanceClosureOutcome::Issue(InstanceClosureIssue {
+                        kind: InstanceClosureIssueKind::NonRegularRecursion,
+                        function: site.function,
+                        expression: Some(site.expression),
+                        span: site.span,
+                        path: site.path,
+                    }));
                 }
                 if entries.len() >= INSTANCE_CLOSURE_MAX_INSTANCES {
-                    return Ok(InstanceClosureOutcome::Unsupported(instance_budget_issue(
+                    return Ok(InstanceClosureOutcome::Issue(instance_budget_issue(
                         program,
                         &key,
                         site.as_ref(),
@@ -1093,8 +1093,8 @@ pub(crate) fn plan_instance_closure(
                     dyn_concepts,
                 ) {
                     Ok(calls) => calls,
-                    Err(CollectCallsError::Unsupported(issue)) => {
-                        return Ok(InstanceClosureOutcome::Unsupported(issue));
+                    Err(CollectCallsError::Issue(issue)) => {
+                        return Ok(InstanceClosureOutcome::Issue(issue));
                     }
                     Err(CollectCallsError::Defect(error)) => return Err(error),
                 };
@@ -1137,7 +1137,7 @@ fn instance_budget_issue(
     program: &mir::Program,
     key: &InstanceKey,
     site: Option<&CallSite>,
-) -> Result<InstanceClosureUnsupported, InstanceClosureError> {
+) -> Result<InstanceClosureIssue, InstanceClosureError> {
     let (function, expression, span, path) = if let Some(site) = site {
         (
             site.function,
@@ -1156,8 +1156,8 @@ fn instance_budget_issue(
             "artifact.roots".to_owned(),
         )
     };
-    Ok(InstanceClosureUnsupported {
-        kind: InstanceClosureUnsupportedKind::InstanceBudget,
+    Ok(InstanceClosureIssue {
+        kind: InstanceClosureIssueKind::InstanceBudget,
         function,
         expression,
         span,
@@ -1220,11 +1220,16 @@ fn instantiation_issue(
             expression: expression.id,
         });
     }
-    CollectCallsError::Unsupported(InstanceClosureUnsupported {
-        kind: if error == InstantiationError::StructureBudget {
-            InstanceClosureUnsupportedKind::InstanceBudget
-        } else {
-            InstanceClosureUnsupportedKind::Instantiation
+    CollectCallsError::Issue(InstanceClosureIssue {
+        kind: match error {
+            InstantiationError::StructureBudget => InstanceClosureIssueKind::InstanceBudget,
+            InstantiationError::ProjectionDepth => InstanceClosureIssueKind::ProjectedPlace,
+            InstantiationError::UnboundTypeParameter
+            | InstantiationError::UnboundWitnessParameter
+            | InstantiationError::UnresolvedAssociatedProjection
+            | InstantiationError::InvalidCheckedWitnessMetadata => {
+                InstanceClosureIssueKind::Instantiation
+            }
         },
         function: function.id,
         expression: Some(expression.id),
@@ -1233,14 +1238,28 @@ fn instantiation_issue(
     })
 }
 
+fn projected_place_issue(
+    function: &mir::Function,
+    expression: &mir::Expr,
+    path: &str,
+) -> CollectCallsError {
+    CollectCallsError::Issue(InstanceClosureIssue {
+        kind: InstanceClosureIssueKind::ProjectedPlace,
+        function: function.id,
+        expression: Some(expression.id),
+        span: expression.span,
+        path: path.to_owned(),
+    })
+}
+
 enum CollectCallsError {
-    Unsupported(InstanceClosureUnsupported),
+    Issue(InstanceClosureIssue),
     Defect(InstanceClosureError),
 }
 
-impl From<InstanceClosureUnsupported> for CollectCallsError {
-    fn from(issue: InstanceClosureUnsupported) -> Self {
-        Self::Unsupported(issue)
+impl From<InstanceClosureIssue> for CollectCallsError {
+    fn from(issue: InstanceClosureIssue) -> Self {
+        Self::Issue(issue)
     }
 }
 
@@ -1519,11 +1538,23 @@ fn scan_expr(
                         .map_err(|error| instantiation_issue(function, expression, path, error))?,
                 ],
                 CallTarget::Dynamic { requirement } => {
-                    let receiver_ty = arguments
-                        .first()
+                    let receiver = arguments.first();
+                    let receiver_ty = receiver
                         .map(|argument| dynamic_receiver_type(function, argument, substitution))
                         .transpose()
-                        .map_err(|error| instantiation_issue(function, expression, path, error))?
+                        .map_err(|error| {
+                            if matches!(receiver, Some(CallArgument::InOut(_)))
+                                && matches!(
+                                    error,
+                                    InstantiationError::StructureBudget
+                                        | InstantiationError::ProjectionDepth
+                                )
+                            {
+                                projected_place_issue(function, expression, path)
+                            } else {
+                                instantiation_issue(function, expression, path, error)
+                            }
+                        })?
                         .flatten();
                     let Some(receiver_ty) = receiver_ty.as_ref() else {
                         return Ok(expression.ty != Type::Never);
@@ -1616,12 +1647,17 @@ mod tests {
 
     use loom_core::Span;
     use loom_mir::{
-        Block, CallPlan, ConceptId, FieldDef, Function, FunctionId, LocalDecl, LocalId, Place,
-        Program, RequirementDef, RequirementId, RequirementType, Type, TypeDef, TypeDefKind,
-        TypeId, Witness, WitnessId, WitnessParam, WitnessRef,
+        Block, CallArgument, CallPlan, CallTarget, ConceptId, Expr, ExprKind, FieldDef, Function,
+        FunctionId, LocalDecl, LocalId, Place, Program, RequirementDef, RequirementId,
+        RequirementType, Type, TypeDef, TypeDefKind, TypeId, Witness, WitnessId, WitnessParam,
+        WitnessRef,
     };
 
-    use super::{InstanceSubstitution, InstantiationError};
+    use super::{
+        InstanceClosureIssueKind, InstanceClosureOutcome, InstanceSubstitution, InstantiationError,
+        plan_instance_closure,
+    };
+    use crate::dyn_plan::DynConceptPlan;
     use crate::place_plan::PLACE_MAX_PROJECTION_DEPTH;
     use crate::{INSTANCE_KEY_STRUCTURE_BUDGET, InstanceKey, InstanceWitnessArgument};
 
@@ -1678,8 +1714,75 @@ mod tests {
                 &InstanceKey::monomorphic(FunctionId(0)),
             )
             .instantiate_place_type(&function, &place),
-            Err(InstantiationError::StructureBudget)
+            Err(InstantiationError::ProjectionDepth)
         );
+    }
+
+    #[test]
+    fn over_depth_dynamic_receiver_remains_a_projected_place_issue() {
+        let span = Span::default();
+        let mut function = function_with_local(Type::Int);
+        function.body.tail = Some(Box::new(Expr::new(
+            ExprKind::Call {
+                target: CallTarget::Dynamic {
+                    requirement: RequirementId(0),
+                },
+                type_arguments: Vec::new(),
+                arguments: vec![CallArgument::InOut(Place {
+                    local: LocalId(0),
+                    projection: vec![0; PLACE_MAX_PROJECTION_DEPTH + 1],
+                })],
+                witnesses: Vec::new(),
+            },
+            Type::Unit,
+            span,
+        )));
+        function.renumber_expr_ids().expect("number dynamic call");
+        let program = Program {
+            functions: vec![function],
+            ..Program::default()
+        };
+        let outcome = plan_instance_closure(&program, &[FunctionId(0)], &DynConceptPlan::default())
+            .expect("plan bounded dynamic receiver");
+        let InstanceClosureOutcome::Issue(issue) = outcome else {
+            panic!("over-depth dynamic receiver must stop instance closure")
+        };
+        assert_eq!(issue.kind, InstanceClosureIssueKind::ProjectedPlace);
+        assert_eq!(issue.path, "function[0].body.tail");
+    }
+
+    #[test]
+    fn over_budget_dynamic_inout_receiver_remains_a_projected_place_issue() {
+        let span = Span::default();
+        let mut function =
+            function_with_local(Type::Tuple(vec![Type::Int; INSTANCE_KEY_STRUCTURE_BUDGET]));
+        function.body.tail = Some(Box::new(Expr::new(
+            ExprKind::Call {
+                target: CallTarget::Dynamic {
+                    requirement: RequirementId(0),
+                },
+                type_arguments: Vec::new(),
+                arguments: vec![CallArgument::InOut(Place {
+                    local: LocalId(0),
+                    projection: Vec::new(),
+                })],
+                witnesses: Vec::new(),
+            },
+            Type::Unit,
+            span,
+        )));
+        function.renumber_expr_ids().expect("number dynamic call");
+        let program = Program {
+            functions: vec![function],
+            ..Program::default()
+        };
+        let outcome = plan_instance_closure(&program, &[FunctionId(0)], &DynConceptPlan::default())
+            .expect("plan bounded dynamic receiver");
+        let InstanceClosureOutcome::Issue(issue) = outcome else {
+            panic!("over-budget inout receiver must stop instance closure")
+        };
+        assert_eq!(issue.kind, InstanceClosureIssueKind::ProjectedPlace);
+        assert_eq!(issue.path, "function[0].body.tail");
     }
 
     #[test]
