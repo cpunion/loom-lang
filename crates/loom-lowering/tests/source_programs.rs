@@ -1705,6 +1705,9 @@ fn values(text Text, bytes Bytes, base Path, child Path, index Int) {
     let byte = bytes.get(index)
     let appended = bytes.append(encoded)
     let decoded = appended.decode_utf8()
+    var output = text.encode_utf8()
+    output.add(0)
+    output.add(255)
     let rendered = base.as_text()
     let joined = base.join(child)
     let parsed = Path.from_text(text)
@@ -1772,6 +1775,7 @@ async fn pathFiles(path Path) {
         "TextFromUtf8Units",
         "BytesLength",
         "BytesGet",
+        "BytesAdd",
         "BytesAppend",
         "BytesDecodeUtf8",
         "PathFromText",
@@ -1891,6 +1895,11 @@ async fn network(host Text, port Int) Result[Unit, IoError] {
         .iter()
         .find(|function| function.name == "std.json.parse_json")
         .expect("ordinary source JSON parser");
+    let format_json = program
+        .functions
+        .iter()
+        .find(|function| function.name == "std.json.format_json")
+        .expect("ordinary source JSON formatter");
     let values = program
         .functions
         .iter()
@@ -1937,6 +1946,7 @@ async fn network(host Text, port Int) Result[Unit, IoError] {
         }),
         "std.json.parse_json must resolve through its ordinary source definition: {program:#?}"
     );
+    assert_direct_call(values, format_json, &program);
     assert!(
         values.exprs_preorder().any(|expression| {
             matches!(
@@ -2034,7 +2044,6 @@ async fn network(host Text, port Int) Result[Unit, IoError] {
         "TextMapEntryAt",
         "TextMapInsert",
         "TextMapRemove",
-        "JsonFormat",
         "IoErrorKind",
         "IoErrorMessage",
         "FileTryOpenRead",
@@ -2048,6 +2057,10 @@ async fn network(host Text, port Int) Result[Unit, IoError] {
     ] {
         assert!(debug.contains(builtin), "missing {builtin} in {debug}");
     }
+    assert!(
+        !debug.contains("JsonFormat"),
+        "format_json must not leave a dedicated MIR builtin: {debug}"
+    );
     for wrapper in [
         "std.log.debug",
         "std.log.info",
@@ -2180,13 +2193,19 @@ fn idle() {
     let debug = format!("{program:#?}");
     for builtin in [
         "TextEncodeUtf8",
-        "TextFromUtf8Units",
         "BytesLength",
         "BytesGet",
+        "BytesAdd",
         "ListAdd",
         "ListToTextMap",
         "FloatParseStatus",
     ] {
         assert!(debug.contains(builtin), "missing {builtin} in {debug}");
+    }
+    for removed_builtin in ["TextFromUtf8Units", "JsonParse", "JsonFormat"] {
+        assert!(
+            !debug.contains(removed_builtin),
+            "source JSON must not retain {removed_builtin}: {debug}"
+        );
     }
 }

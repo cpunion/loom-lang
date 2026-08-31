@@ -3,7 +3,7 @@
 /// Interpreter backend version included in persistent compiler cache keys.
 pub const BACKEND_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -14,10 +14,11 @@ use loom_core::Span;
 use loom_core::runtime_fault::{
     ARTIFACT_PROOF_REJECTED_FAULT_CODE, ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
     EMPTY_TASK_JOIN_FAULT_CODE, EMPTY_TASK_JOIN_FAULT_MESSAGE, INTEGER_OVERFLOW_FAULT_CODE,
-    INTEGER_OVERFLOW_FAULT_MESSAGE, INVALID_DURATION_FAULT_CODE, INVALID_DURATION_FAULT_MESSAGE,
-    INVALID_SLEEP_DURATION_FAULT_CODE, INVALID_SLEEP_DURATION_FAULT_MESSAGE, LOG_WRITE_FAULT_CODE,
-    LOG_WRITE_FAULT_MESSAGE, SLEEP_DURATION_OVERFLOW_FAULT_CODE,
-    SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE, STDOUT_WRITE_FAULT_CODE, STDOUT_WRITE_FAULT_MESSAGE,
+    INTEGER_OVERFLOW_FAULT_MESSAGE, INVALID_BYTE_FAULT_CODE, INVALID_BYTE_FAULT_MESSAGE,
+    INVALID_DURATION_FAULT_CODE, INVALID_DURATION_FAULT_MESSAGE, INVALID_SLEEP_DURATION_FAULT_CODE,
+    INVALID_SLEEP_DURATION_FAULT_MESSAGE, LOG_WRITE_FAULT_CODE, LOG_WRITE_FAULT_MESSAGE,
+    SLEEP_DURATION_OVERFLOW_FAULT_CODE, SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE,
+    STDOUT_WRITE_FAULT_CODE, STDOUT_WRITE_FAULT_MESSAGE,
 };
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, CheckedProgram, Constant, ConstructionMode,
@@ -28,12 +29,42 @@ use loom_mir::{
 };
 use serde::{Deserialize, Serialize};
 
-const DEFAULT_FUEL: u64 = 1_000_000;
+// Normal interpreter execution has the same open-ended duration as native
+// execution. Callers evaluating untrusted or compile-time code must opt into a
+// concrete budget through `Interpreter::with_limits`.
+const DEFAULT_FUEL: u64 = u64::MAX;
 const DEFAULT_MAX_DEPTH: u32 = 256;
 const SOCKET_IO_BUDGET: usize = 64 * 1024;
 const SOCKET_REACTOR_SLICE: Duration = Duration::from_millis(10);
 
 type HostIoJob = Box<dyn FnOnce() + Send + 'static>;
+
+fn escape_log_text(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let mut output = String::with_capacity(value.len() + 2);
+    output.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\u{08}' => output.push_str("\\b"),
+            '\u{0c}' => output.push_str("\\f"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            control if control <= '\u{1f}' => {
+                let value = u32::from(control) as usize;
+                output.push_str("\\u00");
+                output.push(char::from(HEX[value >> 4]));
+                output.push(char::from(HEX[value & 0x0f]));
+            }
+            character => output.push(character),
+        }
+    }
+    output.push('"');
+    output
+}
 
 fn host_io_pool() -> &'static mpsc::SyncSender<HostIoJob> {
     static POOL: OnceLock<mpsc::SyncSender<HostIoJob>> = OnceLock::new();
@@ -136,6 +167,11 @@ mod task_all_cancellation_tests {
     }
 }
 
+/// Optional resource limits for explicitly bounded interpreter evaluation.
+///
+/// The default fuel budget is open-ended, matching native program execution.
+/// Embedders evaluating untrusted or compile-time code should set `fuel` to a
+/// concrete budget and construct the interpreter with [`Interpreter::with_limits`].
 #[derive(Clone, Copy, Debug)]
 pub struct ExecutionLimits {
     pub fuel: u64,
@@ -159,7 +195,7 @@ pub enum Value {
         elements: Vec<Value>,
     },
     List {
-        elements: Vec<Value>,
+        elements: Arc<ListElements>,
     },
     Bool {
         value: bool,
@@ -180,7 +216,7 @@ pub enum Value {
     },
     Record {
         ty: TypeId,
-        fields: Vec<Value>,
+        fields: Arc<RecordFields>,
     },
     Enum {
         ty: TypeId,
@@ -216,6 +252,179 @@ pub enum Value {
     TaskOutcome {
         outcome: TaskOutcomeValue,
     },
+}
+
+/// Immutable backing storage shared by interpreter `List` values.
+///
+/// The cached flag lets ordinary owned lists use copy-on-write without hiding
+/// a borrowed dynamic view. The element vector remains private so every
+/// mutation keeps the cache exact.
+#[derive(Clone, Debug)]
+pub struct ListElements {
+    elements: Vec<Value>,
+    contains_writeback: bool,
+}
+
+impl ListElements {
+    #[must_use]
+    pub fn new(elements: Vec<Value>) -> Self {
+        let contains_writeback = values_contain_dyn_writeback(&elements);
+        Self {
+            elements,
+            contains_writeback,
+        }
+    }
+
+    #[must_use]
+    pub fn as_slice(&self) -> &[Value] {
+        &self.elements
+    }
+
+    fn contains_writeback(&self) -> bool {
+        self.contains_writeback
+    }
+
+    fn push(&mut self, value: Value) {
+        self.contains_writeback |= value_contains_dyn_writeback(&value);
+        self.elements.push(value);
+    }
+}
+
+impl std::ops::Deref for ListElements {
+    type Target = [Value];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl PartialEq for ListElements {
+    fn eq(&self, other: &Self) -> bool {
+        self.elements == other.elements
+    }
+}
+
+impl Serialize for ListElements {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.elements.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ListElements {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Vec::<Value>::deserialize(deserializer).map(Self::new)
+    }
+}
+
+/// Immutable backing storage shared by interpreter record values.
+///
+/// The cached flag makes owned record copies constant-time while preserving
+/// the rule that a borrowed dynamic view cannot escape through a copied
+/// aggregate. Fields stay private so all mutation keeps the cache sound.
+#[derive(Clone, Debug)]
+pub struct RecordFields {
+    fields: Vec<Value>,
+    may_contain_writeback: bool,
+    text_map_shape: TextMapShape,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum TextMapShape {
+    Valid,
+    Invalid,
+    Unknown,
+}
+
+impl RecordFields {
+    #[must_use]
+    pub fn new(fields: Vec<Value>) -> Self {
+        let may_contain_writeback = values_contain_dyn_writeback(&fields);
+        let text_map_shape = if has_text_map_shape(&fields) {
+            TextMapShape::Valid
+        } else {
+            TextMapShape::Invalid
+        };
+        Self {
+            fields,
+            may_contain_writeback,
+            text_map_shape,
+        }
+    }
+
+    #[must_use]
+    pub fn as_slice(&self) -> &[Value] {
+        &self.fields
+    }
+
+    fn may_contain_writeback(&self) -> bool {
+        self.may_contain_writeback
+    }
+
+    fn has_text_map_shape(&self) -> bool {
+        match self.text_map_shape {
+            TextMapShape::Valid => true,
+            TextMapShape::Invalid => false,
+            TextMapShape::Unknown => has_text_map_shape(&self.fields),
+        }
+    }
+
+    /// Conservatively marks the backing before exposing a mutable field.
+    /// The mutation may install a borrowed dynamic view at any nesting level.
+    fn get_mut(&mut self, index: usize) -> Option<&mut Value> {
+        self.may_contain_writeback = true;
+        self.text_map_shape = TextMapShape::Unknown;
+        self.fields.get_mut(index)
+    }
+
+    fn into_fields(self) -> Vec<Value> {
+        self.fields
+    }
+}
+
+fn has_text_map_shape(fields: &[Value]) -> bool {
+    let (entries, remainder) = fields.as_chunks::<2>();
+    remainder.is_empty()
+        && entries
+            .iter()
+            .all(|[key, _]| matches!(key, Value::Text { .. }))
+}
+
+impl std::ops::Deref for RecordFields {
+    type Target = [Value];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl PartialEq for RecordFields {
+    fn eq(&self, other: &Self) -> bool {
+        self.fields == other.fields
+    }
+}
+
+impl Serialize for RecordFields {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.fields.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for RecordFields {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Vec::<Value>::deserialize(deserializer).map(Self::new)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -443,7 +652,8 @@ struct AsyncContractState {
 }
 
 enum HostIoValue {
-    Value(Value),
+    Unit,
+    Text(String),
     File(std::fs::File),
     Socket(TcpStream),
 }
@@ -496,17 +706,6 @@ impl SocketIoOperation {
             Self::Read { .. } => "SocketReadFault",
             Self::Write { .. } => "SocketWriteFault",
         }
-    }
-}
-
-enum JsonConversionFailure {
-    Invalid(ExecutionFailure),
-    DepthLimit,
-}
-
-impl From<ExecutionFailure> for JsonConversionFailure {
-    fn from(value: ExecutionFailure) -> Self {
-        Self::Invalid(value)
     }
 }
 
@@ -1166,7 +1365,8 @@ impl<'program> Interpreter<'program> {
         span: Span,
     ) -> Result<Value, ExecutionFailure> {
         match value {
-            HostIoValue::Value(value) => Ok(value),
+            HostIoValue::Unit => Ok(Value::Unit),
+            HostIoValue::Text(value) => Ok(Value::Text { value }),
             HostIoValue::File(file) => self.insert_file(file, span),
             HostIoValue::Socket(socket) => self.insert_socket(socket, span),
         }
@@ -1544,7 +1744,7 @@ impl<'program> Interpreter<'program> {
                 return match mode {
                     TaskJoinMode::All | TaskJoinMode::Settled => {
                         Ok(AwaitPoll::Ready(Value::List {
-                            elements: Vec::new(),
+                            elements: Arc::new(ListElements::new(Vec::new())),
                         }))
                     }
                     TaskJoinMode::Any | TaskJoinMode::Race => Ok(AwaitPoll::Failed(
@@ -1665,7 +1865,9 @@ impl<'program> Interpreter<'program> {
                 }
                 let values = values.into_iter().flatten().collect::<Vec<_>>();
                 if dynamic {
-                    Ok(AwaitPoll::Ready(Value::List { elements: values }))
+                    Ok(AwaitPoll::Ready(Value::List {
+                        elements: Arc::new(ListElements::new(values)),
+                    }))
                 } else if combined {
                     Ok(AwaitPoll::Ready(Value::Tuple { elements: values }))
                 } else {
@@ -1676,7 +1878,9 @@ impl<'program> Interpreter<'program> {
             }
             TaskJoinMode::Settled => {
                 if dynamic {
-                    Ok(AwaitPoll::Ready(Value::List { elements: outcomes }))
+                    Ok(AwaitPoll::Ready(Value::List {
+                        elements: Arc::new(ListElements::new(outcomes)),
+                    }))
                 } else {
                     Ok(AwaitPoll::Ready(Value::Tuple { elements: outcomes }))
                 }
@@ -3326,7 +3530,9 @@ impl<'program> Interpreter<'program> {
             ExprKind::List(elements) => {
                 let elements = self.sync_eval_expr_sequence(frame, elements, 0, Vec::new());
                 elements.and_then(self, |_, elements| {
-                    SyncStep::complete(Value::List { elements })
+                    SyncStep::complete(Value::List {
+                        elements: Arc::new(ListElements::new(elements)),
+                    })
                 })
             }
             ExprKind::Copy(place) => {
@@ -3441,7 +3647,10 @@ impl<'program> Interpreter<'program> {
                 let span = expression.span;
                 let fields = self.sync_eval_expr_sequence(frame, fields, 0, Vec::new());
                 fields.and_then(self, move |interpreter, fields| {
-                    let value = Value::Record { ty, fields };
+                    let value = Value::Record {
+                        ty,
+                        fields: Arc::new(RecordFields::new(fields)),
+                    };
                     let value = match construction {
                         ConstructionMode::Runtime => interpreter.checked_record(ty, value, span),
                         ConstructionMode::Recheck => interpreter.rechecked_record(ty, value, span),
@@ -3744,7 +3953,7 @@ impl<'program> Interpreter<'program> {
         span: Span,
     ) -> SyncStep<'program, Value> {
         let (values, dynamic) = match values.as_slice() {
-            [Value::List { elements }] => (elements.clone(), true),
+            [Value::List { elements }] => (elements.as_slice().to_vec(), true),
             _ => (values, false),
         };
         let mut tasks = Vec::with_capacity(values.len());
@@ -3936,19 +4145,31 @@ impl<'program> Interpreter<'program> {
             let value = self.sync_eval_expr(frame, value);
             return value.and_then(self, move |interpreter, value| {
                 let location = Location::from_place(frame, place);
-                let list = match interpreter.read_place(&location, span) {
-                    Ok(value) => value,
-                    Err(failure) => return SyncStep::fail(failure),
-                };
-                let Value::List { mut elements } = unrefined(list) else {
+                match interpreter.append_list_place(&location, value, span) {
+                    Ok(()) => SyncStep::complete(Value::Unit),
+                    Err(failure) => SyncStep::fail(failure),
+                }
+            });
+        }
+        if builtin == Builtin::BytesAdd {
+            let [CallArgument::InOut(place), CallArgument::Value(value)] = arguments else {
+                return SyncStep::fail(self.runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "Bytes.add has an invalid checked argument shape",
+                    span,
+                ));
+            };
+            let value = self.sync_eval_expr(frame, value);
+            return value.and_then(self, move |interpreter, value| {
+                let Value::Int { value } = value else {
                     return SyncStep::fail(interpreter.runtime_fault(
                         "LOOM_RUNTIME_INVALID_MIR",
-                        "List.add receiver is not a List",
+                        "Bytes.add value is not an Int",
                         span,
                     ));
                 };
-                elements.push(value);
-                match interpreter.write_place(&location, Value::List { elements }, span) {
+                let location = Location::from_place(frame, place);
+                match interpreter.append_bytes_place(&location, value, span) {
                     Ok(()) => SyncStep::complete(Value::Unit),
                     Err(failure) => SyncStep::fail(failure),
                 }
@@ -4216,10 +4437,12 @@ impl<'program> Interpreter<'program> {
                     .collect::<Result<Vec<_>, _>>()?,
             }),
             ExprKind::List(elements) => Ok(Value::List {
-                elements: elements
-                    .iter()
-                    .map(|element| self.eval_expr(frame, element))
-                    .collect::<Result<Vec<_>, _>>()?,
+                elements: Arc::new(ListElements::new(
+                    elements
+                        .iter()
+                        .map(|element| self.eval_expr(frame, element))
+                        .collect::<Result<Vec<_>, _>>()?,
+                )),
             }),
             ExprKind::Copy(place) => {
                 let value =
@@ -4288,7 +4511,10 @@ impl<'program> Interpreter<'program> {
                     .iter()
                     .map(|field| self.eval_expr(frame, field))
                     .collect::<Result<Vec<_>, _>>()?;
-                let value = Value::Record { ty: *ty, fields };
+                let value = Value::Record {
+                    ty: *ty,
+                    fields: Arc::new(RecordFields::new(fields)),
+                };
                 match construction {
                     ConstructionMode::Runtime => {
                         Ok(self.checked_record(*ty, value, expression.span)?)
@@ -4471,7 +4697,7 @@ impl<'program> Interpreter<'program> {
                     .map(|argument| self.eval_expr(frame, argument))
                     .collect::<Result<Vec<_>, _>>()?;
                 let (values, dynamic) = match values.as_slice() {
-                    [Value::List { elements }] => (elements.clone(), true),
+                    [Value::List { elements }] => (elements.as_slice().to_vec(), true),
                     _ => (values, false),
                 };
                 let mut tasks = Vec::with_capacity(values.len());
@@ -4593,6 +4819,9 @@ impl<'program> Interpreter<'program> {
         if builtin == Builtin::ListAdd {
             return self.eval_list_add(frame, arguments, span);
         }
+        if builtin == Builtin::BytesAdd {
+            return self.eval_bytes_add(frame, arguments, span);
+        }
         if matches!(builtin, Builtin::FileClose | Builtin::SocketClose) {
             return self.eval_resource_close(frame, builtin, arguments, span);
         }
@@ -4624,16 +4853,33 @@ impl<'program> Interpreter<'program> {
         };
         let value = self.eval_expr(frame, value)?;
         let location = Location::from_place(frame, place);
-        let list = self.read_place(&location, span)?;
-        let Value::List { mut elements } = unrefined(list) else {
+        self.append_list_place(&location, value, span)
+            .map_err(EvalAbort::from)?;
+        Ok(Value::Unit)
+    }
+
+    fn eval_bytes_add(
+        &mut self,
+        frame: u64,
+        arguments: &[CallArgument],
+        span: Span,
+    ) -> Result<Value, EvalAbort> {
+        let [CallArgument::InOut(place), CallArgument::Value(value)] = arguments else {
             return Err(EvalAbort::from(self.runtime_fault(
                 "LOOM_RUNTIME_INVALID_MIR",
-                "List.add receiver is not a List",
+                "Bytes.add has an invalid checked argument shape",
                 span,
             )));
         };
-        elements.push(value);
-        self.write_place(&location, Value::List { elements }, span)
+        let Value::Int { value } = self.eval_expr(frame, value)? else {
+            return Err(EvalAbort::from(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "Bytes.add value is not an Int",
+                span,
+            )));
+        };
+        let location = Location::from_place(frame, place);
+        self.append_bytes_place(&location, value, span)
             .map_err(EvalAbort::from)?;
         Ok(Value::Unit)
     }
@@ -4688,7 +4934,10 @@ impl<'program> Interpreter<'program> {
             } else {
                 self.sockets.remove(&handle);
             }
-            fields[0] = Value::Int { value: -1 };
+            *Arc::make_mut(&mut fields)
+                .get_mut(0)
+                .expect("validated resource record has a descriptor field") =
+                Value::Int { value: -1 };
             self.write_place(&location, Value::Record { ty, fields }, span)
                 .map_err(EvalAbort::from)?;
         }
@@ -5066,6 +5315,7 @@ impl<'program> Interpreter<'program> {
                 | Builtin::TextFromUtf8Units
                 | Builtin::BytesLength
                 | Builtin::BytesGet
+                | Builtin::BytesAdd
                 | Builtin::BytesAppend
                 | Builtin::BytesDecodeUtf8
                 | Builtin::PathFromText
@@ -5123,9 +5373,6 @@ impl<'program> Interpreter<'program> {
                 | Builtin::TextMapRemove
         ) {
             return self.eval_text_map_builtin(builtin, arguments, span);
-        }
-        if builtin == Builtin::JsonFormat {
-            return self.eval_json_format_builtin(arguments, span);
         }
         if matches!(builtin, Builtin::IoErrorKind | Builtin::IoErrorMessage) {
             return self.eval_io_error_builtin(builtin, arguments, span);
@@ -5336,7 +5583,7 @@ impl<'program> Interpreter<'program> {
         match (builtin, arguments) {
             (Builtin::TextMapNew, []) => self.text_map_value(Vec::new(), span),
             (Builtin::TextMapLength, [map]) => {
-                let entries = self.text_map_entries(map, span)?;
+                let entries = self.text_map_fields(map, span)?;
                 Ok(Value::Int {
                     value: i64::try_from(entries.len()).map_err(|_| {
                         self.runtime_fault("TextMapTooLarge", "TextMap length exceeds Int", span)
@@ -5344,27 +5591,30 @@ impl<'program> Interpreter<'program> {
                 })
             }
             (Builtin::TextMapContains, [map, Value::Text { value: key }]) => {
-                let entries = self.text_map_entries(map, span)?;
+                let entries = self.text_map_fields(map, span)?;
                 Ok(Value::Bool {
-                    value: entries.iter().any(|(candidate, _)| candidate == key),
+                    value: entries.iter().any(
+                        |[candidate, _]| matches!(candidate, Value::Text { value } if value == key),
+                    ),
                 })
             }
             (Builtin::TextMapGet, [map, Value::Text { value: key }]) => {
-                let value = self
-                    .text_map_entries(map, span)?
-                    .into_iter()
-                    .find(|(candidate, _)| candidate == key)
-                    .map(|(_, value)| value);
+                let value = self.text_map_fields(map, span)?.iter().find_map(
+                    |[candidate, value]| {
+                        matches!(candidate, Value::Text { value: candidate } if candidate == key)
+                            .then(|| value.clone())
+                    },
+                );
                 self.option_value(value, span)
             }
             (Builtin::TextMapEntryAt, [map, Value::Int { value: index }]) => {
-                let entries = self.text_map_entries(map, span)?;
+                let entries = self.text_map_fields(map, span)?;
                 let entry = usize::try_from(*index)
                     .ok()
-                    .and_then(|index| entries.get(index).cloned());
+                    .and_then(|index| entries.get(index));
                 self.option_value(
-                    entry.map(|(key, value)| Value::Tuple {
-                        elements: vec![Value::Text { value: key }, value],
+                    entry.map(|[key, value]| Value::Tuple {
+                        elements: vec![key.clone(), value.clone()],
                     }),
                     span,
                 )
@@ -5390,20 +5640,26 @@ impl<'program> Interpreter<'program> {
         }
     }
 
+    fn text_map_fields<'value>(
+        &self,
+        value: &'value Value,
+        span: Span,
+    ) -> Result<&'value [[Value; 2]], ExecutionFailure> {
+        let Value::Record { ty, fields } = value else {
+            return Err(self.invalid_builtin_fault(span));
+        };
+        if self.program.prelude.text_map != Some(*ty) || !fields.has_text_map_shape() {
+            return Err(self.invalid_builtin_fault(span));
+        }
+        Ok(fields.as_slice().as_chunks::<2>().0)
+    }
+
     fn text_map_entries(
         &self,
         value: &Value,
         span: Span,
     ) -> Result<Vec<(String, Value)>, ExecutionFailure> {
-        let Value::Record { ty, fields } = value else {
-            return Err(self.invalid_builtin_fault(span));
-        };
-        if self.program.prelude.text_map != Some(*ty) || fields.len() % 2 != 0 {
-            return Err(self.invalid_builtin_fault(span));
-        }
-        fields
-            .as_chunks::<2>()
-            .0
+        self.text_map_fields(value, span)?
             .iter()
             .map(|pair| match pair {
                 [Value::Text { value: key }, value] => Ok((key.clone(), value.clone())),
@@ -5433,116 +5689,14 @@ impl<'program> Interpreter<'program> {
                 span,
             )
         })?;
+        let fields = entries
+            .into_iter()
+            .flat_map(|(key, value)| [Value::Text { value: key }, value])
+            .collect();
         Ok(Value::Record {
             ty,
-            fields: entries
-                .into_iter()
-                .flat_map(|(key, value)| [Value::Text { value: key }, value])
-                .collect(),
+            fields: Arc::new(RecordFields::new(fields)),
         })
-    }
-
-    fn eval_json_format_builtin(
-        &self,
-        arguments: &[Value],
-        span: Span,
-    ) -> Result<Value, ExecutionFailure> {
-        match arguments {
-            [value] => match self.json_to_runtime(value, span, 0) {
-                Ok(value) => match loom_runtime::format_json(&value) {
-                    Ok(value) => self.result_value(true, Value::Text { value }, span),
-                    Err(error) => match error {
-                        loom_runtime::JsonFormatFailure::DepthLimit => {
-                            self.json_format_error_result(VariantId(2), span)
-                        }
-                        loom_runtime::JsonFormatFailure::NonFiniteNumber => {
-                            self.json_format_error_result(VariantId(3), span)
-                        }
-                    },
-                },
-                Err(JsonConversionFailure::DepthLimit) => {
-                    self.json_format_error_result(VariantId(2), span)
-                }
-                Err(JsonConversionFailure::Invalid(failure)) => Err(failure),
-            },
-            _ => Err(self.invalid_builtin_fault(span)),
-        }
-    }
-
-    fn json_to_runtime(
-        &self,
-        value: &Value,
-        span: Span,
-        depth: usize,
-    ) -> Result<loom_runtime::JsonNode, JsonConversionFailure> {
-        let Value::Enum {
-            ty,
-            variant,
-            payload,
-        } = value
-        else {
-            return Err(JsonConversionFailure::Invalid(
-                self.invalid_builtin_fault(span),
-            ));
-        };
-        if self.program.prelude.json != Some(*ty) {
-            return Err(JsonConversionFailure::Invalid(
-                self.invalid_builtin_fault(span),
-            ));
-        }
-        match (variant.0, payload.as_slice()) {
-            (0, []) => Ok(loom_runtime::JsonNode::Null),
-            (1, [Value::Bool { value }]) => Ok(loom_runtime::JsonNode::Bool(*value)),
-            (2, [Value::Float { value }]) => Ok(loom_runtime::JsonNode::Number(*value)),
-            (3, [Value::Text { value }]) => Ok(loom_runtime::JsonNode::Text(value.clone())),
-            (4, [Value::List { elements }]) => {
-                if depth >= loom_runtime::JSON_DEPTH_LIMIT {
-                    return Err(JsonConversionFailure::DepthLimit);
-                }
-                Ok(loom_runtime::JsonNode::Array(
-                    elements
-                        .iter()
-                        .map(|value| self.json_to_runtime(value, span, depth + 1))
-                        .collect::<Result<Vec<_>, _>>()?,
-                ))
-            }
-            (5, [map]) => {
-                if depth >= loom_runtime::JSON_DEPTH_LIMIT {
-                    return Err(JsonConversionFailure::DepthLimit);
-                }
-                let mut object = BTreeMap::new();
-                for (key, value) in self.text_map_entries(map, span)? {
-                    object.insert(key, self.json_to_runtime(&value, span, depth + 1)?);
-                }
-                Ok(loom_runtime::JsonNode::Object(object))
-            }
-            _ => Err(JsonConversionFailure::Invalid(
-                self.invalid_builtin_fault(span),
-            )),
-        }
-    }
-
-    fn json_format_error_result(
-        &self,
-        variant: VariantId,
-        span: Span,
-    ) -> Result<Value, ExecutionFailure> {
-        let ty = self.program.prelude.json_error.ok_or_else(|| {
-            self.runtime_fault(
-                "LOOM_RUNTIME_INVALID_MIR",
-                "prelude JsonError type is missing",
-                span,
-            )
-        })?;
-        self.result_value(
-            false,
-            Value::Enum {
-                ty,
-                variant,
-                payload: Vec::new(),
-            },
-            span,
-        )
     }
 
     fn eval_io_error_builtin(
@@ -5578,9 +5732,9 @@ impl<'program> Interpreter<'program> {
             _ => return Err(self.invalid_builtin_fault(span)),
         };
         let mut line = String::from("{\"level\":");
-        line.push_str(&loom_runtime::escape_json_text(level));
+        line.push_str(&escape_log_text(level));
         line.push_str(",\"message\":");
-        line.push_str(&loom_runtime::escape_json_text(message));
+        line.push_str(&escape_log_text(message));
         line.push_str(",\"fields\":{");
         for (index, (key, value)) in fields.into_iter().enumerate() {
             let Value::Text { value } = value else {
@@ -5589,9 +5743,9 @@ impl<'program> Interpreter<'program> {
             if index > 0 {
                 line.push(',');
             }
-            line.push_str(&loom_runtime::escape_json_text(&key));
+            line.push_str(&escape_log_text(&key));
             line.push(':');
-            line.push_str(&loom_runtime::escape_json_text(&value));
+            line.push_str(&escape_log_text(&value));
         }
         line.push_str("}}\n");
         if loom_runtime::write_process_stderr(line.as_bytes()) != loom_runtime::TYPED_LOG_OK {
@@ -5711,7 +5865,7 @@ impl<'program> Interpreter<'program> {
             (Builtin::TextFromUtf8Units, [Value::List { elements }]) => {
                 let mut units = Vec::with_capacity(elements.len());
                 let mut invalid_unit = false;
-                for element in elements {
+                for element in elements.iter() {
                     let Value::Int { value } = element else {
                         return Err(self
                             .runtime_fault(
@@ -5768,6 +5922,13 @@ impl<'program> Interpreter<'program> {
                     });
                 self.option_value(byte, span)
             }
+            (Builtin::BytesAdd, _) => Err(self
+                .runtime_fault(
+                    "LOOM_RUNTIME_INVALID_MIR",
+                    "Bytes.add did not receive an inout receiver",
+                    span,
+                )
+                .into()),
             (Builtin::BytesAppend, [left, right]) => {
                 let left = self.bytes_payload(left, span)?;
                 let right = self.bytes_payload(right, span)?;
@@ -5853,7 +6014,7 @@ impl<'program> Interpreter<'program> {
         })?;
         Ok(Value::Record {
             ty,
-            fields: vec![Value::Bytes { value }],
+            fields: Arc::new(RecordFields::new(vec![Value::Bytes { value }])),
         })
     }
 
@@ -5884,7 +6045,7 @@ impl<'program> Interpreter<'program> {
         })?;
         Ok(Value::Record {
             ty,
-            fields: vec![Value::Text { value }],
+            fields: Arc::new(RecordFields::new(vec![Value::Text { value }])),
         })
     }
 
@@ -5958,7 +6119,7 @@ impl<'program> Interpreter<'program> {
                     Ok(mut file) => self.spawn_host_io_task(span, move || {
                         let mut value = String::new();
                         file.read_to_string(&mut value)
-                            .map(|_| HostIoValue::Value(Value::Text { value }))
+                            .map(|_| HostIoValue::Text(value))
                             .map_err(|error| io_failure("FileReadFault", &error, span))
                     }),
                     Err(failure) => self.spawn_terminal_task(Err(failure), span),
@@ -5980,7 +6141,7 @@ impl<'program> Interpreter<'program> {
                         let value = value.clone();
                         self.spawn_host_io_task(span, move || {
                             file.write_all(value.as_bytes())
-                                .map(|()| HostIoValue::Value(Value::Unit))
+                                .map(|()| HostIoValue::Unit)
                                 .map_err(|error| io_failure("FileWriteFault", &error, span))
                         })
                     }
@@ -6007,7 +6168,7 @@ impl<'program> Interpreter<'program> {
                     Ok(mut file) => self.spawn_try_host_io_task(span, move || {
                         let mut value = String::new();
                         file.read_to_string(&mut value)
-                            .map(|_| HostIoValue::Value(Value::Text { value }))
+                            .map(|_| HostIoValue::Text(value))
                             .map_err(host_io_error)
                     }),
                     Err(error) => {
@@ -6037,7 +6198,7 @@ impl<'program> Interpreter<'program> {
                         let value = value.clone();
                         self.spawn_try_host_io_task(span, move || {
                             file.write_all(value.as_bytes())
-                                .map(|()| HostIoValue::Value(Value::Unit))
+                                .map(|()| HostIoValue::Unit)
                                 .map_err(host_io_error)
                         })
                     }
@@ -6279,14 +6440,14 @@ impl<'program> Interpreter<'program> {
         };
         let fault = Value::Record {
             ty: task_fault,
-            fields: vec![
+            fields: Arc::new(RecordFields::new(vec![
                 Value::Text {
                     value: code.clone(),
                 },
                 Value::Text {
                     value: message.clone(),
                 },
-            ],
+            ])),
         };
         self.task_outcome_variant(VariantId(1), vec![fault], span)
     }
@@ -6336,7 +6497,7 @@ impl<'program> Interpreter<'program> {
         })?;
         Ok(Value::Record {
             ty,
-            fields: vec![Value::Int { value: raw }],
+            fields: Arc::new(RecordFields::new(vec![Value::Int { value: raw }])),
         })
     }
 
@@ -6653,7 +6814,7 @@ impl<'program> Interpreter<'program> {
             false,
             Value::Record {
                 ty: error_ty,
-                fields: vec![
+                fields: Arc::new(RecordFields::new(vec![
                     Value::Enum {
                         ty: kind_ty,
                         variant: VariantId(error.kind),
@@ -6662,7 +6823,7 @@ impl<'program> Interpreter<'program> {
                     Value::Text {
                         value: error.message,
                     },
-                ],
+                ])),
             },
             span,
         )
@@ -7266,6 +7427,138 @@ impl<'program> Interpreter<'program> {
         }
     }
 
+    fn append_list_place(
+        &mut self,
+        location: &Location,
+        value: Value,
+        span: Span,
+    ) -> Result<(), ExecutionFailure> {
+        let (root, mut projection) = self.resolve_location(location, span)?;
+        projection.extend_from_slice(&location.projection);
+        let frame = self
+            .frames
+            .get_mut(&root.frame)
+            .ok_or_else(|| RuntimeFault {
+                code: "LOOM_RUNTIME_DANGLING_VIEW".into(),
+                message: "place refers to a frame that is no longer alive".into(),
+                span,
+            })?;
+        let slot = frame
+            .slots
+            .get_mut(root.local.0 as usize)
+            .ok_or_else(|| RuntimeFault {
+                code: "LOOM_RUNTIME_INVALID_MIR".into(),
+                message: "local does not exist".into(),
+                span,
+            })?;
+        let root_value = match slot {
+            Slot::Value(value) => value,
+            Slot::Empty => {
+                return Err(RuntimeFault {
+                    code: "LOOM_RUNTIME_UNINITIALIZED".into(),
+                    message: "local is uninitialized".into(),
+                    span,
+                }
+                .into());
+            }
+            Slot::Moved => {
+                return Err(RuntimeFault {
+                    code: "LOOM_RUNTIME_USE_AFTER_MOVE".into(),
+                    message: "value has already been moved".into(),
+                    span,
+                }
+                .into());
+            }
+            Slot::Alias(_) => unreachable!("aliases are removed by resolve_location"),
+        };
+        let target = mutable_value_projection(root_value, &projection, span)?;
+        let Value::List { elements } = target else {
+            return Err(RuntimeFault {
+                code: "LOOM_RUNTIME_INVALID_MIR".into(),
+                message: "List.add receiver is not a List".into(),
+                span,
+            }
+            .into());
+        };
+        Arc::make_mut(elements).push(value);
+        Ok(())
+    }
+
+    fn append_bytes_place(
+        &mut self,
+        location: &Location,
+        value: i64,
+        span: Span,
+    ) -> Result<(), ExecutionFailure> {
+        let byte = u8::try_from(value).map_err(|_| RuntimeFault {
+            code: INVALID_BYTE_FAULT_CODE.into(),
+            message: INVALID_BYTE_FAULT_MESSAGE.into(),
+            span,
+        })?;
+        let (root, mut projection) = self.resolve_location(location, span)?;
+        projection.extend_from_slice(&location.projection);
+        let frame = self
+            .frames
+            .get_mut(&root.frame)
+            .ok_or_else(|| RuntimeFault {
+                code: "LOOM_RUNTIME_DANGLING_VIEW".into(),
+                message: "place refers to a frame that is no longer alive".into(),
+                span,
+            })?;
+        let slot = frame
+            .slots
+            .get_mut(root.local.0 as usize)
+            .ok_or_else(|| RuntimeFault {
+                code: "LOOM_RUNTIME_INVALID_MIR".into(),
+                message: "local does not exist".into(),
+                span,
+            })?;
+        let root_value = match slot {
+            Slot::Value(value) => value,
+            Slot::Empty => {
+                return Err(RuntimeFault {
+                    code: "LOOM_RUNTIME_UNINITIALIZED".into(),
+                    message: "local is uninitialized".into(),
+                    span,
+                }
+                .into());
+            }
+            Slot::Moved => {
+                return Err(RuntimeFault {
+                    code: "LOOM_RUNTIME_USE_AFTER_MOVE".into(),
+                    message: "value has already been moved".into(),
+                    span,
+                }
+                .into());
+            }
+            Slot::Alias(_) => unreachable!("aliases are removed by resolve_location"),
+        };
+        let target = mutable_value_projection(root_value, &projection, span)?;
+        let Value::Record { ty, fields } = target else {
+            return Err(RuntimeFault {
+                code: "LOOM_RUNTIME_INVALID_MIR".into(),
+                message: "Bytes.add receiver is not Bytes".into(),
+                span,
+            }
+            .into());
+        };
+        if self.program.prelude.bytes != Some(*ty)
+            || !matches!(fields.first(), Some(Value::Bytes { .. }))
+        {
+            return Err(RuntimeFault {
+                code: "LOOM_RUNTIME_INVALID_MIR".into(),
+                message: "Bytes.add receiver is not Bytes".into(),
+                span,
+            }
+            .into());
+        }
+        let Some(Value::Bytes { value }) = Arc::make_mut(fields).fields.first_mut() else {
+            unreachable!("Bytes payload shape was checked before mutation");
+        };
+        value.push(byte);
+        Ok(())
+    }
+
     fn take_place(&mut self, location: &Location, span: Span) -> Result<Value, ExecutionFailure> {
         let (root, mut projection) = self.resolve_location(location, span)?;
         projection.extend_from_slice(&location.projection);
@@ -7310,7 +7603,17 @@ impl<'program> Interpreter<'program> {
     ) -> Result<(Location, Vec<u32>), ExecutionFailure> {
         let mut current = Location::local(location.frame, location.local);
         let mut segments = Vec::new();
-        for _ in 0..64 {
+        let mut visited = BTreeSet::new();
+        loop {
+            if !visited.insert((current.frame, current.local)) {
+                return Err(self
+                    .runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "place alias chain is cyclic",
+                        span,
+                    )
+                    .into());
+            }
             let frame = self.frames.get(&current.frame).ok_or_else(|| {
                 ExecutionFailure::from(self.runtime_fault(
                     "LOOM_RUNTIME_DANGLING_VIEW",
@@ -7338,13 +7641,6 @@ impl<'program> Interpreter<'program> {
                 return Ok((current, prefix));
             }
         }
-        Err(self
-            .runtime_fault(
-                "LOOM_RUNTIME_INVALID_MIR",
-                "place alias chain is cyclic or too deep",
-                span,
-            )
-            .into())
     }
 
     fn set_slot(
@@ -7496,6 +7792,52 @@ fn unrefined(mut value: Value) -> Value {
     value
 }
 
+fn values_contain_dyn_writeback(values: &[Value]) -> bool {
+    let mut pending = values.iter().collect::<Vec<_>>();
+    while let Some(value) = pending.pop() {
+        match value {
+            Value::DynView {
+                writeback: Some(_), ..
+            } => return true,
+            Value::DynView { value, .. } | Value::Refined { value, .. } => {
+                pending.push(value);
+            }
+            Value::Tuple { elements } => pending.extend(elements),
+            Value::List { elements } => {
+                if elements.contains_writeback() {
+                    return true;
+                }
+            }
+            Value::Record { fields, .. } => {
+                if fields.may_contain_writeback() {
+                    return true;
+                }
+            }
+            Value::Enum { payload, .. } => pending.extend(payload),
+            Value::TaskOutcome {
+                outcome: TaskOutcomeValue::Completed(value),
+            } => pending.push(value),
+            Value::Unit
+            | Value::Bool { .. }
+            | Value::Int { .. }
+            | Value::Float { .. }
+            | Value::Text { .. }
+            | Value::Bytes { .. }
+            | Value::ConstraintError { .. }
+            | Value::Task { .. }
+            | Value::TaskJoin { .. }
+            | Value::TaskOutcome {
+                outcome: TaskOutcomeValue::Faulted | TaskOutcomeValue::Cancelled,
+            } => {}
+        }
+    }
+    false
+}
+
+fn value_contains_dyn_writeback(value: &Value) -> bool {
+    values_contain_dyn_writeback(std::slice::from_ref(value))
+}
+
 fn owned_value_clone(value: &Value) -> Value {
     clone_value(value, true)
 }
@@ -7552,20 +7894,30 @@ fn clone_value(value: &Value, clear_dyn_writeback: bool) -> Value {
                 }
             }
             Value::List { elements } => {
-                if let Some((first, remaining)) = elements.split_first() {
+                if !clear_dyn_writeback || !elements.contains_writeback() {
+                    Value::List {
+                        elements: Arc::clone(elements),
+                    }
+                } else if let Some((first, remaining)) = elements.as_slice().split_first() {
                     frames.push(CloneFrame::List {
                         remaining,
                         cloned: Vec::with_capacity(elements.len()),
                     });
                     current = first;
                     continue;
-                }
-                Value::List {
-                    elements: Vec::new(),
+                } else {
+                    Value::List {
+                        elements: Arc::new(ListElements::new(Vec::new())),
+                    }
                 }
             }
             Value::Record { ty, fields } => {
-                if let Some((first, remaining)) = fields.split_first() {
+                if !clear_dyn_writeback || !fields.may_contain_writeback() {
+                    Value::Record {
+                        ty: *ty,
+                        fields: Arc::clone(fields),
+                    }
+                } else if let Some((first, remaining)) = fields.as_slice().split_first() {
                     frames.push(CloneFrame::Record {
                         ty: *ty,
                         remaining,
@@ -7573,10 +7925,11 @@ fn clone_value(value: &Value, clear_dyn_writeback: bool) -> Value {
                     });
                     current = first;
                     continue;
-                }
-                Value::Record {
-                    ty: *ty,
-                    fields: Vec::new(),
+                } else {
+                    Value::Record {
+                        ty: *ty,
+                        fields: Arc::new(RecordFields::new(Vec::new())),
+                    }
                 }
             }
             Value::Enum {
@@ -7696,7 +8049,9 @@ fn clone_value(value: &Value, clear_dyn_writeback: bool) -> Value {
                         current = next;
                         break;
                     }
-                    completed = Value::List { elements: cloned };
+                    completed = Value::List {
+                        elements: Arc::new(ListElements::new(cloned)),
+                    };
                 }
                 CloneFrame::Record {
                     ty,
@@ -7713,7 +8068,10 @@ fn clone_value(value: &Value, clear_dyn_writeback: bool) -> Value {
                         current = next;
                         break;
                     }
-                    completed = Value::Record { ty, fields: cloned };
+                    completed = Value::Record {
+                        ty,
+                        fields: Arc::new(RecordFields::new(cloned)),
+                    };
                 }
                 CloneFrame::Enum {
                     ty,
@@ -7908,13 +8266,18 @@ fn referenced_task_ids(value: &Value, referenced: &mut Vec<u64>) {
     match value {
         Value::Task { id } => referenced.push(*id),
         Value::TaskJoin { tasks, .. } => referenced.extend(tasks),
-        Value::Tuple { elements } | Value::List { elements } => {
+        Value::Tuple { elements } => {
             for element in elements {
                 referenced_task_ids(element, referenced);
             }
         }
+        Value::List { elements } => {
+            for element in elements.iter() {
+                referenced_task_ids(element, referenced);
+            }
+        }
         Value::Record { fields, .. } => {
-            for field in fields {
+            for field in fields.iter() {
                 referenced_task_ids(field, referenced);
             }
         }
@@ -7951,12 +8314,18 @@ fn semantic_equal(left: &Value, right: &Value) -> bool {
         (Value::Float { value: left }, Value::Float { value: right }) => left == right,
         (Value::Text { value: left }, Value::Text { value: right }) => left == right,
         (Value::Bytes { value: left }, Value::Bytes { value: right }) => left == right,
-        (Value::Tuple { elements: left }, Value::Tuple { elements: right })
-        | (Value::List { elements: left }, Value::List { elements: right }) => {
+        (Value::Tuple { elements: left }, Value::Tuple { elements: right }) => {
             left.len() == right.len()
                 && left
                     .iter()
-                    .zip(right)
+                    .zip(right.iter())
+                    .all(|(left, right)| semantic_equal(left, right))
+        }
+        (Value::List { elements: left }, Value::List { elements: right }) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right.iter())
                     .all(|(left, right)| semantic_equal(left, right))
         }
         (
@@ -7973,7 +8342,7 @@ fn semantic_equal(left: &Value, right: &Value) -> bool {
                 && left.len() == right.len()
                 && left
                     .iter()
-                    .zip(right)
+                    .zip(right.iter())
                     .all(|(left, right)| semantic_equal(left, right))
         }
         (
@@ -8242,16 +8611,50 @@ fn take_value_projection(
             }
             .into());
         };
-        value = fields
-            .into_iter()
-            .nth(*field as usize)
-            .ok_or_else(|| RuntimeFault {
-                code: "LOOM_RUNTIME_INVALID_MIR".into(),
-                message: "field projection is out of bounds".into(),
-                span,
-            })?;
+        let index = *field as usize;
+        value = match Arc::try_unwrap(fields) {
+            Ok(fields) => fields.into_fields().into_iter().nth(index),
+            Err(fields) => fields.get(index).cloned(),
+        }
+        .ok_or_else(|| RuntimeFault {
+            code: "LOOM_RUNTIME_INVALID_MIR".into(),
+            message: "field projection is out of bounds".into(),
+            span,
+        })?;
     }
     Ok(value)
+}
+
+fn mutable_value_projection<'value>(
+    value: &'value mut Value,
+    projection: &[u32],
+    span: Span,
+) -> Result<&'value mut Value, ExecutionFailure> {
+    let value = match value {
+        Value::Refined { value, .. } => {
+            return mutable_value_projection(value, projection, span);
+        }
+        value => value,
+    };
+    let Some((&field, remainder)) = projection.split_first() else {
+        return Ok(value);
+    };
+    let Value::Record { fields, .. } = value else {
+        return Err(RuntimeFault {
+            code: "LOOM_RUNTIME_INVALID_MIR".into(),
+            message: "field projection targets a non-record value".into(),
+            span,
+        }
+        .into());
+    };
+    let field = Arc::make_mut(fields)
+        .get_mut(field as usize)
+        .ok_or_else(|| RuntimeFault {
+            code: "LOOM_RUNTIME_INVALID_MIR".into(),
+            message: "field projection is out of bounds".into(),
+            span,
+        })?;
+    mutable_value_projection(field, remainder, span)
 }
 
 fn write_value_projection(
@@ -8266,11 +8669,13 @@ fn write_value_projection(
     };
     match value {
         Value::Record { fields, .. } => {
-            let field = fields.get_mut(field as usize).ok_or_else(|| RuntimeFault {
-                code: "LOOM_RUNTIME_INVALID_MIR".into(),
-                message: "field projection is out of bounds".into(),
-                span,
-            })?;
+            let field = Arc::make_mut(fields)
+                .get_mut(field as usize)
+                .ok_or_else(|| RuntimeFault {
+                    code: "LOOM_RUNTIME_INVALID_MIR".into(),
+                    message: "field projection is out of bounds".into(),
+                    span,
+                })?;
             write_value_projection(field, remainder, replacement, span)
         }
         _ => Err(RuntimeFault {
@@ -8308,13 +8713,16 @@ mod location_projection_tests {
                 function: None,
                 slots: vec![Slot::Value(Value::Record {
                     ty: TypeId(0),
-                    fields: vec![
+                    fields: Arc::new(RecordFields::new(vec![
                         Value::Int { value: 7 },
                         Value::Record {
                             ty: TypeId(1),
-                            fields: vec![Value::Int { value: 11 }, Value::Int { value: 29 }],
+                            fields: Arc::new(RecordFields::new(vec![
+                                Value::Int { value: 11 },
+                                Value::Int { value: 29 },
+                            ])),
                         },
-                    ],
+                    ])),
                 })],
                 witnesses: Vec::new(),
             },
@@ -8348,6 +8756,419 @@ mod location_projection_tests {
             .read_place(&Location::local(3, LocalId(0)), Span::default())
             .expect("resolve nested projected receiver");
         assert_eq!(value, Value::Int { value: 11 });
+    }
+
+    #[test]
+    fn valid_alias_chains_are_not_limited_by_an_arbitrary_depth() {
+        let program = Program::default()
+            .into_checked()
+            .expect("empty checked-MIR fixture");
+        let mut interpreter = Interpreter::new(&program);
+        interpreter.frames.insert(
+            0,
+            Frame {
+                function: None,
+                slots: vec![Slot::Value(Value::Int { value: 29 })],
+                witnesses: Vec::new(),
+            },
+        );
+        for frame in 1..=128 {
+            interpreter.frames.insert(
+                frame,
+                Frame {
+                    function: None,
+                    slots: vec![Slot::Alias(Location::local(frame - 1, LocalId(0)))],
+                    witnesses: Vec::new(),
+                },
+            );
+        }
+
+        let value = interpreter
+            .read_place(&Location::local(128, LocalId(0)), Span::default())
+            .expect("resolve a valid deep mutable-receiver chain");
+        assert_eq!(value, Value::Int { value: 29 });
+    }
+
+    #[test]
+    fn list_add_cow_separates_an_owned_copy() {
+        let program = Program::default()
+            .into_checked()
+            .expect("empty checked-MIR fixture");
+        let mut interpreter = Interpreter::new(&program);
+        let original = Value::List {
+            elements: Arc::new(ListElements::new(vec![Value::Int { value: 7 }])),
+        };
+        let copied = original.clone();
+        interpreter.frames.insert(
+            0,
+            Frame {
+                function: None,
+                slots: vec![Slot::Value(original), Slot::Value(copied)],
+                witnesses: Vec::new(),
+            },
+        );
+
+        let frame = interpreter.frames.get(&0).expect("test frame");
+        let (
+            Slot::Value(Value::List { elements: original }),
+            Slot::Value(Value::List { elements: copied }),
+        ) = (&frame.slots[0], &frame.slots[1])
+        else {
+            panic!("test slots must contain Lists");
+        };
+        assert!(Arc::ptr_eq(original, copied));
+
+        interpreter
+            .append_list_place(
+                &Location::local(0, LocalId(0)),
+                Value::Int { value: 11 },
+                Span::default(),
+            )
+            .expect("append through direct mutable place");
+
+        let frame = interpreter.frames.get(&0).expect("test frame");
+        let (
+            Slot::Value(Value::List { elements: mutated }),
+            Slot::Value(Value::List {
+                elements: untouched,
+            }),
+        ) = (&frame.slots[0], &frame.slots[1])
+        else {
+            panic!("test slots must contain Lists");
+        };
+        assert!(!Arc::ptr_eq(mutated, untouched));
+        assert_eq!(
+            mutated.as_slice(),
+            [Value::Int { value: 7 }, Value::Int { value: 11 }]
+        );
+        assert_eq!(untouched.as_slice(), [Value::Int { value: 7 }]);
+    }
+
+    #[test]
+    fn owned_clone_shares_a_writeback_free_list() {
+        let original = Value::List {
+            elements: Arc::new(ListElements::new(vec![Value::Int { value: 7 }])),
+        };
+        let copied = owned_value_clone(&original);
+        let (Value::List { elements: original }, Value::List { elements: copied }) =
+            (&original, &copied)
+        else {
+            panic!("fixture must remain Lists");
+        };
+        assert!(Arc::ptr_eq(original, copied));
+    }
+
+    #[test]
+    fn owned_clone_detaches_a_list_containing_dyn_writeback() {
+        let original = Value::List {
+            elements: Arc::new(ListElements::new(vec![Value::DynView {
+                value: Box::new(Value::Int { value: 7 }),
+                writeback: Some(Location::local(0, LocalId(0))),
+                witness: RuntimeWitness {
+                    definition: WitnessId(0),
+                    arguments: Vec::new(),
+                },
+                mutable: true,
+                token: 1,
+            }])),
+        };
+        let copied = owned_value_clone(&original);
+        let (Value::List { elements: original }, Value::List { elements: copied }) =
+            (&original, &copied)
+        else {
+            panic!("fixture must remain Lists");
+        };
+        assert!(!Arc::ptr_eq(original, copied));
+        assert!(matches!(
+            original.as_slice(),
+            [Value::DynView {
+                writeback: Some(_),
+                ..
+            }]
+        ));
+        assert!(matches!(
+            copied.as_slice(),
+            [Value::DynView {
+                writeback: None,
+                ..
+            }]
+        ));
+        assert!(!copied.contains_writeback());
+    }
+
+    #[test]
+    fn record_projection_write_cow_separates_an_owned_copy() {
+        let program = Program::default()
+            .into_checked()
+            .expect("empty checked-MIR fixture");
+        let mut interpreter = Interpreter::new(&program);
+        let original = Value::Record {
+            ty: TypeId(0),
+            fields: Arc::new(RecordFields::new(vec![Value::Int { value: 7 }])),
+        };
+        let copied = owned_value_clone(&original);
+        interpreter.frames.insert(
+            0,
+            Frame {
+                function: None,
+                slots: vec![Slot::Value(original), Slot::Value(copied)],
+                witnesses: Vec::new(),
+            },
+        );
+
+        let frame = interpreter.frames.get(&0).expect("test frame");
+        let (
+            Slot::Value(Value::Record {
+                fields: original, ..
+            }),
+            Slot::Value(Value::Record { fields: copied, .. }),
+        ) = (&frame.slots[0], &frame.slots[1])
+        else {
+            panic!("test slots must contain records");
+        };
+        assert!(Arc::ptr_eq(original, copied));
+
+        interpreter
+            .write_place(
+                &Location {
+                    frame: 0,
+                    local: LocalId(0),
+                    projection: vec![0],
+                },
+                Value::Int { value: 11 },
+                Span::default(),
+            )
+            .expect("write through projected record place");
+
+        let frame = interpreter.frames.get(&0).expect("test frame");
+        let (
+            Slot::Value(Value::Record {
+                fields: mutated, ..
+            }),
+            Slot::Value(Value::Record {
+                fields: untouched, ..
+            }),
+        ) = (&frame.slots[0], &frame.slots[1])
+        else {
+            panic!("test slots must contain records");
+        };
+        assert!(!Arc::ptr_eq(mutated, untouched));
+        assert_eq!(mutated.as_slice(), [Value::Int { value: 11 }]);
+        assert_eq!(untouched.as_slice(), [Value::Int { value: 7 }]);
+        assert!(mutated.may_contain_writeback());
+    }
+
+    #[test]
+    fn projected_move_from_shared_record_preserves_the_moved_value() {
+        let program = Program::default()
+            .into_checked()
+            .expect("empty checked-MIR fixture");
+        let mut interpreter = Interpreter::new(&program);
+        let original = Value::Record {
+            ty: TypeId(0),
+            fields: Arc::new(RecordFields::new(vec![Value::DynView {
+                value: Box::new(Value::Int { value: 7 }),
+                writeback: Some(Location::local(0, LocalId(1))),
+                witness: RuntimeWitness {
+                    definition: WitnessId(0),
+                    arguments: Vec::new(),
+                },
+                mutable: true,
+                token: 1,
+            }])),
+        };
+        let shared = original.clone();
+        interpreter.frames.insert(
+            0,
+            Frame {
+                function: None,
+                slots: vec![
+                    Slot::Value(original),
+                    Slot::Value(Value::Int { value: 7 }),
+                    Slot::Value(shared),
+                ],
+                witnesses: Vec::new(),
+            },
+        );
+
+        let moved = interpreter
+            .take_place(
+                &Location {
+                    frame: 0,
+                    local: LocalId(0),
+                    projection: vec![0],
+                },
+                Span::default(),
+            )
+            .expect("move projected field from shared record backing");
+        assert!(matches!(
+            moved,
+            Value::DynView {
+                writeback: Some(_),
+                ..
+            }
+        ));
+        let frame = interpreter.frames.get(&0).expect("test frame");
+        assert!(matches!(frame.slots[0], Slot::Moved));
+        assert!(matches!(
+            &frame.slots[2],
+            Slot::Value(Value::Record { fields, .. })
+                if matches!(fields.as_slice(), [Value::DynView { writeback: Some(_), .. }])
+        ));
+    }
+
+    #[test]
+    fn owned_clone_detaches_nested_record_writeback() {
+        let inner = Arc::new(RecordFields::new(vec![Value::DynView {
+            value: Box::new(Value::Int { value: 7 }),
+            writeback: Some(Location::local(0, LocalId(0))),
+            witness: RuntimeWitness {
+                definition: WitnessId(0),
+                arguments: Vec::new(),
+            },
+            mutable: true,
+            token: 1,
+        }]));
+        let original = Value::Record {
+            ty: TypeId(0),
+            fields: Arc::new(RecordFields::new(vec![Value::Record {
+                ty: TypeId(1),
+                fields: Arc::clone(&inner),
+            }])),
+        };
+        let copied = owned_value_clone(&original);
+        let (
+            Value::Record {
+                fields: original, ..
+            },
+            Value::Record { fields: copied, .. },
+        ) = (&original, &copied)
+        else {
+            panic!("fixture must remain records");
+        };
+        assert!(!Arc::ptr_eq(original, copied));
+        let (
+            [
+                Value::Record {
+                    fields: original_inner,
+                    ..
+                },
+            ],
+            [
+                Value::Record {
+                    fields: copied_inner,
+                    ..
+                },
+            ],
+        ) = (original.as_slice(), copied.as_slice())
+        else {
+            panic!("fixture must retain nested records");
+        };
+        assert!(Arc::ptr_eq(original_inner, &inner));
+        assert!(!Arc::ptr_eq(original_inner, copied_inner));
+        assert!(matches!(
+            original_inner.as_slice(),
+            [Value::DynView {
+                writeback: Some(_),
+                ..
+            }]
+        ));
+        assert!(matches!(
+            copied_inner.as_slice(),
+            [Value::DynView {
+                writeback: None,
+                ..
+            }]
+        ));
+        assert!(!copied.may_contain_writeback());
+        assert!(!copied_inner.may_contain_writeback());
+    }
+
+    #[test]
+    fn record_fields_wire_is_an_array_and_deserialization_recomputes_writeback() {
+        let original = Value::Record {
+            ty: TypeId(0),
+            fields: Arc::new(RecordFields::new(vec![Value::DynView {
+                value: Box::new(Value::Int { value: 7 }),
+                writeback: Some(Location::local(0, LocalId(0))),
+                witness: RuntimeWitness {
+                    definition: WitnessId(0),
+                    arguments: Vec::new(),
+                },
+                mutable: true,
+                token: 1,
+            }])),
+        };
+        let encoded = serde_json::to_value(&original).expect("serialize record value");
+        assert!(encoded["fields"].is_array());
+        assert!(encoded.get("may_contain_writeback").is_none());
+
+        let decoded: Value = serde_json::from_value(encoded).expect("deserialize record value");
+        let Value::Record { fields, .. } = &decoded else {
+            panic!("decoded fixture must remain a record");
+        };
+        assert!(fields.may_contain_writeback());
+        let copied = owned_value_clone(&decoded);
+        assert!(matches!(
+            copied,
+            Value::Record { fields, .. }
+                if !fields.may_contain_writeback()
+                    && matches!(fields.as_slice(), [Value::DynView { writeback: None, .. }])
+        ));
+    }
+
+    #[test]
+    fn list_add_updates_a_projected_alias_in_place() {
+        let program = Program::default()
+            .into_checked()
+            .expect("empty checked-MIR fixture");
+        let mut interpreter = Interpreter::new(&program);
+        let elements = Arc::new(ListElements::new(vec![Value::Int { value: 17 }]));
+        let original_storage = Arc::as_ptr(&elements);
+        interpreter.frames.insert(
+            1,
+            Frame {
+                function: None,
+                slots: vec![Slot::Value(Value::Record {
+                    ty: TypeId(0),
+                    fields: Arc::new(RecordFields::new(vec![Value::List { elements }])),
+                })],
+                witnesses: Vec::new(),
+            },
+        );
+        interpreter.frames.insert(
+            2,
+            Frame {
+                function: None,
+                slots: vec![Slot::Alias(Location {
+                    frame: 1,
+                    local: LocalId(0),
+                    projection: vec![0],
+                })],
+                witnesses: Vec::new(),
+            },
+        );
+
+        interpreter
+            .append_list_place(
+                &Location::local(2, LocalId(0)),
+                Value::Int { value: 23 },
+                Span::default(),
+            )
+            .expect("append through projected alias");
+
+        let frame = interpreter.frames.get(&1).expect("owner frame");
+        let Slot::Value(Value::Record { fields, .. }) = &frame.slots[0] else {
+            panic!("owner must remain a record");
+        };
+        let [Value::List { elements }] = fields.as_slice() else {
+            panic!("record must retain projected List field");
+        };
+        assert_eq!(Arc::as_ptr(elements), original_storage);
+        assert_eq!(
+            elements.as_slice(),
+            [Value::Int { value: 17 }, Value::Int { value: 23 }]
+        );
     }
 }
 
@@ -8436,11 +9257,7 @@ mod socket_readiness_tests {
         let Value::Task { id: file_task } = interpreter
             .spawn_host_io_task(span, move || {
                 std::fs::read(empty_file)
-                    .map(|bytes| {
-                        HostIoValue::Value(Value::Int {
-                            value: i64::try_from(bytes.len()).expect("fixture length fits Int"),
-                        })
-                    })
+                    .map(|_| HostIoValue::Unit)
                     .map_err(|error| io_failure("FileReadFault", &error, span))
             })
             .expect("spawn file task")
@@ -8450,7 +9267,7 @@ mod socket_readiness_tests {
         assert!(interpreter.wait_for_work());
         assert!(matches!(
             interpreter.tasks.get(&file_task).map(|task| &task.status),
-            Some(TaskStatus::Completed(Value::Int { value: 0 }))
+            Some(TaskStatus::Completed(Value::Unit))
         ));
         drop(peers);
     }
@@ -8459,7 +9276,7 @@ mod socket_readiness_tests {
 #[cfg(test)]
 mod builtin_value_tests {
     use super::*;
-    use loom_mir::{FieldDef, Type, TypeDef, VariantDef};
+    use loom_mir::{ExprId, FieldDef, Type, TypeDef, VariantDef};
 
     const BYTES_TYPE: TypeId = TypeId(13);
     const PATH_TYPE: TypeId = TypeId(14);
@@ -8566,6 +9383,70 @@ mod builtin_value_tests {
     }
 
     #[test]
+    fn bytes_add_mutates_inout_and_rejects_invalid_values_before_writeback() {
+        fn payload(interpreter: &Interpreter<'_>) -> Vec<u8> {
+            let Slot::Value(Value::Record { fields, .. }) = &interpreter.frames[&0].slots[0] else {
+                panic!("fixture must remain Bytes");
+            };
+            let [Value::Bytes { value }] = fields.as_slice() else {
+                panic!("fixture must retain its private Bytes payload");
+            };
+            value.clone()
+        }
+
+        let program = builtin_program()
+            .into_checked()
+            .expect("valid standard-value checked-MIR fixture");
+        let mut interpreter = Interpreter::new(&program);
+        interpreter.frames.insert(
+            0,
+            Frame {
+                function: None,
+                slots: vec![Slot::Value(Value::Record {
+                    ty: BYTES_TYPE,
+                    fields: Arc::new(RecordFields::new(vec![Value::Bytes { value: vec![7] }])),
+                })],
+                witnesses: Vec::new(),
+            },
+        );
+        let span = Span::default();
+        let arguments = |value| {
+            [
+                CallArgument::InOut(Place::local(LocalId(0))),
+                CallArgument::Value(Expr {
+                    id: ExprId::UNASSIGNED,
+                    kind: ExprKind::Constant(Constant::Int(value)),
+                    ty: Type::Int,
+                    span,
+                }),
+            ]
+        };
+
+        for value in [0, 255] {
+            assert_eq!(
+                interpreter
+                    .eval_builtin_call(0, Builtin::BytesAdd, &arguments(value), span)
+                    .unwrap_or_else(|_| panic!("valid byte append")),
+                Value::Unit
+            );
+        }
+        assert_eq!(payload(&interpreter), [7, 0, 255]);
+
+        for value in [-1, 256] {
+            let failure = interpreter
+                .eval_builtin_call(0, Builtin::BytesAdd, &arguments(value), span)
+                .expect_err("out-of-range bytes must fault");
+            assert!(matches!(
+                failure,
+                EvalAbort::Failure(ExecutionFailure::Runtime { fault })
+                    if fault.code == INVALID_BYTE_FAULT_CODE
+                        && fault.message == INVALID_BYTE_FAULT_MESSAGE
+            ));
+            assert_eq!(payload(&interpreter), [7, 0, 255]);
+        }
+    }
+
+    #[test]
     fn unicode_scalars_invalid_utf8_and_lexical_paths_match_the_language_rules() {
         let program = builtin_program()
             .into_checked()
@@ -8592,9 +9473,9 @@ mod builtin_value_tests {
 
         let invalid = Value::Record {
             ty: BYTES_TYPE,
-            fields: vec![Value::Bytes {
+            fields: Arc::new(RecordFields::new(vec![Value::Bytes {
                 value: vec![0xff, 0xfe],
-            }],
+            }])),
         };
         let decoded = interpreter
             .eval_builtin_value(Builtin::BytesDecodeUtf8, &[invalid], span)
@@ -8608,10 +9489,12 @@ mod builtin_value_tests {
         ));
 
         let valid_units = Value::List {
-            elements: [65, 231, 149, 140]
-                .into_iter()
-                .map(|value| Value::Int { value })
-                .collect(),
+            elements: Arc::new(ListElements::new(
+                [65, 231, 149, 140]
+                    .into_iter()
+                    .map(|value| Value::Int { value })
+                    .collect(),
+            )),
         };
         let rebuilt = interpreter
             .eval_builtin_value(Builtin::TextFromUtf8Units, &[valid_units], span)
@@ -8624,10 +9507,12 @@ mod builtin_value_tests {
 
         for invalid_units in [vec![-1], vec![256], vec![255]] {
             let invalid_units = Value::List {
-                elements: invalid_units
-                    .into_iter()
-                    .map(|value| Value::Int { value })
-                    .collect(),
+                elements: Arc::new(ListElements::new(
+                    invalid_units
+                        .into_iter()
+                        .map(|value| Value::Int { value })
+                        .collect(),
+                )),
             };
             let decoded = interpreter
                 .eval_builtin_value(Builtin::TextFromUtf8Units, &[invalid_units], span)
@@ -8650,7 +9535,7 @@ mod builtin_value_tests {
             joined,
             Value::Enum { variant: VariantId(0), payload, .. }
                 if matches!(payload.as_slice(), [Value::Record { fields, .. }]
-                    if fields == &vec![Value::Text { value: "root/child/file".into() }])
+                    if fields.as_slice() == [Value::Text { value: "root/child/file".into() }])
         ));
     }
 

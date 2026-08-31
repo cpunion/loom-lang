@@ -50,18 +50,36 @@ fn verifyBytes() {
         Ok(decoded) => { assert decoded == "A界🙂!" }
         Err(InvalidUtf8) => { assert false }
     }
+
+    var decodedStorage = "decode alia".encode_utf8()
+    decodedStorage.add(115)
+    let decodedAlias = decodedStorage
+    match decodedStorage.decode_utf8() {
+        Ok(decoded) => { assert decoded == "decode alias" }
+        Err(InvalidUtf8) => { assert false }
+    }
+    let decodedAliasLength = decodedAlias.length()
+    assert decodedAliasLength == 12
+    requireByte(decodedAlias, 6, 32)
 }
 
 fn verifyMovingBytes() {
     var current = "".encode_utf8()
     for index in 0..512 {
-        let retained = current
-        current = current.append("x".encode_utf8())
-        let retainedLength = retained.length()
-        assert retainedLength == index
+        current.add(120)
     }
     let currentLength = current.length()
     assert currentLength == 512
+
+    let shared = current
+    current.add(121)
+    let sharedLength = shared.length()
+    let grownLength = current.length()
+    assert sharedLength == 512
+    assert grownLength == 513
+    requireByte(shared, 511, 120)
+    requireMissing(shared, 512)
+    requireByte(current, 512, 121)
 }
 
 pub fn main() {

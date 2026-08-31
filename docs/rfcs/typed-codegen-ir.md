@@ -408,9 +408,9 @@ Lowering and independent validation separately compute the least transitive
 closure over direct and invoke edges. A synchronous caller inherits the effect
 of a precondition it evaluates. An async precondition belongs to the child
 coroutine's state-zero path, so `TaskCreate` does not inherit child effects.
-`TextConcat`, `TextGet`, `TextFromUtf8Units`, `BytesAppend`,
-`BytesDecodeUtf8`, `PathJoin`, `FloatFormat`, and `JsonFormat` are collecting
-opcodes. `PathFromText` and `PathAsText` are non-collecting. `TaskCreate` and
+`TextConcat`, `TextGet`, `TextFromUtf8Units`, `BytesAppend`, both Bytes push
+forms, `PathJoin`, and `FloatFormat` are collecting opcodes.
+`BytesDecodeUtf8`, `PathFromText`, and `PathAsText` are non-collecting. `TaskCreate` and
 `TaskJoin` require an
 executor; neither operation itself suspends. `AwaitTasks` contributes both
 `MAY_FAULT` and `MAY_SUSPEND` and accepts one or more ordered children. The
@@ -683,20 +683,29 @@ and a null/zero empty view or contiguous entry view. It introduces no executor,
 universal value, or moving-GC safepoint. Status `0` follows the normal edge,
 status `2` records `LogWriteFault`, and invalid statuses trap.
 
-`JsonFormat` calls `loom_runtime_json_format_typed_v1` with the direct recursive
-Json carrier and one compiler-supplied target-layout descriptor. The runtime
-stages the complete canonical byte sequence before its sole Text allocation;
-depth exhaustion and non-finite numbers remain ordinary `JsonError` values.
+`std.json.format_json` is an ordinary source call graph over direct Json
+matching, Lists, TextMaps, Float helpers, unique packed byte pushes, and
+`BytesDecodeUtf8`. LCIR and the
+runtime contain no JSON-formatting opcode or descriptor boundary; depth and
+non-finite failures are ordinary source-constructed `JsonError` values.
 
 Compiler-generated `StructuralEquality` instances are exact effect-free
 `(T, T) -> Bool` helpers. Each expands one representation layer and reaches
 nested aggregate helpers through ordinary direct calls, so List/TextMap-backed
 nominal cycles close without a runtime type switch.
 
-Typed Bytes uses `TextEncodeUtf8`, `BytesLength`, `BytesGet`, `BytesAppend`,
-`BytesDecodeUtf8`, and `BytesCompare`. Generated objects call the typed append
-and decode helpers; the ByteObject descriptor and typed allocator remain
-runtime-internal. The format-neutral `TextFromUtf8Units` boundary borrows the
+Typed Bytes uses `TextEncodeUtf8`, `CollectionShare`, `BytesLength`, `BytesGet`,
+`BytesAppend`, `BytesPush`, `BytesPushUnique`, `BytesDecodeUtf8`, and
+`BytesCompare`.
+Generated objects call typed append, push, and decode helpers; the ByteObject
+descriptor, hidden capacity, and typed allocator remain runtime-internal. The
+ordinary push preserves copy-on-write value semantics. LCIR admits the unique
+form only after independent unshared-SSA validation. Source List or Bytes
+copies lower to representation-identical `CollectionShare`, making the COW
+alias explicit without emitting target code or adding source ownership syntax.
+Each push also carries exact lower- and upper-range comparison proofs whose
+unique success edges must dominate it. The runtime still refuses to mutate
+Text-backed storage. The format-neutral `TextFromUtf8Units` boundary borrows the
 direct contiguous `i64` List payload, validates byte range and complete UTF-8,
 stages the bytes before allocation, and publishes canonical Text last. Neither
 boundary introduces JSON policy or a source ownership model.

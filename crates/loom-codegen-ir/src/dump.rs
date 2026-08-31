@@ -53,7 +53,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 50")?;
+    writeln!(output, "lcir 52")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -335,6 +335,9 @@ fn write_instruction(
             output,
             "path.join %{base}, %{child}, ok {ok_variant}, error {error_variant}, absolute_join {absolute_join_variant}"
         ),
+        InstructionKind::CollectionShare { value } => {
+            write!(output, "collection.share %{value}")
+        }
         InstructionKind::BytesLength { bytes } => write!(output, "bytes.length %{bytes}"),
         InstructionKind::BytesGet {
             bytes,
@@ -347,6 +350,28 @@ fn write_instruction(
         ),
         InstructionKind::BytesAppend { left, right } => {
             write!(output, "bytes.append %{left}, %{right}")
+        }
+        InstructionKind::BytesPush {
+            bytes,
+            unit,
+            lower_proof,
+            upper_proof,
+        } => {
+            write!(
+                output,
+                "bytes.push %{bytes}, %{unit}, lower %{lower_proof}, upper %{upper_proof}"
+            )
+        }
+        InstructionKind::BytesPushUnique {
+            bytes,
+            unit,
+            lower_proof,
+            upper_proof,
+        } => {
+            write!(
+                output,
+                "bytes.push.unique %{bytes}, %{unit}, lower %{lower_proof}, upper %{upper_proof}"
+            )
         }
         InstructionKind::BytesDecodeUtf8 {
             bytes,
@@ -374,16 +399,6 @@ fn write_instruction(
         InstructionKind::FloatToIntStatus { value } => {
             write!(output, "convert.float_to_int_status %{value}")
         }
-        InstructionKind::JsonFormat {
-            json,
-            ok_variant,
-            error_variant,
-            depth_limit_variant,
-            non_finite_number_variant,
-        } => write!(
-            output,
-            "json.format %{json}, ok {ok_variant}, error {error_variant}, depth_limit {depth_limit_variant}, non_finite_number {non_finite_number_variant}"
-        ),
         InstructionKind::ProductConstruct { fields } => {
             write!(output, "product.construct (")?;
             write_arguments(output, fields)?;
@@ -1104,6 +1119,7 @@ const fn fault_code_name(code: crate::FaultCode) -> &'static str {
         crate::FaultCode::IntegerOverflow => "IntegerOverflow",
         crate::FaultCode::IntegerDivisionByZero => "IntegerDivisionByZero",
         crate::FaultCode::IntegerDivisionOverflow => "IntegerDivisionOverflow",
+        crate::FaultCode::InvalidByte => "InvalidByte",
         crate::FaultCode::InvalidDuration => "InvalidDuration",
         crate::FaultCode::InvalidSleepDuration => "InvalidSleepDuration",
         crate::FaultCode::SleepDurationOverflow => "SleepDurationOverflow",

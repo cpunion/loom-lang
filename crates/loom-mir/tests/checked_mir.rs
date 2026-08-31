@@ -2076,6 +2076,108 @@ fn text_get_rejects_a_non_integer_index_at_the_checked_boundary() {
 }
 
 #[test]
+fn bytes_add_has_an_independent_checked_mir_shape() {
+    let bytes = TypeId(0);
+    let bytes_ty = Type::Nominal(bytes, Vec::new());
+    let bytes_value = expr(
+        ExprKind::Record {
+            ty: bytes,
+            type_arguments: Vec::new(),
+            fields: vec![constant(Constant::Text(String::new()), Type::Text)],
+            construction: ConstructionMode::Plain,
+        },
+        bytes_ty.clone(),
+    );
+    let add = Expr {
+        id: ExprId::UNASSIGNED,
+        kind: ExprKind::Call {
+            target: CallTarget::Builtin(loom_mir::Builtin::BytesAdd),
+            type_arguments: Vec::new(),
+            arguments: vec![
+                CallArgument::InOut(Place::local(LocalId(0))),
+                CallArgument::Value(constant(Constant::Int(255), Type::Int)),
+            ],
+            witnesses: Vec::new(),
+        },
+        ty: Type::Unit,
+        span: span(),
+    };
+    let program = Program {
+        types: vec![TypeDef {
+            id: bytes,
+            name: "Bytes".to_owned(),
+            span: span(),
+            type_parameters: 0,
+            kind: TypeDefKind::Record {
+                fields: vec![FieldDef {
+                    name: "raw".to_owned(),
+                    ty: Type::Text,
+                    span: span(),
+                }],
+                invariant: None,
+            },
+        }],
+        functions: vec![function(
+            0,
+            Vec::new(),
+            vec![local(0, bytes_ty.clone(), true)],
+            Type::Unit,
+            Block {
+                statements: vec![Statement {
+                    kind: StatementKind::Let {
+                        local: LocalId(0),
+                        value: bytes_value,
+                    },
+                    span: span(),
+                }],
+                tail: Some(Box::new(add)),
+                span: span(),
+            },
+        )],
+        prelude: PreludeIds {
+            bytes: Some(bytes),
+            ..PreludeIds::default()
+        },
+        ..Program::default()
+    };
+    validate_program(&program).expect("valid Bytes.add checked-MIR shape");
+
+    let mut by_value = program.clone();
+    let Some(tail) = &mut by_value.functions[0].body.tail else {
+        unreachable!();
+    };
+    let ExprKind::Call { arguments, .. } = &mut tail.kind else {
+        unreachable!();
+    };
+    arguments[0] = CallArgument::Value(copy(0, bytes_ty));
+    assert!(validation_errors(&by_value).contains(MirValidationCode::ReceiverShape));
+
+    let mut inout_value = program.clone();
+    let Some(tail) = &mut inout_value.functions[0].body.tail else {
+        unreachable!();
+    };
+    let ExprKind::Call { arguments, .. } = &mut tail.kind else {
+        unreachable!();
+    };
+    arguments[1] = CallArgument::InOut(Place::local(LocalId(0)));
+    assert!(validation_errors(&inout_value).contains(MirValidationCode::ReceiverShape));
+
+    let mut wrong_value = program.clone();
+    let Some(tail) = &mut wrong_value.functions[0].body.tail else {
+        unreachable!();
+    };
+    let ExprKind::Call { arguments, .. } = &mut tail.kind else {
+        unreachable!();
+    };
+    arguments[1] = CallArgument::Value(constant(Constant::Bool(true), Type::Bool));
+    assert!(validation_errors(&wrong_value).contains(MirValidationCode::TypeMismatch));
+
+    let mut wrong_receiver = program;
+    wrong_receiver.prelude.bytes = None;
+    assert!(validation_errors(&wrong_receiver).contains(MirValidationCode::BuiltinShape));
+}
+
+#[test]
 fn text_map_insert_rejects_a_wrong_value_type_at_the_checked_boundary() {
     let map = TypeId(0);
     let map_int = Type::Nominal(map, vec![Type::Int]);
@@ -4824,6 +4926,7 @@ fn forged_proof_program() -> CheckedProgram {
 
 #[test]
 fn interpreted_artifact_bytes_are_deterministic_and_round_trip_float_bits() {
+    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 45);
     let program = float_program(0x7ff8_0000_0000_0042);
     let first = encode_interpreted_artifact(&program).expect("encode");
     let second = encode_interpreted_artifact(&program).expect("encode again");

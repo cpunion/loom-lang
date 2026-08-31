@@ -6,7 +6,7 @@ use loom_core::{Diagnostic, FileId, Name, Span};
 use loom_hir::{DefId, DefinitionKind, ModuleId, Program, Visibility};
 use serde::{Deserialize, Serialize};
 
-use crate::module_graph::{imported_name, is_compiler_known_import};
+use crate::module_graph::imported_name;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum Namespace {
@@ -264,9 +264,7 @@ impl DefMapBuild {
 
         for module in modules {
             for import in &program.modules[module].imports {
-                if crate::std_primitives::resolve_import(program, module, &import.path).is_some()
-                    || is_compiler_known_import(&import.path)
-                {
+                if crate::std_primitives::resolve_import(program, module, &import.path).is_some() {
                     continue;
                 }
                 let Some(imported_name) = imported_name(import) else {

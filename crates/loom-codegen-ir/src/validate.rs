@@ -242,7 +242,7 @@ pub enum ValidationCode {
     UnreachableBlock,
     Dominance,
     InvalidIntegerProof,
-    InvalidListUniqueness,
+    InvalidCollectionUniqueness,
     InvalidTaskOwnership,
     InvalidCoroutinePlan,
 }
@@ -284,7 +284,7 @@ impl ValidationCode {
             Self::UnreachableBlock => "LcirUnreachableBlock",
             Self::Dominance => "LcirDominance",
             Self::InvalidIntegerProof => "LcirInvalidIntegerProof",
-            Self::InvalidListUniqueness => "LcirInvalidListUniqueness",
+            Self::InvalidCollectionUniqueness => "LcirInvalidCollectionUniqueness",
             Self::InvalidTaskOwnership => "LcirInvalidTaskOwnership",
             Self::InvalidCoroutinePlan => "LcirInvalidCoroutinePlan",
         }
@@ -1544,7 +1544,7 @@ impl<'a> Validator<'a> {
         let dominators = compute_dominators(entry.index(), &reachable, &successors, &predecessors);
         self.validate_dominance(function, &base, &schedule, &reachable, &dominators);
         self.validate_integer_proofs(function, &base, &reachable, &predecessors, &dominators);
-        self.validate_list_uniqueness(function, &base, &reachable);
+        self.validate_collection_uniqueness(function, &base, &reachable);
         self.validate_task_ownership(function, &base, &reachable);
     }
 
@@ -1687,87 +1687,99 @@ impl<'a> Validator<'a> {
         }
     }
 
-    fn validate_list_uniqueness(&mut self, function: &Function, base: &str, reachable: &[bool]) {
-        let list_values = function
-            .values()
-            .iter()
-            .map(|value| {
-                self.program
-                    .representations
-                    .value_type(value.ty())
-                    .is_some_and(|ty| matches!(ty.semantic(), Type::List(_)))
-            })
-            .collect::<Vec<_>>();
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the sparse possible-state worklist keeps List and Bytes eligibility, CFG propagation, and diagnostics auditable together"
+    )]
+    fn validate_collection_uniqueness(
+        &mut self,
+        function: &Function,
+        base: &str,
+        reachable: &[bool],
+    ) {
+        let mut collection_slots = vec![None; function.values().len()];
+        let mut collection_count = 0_usize;
+        for value in function.values() {
+            let is_collection = self
+                .program
+                .representations
+                .value_type(value.ty())
+                .is_some_and(|ty| {
+                    matches!(ty.semantic(), Type::List(_))
+                        || matches!(
+                            ty.semantic(),
+                            Type::Nominal(id, arguments)
+                                if Some(*id) == self.program.canonical_types.bytes
+                                    && arguments.is_empty()
+                        )
+                });
+            if is_collection {
+                collection_slots[value.id().index()] = Some(collection_count);
+                collection_count += 1;
+            }
+        }
         if !function.instructions().iter().any(|instruction| {
-            matches!(instruction.kind(), InstructionKind::ListAppendUnique { .. })
+            matches!(
+                instruction.kind(),
+                InstructionKind::ListAppendUnique { .. } | InstructionKind::BytesPushUnique { .. }
+            )
         }) {
             return;
         }
-
-        let top = list_values
-            .iter()
-            .map(|is_list| {
-                if *is_list {
-                    ListOwnership::Unique
-                } else {
-                    ListOwnership::Shared
-                }
-            })
-            .collect::<Vec<_>>();
-        let mut inputs = vec![top.clone(); function.blocks().len()];
         let Some(entry) = function.entry() else {
             return;
         };
+        let mut entry_input = vec![CollectionOwnership::NONE; collection_count];
         for parameter in function
             .block(entry)
             .into_iter()
             .flat_map(crate::Block::params)
             .copied()
-            .filter(|value| list_values.get(value.index()).copied().unwrap_or(false))
         {
-            inputs[entry.index()][parameter.index()] = ListOwnership::Shared;
+            if let Some(slot) = collection_slot(&collection_slots, parameter) {
+                entry_input[slot] = CollectionOwnership::SHARED;
+            }
         }
-
-        loop {
-            let mut next = vec![top.clone(); function.blocks().len()];
-            let mut seen = vec![false; function.blocks().len()];
-            next[entry.index()].clone_from(&inputs[entry.index()]);
-            seen[entry.index()] = true;
-            for (block_index, block) in function.blocks().iter().enumerate() {
-                if !reachable.get(block_index).copied().unwrap_or(false) {
+        let mut inputs = vec![None; function.blocks().len()];
+        inputs[entry.index()] = Some(entry_input);
+        let mut pending = VecDeque::from([entry.index()]);
+        let mut queued = vec![false; function.blocks().len()];
+        queued[entry.index()] = true;
+        while let Some(block_index) = pending.pop_front() {
+            queued[block_index] = false;
+            let Some(input) = inputs[block_index].as_deref() else {
+                continue;
+            };
+            let transfer = transfer_collection_ownership(
+                function,
+                &function.blocks()[block_index],
+                input,
+                &collection_slots,
+                false,
+            );
+            for edge in transfer.edges {
+                if edge.target == entry.index()
+                    || !reachable.get(edge.target).copied().unwrap_or(false)
+                {
                     continue;
                 }
-                for edge in transfer_list_ownership(
-                    function,
-                    block,
-                    &inputs[block_index],
-                    &list_values,
-                    false,
-                )
-                .edges
-                {
-                    if edge.target == entry.index()
-                        || !reachable.get(edge.target).copied().unwrap_or(false)
-                    {
-                        continue;
+                let changed = if let Some(current) = inputs[edge.target].as_mut() {
+                    let mut changed = false;
+                    for (current, incoming) in current.iter_mut().zip(edge.states) {
+                        let merged = current.union(incoming);
+                        changed |= merged != *current;
+                        *current = merged;
                     }
-                    if seen[edge.target] {
-                        for (current, incoming) in next[edge.target]
-                            .iter_mut()
-                            .zip(edge.states.iter().copied())
-                        {
-                            *current = current.meet(incoming);
-                        }
-                    } else {
-                        next[edge.target] = edge.states;
-                        seen[edge.target] = true;
-                    }
+                    changed
+                } else {
+                    inputs[edge.target] = Some(edge.states);
+                    true
+                };
+                if changed && !queued[edge.target] {
+                    pending.push_back(edge.target);
+                    queued[edge.target] = true;
                 }
             }
-            if next == inputs {
-                break;
-            }
-            inputs = next;
         }
 
         let mut reported = BTreeSet::new();
@@ -1775,13 +1787,24 @@ impl<'a> Validator<'a> {
             if !reachable.get(block_index).copied().unwrap_or(false) {
                 continue;
             }
+            let Some(input) = inputs[block_index].as_deref() else {
+                continue;
+            };
             let transfer =
-                transfer_list_ownership(function, block, &inputs[block_index], &list_values, true);
+                transfer_collection_ownership(function, block, input, &collection_slots, true);
             for issue in transfer.issues {
-                if reported.insert((issue.instruction, issue.value, issue.message)) {
+                if reported.insert((issue.site, issue.value, issue.message)) {
+                    let path = match issue.site {
+                        CollectionOwnershipSite::Instruction(instruction) => {
+                            format!("{base}.instruction[{}].collection", instruction.index())
+                        }
+                        CollectionOwnershipSite::Terminator(block) => {
+                            format!("{base}.block[{}].terminator.collection", block.index())
+                        }
+                    };
                     self.error(
-                        ValidationCode::InvalidListUniqueness,
-                        format!("{base}.instruction[{}].list", issue.instruction.index()),
+                        ValidationCode::InvalidCollectionUniqueness,
+                        path,
                         issue.message,
                     );
                 }
@@ -3184,6 +3207,19 @@ impl<'a> Validator<'a> {
                     &path,
                 );
             }
+            InstructionKind::CollectionShare { value } => {
+                let value_type = function.value(*value).map(Value::ty);
+                let canonical_collection = value_type
+                    .is_some_and(|ty| self.list_element(ty).is_some() || Some(ty) == bytes);
+                if value_type.is_some() && !canonical_collection {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.value"),
+                        "collection share requires a canonical concrete List or Bytes value",
+                    );
+                }
+                self.require_results(function, instruction, &[value_type], &path);
+            }
             InstructionKind::BytesLength { bytes: value } => {
                 if bytes.is_none() {
                     self.error(
@@ -3290,6 +3326,50 @@ impl<'a> Validator<'a> {
                 }
                 self.require_results(function, instruction, &[bytes], &path);
             }
+            InstructionKind::BytesPush {
+                bytes: value,
+                unit,
+                lower_proof,
+                upper_proof,
+            }
+            | InstructionKind::BytesPushUnique {
+                bytes: value,
+                unit,
+                lower_proof,
+                upper_proof,
+            } => {
+                if bytes.is_none() {
+                    self.error(
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.bytes"),
+                        "Bytes push requires cataloged canonical managed Bytes",
+                    );
+                }
+                self.require_known_value_type(
+                    function,
+                    *value,
+                    bytes,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.bytes"),
+                );
+                self.require_known_value_type(
+                    function,
+                    *unit,
+                    integer,
+                    ValidationCode::TypeMismatch,
+                    format!("{path}.unit"),
+                );
+                for (name, proof) in [("lower_proof", lower_proof), ("upper_proof", upper_proof)] {
+                    self.require_known_value_type(
+                        function,
+                        *proof,
+                        boolean,
+                        ValidationCode::TypeMismatch,
+                        format!("{path}.{name}"),
+                    );
+                }
+                self.require_results(function, instruction, &[bytes], &path);
+            }
             InstructionKind::BytesDecodeUtf8 {
                 bytes: value,
                 ok_variant,
@@ -3376,22 +3456,6 @@ impl<'a> Validator<'a> {
                 );
                 self.require_results(function, instruction, &[integer_pair], &path);
             }
-            InstructionKind::JsonFormat {
-                json,
-                ok_variant,
-                error_variant,
-                depth_limit_variant,
-                non_finite_number_variant,
-            } => self.validate_json_format_instruction(
-                function,
-                instruction,
-                *json,
-                *ok_variant,
-                *error_variant,
-                *depth_limit_variant,
-                *non_finite_number_variant,
-                &path,
-            ),
             InstructionKind::ProductConstruct { fields }
             | InstructionKind::InvariantRecordProven { fields } => {
                 self.require_results(function, instruction, &[None], &path);
@@ -6467,12 +6531,14 @@ impl<'a> Validator<'a> {
             .and_then(|index| self.exact_effects.get(index).copied())
     }
 
-    /// Validates the edge-sensitive fact consumed by `int.successor_below`.
+    /// Validates the edge-sensitive facts consumed by `int.successor_below`
+    /// and the packed-Bytes push instructions.
     ///
-    /// A proof value must drive exactly one reachable branch. Its true target
-    /// must have that branch as its only reachable predecessor and dominate
-    /// every proof use. The unique-entry rule turns ordinary block dominance
-    /// into true-edge dominance without materializing path facts per block.
+    /// A proof value must drive exactly one reachable branch or assertion. Its
+    /// success target must have that guard as its only reachable predecessor
+    /// and dominate every proof use. The unique-entry rule turns ordinary
+    /// block dominance into success-edge dominance without materializing path
+    /// facts per block.
     fn validate_integer_proofs(
         &mut self,
         function: &Function,
@@ -6490,25 +6556,121 @@ impl<'a> Validator<'a> {
                 let Some(instruction) = function.instruction(*instruction_id) else {
                     continue;
                 };
-                let InstructionKind::IntSuccessorBelow {
-                    value,
-                    upper_bound,
-                    proof,
-                } = &instruction.kind
-                else {
-                    continue;
+                match &instruction.kind {
+                    InstructionKind::IntSuccessorBelow {
+                        value,
+                        upper_bound,
+                        proof,
+                    } => self.validate_integer_successor(
+                        function,
+                        instruction,
+                        block_index,
+                        *value,
+                        *upper_bound,
+                        *proof,
+                        &facts,
+                        dominators,
+                        base,
+                    ),
+                    InstructionKind::BytesPush {
+                        unit,
+                        lower_proof,
+                        upper_proof,
+                        ..
+                    }
+                    | InstructionKind::BytesPushUnique {
+                        unit,
+                        lower_proof,
+                        upper_proof,
+                        ..
+                    } => self.validate_byte_push_proofs(
+                        function,
+                        instruction,
+                        block_index,
+                        *unit,
+                        *lower_proof,
+                        *upper_proof,
+                        &facts,
+                        dominators,
+                        base,
+                    ),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn validate_byte_push_proofs(
+        &mut self,
+        function: &Function,
+        instruction: &Instruction,
+        block_index: usize,
+        unit: ValueId,
+        lower_proof: ValueId,
+        upper_proof: ValueId,
+        facts: &IntegerProofFacts,
+        dominators: &DominatorTree,
+        base: &str,
+    ) {
+        for (name, proof, bound) in [
+            ("lower_proof", lower_proof, ByteRangeBound::Lower),
+            ("upper_proof", upper_proof, ByteRangeBound::Upper),
+        ] {
+            let path = format!("{base}.instruction[{}].{name}", instruction.id.index());
+            if !is_exact_byte_range_proof(function, unit, proof, bound) {
+                let relation = match bound {
+                    ByteRangeBound::Lower => "unit >= 0",
+                    ByteRangeBound::Upper => "unit <= 255",
                 };
-                let (value, upper_bound, proof) = (*value, *upper_bound, *proof);
-                self.validate_integer_successor(
-                    function,
-                    instruction,
-                    block_index,
-                    value,
-                    upper_bound,
-                    proof,
-                    &facts,
-                    dominators,
-                    base,
+                self.error(
+                    ValidationCode::InvalidIntegerProof,
+                    path,
+                    format!("Bytes push {name} must be the exact result of {relation}"),
+                );
+                continue;
+            }
+            let branch = (proof.owner() == function.id)
+                .then(|| facts.branches.get(proof.index()).copied())
+                .flatten()
+                .unwrap_or(ProofBranch::None);
+            let (source, true_target) = match branch {
+                ProofBranch::Unique {
+                    source,
+                    true_target,
+                } => (source, true_target),
+                ProofBranch::None => {
+                    self.error(
+                        ValidationCode::InvalidIntegerProof,
+                        path,
+                        format!("Bytes push {name} must condition a reachable guard"),
+                    );
+                    continue;
+                }
+                ProofBranch::Ambiguous => {
+                    self.error(
+                        ValidationCode::InvalidIntegerProof,
+                        path,
+                        format!("Bytes push {name} cannot condition multiple reachable guards"),
+                    );
+                    continue;
+                }
+            };
+            if facts.predecessors.get(true_target) != Some(&UniquePredecessor::One(source)) {
+                self.error(
+                    ValidationCode::InvalidIntegerProof,
+                    path,
+                    format!(
+                        "Bytes push {name} success target must have only the proving guard as a reachable predecessor"
+                    ),
+                );
+                continue;
+            }
+            if !dominators.dominates(true_target, block_index) {
+                self.error(
+                    ValidationCode::InvalidIntegerProof,
+                    path,
+                    format!("Bytes push {name} success edge does not dominate the push"),
                 );
             }
         }
@@ -7612,260 +7774,6 @@ impl<'a> Validator<'a> {
         }
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the JSON formatter's closed input, Result, and JsonError identities are validated at one boundary"
-    )]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the recursive Json and nested Result[Text, JsonError] shapes are checked atomically"
-    )]
-    fn validate_json_format_instruction(
-        &mut self,
-        function: &Function,
-        instruction: &Instruction,
-        json: ValueId,
-        ok_variant: u32,
-        error_variant: u32,
-        depth_limit_variant: u32,
-        non_finite_number_variant: u32,
-        path: &str,
-    ) {
-        self.require_results(function, instruction, &[None], path);
-
-        let Some(json_ty) = function.value(json).map(Value::ty) else {
-            return;
-        };
-        let Some((json_id, text_map_id, json_error_id, result_id)) = self
-            .program
-            .canonical_types
-            .json
-            .zip(self.program.canonical_types.text_map)
-            .zip(self.program.canonical_types.json_error)
-            .zip(self.program.canonical_types.result)
-            .map(|(((json, text_map), json_error), result)| (json, text_map, json_error, result))
-        else {
-            self.error(
-                ValidationCode::TypeMismatch,
-                format!("{path}.json"),
-                "JSON formatting requires cataloged Json, TextMap, JsonError, and Result identities",
-            );
-            return;
-        };
-        let canonical_json_semantic = Type::Nominal(json_id, Vec::new());
-        let json_semantic = self
-            .program
-            .representations
-            .value_type(json_ty)
-            .map(crate::ValueType::semantic);
-        let Some(json_sum) = self.sum_repr(json_ty) else {
-            self.error(
-                ValidationCode::TypeMismatch,
-                format!("{path}.json"),
-                "JSON formatting requires the canonical recursive Json sum",
-            );
-            return;
-        };
-        if json_semantic != Some(&canonical_json_semantic)
-            || self.scalar_type(&canonical_json_semantic) != Some(json_ty)
-        {
-            self.error(
-                ValidationCode::TypeMismatch,
-                format!("{path}.json"),
-                "JSON formatting requires the cataloged canonical Json type",
-            );
-        }
-        let variants = self
-            .program
-            .representations
-            .sum(json_sum)
-            .map_or(0, |sum| sum.variants().len());
-        let boolean = self.scalar_type(&Type::Bool);
-        let float = self.scalar_type(&Type::Float);
-        let text = self.scalar_type(&Type::Text);
-        let array_semantic = Type::List(Box::new(canonical_json_semantic.clone()));
-        let object_semantic = Type::Nominal(text_map_id, vec![canonical_json_semantic.clone()]);
-        let exact_scalar_variant = |validator: &Self, variant: usize, expected| {
-            validator.sum_variant_field_count(json_sum, variant) == Some(1)
-                && validator.sum_variant_field(json_sum, variant, 0) == expected
-        };
-        let array_ty = self.sum_variant_field(json_sum, 4, 0);
-        let object_ty = self.sum_variant_field(json_sum, 5, 0);
-        let canonical_json = variants == 6
-            && self.sum_variant_field_count(json_sum, 0) == Some(0)
-            && exact_scalar_variant(self, 1, boolean)
-            && exact_scalar_variant(self, 2, float)
-            && exact_scalar_variant(self, 3, text)
-            && self.sum_variant_field_count(json_sum, 4) == Some(1)
-            && array_ty == self.scalar_type(&array_semantic)
-            && array_ty.and_then(|ty| self.list_element(ty)) == Some(json_ty)
-            && self.sum_variant_field_count(json_sum, 5) == Some(1)
-            && object_ty == self.scalar_type(&object_semantic)
-            && object_ty.and_then(|ty| self.text_map_value(ty)) == Some(json_ty);
-        if !canonical_json {
-            self.error(
-                ValidationCode::TypeMismatch,
-                format!("{path}.json"),
-                "Json must contain Null, Bool(Bool), Number(Float), Text(Text), Array(List[Json]), and Object(TextMap[Json]) in canonical order",
-            );
-        }
-
-        let Some(result_ty) = instruction
-            .results
-            .first()
-            .and_then(|result| function.value(*result))
-            .map(Value::ty)
-        else {
-            return;
-        };
-        let result_semantic = self
-            .program
-            .representations
-            .value_type(result_ty)
-            .map(|value_type| value_type.semantic().clone());
-        let error_semantic = Type::Nominal(json_error_id, Vec::new());
-        let canonical_result_semantic =
-            Type::Nominal(result_id, vec![Type::Text, error_semantic.clone()]);
-        if result_semantic.as_ref() != Some(&canonical_result_semantic)
-            || self.scalar_type(&canonical_result_semantic) != Some(result_ty)
-        {
-            self.error(
-                ValidationCode::TypeMismatch,
-                format!("{path}.result[0]"),
-                "JSON formatting result must be the cataloged canonical Result[Text, JsonError]",
-            );
-        }
-
-        let Some(result_sum) = self.sum_repr(result_ty) else {
-            self.error(
-                ValidationCode::TypeMismatch,
-                format!("{path}.result[0]"),
-                "JSON formatting result must use a closed sum representation",
-            );
-            return;
-        };
-        if self
-            .program
-            .representations
-            .sum(result_sum)
-            .map_or(0, |sum| sum.variants().len())
-            != 2
-        {
-            self.error(
-                ValidationCode::InstructionShape,
-                format!("{path}.result[0]"),
-                "JSON formatting Result must contain exactly two variants",
-            );
-        }
-        if (ok_variant, error_variant) != (0, 1) {
-            self.error(
-                ValidationCode::InstructionShape,
-                format!("{path}.variants"),
-                "JSON formatting Result requires canonical Ok=0 and Err=1 variants",
-            );
-        }
-        let ok = usize::try_from(ok_variant).ok();
-        if ok.map(|variant| {
-            (
-                self.sum_variant_field_count(result_sum, variant),
-                self.sum_variant_field(result_sum, variant, 0),
-            )
-        }) != Some((Some(1), text))
-        {
-            self.error(
-                ValidationCode::InstructionShape,
-                format!("{path}.ok_variant"),
-                "JSON formatting success variant must exist and carry exactly Text",
-            );
-        }
-        let error = usize::try_from(error_variant).ok();
-        let error_ty = error.and_then(|variant| {
-            (self.sum_variant_field_count(result_sum, variant) == Some(1))
-                .then(|| self.sum_variant_field(result_sum, variant, 0))
-                .flatten()
-        });
-        let Some(error_ty) = error_ty else {
-            self.error(
-                ValidationCode::InstructionShape,
-                format!("{path}.error_variant"),
-                "JSON formatting error variant must exist and carry exactly one JsonError",
-            );
-            return;
-        };
-        if self
-            .program
-            .representations
-            .value_type(error_ty)
-            .is_none_or(|value_type| value_type.semantic() != &error_semantic)
-            || self.scalar_type(&error_semantic) != Some(error_ty)
-        {
-            self.error(
-                ValidationCode::TypeMismatch,
-                format!("{path}.error_variant"),
-                "JSON formatting error payload must match the Result error argument exactly",
-            );
-        }
-        let Some(error_sum) = self.sum_repr(error_ty) else {
-            self.error(
-                ValidationCode::TypeMismatch,
-                format!("{path}.error_variant"),
-                "JsonError payload must use a closed sum representation",
-            );
-            return;
-        };
-        if self
-            .program
-            .representations
-            .sum(error_sum)
-            .map_or(0, |sum| sum.variants().len())
-            != 4
-        {
-            self.error(
-                ValidationCode::InstructionShape,
-                format!("{path}.error_variant"),
-                "JsonError must contain exactly four variants",
-            );
-        }
-        if (depth_limit_variant, non_finite_number_variant) != (2, 3) {
-            self.error(
-                ValidationCode::InstructionShape,
-                format!("{path}.error_variants"),
-                "JSON formatting requires canonical JsonError DepthLimit=2 and NonFiniteNumber=3 variants",
-            );
-        }
-        for (name, variant) in [
-            ("depth_limit_variant", depth_limit_variant),
-            ("non_finite_number_variant", non_finite_number_variant),
-        ] {
-            if usize::try_from(variant)
-                .ok()
-                .and_then(|variant| self.sum_variant_field_count(error_sum, variant))
-                != Some(0)
-            {
-                self.error(
-                    ValidationCode::InstructionShape,
-                    format!("{path}.{name}"),
-                    "JsonError status variant must exist and carry no payload",
-                );
-            }
-        }
-        let integer = self.scalar_type(&Type::Int);
-        for variant in 0..4 {
-            let mapped_status = usize::try_from(depth_limit_variant).ok() == Some(variant)
-                || usize::try_from(non_finite_number_variant).ok() == Some(variant);
-            if !mapped_status
-                && (self.sum_variant_field_count(error_sum, variant) != Some(1)
-                    || self.sum_variant_field(error_sum, variant, 0) != integer)
-            {
-                self.error(
-                    ValidationCode::InstructionShape,
-                    format!("{path}.error_variant[{variant}]"),
-                    "each non-status JsonError variant must carry exactly one Int offset",
-                );
-            }
-        }
-    }
-
     fn signature_writeback_types(function: &Function) -> Vec<ValueTypeId> {
         function
             .signature
@@ -7966,9 +7874,9 @@ fn instruction_direct_effects(kind: &InstructionKind) -> Effects {
             | InstructionKind::ProcessEnvironment { .. }
             | InstructionKind::PathJoin { .. }
             | InstructionKind::BytesAppend { .. }
-            | InstructionKind::BytesDecodeUtf8 { .. }
+            | InstructionKind::BytesPush { .. }
+            | InstructionKind::BytesPushUnique { .. }
             | InstructionKind::FloatFormat { .. }
-            | InstructionKind::JsonFormat { .. }
             | InstructionKind::ListAppend { .. }
             | InstructionKind::ListAppendUnique { .. }
             | InstructionKind::TextMapInsert { .. }
@@ -8573,7 +8481,7 @@ fn transfer_task_ownership(
     }
 
     let mut edges = Vec::new();
-    for (target, arguments) in forwarded_list_edges(terminator.kind()) {
+    for (target, arguments) in forwarded_collection_edges(terminator.kind()) {
         let Some(target_block) = function.block(target) else {
             continue;
         };
@@ -8628,60 +8536,98 @@ fn transfer_task_ownership(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ListOwnership {
-    Consumed,
-    Shared,
-    Unique,
-}
+struct CollectionOwnership(u8);
 
-impl ListOwnership {
-    const fn meet(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Consumed, _) | (_, Self::Consumed) => Self::Consumed,
-            (Self::Shared, _) | (_, Self::Shared) => Self::Shared,
-            (Self::Unique, Self::Unique) => Self::Unique,
+impl CollectionOwnership {
+    const NONE: Self = Self(0);
+    const UNIQUE: Self = Self(1 << 0);
+    const SHARED: Self = Self(1 << 1);
+    const CONSUMED: Self = Self(1 << 2);
+
+    const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
+
+    const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    const fn shared(self) -> Self {
+        let mut output = Self(self.0 & Self::CONSUMED.0);
+        if self.contains(Self::UNIQUE) || self.contains(Self::SHARED) {
+            output = output.union(Self::SHARED);
         }
+        output
+    }
+
+    const fn forwarded_source(self, count: usize) -> Self {
+        if count > 1 {
+            return self.shared();
+        }
+        let mut output = Self(self.0 & (Self::SHARED.0 | Self::CONSUMED.0));
+        if self.contains(Self::UNIQUE) {
+            output = output.union(Self::CONSUMED);
+        }
+        output
+    }
+
+    const fn forwarded_destination(self, count: usize) -> Self {
+        if count > 1 { self.shared() } else { self }
     }
 }
 
-struct ListOwnershipEdge {
+struct CollectionOwnershipEdge {
     target: usize,
-    states: Vec<ListOwnership>,
+    states: Vec<CollectionOwnership>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum CollectionOwnershipSite {
+    Instruction(InstructionId),
+    Terminator(BlockId),
 }
 
 #[derive(Clone, Copy)]
-struct ListOwnershipIssue {
-    instruction: InstructionId,
+struct CollectionOwnershipIssue {
+    site: CollectionOwnershipSite,
     value: ValueId,
     message: &'static str,
 }
 
-struct ListOwnershipTransfer {
-    edges: Vec<ListOwnershipEdge>,
-    issues: Vec<ListOwnershipIssue>,
+struct CollectionOwnershipTransfer {
+    edges: Vec<CollectionOwnershipEdge>,
+    issues: Vec<CollectionOwnershipIssue>,
 }
 
-fn apply_list_use(
-    instruction: InstructionId,
+fn collection_slot(collection_slots: &[Option<usize>], value: ValueId) -> Option<usize> {
+    collection_slots.get(value.index()).copied().flatten()
+}
+
+fn collection_state_mut<'a>(
+    states: &'a mut [CollectionOwnership],
+    collection_slots: &[Option<usize>],
     value: ValueId,
-    state: &mut ListOwnership,
+) -> Option<&'a mut CollectionOwnership> {
+    states.get_mut(collection_slot(collection_slots, value)?)
+}
+
+fn apply_collection_use(
+    site: CollectionOwnershipSite,
+    value: ValueId,
+    state: &mut CollectionOwnership,
     shares: bool,
     collect_issues: bool,
-    list_values: &[bool],
-    issues: &mut Vec<ListOwnershipIssue>,
+    issues: &mut Vec<CollectionOwnershipIssue>,
 ) {
-    if !list_values.get(value.index()).copied().unwrap_or(false) {
-        return;
-    }
-    if collect_issues && *state == ListOwnership::Consumed {
-        issues.push(ListOwnershipIssue {
-            instruction,
+    if collect_issues && state.contains(CollectionOwnership::CONSUMED) {
+        issues.push(CollectionOwnershipIssue {
+            site,
             value,
-            message: "a consumed unique List value is used again",
+            message: "a consumed unique collection value is used again",
         });
     }
     if shares {
-        *state = ListOwnership::Shared;
+        *state = state.shared();
     }
 }
 
@@ -8689,105 +8635,104 @@ fn apply_list_use(
     clippy::too_many_lines,
     reason = "the ownership transfer keeps instruction sequencing and edge moves in one auditable fixed-point operation"
 )]
-fn transfer_list_ownership(
+fn transfer_collection_ownership(
     function: &Function,
     block: &crate::Block,
-    input: &[ListOwnership],
-    list_values: &[bool],
+    input: &[CollectionOwnership],
+    collection_slots: &[Option<usize>],
     collect_issues: bool,
-) -> ListOwnershipTransfer {
+) -> CollectionOwnershipTransfer {
     let mut states = input.to_vec();
     let mut issues = Vec::new();
     for instruction_id in block.instructions().iter().copied() {
         let Some(instruction) = function.instruction(instruction_id) else {
             continue;
         };
+        let site = CollectionOwnershipSite::Instruction(instruction_id);
         match instruction.kind() {
             InstructionKind::ListConstruct { elements } => {
                 for element in elements.iter().copied() {
-                    if let Some(state) = states.get_mut(element.index()) {
-                        apply_list_use(
-                            instruction_id,
+                    if let Some(state) =
+                        collection_state_mut(&mut states, collection_slots, element)
+                    {
+                        apply_collection_use(
+                            site,
                             element,
                             state,
                             true,
                             collect_issues,
-                            list_values,
                             &mut issues,
                         );
                     }
                 }
             }
             InstructionKind::ListAppend { list, value } => {
-                if let Some(state) = states.get_mut(list.index()) {
-                    apply_list_use(
-                        instruction_id,
-                        *list,
-                        state,
-                        false,
-                        collect_issues,
-                        list_values,
-                        &mut issues,
-                    );
+                if let Some(state) = collection_state_mut(&mut states, collection_slots, *list) {
+                    apply_collection_use(site, *list, state, false, collect_issues, &mut issues);
                 }
-                if let Some(state) = states.get_mut(value.index()) {
-                    apply_list_use(
-                        instruction_id,
-                        *value,
-                        state,
-                        true,
-                        collect_issues,
-                        list_values,
-                        &mut issues,
-                    );
+                if let Some(state) = collection_state_mut(&mut states, collection_slots, *value) {
+                    apply_collection_use(site, *value, state, true, collect_issues, &mut issues);
                 }
             }
             InstructionKind::ListAppendUnique { list, value } => {
-                if let Some(state) = states.get_mut(list.index()) {
-                    if collect_issues && *state != ListOwnership::Unique {
-                        issues.push(ListOwnershipIssue {
-                            instruction: instruction_id,
+                if let Some(state) = collection_state_mut(&mut states, collection_slots, *list) {
+                    if collect_issues && *state != CollectionOwnership::UNIQUE {
+                        issues.push(CollectionOwnershipIssue {
+                            site,
                             value: *list,
                             message: "list.append.unique receiver is not uniquely owned on every incoming edge",
                         });
                     }
-                    *state = ListOwnership::Consumed;
+                    *state = CollectionOwnership::CONSUMED;
                 }
-                if let Some(state) = states.get_mut(value.index()) {
-                    apply_list_use(
-                        instruction_id,
-                        *value,
-                        state,
-                        true,
-                        collect_issues,
-                        list_values,
-                        &mut issues,
-                    );
+                if let Some(state) = collection_state_mut(&mut states, collection_slots, *value) {
+                    apply_collection_use(site, *value, state, true, collect_issues, &mut issues);
                 }
             }
             InstructionKind::ListLength { list } | InstructionKind::ListGet { list, .. } => {
-                if let Some(state) = states.get_mut(list.index()) {
-                    apply_list_use(
-                        instruction_id,
-                        *list,
-                        state,
-                        false,
-                        collect_issues,
-                        list_values,
-                        &mut issues,
-                    );
+                if let Some(state) = collection_state_mut(&mut states, collection_slots, *list) {
+                    apply_collection_use(site, *list, state, false, collect_issues, &mut issues);
+                }
+            }
+            InstructionKind::BytesPush { bytes, unit, .. } => {
+                if let Some(state) = collection_state_mut(&mut states, collection_slots, *bytes) {
+                    apply_collection_use(site, *bytes, state, false, collect_issues, &mut issues);
+                }
+                if let Some(state) = collection_state_mut(&mut states, collection_slots, *unit) {
+                    apply_collection_use(site, *unit, state, true, collect_issues, &mut issues);
+                }
+            }
+            InstructionKind::BytesPushUnique { bytes, unit, .. } => {
+                if let Some(state) = collection_state_mut(&mut states, collection_slots, *bytes) {
+                    if collect_issues && *state != CollectionOwnership::UNIQUE {
+                        issues.push(CollectionOwnershipIssue {
+                            site,
+                            value: *bytes,
+                            message: "bytes.push.unique receiver is not eligible for unique reuse on every incoming edge",
+                        });
+                    }
+                    *state = CollectionOwnership::CONSUMED;
+                }
+                if let Some(state) = collection_state_mut(&mut states, collection_slots, *unit) {
+                    apply_collection_use(site, *unit, state, true, collect_issues, &mut issues);
+                }
+            }
+            InstructionKind::BytesLength { bytes } | InstructionKind::BytesGet { bytes, .. } => {
+                if let Some(state) = collection_state_mut(&mut states, collection_slots, *bytes) {
+                    apply_collection_use(site, *bytes, state, false, collect_issues, &mut issues);
                 }
             }
             kind => {
                 for operand in kind.operands() {
-                    if let Some(state) = states.get_mut(operand.index()) {
-                        apply_list_use(
-                            instruction_id,
+                    if let Some(state) =
+                        collection_state_mut(&mut states, collection_slots, operand)
+                    {
+                        apply_collection_use(
+                            site,
                             operand,
                             state,
                             true,
                             collect_issues,
-                            list_values,
                             &mut issues,
                         );
                     }
@@ -8796,95 +8741,147 @@ fn transfer_list_ownership(
         }
 
         for result in instruction.results().iter().copied() {
-            if !list_values.get(result.index()).copied().unwrap_or(false) {
+            let Some(slot) = collection_slot(collection_slots, result) else {
                 continue;
-            }
-            states[result.index()] = if matches!(
+            };
+            // `Unique` is an eligibility certificate for the checked backend
+            // helper, not a claim that every managed pointer is physically
+            // mutable. In particular TextEncodeUtf8 aliases immutable Text;
+            // bytes.push.unique must inspect the descriptor and allocate a
+            // ByteObject before changing any Text-backed storage.
+            states[slot] = if matches!(
                 instruction.kind(),
                 InstructionKind::ListConstruct { .. }
                     | InstructionKind::ListAppend { .. }
                     | InstructionKind::ListAppendUnique { .. }
+                    | InstructionKind::TextEncodeUtf8 { .. }
+                    | InstructionKind::BytesAppend { .. }
+                    | InstructionKind::BytesPush { .. }
+                    | InstructionKind::BytesPushUnique { .. }
             ) {
-                ListOwnership::Unique
+                CollectionOwnership::UNIQUE
             } else {
-                ListOwnership::Shared
+                CollectionOwnership::SHARED
             };
         }
     }
 
     let Some(terminator) = block.terminator() else {
-        return ListOwnershipTransfer {
+        return CollectionOwnershipTransfer {
             edges: Vec::new(),
             issues,
         };
     };
+    let site = CollectionOwnershipSite::Terminator(block.id());
     match terminator.kind() {
         TerminatorKind::Invoke { arguments, .. } => {
             for argument in arguments.iter().copied() {
-                if list_values.get(argument.index()).copied().unwrap_or(false) {
-                    states[argument.index()] = ListOwnership::Shared;
+                if let Some(state) = collection_state_mut(&mut states, collection_slots, argument) {
+                    apply_collection_use(site, argument, state, true, collect_issues, &mut issues);
                 }
             }
         }
-        TerminatorKind::Return(value)
-            if list_values.get(value.index()).copied().unwrap_or(false) =>
-        {
-            states[value.index()] = ListOwnership::Shared;
+        TerminatorKind::Return(value) => {
+            if let Some(state) = collection_state_mut(&mut states, collection_slots, *value) {
+                apply_collection_use(site, *value, state, true, collect_issues, &mut issues);
+            }
         }
         _ => {}
     }
     for writeback in terminator.writebacks().iter().copied() {
-        if list_values.get(writeback.index()).copied().unwrap_or(false) {
-            states[writeback.index()] = ListOwnership::Shared;
+        if let Some(state) = collection_state_mut(&mut states, collection_slots, writeback) {
+            apply_collection_use(site, writeback, state, true, collect_issues, &mut issues);
         }
     }
 
     let mut edges = Vec::new();
-    for (target, arguments) in forwarded_list_edges(terminator.kind()) {
+    for (target, arguments) in forwarded_collection_edges(terminator.kind()) {
         let Some(target_block) = function.block(target) else {
             continue;
         };
-        let mut edge_states = states.clone();
         let implicit = target_block.params().len().saturating_sub(arguments.len());
-        for parameter in target_block.params().iter().copied().take(implicit) {
-            if list_values.get(parameter.index()).copied().unwrap_or(false) {
-                edge_states[parameter.index()] = ListOwnership::Shared;
+        let mut sources = arguments
+            .iter()
+            .copied()
+            .filter(|argument| collection_slot(collection_slots, *argument).is_some())
+            .collect::<Vec<_>>();
+        sources.sort_unstable_by_key(|value| value.index());
+        // Inspect each moved source once before defining edge parameters.
+        // Repeating the same source on one edge is a legal share, while a
+        // source consumed by an earlier unique operation must never be
+        // resurrected through a block parameter.
+        for (index, argument) in sources.iter().copied().enumerate() {
+            if index > 0 && sources[index - 1] == argument {
+                continue;
             }
+            let slot = collection_slot(collection_slots, argument)
+                .expect("sources only contains collection values");
+            let mut inspected = states[slot];
+            apply_collection_use(
+                site,
+                argument,
+                &mut inspected,
+                false,
+                collect_issues,
+                &mut issues,
+            );
         }
-        let mut counts = BTreeMap::<ValueId, usize>::new();
-        for argument in arguments.iter().copied() {
-            if list_values.get(argument.index()).copied().unwrap_or(false) {
-                *counts.entry(argument).or_default() += 1;
+
+        // Compute every source move from the same pre-edge state before any
+        // block parameter is defined. This makes the transfer simultaneous
+        // for self-loop swaps and repeated arguments.
+        let mut edge_states = states.clone();
+        let mut source_index = 0;
+        while source_index < sources.len() {
+            let argument = sources[source_index];
+            let mut end = source_index + 1;
+            while end < sources.len() && sources[end] == argument {
+                end += 1;
             }
+            let slot = collection_slot(collection_slots, argument)
+                .expect("sources only contains collection values");
+            edge_states[slot] = states[slot].forwarded_source(end - source_index);
+            source_index = end;
         }
+
+        // Define explicit target parameters from the original source states,
+        // not from the moved source states above.
         for (argument, parameter) in arguments
             .iter()
             .copied()
             .zip(target_block.params().iter().copied().skip(implicit))
         {
-            if !list_values.get(parameter.index()).copied().unwrap_or(false) {
+            let Some(parameter_slot) = collection_slot(collection_slots, parameter) else {
                 continue;
-            }
-            let incoming = states
-                .get(argument.index())
-                .copied()
-                .unwrap_or(ListOwnership::Shared);
-            edge_states[argument.index()] = ListOwnership::Consumed;
-            edge_states[parameter.index()] = if counts.get(&argument).copied().unwrap_or(0) > 1 {
-                ListOwnership::Shared
-            } else {
-                incoming
             };
+            let incoming = collection_slot(collection_slots, argument)
+                .map_or(CollectionOwnership::SHARED, |slot| states[slot]);
+            let count = if collection_slot(collection_slots, argument).is_some() {
+                let first = sources.partition_point(|source| source.index() < argument.index());
+                let end = sources.partition_point(|source| source.index() <= argument.index());
+                end - first
+            } else {
+                0
+            };
+            edge_states[parameter_slot] = incoming.forwarded_destination(count);
         }
-        edges.push(ListOwnershipEdge {
+
+        // Implicit edge parameters are fresh definitions and must be written
+        // last in case a self-edge also forwards their previous SSA names.
+        for parameter in target_block.params().iter().copied().take(implicit) {
+            if let Some(slot) = collection_slot(collection_slots, parameter) {
+                edge_states[slot] = CollectionOwnership::SHARED;
+            }
+        }
+        edges.push(CollectionOwnershipEdge {
             target: target.index(),
             states: edge_states,
         });
     }
-    ListOwnershipTransfer { edges, issues }
+    CollectionOwnershipTransfer { edges, issues }
 }
 
-fn forwarded_list_edges(kind: &TerminatorKind) -> Vec<(BlockId, &[ValueId])> {
+fn forwarded_collection_edges(kind: &TerminatorKind) -> Vec<(BlockId, &[ValueId])> {
     match kind {
         TerminatorKind::Jump(target) => vec![(target.block, &target.arguments)],
         TerminatorKind::Branch {
@@ -9009,13 +9006,16 @@ impl IntegerProofFacts {
             if !reachable.get(source).copied().unwrap_or(false) {
                 continue;
             }
-            let Some(TerminatorKind::Branch {
-                condition,
-                then_target,
-                ..
-            }) = block.terminator.as_ref().map(Terminator::kind)
-            else {
-                continue;
+            let (condition, true_target) = match block.terminator.as_ref().map(Terminator::kind) {
+                Some(TerminatorKind::Branch {
+                    condition,
+                    then_target,
+                    ..
+                }) => (*condition, then_target.block),
+                Some(TerminatorKind::Assert {
+                    condition, success, ..
+                }) => (*condition, success.block),
+                _ => continue,
             };
             if condition.owner() != function.id {
                 continue;
@@ -9026,7 +9026,7 @@ impl IntegerProofFacts {
             *slot = match *slot {
                 ProofBranch::None => ProofBranch::Unique {
                     source,
-                    true_target: then_target.block.index(),
+                    true_target: true_target.index(),
                 },
                 ProofBranch::Unique { .. } | ProofBranch::Ambiguous => ProofBranch::Ambiguous,
             };
@@ -9036,6 +9036,61 @@ impl IntegerProofFacts {
             predecessors,
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum ByteRangeBound {
+    Lower,
+    Upper,
+}
+
+fn is_exact_byte_range_proof(
+    function: &Function,
+    unit: ValueId,
+    proof: ValueId,
+    bound: ByteRangeBound,
+) -> bool {
+    function.value(proof).is_some_and(|proof_value| {
+        let ValueDefinition::InstructionResult {
+            instruction: producer,
+            index: 0,
+        } = proof_value.definition
+        else {
+            return false;
+        };
+        function.instruction(producer).is_some_and(|producer| {
+            let InstructionKind::IntCompare {
+                predicate,
+                left,
+                right,
+            } = producer.kind()
+            else {
+                return false;
+            };
+            let (expected_predicate, expected_bound) = match bound {
+                ByteRangeBound::Lower => (crate::IntPredicate::GreaterEqual, 0),
+                ByteRangeBound::Upper => (crate::IntPredicate::LessEqual, 255),
+            };
+            *predicate == expected_predicate
+                && *left == unit
+                && is_exact_int_constant(function, *right, expected_bound)
+        })
+    })
+}
+
+fn is_exact_int_constant(function: &Function, value: ValueId, expected: i64) -> bool {
+    function.value(value).is_some_and(|value| {
+        let ValueDefinition::InstructionResult {
+            instruction: producer,
+            index: 0,
+        } = value.definition
+        else {
+            return false;
+        };
+        function.instruction(producer).is_some_and(|producer| {
+            matches!(producer.kind(), InstructionKind::Constant(Constant::Int(value)) if *value == expected)
+        })
+    })
 }
 
 fn is_exact_successor_proof(
@@ -9636,8 +9691,340 @@ mod tests {
         }
         let errors = validate_program(&builder.finish()).expect_err("shared receiver must fail");
         assert!(errors.as_slice().iter().any(|error| {
-            error.code() == ValidationCode::InvalidListUniqueness
+            error.code() == ValidationCode::InvalidCollectionUniqueness
                 && error.message().contains("not uniquely owned")
+        }));
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one graph keeps valid Text-backed Bytes eligibility and a forged entry certificate adjacent"
+    )]
+    fn unique_bytes_certificate_accepts_loop_phi_and_rejects_entry_alias() {
+        let bytes_id = TypeId(109);
+        let origin = Origin::synthetic(MirFunctionId(92));
+        let mut builder = ProgramBuilder::with_canonical_types(
+            TargetLayout::new(64).expect("target"),
+            crate::CanonicalTypeCatalog {
+                bytes: Some(bytes_id),
+                ..crate::CanonicalTypeCatalog::default()
+            },
+        );
+        let text = builder.add_managed_text_type().expect("Text");
+        let bytes = builder
+            .add_managed_bytes_type(Type::Nominal(bytes_id, Vec::new()))
+            .expect("Bytes");
+        let integer = builder.type_id(&Type::Int).expect("Int");
+        let boolean = builder.type_id(&Type::Bool).expect("Bool");
+        let root = builder
+            .declare_function(
+                origin,
+                "bytes.unique.loop",
+                Signature::new([], bytes),
+                Effects::MAY_COLLECT.with_implications(),
+            )
+            .expect("function");
+        {
+            let mut function = builder.function(root).expect("function builder");
+            let entry = function.create_block().expect("entry");
+            let header = function.create_block().expect("header");
+            let body = function.create_block().expect("body");
+            let lower_checked = function.create_block().expect("lower checked");
+            let push_block = function.create_block().expect("push block");
+            let exit = function.create_block().expect("exit");
+            function.set_entry(entry).expect("set entry");
+            let literal = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::TextLiteral { utf8: "x".into() },
+                    &[text],
+                    origin,
+                )
+                .expect("literal")[0];
+            let encoded = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::TextEncodeUtf8 { text: literal },
+                    &[bytes],
+                    origin,
+                )
+                .expect("encode")[0];
+            function
+                .terminate(
+                    entry,
+                    Terminator::new(
+                        TerminatorKind::Jump(crate::BlockTarget::new(header, [encoded])),
+                        origin,
+                    ),
+                )
+                .expect("preheader");
+            let carried = function
+                .append_block_parameter(header, bytes)
+                .expect("carried Bytes");
+            let condition = function
+                .append_instruction(
+                    header,
+                    InstructionKind::Constant(Constant::Bool(true)),
+                    &[boolean],
+                    origin,
+                )
+                .expect("condition")[0];
+            function
+                .terminate(
+                    header,
+                    Terminator::new(
+                        TerminatorKind::Branch {
+                            condition,
+                            then_target: crate::BlockTarget::new(body, []),
+                            else_target: crate::BlockTarget::new(exit, []),
+                        },
+                        origin,
+                    ),
+                )
+                .expect("branch");
+            let unit = function
+                .append_instruction(
+                    body,
+                    InstructionKind::Constant(Constant::Int(33)),
+                    &[integer],
+                    origin,
+                )
+                .expect("unit")[0];
+            let zero = function
+                .append_instruction(
+                    body,
+                    InstructionKind::Constant(Constant::Int(0)),
+                    &[integer],
+                    origin,
+                )
+                .expect("zero")[0];
+            let lower_proof = function
+                .append_instruction(
+                    body,
+                    InstructionKind::IntCompare {
+                        predicate: crate::IntPredicate::GreaterEqual,
+                        left: unit,
+                        right: zero,
+                    },
+                    &[boolean],
+                    origin,
+                )
+                .expect("lower proof")[0];
+            function
+                .terminate(
+                    body,
+                    Terminator::new(
+                        TerminatorKind::Branch {
+                            condition: lower_proof,
+                            then_target: crate::BlockTarget::new(lower_checked, []),
+                            else_target: crate::BlockTarget::new(exit, []),
+                        },
+                        origin,
+                    ),
+                )
+                .expect("lower guard");
+            let maximum = function
+                .append_instruction(
+                    lower_checked,
+                    InstructionKind::Constant(Constant::Int(255)),
+                    &[integer],
+                    origin,
+                )
+                .expect("maximum")[0];
+            let upper_proof = function
+                .append_instruction(
+                    lower_checked,
+                    InstructionKind::IntCompare {
+                        predicate: crate::IntPredicate::LessEqual,
+                        left: unit,
+                        right: maximum,
+                    },
+                    &[boolean],
+                    origin,
+                )
+                .expect("upper proof")[0];
+            function
+                .terminate(
+                    lower_checked,
+                    Terminator::new(
+                        TerminatorKind::Branch {
+                            condition: upper_proof,
+                            then_target: crate::BlockTarget::new(push_block, []),
+                            else_target: crate::BlockTarget::new(exit, []),
+                        },
+                        origin,
+                    ),
+                )
+                .expect("upper guard");
+            let pushed = function
+                .append_trusted_instruction(
+                    push_block,
+                    InstructionKind::BytesPushUnique {
+                        bytes: carried,
+                        unit,
+                        lower_proof,
+                        upper_proof,
+                    },
+                    &[bytes],
+                    origin,
+                )
+                .expect("trusted push")[0];
+            function
+                .terminate(
+                    push_block,
+                    Terminator::new(
+                        TerminatorKind::Jump(crate::BlockTarget::new(header, [pushed])),
+                        origin,
+                    ),
+                )
+                .expect("backedge");
+            function
+                .terminate(
+                    exit,
+                    Terminator::new(TerminatorKind::Return(carried), origin),
+                )
+                .expect("return");
+        }
+        builder
+            .finish_checked()
+            .expect("unique Bytes loop certificate");
+
+        let origin = Origin::synthetic(MirFunctionId(93));
+        let mut builder = ProgramBuilder::with_canonical_types(
+            TargetLayout::new(64).expect("target"),
+            crate::CanonicalTypeCatalog {
+                bytes: Some(bytes_id),
+                ..crate::CanonicalTypeCatalog::default()
+            },
+        );
+        let bytes = builder
+            .add_managed_bytes_type(Type::Nominal(bytes_id, Vec::new()))
+            .expect("Bytes");
+        let integer = builder.type_id(&Type::Int).expect("Int");
+        let boolean = builder.type_id(&Type::Bool).expect("Bool");
+        let root = builder
+            .declare_function(
+                origin,
+                "bytes.unique.forged",
+                Signature::new([bytes], bytes),
+                Effects::MAY_COLLECT.with_implications(),
+            )
+            .expect("function");
+        {
+            let mut function = builder.function(root).expect("function builder");
+            let entry = function.create_block().expect("entry");
+            let lower_checked = function.create_block().expect("lower checked");
+            let push_block = function.create_block().expect("push block");
+            let failed = function.create_block().expect("failed");
+            function.set_entry(entry).expect("set entry");
+            let shared = function
+                .append_block_parameter(entry, bytes)
+                .expect("shared parameter");
+            let unit = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::Constant(Constant::Int(33)),
+                    &[integer],
+                    origin,
+                )
+                .expect("unit")[0];
+            let zero = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::Constant(Constant::Int(0)),
+                    &[integer],
+                    origin,
+                )
+                .expect("zero")[0];
+            let lower_proof = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::IntCompare {
+                        predicate: crate::IntPredicate::GreaterEqual,
+                        left: unit,
+                        right: zero,
+                    },
+                    &[boolean],
+                    origin,
+                )
+                .expect("lower proof")[0];
+            function
+                .terminate(
+                    entry,
+                    Terminator::new(
+                        TerminatorKind::Branch {
+                            condition: lower_proof,
+                            then_target: crate::BlockTarget::new(lower_checked, []),
+                            else_target: crate::BlockTarget::new(failed, []),
+                        },
+                        origin,
+                    ),
+                )
+                .expect("lower guard");
+            let maximum = function
+                .append_instruction(
+                    lower_checked,
+                    InstructionKind::Constant(Constant::Int(255)),
+                    &[integer],
+                    origin,
+                )
+                .expect("maximum")[0];
+            let upper_proof = function
+                .append_instruction(
+                    lower_checked,
+                    InstructionKind::IntCompare {
+                        predicate: crate::IntPredicate::LessEqual,
+                        left: unit,
+                        right: maximum,
+                    },
+                    &[boolean],
+                    origin,
+                )
+                .expect("upper proof")[0];
+            function
+                .terminate(
+                    lower_checked,
+                    Terminator::new(
+                        TerminatorKind::Branch {
+                            condition: upper_proof,
+                            then_target: crate::BlockTarget::new(push_block, []),
+                            else_target: crate::BlockTarget::new(failed, []),
+                        },
+                        origin,
+                    ),
+                )
+                .expect("upper guard");
+            let pushed = function
+                .append_trusted_instruction(
+                    push_block,
+                    InstructionKind::BytesPushUnique {
+                        bytes: shared,
+                        unit,
+                        lower_proof,
+                        upper_proof,
+                    },
+                    &[bytes],
+                    origin,
+                )
+                .expect("unchecked trusted push")[0];
+            function
+                .terminate(
+                    push_block,
+                    Terminator::new(TerminatorKind::Return(pushed), origin),
+                )
+                .expect("return");
+            function
+                .terminate(
+                    failed,
+                    Terminator::new(TerminatorKind::Return(shared), origin),
+                )
+                .expect("failed return");
+        }
+        let errors = validate_program(&builder.finish()).expect_err("shared receiver must fail");
+        assert!(errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::InvalidCollectionUniqueness
+                && error.message().contains("not eligible for unique reuse")
         }));
     }
 
@@ -10061,5 +10448,463 @@ mod tests {
         builder
             .finish_checked()
             .expect("reverse table-order linear CFG is valid");
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum ConsumedListTerminatorCase {
+        Return,
+        Invoke,
+        Writeback,
+        JumpPhi,
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one raw LCIR fixture keeps the four terminator uses of a consumed unique List directly comparable"
+    )]
+    fn consumed_list_terminator_program(case: ConsumedListTerminatorCase) -> Program {
+        let sink_origin = Origin::synthetic(MirFunctionId(110));
+        let root_origin = Origin::synthetic(MirFunctionId(111));
+        let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        let integer = builder.type_id(&Type::Int).expect("Int");
+        let list = builder
+            .add_managed_list_type(Type::List(Box::new(Type::Int)))
+            .expect("List[Int]");
+
+        let fallible_sink = builder
+            .declare_function(
+                sink_origin,
+                "collection.terminator.sink",
+                Signature::new([list], list),
+                Effects::MAY_FAULT,
+            )
+            .expect("declare fallible sink");
+        let root_signature = if matches!(case, ConsumedListTerminatorCase::Writeback) {
+            // Collection values are not legal inout parameters. Keep the
+            // signature itself valid and put the consumed List in a deliberately
+            // mistyped writeback so ownership validation must still inspect it.
+            Signature::with_inout_params([integer], list, [0_u32])
+        } else {
+            Signature::new([], list)
+        };
+        let root_effects = if matches!(case, ConsumedListTerminatorCase::Invoke) {
+            Effects::MAY_COLLECT
+                .union(Effects::MAY_FAULT)
+                .with_implications()
+        } else {
+            Effects::MAY_COLLECT.with_implications()
+        };
+        let root = builder
+            .declare_function(
+                root_origin,
+                "collection.consumed_terminator",
+                root_signature,
+                root_effects,
+            )
+            .expect("declare root");
+
+        {
+            let mut function = builder.function(fallible_sink).expect("sink builder");
+            let entry = function.create_block().expect("entry");
+            function.set_entry(entry).expect("set entry");
+            function
+                .append_block_parameter(entry, list)
+                .expect("List parameter");
+            function
+                .terminate(
+                    entry,
+                    Terminator::new(
+                        TerminatorKind::Fault {
+                            metadata: crate::FaultMetadata::runtime(
+                                crate::FaultCode::IntegerOverflow,
+                            ),
+                        },
+                        sink_origin,
+                    ),
+                )
+                .expect("fault");
+        }
+
+        {
+            let mut function = builder.function(root).expect("root builder");
+            let entry = function.create_block().expect("entry");
+            function.set_entry(entry).expect("set entry");
+            if matches!(case, ConsumedListTerminatorCase::Writeback) {
+                function
+                    .append_block_parameter(entry, integer)
+                    .expect("inout Int parameter");
+            }
+            let old = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::ListConstruct {
+                        elements: Box::new([]),
+                    },
+                    &[list],
+                    root_origin,
+                )
+                .expect("empty List")[0];
+            let element = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::Constant(Constant::Int(1)),
+                    &[integer],
+                    root_origin,
+                )
+                .expect("element")[0];
+            let appended = function
+                .append_trusted_instruction(
+                    entry,
+                    InstructionKind::ListAppendUnique {
+                        list: old,
+                        value: element,
+                    },
+                    &[list],
+                    root_origin,
+                )
+                .expect("trusted unique append")[0];
+
+            match case {
+                ConsumedListTerminatorCase::Return => function
+                    .terminate(
+                        entry,
+                        Terminator::new(TerminatorKind::Return(old), root_origin),
+                    )
+                    .expect("return consumed List"),
+                ConsumedListTerminatorCase::Invoke => {
+                    let normal = function.create_block().expect("normal");
+                    let unwind = function.create_block().expect("unwind");
+                    let result = function
+                        .append_block_parameter(normal, list)
+                        .expect("invoke result");
+                    function
+                        .terminate(
+                            entry,
+                            Terminator::new(
+                                TerminatorKind::Invoke {
+                                    callee: fallible_sink,
+                                    arguments: Box::from([old]),
+                                    normal: ResultTarget::new(normal, []),
+                                    unwind: UnwindTarget::new(unwind, []),
+                                },
+                                root_origin,
+                            ),
+                        )
+                        .expect("invoke with consumed List");
+                    function
+                        .terminate(
+                            normal,
+                            Terminator::new(TerminatorKind::Return(result), root_origin),
+                        )
+                        .expect("normal return");
+                    function
+                        .terminate(
+                            unwind,
+                            Terminator::new(TerminatorKind::ResumeFault, root_origin),
+                        )
+                        .expect("resume fault");
+                }
+                ConsumedListTerminatorCase::Writeback => function
+                    .terminate(
+                        entry,
+                        Terminator::with_writebacks(
+                            TerminatorKind::Return(appended),
+                            root_origin,
+                            [old],
+                        ),
+                    )
+                    .expect("write back consumed List"),
+                ConsumedListTerminatorCase::JumpPhi => {
+                    let target = function.create_block().expect("target");
+                    let forwarded = function
+                        .append_block_parameter(target, list)
+                        .expect("forwarded List");
+                    function
+                        .terminate(
+                            entry,
+                            Terminator::new(
+                                TerminatorKind::Jump(crate::BlockTarget::new(target, [old])),
+                                root_origin,
+                            ),
+                        )
+                        .expect("forward consumed List");
+                    function
+                        .terminate(
+                            target,
+                            Terminator::new(TerminatorKind::Return(forwarded), root_origin),
+                        )
+                        .expect("return forwarded List");
+                }
+            }
+        }
+        builder.finish()
+    }
+
+    #[test]
+    fn collection_ownership_rejects_consumed_values_at_terminators() {
+        for case in [
+            ConsumedListTerminatorCase::Return,
+            ConsumedListTerminatorCase::Invoke,
+            ConsumedListTerminatorCase::Writeback,
+            ConsumedListTerminatorCase::JumpPhi,
+        ] {
+            let errors = validate_program(&consumed_list_terminator_program(case))
+                .expect_err("a terminator must not reuse a consumed unique List");
+            assert!(
+                errors.as_slice().iter().any(|error| {
+                    error.code() == ValidationCode::InvalidCollectionUniqueness
+                        && error.path() == "function[1].block[0].terminator.collection"
+                        && error.message().contains("consumed unique collection")
+                }),
+                "{case:?}: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one compact truth table keeps single, duplicate, and simultaneous self-edge ownership cases adjacent"
+    )]
+    fn collection_edge_transfer_is_simultaneous_and_preserves_cow_states() {
+        fn self_edge(
+            forwarded: &[usize],
+            input: [CollectionOwnership; 2],
+        ) -> Vec<CollectionOwnership> {
+            let origin = Origin::synthetic(MirFunctionId(114));
+            let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+            let list = builder
+                .add_managed_list_type(Type::List(Box::new(Type::Int)))
+                .expect("List[Int]");
+            let root = builder
+                .declare_function(
+                    origin,
+                    "collection.self_edge",
+                    Signature::new([list, list], list),
+                    Effects::MAY_COLLECT.with_implications(),
+                )
+                .expect("declare root");
+            let (entry, first, second) = {
+                let mut function = builder.function(root).expect("root builder");
+                let entry = function.create_block().expect("entry");
+                function.set_entry(entry).expect("set entry");
+                let first = function
+                    .append_block_parameter(entry, list)
+                    .expect("first List");
+                let second = function
+                    .append_block_parameter(entry, list)
+                    .expect("second List");
+                let values = [first, second];
+                let arguments = forwarded
+                    .iter()
+                    .map(|index| values[*index])
+                    .collect::<Vec<_>>();
+                function
+                    .terminate(
+                        entry,
+                        Terminator::new(
+                            TerminatorKind::Jump(crate::BlockTarget::new(entry, arguments)),
+                            origin,
+                        ),
+                    )
+                    .expect("self edge");
+                (entry, first, second)
+            };
+            let program = builder.finish();
+            let function = program.function(root).expect("root function");
+            let mut slots = vec![None; function.values().len()];
+            slots[first.index()] = Some(0);
+            slots[second.index()] = Some(1);
+            transfer_collection_ownership(
+                function,
+                function.block(entry).expect("entry block"),
+                &input,
+                &slots,
+                false,
+            )
+            .edges
+            .into_iter()
+            .next()
+            .expect("self edge transfer")
+            .states
+        }
+
+        assert_eq!(
+            CollectionOwnership::UNIQUE.forwarded_source(1),
+            CollectionOwnership::CONSUMED
+        );
+        assert_eq!(
+            CollectionOwnership::UNIQUE.forwarded_destination(1),
+            CollectionOwnership::UNIQUE
+        );
+        assert_eq!(
+            CollectionOwnership::SHARED.forwarded_source(1),
+            CollectionOwnership::SHARED
+        );
+        assert_eq!(
+            CollectionOwnership::SHARED.forwarded_destination(1),
+            CollectionOwnership::SHARED
+        );
+        assert_eq!(
+            CollectionOwnership::CONSUMED.forwarded_source(1),
+            CollectionOwnership::CONSUMED
+        );
+        assert_eq!(
+            CollectionOwnership::CONSUMED.forwarded_destination(1),
+            CollectionOwnership::CONSUMED
+        );
+
+        assert_eq!(
+            self_edge(
+                &[1, 0],
+                [CollectionOwnership::UNIQUE, CollectionOwnership::SHARED]
+            ),
+            vec![CollectionOwnership::SHARED, CollectionOwnership::UNIQUE]
+        );
+        assert_eq!(
+            self_edge(
+                &[0, 0],
+                [CollectionOwnership::UNIQUE, CollectionOwnership::NONE]
+            ),
+            vec![CollectionOwnership::SHARED, CollectionOwnership::SHARED]
+        );
+        assert_eq!(
+            self_edge(
+                &[0, 0],
+                [CollectionOwnership::SHARED, CollectionOwnership::NONE]
+            ),
+            vec![CollectionOwnership::SHARED, CollectionOwnership::SHARED]
+        );
+        assert_eq!(
+            self_edge(
+                &[0, 0],
+                [CollectionOwnership::CONSUMED, CollectionOwnership::NONE,]
+            ),
+            vec![CollectionOwnership::CONSUMED, CollectionOwnership::CONSUMED,]
+        );
+        assert_eq!(
+            self_edge(
+                &[0],
+                [CollectionOwnership::UNIQUE, CollectionOwnership::NONE]
+            ),
+            vec![CollectionOwnership::SHARED, CollectionOwnership::UNIQUE]
+        );
+    }
+
+    #[test]
+    fn collection_ownership_transfer_distributes_over_state_union() {
+        for left in 0_u8..8 {
+            for right in 0_u8..8 {
+                let left = CollectionOwnership(left);
+                let right = CollectionOwnership(right);
+                let union = left.union(right);
+                assert_eq!(union.shared(), left.shared().union(right.shared()));
+                assert_eq!(
+                    union.forwarded_source(1),
+                    left.forwarded_source(1).union(right.forwarded_source(1))
+                );
+                assert_eq!(
+                    union.forwarded_source(2),
+                    left.forwarded_source(2).union(right.forwarded_source(2))
+                );
+                assert_eq!(
+                    union.forwarded_destination(2),
+                    left.forwarded_destination(2)
+                        .union(right.forwarded_destination(2))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn collection_ownership_allows_mutually_exclusive_branch_moves() {
+        let origin = Origin::synthetic(MirFunctionId(112));
+        let mut builder = ProgramBuilder::new(TargetLayout::new(64).expect("target"));
+        let integer = builder.type_id(&Type::Int).expect("Int");
+        let boolean = builder.type_id(&Type::Bool).expect("Bool");
+        let list = builder
+            .add_managed_list_type(Type::List(Box::new(Type::Int)))
+            .expect("List[Int]");
+        let root = builder
+            .declare_function(
+                origin,
+                "collection.exclusive_branch",
+                Signature::new([boolean], list),
+                Effects::MAY_COLLECT.with_implications(),
+            )
+            .expect("declare root");
+        {
+            let mut function = builder.function(root).expect("root builder");
+            let entry = function.create_block().expect("entry");
+            let then_block = function.create_block().expect("then");
+            let else_block = function.create_block().expect("else");
+            function.set_entry(entry).expect("set entry");
+            let condition = function
+                .append_block_parameter(entry, boolean)
+                .expect("condition");
+            let old = function
+                .append_instruction(
+                    entry,
+                    InstructionKind::ListConstruct {
+                        elements: Box::new([]),
+                    },
+                    &[list],
+                    origin,
+                )
+                .expect("empty List")[0];
+            let then_list = function
+                .append_block_parameter(then_block, list)
+                .expect("then List");
+            let else_list = function
+                .append_block_parameter(else_block, list)
+                .expect("else List");
+            function
+                .terminate(
+                    entry,
+                    Terminator::new(
+                        TerminatorKind::Branch {
+                            condition,
+                            then_target: crate::BlockTarget::new(then_block, [old]),
+                            else_target: crate::BlockTarget::new(else_block, [old]),
+                        },
+                        origin,
+                    ),
+                )
+                .expect("exclusive branch");
+
+            for (block, incoming, value) in [
+                (then_block, then_list, 1_i64),
+                (else_block, else_list, 2_i64),
+            ] {
+                let element = function
+                    .append_instruction(
+                        block,
+                        InstructionKind::Constant(Constant::Int(value)),
+                        &[integer],
+                        origin,
+                    )
+                    .expect("element")[0];
+                let appended = function
+                    .append_trusted_instruction(
+                        block,
+                        InstructionKind::ListAppendUnique {
+                            list: incoming,
+                            value: element,
+                        },
+                        &[list],
+                        origin,
+                    )
+                    .expect("trusted unique append")[0];
+                function
+                    .terminate(
+                        block,
+                        Terminator::new(TerminatorKind::Return(appended), origin),
+                    )
+                    .expect("return appended List");
+            }
+        }
+        builder
+            .finish_checked()
+            .expect("one unique List may move along either exclusive branch");
     }
 }

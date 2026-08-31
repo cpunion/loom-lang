@@ -20,27 +20,27 @@ writers for unreleased formats. Development history belongs in
 | Manifest schema | `2` |
 | Lockfile schema | `2` |
 | Registry protocol and bundle | `1` |
-| Interpreted MIR artifact | `loom.interpreted-mir`, version `43` |
+| Interpreted MIR artifact | `loom.interpreted-mir`, version `45` |
 | Portable library artifact | `loom-library`, source-and-interface version `4` |
-| Persistent compiler cache | schema `16` |
-| Compilation-cache domain | `loom-compilation-cache-v16` |
+| Persistent compiler cache | schema `18` |
+| Compilation-cache domain | `loom-compilation-cache-v18` |
 | Interpreted final-cache layer | `final-artifact-v3` |
 | Interpreted artifact writer | `loom-interpreted-artifact-writer-v3` |
 | Portable-library final-cache layer | `portable-library-artifact-v4` |
-| LCIR textual dump | `lcir 50` |
-| LCIR artifact identity | schema `52` |
-| LCIR native-object domain | `loom-lcir-native-object-v45` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v48` |
+| LCIR textual dump | `lcir 52` |
+| LCIR artifact identity | schema `54` |
+| LCIR native-object domain | `loom-lcir-native-object-v47` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v50` |
 | Controlled quality evidence | schema `5` |
 | Runtime bundle manifest | schema `2` |
-| Native runtime ABI component | `37` |
+| Native runtime ABI component | `39` |
 | Shared Task ABI component | `2` |
 | Typed Task ABI component | `1` |
 | Typed I/O ABI component | `1` |
 | Typed resource ABI component | `1` |
 | Wait ABI component | `1` |
 | Typed process ABI component | `1` |
-| Standard-library ABI component | `7` |
+| Standard-library ABI component | `9` |
 
 The compiler-owned standard library uses the content identity
 `loom-source-stdlib-v2/<sha256>`. The digest covers the Loom language version
@@ -51,19 +51,47 @@ cache entries even when no public ABI component changes.
 The complete compiler-private native runtime identity is:
 
 ```text
-layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/typed-process-v1/runtime-v31/gc-v9/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/stdlib-v7
+layout-v1/text-v4/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v2/typed-text-units-v1/typed-path-v1/typed-log-v1/stdout-v1/typed-process-v1/runtime-v33/gc-v9/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/stdlib-v9
 ```
 
 Runtime bundles compare this entire identity, not only native runtime component
-`37` or one subordinate ABI version. Runtime component `37` pins deletion of
-the unreachable universal `ValueSlot` heap and root chain, runtime witness
-arena, universal Task/value operations, and Int-list implementation. The
-existing shared `task-v2` join/fault operations (`loom_task_prepare_join`,
+`39` or one subordinate ABI version. Runtime component `39` and standard-
+library component `9` add the checked `Bytes.add(Int)` surface and its ordinary
+and unique packed-push boundaries. `typed-bytes-v2` admits hidden ByteObject
+capacity, while `text-v4` admits a Text allocation larger than its logical byte
+length after non-collecting UTF-8 decode relabels valid ByteObject storage.
+Text-backed Bytes is never mutated. Runtime component `38` and standard-library
+component `8` previously removed the typed JSON-formatting descriptor and
+runtime entry point after `std.json.format_json` moved to ordinary Loom source.
+Runtime component `37` pinned deletion of the unreachable universal
+`ValueSlot` heap and root chain, runtime witness arena, universal Task/value
+operations, and Int-list implementation. The existing shared `task-v2`
+join/fault operations (`loom_task_prepare_join`,
 `loom_task_add_join_child`, `loom_task_suspend_join`, `loom_task_join_step`,
 `loom_task_join_winner`, and `loom_task_report_fault`) and the typed Task, I/O,
 resource, GC, and shadow-stack wires did not change. An older compiler or
 runtime bundle is therefore rejected instead of crossing the removed symbol
 boundary.
+
+Interpreted MIR 45 adds the exact mutable-receiver `BytesAdd` builtin and
+rejects older serialized enum sets. Persistent compiler-cache schema 18 and its
+matching domain invalidate semantic and MIR layers that predate that surface.
+LCIR dump 52 and artifact identity schema 54 add checked `BytesPush`, the
+independently validated `BytesPushUnique`, exact byte-range guard proofs, and
+the zero-code `CollectionShare` COW alias boundary; native-object domain 47 and
+LLVM object-cache domain 50 prevent reuse of objects with the older Bytes
+effects, root plan, or runtime calls. `BytesDecodeUtf8` is now non-collecting
+because a valid standalone ByteObject is relabelled Text without moving its
+payload.
+
+Interpreted MIR 44 removes the public-name `JsonFormat` builtin. Persistent
+compiler-cache schema 17 and its matching domain reject typed-state or MIR
+entries that predate ordinary source resolution. LCIR dump 51 and artifact
+identity schema 53 remove the dedicated JSON-format instruction; native-object
+domain 46 and LLVM object-cache domain 49 prevent reuse of objects that called
+the removed runtime boundary. JSON formatting now closes through ordinary
+source functions, matches, collections, Float formatting, and Text
+construction.
 
 Interpreted MIR 43 rejects postconditions that inspect current or `old`
 Task-bearing inputs after the body may have transferred them, and defines

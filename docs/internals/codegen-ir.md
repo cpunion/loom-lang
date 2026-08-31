@@ -160,26 +160,48 @@ repeats both limits before LLVM constructs any constant object.
 Canonical `Bytes` has one tagless managed-pointer representation. The exact
 `Text.encode_utf8` instruction preserves the immutable Text object pointer, so
 encoding allocates nothing and the resulting Bytes retains a Text descriptor.
-Bytes created by append instead use a distinct ByteObject descriptor with no
-Unicode-scalar claim. Both proven descriptor forms share the checked prefix and
-trailing-byte layout; no raw pointer, foreign descriptor, or user nominal type
-can enter this representation.
+Bytes created by append or mutable push instead use a distinct ByteObject
+descriptor with no Unicode-scalar claim. Both proven descriptor forms share
+the checked prefix and trailing-byte layout; no raw pointer, foreign
+descriptor, or user nominal type can enter this representation. A ByteObject's
+allocation size also bounds compiler-private spare capacity. Source cannot
+observe that capacity or require stable storage.
+
+`CollectionShare` makes a source-level List or Bytes copy explicit in SSA. It
+has no target instruction or runtime call: both names retain the same managed
+pointer, while independent ownership dataflow marks both names `Shared` so a
+later unique append cannot cross the COW alias boundary. A single `Unique`
+name may still move through a block argument; repeated or already-shared edge
+arguments remain `Shared`. This is compiler IR only and adds no ownership or
+borrow syntax.
 
 `BytesLength`, `BytesGet`, and `BytesCompare` inspect immutable headers and byte
 ranges without a moving-GC safepoint. Checked indexing widens the selected
 unsigned byte to `Int` and returns the canonical `Option[Int]`; a negative or
 out-of-range index returns `None`. Equality is content equality rather than
-managed-pointer identity. `BytesAppend` and `BytesDecodeUtf8` are explicit
-`MAY_COLLECT` instructions. Append returns a fresh ByteObject. Decode returns
-the shared pointer for a valid Text-backed value, allocates a canonical Text for
-a valid standalone ByteObject, and otherwise constructs the exact
-`Result[Text, DecodeTextError]` invalid-UTF-8 variant. The root plan protects
-live inputs across either typed boundary. Each runtime helper publishes its
-fully initialized pointer last through a stable output cell. Append may reuse
-the result's direct root cell when one exists; decode uses a stable temporary,
-then constructs and publishes the exact Result without an intervening
-safepoint. These five existing source APIs introduce no JSON-specific operation
-or runtime type registry, and require no ownership or borrow syntax.
+managed-pointer identity. `BytesAppend`, `BytesPush`, and `BytesPushUnique` are
+explicit `MAY_COLLECT` instructions. Append returns a fresh ByteObject. `BytesPush`
+copies the receiver and appends one range-checked unit. `BytesPushUnique` is an
+independently validated optimization available only when LCIR proves the
+receiver SSA value has not been shared; the runtime may then reuse distinct
+ByteObject storage with sufficient hidden capacity. It never mutates a
+Text-backed value. Both push forms carry the exact `unit >= 0` and `unit <= 255`
+comparison results. Independent validation requires each result to guard one
+reachable success edge with a unique predecessor and requires that edge to
+dominate the push. Source lowering uses `Assert` with the canonical
+`InvalidByte` RuntimeFault, so malformed native input cannot become an
+unchecked byte write. Decode returns the shared
+pointer for a valid Text-backed value, may relabel a valid standalone
+ByteObject as canonical Text without copying its payload, and otherwise
+constructs the exact `Result[Text, DecodeTextError]` invalid-UTF-8 variant.
+Decode cannot allocate and is not a safepoint. The root plan protects live
+inputs across the collecting append and push boundaries. Each helper publishes
+its result last through stable output storage. Append may reuse the result's
+direct root cell when one exists; push uses a stable output cell. Decode writes
+its direct pointer before LLVM constructs the exact Result, with no intervening
+safepoint. These source APIs introduce no
+JSON-specific operation or runtime type registry, and require no ownership or
+borrow syntax.
 
 `TextFromUtf8Units` accepts only the canonical direct `List[Int]` managed
 representation and returns the exact closed
@@ -246,34 +268,16 @@ DCE, and require no universal comparison instruction or runtime type switch.
 
 The recursive `Json` carrier therefore receives ordinary structural equality
 through the same generated List/TextMap helper cycles as user-defined recursive
-types. `std.json.parse_json` is an ordinary source call graph over Bytes, List,
-Text, `TextMapConstructEntries`, and Float primitives; LCIR contains no JSON
-parse instruction.
-
-## Typed JSON formatting
-
-The compiler-known `format_json` operation lowers to one `JsonFormat`
-instruction only when its input is the canonical recursive `Json` type and its
-result is the canonical `Result[Text, JsonError]`. The instruction records the
-checked `Ok`, `Err`, `DepthLimit`, and `NonFiniteNumber` variant identities;
-independent validation rederives those relationships and rejects a raw builder
-which substitutes a layout-compatible sum.
-
-The instruction is a collection safepoint because a successful result owns a
-new managed Text. Exact live-after root planning protects only the Json leaves
-and other values which remain live across that point. The runtime first walks
-the complete direct Json carrier through the compiler-supplied
-`LoomTypedJsonLayout`, writes canonical compact bytes into non-GC staging
-storage, and only then allocates and publishes the Text object. Object fields
-follow the TextMap's canonical key order. Invalid recursion depth or a
-non-finite number returns an ordinary error selector without publishing a
-partial Text or activating source fault state.
-
-LLVM consumes the runtime status and constructs the exact direct Result sum in
-SSA. The boundary contains no universal `ValueSlot`, source type identifier,
-runtime layout registry, scheduler, executor, or source-visible address. JSON
-parsing and recursive Json equality use ordinary source and generated-helper
-paths, respectively.
+types. `std.json.parse_json` and `std.json.format_json` are ordinary source call
+graphs over Bytes, List, TextMap, Text, and Float primitives. The formatter's
+iterative source implementation uses an indexed continuation/work stack. A
+container schedules only its current child and next sibling index, so pending
+work is `O(container nesting depth)` rather than growing with container width.
+One fresh packed `Bytes` output local grows with the emitted UTF-8. LCIR
+independently validates unique byte pushes before `BytesDecodeUtf8` publishes
+the result.
+LCIR contains no JSON parse or format instruction, and ordinary reachability
+removes either helper graph when unused.
 
 Support classification first builds one concrete aggregate plan, without
 allocating LCIR. The plan covers every reachable structural tuple, closed
@@ -510,10 +514,10 @@ synchronous body does not gain that effect merely because it declares
 `requires`. An async precondition instead contributes `MAY_FAULT` to the child
 coroutine's state-zero path. `TaskCreate` does not inherit any child effect.
 `TextConcat`, `TextGet`, `TextFromUtf8Units`, process argument selection,
-process environment lookup, `BytesAppend`,
-`BytesDecodeUtf8`, `PathJoin`, `FloatFormat`, and `JsonFormat` are collecting
-opcodes and contribute `MAY_COLLECT`. Process argument count, Path construction,
-and Path extraction remain non-collecting. `TaskCreate` contributes
+process environment lookup, `BytesAppend`, both Bytes push forms, `PathJoin`,
+and `FloatFormat` are collecting opcodes and contribute `MAY_COLLECT`.
+`BytesDecodeUtf8`, process argument count, Path construction, and Path
+extraction remain non-collecting. `TaskCreate` contributes
 `NEEDS_EXECUTOR`, while the `AwaitTasks` terminator contributes `MAY_FAULT` and
 `MAY_SUSPEND`.
 `TaskJoin` contributes `NEEDS_EXECUTOR` but does not itself suspend.
@@ -618,10 +622,13 @@ checked during LLVM emission; an excess is `ProgramTooLarge`.
 `ListConstruct`, immutable `ListAppend`, `ListLength`, and `ListGet` are
 first-class typed instructions. Allocation sites root even otherwise-dead List
 and managed-element operands before calling `typed-repeated-v1`, then reload
-them before copying. The checked-MIR-proven `ListAppendUnique` consumes a
-greatest-fixed-point `Unique` ownership fact across CFG edges and loop phis;
-entry values, copies, calls, aggregate embedding, projections, and ambiguous
-joins are `Shared`. Raw LCIR builders cannot forge this certificate.
+them before copying. The checked-MIR-proven `ListAppendUnique` consumes an
+exact `Unique` ownership fact across CFG edges and loop phis. A sparse
+possible-state worklist unions `Unique`, `Shared`, and `Consumed` paths
+monotonically; only the singleton `Unique` state admits the optimized
+instruction. Entry values, explicit `CollectionShare` copies, calls, aggregate
+embedding, projections, and ambiguous joins are `Shared`. Raw LCIR builders
+cannot forge this certificate.
 
 `TextMapConstruct`, `TextMapConstructEntries`, immutable `TextMapInsert`,
 `TextMapLength`, `TextMapContains`, `TextMapGet`, checked indexed
@@ -1279,7 +1286,7 @@ managed-pointer representations, finite dynamic candidate catalogs,
 `io.task_create.*.fault`, and
 `text.concat`, `text.get`, `text.encode_utf8`, `text.from_utf8_units`, the
 typed Bytes operations, `path.from_text`, `path.as_text`, and `path.join`,
-`json.format`, typed resource close, structured-log edges, transient
+typed resource close, structured-log edges, transient
 protected-receiver updates, typed TextMap containment/removal/indexed-entry
 operations, and the checked value type of every block parameter and instruction
 result. Representation semantic

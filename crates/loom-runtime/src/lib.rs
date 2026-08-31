@@ -16,7 +16,6 @@
 
 mod float;
 mod gc;
-mod json;
 mod logging;
 mod output;
 mod platform;
@@ -25,15 +24,14 @@ mod reactor;
 mod runtime;
 mod scheduler;
 mod text;
-mod typed_json;
 
 pub use float::format_float_typed_v1;
 pub use gc::{
     activate_runtime_v1, deactivate_runtime_v1, safepoint_v1, typed_alloc_v1,
     typed_repeated_alloc_v1, typed_root_pop_v1, typed_root_push_v1,
 };
-pub use json::{JSON_DEPTH_LIMIT, JsonFormatFailure, JsonNode, escape_json_text, format_json};
 pub use logging::log_typed_v1;
+pub use loom_runtime_abi::*;
 pub use output::{stdout_write_v1, write_process_stderr, write_process_stdout};
 pub use process::{
     argument_at_typed_v1, argument_count_typed_v1, arguments_initialize_typed_v1,
@@ -59,11 +57,9 @@ pub use scheduler::{
     typed_task_take_outcome_v1, typed_task_take_result_v1, typed_timer_task_create_v1,
 };
 pub use text::{
-    bytes_append_typed_v1, bytes_decode_utf8_typed_v1, concat_typed_v1, from_utf8_units_typed_v1,
-    get_typed_v1, path_join_typed_v1, text_contains,
+    bytes_append_typed_v1, bytes_decode_utf8_typed_v1, bytes_push_typed_v1,
+    bytes_push_unique_typed_v1, concat_typed_v1, from_utf8_units_typed_v1, get_typed_v1,
+    path_join_typed_v1, text_contains,
 };
-pub use typed_json::json_format_typed_v1;
-
-pub use loom_runtime_abi::*;
 
 pub const WAIT_INFINITE: u64 = u64::MAX;

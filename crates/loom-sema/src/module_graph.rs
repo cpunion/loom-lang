@@ -70,9 +70,7 @@ impl ModuleGraphBuild {
         for module in modules {
             let mut seen_targets = BTreeSet::new();
             for (import_index, import) in program.modules[module].imports.iter().enumerate() {
-                if crate::std_primitives::resolve_import(program, module, &import.path).is_some()
-                    || is_compiler_known_import(&import.path)
-                {
+                if crate::std_primitives::resolve_import(program, module, &import.path).is_some() {
                     continue;
                 }
                 let Some(imported_name) = imported_module_name(&import.path) else {
@@ -242,10 +240,6 @@ fn imported_module_name(path: &Path) -> Option<ModuleName> {
 
 pub(crate) fn imported_name(import: &Import) -> Option<&loom_core::Name> {
     import.path.last()
-}
-
-pub(crate) fn is_compiler_known_import(path: &Path) -> bool {
-    path.as_string() == "std.json.format_json"
 }
 
 fn canonicalize_cycle(cycle: &mut [ModuleId], program: &Program) {

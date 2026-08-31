@@ -366,6 +366,7 @@ dependencies = [
  "loom-mir",
  "loom-runtime",
  "serde",
+ "serde_json",
  "tempfile",
 ]
 

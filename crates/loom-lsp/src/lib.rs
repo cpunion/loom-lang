@@ -1069,12 +1069,6 @@ const STD_SYMBOLS: &[StdSymbol] = &[
         signature: "enum JsonError",
     },
     StdSymbol {
-        name: "format_json",
-        kind: "function",
-        module: "std.json",
-        signature: "fn format_json(value Json) Result[Text, JsonError]",
-    },
-    StdSymbol {
         name: "length",
         kind: "method",
         module: "std.prelude.TextMap",

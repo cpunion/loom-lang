@@ -263,13 +263,108 @@ pub unsafe extern "C" fn bytes_append_typed_v1(
     unsafe { allocate_typed_bytes(&staged, output) }
 }
 
+/// Copies one immutable byte sequence, appends one byte, and publishes a fresh
+/// `ByteObject`. Checked LCIR proves the byte range before calling this boundary;
+/// the defensive conversion keeps malformed native callers fail-closed.
+#[unsafe(export_name = "loom_runtime_bytes_push_typed_v1")]
+pub unsafe extern "C" fn bytes_push_typed_v1(
+    source: *const c_void,
+    unit: i64,
+    output: *mut *mut c_void,
+) -> i32 {
+    unsafe { bytes_push_impl(source, unit, output, false) }
+}
+
+/// Appends one byte to compiler-certified unique Bytes storage. Only a
+/// distinct `ByteObject` with available hidden capacity is changed in place.
+/// Text-backed byte views always allocate, preserving immutable Text storage.
+#[unsafe(export_name = "loom_runtime_bytes_push_unique_typed_v1")]
+pub unsafe extern "C" fn bytes_push_unique_typed_v1(
+    source: *mut c_void,
+    unit: i64,
+    output: *mut *mut c_void,
+) -> i32 {
+    unsafe { bytes_push_impl(source, unit, output, true) }
+}
+
+unsafe fn bytes_push_impl(
+    source: *const c_void,
+    unit: i64,
+    output: *mut *mut c_void,
+    unique: bool,
+) -> i32 {
+    if output.is_null() || !output.addr().is_multiple_of(align_of::<*mut c_void>()) {
+        return GC_INVALID_ARGUMENT;
+    }
+    unsafe { output.write(ptr::null_mut()) };
+    let Ok(unit) = u8::try_from(unit) else {
+        return GC_INVALID_ARGUMENT;
+    };
+
+    let source_length = {
+        let Some(source_bytes) = (unsafe { bytes(source) }) else {
+            return GC_INVALID_ARGUMENT;
+        };
+        source_bytes.len()
+    };
+    let Some(required) = source_length.checked_add(1) else {
+        std::process::abort();
+    };
+    enforce_typed_byte_length(required);
+    let (source_is_byte_object, current_capacity) = {
+        let Some(header) = (unsafe { source.cast::<ByteObject>().as_ref() }) else {
+            return GC_INVALID_ARGUMENT;
+        };
+        if header.layout == &raw const BYTES_LAYOUT_DESCRIPTOR {
+            (
+                true,
+                usize::try_from(header.allocation_size - TEXT_OBJECT_HEADER_SIZE)
+                    .unwrap_or_else(|_| std::process::abort()),
+            )
+        } else {
+            // A decoded ByteObject may retain slack after being relabelled
+            // Text, but Text storage is immutable and never exposes capacity.
+            (false, source_length)
+        }
+    };
+
+    if unique && source_is_byte_object && required <= current_capacity {
+        let object = source.cast_mut().cast::<ByteObject>();
+        // SAFETY: checked LCIR certified the Bytes value unique, validation
+        // proved a distinct ByteObject and its allocation header exposes at
+        // least one writable byte beyond the logical payload. No safepoint is
+        // entered before the same object is republished.
+        unsafe {
+            object
+                .cast::<u8>()
+                .add(TEXT_OBJECT_HEADER_BYTES + source_length)
+                .write(unit);
+            (*object).byte_length = u64::try_from(required).unwrap_or_else(|_| unreachable!());
+            output.write(source.cast_mut());
+        }
+        return GC_OK;
+    }
+
+    let capacity = grown_byte_capacity(current_capacity, required);
+    let staged = {
+        let Some(source_bytes) = (unsafe { bytes(source) }) else {
+            return GC_INVALID_ARGUMENT;
+        };
+        let mut staged = Vec::with_capacity(required);
+        staged.extend_from_slice(source_bytes);
+        staged.push(unit);
+        staged
+    };
+    unsafe { allocate_typed_bytes_with_capacity(&staged, capacity, output) }
+}
+
 /// Decodes one immutable byte sequence into a direct managed Text leaf.
 ///
 /// Invalid UTF-8 is the one ordinary negative result. Positive failures retain
 /// the shared GC status domain. A canonical Text-backed byte sequence is
-/// validated deeply and returned directly; a distinct Bytes payload and its
-/// scalar count are staged before allocation, so collection cannot invalidate
-/// the source. Every non-success path leaves `output` null.
+/// validated deeply and returned directly; a distinct `ByteObject` is validated
+/// then relabelled Text in place without changing its immutable payload. Every
+/// non-success path leaves `output` null.
 #[unsafe(export_name = "loom_runtime_bytes_decode_utf8_typed_v1")]
 pub unsafe extern "C" fn bytes_decode_utf8_typed_v1(
     source: *const c_void,
@@ -279,34 +374,46 @@ pub unsafe extern "C" fn bytes_decode_utf8_typed_v1(
         return GC_INVALID_ARGUMENT;
     }
     unsafe { output.write(ptr::null_mut()) };
-    let Some(source_bytes) = (unsafe { bytes(source) }) else {
-        return GC_INVALID_ARGUMENT;
-    };
-    let Some(header) = (unsafe { source.cast::<TextObject>().as_ref() }) else {
-        return GC_INVALID_ARGUMENT;
-    };
-    if header.layout == &raw const TEXT_LAYOUT_DESCRIPTOR {
-        let Ok(text) = std::str::from_utf8(source_bytes) else {
+    let scalar_length = {
+        let Some(source_bytes) = (unsafe { bytes(source) }) else {
             return GC_INVALID_ARGUMENT;
         };
-        if u64::try_from(text.chars().count()).ok() != Some(header.scalar_length) {
+        let Some(header) = (unsafe { source.cast::<TextObject>().as_ref() }) else {
             return GC_INVALID_ARGUMENT;
+        };
+        if header.layout == &raw const TEXT_LAYOUT_DESCRIPTOR {
+            let Ok(text) = std::str::from_utf8(source_bytes) else {
+                return GC_INVALID_ARGUMENT;
+            };
+            if u64::try_from(text.chars().count()).ok() != Some(header.scalar_length) {
+                return GC_INVALID_ARGUMENT;
+            }
+            // A typed Bytes value produced by Text.encode_utf8 may share the
+            // exact immutable Text object. No allocation or collection is
+            // needed to recover Text; storage identity remains private.
+            unsafe { output.write(source.cast_mut()) };
+            return GC_OK;
         }
-        // A typed Bytes value produced by Text.encode_utf8 may share the exact
-        // immutable Text object. No allocation or collection is needed to
-        // recover Text; storage identity remains compiler-private.
-        unsafe { output.write(source.cast_mut()) };
-        return GC_OK;
+        let Ok(text) = std::str::from_utf8(source_bytes) else {
+            return BYTES_DECODE_UTF8_TYPED_INVALID_UTF8;
+        };
+        let Ok(scalar_length) = u64::try_from(text.chars().count()) else {
+            std::process::abort();
+        };
+        scalar_length
+    };
+    let object = source.cast_mut().cast::<TextObject>();
+    // SAFETY: validation above proved a distinct pointer-free ByteObject.
+    // Relabelling its compiler-private header preserves every payload byte and
+    // is unobservable through existing immutable Bytes aliases. The reserved
+    // word occupies the exact scalar-length field of TextObject. Text storage
+    // is never subsequently mutated, even when this allocation retains slack.
+    unsafe {
+        (*object).layout = &raw const TEXT_LAYOUT_DESCRIPTOR;
+        (*object).scalar_length = scalar_length;
+        output.write(source.cast_mut());
     }
-    enforce_typed_byte_length(source_bytes.len());
-    let staged = source_bytes.to_vec();
-    let Ok(text) = std::str::from_utf8(&staged) else {
-        return BYTES_DECODE_UTF8_TYPED_INVALID_UTF8;
-    };
-    let Ok(scalar_length) = u64::try_from(text.chars().count()) else {
-        std::process::abort();
-    };
-    unsafe { allocate_typed_text(&staged, scalar_length, output) }
+    GC_OK
 }
 
 /// Portably joins the Text fields of two Path values.
@@ -402,11 +509,41 @@ fn enforce_typed_byte_length(byte_length: usize) {
     }
 }
 
+fn maximum_typed_byte_capacity() -> usize {
+    usize::try_from(GC_MAX_OBJECT_BYTES - TEXT_OBJECT_HEADER_SIZE)
+        .unwrap_or_else(|_| std::process::abort())
+}
+
+fn grown_byte_capacity(current: usize, required: usize) -> usize {
+    let maximum = maximum_typed_byte_capacity();
+    if required > maximum {
+        std::process::abort();
+    }
+    if required <= current {
+        return current;
+    }
+    current.saturating_mul(2).max(1).max(required).min(maximum)
+}
+
 unsafe fn allocate_typed_bytes(staged: &[u8], output: *mut *mut c_void) -> i32 {
+    unsafe { allocate_typed_bytes_with_capacity(staged, staged.len(), output) }
+}
+
+unsafe fn allocate_typed_bytes_with_capacity(
+    staged: &[u8],
+    capacity: usize,
+    output: *mut *mut c_void,
+) -> i32 {
+    if capacity < staged.len() || !typed_byte_length_is_valid(capacity) {
+        return GC_INVALID_ARGUMENT;
+    }
     let Ok(byte_length) = u64::try_from(staged.len()) else {
         std::process::abort();
     };
-    let Some(allocation_size) = TEXT_OBJECT_HEADER_SIZE.checked_add(byte_length) else {
+    let Ok(capacity) = u64::try_from(capacity) else {
+        std::process::abort();
+    };
+    let Some(allocation_size) = TEXT_OBJECT_HEADER_SIZE.checked_add(capacity) else {
         std::process::abort();
     };
     let descriptor = LoomGcObjectDescriptor {
@@ -593,7 +730,7 @@ pub(crate) unsafe fn allocate_typed_text_pair(
 pub(crate) fn allocate_text_storage(bytes: &[u8]) -> Option<(Box<[u64]>, *mut TextObject)> {
     let text = std::str::from_utf8(bytes).ok()?;
     let scalar_length = u64::try_from(text.chars().count()).ok()?;
-    let (allocation, object) = allocate_storage(bytes)?;
+    let (allocation, object) = allocate_storage(bytes, bytes.len())?;
     let object = object.cast::<TextObject>();
     // SAFETY: allocate_storage reserved and aligned the complete header.
     unsafe {
@@ -611,14 +748,24 @@ pub(crate) fn allocate_text_storage(bytes: &[u8]) -> Option<(Box<[u64]>, *mut Te
 
 #[cfg(test)]
 pub(crate) fn allocate_byte_storage(bytes: &[u8]) -> Option<(Box<[u64]>, *mut ByteObject)> {
-    let (allocation, object) = allocate_storage(bytes)?;
+    allocate_byte_storage_with_capacity(bytes, bytes.len())
+}
+
+#[cfg(test)]
+pub(crate) fn allocate_byte_storage_with_capacity(
+    bytes: &[u8],
+    capacity: usize,
+) -> Option<(Box<[u64]>, *mut ByteObject)> {
+    if capacity < bytes.len() || !typed_byte_length_is_valid(capacity) {
+        return None;
+    }
+    let (allocation, object) = allocate_storage(bytes, capacity)?;
     let object = object.cast::<ByteObject>();
     // SAFETY: allocate_storage reserved and aligned the complete header.
     unsafe {
         object.write(ByteObject {
             layout: &raw const BYTES_LAYOUT_DESCRIPTOR,
-            allocation_size: TEXT_OBJECT_HEADER_SIZE
-                .checked_add(u64::try_from(bytes.len()).ok()?)?,
+            allocation_size: TEXT_OBJECT_HEADER_SIZE.checked_add(u64::try_from(capacity).ok()?)?,
             byte_length: u64::try_from(bytes.len()).ok()?,
             reserved: 0,
             bytes: [],
@@ -628,8 +775,8 @@ pub(crate) fn allocate_byte_storage(bytes: &[u8]) -> Option<(Box<[u64]>, *mut By
 }
 
 #[cfg(test)]
-fn allocate_storage(bytes: &[u8]) -> Option<(Box<[u64]>, *mut u64)> {
-    let allocation_size = TEXT_OBJECT_HEADER_BYTES.checked_add(bytes.len())?;
+fn allocate_storage(bytes: &[u8], capacity: usize) -> Option<(Box<[u64]>, *mut u64)> {
+    let allocation_size = TEXT_OBJECT_HEADER_BYTES.checked_add(capacity)?;
     let word_count = allocation_size.checked_add(size_of::<u64>() - 1)? / size_of::<u64>();
     let mut allocation = vec![0_u64; word_count.max(TEXT_OBJECT_HEADER_WORDS)].into_boxed_slice();
     let object = allocation.as_mut_ptr();
@@ -658,7 +805,7 @@ pub(crate) unsafe fn bytes<'object>(object: *const c_void) -> Option<&'object [u
         return None;
     };
     let layout = unsafe { header.layout.as_ref() }?;
-    let expected_size = TEXT_OBJECT_HEADER_SIZE.checked_add(header.byte_length)?;
+    let minimum_size = TEXT_OBJECT_HEADER_SIZE.checked_add(header.byte_length)?;
     if layout != expected
         || layout.abi_version != LAYOUT_ABI_VERSION
         || !matches!(layout.kind, LAYOUT_KIND_TEXT | LAYOUT_KIND_BYTES)
@@ -669,7 +816,8 @@ pub(crate) unsafe fn bytes<'object>(object: *const c_void) -> Option<&'object [u
         || layout.flags
             != (LAYOUT_FLAG_MANAGED_POINTER | LAYOUT_FLAG_LEAF | LAYOUT_FLAG_TRAILING_BYTES)
         || layout.reserved != 0
-        || header.allocation_size != expected_size
+        || header.allocation_size < minimum_size
+        || header.allocation_size > GC_MAX_OBJECT_BYTES
     {
         return None;
     }
@@ -695,7 +843,8 @@ pub(crate) unsafe fn text_bytes<'object>(object: *const c_void) -> Option<&'obje
     Some(bytes)
 }
 
-pub(crate) unsafe fn scalar_length(object: *const TextObject) -> Option<u64> {
+#[cfg(test)]
+unsafe fn scalar_length(object: *const TextObject) -> Option<u64> {
     unsafe { text_bytes(object.cast::<c_void>()) }?;
     let object = unsafe { object.as_ref() }?;
     Some(object.scalar_length)
@@ -729,9 +878,11 @@ mod tests {
 
     use super::{
         BYTES_LAYOUT_DESCRIPTOR, ByteObject, TEXT_LAYOUT_DESCRIPTOR, TextObject,
-        allocate_byte_storage, allocate_text_storage, bytes, bytes_append_typed_v1,
-        bytes_decode_utf8_typed_v1, concat_typed_v1, from_utf8_units_typed_v1, get_typed_v1,
-        path_join_typed_v1, scalar_length, text_bytes, validate_text_object_deep,
+        allocate_byte_storage, allocate_byte_storage_with_capacity, allocate_text_storage, bytes,
+        bytes_append_typed_v1, bytes_decode_utf8_typed_v1, bytes_push_typed_v1,
+        bytes_push_unique_typed_v1, concat_typed_v1, from_utf8_units_typed_v1, get_typed_v1,
+        grown_byte_capacity, maximum_typed_byte_capacity, path_join_typed_v1, scalar_length,
+        text_bytes, validate_text_object_deep,
     };
     use crate::gc::{
         activate_runtime_v1, deactivate_runtime_v1, typed_root_pop_v1, typed_root_push_v1,
@@ -1244,6 +1395,137 @@ mod tests {
     }
 
     #[test]
+    fn typed_bytes_push_copies_normally_and_reuses_only_unique_byte_capacity() {
+        let (text_storage, text) = allocate_text_storage(b"ab").unwrap();
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+
+            let bitmaps = [0_u64, 1_u64];
+            let descriptor = LoomGcTypedRootDescriptor {
+                abi_version: TYPED_SHADOW_STACK_ABI_VERSION,
+                flags: 0,
+                slot_count: 1,
+                state_count: 2,
+                live_bitmap_words: 1,
+                live_bitmaps: bitmaps.as_ptr(),
+            };
+            let mut cell: *mut c_void = ptr::null_mut();
+            let slots = [(&raw mut cell).cast::<c_void>()];
+            let mut frame = LoomGcTypedRootFrame {
+                abi_version: TYPED_SHADOW_STACK_ABI_VERSION,
+                flags: 0,
+                state: 1,
+                descriptor: &raw const descriptor,
+                slots: slots.as_ptr(),
+                previous: ptr::null_mut(),
+            };
+            assert_eq!(typed_root_push_v1(&raw mut frame), GC_OK);
+
+            assert_eq!(bytes_push_typed_v1(text.cast(), 99, &raw mut cell), GC_OK);
+            assert_eq!(bytes(cell), Some(&b"abc"[..]));
+            assert_eq!(text_bytes(text.cast()), Some(&b"ab"[..]));
+            let first = cell;
+            let first_header = &*first.cast::<ByteObject>();
+            assert_eq!(first_header.byte_length, 3);
+            assert_eq!(first_header.allocation_size, TEXT_OBJECT_HEADER_SIZE + 4);
+
+            let collections = (*runtime).heap.collections;
+            assert_eq!(bytes_push_unique_typed_v1(first, 100, &raw mut cell), GC_OK);
+            assert_eq!(cell, first);
+            assert_eq!(bytes(cell), Some(&b"abcd"[..]));
+            assert_eq!((*runtime).heap.collections, collections);
+
+            (*runtime).heap.collect_before_every_allocation = true;
+            assert_eq!(bytes_push_unique_typed_v1(cell, 101, &raw mut cell), GC_OK);
+            assert_eq!(bytes(cell), Some(&b"abcde"[..]));
+            assert_eq!(
+                (*cell.cast::<ByteObject>()).allocation_size,
+                TEXT_OBJECT_HEADER_SIZE + 8
+            );
+            assert_eq!((*runtime).heap.collections, collections + 1);
+
+            assert_eq!(typed_root_pop_v1(&raw mut frame), GC_OK);
+            (*runtime).heap.collect_before_every_allocation = false;
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+        drop(text_storage);
+    }
+
+    #[test]
+    fn typed_bytes_push_never_mutates_text_and_rejects_invalid_units() {
+        let (text_storage, text) = allocate_text_storage(b"x").unwrap();
+        let runtime = runtime_create_v1();
+        assert!(!runtime.is_null());
+        unsafe {
+            assert_eq!(activate_runtime_v1(runtime), GC_OK);
+            let mut output = ptr::dangling_mut::<c_void>();
+            assert_eq!(
+                bytes_push_unique_typed_v1(text.cast(), 255, &raw mut output),
+                GC_OK
+            );
+            assert_ne!(output, text.cast());
+            assert_eq!(text_bytes(text.cast()), Some(&b"x"[..]));
+            assert_eq!(bytes(output), Some(&b"x\xff"[..]));
+            assert_eq!(
+                (*output.cast::<ByteObject>()).layout,
+                &raw const BYTES_LAYOUT_DESCRIPTOR
+            );
+
+            let unchanged = bytes(output).unwrap().to_vec();
+            let mut failed = ptr::dangling_mut::<c_void>();
+            assert_eq!(
+                bytes_push_unique_typed_v1(output, -1, &raw mut failed),
+                GC_INVALID_ARGUMENT
+            );
+            assert!(failed.is_null());
+            assert_eq!(bytes(output), Some(unchanged.as_slice()));
+            failed = ptr::dangling_mut();
+            assert_eq!(
+                bytes_push_typed_v1(output, 256, &raw mut failed),
+                GC_INVALID_ARGUMENT
+            );
+            assert!(failed.is_null());
+
+            assert_eq!(deactivate_runtime_v1(runtime), GC_OK);
+            assert_eq!(runtime_destroy_v1(runtime), GC_OK);
+        }
+        drop(text_storage);
+    }
+
+    #[test]
+    fn typed_bytes_capacity_is_hidden_and_growth_clamps_at_the_object_limit() {
+        let (allocation, object) = allocate_byte_storage_with_capacity(b"abc", 8).unwrap();
+        assert_eq!(unsafe { bytes(object.cast()) }, Some(&b"abc"[..]));
+        assert_eq!(
+            unsafe { (*object).allocation_size },
+            TEXT_OBJECT_HEADER_SIZE + 8
+        );
+        let mut decoded = ptr::dangling_mut::<c_void>();
+        assert_eq!(
+            unsafe { bytes_decode_utf8_typed_v1(object.cast(), &raw mut decoded) },
+            GC_OK
+        );
+        assert_eq!(decoded, object.cast());
+        assert_eq!(unsafe { text_bytes(decoded) }, Some(&b"abc"[..]));
+        assert_eq!(
+            unsafe { (*decoded.cast::<TextObject>()).allocation_size },
+            TEXT_OBJECT_HEADER_SIZE + 8
+        );
+        drop(allocation);
+
+        let maximum = maximum_typed_byte_capacity();
+        assert_eq!(grown_byte_capacity(0, 1), 1);
+        assert_eq!(grown_byte_capacity(4, 5), 8);
+        assert_eq!(
+            grown_byte_capacity(maximum / 2 + 1, maximum / 2 + 2),
+            maximum
+        );
+    }
+
+    #[test]
     fn typed_bytes_decode_has_distinct_utf8_and_defect_statuses() {
         let (valid_storage, valid) = allocate_byte_storage("a界🙂".as_bytes()).unwrap();
         let (shared_text_storage, shared_text) =
@@ -1285,12 +1567,14 @@ mod tests {
                 GC_OK
             );
             assert_eq!(bytes(cell), Some("a界🙂".as_bytes()));
+            let decoded = cell;
+            let collections = (*runtime).heap.collections;
             assert_eq!(bytes_decode_utf8_typed_v1(cell, &raw mut cell), GC_OK);
+            assert_eq!(cell, decoded);
             assert_eq!(text_bytes(cell), Some("a界🙂".as_bytes()));
             assert_eq!(scalar_length(cell.cast()), Some(3));
-            assert!((*runtime).heap.reclaimed >= 1);
+            assert_eq!((*runtime).heap.collections, collections);
 
-            let collections = (*runtime).heap.collections;
             let mut shared: *mut c_void = shared_text.cast();
             assert_eq!(bytes_decode_utf8_typed_v1(shared, &raw mut shared), GC_OK);
             assert_eq!(shared, shared_text.cast());
@@ -1334,9 +1618,9 @@ mod tests {
             failed = ptr::dangling_mut();
             assert_eq!(
                 bytes_decode_utf8_typed_v1(valid.cast(), &raw mut failed),
-                GC_INVALID_ARGUMENT
+                GC_OK
             );
-            assert!(failed.is_null());
+            assert_eq!(failed, valid.cast());
             failed = ptr::dangling_mut();
             assert_eq!(
                 bytes_append_typed_v1(valid.cast(), empty.cast(), &raw mut failed),
@@ -1362,7 +1646,7 @@ mod tests {
         let (allocation, object) = allocate_text_storage(b"safe").unwrap();
         // SAFETY: this test owns the complete allocation and deliberately
         // corrupts one header field to exercise fail-closed validation.
-        unsafe { (*object).allocation_size += 1 };
+        unsafe { (*object).allocation_size -= 1 };
         assert_eq!(unsafe { bytes(object.cast()) }, None);
         assert_eq!(unsafe { scalar_length(object) }, None);
         drop(allocation);

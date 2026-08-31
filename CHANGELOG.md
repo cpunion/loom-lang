@@ -51,13 +51,16 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
 - `loom check`, `build`, `test`, `run`, `fmt`, package, cache, runtime-bundle,
   and artifact workflows. Persistent inputs are bounded, version-exact, and
   rejected rather than upgraded when their current identity does not match.
+  Normal interpreter execution has no arbitrary instruction cutoff and matches
+  native run duration; Rust embedders can select an explicit fuel and call-depth
+  budget for untrusted or future compile-time evaluation.
   Ordinary source files may contain `test fn`, while `*_test.loom` files may
   also contain test-only helpers. `loom test` places both forms in a
   compiler-owned companion package with one-way access to the production
   package's private declarations; production builds and portable libraries
   exclude the companion completely.
 - Compiler-distributed `std` source modules compiled through the ordinary
-  frontend, including integer and JSON parsing, logging wrappers, process
+  frontend, including integer parsing, JSON parsing and formatting, logging wrappers, process
   wrappers, resource concepts, the public `DecodeTextError` and `PathError`
   enums, the public `std.time.milliseconds` wrapper, and the complete public
   `std.log` graph. Time construction now resolves through an ordinary source
@@ -65,6 +68,14 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   resolves through ordinary source `DefId` values and has no universal-value
   native fallback;
   only its exact-owner private typed write primitive remains compiler-owned.
+  `std.json.format_json` traverses Json and builds canonical UTF-8 through
+  ordinary Loom source. Its generic packed builder is `Bytes.add`: a mutable
+  Bytes binding has copy-on-write value semantics, checked byte units, hidden
+  geometric capacity, exact lower/upper LCIR guard proofs, and an independently
+  validated unique-push form. Source List/Bytes copies become zero-code
+  `CollectionShare` SSA boundaries so COW aliases cannot inherit uniqueness.
+  The compiler, LLVM backend, runtime ABI, and runtime contain no
+  JSON-formatting opcode, layout descriptor, or entry point.
   `IoErrorKind` is now an ordinary `std.io` source enum whose exact definition
   is made available through the prelude; its ten compiler builtin constructors
   and fixed MIR type slot are gone. `IoError` is likewise an ordinary protected
@@ -80,15 +91,18 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   public `std.file` and `std.net` functions resolve through ordinary source
   wrappers, and the Path forms reuse their Text counterparts. Only 16
   exact-owner resource/I/O/close leaves plus two protected error access leaves
-  remain below source. Interpreted MIR artifact 43 and persistent cache schema
-  16 reject infinite value layouts, source-impossible mutable parameter slots
+  remain below source. Interpreted MIR artifact 45 and persistent cache schema
+  18 reject infinite value layouts, source-impossible mutable parameter slots
   and coroutine receivers, invariant-boundary bypasses, removed semantic types,
   fixed slots, and special cleanup tags instead of decoding them through
   compatibility paths.
-  Native runtime ABI 37 (`runtime-v31`) records deletion of the unreachable
-  universal `ValueSlot` heap and root chain, runtime witness arena, legacy
-  Task/value operations, and Int-list implementation, following the earlier
-  removal of universal File, Socket, close, logging, and process boundaries.
+  Native runtime ABI 39 (`runtime-v33`, `stdlib-v9`, `text-v4`, and
+  `typed-bytes-v2`) adds checked packed Bytes growth and non-collecting
+  ByteObject-to-Text decode. It follows ABI 38's deletion of the
+  unreachable universal `ValueSlot` heap and root chain, runtime witness arena,
+  legacy Task/value operations, Int-list implementation, and the former typed
+  JSON-formatting boundary, following the earlier removal of universal File,
+  Socket, close, logging, and process boundaries.
   The live shared join/fault scheduler operations retain `task-v2`.
   The 16-byte `typed-io-v1` outcome uses its primitive
   payload for either a resource token or a closed fault class, preserving
@@ -98,8 +112,8 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   primitives; process input has no universal-value or checked-MIR runtime path,
   and Windows snapshots the operating system's wide arguments instead of the
   lossy narrow C entry vector.
-  JSON parsing has no compiler opcode or runtime entry point; canonical JSON
-  formatting uses an exact typed layout boundary.
+  JSON parsing and canonical formatting have no compiler opcode or runtime
+  entry point; both execute through ordinary `std.json` Loom source.
 - A precise moving collector, lazy single-threaded executor, OS reactor, bounded
   blocking pool, structured cancellation, deterministic cleanup, and strict
   runtime-bundle identity checks.

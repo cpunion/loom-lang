@@ -27,6 +27,7 @@ export const removedRuntimeSymbols = Object.freeze([
   "loom_runtime_text_map_insert",
   "loom_runtime_text_map_remove",
   "loom_runtime_json_format",
+  "loom_runtime_json_format_typed_v1",
   "loom_runtime_format_float",
   "loom_runtime_log",
   "loom_runtime_set_arguments",
@@ -144,7 +145,7 @@ if (invokedPath === fileURLToPath(import.meta.url)) {
         }
         process.exitCode = 1;
       } else {
-        console.log("runtime archive contains no removed universal ABI symbols");
+        console.log("runtime archive contains no removed ABI symbols");
       }
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error));

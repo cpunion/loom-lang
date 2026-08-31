@@ -160,9 +160,15 @@ numbers use a shortest decimal representation. `Json.Number` can hold any Float
 value, but formatting NaN or infinity produces `NonFiniteNumber`. Formatting
 also applies the 128-container depth limit.
 
-`format_json` is a compiler-known typed operation over the exact closed `Json`
-and `JsonError` shapes. Its runtime boundary receives a compiler-supplied
-layout descriptor rather than a universal value or source type identifier.
+`format_json` is an ordinary function in the compiler-owned `std` source
+package. Its iterative source formatter traverses `Json` with an indexed
+continuation/work stack: each container schedules its current child and next
+sibling index instead of materializing work for every element. Pending work is
+therefore `O(container nesting depth)`, independent of container width. The
+formatter enumerates Lists and TextMaps, escapes UTF-8 into one fresh packed
+`Bytes` value, and constructs the final Text with `Bytes.decode_utf8`. It uses
+the public Float formatting and finiteness helpers. There is no JSON formatter
+builtin, MIR or LCIR opcode, LLVM layout descriptor, or runtime entry point.
 
 Json equality is recursive value equality. Object equality compares mappings,
 not insertion history.

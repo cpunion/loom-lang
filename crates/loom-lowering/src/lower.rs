@@ -3396,6 +3396,7 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             | BuiltinValue::TextFromUtf8Units
             | BuiltinValue::BytesLength
             | BuiltinValue::BytesGet
+            | BuiltinValue::BytesAdd
             | BuiltinValue::BytesAppend
             | BuiltinValue::BytesDecodeUtf8
             | BuiltinValue::PathFromText
@@ -3409,7 +3410,6 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             | BuiltinValue::TextMapInsert
             | BuiltinValue::ListToTextMap
             | BuiltinValue::TextMapRemove
-            | BuiltinValue::JsonFormat
             | BuiltinValue::IoErrorKind
             | BuiltinValue::IoErrorMessage
             | BuiltinValue::LogWrite
@@ -3871,6 +3871,7 @@ fn executable_builtin(builtin: BuiltinValue) -> Option<Builtin> {
         BuiltinValue::TextFromUtf8Units => Builtin::TextFromUtf8Units,
         BuiltinValue::BytesLength => Builtin::BytesLength,
         BuiltinValue::BytesGet => Builtin::BytesGet,
+        BuiltinValue::BytesAdd => Builtin::BytesAdd,
         BuiltinValue::BytesAppend => Builtin::BytesAppend,
         BuiltinValue::BytesDecodeUtf8 => Builtin::BytesDecodeUtf8,
         BuiltinValue::PathFromText => Builtin::PathFromText,
@@ -3884,7 +3885,6 @@ fn executable_builtin(builtin: BuiltinValue) -> Option<Builtin> {
         BuiltinValue::TextMapInsert => Builtin::TextMapInsert,
         BuiltinValue::ListToTextMap => Builtin::ListToTextMap,
         BuiltinValue::TextMapRemove => Builtin::TextMapRemove,
-        BuiltinValue::JsonFormat => Builtin::JsonFormat,
         BuiltinValue::IoErrorKind => Builtin::IoErrorKind,
         BuiltinValue::IoErrorMessage => Builtin::IoErrorMessage,
         BuiltinValue::LogWrite => Builtin::LogWrite,

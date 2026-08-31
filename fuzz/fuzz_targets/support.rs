@@ -17,6 +17,7 @@ import std.log.info
 import std.log.warn
 import std.log.error
 import std.log.write
+import std.log.LogLevel
 
 fn jsonValue(value Json) {
     match value {
@@ -110,6 +111,11 @@ pub fn compile(source: &str) -> Result<loom_mir::CheckedProgram, String> {
     let std_io = parse_with_file(FileId(5), include_str!("../../library/std/io/io.loom"));
     let std_file = parse_with_file(FileId(6), include_str!("../../library/std/file/file.loom"));
     let std_net = parse_with_file(FileId(7), include_str!("../../library/std/net/net.loom"));
+    let std_float = parse_with_file(
+        FileId(8),
+        include_str!("../../library/std/float/float.loom"),
+    );
+    let std_text = parse_with_file(FileId(9), include_str!("../../library/std/text/text.loom"));
     if !parsed.diagnostics().is_empty() {
         return Err(format!("syntax diagnostics: {:#?}", parsed.diagnostics()));
     }
@@ -120,16 +126,20 @@ pub fn compile(source: &str) -> Result<loom_mir::CheckedProgram, String> {
         || !std_io.diagnostics().is_empty()
         || !std_file.diagnostics().is_empty()
         || !std_net.diagnostics().is_empty()
+        || !std_float.diagnostics().is_empty()
+        || !std_text.diagnostics().is_empty()
     {
         return Err(format!(
-            "std source syntax diagnostics: int={:#?}, json={:#?}, log={:#?}, resource={:#?}, io={:#?}, file={:#?}, net={:#?}",
+            "std source syntax diagnostics: int={:#?}, json={:#?}, log={:#?}, resource={:#?}, io={:#?}, file={:#?}, net={:#?}, float={:#?}, text={:#?}",
             std_int.diagnostics(),
             std_json.diagnostics(),
             std_log.diagnostics(),
             std_resource.diagnostics(),
             std_io.diagnostics(),
             std_file.diagnostics(),
-            std_net.diagnostics()
+            std_net.diagnostics(),
+            std_float.diagnostics(),
+            std_text.diagnostics()
         ));
     }
     let root_package = PackageId::new("fuzz", "0");
@@ -182,6 +192,18 @@ pub fn compile(source: &str) -> Result<loom_mir::CheckedProgram, String> {
             package: std_package.clone(),
             module: ModuleName::new("std.net"),
             syntax: std_net.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(8),
+            package: std_package.clone(),
+            module: ModuleName::new("std.float"),
+            syntax: std_float.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(9),
+            package: std_package.clone(),
+            module: ModuleName::new("std.text"),
+            syntax: std_text.ast(),
         },
     ]);
     if !lowered.diagnostics.is_empty() {

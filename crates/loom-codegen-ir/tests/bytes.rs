@@ -1,7 +1,8 @@
 use loom_codegen_ir::{
-    BoolPredicate, CanonicalTypeCatalog, Constant, Effects, InstructionKind, ManagedSafepoint,
-    Origin, ProgramBuilder, Signature, TargetLayout, Terminator, TerminatorKind, ValidationCode,
-    ValueTypeId, dump_program, plan_managed_roots,
+    BlockTarget, BoolPredicate, BuildErrorCode, CanonicalTypeCatalog, Constant, Effects,
+    InstructionKind, IntPredicate, ManagedSafepoint, Origin, ProgramBuilder, Signature,
+    TargetLayout, Terminator, TerminatorKind, ValidationCode, ValueTypeId, dump_program,
+    plan_managed_roots,
 };
 use loom_mir::{FunctionId as MirFunctionId, Type, TypeId};
 
@@ -111,9 +112,13 @@ fn checked_bytes_instruction_family_has_exact_shapes_effects_roots_and_dump() {
             Effects::MAY_COLLECT.with_implications(),
         )
         .expect("function");
-    let (append_id, decode_id, from_units_id, units_id) = {
+    let (append_id, push_id, decode_id, from_units_id, units_id, left_id) = {
         let mut function = builder.function(root).expect("function builder");
         let entry = function.create_block().expect("entry");
+        let lower_checked = function.create_block().expect("lower checked");
+        let lower_failed = function.create_block().expect("lower failed");
+        let push_block = function.create_block().expect("push block");
+        let upper_failed = function.create_block().expect("upper failed");
         function.set_entry(entry).expect("set entry");
         let text = function
             .append_block_parameter(entry, types.text)
@@ -213,9 +218,116 @@ fn checked_bytes_instruction_family_has_exact_shapes_effects_roots_and_dump() {
                 origin(),
             )
             .expect("compare");
-        let result = function
+        let zero = function
             .append_instruction(
                 entry,
+                InstructionKind::Constant(Constant::Int(0)),
+                &[types.integer],
+                origin(),
+            )
+            .expect("zero")[0];
+        let lower_proof = function
+            .append_instruction(
+                entry,
+                InstructionKind::IntCompare {
+                    predicate: IntPredicate::GreaterEqual,
+                    left: index,
+                    right: zero,
+                },
+                &[types.boolean],
+                origin(),
+            )
+            .expect("lower proof")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(
+                    TerminatorKind::Branch {
+                        condition: lower_proof,
+                        then_target: BlockTarget::new(lower_checked, []),
+                        else_target: BlockTarget::new(lower_failed, []),
+                    },
+                    origin(),
+                ),
+            )
+            .expect("lower guard");
+        let lower_failure = function
+            .append_instruction(
+                lower_failed,
+                InstructionKind::Constant(Constant::Unit),
+                &[types.unit],
+                origin(),
+            )
+            .expect("lower failure")[0];
+        function
+            .terminate(
+                lower_failed,
+                Terminator::new(TerminatorKind::Return(lower_failure), origin()),
+            )
+            .expect("lower failure return");
+        let maximum = function
+            .append_instruction(
+                lower_checked,
+                InstructionKind::Constant(Constant::Int(255)),
+                &[types.integer],
+                origin(),
+            )
+            .expect("maximum")[0];
+        let upper_proof = function
+            .append_instruction(
+                lower_checked,
+                InstructionKind::IntCompare {
+                    predicate: IntPredicate::LessEqual,
+                    left: index,
+                    right: maximum,
+                },
+                &[types.boolean],
+                origin(),
+            )
+            .expect("upper proof")[0];
+        function
+            .terminate(
+                lower_checked,
+                Terminator::new(
+                    TerminatorKind::Branch {
+                        condition: upper_proof,
+                        then_target: BlockTarget::new(push_block, []),
+                        else_target: BlockTarget::new(upper_failed, []),
+                    },
+                    origin(),
+                ),
+            )
+            .expect("upper guard");
+        let upper_failure = function
+            .append_instruction(
+                upper_failed,
+                InstructionKind::Constant(Constant::Unit),
+                &[types.unit],
+                origin(),
+            )
+            .expect("upper failure")[0];
+        function
+            .terminate(
+                upper_failed,
+                Terminator::new(TerminatorKind::Return(upper_failure), origin()),
+            )
+            .expect("upper failure return");
+        let push = function
+            .append_instruction(
+                push_block,
+                InstructionKind::BytesPush {
+                    bytes: left,
+                    unit: index,
+                    lower_proof,
+                    upper_proof,
+                },
+                &[types.bytes],
+                origin(),
+            )
+            .expect("push");
+        let result = function
+            .append_instruction(
+                push_block,
                 InstructionKind::Constant(Constant::Unit),
                 &[types.unit],
                 origin(),
@@ -223,11 +335,11 @@ fn checked_bytes_instruction_family_has_exact_shapes_effects_roots_and_dump() {
             .expect("Unit")[0];
         function
             .terminate(
-                entry,
+                push_block,
                 Terminator::new(TerminatorKind::Return(result), origin()),
             )
             .expect("return");
-        (append[0], decode[0], from_units[0], units)
+        (append[0], push[0], decode[0], from_units[0], units, left)
     };
     let program = builder.finish_checked().expect("checked Bytes program");
     let function = program.as_program().function(root).expect("function");
@@ -243,10 +355,22 @@ fn checked_bytes_instruction_family_has_exact_shapes_effects_roots_and_dump() {
             .state(ManagedSafepoint::Instruction(instruction_id(append_id)))
             .is_some()
     );
+    let push_state = roots
+        .state(ManagedSafepoint::Instruction(instruction_id(push_id)))
+        .expect("Bytes push root state");
+    let left_slot = roots
+        .slots()
+        .iter()
+        .position(|slot| slot.value() == left_id && slot.projection().is_empty())
+        .expect("dead-after-push Bytes receiver root");
+    let push_bitmap = roots.bitmaps()
+        [usize::try_from(push_state).expect("root state") * roots.bitmap_words() + left_slot / 64];
+    assert_ne!(push_bitmap & (1_u64 << (left_slot % 64)), 0);
     assert!(
         roots
             .state(ManagedSafepoint::Instruction(instruction_id(decode_id)))
-            .is_some()
+            .is_none(),
+        "Bytes.decode_utf8 relabels validated storage without collecting"
     );
     let from_units_state = roots
         .state(ManagedSafepoint::Instruction(instruction_id(from_units_id)))
@@ -267,11 +391,410 @@ fn checked_bytes_instruction_family_has_exact_shapes_effects_roots_and_dump() {
         "bytes.length",
         "bytes.get",
         "bytes.append",
+        "bytes.push",
         "bytes.decode_utf8",
         "bytes.compare.not_equal",
     ] {
         assert!(dump.contains(opcode), "missing {opcode}: {dump}");
     }
+}
+
+#[test]
+fn raw_builder_cannot_forge_unique_bytes_push() {
+    let (mut builder, types) = builder_with_bytes_types();
+    let root = builder
+        .declare_function(
+            origin(),
+            "bytes.unique.raw",
+            Signature::new([], types.bytes),
+            Effects::MAY_COLLECT.with_implications(),
+        )
+        .expect("function");
+    let mut function = builder.function(root).expect("function builder");
+    let entry = function.create_block().expect("entry");
+    function.set_entry(entry).expect("set entry");
+    let text = function
+        .append_instruction(
+            entry,
+            InstructionKind::TextLiteral { utf8: "x".into() },
+            &[types.text],
+            origin(),
+        )
+        .expect("Text")[0];
+    let bytes = function
+        .append_instruction(
+            entry,
+            InstructionKind::TextEncodeUtf8 { text },
+            &[types.bytes],
+            origin(),
+        )
+        .expect("Bytes")[0];
+    let unit = function
+        .append_instruction(
+            entry,
+            InstructionKind::Constant(Constant::Int(33)),
+            &[types.integer],
+            origin(),
+        )
+        .expect("unit")[0];
+    let error = function
+        .append_instruction(
+            entry,
+            InstructionKind::BytesPushUnique {
+                bytes,
+                unit,
+                lower_proof: unit,
+                upper_proof: unit,
+            },
+            &[types.bytes],
+            origin(),
+        )
+        .expect_err("raw unique certificate must be rejected");
+    assert_eq!(error.code(), BuildErrorCode::TrustedInstruction);
+}
+
+#[test]
+fn checked_bytes_push_rejects_exact_comparisons_without_success_guards() {
+    let (mut builder, types) = builder_with_bytes_types();
+    let root = builder
+        .declare_function(
+            origin(),
+            "bytes.push.missing_guards",
+            Signature::new([types.bytes, types.integer], types.bytes),
+            Effects::MAY_COLLECT.with_implications(),
+        )
+        .expect("function");
+    {
+        let mut function = builder.function(root).expect("function builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("set entry");
+        let bytes = function
+            .append_block_parameter(entry, types.bytes)
+            .expect("Bytes parameter");
+        let unit = function
+            .append_block_parameter(entry, types.integer)
+            .expect("unit parameter");
+        let zero = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Int(0)),
+                &[types.integer],
+                origin(),
+            )
+            .expect("zero")[0];
+        let maximum = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Int(255)),
+                &[types.integer],
+                origin(),
+            )
+            .expect("maximum")[0];
+        let lower_proof = function
+            .append_instruction(
+                entry,
+                InstructionKind::IntCompare {
+                    predicate: IntPredicate::GreaterEqual,
+                    left: unit,
+                    right: zero,
+                },
+                &[types.boolean],
+                origin(),
+            )
+            .expect("lower proof")[0];
+        let upper_proof = function
+            .append_instruction(
+                entry,
+                InstructionKind::IntCompare {
+                    predicate: IntPredicate::LessEqual,
+                    left: unit,
+                    right: maximum,
+                },
+                &[types.boolean],
+                origin(),
+            )
+            .expect("upper proof")[0];
+        let pushed = function
+            .append_instruction(
+                entry,
+                InstructionKind::BytesPush {
+                    bytes,
+                    unit,
+                    lower_proof,
+                    upper_proof,
+                },
+                &[types.bytes],
+                origin(),
+            )
+            .expect("push")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(TerminatorKind::Return(pushed), origin()),
+            )
+            .expect("return");
+    }
+
+    let errors = builder
+        .finish_checked()
+        .expect_err("unguarded byte-range comparisons must fail closed");
+    for proof in ["lower_proof", "upper_proof"] {
+        assert!(
+            errors.as_slice().iter().any(|error| {
+                error.code() == ValidationCode::InvalidIntegerProof
+                    && error.path().ends_with(proof)
+                    && error.message().contains("must condition a reachable guard")
+            }),
+            "missing {proof} rejection: {errors:?}"
+        );
+    }
+}
+
+#[test]
+fn checked_bytes_push_rejects_proofs_for_the_wrong_range() {
+    let (mut builder, types) = builder_with_bytes_types();
+    let root = builder
+        .declare_function(
+            origin(),
+            "bytes.push.wrong_range",
+            Signature::new([types.bytes, types.integer], types.bytes),
+            Effects::MAY_COLLECT.with_implications(),
+        )
+        .expect("function");
+    {
+        let mut function = builder.function(root).expect("function builder");
+        let entry = function.create_block().expect("entry");
+        function.set_entry(entry).expect("set entry");
+        let bytes = function
+            .append_block_parameter(entry, types.bytes)
+            .expect("Bytes parameter");
+        let unit = function
+            .append_block_parameter(entry, types.integer)
+            .expect("unit parameter");
+        let one = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Int(1)),
+                &[types.integer],
+                origin(),
+            )
+            .expect("one")[0];
+        let beyond_byte = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Int(256)),
+                &[types.integer],
+                origin(),
+            )
+            .expect("beyond byte")[0];
+        let lower_proof = function
+            .append_instruction(
+                entry,
+                InstructionKind::IntCompare {
+                    predicate: IntPredicate::GreaterEqual,
+                    left: unit,
+                    right: one,
+                },
+                &[types.boolean],
+                origin(),
+            )
+            .expect("wrong lower proof")[0];
+        let upper_proof = function
+            .append_instruction(
+                entry,
+                InstructionKind::IntCompare {
+                    predicate: IntPredicate::LessEqual,
+                    left: unit,
+                    right: beyond_byte,
+                },
+                &[types.boolean],
+                origin(),
+            )
+            .expect("wrong upper proof")[0];
+        let pushed = function
+            .append_instruction(
+                entry,
+                InstructionKind::BytesPush {
+                    bytes,
+                    unit,
+                    lower_proof,
+                    upper_proof,
+                },
+                &[types.bytes],
+                origin(),
+            )
+            .expect("push")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(TerminatorKind::Return(pushed), origin()),
+            )
+            .expect("return");
+    }
+
+    let errors = builder
+        .finish_checked()
+        .expect_err("wrong byte-range comparisons must fail closed");
+    for (proof, relation) in [("lower_proof", "unit >= 0"), ("upper_proof", "unit <= 255")] {
+        assert!(
+            errors.as_slice().iter().any(|error| {
+                error.code() == ValidationCode::InvalidIntegerProof
+                    && error.path().ends_with(proof)
+                    && error.message().contains(relation)
+            }),
+            "missing {proof} exact-range rejection: {errors:?}"
+        );
+    }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the hostile diamond must expose the false path around one otherwise exact guard"
+)]
+fn checked_bytes_push_rejects_a_success_edge_that_does_not_dominate_the_push() {
+    let (mut builder, types) = builder_with_bytes_types();
+    let root = builder
+        .declare_function(
+            origin(),
+            "bytes.push.non_dominating_guard",
+            Signature::new([types.bytes, types.integer], types.bytes),
+            Effects::MAY_COLLECT.with_implications(),
+        )
+        .expect("function");
+    {
+        let mut function = builder.function(root).expect("function builder");
+        let entry = function.create_block().expect("entry");
+        let upper_checked = function.create_block().expect("upper checked");
+        let upper_failed = function.create_block().expect("upper failed");
+        let lower_checked = function.create_block().expect("lower checked");
+        let lower_bypass = function.create_block().expect("lower bypass");
+        let push_block = function.create_block().expect("push block");
+        function.set_entry(entry).expect("set entry");
+        let bytes = function
+            .append_block_parameter(entry, types.bytes)
+            .expect("Bytes parameter");
+        let unit = function
+            .append_block_parameter(entry, types.integer)
+            .expect("unit parameter");
+        let zero = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Int(0)),
+                &[types.integer],
+                origin(),
+            )
+            .expect("zero")[0];
+        let maximum = function
+            .append_instruction(
+                entry,
+                InstructionKind::Constant(Constant::Int(255)),
+                &[types.integer],
+                origin(),
+            )
+            .expect("maximum")[0];
+        let lower_proof = function
+            .append_instruction(
+                entry,
+                InstructionKind::IntCompare {
+                    predicate: IntPredicate::GreaterEqual,
+                    left: unit,
+                    right: zero,
+                },
+                &[types.boolean],
+                origin(),
+            )
+            .expect("lower proof")[0];
+        let upper_proof = function
+            .append_instruction(
+                entry,
+                InstructionKind::IntCompare {
+                    predicate: IntPredicate::LessEqual,
+                    left: unit,
+                    right: maximum,
+                },
+                &[types.boolean],
+                origin(),
+            )
+            .expect("upper proof")[0];
+        function
+            .terminate(
+                entry,
+                Terminator::new(
+                    TerminatorKind::Branch {
+                        condition: upper_proof,
+                        then_target: BlockTarget::new(upper_checked, []),
+                        else_target: BlockTarget::new(upper_failed, []),
+                    },
+                    origin(),
+                ),
+            )
+            .expect("upper guard");
+        function
+            .terminate(
+                upper_failed,
+                Terminator::new(TerminatorKind::Return(bytes), origin()),
+            )
+            .expect("upper failure return");
+        function
+            .terminate(
+                upper_checked,
+                Terminator::new(
+                    TerminatorKind::Branch {
+                        condition: lower_proof,
+                        then_target: BlockTarget::new(lower_checked, []),
+                        else_target: BlockTarget::new(lower_bypass, []),
+                    },
+                    origin(),
+                ),
+            )
+            .expect("lower guard");
+        for (block, label) in [
+            (lower_checked, "lower success"),
+            (lower_bypass, "lower bypass"),
+        ] {
+            function
+                .terminate(
+                    block,
+                    Terminator::new(
+                        TerminatorKind::Jump(BlockTarget::new(push_block, [])),
+                        origin(),
+                    ),
+                )
+                .unwrap_or_else(|error| panic!("{label} jump: {error:?}"));
+        }
+        let pushed = function
+            .append_instruction(
+                push_block,
+                InstructionKind::BytesPush {
+                    bytes,
+                    unit,
+                    lower_proof,
+                    upper_proof,
+                },
+                &[types.bytes],
+                origin(),
+            )
+            .expect("push")[0];
+        function
+            .terminate(
+                push_block,
+                Terminator::new(TerminatorKind::Return(pushed), origin()),
+            )
+            .expect("return");
+    }
+
+    let errors = builder
+        .finish_checked()
+        .expect_err("a bypassable success edge must fail closed");
+    assert!(
+        errors.as_slice().iter().any(|error| {
+            error.code() == ValidationCode::InvalidIntegerProof
+                && error.path().ends_with("lower_proof")
+                && error.message().contains("does not dominate the push")
+        }),
+        "missing non-dominating guard rejection: {errors:?}"
+    );
 }
 
 #[test]
@@ -344,6 +867,19 @@ fn independent_validation_rejects_wrong_bytes_operands_variants_and_effects() {
                 origin(),
             )
             .expect("collecting append");
+        function
+            .append_instruction(
+                entry,
+                InstructionKind::BytesPush {
+                    bytes: integer,
+                    unit: bytes,
+                    lower_proof: bytes,
+                    upper_proof: bytes,
+                },
+                &[types.bytes],
+                origin(),
+            )
+            .expect("malformed collecting push");
         function
             .append_instruction(
                 entry,

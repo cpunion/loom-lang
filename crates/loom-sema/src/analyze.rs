@@ -6230,9 +6230,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     "Some" => Some(BuiltinValue::Some),
                     "Ok" => Some(BuiltinValue::Ok),
                     "Err" => Some(BuiltinValue::Err),
-                    "format_json" if self.builtin_is_imported("std.json.format_json") => {
-                        Some(BuiltinValue::JsonFormat)
-                    }
                     _ => None,
                 });
             if let Some(builtin) = builtin {
@@ -6404,7 +6401,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::IoErrorMessage
             | BuiltinValue::SocketConnect
             | BuiltinValue::SocketTryConnect
-            | BuiltinValue::JsonFormat
             | BuiltinValue::LogWrite
             | BuiltinValue::StdoutWrite => {
                 self.check_builtin_function_call(expression, builtin, arguments)
@@ -6447,6 +6443,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::TextFromUtf8Units
             | BuiltinValue::BytesLength
             | BuiltinValue::BytesGet
+            | BuiltinValue::BytesAdd
             | BuiltinValue::BytesAppend
             | BuiltinValue::BytesDecodeUtf8
             | BuiltinValue::PathFromText
@@ -6641,13 +6638,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 self.check_fixed_arguments(expression, arguments, &[text, int]);
                 let socket = self.canonical_socket_type(expression);
                 self.try_resource_task(socket, expression)
-            }
-            BuiltinValue::JsonFormat => {
-                let json = self.types().builtin(BuiltinType::Json);
-                self.check_fixed_arguments(expression, arguments, &[json]);
-                let text = self.types().builtin(BuiltinType::Text);
-                let error = self.types().builtin(BuiltinType::JsonError);
-                self.types().intern(TyData::Result { ok: text, error })
             }
             BuiltinValue::LogWrite => {
                 let definition = self.analyzer.canonical_std_items.log_level;
@@ -7846,6 +7836,12 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     vec![int],
                     self.types().intern(TyData::Option(int)),
                 ),
+                (BuiltinType::Bytes, "add") => (
+                    BuiltinValue::BytesAdd,
+                    ReceiverPassing::InOut,
+                    vec![int],
+                    self.types().builtin(BuiltinType::Unit),
+                ),
                 (BuiltinType::Bytes, "append") => {
                     let bytes = self.types().builtin(BuiltinType::Bytes);
                     (
@@ -7897,6 +7893,19 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 "TypeMismatch",
                 "standard value methods do not accept explicit type arguments",
                 expression,
+            );
+        }
+        if receiver_passing == ReceiverPassing::InOut
+            && self
+                .semantics
+                .expression_places
+                .get(receiver)
+                .is_none_or(|place| place.mutability != Mutability::Mutable)
+        {
+            self.error_at(
+                "MutReceiverRequiresVar",
+                "Bytes.add requires a mutable `var` receiver",
+                receiver,
             );
         }
         self.with_inout_argument_scope(
@@ -9944,21 +9953,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 expression,
             );
         }
-    }
-
-    fn builtin_is_imported(&self, qualified: &str) -> bool {
-        let module = self.analyzer.program.definitions[self.environment.owner].module;
-        let file = self
-            .analyzer
-            .program
-            .source_map
-            .definition(self.environment.owner)
-            .unwrap_or_default()
-            .file;
-        self.analyzer.program.modules[module]
-            .imports
-            .iter()
-            .any(|import| import.file == file && import.path.as_string() == qualified)
     }
 
     fn compiler_std_primitive_call(

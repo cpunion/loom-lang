@@ -161,6 +161,19 @@ enum cannot substitute for either compiler-owned source declaration; there is
 no builtin type, builtin variant, or compatibility alias behind the public
 names.
 
+`std.json.parse_json` and `std.json.format_json` are ordinary source functions.
+The iterative formatter walks the closed `Json` value with an indexed
+continuation/work stack. Each container retains only its next sibling index and
+the current path's pending work, so auxiliary stack space is
+`O(container nesting depth)`, independent of container width. It writes
+canonical UTF-8 units into one fresh packed `Bytes` value; LCIR independently
+validates unique byte pushes to that output buffer. The formatter uses public
+Float helpers for finite-number spelling and constructs Text through
+`Bytes.decode_utf8`. Its
+helper graph is selected by normal reachability. The compiler has no
+public-name JSON formatter builtin, MIR or LCIR formatter opcode, LLVM layout
+descriptor, or JSON-formatting runtime entry point.
+
 The embedded source content is part of compiler-cache identity. Editing an
 unused private library body may leave a native object reusable when ordinary
 reachability proves that body dead; changing an imported public interface or a
@@ -178,12 +191,10 @@ The runtime is compiler-private. Its responsibilities are:
   as immutable source-level copies would impose unavoidable quadratic work.
 
 Runtime entry points operate on primitive storage or compiler-provided layout
-descriptors. The runtime contains no JSON parser and does not receive a
-universal value or source type identifier for parsing. The one format-specific
-operation is canonical JSON formatting: generated code supplies the exact
-closed `Json` layout, the runtime stages bounded output bytes, and generated
-code constructs the checked `Result[Text, JsonError]` value from the returned
-status. No runtime registry or dynamic type switch participates.
+descriptors. The runtime contains no JSON parser or formatter and receives no
+universal value or source type identifier for data-format processing. JSONL
+escaping inside the typed logging boundary is private output framing, not a
+general JSON value operation or source API.
 
 File and Socket work crosses only the `typed-io-v1` primitive request/outcome
 wire and the `typed-resource-v1` close boundary. The compiler generates the
