@@ -133,6 +133,10 @@ fn source_position(source: &str, needle: &str) -> Value {
 fn windows_drive_file_uri_round_trips_a_deleted_descendant_through_the_protocol() {
     let source = "pub fn restored() {}\n";
     let project = TestProject::new_with_name("pub fn existing() {}\n", "loom lsp 价格");
+    project.write(
+        "loom.toml",
+        "schema = 2\n\n[module]\nname = \"windows_uri\"\nversion = \"1.0.0\"\n",
+    );
     let root_uri = loom_lsp::path_to_file_uri(&project.0);
     project.write("deleted/nested.loom", source);
     let file_path = project.0.join("deleted/nested.loom");
