@@ -57,8 +57,8 @@ belong to `application.http.client`. A file name never changes its package.
 Production source selection excludes `*_test.loom` and ignores `test fn`
 declarations embedded in ordinary source files. `loom test PATH` enables both
 forms for that directory package, and `loom test PATH/...` enables them for
-every package in that root module. Tests declared by dependencies are never
-selected.
+that directory package and every descendant directory package. Tests declared
+by dependencies are never selected.
 
 ## Dependencies
 

@@ -144,8 +144,8 @@ does not receive this authority.
 
 Production compilation omits test declarations and all `*_test.loom` files.
 `loom test .` or `loom test PATH` selects one directory package; appending
-`/...` selects every package below the root module. Dependency tests are
-neither loaded nor run.
+`/...` selects that package and every descendant directory package. Dependency
+tests are neither loaded nor run.
 
 The bracketed parts above denote optional generic parameter lists; they are not
 literal ellipses in Loom source. Concept declarations themselves do not accept

@@ -43,7 +43,7 @@ pub enum TestSelection {
     None,
     /// Include tests from the package directory named by the project input.
     Package,
-    /// Include tests from every package directory in the root module.
+    /// Include tests below the project input directory within the root module.
     Recursive,
 }
 
@@ -236,7 +236,7 @@ pub struct ProjectGraph {
     targets: Vec<Target>,
     lock: Option<LockState>,
     tests: TestSelection,
-    test_package_directory: Option<PathBuf>,
+    test_selection_directory: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -294,14 +294,18 @@ impl ProjectGraph {
             None
         };
 
-        let test_package_directory = match options.tests {
-            TestSelection::Package if metadata.is_dir() => Some(canonical.clone()),
-            TestSelection::Package => canonical.parent().map(Path::to_path_buf),
-            TestSelection::None | TestSelection::Recursive => None,
+        let test_selection_directory = match options.tests {
+            TestSelection::Package | TestSelection::Recursive if metadata.is_dir() => {
+                Some(canonical.clone())
+            }
+            TestSelection::Package | TestSelection::Recursive => {
+                canonical.parent().map(Path::to_path_buf)
+            }
+            TestSelection::None => None,
         };
 
         if let Some(manifest) = manifest {
-            return Self::load_manifest(&manifest, test_package_directory, options);
+            return Self::load_manifest(&manifest, test_selection_directory, options);
         }
         if metadata.is_dir() || metadata.is_file() && has_loom_extension(&canonical) {
             if !options.features.is_empty()
@@ -329,7 +333,7 @@ impl ProjectGraph {
                 targets: Vec::new(),
                 lock: None,
                 tests: options.tests,
-                test_package_directory,
+                test_selection_directory,
             });
         }
         Err(DriverError::InvalidRoot(canonical))
@@ -337,7 +341,7 @@ impl ProjectGraph {
 
     fn load_manifest(
         manifest: &Path,
-        test_package_directory: Option<PathBuf>,
+        test_selection_directory: Option<PathBuf>,
         options: &ProjectOptions,
     ) -> Result<Self, DriverError> {
         let root = manifest
@@ -395,7 +399,7 @@ impl ProjectGraph {
                 current,
             }),
             tests: options.tests,
-            test_package_directory,
+            test_selection_directory,
         })
     }
 
@@ -501,7 +505,7 @@ impl ProjectGraph {
                 &self.root,
                 input,
                 self.tests,
-                self.test_package_directory.as_deref(),
+                self.test_selection_directory.as_deref(),
             )?,
             ProjectKind::Manifest { root_package } => {
                 let mut sources = BTreeMap::<
@@ -733,7 +737,7 @@ impl ProjectGraph {
     ) -> Option<crate::SourceParticipation> {
         classify_source_participation(
             self.tests,
-            self.test_package_directory.as_deref(),
+            self.test_selection_directory.as_deref(),
             path,
             is_root_package,
         )
@@ -2290,7 +2294,7 @@ fn standalone_sources(
     root: &Path,
     input: &Path,
     tests: TestSelection,
-    test_package_directory: Option<&Path>,
+    test_selection_directory: Option<&Path>,
 ) -> Result<Vec<ProjectSource>, DriverError> {
     let paths = if input.is_file() && tests == TestSelection::None {
         vec![input.to_path_buf()]
@@ -2321,7 +2325,7 @@ fn standalone_sources(
         .into_iter()
         .filter_map(|absolute| {
             let participation =
-                classify_source_participation(tests, test_package_directory, &absolute, true)?;
+                classify_source_participation(tests, test_selection_directory, &absolute, true)?;
             let stable_path = relative_key(root, &absolute)
                 .ok_or_else(|| DriverError::NonUtf8Path(absolute.clone()));
             Some(stable_path.map(|stable_path| ProjectSource {
@@ -2387,16 +2391,18 @@ fn is_test_source(path: &Path) -> bool {
 
 fn classify_source_participation(
     tests: TestSelection,
-    test_package_directory: Option<&Path>,
+    test_selection_directory: Option<&Path>,
     path: &Path,
     is_root_package: bool,
 ) -> Option<crate::SourceParticipation> {
     let tests_enabled = is_root_package
         && match tests {
             TestSelection::None => false,
-            TestSelection::Recursive => true,
-            TestSelection::Package => test_package_directory
+            TestSelection::Package => test_selection_directory
                 .is_some_and(|directory| path.parent().is_some_and(|parent| parent == directory)),
+            TestSelection::Recursive => {
+                test_selection_directory.is_some_and(|directory| path.starts_with(directory))
+            }
         };
     if is_test_source(path) {
         return tests_enabled.then_some(crate::SourceParticipation::TestCompanion);

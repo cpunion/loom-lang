@@ -97,7 +97,8 @@ execute user code.
 
 Dependency `*_test.loom` files and embedded test declarations are not part of
 the test build graph. `loom test .` runs the current directory package, while
-`loom test ./...` runs every package below the selected root module.
+`loom test PATH/...` runs that directory package and every descendant directory
+package. From the manifest root, `loom test ./...` runs the entire root module.
 
 ## Git and fork dependencies
 

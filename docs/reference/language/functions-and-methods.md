@@ -191,7 +191,7 @@ companion can use private production members and test-file helpers; the access
 does not work in the reverse direction.
 
 Production commands omit embedded tests and test files. `loom test .` or
-`loom test PATH` includes one directory package; `loom test ./...` recursively
-includes every package in the root module. Dependency tests are neither loaded
-nor executed. There is no manifest test target and `loom test` does not accept
-`--target`.
+`loom test PATH` includes one directory package; `loom test PATH/...`
+recursively includes that package and its descendant directory packages.
+Dependency tests are neither loaded nor executed. There is no manifest test
+target and `loom test` does not accept `--target`.

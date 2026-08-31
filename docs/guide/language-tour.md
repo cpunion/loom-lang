@@ -240,9 +240,10 @@ test fn arithmetic_works() {
 
 Asynchronous tests are written `test async fn`. Production commands exclude
 embedded tests and `*_test.loom`. `loom test .` adds the current directory
-package's internal test companion; `loom test ./...` adds one for every package
-below the selected root module. A companion can access its production
-package's private members. Neither form adds or runs dependency tests.
+package's internal test companion; `loom test PATH/...` adds one for that
+package and every descendant directory package. A companion can access its
+production package's private members. Neither form adds or runs dependency
+tests.
 
 ## Next topics
 
