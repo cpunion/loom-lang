@@ -209,11 +209,7 @@ jobs:
           RELEASE_LANGUAGE_SERVER: ${{ matrix.language_server }}
         run: |
           "$RELEASE_COMPILER" --help
-          set +e
-          "$RELEASE_LANGUAGE_SERVER" --help
-          lsp_status="$?"
-          set -e
-          test "$lsp_status" -eq 2
+          "$RELEASE_LANGUAGE_SERVER" </dev/null
       - name: Archive and checksum Unix release
         if: runner.os != 'Windows'
         shell: bash
