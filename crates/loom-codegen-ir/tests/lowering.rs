@@ -3671,6 +3671,141 @@ pub fn main() {
 }
 
 #[test]
+fn portable_affine_proofs_recheck_exact_by_value_task_carriers() {
+    let fresh = compile_with_std_resource(
+        r"type PendingTask = Task[Int] where true
+
+enum Work {
+    Queued(PendingTask)
+    Idle
+}
+
+record Inner {
+    work Work
+    allowed Bool
+}
+
+record Nested {
+    inner Inner
+    pending PendingTask
+}
+
+record Guarded {
+    direct Task[Int]
+    nested Nested
+    invariant self.nested.inner.allowed
+}
+
+type PendingWork = Work where true
+
+async fn child(value Int) Int { value }
+
+fn consumeGuarded(value Guarded) { consumeGuarded(value) }
+fn consumePending(value PendingWork) { consumePending(value) }
+
+pub async fn main() {
+    let nested = Nested {
+        inner = Inner {
+            work = Work.Queued(PendingTask(child(2))),
+            allowed = true,
+        },
+        pending = PendingTask(child(3)),
+    }
+    assert nested.inner.allowed
+    consumeGuarded(Guarded {
+        direct = child(1),
+        nested = nested,
+    })
+    consumePending(PendingWork(Work.Queued(PendingTask(child(4)))))
+}
+",
+    );
+    let bytes = loom_mir::encode_interpreted_executable_artifact(&fresh, "main")
+        .expect("encode portable affine proof artifact");
+    let (decoded, entry) = loom_mir::decode_interpreted_executable_artifact(&bytes)
+        .expect("decode portable affine proof artifact");
+    let decoded_debug = format!("{decoded:#?}");
+    assert!(
+        decoded_debug.contains("construction: Recheck"),
+        "{decoded_debug}"
+    );
+
+    let outcome = lower_typed_artifact(
+        &decoded,
+        &SourceArtifactRequest::Run { entry },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("classify portable affine proof replay");
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("exact by-value Task carriers must replay through typed LCIR: {outcome:?}")
+    };
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("runtime ArtifactProofRejected"), "{dump}");
+    assert!(dump.contains("invariant_record.proven"), "{dump}");
+    assert!(dump.contains("refine.proven"), "{dump}");
+    assert!(dump.contains("task_carrier.borrow"), "{dump}");
+    assert!(dump.contains("product.borrow"), "{dump}");
+    assert!(!dump.contains("loom.Value"), "{dump}");
+}
+
+#[test]
+fn portable_proof_recheck_keeps_repeated_task_carriers_unsupported() {
+    for (label, source) in [
+        (
+            "record",
+            r"record GuardedQueue {
+    tasks List[Task[Int]]
+    invariant true
+}
+
+async fn child(value Int) Int { value }
+
+fn consumeGuarded(value GuardedQueue) { consumeGuarded(value) }
+
+pub async fn main() {
+    consumeGuarded(GuardedQueue { tasks = [child(1)] })
+}
+",
+        ),
+        (
+            "refinement",
+            r"type PendingQueue = List[Task[Int]] where true
+
+async fn child(value Int) Int { value }
+
+fn consumePending(value PendingQueue) { consumePending(value) }
+
+pub async fn main() {
+    consumePending(PendingQueue([child(2)]))
+}
+",
+        ),
+    ] {
+        let fresh = compile_with_std_resource(source);
+        let bytes = loom_mir::encode_interpreted_executable_artifact(&fresh, "main")
+            .expect("encode repeated Task proof artifact");
+        let (decoded, entry) = loom_mir::decode_interpreted_executable_artifact(&bytes)
+            .expect("decode repeated Task proof artifact");
+        let outcome = lower_typed_artifact(
+            &decoded,
+            &SourceArtifactRequest::Run { entry },
+            TargetLayout::new(64).expect("test target"),
+        )
+        .expect("classify repeated Task proof replay");
+        let LoweringOutcome::Unsupported(report) = outcome else {
+            panic!("{label} List[Task] proof replay must remain outside the by-value affine slice")
+        };
+        assert!(
+            report
+                .items()
+                .iter()
+                .any(|item| item.feature() == UnsupportedFeature::SerializedProofRecheck),
+            "{label}: {report:?}"
+        );
+    }
+}
+
+#[test]
 fn generic_invariant_and_refined_record_instantiations_lower_directly() {
     let source = r"record Boxed[T] {
     value T

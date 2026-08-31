@@ -190,8 +190,12 @@ ordinary `std` source `DefId`, lets reachability follow its body into private
 scheduler primitives, and deletes the catalog and `TaskIntrinsic` rather than
 mapping source definitions back to them.
 
-Remaining native coverage gaps include unsupported proof replay and otherwise
-unrepresentable shapes. They are explicit compilation errors. Preconditions, invariants,
+Typed native decoded proof replay supports exact by-value Task leaves inside
+bounded tuples, records, closed sums, and transparent wrappers. It borrows
+during inspection, establishes the original carrier once on success, and uses
+the native scheduler's ordinary structured Task teardown on rejection. Repeated
+Task carriers, attempted Task erasure, and otherwise unrepresentable shapes
+remain explicit compilation errors. Preconditions, invariants,
 and assertions may now inspect whole Task-bearing transparent/product/sum
 carriers without consuming their owner; postconditions may inspect a
 Task-bearing result but not an input the body may already have transferred. Raw

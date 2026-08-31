@@ -585,9 +585,16 @@ name or maps the source `DefId` back to `TaskIntrinsic`. LCIR therefore still
 receives exact child types and explicit control flow without acquiring public
 Task policy operators.
 
-Remaining native coverage gaps include affine runtime proof replay whose
-failure path cannot yet dispose of the carried obligation. Raw readiness has no current source or MIR
-producer and is therefore not a language coverage item. A reachable
+Decoded proof replay also admits an exact by-value Task leaf inside bounded
+tuples, records, closed sums, and transparent refined wrappers. Contract
+evaluation borrows the candidate, successful replay establishes the original
+carrier once, and rejection follows the owning coroutine's ordinary terminal
+path, which cancels and drains its structured children. Repeated Task carriers
+such as `List[Task[T]]` remain explicitly unsupported, and Task obligations
+cannot be erased into `dyn C`; neither case acquires a disposal side channel.
+Raw readiness has no
+current source or MIR producer and is therefore not a language coverage item.
+A reachable
 dynamic-concept frame use with no exact producer in the closed catalog instead
 reports `MissingDynamicConceptWitness`. Mutation or moves
 through a constrained or protected record interior are rejected at the source

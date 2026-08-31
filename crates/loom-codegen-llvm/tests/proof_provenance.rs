@@ -414,6 +414,105 @@ pub fn main() {
 }
 
 #[test]
+fn decoded_transparent_task_proof_preserves_the_original_handle() {
+    let source = r"type PendingTask = Task[Int] where true
+
+async fn child() Int { 42 }
+
+fn unwrap(value PendingTask) Task[Int] { value }
+
+pub async fn main() {
+    let answer = unwrap(PendingTask(child())).await
+    assert answer == 42
+}
+";
+    let fresh = compile_source(source);
+    let bytes = encode_interpreted_executable_artifact(&fresh, "main")
+        .expect("encode transparent Task proof artifact");
+    let (decoded, entry) = decode_interpreted_executable_artifact(&bytes)
+        .expect("decode transparent Task proof artifact");
+    let decoded_debug = format!("{decoded:#?}");
+    assert!(
+        decoded_debug.contains("construction: Recheck"),
+        "{decoded_debug}"
+    );
+    assert!(decoded.serialized_construction_proofs_were_distrusted());
+    assert_eq!(
+        Interpreter::new(&decoded)
+            .invoke(decoded.exports[&entry], Vec::new(), Span::default())
+            .expect("transparent Task replay preserves an awaitable handle"),
+        Value::Unit
+    );
+
+    let directory = tempfile::tempdir().expect("create transparent Task proof output");
+    let executable = directory.path().join("transparent-task-proof");
+    let ir = directory.path().join("transparent-task-proof.ll");
+    let mut options = EmitOptions::run(&entry).with_optimization(OptimizationProfile::Development);
+    options.emit_ir = Some(ir.clone());
+    emit_prepared_executable(&decoded, &executable, options);
+    let llvm = std::fs::read_to_string(ir).expect("read transparent Task proof LLVM IR");
+    assert!(!llvm.contains("loom.Value"), "{llvm}");
+    let output = Command::new(executable)
+        .output()
+        .expect("run transparent Task proof replay");
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[test]
+fn rejected_task_record_proof_matches_the_interpreter_fault_on_native_lcir() {
+    let source = r"record Guarded[T] {
+    pending T
+    marker Float
+
+    invariant self.marker >= 0.0
+}
+
+async fn child() Int {
+    Task.sleep(100).await
+    42
+}
+
+fn consume(value Guarded[Task[Int]]) { consume(value) }
+
+pub async fn main() {
+    let pending = child()
+    Task.sleep(0).await
+    consume(Guarded { pending = pending, marker = 9.0 })
+}
+";
+    let fresh = compile_source(source);
+    let (decoded, entry) = decode_with_tampered_float(&fresh, "main", 9.0, -1.0, true);
+    let function = decoded.exports[&entry];
+    let failure = Interpreter::new(&decoded)
+        .invoke(function, Vec::new(), Span::default())
+        .expect_err("a forged Task-bearing record must fail before publication");
+    let ExecutionFailure::Runtime { fault } = &failure else {
+        panic!("Task-bearing proof replay produced a non-runtime failure: {failure:?}");
+    };
+    assert_eq!(fault.code, ARTIFACT_PROOF_REJECTED_FAULT_CODE);
+    assert_eq!(fault.message, ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE);
+
+    let directory = tempfile::tempdir().expect("create rejected Task proof output");
+    let executable = directory.path().join("rejected-task-proof");
+    let ir = directory.path().join("rejected-task-proof.ll");
+    let mut options = EmitOptions::run(&entry).with_optimization(OptimizationProfile::Development);
+    options.emit_ir = Some(ir.clone());
+    emit_prepared_executable(&decoded, &executable, options);
+    let llvm = std::fs::read_to_string(ir).expect("read rejected Task proof LLVM IR");
+    assert!(llvm.contains(ARTIFACT_PROOF_REJECTED_FAULT_CODE), "{llvm}");
+    assert!(!llvm.contains("loom.Value"), "{llvm}");
+    assert_eq!(
+        native_json_failure(
+            &decoded,
+            &entry,
+            directory.path(),
+            "rejected-task-proof-run"
+        ),
+        serde_json::to_value(&failure).expect("serialize interpreted Task proof failure")
+    );
+}
+
+#[test]
 fn tampered_generic_record_recheck_faults_identically_on_typed_lcir() {
     let source = r"record Boxed[T] {
     payload T

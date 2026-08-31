@@ -124,8 +124,10 @@ Frontend checking and backend roots are intentionally different:
 
 - `check` validates the full resolved source graph and emits no object.
 - a binary `build`, `run`, or `debug` selects one public entry;
-- `test PATH` adds the selected directory package's internal test companion,
-  populated from embedded tests and `*_test.loom`; `test PATH/...` does the
+- `test PATH` adds the selected directory package's compiler-owned, non-importable
+  `<package>.test` companion, populated from embedded tests and `*_test.loom`;
+  that companion has one-way access to private production declarations;
+  `test PATH/...` does the
   same for that package and every descendant package; dependency tests are
   never added;
 - an empty test set produces a successful empty harness;

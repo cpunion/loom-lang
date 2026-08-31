@@ -3681,9 +3681,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 if *construction == mir::ConstructionMode::Recheck {
                     let invariant_path = format!("{path}.recheck_invariant");
                     let target = semantic.as_ref().filter(|target| {
-                        expression_ty.as_ref() == Some(*target)
-                            && self.supported_value_type(target)
-                            && task_free_type(self.program, self.dyn_concepts, target)
+                        expression_ty.as_ref() == Some(*target) && self.supported_value_type(target)
                     });
                     let invariant = target.and_then(|target| {
                         self.concrete_invariant_contract(
@@ -3901,10 +3899,9 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         });
                     let direct_recheck = expression_ty.as_ref()
                         == Some(&Type::Nominal(*ty, Vec::new()))
-                        && expression_ty.as_ref().is_some_and(|ty| {
-                            self.supported_value_type(ty)
-                                && task_free_type(self.program, self.dyn_concepts, ty)
-                        });
+                        && expression_ty
+                            .as_ref()
+                            .is_some_and(|ty| self.supported_value_type(ty));
                     let contract_supported = refined.is_some_and(|(base, predicate)| {
                         value_ty.as_ref() == Some(&base)
                             && self.classify_contract_expr(
