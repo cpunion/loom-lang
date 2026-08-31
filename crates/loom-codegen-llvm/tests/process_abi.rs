@@ -53,6 +53,16 @@ pub fn main() {
             Unit
         }
     }
+    match values.get(2) {
+        Some(value) => {
+            assert value == "界🙂"
+            Unit
+        }
+        None => {
+            assert false
+            Unit
+        }
+    }
 }
 "#;
     let project = tempfile::tempdir().expect("create process ABI project");
@@ -184,7 +194,7 @@ pub fn main() {
     );
 
     let output = Command::new(executable)
-        .args(["alpha", "beta"])
+        .args(["alpha", "beta", "界🙂"])
         .env("LOOM_PROCESS_ABI_TEST", "present")
         .output()
         .expect("run process ABI executable");
