@@ -199,6 +199,12 @@ jobs:
           cargo test --locked --release -p loom-cli --test cli \
             typed_logging_closes_real_check_build_test_and_run_commands -- --exact
           cargo test --locked --release -p loom-codegen-llvm --test runtime_bundle
+      - name: Test Windows native Unicode process arguments
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cargo test --locked --release -p loom-codegen-llvm --test process_abi \
+            process_primitives_use_typed_lcir_and_run_natively -- --exact
       - name: Controlled quality release gate
         shell: bash
         run: cargo run --locked --release -p loom-quality > target/c3-evidence.json

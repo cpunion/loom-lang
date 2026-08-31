@@ -17,9 +17,11 @@ pub const TYPED_IO_ABI_VERSION: u32 = 1;
 pub const TYPED_PROCESS_ABI_VERSION: u32 = 1;
 pub const NATIVE_RUNTIME_ABI_IDENTITY: &str = "layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/typed-process-v1/runtime-v31/gc-v9/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/stdlib-v7";
 
-/// Copies `argv[1..argc]` into the process-wide immutable argument snapshot.
-/// Generated `main` calls this only when the reachable program reads process
-/// arguments. Zero reports a newly installed snapshot; repeated or malformed
+/// Initializes the process-wide immutable argument snapshot. Generated `main`
+/// calls this only when the reachable program reads process arguments. Unix
+/// copies `argv[1..argc]`; Windows preserves the ABI signature but ignores the
+/// narrow pointers and reads the operating system's wide argument source.
+/// Zero reports a newly installed snapshot; repeated or malformed Unix
 /// initialization returns a nonzero ABI defect status.
 pub const PROCESS_ARGUMENTS_INITIALIZE_TYPED_SYMBOL: &str =
     "loom_runtime_process_arguments_initialize_typed_v1";

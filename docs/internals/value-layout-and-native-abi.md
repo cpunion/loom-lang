@@ -419,9 +419,13 @@ listed in [Versioning and compatibility](../project/versioning.md).
 
 Native process input uses the private typed-process-v1 boundary; it never
 constructs a universal `ValueSlot`. When an artifact reaches argument count or
-selection, generated `main` copies `argv[1..]` into one immutable runtime
-snapshot before creating or activating the Loom runtime. An environment-only
-artifact does not initialize that snapshot.
+selection, generated `main` initializes one immutable runtime snapshot before
+creating or activating the Loom runtime. Unix copies `argv[1..]`. Windows keeps
+the same private ABI call but ignores its narrow `argv` and reads the operating
+system's wide argument source, preserving every valid Unicode argument exactly.
+An isolated UTF-16 surrogate becomes the Unicode replacement character because
+Loom `Text` is a sequence of Unicode scalar values. An environment-only artifact
+does not initialize the snapshot.
 
 The count operation returns an `i64`; `-1` means that the snapshot is absent
 and all negative values fail closed. Argument selection accepts an `i64` index

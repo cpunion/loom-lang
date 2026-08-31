@@ -91,7 +91,9 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   `InvalidPort`, `SocketResolveFault`, and operation-specific host faults; the
   `typed-resource-v1` close boundary remains unchanged.
   `std.process.arguments` builds its List in source over typed snapshot
-  primitives; process input has no universal-value or checked-MIR runtime path.
+  primitives; process input has no universal-value or checked-MIR runtime path,
+  and Windows snapshots the operating system's wide arguments instead of the
+  lossy narrow C entry vector.
   JSON parsing has no compiler opcode or runtime entry point; canonical JSON
   formatting uses an exact typed layout boundary.
 - A precise moving collector, lazy single-threaded executor, OS reactor, bounded
