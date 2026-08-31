@@ -252,6 +252,14 @@ fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
     )
 }
 
+fn compile_with_std_time(source: &str) -> loom_mir::CheckedProgram {
+    compile_with_std_module(
+        source,
+        "std.time",
+        include_str!("../../../library/std/time/time.loom"),
+    )
+}
+
 fn compile_with_std_json(source: &str) -> loom_mir::CheckedProgram {
     compile_with_std_modules(
         source,
@@ -334,6 +342,18 @@ fn lower_run_with_std_path(source: &str) -> LoweringOutcome {
 
 fn lower_run_with_std_log(source: &str) -> LoweringOutcome {
     let mir = compile_with_std_log(source);
+    lower_typed_artifact(
+        &mir,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("lower typed artifact")
+}
+
+fn lower_run_with_std_time(source: &str) -> LoweringOutcome {
+    let mir = compile_with_std_time(source);
     lower_typed_artifact(
         &mir,
         &SourceArtifactRequest::Run {
@@ -1622,6 +1642,17 @@ pub async fn main() {
 
 #[test]
 fn task_sleep_normalizes_duration_and_preserves_first_class_task_flow() {
+    let LoweringOutcome::Complete(unused) = lower_run_with_std_time("pub fn main() {}\n") else {
+        panic!("an unused source time package must still lower completely")
+    };
+    assert!(
+        unused
+            .functions()
+            .iter()
+            .all(|function| !function.name().contains("std.time")),
+        "unused time wrappers and primitives must stay outside the reachable LCIR artifact"
+    );
+
     let source = r"import std.time.milliseconds
 
 pub async fn main() {
@@ -1632,9 +1663,16 @@ pub async fn main() {
     assert marker == 42
 }
 ";
-    let LoweringOutcome::Complete(artifact) = lower_run(source) else {
+    let LoweringOutcome::Complete(artifact) = lower_run_with_std_time(source) else {
         panic!("first-class typed timer Task must lower completely")
     };
+    assert!(
+        artifact
+            .functions()
+            .iter()
+            .any(|function| function.name().ends_with("std.time.milliseconds")),
+        "the public time API must enter LCIR through its ordinary source definition"
+    );
     let main = artifact
         .functions()
         .iter()

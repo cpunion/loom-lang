@@ -34,6 +34,9 @@ open/create APIs, `File`, its I/O methods and resource conformances; all public
 `std.net` connect APIs, `Socket`, its I/O methods and resource conformances; and
 the public `Dispose`, `MustScope`, and `NoSuspend` declarations in
 `std.resource`.
+`std.time.milliseconds` is likewise an ordinary source wrapper over one
+exact-owner primitive; `Duration` and its intrinsic inspection method remain
+core values.
 The public logging graph is ordinary Loom source over one compiler-private
 typed output primitive. Resource declarations are source-backed, but
 their fixed shapes and irreducible static rules remain part of the language
@@ -188,6 +191,11 @@ duration.as_milliseconds() Int
 The input must be non-negative. A negative input produces RuntimeFault code
 `InvalidDuration`. `Duration` is an immutable millisecond duration and supports
 value equality. It can be passed to `Task.sleep`.
+
+`milliseconds` is an ordinary `std.time` source definition. Only its body may
+call the compiler-private construction primitive, so importing the public API
+uses normal source resolution, reachability, and dead-code elimination rather
+than a public-name builtin rule.
 
 ## Error and fault boundary
 

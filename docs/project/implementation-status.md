@@ -23,7 +23,7 @@ names still recognized by semantic builtin tables.
 | `std.float` | `ParseFloatError`, `FloatToIntError`, parsing, formatting, finiteness, and both explicit Int conversions | only exact-owner private scalar primitives and the runtime parse/format boundary | source-backed |
 | `std.process` | public `arguments` and `environment` wrappers | compiler-private process snapshot primitives and their runtime OS boundary | source-backed |
 | `std.text` / `std.path` | public `DecodeTextError` and `PathError` enums | Text, Bytes, Path, and their intrinsic construction and decoding operations remain core mechanisms | partial |
-| `std.time` | none | `Duration`, construction, and conversion | not source-backed |
+| `std.time` | public `milliseconds` wrapper | `Duration`, its exact-owner private construction leaf, and intrinsic conversion method | partial |
 | `std.file` / `std.net` | `File`, `Socket`, all public acquisition and I/O methods, and their `Dispose`/`MustScope` conformances | only exact-owner private typed I/O and close leaves | source-backed |
 | `Task.sleep/all/settled/any/race` | none | temporary public-name resolution through `TaskIntrinsic` plus the private scheduler substrate | transitional |
 

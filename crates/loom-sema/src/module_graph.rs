@@ -245,10 +245,7 @@ pub(crate) fn imported_name(import: &Import) -> Option<&loom_core::Name> {
 }
 
 pub(crate) fn is_compiler_known_import(path: &Path) -> bool {
-    matches!(
-        path.as_string().as_str(),
-        "std.time.milliseconds" | "std.json.format_json"
-    )
+    path.as_string() == "std.json.format_json"
 }
 
 fn canonicalize_cycle(cycle: &mut [ModuleId], program: &Program) {

@@ -1,0 +1,6 @@
+import std.time.__milliseconds
+
+/// Constructs a non-negative millisecond duration.
+pub fn milliseconds(value Int) Duration {
+    __milliseconds(value)
+}
