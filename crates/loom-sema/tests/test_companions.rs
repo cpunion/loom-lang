@@ -115,6 +115,110 @@ test fn fromFile() {
 }
 
 #[test]
+fn companion_can_use_a_production_private_type_and_inherent_method() {
+    let package = PackageId::new("application", "1.0.0");
+    let production = parse_with_file(
+        FileId(0),
+        r"record Counter {
+    value Int
+}
+
+impl Counter {
+    method secret(self) Int { self.value }
+}
+",
+    );
+    let tests = parse_with_file(
+        FileId(1),
+        r"test fn readsPrivateMethod() {
+    let counter = Counter { value = 42 }
+    let value = counter.secret()
+    assert value == 42
+}
+",
+    );
+    assert!(production.diagnostics().is_empty());
+    assert!(tests.diagnostics().is_empty());
+
+    let lowered = lower_selected_package_files([
+        source(
+            FileId(0),
+            &package,
+            "application.library",
+            &production,
+            PackageSourceMode::Production,
+        ),
+        source(
+            FileId(1),
+            &package,
+            "application.library",
+            &tests,
+            PackageSourceMode::TestCompanion,
+        ),
+    ]);
+    assert!(lowered.diagnostics.is_empty(), "{:#?}", lowered.diagnostics);
+    let analysis = analyze(&lowered.program);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "{:#?}",
+        analysis.diagnostics
+    );
+}
+
+#[test]
+fn sibling_module_cannot_call_a_private_inherent_method() {
+    let package = PackageId::new("application", "1.0.0");
+    let library = parse_with_file(
+        FileId(0),
+        r"pub record Counter {
+    value Int
+}
+
+impl Counter {
+    method secret(self) Int { self.value }
+}
+",
+    );
+    let consumer = parse_with_file(
+        FileId(1),
+        r"import application.library.Counter
+
+fn expose(value Counter) Int { value.secret() }
+",
+    );
+    assert!(library.diagnostics().is_empty());
+    assert!(consumer.diagnostics().is_empty());
+
+    let lowered = lower_selected_package_files([
+        source(
+            FileId(0),
+            &package,
+            "application.library",
+            &library,
+            PackageSourceMode::Production,
+        ),
+        source(
+            FileId(1),
+            &package,
+            "application.consumer",
+            &consumer,
+            PackageSourceMode::Production,
+        ),
+    ]);
+    assert!(lowered.diagnostics.is_empty(), "{:#?}", lowered.diagnostics);
+    let analysis = analyze(&lowered.program);
+    assert!(
+        analysis.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "UnknownName"
+                && diagnostic.primary.file == FileId(1)
+                && diagnostic.message.contains("no method `secret`")
+        }),
+        "{:#?}",
+        analysis.diagnostics
+    );
+}
+
+#[test]
 fn production_bodies_cannot_resolve_companion_helpers() {
     let package = PackageId::standalone();
     let production = parse_with_file(

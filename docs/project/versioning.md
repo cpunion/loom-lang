@@ -33,8 +33,8 @@ writers for unreleased formats. Development history belongs in
 | LLVM object-cache domain | `loom-llvm-object-cache-v48` |
 | Controlled quality evidence | schema `5` |
 | Runtime bundle manifest | schema `2` |
-| Native runtime ABI component | `36` |
-| Coroutine ABI component | `2` |
+| Native runtime ABI component | `37` |
+| Shared Task ABI component | `2` |
 | Typed Task ABI component | `1` |
 | Typed I/O ABI component | `1` |
 | Typed resource ABI component | `1` |
@@ -51,15 +51,19 @@ cache entries even when no public ABI component changes.
 The complete compiler-private native runtime identity is:
 
 ```text
-loom-value-v2/layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/typed-process-v1/runtime-v30/gc-v9/shadow-stack-v1/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/witness-v1/int-list-v1/stdlib-v7
+layout-v1/text-v3/wait-v1/task-v2/typed-task-v1/typed-task-adopt-v1/typed-task-winner-finalize-v1/typed-task-outcome-v1/typed-resource-ownership-v1/typed-timer-v1/typed-resource-v1/typed-io-v1/format-float-v1/typed-bytes-v1/typed-text-units-v1/typed-path-v1/typed-json-v1/typed-log-v1/stdout-v1/typed-process-v1/runtime-v31/gc-v9/typed-gc-v1/typed-repeated-v1/typed-shadow-stack-v1/stdlib-v7
 ```
 
 Runtime bundles compare this entire identity, not only native runtime component
-`36` or one subordinate ABI version. Runtime component `36` pins the removal of
-the former universal File, Socket, and close entry points and their fixed
-source nominal IDs. The existing `typed-io-v1` request/outcome wire and
-`typed-resource-v1` close boundary did not change. An older compiler or runtime
-bundle is therefore rejected instead of crossing the removed symbol boundary.
+`37` or one subordinate ABI version. Runtime component `37` pins deletion of
+the unreachable universal `ValueSlot` heap and root chain, runtime witness
+arena, universal Task/value operations, and Int-list implementation. The
+existing shared `task-v2` join/fault operations (`loom_task_prepare_join`,
+`loom_task_add_join_child`, `loom_task_suspend_join`, `loom_task_join_step`,
+`loom_task_join_winner`, and `loom_task_report_fault`) and the typed Task, I/O,
+resource, GC, and shadow-stack wires did not change. An older compiler or
+runtime bundle is therefore rejected instead of crossing the removed symbol
+boundary.
 
 Interpreted MIR 43 rejects postconditions that inspect current or `old`
 Task-bearing inputs after the body may have transferred them, and defines

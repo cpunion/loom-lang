@@ -9,8 +9,6 @@ use loom_runtime_abi::{
     PARSE_FLOAT_STATUS_OUT_OF_RANGE,
 };
 
-use crate::scheduler::ValueSlot;
-
 const CANONICAL_NAN: u64 = 0x7ff8_0000_0000_0000;
 
 fn has_float_syntax(text: &str) -> bool {
@@ -106,21 +104,6 @@ pub unsafe extern "C" fn parse_float(data: *const c_char, length: u64, output: *
     // SAFETY: output was checked non-null and is an LLVM stack slot for f64.
     unsafe { output.write(value) };
     PARSE_FLOAT_STATUS_OK
-}
-
-/// Formats a binary64 value into one managed Text object.
-#[unsafe(export_name = "loom_runtime_format_float")]
-pub unsafe extern "C" fn format_float(value: f64, output: *mut ValueSlot) -> c_int {
-    if output.is_null() {
-        return 1;
-    }
-    let text = canonical_text(value);
-    let Some(result) = crate::gc::text_value(text.as_bytes()) else {
-        return 1;
-    };
-    // SAFETY: the caller-owned stable Value slot was checked non-null.
-    unsafe { output.write(result) };
-    0
 }
 
 /// Formats a binary64 value and publishes one direct managed Text pointer.
@@ -236,31 +219,5 @@ mod tests {
         assert_eq!(canonical_text(-0.0), "-0.0");
         assert_eq!(canonical_text(f64::INFINITY), "Infinity");
         assert_eq!(canonical_text(f64::NAN), "NaN");
-    }
-
-    #[test]
-    fn format_writes_a_stable_value_slot_before_the_next_allocation() {
-        let runtime = crate::runtime::runtime_create_v1();
-        assert!(!runtime.is_null());
-        unsafe {
-            assert_eq!(crate::gc::activate_runtime_v1(runtime), crate::GC_OK);
-            let roots = crate::gc::RuntimeRootScope::with_count(1).expect("runtime root scope");
-            (*runtime).heap.collect_before_every_allocation = true;
-            assert_eq!(super::format_float(12.5, roots.pointer(0)), 0);
-            let first_address = roots.read(0).words[loom_runtime_abi::VALUE_WORD_DATA];
-            let _trigger = crate::gc::text_value(b"trigger").expect("managed Text");
-            assert_ne!(
-                roots.read(0).words[loom_runtime_abi::VALUE_WORD_DATA],
-                first_address,
-            );
-            assert_eq!(
-                crate::text::text_value_bytes(&roots.read(0)),
-                Some(&b"12.5"[..]),
-            );
-            (*runtime).heap.collect_before_every_allocation = false;
-            drop(roots);
-            assert_eq!(crate::gc::deactivate_runtime_v1(runtime), crate::GC_OK);
-            assert_eq!(crate::runtime::runtime_destroy_v1(runtime), crate::WAIT_OK,);
-        }
     }
 }

@@ -371,8 +371,7 @@ The helper implements only Loom's portable lexical separator rule. It neither
 queries a filesystem nor normalizes `.`, `..`, repeated `/`, host drive syntax,
 or reverse solidus. It creates no runtime Path object, universal value, JSON
 policy, executor, or ownership/borrow surface. Typed LLVM objects declare and
-reference no untyped Path helper; removal of the unreachable legacy runtime
-exports is a separate runtime-boundary cleanup.
+reference no untyped Path helper, and the runtime archive exports none.
 
 ## Direct managed Lists
 
@@ -766,12 +765,12 @@ scheduler step codes. Callback-local typed roots are popped on every terminal
 or pending exit.
 
 Generated typed LLVM objects use narrow typed runtime helpers rather than a
-universal value boundary. The archive still contains dormant universal GC/value
-exports pending the dedicated runtime-boundary cleanup; no current compiler
-path references them. Typed repeated allocation and shadow-root descriptors carry exact
-managed layouts. Text, Bytes, Path, JSON, and formatting helpers validate their
-direct inputs, stage every borrowed byte sequence before a possible collection,
-and publish only fully initialized managed results. Structured logging receives
+universal value boundary. The runtime archive exports no universal GC/value,
+witness, legacy Task, value-operation, or Int-list surface. Typed repeated
+allocation and shadow-root descriptors carry exact managed layouts. Text,
+Bytes, Path, JSON, and formatting helpers validate their direct inputs, stage
+every borrowed byte sequence before a possible collection, and publish only
+fully initialized managed results. Structured logging receives
 the canonical `LogLevel`, direct Text, and an optional contiguous
 `TextMap[Text]` entry view; it is non-collecting, maps status `2` to
 `LogWriteFault`, and traps on an invalid status. Reachable logging lowers

@@ -9,7 +9,7 @@ addresses are not observable in the language.
 `LoomRuntime` owns:
 
 - the managed heap;
-- independent universal-value and typed-pointer shadow-stack root chains;
+- the typed-pointer shadow-stack root chain;
 - collector counters and threshold state;
 - at most one attached async executor.
 
@@ -32,40 +32,29 @@ managed allocation.
 
 ## Precise roots
 
-Dormant legacy runtime support accepts a universal-value shadow-stack record
-containing:
-
-- a versioned immutable descriptor;
-- pointers to existing universal value slots;
-- one current state;
-- a bitmap row selecting the slots live in that state.
-
-No current compiler path publishes that record; its exports remain only until
-the dedicated runtime-boundary cleanup. Runtime helper operations use temporary
-precise root scopes when they hold partially constructed values.
-
-Typed synchronous frames use the same state/bitmap model on a separate chain.
+Typed synchronous frames use a versioned state/bitmap descriptor and one
+intrusive shadow-stack chain. Runtime helper operations use temporary precise
+root scopes when they hold partially constructed managed values.
 Each live entry points to writable pointer-sized storage containing a direct
-managed reference. It is never interpreted as a universal `ValueSlot`. A cell
-may contain only null, the exact base of a typed managed allocation, or a
-compiler-proven process-lifetime static/immortal pointer. Checked-MIR moving object
-pointers, interior pointers, and other unregistered finite-lifetime pointers
-are forbidden. A legal static pointer is left unchanged without adding a
-runtime tag or registration table.
+managed reference. A cell may contain only null, the exact base of a managed
+allocation, or a compiler-proven process-lifetime static/immortal pointer.
+Interior pointers and other unregistered finite-lifetime pointers are
+forbidden. A legal static pointer is left unchanged without adding a runtime
+tag or registration table.
 
 The slot cells, slot-pointer array, descriptor, and frame have stable addresses
 for the entire linked interval. In particular, slot cells cannot live inside
-either moving heap. Generated code may update cell contents and the published
+the moving heap. Generated code may update cell contents and the published
 state, but collection must never invalidate the storage that the frame names.
 
-Both descriptor forms are validated before a collection can increment its
-counter, trace, sweep, or move any allocation. One descriptor is limited to
+The descriptor is validated before a collection can increment its counter,
+trace, sweep, or move any allocation. One descriptor is limited to
 65,536 slots, 65,536 states, and 1,048,576 bitmap words in total across all
-states. Each independent chain is limited to 65,536 linked frames. The limits
-are shared ABI constants so compiler rejection and hostile-runtime-input
-validation agree. The typed LLVM emitter rejects an oversized root-map shape as
-`ProgramTooLarge` before emitting a descriptor; this is an emission error, not
-unsupported source coverage and never a fallback signal.
+states. The chain is limited to 65,536 linked frames. The limits are shared ABI
+constants so compiler rejection and hostile-runtime-input validation agree.
+The typed LLVM emitter rejects an oversized root-map shape as `ProgramTooLarge`
+before emitting a descriptor; this is an emission error, not unsupported source
+coverage and never a fallback signal.
 
 Async values live across suspension are stored in Task slots. Coroutine
 descriptors provide the exact live bitmap for each state. Task results remain
@@ -76,15 +65,14 @@ roots and are cleared before relocation.
 
 ## Typed moving-object ABI
 
-The typed heap is a side-by-side extension of the existing universal heap. A
-typed allocation has no universal `Value` envelope and no required in-object
-tag. `LoomGcObjectDescriptor` supplies a fixed pointer-bearing prefix size,
-object alignment, and a strictly increasing list of exact pointer-cell byte
-offsets. An allocation may append pointer-free trailing bytes. The allocator
-copies the validated offsets into its private side table, zero-initializes the
-complete allocation, and does not retain caller descriptor or offset pointers.
-Every non-null fixed pointer cell follows the same exact-typed-base or
-static/immortal restriction as a typed root.
+The managed heap stores typed allocations without a universal `Value` envelope
+or required in-object tag. `LoomGcObjectDescriptor` supplies a fixed
+pointer-bearing prefix size, object alignment, and a strictly increasing list
+of exact pointer-cell byte offsets. An allocation may append pointer-free
+trailing bytes. The allocator copies the validated offsets into its private
+side table, zero-initializes the complete allocation, and does not retain caller
+descriptor or offset pointers. Every non-null fixed pointer cell follows the
+same exact-base or static/immortal restriction as a typed root.
 
 The version-one symbols are:
 
@@ -103,7 +91,7 @@ process-level fault.
 
 `output` is set to null before validation or an allocation safepoint. Its cell
 address must remain stable throughout the complete call and any triggered
-collection, and the cell cannot reside in either moving heap. After the runtime
+collection, and the cell cannot reside in the moving heap. After the runtime
 owns the allocation and copied trace metadata, it publishes the zeroed base
 address to `output`. A runtime helper may stage source data, allocate into a
 stable private out-cell, initialize without another safepoint, and publish its
@@ -157,22 +145,11 @@ descriptor can be emitted.
 
 ## Moving collection
 
-The collector traces live universal values, managed nodes and sequences, text
-objects, typed objects, Task frames, and witness instances. It builds
-replacement allocations, updates every precise root and internal managed
-pointer, then releases dead old storage. Typed tracing follows only copied
-fixed or repeated pointer offsets. Parent-to-child graphs and cycles are marked
-without recursion; relocation rewrites both typed root cells and typed object
-fields.
-
-Runtime clone and aggregate-building helpers use an explicit non-recursive work
-stack. This avoids host stack overflow on deeply nested but valid managed
-values and makes partially built graphs visible to the root protocol.
-
-Compiler-emitted witness descriptors are static and do not move. Runtime-owned
-witness instances use a separate non-moving arena because generated proof
-arguments can hold their addresses across a safepoint; unreachable instances
-are marked and swept.
+The collector traces typed objects and Task frames. It builds replacement
+allocations, updates every precise root and internal managed pointer, then
+releases dead old storage. Tracing follows only copied fixed or repeated
+pointer offsets. Parent-to-child graphs and cycles are marked without
+recursion; relocation rewrites both root cells and object fields.
 
 Typed LCIR uses two artifact-wide Text modes. A literal-only, aggregate-free
 artifact keeps its immutable compiler-emitted `TextObject` globals outside the
@@ -230,17 +207,16 @@ bounded pin protocol; ordinary Loom values do not become immovable.
 
 ## Evidence
 
-Runtime unit tests cover activation, attachment, both root descriptor forms,
-shared resource bounds, copied typed layout metadata, advertised alignment,
-forced collection, pointer-free trailing-byte preservation, typed
-parent/child graphs, cycles, aliased and state-selective roots, checked-MIR/typed
-coexistence, relocation, nested managed values, witness mark/sweep, and
-partial-construction helpers. The synchronous typed tests also prove concat
-staging across forced relocation and that the heap path constructs no
-executor. LLVM integration tests exercise exact Text live-after maps, alias
-reloads, no-empty-frame emission, synchronous shadow-stack maps, coroutine
-state liveness, structured values, standard-library outputs, and collections
-at compiler-generated boundaries.
+Runtime unit tests cover activation, attachment, typed root descriptor
+validation, shared resource bounds, copied typed layout metadata, advertised
+alignment, forced collection, pointer-free trailing-byte preservation, typed
+parent/child graphs, cycles, aliased and state-selective roots, relocation, and
+nested managed values. The synchronous tests also prove concat staging across
+forced relocation and that the heap path constructs no executor. LLVM
+integration tests exercise exact Text live-after maps, alias reloads,
+no-empty-frame emission, synchronous shadow-stack maps, coroutine state
+liveness, structured values, standard-library outputs, and collections at
+compiler-generated boundaries.
 
 The Windows release entry includes GC/runtime fixture coverage, but it is not
 verified Windows runtime or release evidence until a successful archive run is

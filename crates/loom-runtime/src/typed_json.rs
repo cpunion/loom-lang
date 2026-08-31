@@ -1,7 +1,6 @@
 //! Canonical JSON formatting for compiler-shaped direct values.
 //!
-//! This boundary deliberately does not decode or construct the universal
-//! `ValueSlot`. Generated code supplies one target-data descriptor,
+//! Generated code supplies one target-data descriptor,
 //! and the runtime reads only the closed direct Json/List/TextMap shapes named
 //! by that descriptor. All input is consumed into ordinary Rust staging
 //! storage before the sole managed Text allocation.
@@ -19,8 +18,8 @@ use loom_runtime_abi::{
     TYPED_JSON_FORMAT_RESOURCE_LIMIT,
 };
 
+use crate::json::JSON_DEPTH_LIMIT;
 use crate::text;
-use crate::value_ops::JSON_DEPTH_LIMIT;
 
 const JSON_TAG_NULL: u32 = 0;
 const JSON_TAG_BOOL: u32 = 1;

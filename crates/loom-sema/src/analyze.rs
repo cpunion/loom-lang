@@ -6,7 +6,7 @@ use loom_core::{Diagnostic, LOOM_LANGUAGE_VERSION, Name, PackageId, Severity, Sp
 use loom_hir::{
     BinaryOp, BodyId, BodyKind, DefId, DefinitionKind, Expr, ExprId, GenericParamId, Literal,
     LocalId, MatchArm, ModuleId, ParamId, Path, Pattern, PatternId, Program, ReceiverKind,
-    Statement, TypeArgumentRef, TypeRef, TypeRefId, UnaryOp,
+    Statement, TypeArgumentRef, TypeRef, TypeRefId, UnaryOp, Visibility,
 };
 
 use crate::proof::{
@@ -7188,7 +7188,14 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 continue;
             }
             for method in &inherent.methods {
-                if self.analyzer.program.definitions[*method].name.as_ref() == Some(method_name) {
+                let method_definition = &self.analyzer.program.definitions[*method];
+                if method_definition.name.as_ref() == Some(method_name)
+                    && (method_definition.visibility == Visibility::Public
+                        || self
+                            .analyzer
+                            .program
+                            .can_access_private(current_module, method_definition.module))
+                {
                     candidates.push((implementation, *method, target, substitution.clone()));
                 }
             }

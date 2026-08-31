@@ -20,7 +20,7 @@ use loom_runtime_abi::{
     FAULT_FORMAT_ENV, FAULT_FORMAT_JSON, FAULT_JSON_PREFIX, GC_MAX_OBJECT_ALIGNMENT,
     GC_MAX_OBJECT_BYTES, GC_MAX_ROOT_BITMAP_WORDS, GC_MAX_ROOT_SLOTS, GC_MAX_ROOT_STATES, GC_OK,
     LoomByteView, LoomTypedCoroutineDescriptor, LoomTypedIoOutcome, LoomTypedIoRequest,
-    LoomTypedTaskCallback, LoomTypedTaskFaultView, LoomWitnessInstance, TYPED_IO_ABI_VERSION,
+    LoomTypedTaskCallback, LoomTypedTaskFaultView, TYPED_IO_ABI_VERSION,
     TYPED_IO_FAULT_CLASS_INVALID_PORT, TYPED_IO_FAULT_CLASS_OPERATION,
     TYPED_IO_FAULT_CLASS_SOCKET_RESOLVE, TYPED_IO_INVALID_RESOURCE_TOKEN,
     TYPED_IO_OPERATION_FILE_CREATE, TYPED_IO_OPERATION_FILE_OPEN_READ,
@@ -31,13 +31,11 @@ use loom_runtime_abi::{
     TYPED_RESOURCE_CLOSE_OK, TYPED_RESOURCE_KIND_FILE, TYPED_RESOURCE_KIND_SOCKET,
     TYPED_TASK_ABI_VERSION, TYPED_TASK_CLEANUP_FAULTED, TYPED_TASK_INVALID_ARGUMENT,
     TYPED_TASK_MAX_FAULT_TEXT_BYTES, TYPED_TASK_NO_MEMORY, TYPED_TASK_OK,
-    TYPED_TASK_STATUS_INVALID, VALUE_SLOT_WORDS, VALUE_TAG_ENUM, VALUE_TAG_LIST, VALUE_TAG_RECORD,
-    VALUE_TAG_TASK, VALUE_TAG_TUPLE,
+    TYPED_TASK_STATUS_INVALID,
 };
 
 use crate::gc::{
-    NodeStream, RecoverableExecutorActivation, RuntimeRootScope, active_runtime_pointer,
-    enter_executor, leave_executor, poll,
+    RecoverableExecutorActivation, active_runtime_pointer, enter_executor, leave_executor, poll,
 };
 use crate::platform::{INVALID_RESOURCE_TOKEN, OwnedResource, socket_handle_bits};
 use crate::reactor::{
@@ -45,24 +43,13 @@ use crate::reactor::{
     has_registrations, pop_for_scheduler, register_for_task, wait_for_scheduler,
 };
 use crate::runtime::LoomRuntime;
-use crate::witness::{WitnessArena, clone_witnesses};
 use crate::{
-    COROUTINE_ABI_VERSION, TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL,
-    TASK_JOIN_ANY, TASK_JOIN_RACE, TASK_JOIN_SETTLED, TASK_PENDING, WAIT_ABI_VERSION,
-    WAIT_INVALID_ARGUMENT, WAIT_NO_MEMORY, WAIT_OK, WAIT_SOURCE_IO, WAIT_SOURCE_TIMER,
-    WAIT_UNSUPPORTED,
+    TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED, TASK_JOIN_ALL, TASK_JOIN_ANY, TASK_JOIN_RACE,
+    TASK_JOIN_SETTLED, TASK_PENDING, WAIT_ABI_VERSION, WAIT_INVALID_ARGUMENT, WAIT_OK,
+    WAIT_SOURCE_IO, WAIT_SOURCE_TIMER, WAIT_UNSUPPORTED,
 };
 
 const NO_JOIN_WINNER: u64 = u64::MAX;
-const TASK_VALUE_DIRECT: u64 = 0;
-
-// Compiler-private synthetic prelude ids. Keep these synchronized with
-// loom-lowering until the native value ABI becomes self-describing.
-const TASK_FAULT_TYPE: u64 = 4;
-const TASK_OUTCOME_TYPE: u64 = 5;
-const TASK_OUTCOME_COMPLETED: u64 = 0;
-const TASK_OUTCOME_FAULTED: u64 = 1;
-const TASK_OUTCOME_CANCELLED: u64 = 2;
 const TASK_FAULT_CODE: &str = "TaskFault";
 const TASK_FAULT_MESSAGE: &str = "task execution failed";
 
@@ -85,12 +72,6 @@ impl IoResourceKind {
         }
     }
 }
-
-const JOIN_RESULT_TUPLE: u32 = 1;
-const JOIN_RESULT_LIST: u32 = 2;
-const JOIN_RESULT_OUTCOME: u32 = 3;
-const JOIN_RESULT_OUTCOME_TUPLE: u32 = 4;
-const JOIN_RESULT_OUTCOME_LIST: u32 = 5;
 
 fn json_string(value: &str) -> String {
     let mut output = String::with_capacity(value.len() + 2);
@@ -148,39 +129,7 @@ fn report_fault(detail: &str, code: &str, message: &str, human: &str) {
     }
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-pub(crate) struct ValueSlot {
-    pub(crate) words: [u64; VALUE_SLOT_WORDS],
-}
-
-#[repr(C)]
-pub(crate) struct ValueNode {
-    pub(crate) value: ValueSlot,
-    pub(crate) next: *mut ValueNode,
-}
-
-pub type LoomTaskResume = unsafe extern "C" fn(*mut LoomTask, *mut LoomExecutor) -> i32;
-pub type LoomTaskCancel = unsafe extern "C" fn(*mut LoomTask, *mut LoomExecutor) -> i32;
-pub type LoomTraceVisitor = unsafe extern "C" fn(*mut c_void, *mut c_void);
-pub type LoomTaskTrace = unsafe extern "C" fn(*mut LoomTask, Option<LoomTraceVisitor>, *mut c_void);
 pub(crate) type LoomTypedTraceVisitor = unsafe extern "C" fn(*mut *mut c_void, *mut c_void);
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct LoomCoroutineDescriptor {
-    pub abi_version: u32,
-    pub flags: u32,
-    pub resume: Option<LoomTaskResume>,
-    pub cancel: Option<LoomTaskCancel>,
-    pub trace: Option<LoomTaskTrace>,
-    pub slot_count: u64,
-    pub witness_count: u64,
-    pub result_slot: u64,
-    pub state_count: u64,
-    pub live_bitmap_words: u64,
-    pub live_bitmaps: *const u64,
-}
 
 /// Owned, validated metadata and stable storage for one typed coroutine.
 ///
@@ -554,9 +503,6 @@ fn blocking_pool() -> &'static mpsc::SyncSender<BlockingJob> {
 }
 
 pub struct LoomTask {
-    descriptor: LoomCoroutineDescriptor,
-    pub(crate) slots: Box<[ValueSlot]>,
-    result_slot: usize,
     state: u64,
     executor: *mut LoomExecutor,
     owner: *mut LoomTask,
@@ -573,7 +519,6 @@ pub struct LoomTask {
     join_active: bool,
     wait_leaf: bool,
     wait_source: LoomWaitSource,
-    composite_spec: *mut LoomJoinSpec,
     io_operation: Option<IoOperation>,
     blocking_result: Option<BlockingResult>,
     blocking_wait: Option<BlockingWait>,
@@ -584,20 +529,8 @@ pub struct LoomTask {
     fault_code: String,
     fault_message: String,
     fault_detail: String,
-    witness_slots: Box<[*const LoomWitnessInstance]>,
-    witness_arena: WitnessArena,
-    witnesses_captured: bool,
-    typed: Option<TypedTaskStorage>,
+    typed: TypedTaskStorage,
     pending_owner: *mut LoomTask,
-}
-
-pub struct LoomJoinSpec {
-    executor: *mut LoomExecutor,
-    owner: *mut LoomTask,
-    task: *mut LoomTask,
-    mode: u32,
-    shape: u32,
-    tasks: Vec<*mut LoomTask>,
 }
 
 fn terminal(status: TaskStatus) -> bool {
@@ -605,68 +538,6 @@ fn terminal(status: TaskStatus) -> bool {
         status,
         TaskStatus::Completed | TaskStatus::Faulted | TaskStatus::Cancelled
     )
-}
-
-fn task_slot_is_live(task: &LoomTask, index: usize) -> bool {
-    match task.status {
-        TaskStatus::Completed => return index == task.result_slot,
-        TaskStatus::Unpublished | TaskStatus::Faulted | TaskStatus::Cancelled => return false,
-        TaskStatus::Runnable | TaskStatus::Running | TaskStatus::Waiting | TaskStatus::Draining => {
-        }
-    }
-    let descriptor = task.descriptor;
-    if descriptor.live_bitmaps.is_null() {
-        return true;
-    }
-    let Ok(state) = usize::try_from(task.state) else {
-        return true;
-    };
-    let Ok(state_count) = usize::try_from(descriptor.state_count) else {
-        return true;
-    };
-    let Ok(words) = usize::try_from(descriptor.live_bitmap_words) else {
-        return true;
-    };
-    if state >= state_count {
-        return true;
-    }
-    let Some(offset) = state
-        .checked_mul(words)
-        .and_then(|row| row.checked_add(index / 64))
-    else {
-        return true;
-    };
-    let word = unsafe { *descriptor.live_bitmaps.add(offset) };
-    word & (1_u64 << (index % 64)) != 0
-}
-
-#[unsafe(export_name = "loom_task_trace_live_slots")]
-pub unsafe extern "C" fn task_trace_live_slots(
-    task: *mut LoomTask,
-    visitor: Option<LoomTraceVisitor>,
-    context: *mut c_void,
-) {
-    let (Some(task), Some(visitor)) = (unsafe { task.as_mut() }, visitor) else {
-        return;
-    };
-    for index in 0..task.slots.len() {
-        if task_slot_is_live(task, index) {
-            unsafe { visitor((&raw mut task.slots[index]).cast(), context) };
-        }
-    }
-}
-
-pub(crate) unsafe fn trace_task_roots(
-    task: *mut LoomTask,
-    visitor: Option<LoomTraceVisitor>,
-    context: *mut c_void,
-) {
-    if task.is_null() || unsafe { (*task).typed.is_some() } {
-        return;
-    }
-    if let Some(trace) = unsafe { (*task).descriptor.trace } {
-        unsafe { trace(task, visitor, context) };
-    }
 }
 
 /// Visits the exact direct-pointer root cells in a typed coroutine frame.
@@ -682,9 +553,7 @@ pub(crate) unsafe fn trace_typed_task_roots(
     let (Some(task), Some(visitor)) = (unsafe { task.as_mut() }, visitor) else {
         return;
     };
-    let Some(typed) = task.typed.as_ref() else {
-        return;
-    };
+    let typed = &task.typed;
     if !typed.initialized {
         return;
     }
@@ -756,10 +625,8 @@ fn all_terminal(tasks: &[*mut LoomTask]) -> bool {
 unsafe fn make_join_runnable(executor: &mut LoomExecutor, parent: *mut LoomTask) {
     // SAFETY: caller established that parent belongs to executor.
     unsafe {
-        if let Some(typed) = (*parent).typed.as_mut() {
-            typed.join_completion_pending = true;
-            typed.join_cancel_authorized = false;
-        }
+        (*parent).typed.join_completion_pending = true;
+        (*parent).typed.join_cancel_authorized = false;
         (*parent).join_active = false;
         (*parent).status = TaskStatus::Runnable;
         enqueue_task(executor, parent);
@@ -963,12 +830,8 @@ unsafe fn child_became_terminal(executor: &mut LoomExecutor, child: *mut LoomTas
     } else if unsafe { (*owner).status } == TaskStatus::Draining {
         let children = unsafe { (*owner).owned_children.clone() };
         if all_terminal(&children) {
-            let typed_cancel_pending = unsafe {
-                (*owner)
-                    .typed
-                    .as_ref()
-                    .is_some_and(|typed| (*owner).cancel_requested && !typed.cancel_invoked)
-            };
+            let typed_cancel_pending =
+                unsafe { (*owner).cancel_requested && !(*owner).typed.cancel_invoked };
             if typed_cancel_pending {
                 unsafe {
                     (*owner).status = TaskStatus::Runnable;
@@ -1052,7 +915,6 @@ struct CleanupTopologySnapshot {
     runnable: Vec<*mut LoomTask>,
     retired_tasks: Vec<*mut LoomTask>,
     tasks: Vec<*mut LoomTask>,
-    join_specs: Vec<*mut LoomJoinSpec>,
 }
 
 impl CleanupTopologySnapshot {
@@ -1075,11 +937,6 @@ impl CleanupTopologySnapshot {
                 .iter()
                 .map(|candidate| (&raw const **candidate).cast_mut())
                 .collect(),
-            join_specs: executor
-                .join_specs
-                .iter()
-                .map(|join| (&raw const **join).cast_mut())
-                .collect(),
         }
     }
 
@@ -1088,11 +945,6 @@ impl CleanupTopologySnapshot {
             .tasks
             .iter()
             .map(|candidate| (&raw const **candidate).cast_mut())
-            .collect::<Vec<_>>();
-        let current_join_specs = executor
-            .join_specs
-            .iter()
-            .map(|join| (&raw const **join).cast_mut())
             .collect::<Vec<_>>();
         let task_ref = unsafe { &mut *task };
         let intact = task_ref.status == self.status
@@ -1111,7 +963,6 @@ impl CleanupTopologySnapshot {
                 .eq(self.runnable.iter().copied())
             && executor.retired_tasks == self.retired_tasks
             && current_tasks == self.tasks
-            && current_join_specs == self.join_specs
             && executor.active_task == task;
 
         // Any registration appended by a malicious callback is cancelled
@@ -1225,9 +1076,7 @@ unsafe fn dispose_typed_result(executor: &mut LoomExecutor, task: *mut LoomTask)
         let task_ref = unsafe { &mut *task };
         let cancellation_primary =
             task_ref.cancel_requested || task_ref.status == TaskStatus::Cancelled;
-        let Some(typed) = task_ref.typed.as_mut() else {
-            return CleanupOutcome::Clean;
-        };
+        let typed = &mut task_ref.typed;
         if !typed.result_initialized || typed.result_taken || typed.result_disposed {
             return CleanupOutcome::Clean;
         }
@@ -1297,7 +1146,7 @@ unsafe fn dispose_typed_result(executor: &mut LoomExecutor, task: *mut LoomTask)
     // structured disposal boundary, even when the callback reports a fault or
     // protocol defect. Reaping the retired Task is only memory reclamation.
     unsafe { (*task).owned_result_resources.clear() };
-    let typed = unsafe { (*task).typed.as_mut().expect("typed result owner") };
+    let typed = unsafe { &mut (*task).typed };
     if typed.result_size != 0 {
         unsafe { ptr::write_bytes(typed.result_pointer(), 0, typed.result_size) };
     }
@@ -1388,7 +1237,7 @@ unsafe fn retire_terminal_typed_children(
     let mut first_failure = None;
     let mut first_defect = None;
     for child in children.into_iter().rev() {
-        if unsafe { (*child).typed.is_none() } || !terminal(unsafe { (*child).status }) {
+        if !terminal(unsafe { (*child).status }) {
             continue;
         }
         if unsafe { (*child).status } == TaskStatus::Completed {
@@ -1408,12 +1257,12 @@ unsafe fn retire_terminal_typed_children(
 
 #[allow(clippy::too_many_lines)]
 unsafe fn retire_typed_frame(executor: &mut LoomExecutor, task: *mut LoomTask) -> CleanupOutcome {
-    if !executor_owns(executor, task) || unsafe { (*task).typed.is_none() } {
+    if !executor_owns(executor, task) {
         return CleanupOutcome::Defect;
     }
     let needs_cancel = {
         let task_ref = unsafe { &*task };
-        let typed = task_ref.typed.as_ref().expect("typed retirement branch");
+        let typed = &task_ref.typed;
         typed.initialized && !terminal(task_ref.status)
     };
     let mut outcome = CleanupOutcome::Clean;
@@ -1421,7 +1270,7 @@ unsafe fn retire_typed_frame(executor: &mut LoomExecutor, task: *mut LoomTask) -
         let (callback, frame, fault_before, cancellation_primary) = {
             let task_ref = unsafe { &mut *task };
             let cancellation_primary = task_ref.cancel_requested;
-            let typed = task_ref.typed.as_mut().expect("typed retirement branch");
+            let typed = &mut task_ref.typed;
             if typed.cancel_invoked {
                 unsafe {
                     record_typed_runtime_defect(
@@ -1555,7 +1404,7 @@ unsafe fn retire_typed_frame(executor: &mut LoomExecutor, task: *mut LoomTask) -
         };
         outcome = outcome.combine(cancel_outcome);
     }
-    if unsafe { (*task).typed.as_ref().unwrap().result_initialized } {
+    if unsafe { (*task).typed.result_initialized } {
         let dispose_outcome = unsafe { dispose_typed_result(executor, task) };
         if !dispose_outcome.is_clean() {
             unsafe { (*task).status = TaskStatus::Faulted };
@@ -1577,9 +1426,7 @@ pub(crate) unsafe fn retire_typed_frames_before_executor_drop(executor: &mut Loo
         .map(|task| &raw mut **task)
         .collect::<Vec<_>>();
     for task in tasks {
-        if unsafe { (*task).typed.is_some() } {
-            let _ = unsafe { retire_typed_frame(executor, task) };
-        }
+        let _ = unsafe { retire_typed_frame(executor, task) };
     }
 }
 
@@ -1698,36 +1545,33 @@ unsafe fn complete_terminal(executor: &mut LoomExecutor, task: *mut LoomTask, st
             step = TASK_FAULTED;
         }
     }
-    if unsafe { (*task).typed.is_some() } {
-        if step == TASK_COMPLETED && !unsafe { (*task).typed.as_ref().unwrap().result_initialized }
-        {
-            unsafe {
-                record_typed_runtime_defect(
-                    task,
-                    "LOOM_RUNTIME_TYPED_RESULT_MISSING",
-                    "typed Task completed without publishing its result",
-                );
-            }
-            step = TASK_FAULTED;
+    if step == TASK_COMPLETED && !unsafe { (*task).typed.result_initialized } {
+        unsafe {
+            record_typed_runtime_defect(
+                task,
+                "LOOM_RUNTIME_TYPED_RESULT_MISSING",
+                "typed Task completed without publishing its result",
+            );
         }
-        if step != TASK_COMPLETED
-            && unsafe { (*task).typed.as_ref().unwrap().result_initialized }
-            && !unsafe { dispose_typed_result(executor, task) }.is_clean()
-        {
-            // Legitimate cleanup faults after cancellation were normalized to
-            // Clean above. A remaining Faulted/Defect outcome is an earlier
-            // fault or cleanup protocol defect and must not be laundered into
-            // cancellation.
-            step = TASK_FAULTED;
-        }
-        if step == TASK_FAULTED && !unsafe { (*task).primary_fault_recorded } {
-            unsafe {
-                record_typed_runtime_defect(
-                    task,
-                    "LOOM_RUNTIME_TYPED_TASK_FAULTED",
-                    "typed Task returned faulted without recording a fault",
-                );
-            }
+        step = TASK_FAULTED;
+    }
+    if step != TASK_COMPLETED
+        && unsafe { (*task).typed.result_initialized }
+        && !unsafe { dispose_typed_result(executor, task) }.is_clean()
+    {
+        // Legitimate cleanup faults after cancellation were normalized to
+        // Clean above. A remaining Faulted/Defect outcome is an earlier
+        // fault or cleanup protocol defect and must not be laundered into
+        // cancellation.
+        step = TASK_FAULTED;
+    }
+    if step == TASK_FAULTED && !unsafe { (*task).primary_fault_recorded } {
+        unsafe {
+            record_typed_runtime_defect(
+                task,
+                "LOOM_RUNTIME_TYPED_TASK_FAULTED",
+                "typed Task returned faulted without recording a fault",
+            );
         }
     }
     if step != TASK_COMPLETED {
@@ -1825,48 +1669,6 @@ unsafe fn drain_worker_completions(executor: *mut LoomExecutor) {
     }
 }
 
-fn move_task_frames(executor: &mut LoomExecutor) {
-    let mut relocations = 0_u64;
-    for task in &mut executor.tasks {
-        let pointer = (&raw mut **task).cast::<LoomTask>();
-        if task.typed.is_some() || pointer == executor.active_task || task.slots.is_empty() {
-            continue;
-        }
-        task.slots = task.slots.to_vec().into_boxed_slice();
-        relocations = relocations.saturating_add(1);
-    }
-    if relocations != 0 {
-        let heap = executor.heap_mut();
-        heap.relocations = heap.relocations.saturating_add(relocations);
-    }
-}
-
-unsafe extern "C" fn resume_wait_leaf(task: *mut LoomTask, executor: *mut LoomExecutor) -> i32 {
-    if executor.is_null() || task.is_null() || !unsafe { (*task).wait_leaf } {
-        return TASK_FAULTED;
-    }
-    if unsafe { (*task).cancel_requested } {
-        return TASK_CANCELLED;
-    }
-    match unsafe { (*task).state } {
-        0 => {
-            let source = unsafe { (*task).wait_source };
-            // SAFETY: task and source are live and owned by executor.
-            if unsafe { task_suspend_wait(executor, task, &raw const source) } != WAIT_OK {
-                return TASK_FAULTED;
-            }
-            unsafe { (*task).state = 1 };
-            TASK_PENDING
-        }
-        1 => {
-            let result = unsafe { &mut (*task).slots[(*task).result_slot] };
-            *result = ValueSlot::default();
-            TASK_COMPLETED
-        }
-        _ => TASK_FAULTED,
-    }
-}
-
 const TYPED_TIMER_REGISTRATION_FAULT_CODE: &str = "TimerRegistrationFault";
 const TYPED_TIMER_REGISTRATION_FAULT_MESSAGE: &str = "could not register timer wait";
 
@@ -1883,7 +1685,6 @@ unsafe extern "C" fn resume_typed_timer(
     let executor = executor.cast::<LoomExecutor>();
     if task.is_null()
         || executor.is_null()
-        || unsafe { (*task).typed.is_none() }
         || !unsafe { (*task).wait_leaf }
         || unsafe { (*task).wait_source.kind } != WAIT_SOURCE_TIMER
     {
@@ -1945,52 +1746,6 @@ unsafe extern "C" fn cancel_typed_timer(
     TASK_CANCELLED
 }
 
-unsafe extern "C" fn resume_composite(task: *mut LoomTask, executor: *mut LoomExecutor) -> i32 {
-    if executor.is_null() || task.is_null() || unsafe { (*task).composite_spec.is_null() } {
-        return TASK_FAULTED;
-    }
-    if unsafe { (*task).cancel_requested } {
-        return TASK_CANCELLED;
-    }
-    let spec = unsafe { (*task).composite_spec };
-    if unsafe { (*spec).executor } != executor || unsafe { (*spec).task } != task {
-        return TASK_FAULTED;
-    }
-    if unsafe { (*task).state } == 0 {
-        let prepare = unsafe { task_prepare_join(executor, task, (*spec).mode) };
-        if prepare != WAIT_OK {
-            return TASK_FAULTED;
-        }
-        for child in unsafe { (*spec).tasks.clone() } {
-            if unsafe { task_add_join_child(executor, task, child) } != WAIT_OK {
-                unsafe { (*task).join_active = false };
-                return TASK_FAULTED;
-            }
-        }
-        let suspend = unsafe { task_suspend_join(executor, task) };
-        if suspend < 0 {
-            return TASK_FAULTED;
-        }
-        unsafe { (*task).state = 1 };
-        if suspend != 0 {
-            return TASK_PENDING;
-        }
-    } else if unsafe { (*task).state } != 1 {
-        return TASK_FAULTED;
-    }
-    let step = unsafe { (*task).join_step };
-    if step != TASK_COMPLETED {
-        return step;
-    }
-    let result = unsafe { task_result(task) };
-    let write = unsafe { task_write_join_result(task, result, (*spec).shape) };
-    if write == WAIT_OK {
-        TASK_COMPLETED
-    } else {
-        TASK_FAULTED
-    }
-}
-
 fn typed_io_operation_matches(expected: TypedIoOperation, operation: &IoOperation) -> bool {
     matches!(
         (expected, operation),
@@ -2044,7 +1799,7 @@ unsafe fn validate_typed_io_poll(
     {
         return None;
     }
-    let typed = unsafe { (*task).typed.as_ref() }?;
+    let typed = unsafe { &(*task).typed };
     if !typed.initialized
         || !typed.published
         || typed.result_initialized
@@ -2363,12 +2118,7 @@ pub unsafe extern "C" fn typed_io_cancel_v1(
         || !unsafe { (*task).cancel_requested }
         || !unsafe { (*task).io_fallible }
         || unsafe { (*task).typed_io_operation.is_none() }
-        || unsafe {
-            (*task)
-                .typed
-                .as_ref()
-                .is_none_or(|typed| !typed.initialized || typed.frame_pointer() != frame)
-        }
+        || unsafe { !(*task).typed.initialized || (*task).typed.frame_pointer() != frame }
     {
         return TASK_FAULTED;
     }
@@ -2622,45 +2372,6 @@ fn advance_socket_write(mut socket: TcpStream, bytes: Vec<u8>, mut offset: usize
     }
 }
 
-fn build_runtime_aggregate(mut aggregate: ValueSlot, values: Vec<ValueSlot>) -> Option<ValueSlot> {
-    let count_word = if aggregate.words[0] == VALUE_TAG_ENUM {
-        3
-    } else {
-        2
-    };
-    aggregate.words[count_word] = 0;
-    aggregate.words[4] = 0;
-    if values.is_empty() {
-        return Some(aggregate);
-    }
-    let mut initial = Vec::with_capacity(values.len() + 1);
-    initial.push(aggregate);
-    initial.extend(values);
-    let roots = RuntimeRootScope::from_values(initial).ok()?;
-    let stream = NodeStream::new(&roots, 0, aggregate);
-    for index in (1..roots.len()).rev() {
-        if stream.prepend(index) != crate::GC_OK {
-            return None;
-        }
-    }
-    Some(roots.read(0))
-}
-
-fn record_value(nominal: u64, fields: Vec<ValueSlot>) -> Option<ValueSlot> {
-    let mut record = ValueSlot::default();
-    record.words[0] = VALUE_TAG_RECORD;
-    record.words[1] = nominal;
-    build_runtime_aggregate(record, fields)
-}
-
-fn enum_value(nominal: u64, variant: u64, payload: Vec<ValueSlot>) -> Option<ValueSlot> {
-    let mut value = ValueSlot::default();
-    value.words[0] = VALUE_TAG_ENUM;
-    value.words[1] = nominal;
-    value.words[2] = variant;
-    build_runtime_aggregate(value, payload)
-}
-
 unsafe fn suspend_io(
     task: *mut LoomTask,
     executor: *mut LoomExecutor,
@@ -2709,22 +2420,6 @@ unsafe fn fail_message(task: *mut LoomTask, code: &str, message: &str) -> i32 {
         }
     }
     TASK_FAULTED
-}
-
-fn empty_universal_descriptor() -> LoomCoroutineDescriptor {
-    LoomCoroutineDescriptor {
-        abi_version: COROUTINE_ABI_VERSION,
-        flags: 0,
-        resume: None,
-        cancel: None,
-        trace: None,
-        slot_count: 0,
-        witness_count: 0,
-        result_slot: 0,
-        state_count: 0,
-        live_bitmap_words: 0,
-        live_bitmaps: ptr::null(),
-    }
 }
 
 fn is_aligned_for<T>(pointer: *const T) -> bool {
@@ -2941,9 +2636,6 @@ pub unsafe extern "C" fn typed_task_create_v1(
         return ptr::null_mut();
     }
     let mut task = Box::new(LoomTask {
-        descriptor: empty_universal_descriptor(),
-        slots: Box::new([]),
-        result_slot: 0,
         state: 0,
         executor,
         owner: ptr::null_mut(),
@@ -2960,7 +2652,6 @@ pub unsafe extern "C" fn typed_task_create_v1(
         join_active: false,
         wait_leaf: false,
         wait_source: LoomWaitSource::default(),
-        composite_spec: ptr::null_mut(),
         io_operation: None,
         blocking_result: None,
         blocking_wait: None,
@@ -2971,10 +2662,7 @@ pub unsafe extern "C" fn typed_task_create_v1(
         fault_code: String::new(),
         fault_message: String::new(),
         fault_detail: String::new(),
-        witness_slots: Box::new([]),
-        witness_arena: WitnessArena::default(),
-        witnesses_captured: true,
-        typed: Some(typed),
+        typed,
         pending_owner,
     });
     let pointer = &raw mut *task;
@@ -2994,9 +2682,7 @@ pub unsafe extern "C" fn typed_task_frame_v1(task: *mut LoomTask) -> *mut c_void
     {
         return ptr::null_mut();
     }
-    task.typed
-        .as_ref()
-        .map_or(ptr::null_mut(), TypedTaskStorage::frame_pointer)
+    task.typed.frame_pointer()
 }
 
 #[unsafe(export_name = "loom_typed_task_initialize_v1")]
@@ -3004,9 +2690,7 @@ pub unsafe extern "C" fn typed_task_initialize_v1(task: *mut LoomTask, root_stat
     let Some(task) = (unsafe { task.as_mut() }) else {
         return TYPED_TASK_INVALID_ARGUMENT;
     };
-    let Some(typed) = task.typed.as_mut() else {
-        return TYPED_TASK_INVALID_ARGUMENT;
-    };
+    let typed = &mut task.typed;
     let Ok(root_state) = usize::try_from(root_state) else {
         return TYPED_TASK_INVALID_ARGUMENT;
     };
@@ -3035,9 +2719,7 @@ pub unsafe extern "C" fn typed_task_publish_v1(
         return TYPED_TASK_INVALID_ARGUMENT;
     }
     let task_ref = unsafe { &mut *task };
-    let Some(typed) = task_ref.typed.as_mut() else {
-        return TYPED_TASK_INVALID_ARGUMENT;
-    };
+    let typed = &mut task_ref.typed;
     if task_ref.status != TaskStatus::Unpublished || !typed.initialized || typed.published {
         return TYPED_TASK_INVALID_ARGUMENT;
     }
@@ -3101,10 +2783,7 @@ pub unsafe extern "C" fn typed_task_publish_adopting_v1(
         return TYPED_TASK_INVALID_ARGUMENT;
     }
     let parent_ref = unsafe { &*parent };
-    let Some(parent_typed) = parent_ref.typed.as_ref() else {
-        // This ABI is deliberately unavailable to the universal Task path.
-        return TYPED_TASK_INVALID_ARGUMENT;
-    };
+    let parent_typed = &parent_ref.typed;
     if parent_ref.status != TaskStatus::Running
         || parent_ref.cancel_requested
         || !parent_ref.pending_owner.is_null()
@@ -3119,9 +2798,7 @@ pub unsafe extern "C" fn typed_task_publish_adopting_v1(
     }
 
     let composite_ref = unsafe { &*composite };
-    let Some(composite_typed) = composite_ref.typed.as_ref() else {
-        return TYPED_TASK_INVALID_ARGUMENT;
-    };
+    let composite_typed = &composite_ref.typed;
     if composite_ref.executor != executor
         || composite_ref.status != TaskStatus::Unpublished
         || !composite_ref.owner.is_null()
@@ -3167,9 +2844,7 @@ pub unsafe extern "C" fn typed_task_publish_adopting_v1(
             return TYPED_TASK_INVALID_ARGUMENT;
         }
         let child_ref = unsafe { &*child };
-        let Some(child_typed) = child_ref.typed.as_ref() else {
-            return TYPED_TASK_INVALID_ARGUMENT;
-        };
+        let child_typed = &child_ref.typed;
         let owned_memberships = parent_ref
             .owned_children
             .iter()
@@ -3293,9 +2968,7 @@ pub unsafe extern "C" fn typed_task_publish_adopting_v1(
         }
         (*composite).pending_owner = ptr::null_mut();
         (*composite).owner = parent;
-        if let Some(typed) = (*composite).typed.as_mut() {
-            typed.published = true;
-        }
+        (*composite).typed.published = true;
         (*composite).status = TaskStatus::Runnable;
     }
 
@@ -3333,9 +3006,7 @@ pub unsafe extern "C" fn typed_task_abort_unpublished_v1(
         return TYPED_TASK_INVALID_ARGUMENT;
     }
     let task_ref = unsafe { &*task };
-    let Some(typed) = task_ref.typed.as_ref() else {
-        return TYPED_TASK_INVALID_ARGUMENT;
-    };
+    let typed = &task_ref.typed;
     if task_ref.status != TaskStatus::Unpublished || typed.published {
         return TYPED_TASK_INVALID_ARGUMENT;
     }
@@ -3419,9 +3090,7 @@ pub unsafe extern "C" fn typed_task_set_root_state_v1(task: *mut LoomTask, root_
     let Some(task) = (unsafe { task.as_mut() }) else {
         return TYPED_TASK_INVALID_ARGUMENT;
     };
-    let Some(typed) = task.typed.as_mut() else {
-        return TYPED_TASK_INVALID_ARGUMENT;
-    };
+    let typed = &mut task.typed;
     let Ok(root_state) = usize::try_from(root_state) else {
         return TYPED_TASK_INVALID_ARGUMENT;
     };
@@ -3446,9 +3115,7 @@ pub unsafe extern "C" fn typed_task_publish_result_v1(task: *mut LoomTask) -> i3
     let Some(task) = (unsafe { task.as_mut() }) else {
         return TYPED_TASK_INVALID_ARGUMENT;
     };
-    let Some(typed) = task.typed.as_mut() else {
-        return TYPED_TASK_INVALID_ARGUMENT;
-    };
+    let typed = &mut task.typed;
     let executor = task.executor;
     if task.status != TaskStatus::Running
         || !typed.initialized
@@ -3468,7 +3135,7 @@ pub unsafe extern "C" fn typed_task_publish_result_v1(task: *mut LoomTask) -> i3
 
 #[unsafe(export_name = "loom_typed_task_status_v1")]
 pub unsafe extern "C" fn typed_task_status_v1(task: *const LoomTask) -> i32 {
-    if task.is_null() || unsafe { (*task).typed.is_none() } {
+    if task.is_null() {
         return TYPED_TASK_STATUS_INVALID;
     }
     match unsafe { (*task).status } {
@@ -3485,11 +3152,7 @@ pub unsafe extern "C" fn typed_task_status_v1(task: *const LoomTask) -> i32 {
 
 #[unsafe(export_name = "loom_typed_task_is_cancel_requested_v1")]
 pub unsafe extern "C" fn typed_task_is_cancel_requested_v1(task: *const LoomTask) -> i32 {
-    i32::from(
-        !task.is_null()
-            && unsafe { (*task).typed.is_some() }
-            && unsafe { (*task).cancel_requested },
-    )
+    i32::from(!task.is_null() && unsafe { (*task).cancel_requested })
 }
 
 unsafe fn retire_typed_child(
@@ -3566,12 +3229,7 @@ unsafe fn typed_child_take_ready(
         && (!matches!(
             unsafe { (*owner).join_mode },
             TASK_JOIN_ANY | TASK_JOIN_RACE
-        ) || unsafe {
-            (*owner)
-                .typed
-                .as_ref()
-                .is_some_and(|typed| typed.join_winner_finalized)
-        })
+        ) || unsafe { (*owner).typed.join_winner_finalized })
 }
 
 /// Moves a completed result out of its stable Task frame and consumes the
@@ -3592,9 +3250,7 @@ pub unsafe extern "C" fn typed_task_take_result_v1(
     let Some(task_ref) = (unsafe { task.as_mut() }) else {
         return TYPED_TASK_INVALID_ARGUMENT;
     };
-    let Some(typed) = task_ref.typed.as_mut() else {
-        return TYPED_TASK_INVALID_ARGUMENT;
-    };
+    let typed = &mut task_ref.typed;
     let (Ok(output_size), Ok(output_align)) =
         (usize::try_from(output_size), usize::try_from(output_align))
     else {
@@ -3681,9 +3337,7 @@ pub unsafe extern "C" fn typed_task_take_outcome_v1(
     let Some(task_ref) = (unsafe { task.as_ref() }) else {
         return TYPED_TASK_STATUS_INVALID;
     };
-    let Some(typed) = task_ref.typed.as_ref() else {
-        return TYPED_TASK_STATUS_INVALID;
-    };
+    let typed = &task_ref.typed;
     let (Ok(value_size), Ok(value_align)) =
         (usize::try_from(value_size), usize::try_from(value_align))
     else {
@@ -3774,9 +3428,7 @@ pub unsafe extern "C" fn typed_task_take_outcome_v1(
                     ptr::write_bytes(typed.result_pointer(), 0, value_size);
                 }
             }
-            let Some(typed) = (unsafe { (*task).typed.as_mut() }) else {
-                std::process::abort();
-            };
+            let typed = unsafe { &mut (*task).typed };
             typed.result_initialized = false;
             typed.result_taken = true;
             TASK_COMPLETED
@@ -3820,7 +3472,7 @@ pub unsafe extern "C" fn typed_task_request_cancel_v1(
     if executor.is_null()
         || unsafe { (*executor).cleanup_active() }
         || !executor_owns(unsafe { &*executor }, task)
-        || unsafe { (*task).typed.as_ref() }.is_none_or(|typed| !typed.published)
+        || !unsafe { (*task).typed.published }
     {
         return TYPED_TASK_INVALID_ARGUMENT;
     }
@@ -3864,8 +3516,7 @@ pub unsafe extern "C" fn typed_task_record_fault_v1(
         return TYPED_TASK_INVALID_ARGUMENT;
     };
     let executor = task_ref.executor;
-    if task_ref.typed.is_none() || executor.is_null() || unsafe { (*executor).active_task } != task
-    {
+    if executor.is_null() || unsafe { (*executor).active_task } != task {
         return TYPED_TASK_INVALID_ARGUMENT;
     }
     let code = match unsafe { copy_typed_fault_text(code, code_length) } {
@@ -3904,7 +3555,7 @@ pub unsafe extern "C" fn typed_task_fault_view_v1(
         return TYPED_TASK_INVALID_ARGUMENT;
     }
     let task = unsafe { &*task };
-    if task.typed.is_none() || !task.primary_fault_recorded {
+    if !task.primary_fault_recorded {
         return TYPED_TASK_INVALID_ARGUMENT;
     }
     unsafe {
@@ -3917,232 +3568,8 @@ pub unsafe extern "C" fn typed_task_fault_view_v1(
     TYPED_TASK_OK
 }
 
-#[unsafe(export_name = "loom_task_spawn")]
-pub unsafe extern "C" fn task_spawn(
-    executor: *mut LoomExecutor,
-    resume: Option<LoomTaskResume>,
-    slot_count: u64,
-    result_slot: u64,
-) -> *mut LoomTask {
-    let descriptor = LoomCoroutineDescriptor {
-        abi_version: COROUTINE_ABI_VERSION,
-        flags: 0,
-        resume,
-        cancel: None,
-        trace: None,
-        slot_count,
-        witness_count: 0,
-        result_slot,
-        state_count: 0,
-        live_bitmap_words: 0,
-        live_bitmaps: ptr::null(),
-    };
-    unsafe { task_spawn_descriptor(executor, &raw const descriptor) }
-}
-
-#[unsafe(export_name = "loom_task_spawn_descriptor")]
-pub unsafe extern "C" fn task_spawn_descriptor(
-    executor: *mut LoomExecutor,
-    descriptor: *const LoomCoroutineDescriptor,
-) -> *mut LoomTask {
-    if executor.is_null() || unsafe { (*executor).cleanup_active() } {
-        return ptr::null_mut();
-    }
-    let Some(mut descriptor) = (unsafe { descriptor.as_ref() }).copied() else {
-        return ptr::null_mut();
-    };
-    let (Ok(slot_count), Ok(witness_count), Ok(result_slot), Some(_)) = (
-        usize::try_from(descriptor.slot_count),
-        usize::try_from(descriptor.witness_count),
-        usize::try_from(descriptor.result_slot),
-        descriptor.resume,
-    ) else {
-        return ptr::null_mut();
-    };
-    let bitmap_layout_valid = descriptor.live_bitmaps.is_null()
-        || (descriptor.state_count > 0
-            && descriptor.live_bitmap_words >= descriptor.slot_count.div_ceil(64)
-            && descriptor
-                .state_count
-                .checked_mul(descriptor.live_bitmap_words)
-                .is_some());
-    if descriptor.abi_version != COROUTINE_ABI_VERSION
-        || slot_count == 0
-        || result_slot >= slot_count
-        || !bitmap_layout_valid
-    {
-        return ptr::null_mut();
-    }
-    if descriptor.cancel.is_none() {
-        descriptor.cancel = descriptor.resume;
-    }
-    if descriptor.trace.is_none() {
-        descriptor.trace = Some(task_trace_live_slots);
-    }
-    // SAFETY: non-null executor is uniquely driven on this thread.
-    let executor_ref = unsafe { &mut *executor };
-    let owner = executor_ref.active_task;
-    if !owner.is_null()
-        && (!executor_owns(executor_ref, owner)
-            || unsafe { (*owner).status } != TaskStatus::Running
-            || unsafe { (*owner).cancel_requested })
-    {
-        return ptr::null_mut();
-    }
-    let mut task = Box::new(LoomTask {
-        descriptor,
-        slots: vec![ValueSlot::default(); slot_count].into_boxed_slice(),
-        result_slot,
-        state: 0,
-        executor,
-        owner,
-        owned_children: Vec::new(),
-        join_children: Vec::new(),
-        waits: Vec::new(),
-        status: TaskStatus::Runnable,
-        deferred_terminal: TASK_PENDING,
-        join_mode: TASK_JOIN_ALL,
-        join_winner: NO_JOIN_WINNER,
-        join_step: TASK_COMPLETED,
-        queued: false,
-        cancel_requested: false,
-        join_active: false,
-        wait_leaf: false,
-        wait_source: LoomWaitSource::default(),
-        composite_spec: ptr::null_mut(),
-        io_operation: None,
-        blocking_result: None,
-        blocking_wait: None,
-        io_fallible: false,
-        typed_io_operation: None,
-        owned_result_resources: Vec::new(),
-        primary_fault_recorded: false,
-        fault_code: "TaskFault".into(),
-        fault_message: "task execution failed".into(),
-        fault_detail: String::new(),
-        witness_slots: vec![ptr::null(); witness_count].into_boxed_slice(),
-        witness_arena: WitnessArena::default(),
-        witnesses_captured: witness_count == 0,
-        typed: None,
-        pending_owner: ptr::null_mut(),
-    });
-    let pointer = &raw mut *task;
-    executor_ref.tasks.push(task);
-    if !owner.is_null() {
-        unsafe { (*owner).owned_children.push(pointer) };
-    }
-    unsafe { enqueue_task(executor_ref, pointer) };
-    pointer
-}
-
-/// Atomically captures every hidden proof parameter into Task-owned,
-/// non-moving storage.
-///
-/// `count` must equal the coroutine descriptor's `witness_count`. The source
-/// array and every proof reachable from it only need to remain live for this
-/// call; no source address is retained as a cache key afterwards.
-#[unsafe(export_name = "loom_task_capture_witnesses_v1")]
-pub unsafe extern "C" fn task_capture_witnesses_v1(
-    task: *mut LoomTask,
-    sources: *const *const LoomWitnessInstance,
-    count: u64,
-) -> i32 {
-    let Some(task) = (unsafe { task.as_mut() }) else {
-        return WAIT_INVALID_ARGUMENT;
-    };
-    let Ok(count) = usize::try_from(count) else {
-        return WAIT_INVALID_ARGUMENT;
-    };
-    if task.executor.is_null()
-        || unsafe { (*task.executor).cleanup_active() }
-        || task.witnesses_captured
-        || task.status != TaskStatus::Runnable
-        || task.state != 0
-        || count != task.witness_slots.len()
-        || (count != 0 && sources.is_null())
-    {
-        return WAIT_INVALID_ARGUMENT;
-    }
-    let sources = if count == 0 {
-        &[][..]
-    } else {
-        unsafe { slice::from_raw_parts(sources, count) }
-    };
-    let Some(staged) = (unsafe { clone_witnesses(sources) }) else {
-        return WAIT_INVALID_ARGUMENT;
-    };
-    task.witness_slots = task.witness_arena.adopt(staged);
-    task.witnesses_captured = true;
-    WAIT_OK
-}
-
-/// Returns one Task-owned hidden proof parameter by its checked dense index.
-#[unsafe(export_name = "loom_task_witness_v1")]
-pub unsafe extern "C" fn task_witness_v1(
-    task: *const LoomTask,
-    index: u64,
-) -> *const LoomWitnessInstance {
-    let Some(task) = (unsafe { task.as_ref() }) else {
-        return ptr::null();
-    };
-    let Ok(index) = usize::try_from(index) else {
-        return ptr::null();
-    };
-    if !task.witnesses_captured {
-        return ptr::null();
-    }
-    task.witness_slots
-        .get(index)
-        .copied()
-        .unwrap_or(ptr::null())
-}
-
-#[cfg(test)]
-unsafe extern "C" fn resume_slow_blocking_fixture(
-    task: *mut LoomTask,
-    executor: *mut LoomExecutor,
-) -> i32 {
-    if unsafe { (*task).cancel_requested } {
-        return TASK_CANCELLED;
-    }
-    if unsafe { (*task).blocking_result.take().is_some() } {
-        return TASK_COMPLETED;
-    }
-    unsafe {
-        suspend_blocking(task, executor, || {
-            SLOW_BLOCKING_STARTED.store(true, Ordering::SeqCst);
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            SLOW_BLOCKING_FINISHED.store(true, Ordering::SeqCst);
-            BlockingResult::Unit
-        })
-    }
-}
-
-#[cfg(test)]
-static SLOW_BLOCKING_STARTED: AtomicBool = AtomicBool::new(false);
-#[cfg(test)]
-static SLOW_BLOCKING_FINISHED: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
 static SLOW_BLOCKING_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-#[cfg(test)]
-pub(crate) unsafe fn spawn_slow_blocking_fixture(executor: *mut LoomExecutor) -> *mut LoomTask {
-    unsafe { task_spawn(executor, Some(resume_slow_blocking_fixture), 1, 0) }
-}
-
-#[cfg(test)]
-pub(crate) fn reset_slow_blocking_fixture() {
-    SLOW_BLOCKING_STARTED.store(false, Ordering::SeqCst);
-    SLOW_BLOCKING_FINISHED.store(false, Ordering::SeqCst);
-}
-
-#[cfg(test)]
-pub(crate) fn slow_blocking_fixture_state() -> (bool, bool) {
-    (
-        SLOW_BLOCKING_STARTED.load(Ordering::SeqCst),
-        SLOW_BLOCKING_FINISHED.load(Ordering::SeqCst),
-    )
-}
 
 #[cfg(test)]
 pub(crate) fn lock_slow_blocking_fixture() -> std::sync::MutexGuard<'static, ()> {
@@ -4151,14 +3578,21 @@ pub(crate) fn lock_slow_blocking_fixture() -> std::sync::MutexGuard<'static, ()>
 
 #[cfg(test)]
 unsafe extern "C" fn resume_controlled_blocking_fixture(
-    task: *mut LoomTask,
-    executor: *mut LoomExecutor,
+    task: *mut c_void,
+    executor: *mut c_void,
+    _frame: *mut c_void,
 ) -> i32 {
+    let task = task.cast::<LoomTask>();
+    let executor = executor.cast::<LoomExecutor>();
     if unsafe { (*task).cancel_requested } {
         return TASK_CANCELLED;
     }
     if unsafe { (*task).blocking_result.take().is_some() } {
-        return TASK_COMPLETED;
+        return if unsafe { typed_task_publish_result_v1(task) } == TYPED_TASK_OK {
+            TASK_COMPLETED
+        } else {
+            TASK_FAULTED
+        };
     }
     unsafe {
         suspend_blocking(task, executor, || {
@@ -4184,6 +3618,70 @@ fn reset_controlled_blocking_fixture() {
     CONTROLLED_BLOCKING_STARTED.store(false, Ordering::Release);
     CONTROLLED_BLOCKING_RELEASED.store(false, Ordering::Release);
     CONTROLLED_BLOCKING_FINISHED.store(false, Ordering::Release);
+}
+
+#[cfg(test)]
+unsafe extern "C" fn complete_typed_test_fixture(
+    task: *mut c_void,
+    _executor: *mut c_void,
+    _frame: *mut c_void,
+) -> i32 {
+    if unsafe { typed_task_publish_result_v1(task.cast()) } == TYPED_TASK_OK {
+        TASK_COMPLETED
+    } else {
+        TASK_FAULTED
+    }
+}
+
+#[cfg(test)]
+unsafe extern "C" fn cancel_typed_test_fixture(
+    _task: *mut c_void,
+    _executor: *mut c_void,
+    _frame: *mut c_void,
+) -> i32 {
+    TASK_CANCELLED
+}
+
+#[cfg(test)]
+fn typed_test_fixture_descriptor(
+    resume: LoomTypedTaskCallback,
+    cancel: LoomTypedTaskCallback,
+) -> LoomTypedCoroutineDescriptor {
+    LoomTypedCoroutineDescriptor {
+        abi_version: TYPED_TASK_ABI_VERSION,
+        flags: 0,
+        resume: Some(resume),
+        cancel: Some(cancel),
+        dispose_result: None,
+        frame_size: 1,
+        frame_align: 1,
+        result_offset: 0,
+        result_size: 1,
+        result_align: 1,
+        root_slot_count: 0,
+        root_state_count: 1,
+        root_bitmap_words: 0,
+        root_offsets: ptr::null(),
+        live_bitmaps: ptr::null(),
+        completed_root_state: 0,
+    }
+}
+
+#[cfg(test)]
+unsafe fn spawn_typed_test_fixture(
+    executor: *mut LoomExecutor,
+    resume: LoomTypedTaskCallback,
+    cancel: LoomTypedTaskCallback,
+) -> *mut LoomTask {
+    let descriptor = typed_test_fixture_descriptor(resume, cancel);
+    let task = unsafe { typed_task_create_v1(executor, &raw const descriptor) };
+    if task.is_null()
+        || unsafe { typed_task_initialize_v1(task, 0) } != TYPED_TASK_OK
+        || unsafe { typed_task_publish_v1(executor, task) } != TYPED_TASK_OK
+    {
+        return ptr::null_mut();
+    }
+    task
 }
 
 unsafe fn copy_text(data: *const u8, length: u64) -> Option<String> {
@@ -4404,12 +3902,7 @@ pub unsafe extern "C" fn typed_io_task_create_v1(
     if task.is_null() {
         return ptr::null_mut();
     }
-    let root_shape_valid = unsafe {
-        (*task)
-            .typed
-            .as_ref()
-            .is_some_and(TypedTaskStorage::has_typed_io_root_shape)
-    };
+    let root_shape_valid = unsafe { (*task).typed.has_typed_io_root_shape() };
     if !root_shape_valid {
         let _ = unsafe { typed_task_abort_unpublished_v1(executor, task) };
         return ptr::null_mut();
@@ -4614,78 +4107,6 @@ pub unsafe extern "C" fn typed_resource_close_v1(
     TYPED_RESOURCE_CLOSE_OK
 }
 
-#[unsafe(export_name = "loom_task_from_wait_source")]
-pub unsafe extern "C" fn task_from_wait_source(
-    executor: *mut LoomExecutor,
-    source: *const LoomWaitSource,
-) -> *mut LoomTask {
-    if executor.is_null() || source.is_null() {
-        return ptr::null_mut();
-    }
-    // SAFETY: source is borrowed for this call only.
-    let copied = unsafe { *source };
-    if copied.abi_version != WAIT_ABI_VERSION
-        || !matches!(copied.kind, WAIT_SOURCE_TIMER | WAIT_SOURCE_IO)
-    {
-        return ptr::null_mut();
-    }
-    // SAFETY: validated executor and internal callback/slot layout.
-    let task = unsafe { task_spawn(executor, Some(resume_wait_leaf), 1, 0) };
-    if !task.is_null() {
-        unsafe {
-            (*task).wait_leaf = true;
-            (*task).wait_source = copied;
-        }
-    }
-    task
-}
-
-#[unsafe(export_name = "loom_task_slot")]
-pub unsafe extern "C" fn task_slot(task: *mut LoomTask, index: u64) -> *mut c_void {
-    let Ok(index) = usize::try_from(index) else {
-        return ptr::null_mut();
-    };
-    if task.is_null() {
-        return ptr::null_mut();
-    }
-    // SAFETY: task was checked above; this explicit reference avoids an
-    // implicit raw-pointer autoref while inspecting the boxed-slice metadata.
-    let slots = unsafe { &*ptr::addr_of!((*task).slots) };
-    if index >= slots.len() {
-        return ptr::null_mut();
-    }
-    unsafe { (&raw mut (*task).slots[index]).cast() }
-}
-
-#[unsafe(export_name = "loom_task_result")]
-pub unsafe extern "C" fn task_result(task: *mut LoomTask) -> *mut c_void {
-    if task.is_null() {
-        return ptr::null_mut();
-    }
-    unsafe { task_slot(task, (*task).result_slot as u64) }
-}
-
-#[unsafe(export_name = "loom_task_state")]
-pub unsafe extern "C" fn task_state(task: *const LoomTask) -> u64 {
-    if task.is_null() {
-        0
-    } else {
-        unsafe { (*task).state }
-    }
-}
-
-#[unsafe(export_name = "loom_task_set_state")]
-pub unsafe extern "C" fn task_set_state(task: *mut LoomTask, state: u64) {
-    if !task.is_null() {
-        unsafe { (*task).state = state };
-    }
-}
-
-#[unsafe(export_name = "loom_task_is_cancelled")]
-pub unsafe extern "C" fn task_is_cancelled(task: *const LoomTask) -> i32 {
-    i32::from(!task.is_null() && unsafe { (*task).cancel_requested })
-}
-
 fn record_primary_task_fault(task: &mut LoomTask, code: String, message: String, detail: String) {
     if task.primary_fault_recorded {
         return;
@@ -4706,36 +4127,6 @@ fn inherit_primary_task_fault(parent: &mut LoomTask, child: &LoomTask) {
         child.fault_message.clone(),
         child.fault_detail.clone(),
     );
-}
-
-/// Stores the structured failure carried by a native task.
-///
-/// Generated coroutine code calls this before returning `TASK_FAULTED`.  The
-/// scheduler deliberately does not print child failures: `Task.settled` and
-/// `Task.race` must be able to consume them as ordinary values without an
-/// observable side effect. The first recorded fault remains the task's primary
-/// failure while lexical cleanup continues; later faults return success but do
-/// not replace it. This ABI does not expose suppressed fault details.
-#[unsafe(export_name = "loom_task_set_fault")]
-pub unsafe extern "C" fn task_set_fault(
-    task: *mut LoomTask,
-    code: *const u8,
-    code_length: u64,
-    message: *const u8,
-    message_length: u64,
-) -> i32 {
-    if task.is_null() {
-        return WAIT_INVALID_ARGUMENT;
-    }
-    let (Some(code), Some(message)) = (unsafe { copy_text(code, code_length) }, unsafe {
-        copy_text(message, message_length)
-    }) else {
-        return WAIT_INVALID_ARGUMENT;
-    };
-    // SAFETY: null was rejected above; scheduler ownership keeps the task live
-    // throughout this call.
-    unsafe { record_primary_task_fault(&mut *task, code, message, String::new()) };
-    WAIT_OK
 }
 
 /// Reports an unhandled root-task failure exactly once at the executable
@@ -4947,13 +4338,6 @@ mod fault_context_tests {
     const CONTRACT_PREFIX: &[u8] = br#"{"channel":"contract","fault":{"blameSpan":"#;
     const CONTRACT_SUFFIX: &[u8] = br#", "code":"PreconditionFault"}}"#;
 
-    unsafe extern "C" fn completed_fixture(
-        _task: *mut LoomTask,
-        _executor: *mut LoomExecutor,
-    ) -> i32 {
-        TASK_COMPLETED
-    }
-
     unsafe fn raise_context_with(
         context: *mut c_void,
         code: &[u8],
@@ -4979,18 +4363,6 @@ mod fault_context_tests {
         unsafe { raise_context_with(context, CODE, MESSAGE, DETAIL) }
     }
 
-    unsafe fn set_task_fault_text(task: *mut LoomTask, code: &[u8], message: &[u8]) -> i32 {
-        unsafe {
-            task_set_fault(
-                task,
-                code.as_ptr(),
-                code.len() as u64,
-                message.as_ptr(),
-                message.len() as u64,
-            )
-        }
-    }
-
     #[test]
     fn standalone_runtime_context_routes_to_the_root_boundary() {
         let runtime = runtime_create_v1();
@@ -5014,7 +4386,11 @@ mod fault_context_tests {
         unsafe {
             let executor = executor_create_for_runtime_v1(runtime);
             assert!(!executor.is_null());
-            let task = task_spawn(executor, Some(completed_fixture), 1, 0);
+            let task = spawn_typed_test_fixture(
+                executor,
+                complete_typed_test_fixture,
+                cancel_typed_test_fixture,
+            );
             assert!(!task.is_null());
 
             (*executor).active_task = task;
@@ -5055,7 +4431,11 @@ mod fault_context_tests {
         unsafe {
             let executor = executor_create_for_runtime_v1(runtime);
             assert!(!executor.is_null());
-            let task = task_spawn(executor, Some(completed_fixture), 1, 0);
+            let task = spawn_typed_test_fixture(
+                executor,
+                complete_typed_test_fixture,
+                cancel_typed_test_fixture,
+            );
             assert!(!task.is_null());
 
             (*executor).active_task = task;
@@ -5098,8 +4478,16 @@ mod fault_context_tests {
         unsafe {
             let executor = executor_create_for_runtime_v1(runtime);
             assert!(!executor.is_null());
-            let parent = task_spawn(executor, Some(completed_fixture), 1, 0);
-            let child = task_spawn(executor, Some(completed_fixture), 1, 0);
+            let parent = spawn_typed_test_fixture(
+                executor,
+                complete_typed_test_fixture,
+                cancel_typed_test_fixture,
+            );
+            let child = spawn_typed_test_fixture(
+                executor,
+                complete_typed_test_fixture,
+                cancel_typed_test_fixture,
+            );
             assert!(!parent.is_null() && !child.is_null());
 
             record_primary_task_fault(
@@ -5125,20 +4513,45 @@ mod fault_context_tests {
     }
 
     #[test]
-    fn task_fault_record_keeps_the_first_primary_failure() {
+    fn typed_task_fault_record_keeps_the_first_primary_failure() {
         let runtime = runtime_create_v1();
         assert!(!runtime.is_null());
         unsafe {
             let executor = executor_create_for_runtime_v1(runtime);
             assert!(!executor.is_null());
-            let task = task_spawn(executor, Some(completed_fixture), 1, 0);
+            let task = spawn_typed_test_fixture(
+                executor,
+                complete_typed_test_fixture,
+                cancel_typed_test_fixture,
+            );
             assert!(!task.is_null());
 
-            assert_eq!(set_task_fault_text(task, CODE, MESSAGE), WAIT_OK);
+            (*executor).active_task = task;
             assert_eq!(
-                set_task_fault_text(task, CLEANUP_CODE, CLEANUP_MESSAGE),
-                WAIT_OK,
+                typed_task_record_fault_v1(
+                    task,
+                    CODE.as_ptr(),
+                    CODE.len() as u64,
+                    MESSAGE.as_ptr(),
+                    MESSAGE.len() as u64,
+                    ptr::null(),
+                    0,
+                ),
+                TYPED_TASK_OK,
             );
+            assert_eq!(
+                typed_task_record_fault_v1(
+                    task,
+                    CLEANUP_CODE.as_ptr(),
+                    CLEANUP_CODE.len() as u64,
+                    CLEANUP_MESSAGE.as_ptr(),
+                    CLEANUP_MESSAGE.len() as u64,
+                    ptr::null(),
+                    0,
+                ),
+                TYPED_TASK_OK,
+            );
+            (*executor).active_task = ptr::null_mut();
             assert_eq!((*task).fault_code, "ExampleFault");
             assert_eq!((*task).fault_message, "example message");
             assert_eq!((*task).fault_detail, "");
@@ -5207,11 +4620,9 @@ pub unsafe extern "C" fn task_prepare_join(
         (*parent).join_winner = NO_JOIN_WINNER;
         (*parent).join_step = TASK_COMPLETED;
         (*parent).join_active = true;
-        if let Some(typed) = (*parent).typed.as_mut() {
-            typed.join_completion_pending = false;
-            typed.join_cancel_authorized = false;
-            typed.join_winner_finalized = false;
-        }
+        (*parent).typed.join_completion_pending = false;
+        (*parent).typed.join_cancel_authorized = false;
+        (*parent).typed.join_winner_finalized = false;
     }
     WAIT_OK
 }
@@ -5339,9 +4750,8 @@ pub unsafe extern "C" fn task_join_winner(parent: *const LoomTask) -> u64 {
 unsafe fn finalize_typed_winner_join(executor: &mut LoomExecutor, parent: *mut LoomTask) {
     let mode = unsafe { (*parent).join_mode };
     if !executor_owns(executor, parent)
-        || unsafe { (*parent).typed.is_none() }
         || !matches!(mode, TASK_JOIN_ANY | TASK_JOIN_RACE)
-        || unsafe { (*parent).typed.as_ref().unwrap().join_winner_finalized }
+        || unsafe { (*parent).typed.join_winner_finalized }
     {
         return;
     }
@@ -5362,7 +4772,6 @@ unsafe fn finalize_typed_winner_join(executor: &mut LoomExecutor, parent: *mut L
                 && unsafe {
                     (*child).executor == executor_pointer
                         && (*child).owner == parent
-                        && (*child).typed.is_some()
                         && terminal((*child).status)
                         && (*parent)
                             .owned_children
@@ -5390,7 +4799,7 @@ unsafe fn finalize_typed_winner_join(executor: &mut LoomExecutor, parent: *mut L
         };
     if !children_valid || !outcome_valid {
         unsafe {
-            (*parent).typed.as_mut().unwrap().join_winner_finalized = true;
+            (*parent).typed.join_winner_finalized = true;
             record_typed_runtime_defect(
                 parent,
                 "LOOM_RUNTIME_TYPED_WINNER_FINALIZE",
@@ -5400,7 +4809,7 @@ unsafe fn finalize_typed_winner_join(executor: &mut LoomExecutor, parent: *mut L
         }
         return;
     }
-    unsafe { (*parent).typed.as_mut().unwrap().join_winner_finalized = true };
+    unsafe { (*parent).typed.join_winner_finalized = true };
 
     let mut first_non_clean = None;
     for (index, child) in children.into_iter().enumerate().rev() {
@@ -5446,16 +4855,12 @@ pub unsafe extern "C" fn task_join_step(parent: *const LoomTask) -> i32 {
         && unsafe { (*parent_pointer).status } == TaskStatus::Running
         && !unsafe { (*parent_pointer).cancel_requested };
     let join_step = unsafe { (*parent_pointer).join_step };
-    let completed = if let Some(typed) = unsafe { (*parent_pointer).typed.as_mut() } {
-        // Only the scheduler can mint this token when a join becomes runnable.
-        // Reading the outcome consumes it atomically, so an old Cancelled step
-        // cannot authorize a later callback activation.
-        let completed = active_parent && std::mem::take(&mut typed.join_completion_pending);
-        typed.join_cancel_authorized = completed && join_step == TASK_CANCELLED;
-        completed
-    } else {
-        false
-    };
+    // Only the scheduler can mint this token when a join becomes runnable.
+    // Reading the outcome consumes it atomically, so an old Cancelled step
+    // cannot authorize a later callback activation.
+    let typed = unsafe { &mut (*parent_pointer).typed };
+    let completed = active_parent && std::mem::take(&mut typed.join_completion_pending);
+    typed.join_cancel_authorized = completed && join_step == TASK_CANCELLED;
     if completed
         && matches!(
             unsafe { (*parent_pointer).join_mode },
@@ -5465,151 +4870,6 @@ pub unsafe extern "C" fn task_join_step(parent: *const LoomTask) -> i32 {
         unsafe { finalize_typed_winner_join(&mut *executor, parent_pointer) };
     }
     unsafe { (*parent_pointer).join_step }
-}
-
-#[unsafe(export_name = "loom_task_join_result")]
-pub unsafe extern "C" fn task_join_result(parent: *mut LoomTask, index: u64) -> *mut c_void {
-    let Ok(index) = usize::try_from(index) else {
-        return ptr::null_mut();
-    };
-    if parent.is_null() || index >= unsafe { (*parent).join_children.len() } {
-        return ptr::null_mut();
-    }
-    unsafe { task_result((&(*parent).join_children)[index]) }
-}
-
-unsafe fn write_outcome(parent: *mut LoomTask, index: usize, destination: *mut ValueSlot) -> i32 {
-    if parent.is_null()
-        || destination.is_null()
-        || index >= unsafe { (*parent).join_children.len() }
-    {
-        return WAIT_INVALID_ARGUMENT;
-    }
-    let step = terminal_step(unsafe { (&(*parent).join_children)[index] });
-    let value = match step {
-        TASK_COMPLETED => {
-            let result = unsafe { task_join_result(parent, index as u64).cast::<ValueSlot>() };
-            if result.is_null() {
-                return WAIT_INVALID_ARGUMENT;
-            }
-            let Some(value) = enum_value(
-                TASK_OUTCOME_TYPE,
-                TASK_OUTCOME_COMPLETED,
-                vec![unsafe { *result }],
-            ) else {
-                return WAIT_NO_MEMORY;
-            };
-            value
-        }
-        TASK_CANCELLED => enum_value(TASK_OUTCOME_TYPE, TASK_OUTCOME_CANCELLED, Vec::new())
-            .unwrap_or_else(|| unreachable!()),
-        _ => {
-            // Do not retain a Rust reference into a Task while managed
-            // allocation can cause the collector to traverse and rewrite Task
-            // slots. Own both strings before entering the first safepoint.
-            let (code, message) = {
-                let child = unsafe { &*(&(*parent).join_children)[index] };
-                let code = if child.fault_code.is_empty() {
-                    TASK_FAULT_CODE.to_owned()
-                } else {
-                    child.fault_code.clone()
-                };
-                let message = if child.fault_message.is_empty() {
-                    TASK_FAULT_MESSAGE.to_owned()
-                } else {
-                    child.fault_message.clone()
-                };
-                (code, message)
-            };
-            let Ok(roots) = RuntimeRootScope::with_count(2) else {
-                return WAIT_NO_MEMORY;
-            };
-            roots.write(0, text_value(code.as_bytes()));
-            roots.write(1, text_value(message.as_bytes()));
-            let Some(fault) = record_value(TASK_FAULT_TYPE, vec![roots.read(0), roots.read(1)])
-            else {
-                return WAIT_NO_MEMORY;
-            };
-            let Some(value) = enum_value(TASK_OUTCOME_TYPE, TASK_OUTCOME_FAULTED, vec![fault])
-            else {
-                return WAIT_NO_MEMORY;
-            };
-            value
-        }
-    };
-    unsafe { destination.write(value) };
-    WAIT_OK
-}
-
-fn text_value(bytes: &[u8]) -> ValueSlot {
-    crate::gc::text_value(bytes).unwrap_or_else(|| std::process::abort())
-}
-
-unsafe fn retire_join_children(parent: *mut LoomTask) {
-    if parent.is_null() {
-        return;
-    }
-    let executor = unsafe { &mut *(*parent).executor };
-    let children = unsafe { std::mem::take(&mut (*parent).join_children) };
-    for child in children {
-        if let Some(index) =
-            unsafe { (*parent).owned_children.iter() }.position(|candidate| *candidate == child)
-        {
-            unsafe { (*parent).owned_children.remove(index) };
-        }
-        if !executor.retired_tasks.contains(&child) && terminal(unsafe { (*child).status }) {
-            executor.retired_tasks.push(child);
-        }
-    }
-}
-
-unsafe fn transfer_child_result_resources(parent: *mut LoomTask, index: usize) {
-    let child = unsafe { (&(*parent).join_children)[index] };
-    unsafe { transfer_result_resources(parent, child) };
-}
-
-fn referenced_tasks_in_value(value: &ValueSlot, referenced: &mut std::collections::HashSet<usize>) {
-    match value.words[0] {
-        VALUE_TAG_TASK => {
-            if value.words[2] == TASK_VALUE_DIRECT
-                && value.words[4] != 0
-                && let Ok(address) = usize::try_from(value.words[4])
-            {
-                referenced.insert(address);
-            }
-        }
-        VALUE_TAG_RECORD | VALUE_TAG_TUPLE | VALUE_TAG_LIST => {
-            referenced_tasks_in_nodes(
-                value.words[4] as *const ValueNode,
-                value.words[2],
-                referenced,
-            );
-        }
-        VALUE_TAG_ENUM => {
-            referenced_tasks_in_nodes(
-                value.words[4] as *const ValueNode,
-                value.words[3],
-                referenced,
-            );
-        }
-        _ => {}
-    }
-}
-
-fn referenced_tasks_in_nodes(
-    mut node: *const ValueNode,
-    count: u64,
-    referenced: &mut std::collections::HashSet<usize>,
-) {
-    for _ in 0..count {
-        if node.is_null() {
-            return;
-        }
-        unsafe {
-            referenced_tasks_in_value(&(*node).value, referenced);
-            node = (*node).next;
-        }
-    }
 }
 
 fn reap_retired_tasks(executor: &mut LoomExecutor, root: *mut LoomTask) {
@@ -5628,9 +4888,6 @@ fn reap_retired_tasks(executor: &mut LoomExecutor, root: *mut LoomTask) {
         if retired.contains(&pointer) {
             continue;
         }
-        for slot in &task.slots {
-            referenced_tasks_in_value(slot, &mut referenced);
-        }
         referenced.extend(task.owned_children.iter().map(|child| *child as usize));
         referenced.extend(task.join_children.iter().map(|child| *child as usize));
     }
@@ -5644,9 +4901,6 @@ fn reap_retired_tasks(executor: &mut LoomExecutor, root: *mut LoomTask) {
     executor
         .runnable
         .retain(|task| !reclaim.contains(&(*task as usize)));
-    executor
-        .join_specs
-        .retain(|join| !reclaim.contains(&(join.task as usize)));
     let before = executor.tasks.len();
     executor
         .tasks
@@ -5659,238 +4913,7 @@ fn reap_retired_tasks(executor: &mut LoomExecutor, root: *mut LoomTask) {
         .saturating_add(before.saturating_sub(executor.tasks.len()) as u64);
 }
 
-#[unsafe(export_name = "loom_task_write_join_result")]
-pub unsafe extern "C" fn task_write_join_result(
-    parent: *mut LoomTask,
-    destination: *mut c_void,
-    shape: u32,
-) -> i32 {
-    if parent.is_null()
-        || destination.is_null()
-        || shape > JOIN_RESULT_OUTCOME_LIST
-        || unsafe { (*parent).executor.is_null() }
-        || unsafe { (*(*parent).executor).cleanup_active() }
-    {
-        return WAIT_INVALID_ARGUMENT;
-    }
-    let destination = destination.cast::<ValueSlot>();
-    let count = unsafe { (*parent).join_children.len() };
-    let outcome = matches!(
-        shape,
-        JOIN_RESULT_OUTCOME | JOIN_RESULT_OUTCOME_TUPLE | JOIN_RESULT_OUTCOME_LIST
-    );
-    let aggregate = matches!(
-        shape,
-        JOIN_RESULT_TUPLE | JOIN_RESULT_LIST | JOIN_RESULT_OUTCOME_TUPLE | JOIN_RESULT_OUTCOME_LIST
-    );
-    if !aggregate {
-        if count == 0 {
-            return WAIT_INVALID_ARGUMENT;
-        }
-        let winner = unsafe { (*parent).join_winner };
-        let index = if winner == NO_JOIN_WINNER {
-            0
-        } else {
-            let Ok(index) = usize::try_from(winner) else {
-                return WAIT_INVALID_ARGUMENT;
-            };
-            index
-        };
-        if outcome {
-            let status = unsafe { write_outcome(parent, index, destination) };
-            if status == WAIT_OK {
-                unsafe { transfer_child_result_resources(parent, index) };
-                unsafe { retire_join_children(parent) };
-            }
-            return status;
-        }
-        let result = unsafe { task_join_result(parent, index as u64).cast::<ValueSlot>() };
-        if result.is_null() {
-            return WAIT_INVALID_ARGUMENT;
-        }
-        unsafe { destination.write(*result) };
-        unsafe { transfer_child_result_resources(parent, index) };
-        unsafe { retire_join_children(parent) };
-        return WAIT_OK;
-    }
-
-    let mut result = ValueSlot::default();
-    result.words[0] = if matches!(shape, JOIN_RESULT_LIST | JOIN_RESULT_OUTCOME_LIST) {
-        VALUE_TAG_LIST
-    } else {
-        VALUE_TAG_TUPLE
-    };
-    let Ok(roots) = RuntimeRootScope::from_values(vec![result, ValueSlot::default()]) else {
-        return WAIT_NO_MEMORY;
-    };
-    let stream = NodeStream::new(&roots, 0, result);
-    for index in (0..count).rev() {
-        let status = if outcome {
-            unsafe { write_outcome(parent, index, roots.pointer(1)) }
-        } else {
-            let result = unsafe { task_join_result(parent, index as u64).cast::<ValueSlot>() };
-            if result.is_null() {
-                WAIT_INVALID_ARGUMENT
-            } else {
-                roots.write(1, unsafe { *result });
-                WAIT_OK
-            }
-        };
-        if status != WAIT_OK {
-            return status;
-        }
-        if stream.prepend(1) != crate::GC_OK {
-            return WAIT_NO_MEMORY;
-        }
-    }
-    unsafe { destination.write(roots.read(0)) };
-    for index in 0..count {
-        unsafe { transfer_child_result_resources(parent, index) };
-    }
-    unsafe { retire_join_children(parent) };
-    WAIT_OK
-}
-
-#[unsafe(export_name = "loom_join_create")]
-pub unsafe extern "C" fn join_create(
-    executor: *mut LoomExecutor,
-    mode: u32,
-    shape: u32,
-) -> *mut LoomJoinSpec {
-    if executor.is_null()
-        || mode > TASK_JOIN_RACE
-        || shape > JOIN_RESULT_OUTCOME_LIST
-        || unsafe { (*executor).cleanup_active() }
-        || unsafe { (*executor).active_task.is_null() }
-    {
-        return ptr::null_mut();
-    }
-    let task = unsafe { task_spawn(executor, Some(resume_composite), 1, 0) };
-    if task.is_null() {
-        return ptr::null_mut();
-    }
-    let executor_ref = unsafe { &mut *executor };
-    let mut join = Box::new(LoomJoinSpec {
-        executor,
-        owner: executor_ref.active_task,
-        task,
-        mode,
-        shape,
-        tasks: Vec::new(),
-    });
-    let pointer = &raw mut *join;
-    unsafe { (*task).composite_spec = pointer };
-    executor_ref.join_specs.push(join);
-    pointer
-}
-
-#[unsafe(export_name = "loom_join_task")]
-pub unsafe extern "C" fn join_task(join: *mut LoomJoinSpec) -> *mut LoomTask {
-    if join.is_null() {
-        ptr::null_mut()
-    } else {
-        unsafe { (*join).task }
-    }
-}
-
-#[unsafe(export_name = "loom_join_add_task")]
-pub unsafe extern "C" fn join_add_task(join: *mut LoomJoinSpec, task: *mut LoomTask) -> i32 {
-    if join.is_null() {
-        return WAIT_INVALID_ARGUMENT;
-    }
-    let executor = unsafe { (*join).executor };
-    let valid = !executor.is_null()
-        && !unsafe { (*executor).cleanup_active() }
-        && executor_owns(unsafe { &*executor }, task)
-        && unsafe { (*join).owner } == unsafe { (*executor).active_task };
-    if !valid
-        || unsafe { (*task).owner } != unsafe { (*join).owner }
-        || task == unsafe { (*join).owner }
-        || task == unsafe { (*join).task }
-        || unsafe { (*join).tasks.contains(&task) }
-    {
-        return WAIT_INVALID_ARGUMENT;
-    }
-    let owner = unsafe { (*join).owner };
-    let composite = unsafe { (*join).task };
-    unsafe {
-        if let Some(index) = (*owner)
-            .owned_children
-            .iter()
-            .position(|candidate| *candidate == task)
-        {
-            (*owner).owned_children.remove(index);
-        } else {
-            return WAIT_INVALID_ARGUMENT;
-        }
-        (*task).owner = composite;
-        (*composite).owned_children.push(task);
-        (*join).tasks.push(task);
-    }
-    WAIT_OK
-}
-
-#[unsafe(export_name = "loom_join_add_list")]
-pub unsafe extern "C" fn join_add_list(join: *mut LoomJoinSpec, list_value: *const c_void) -> i32 {
-    if join.is_null() || list_value.is_null() {
-        return WAIT_INVALID_ARGUMENT;
-    }
-    let executor = unsafe { (*join).executor };
-    if executor.is_null() || unsafe { (*executor).cleanup_active() } {
-        return WAIT_INVALID_ARGUMENT;
-    }
-    let list = unsafe { &*list_value.cast::<ValueSlot>() };
-    if list.words[0] != VALUE_TAG_LIST {
-        return WAIT_INVALID_ARGUMENT;
-    }
-    let mut node = list.words[4] as *const ValueNode;
-    for _ in 0..list.words[2] {
-        if node.is_null()
-            || unsafe { (*node).value.words[0] } != VALUE_TAG_TASK
-            || unsafe { (*node).value.words[2] } != TASK_VALUE_DIRECT
-        {
-            return WAIT_INVALID_ARGUMENT;
-        }
-        let task = unsafe { (*node).value.words[4] as *mut LoomTask };
-        let status = unsafe { join_add_task(join, task) };
-        if status != WAIT_OK {
-            return status;
-        }
-        node = unsafe { (*node).next };
-    }
-    i32::from(!node.is_null()) * WAIT_INVALID_ARGUMENT
-}
-
-#[unsafe(export_name = "loom_task_suspend_value")]
-pub unsafe extern "C" fn task_suspend_value(
-    executor: *mut LoomExecutor,
-    parent: *mut LoomTask,
-    task_value: *const c_void,
-) -> i32 {
-    if executor.is_null() || task_value.is_null() {
-        return -WAIT_INVALID_ARGUMENT;
-    }
-    let value = unsafe { &*task_value.cast::<ValueSlot>() };
-    if value.words[0] != VALUE_TAG_TASK {
-        return -WAIT_INVALID_ARGUMENT;
-    }
-    if value.words[2] != TASK_VALUE_DIRECT {
-        return -WAIT_INVALID_ARGUMENT;
-    }
-    let prepare = unsafe { task_prepare_join(executor, parent, TASK_JOIN_ALL) };
-    if prepare != WAIT_OK {
-        return -prepare;
-    }
-    let add = unsafe { task_add_join_child(executor, parent, value.words[4] as *mut LoomTask) };
-    if add != WAIT_OK {
-        unsafe { (*parent).join_active = false };
-        return -add;
-    }
-    unsafe { task_suspend_join(executor, parent) }
-}
-
-#[unsafe(export_name = "loom_task_suspend_wait")]
-pub unsafe extern "C" fn task_suspend_wait(
+unsafe fn task_suspend_wait(
     executor: *mut LoomExecutor,
     task: *mut LoomTask,
     source: *const LoomWaitSource,
@@ -5925,21 +4948,9 @@ pub unsafe extern "C" fn task_suspend_wait(
     WAIT_OK
 }
 
-#[unsafe(export_name = "loom_task_cancel")]
-pub unsafe extern "C" fn task_cancel(executor: *mut LoomExecutor, task: *mut LoomTask) -> i32 {
-    if executor.is_null()
-        || unsafe { (*executor).cleanup_active() }
-        || !executor_owns(unsafe { &*executor }, task)
-    {
-        return WAIT_INVALID_ARGUMENT;
-    }
-    unsafe { request_cancel(&mut *executor, task) };
-    WAIT_OK
-}
-
 unsafe fn validate_typed_task_step(task: *mut LoomTask, cancelling: bool, step: i32) -> i32 {
     let join_cancel_authorized = unsafe {
-        let typed = (*task).typed.as_mut().expect("typed scheduler branch");
+        let typed = &mut (*task).typed;
         // A normal callback activation gets one opportunity to observe and
         // propagate its newly completed join. Both an unread completion and a
         // read authorization expire when this step is validated.
@@ -5976,13 +4987,7 @@ unsafe fn validate_typed_task_step(task: *mut LoomTask, cancelling: bool, step: 
             }
         };
     }
-    let result_initialized = unsafe {
-        (*task)
-            .typed
-            .as_ref()
-            .expect("typed scheduler branch")
-            .result_initialized
-    };
+    let result_initialized = unsafe { (*task).typed.result_initialized };
     match step {
         TASK_PENDING if !result_initialized => TASK_PENDING,
         TASK_COMPLETED if result_initialized => TASK_COMPLETED,
@@ -6050,7 +5055,7 @@ unsafe fn run_typed_task_step(executor: *mut LoomExecutor, task: *mut LoomTask) 
     }
     let fault_before = unsafe { (*task).primary_fault_recorded };
     let (callback, frame) = {
-        let typed = unsafe { (*task).typed.as_mut().expect("typed scheduler branch") };
+        let typed = unsafe { &mut (*task).typed };
         let callback = if cancelling {
             if typed.cancel_invoked {
                 unsafe {
@@ -6171,7 +5176,6 @@ pub unsafe extern "C" fn executor_run(executor: *mut LoomExecutor, root: *mut Lo
             let executor_ref = unsafe { &mut *executor };
             reap_retired_tasks(executor_ref, root);
             poll(executor_ref);
-            move_task_frames(executor_ref);
             executor_ref.runnable.pop_front()
         };
         let Some(task) = task else {
@@ -6183,46 +5187,7 @@ pub unsafe extern "C" fn executor_run(executor: *mut LoomExecutor, root: *mut Lo
         }
         unsafe { (*task).status = TaskStatus::Running };
         unsafe { (*executor).active_task = task };
-        let step = if unsafe { (*task).typed.is_some() } {
-            unsafe { run_typed_task_step(executor, task) }
-        } else {
-            let descriptor = unsafe { (*task).descriptor };
-            let cancelling = unsafe { (*task).cancel_requested };
-            let resume = if cancelling {
-                descriptor.cancel.or(descriptor.resume)
-            } else {
-                descriptor.resume
-            };
-            let Some(resume) = resume else {
-                unsafe {
-                    (*executor).active_task = ptr::null_mut();
-                    complete_terminal(&mut *executor, task, TASK_FAULTED);
-                }
-                continue;
-            };
-            let cleanup = if cancelling {
-                CleanupPhaseGuard::enter(unsafe { &mut *executor })
-            } else {
-                None
-            };
-            if cancelling && cleanup.is_none() {
-                unsafe {
-                    record_primary_task_fault(
-                        &mut *task,
-                        "LOOM_RUNTIME_CLEANUP_DEPTH".into(),
-                        "coroutine cancellation exceeded the cleanup nesting limit".into(),
-                        String::new(),
-                    );
-                }
-                TASK_FAULTED
-            } else {
-                enter_executor(executor);
-                let step = unsafe { resume(task, executor) };
-                leave_executor();
-                drop(cleanup);
-                step
-            }
-        };
+        let step = unsafe { run_typed_task_step(executor, task) };
         unsafe { (*executor).active_task = ptr::null_mut() };
         if step == TASK_PENDING {
             if unsafe { (*task).status } == TaskStatus::Running {
@@ -6274,13 +5239,7 @@ pub unsafe extern "C" fn executor_gc_live_objects(executor: *const LoomExecutor)
     if executor.is_null() {
         0
     } else {
-        let executor = unsafe { &*executor };
-        let heap = executor.heap();
-        (heap.values.len() as u64)
-            .saturating_add(heap.nodes.len() as u64)
-            .saturating_add(heap.sequences.len() as u64)
-            .saturating_add(heap.typed_object_count() as u64)
-            .saturating_add(heap.witnesses.len() as u64)
+        unsafe { (*executor).heap().typed_object_count() as u64 }
     }
 }
 
@@ -6385,16 +5344,15 @@ mod typed_io_tests {
         unsafe { typed_io_task_create_v1(executor, &raw const descriptor, ptr::from_ref(request)) }
     }
 
-    unsafe extern "C" fn complete_resource_owner_fixture(
-        _task: *mut LoomTask,
-        _executor: *mut LoomExecutor,
-    ) -> i32 {
-        TASK_COMPLETED
-    }
-
     unsafe fn activate_resource_owner(executor: *mut LoomExecutor) -> *mut LoomTask {
         assert!(unsafe { (*executor).active_task.is_null() });
-        let owner = unsafe { task_spawn(executor, Some(complete_resource_owner_fixture), 1, 0) };
+        let owner = unsafe {
+            spawn_typed_test_fixture(
+                executor,
+                complete_typed_test_fixture,
+                cancel_typed_test_fixture,
+            )
+        };
         assert!(!owner.is_null());
         let index = unsafe {
             (*executor)
@@ -6683,12 +5641,7 @@ mod typed_io_tests {
         unsafe {
             let task = create_typed_io_task(executor, &closed_request);
             assert_eq!(executor_run(executor, task), TASK_COMPLETED);
-            let frame = (*task)
-                .typed
-                .as_ref()
-                .unwrap()
-                .frame_pointer()
-                .cast::<TestIoFrame>();
+            let frame = (*task).typed.frame_pointer().cast::<TestIoFrame>();
             assert_eq!(
                 crate::text::text_bytes((*frame).result.text).unwrap(),
                 b"file resource is closed"
@@ -6843,7 +5796,11 @@ mod typed_io_tests {
         let (runtime, executor) = runtime_and_executor();
         let (socket, _peer) = connected_pair();
         unsafe {
-            let sibling = task_spawn(executor, Some(complete_resource_owner_fixture), 1, 0);
+            let sibling = spawn_typed_test_fixture(
+                executor,
+                complete_typed_test_fixture,
+                cancel_typed_test_fixture,
+            );
             assert!(!sibling.is_null());
             let resource = OwnedResource::from(socket);
             let token = resource.token();
@@ -7144,12 +6101,7 @@ mod typed_io_tests {
             (*task).queued = false;
             (*task).status = TaskStatus::Running;
             (*executor).active_task = task;
-            let frame = (*task)
-                .typed
-                .as_ref()
-                .unwrap()
-                .frame_pointer()
-                .cast::<TestIoFrame>();
+            let frame = (*task).typed.frame_pointer().cast::<TestIoFrame>();
             (*frame).result.outcome.kind = u32::MAX;
             crate::gc::enter_executor(executor);
             assert_eq!(
@@ -7180,13 +6132,6 @@ mod resource_ownership_tests {
     use super::*;
     use crate::reactor::{executor_create_for_runtime_v1, executor_destroy};
     use crate::runtime::{runtime_create_v1, runtime_destroy_v1};
-
-    unsafe extern "C" fn complete_fixture(
-        _task: *mut LoomTask,
-        _executor: *mut LoomExecutor,
-    ) -> i32 {
-        TASK_COMPLETED
-    }
 
     unsafe extern "C" fn typed_pending_fixture(
         _task: *mut c_void,
@@ -7295,7 +6240,7 @@ mod resource_ownership_tests {
         action: impl FnOnce(*mut LoomTask, i64) -> T,
     ) -> T {
         assert!(unsafe { (*executor).active_task.is_null() });
-        let owner = unsafe { task_spawn(executor, Some(complete_fixture), 1, 0) };
+        let owner = unsafe { create_typed_resource_task(executor) };
         assert!(!owner.is_null());
         unsafe { activate_test_task(executor, owner) };
         let token = resource.token();
@@ -7322,7 +6267,7 @@ mod resource_ownership_tests {
         let handle = resource.token();
         unsafe { detach_from_ready_queue(executor, task) };
         unsafe {
-            let typed = (*task).typed.as_mut().expect("typed resource fixture");
+            let typed = &mut (*task).typed;
             typed.frame_pointer().cast::<i64>().write(handle);
             typed.result_initialized = true;
             typed.root_state = typed.completed_root_state;
@@ -7464,7 +6409,7 @@ mod resource_ownership_tests {
         let original = handle;
 
         unsafe {
-            let owner = task_spawn(executor, Some(complete_fixture), 1, 0);
+            let owner = create_typed_resource_task(executor);
             assert!(!owner.is_null());
             activate_test_task(executor, owner);
             enter_executor(executor);
@@ -7496,7 +6441,7 @@ mod resource_ownership_tests {
         let original = raw_handle;
 
         unsafe {
-            let owner = task_spawn(executor, Some(complete_fixture), 1, 0);
+            let owner = create_typed_resource_task(executor);
             assert!(!owner.is_null());
             activate_test_task(executor, owner);
             enter_executor(executor);
@@ -7527,8 +6472,8 @@ mod resource_ownership_tests {
         peer.set_nonblocking(true).expect("make peer nonblocking");
 
         unsafe {
-            let sibling = task_spawn(executor, Some(complete_fixture), 1, 0);
-            let owner = task_spawn(executor, Some(complete_fixture), 1, 0);
+            let sibling = create_typed_resource_task(executor);
+            let owner = create_typed_resource_task(executor);
             assert!(!sibling.is_null() && !owner.is_null());
             let resource = OwnedResource::from(socket);
             let mut token = resource.token();
@@ -7562,7 +6507,7 @@ mod resource_ownership_tests {
         peer.set_nonblocking(true).expect("make peer nonblocking");
 
         unsafe {
-            let owner = task_spawn(executor, Some(complete_fixture), 1, 0);
+            let owner = create_typed_resource_task(executor);
             assert!(!owner.is_null());
             activate_test_task(executor, owner);
             let resource = OwnedResource::from(socket);
@@ -7636,13 +6581,7 @@ mod resource_ownership_tests {
 
             let resource = OwnedResource::from(socket);
             let token = resource.token();
-            (*task)
-                .typed
-                .as_mut()
-                .expect("typed cancellation fixture")
-                .frame_pointer()
-                .cast::<i64>()
-                .write(token);
+            (*task).typed.frame_pointer().cast::<i64>().write(token);
             (*task).owned_result_resources.push(resource);
             assert_eq!(typed_task_publish_v1(executor, task), TYPED_TASK_OK);
 
@@ -7653,12 +6592,7 @@ mod resource_ownership_tests {
                 typed_resource_close_v1(
                     executor,
                     TYPED_RESOURCE_KIND_SOCKET,
-                    (*task)
-                        .typed
-                        .as_mut()
-                        .expect("typed cancellation fixture")
-                        .frame_pointer()
-                        .cast(),
+                    (*task).typed.frame_pointer().cast(),
                 ),
                 TYPED_RESOURCE_CLOSE_INVALID_ARGUMENT
             );
@@ -7841,13 +6775,7 @@ mod resource_ownership_tests {
             assert_eq!(handle, INVALID_RESOURCE_TOKEN);
             assert_eq!((*sibling).owned_result_resources.len(), 1);
             assert_eq!(
-                (*sibling)
-                    .typed
-                    .as_ref()
-                    .expect("typed sibling")
-                    .frame_pointer()
-                    .cast::<i64>()
-                    .read(),
+                (*sibling).typed.frame_pointer().cast::<i64>().read(),
                 expected
             );
             assert!(!(*executor).retired_tasks.contains(&sibling));
@@ -8296,13 +7224,7 @@ mod resource_ownership_tests {
 
             assert_eq!(task_suspend_join(executor, parent), 0);
             let mut handle = INVALID_RESOURCE_TOKEN;
-            assert!(
-                !(*parent)
-                    .typed
-                    .as_ref()
-                    .expect("typed parent")
-                    .join_winner_finalized
-            );
+            assert!(!(*parent).typed.join_winner_finalized);
             assert_eq!(
                 typed_task_take_result_v1(
                     winner,
@@ -8375,7 +7297,7 @@ mod resource_ownership_tests {
             let child = create_typed_resource_task(executor);
             complete_typed_resource(executor, child, socket.into());
             {
-                let typed = (*parent).typed.as_mut().expect("typed parent fixture");
+                let typed = &mut (*parent).typed;
                 typed.frame_pointer().cast::<i64>().write(7);
                 typed.result_initialized = true;
                 typed.root_state = typed.completed_root_state;
@@ -8478,17 +7400,16 @@ mod typed_task_tests {
     use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
 
     use loom_runtime_abi::{
-        LoomGcObjectDescriptor, LoomGcRootDescriptor, LoomGcRootFrame, LoomGcTypedRootDescriptor,
-        LoomGcTypedRootFrame, LoomTypedCoroutineDescriptor, LoomTypedTaskFaultView,
-        SHADOW_STACK_ABI_VERSION, TYPED_GC_ABI_VERSION, TYPED_SHADOW_STACK_ABI_VERSION,
-        TYPED_TASK_ABI_VERSION,
+        LoomGcObjectDescriptor, LoomGcTypedRootDescriptor, LoomGcTypedRootFrame,
+        LoomTypedCoroutineDescriptor, LoomTypedTaskFaultView, TYPED_GC_ABI_VERSION,
+        TYPED_SHADOW_STACK_ABI_VERSION, TYPED_TASK_ABI_VERSION,
     };
 
     use super::*;
     use crate::GC_OK;
     use crate::gc::{
         activate_runtime_v1, active_runtime_pointer, collect, enter_executor, leave_executor,
-        root_pop_v1, root_push_v1, typed_alloc_v1, typed_root_pop_v1, typed_root_push_v1,
+        typed_alloc_v1, typed_root_pop_v1, typed_root_push_v1,
     };
     use crate::reactor::{executor_create_for_runtime_v1, executor_destroy, executor_register};
     use crate::runtime::{runtime_create_v1, runtime_destroy_v1};
@@ -8557,7 +7478,11 @@ mod typed_task_tests {
         let executor = unsafe { executor_create_for_runtime_v1(runtime) };
         assert!(!executor.is_null());
         unsafe {
-            let task = task_spawn(executor, Some(resume_controlled_blocking_fixture), 1, 0);
+            let task = spawn_typed_test_fixture(
+                executor,
+                resume_controlled_blocking_fixture,
+                resume_controlled_blocking_fixture,
+            );
             assert!(!task.is_null());
             (*executor).runnable.clear();
             (*task).queued = false;
@@ -8576,7 +7501,7 @@ mod typed_task_tests {
             leave_executor();
             (*executor).active_task = ptr::null_mut();
             assert!((*task).status == TaskStatus::Waiting);
-            assert_eq!(task_cancel(executor, task), WAIT_OK);
+            assert_eq!(typed_task_request_cancel_v1(executor, task), TYPED_TASK_OK);
             super::resource_ownership_tests::assert_peer_closed(&mut peer);
 
             let timed_out = Arc::new(AtomicBool::new(false));
@@ -8617,7 +7542,11 @@ mod typed_task_tests {
         assert!(!executor.is_null());
 
         unsafe {
-            let task = task_spawn(executor, Some(resume_controlled_blocking_fixture), 1, 0);
+            let task = spawn_typed_test_fixture(
+                executor,
+                resume_controlled_blocking_fixture,
+                resume_controlled_blocking_fixture,
+            );
             assert!(!task.is_null());
             (*executor).runnable.clear();
             (*task).queued = false;
@@ -8625,7 +7554,11 @@ mod typed_task_tests {
             (*executor).active_task = task;
             enter_executor(executor);
             assert_eq!(
-                resume_controlled_blocking_fixture(task, executor),
+                resume_controlled_blocking_fixture(
+                    task.cast(),
+                    executor.cast(),
+                    (*task).typed.frame_pointer(),
+                ),
                 TASK_PENDING
             );
             leave_executor();
@@ -8703,26 +7636,8 @@ mod typed_task_tests {
         }
     }
 
-    unsafe fn with_sync_and_typed_roots(action: impl FnOnce() -> bool) -> bool {
+    unsafe fn with_typed_roots(action: impl FnOnce() -> bool) -> bool {
         let bitmap = [1_u64];
-        let sync_descriptor = LoomGcRootDescriptor {
-            abi_version: SHADOW_STACK_ABI_VERSION,
-            flags: 0,
-            slot_count: 1,
-            state_count: 1,
-            live_bitmap_words: 1,
-            live_bitmaps: bitmap.as_ptr(),
-        };
-        let mut sync_value = ValueSlot::default();
-        let sync_slots = [(&raw mut sync_value).cast::<c_void>()];
-        let mut sync_frame = LoomGcRootFrame {
-            abi_version: SHADOW_STACK_ABI_VERSION,
-            flags: 0,
-            state: 0,
-            descriptor: &raw const sync_descriptor,
-            slots: sync_slots.as_ptr(),
-            previous: ptr::null_mut(),
-        };
         let typed_descriptor = LoomGcTypedRootDescriptor {
             abi_version: TYPED_SHADOW_STACK_ABI_VERSION,
             flags: 0,
@@ -8742,17 +7657,12 @@ mod typed_task_tests {
             previous: ptr::null_mut(),
         };
 
-        if unsafe { root_push_v1(&raw mut sync_frame) } != GC_OK {
-            return false;
-        }
         if unsafe { typed_root_push_v1(&raw mut typed_frame) } != GC_OK {
-            let _ = unsafe { root_pop_v1(&raw mut sync_frame) };
             return false;
         }
         let action_ok = action();
         let typed_pop_ok = unsafe { typed_root_pop_v1(&raw mut typed_frame) } == GC_OK;
-        let sync_pop_ok = unsafe { root_pop_v1(&raw mut sync_frame) } == GC_OK;
-        action_ok && typed_pop_ok && sync_pop_ok
+        action_ok && typed_pop_ok
     }
 
     fn runtime_and_executor() -> (*mut crate::runtime::LoomRuntime, *mut LoomExecutor) {
@@ -8872,11 +7782,7 @@ mod typed_task_tests {
             (*parent).queued = false;
             (*parent).status = TaskStatus::Running;
             (*executor).active_task = parent;
-            let frame = (*parent)
-                .typed
-                .as_ref()
-                .expect("typed test parent")
-                .frame_pointer();
+            let frame = (*parent).typed.frame_pointer();
             enter_executor(executor);
             let step = resume(parent.cast(), executor.cast(), frame);
             leave_executor();
@@ -8895,7 +7801,7 @@ mod typed_task_tests {
 
     unsafe fn complete_typed_u64_for_test(task: *mut LoomTask, value: u64) {
         unsafe {
-            let typed = (*task).typed.as_mut().expect("typed test child");
+            let typed = &mut (*task).typed;
             typed.frame_pointer().cast::<u64>().write(value);
             typed.result_initialized = true;
             typed.root_state = typed.completed_root_state;
@@ -9127,7 +8033,7 @@ mod typed_task_tests {
             assert!((*composite).pending_owner.is_null());
             assert!((*composite).status == TaskStatus::Runnable);
             assert!((*composite).queued);
-            assert!((*composite).typed.as_ref().unwrap().published);
+            assert!((*composite).typed.published);
             assert_eq!(
                 (*executor)
                     .runnable
@@ -9171,7 +8077,7 @@ mod typed_task_tests {
                 assert!((*composite).owned_children.is_empty());
                 assert!((*composite).status == TaskStatus::Unpublished);
                 assert!(!(*composite).queued);
-                assert!(!(*composite).typed.as_ref().unwrap().published);
+                assert!(!(*composite).typed.published);
                 assert_eq!(typed_task_frame_v1(composite), composite_frame);
             };
 
@@ -9237,7 +8143,7 @@ mod typed_task_tests {
                 assert_eq!((*composite).pending_owner, parent);
                 assert!((*composite).owned_children.is_empty());
                 assert!((*composite).status == TaskStatus::Unpublished);
-                assert!(!(*composite).typed.as_ref().unwrap().published);
+                assert!(!(*composite).typed.published);
             };
 
             let foreign = [valid, foreign_child];
@@ -9267,13 +8173,6 @@ mod typed_task_tests {
             destroy(other_runtime, other_executor);
             destroy(runtime, executor);
         }
-    }
-
-    unsafe extern "C" fn universal_complete(
-        _task: *mut LoomTask,
-        _executor: *mut LoomExecutor,
-    ) -> i32 {
-        TASK_COMPLETED
     }
 
     #[test]
@@ -9339,12 +8238,7 @@ mod typed_task_tests {
             );
             assert_eq!(second_result, 22);
 
-            let frame = (*parent)
-                .typed
-                .as_ref()
-                .expect("typed parent")
-                .frame_pointer()
-                .cast::<u64>();
+            let frame = (*parent).typed.frame_pointer().cast::<u64>();
             frame.write(first_result + second_result);
             assert_eq!(typed_task_publish_result_v1(parent), TYPED_TASK_OK);
             leave_executor();
@@ -9391,39 +8285,6 @@ mod typed_task_tests {
     }
 
     #[test]
-    fn universal_composite_consumes_an_already_completed_child_inline() {
-        let (runtime, executor) = runtime_and_executor();
-        unsafe {
-            let owner = task_spawn(executor, Some(universal_complete), 1, 0);
-            activate_test_task(executor, owner);
-            let child = task_spawn(executor, Some(universal_complete), 1, 0);
-            (*child).status = TaskStatus::Completed;
-            let join = join_create(executor, TASK_JOIN_ALL, 0);
-            assert!(!join.is_null());
-            assert_eq!(join_add_task(join, child), WAIT_OK);
-            let composite = join_task(join);
-            assert!(!composite.is_null());
-            (*executor).active_task = ptr::null_mut();
-            activate_test_task(executor, composite);
-            enter_executor(executor);
-            assert_eq!(resume_composite(composite, executor), TASK_COMPLETED);
-            assert!((*composite).status == TaskStatus::Running);
-            assert!(!(*composite).queued);
-            assert!(
-                !(*executor)
-                    .runnable
-                    .iter()
-                    .any(|candidate| *candidate == composite)
-            );
-            leave_executor();
-            (*executor).active_task = ptr::null_mut();
-            (*composite).status = TaskStatus::Completed;
-            (*owner).status = TaskStatus::Completed;
-            destroy(runtime, executor);
-        }
-    }
-
-    #[test]
     fn typed_task_requires_initialize_before_publish_and_take_zeros_the_result() {
         let (runtime, executor) = runtime_and_executor();
         let descriptor = descriptor(complete_u64, cancel_noop);
@@ -9465,8 +8326,7 @@ mod typed_task_tests {
                 typed_task_abort_unpublished_v1(executor, task),
                 TYPED_TASK_INVALID_ARGUMENT
             );
-            move_task_frames(&mut *executor);
-            assert_eq!((*task).typed.as_ref().unwrap().frame.as_ptr(), frame.cast());
+            assert_eq!((*task).typed.frame.as_ptr(), frame.cast());
             assert_eq!(executor_run(executor, task), TASK_COMPLETED);
             assert_eq!(typed_task_status_v1(task), TASK_COMPLETED);
 
@@ -9712,7 +8572,7 @@ mod typed_task_tests {
         let task = task.cast::<LoomTask>();
         let executor = executor.cast::<LoomExecutor>();
         let roots_restored = unsafe {
-            with_sync_and_typed_roots(|| {
+            with_typed_roots(|| {
                 let descriptor = descriptor(remain_pending, cancel_noop);
                 let child = typed_task_create_v1(executor, &raw const descriptor);
                 !child.is_null()
@@ -9747,7 +8607,7 @@ mod typed_task_tests {
         let task = task.cast::<LoomTask>();
         let executor = executor.cast::<LoomExecutor>();
         let roots_restored = unsafe {
-            with_sync_and_typed_roots(|| {
+            with_typed_roots(|| {
                 let mut descriptor = descriptor(complete_u64, cancel_noop);
                 descriptor.dispose_result = Some(reentrant_dispose_callback);
                 let child = typed_task_create_v1(executor, &raw const descriptor);
@@ -9764,7 +8624,7 @@ mod typed_task_tests {
                 (*executor).runnable.retain(|candidate| *candidate != child);
                 (*child).queued = false;
                 child_frame.write(19);
-                let typed = (*child).typed.as_mut().expect("typed child");
+                let typed = &mut (*child).typed;
                 typed.result_initialized = true;
                 typed.root_state = typed.completed_root_state;
                 (*child).status = TaskStatus::Completed;
@@ -9780,7 +8640,7 @@ mod typed_task_tests {
     }
 
     #[test]
-    fn nested_cancel_and_dispose_restore_outer_sync_and_typed_root_baselines() {
+    fn nested_cancel_and_dispose_restore_outer_typed_root_baseline() {
         REENTRANT_DISPOSE_CALLS.store(0, Ordering::SeqCst);
         for (resume, expected) in [
             (
@@ -9816,17 +8676,16 @@ mod typed_task_tests {
         assert_eq!(REENTRANT_DISPOSE_CALLS.load(Ordering::SeqCst), 1);
     }
 
-    const CLEANUP_UNIVERSAL_SPAWN_DENIED: usize = 1 << 0;
-    const CLEANUP_TYPED_SPAWN_DENIED: usize = 1 << 1;
-    const CLEANUP_DELAYED_PUBLISH_DENIED: usize = 1 << 2;
-    const CLEANUP_REGISTER_DENIED: usize = 1 << 3;
-    const CLEANUP_SUSPEND_DENIED: usize = 1 << 4;
-    const CLEANUP_JOIN_DENIED: usize = 1 << 5;
-    const CLEANUP_CANCEL_DENIED: usize = 1 << 6;
-    const CLEANUP_RUN_DENIED: usize = 1 << 7;
-    const CLEANUP_ABORT_DENIED: usize = 1 << 8;
-    const CLEANUP_ROOTS_ALLOWED: usize = 1 << 9;
-    const CLEANUP_ALL_GUARDS: usize = (1 << 10) - 1;
+    const CLEANUP_TYPED_SPAWN_DENIED: usize = 1 << 0;
+    const CLEANUP_DELAYED_PUBLISH_DENIED: usize = 1 << 1;
+    const CLEANUP_REGISTER_DENIED: usize = 1 << 2;
+    const CLEANUP_SUSPEND_DENIED: usize = 1 << 3;
+    const CLEANUP_JOIN_DENIED: usize = 1 << 4;
+    const CLEANUP_CANCEL_DENIED: usize = 1 << 5;
+    const CLEANUP_RUN_DENIED: usize = 1 << 6;
+    const CLEANUP_ABORT_DENIED: usize = 1 << 7;
+    const CLEANUP_ROOTS_ALLOWED: usize = 1 << 8;
+    const CLEANUP_ALL_GUARDS: usize = (1 << 9) - 1;
 
     static DELAYED_TYPED_TASK: AtomicUsize = AtomicUsize::new(0);
     static CLEANUP_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -9836,22 +8695,12 @@ mod typed_task_tests {
     static SELF_TAKE_VALUE: AtomicU64 = AtomicU64::new(0);
     static MALICIOUS_DISPOSE_CALLS: AtomicUsize = AtomicUsize::new(0);
 
-    unsafe extern "C" fn universal_pending(
-        _task: *mut LoomTask,
-        _executor: *mut LoomExecutor,
-    ) -> i32 {
-        TASK_PENDING
-    }
-
     unsafe fn exercise_cleanup_guards(
         task: *mut LoomTask,
         executor: *mut LoomExecutor,
         frame: *mut c_void,
     ) -> usize {
         let mut passed = 0;
-        if unsafe { task_spawn(executor, Some(universal_pending), 1, 0) }.is_null() {
-            passed |= CLEANUP_UNIVERSAL_SPAWN_DENIED;
-        }
         let descriptor = descriptor(remain_pending, cancel_noop);
         if unsafe { typed_task_create_v1(executor, &raw const descriptor) }.is_null() {
             passed |= CLEANUP_TYPED_SPAWN_DENIED;
@@ -9895,7 +8744,7 @@ mod typed_task_tests {
         {
             passed |= CLEANUP_ABORT_DENIED;
         }
-        if unsafe { with_sync_and_typed_roots(|| true) } {
+        if unsafe { with_typed_roots(|| true) } {
             passed |= CLEANUP_ROOTS_ALLOWED;
         }
         passed
@@ -9933,37 +8782,6 @@ mod typed_task_tests {
         _frame: *mut c_void,
     ) -> i32 {
         TASK_PENDING
-    }
-
-    unsafe extern "C" fn cancellation_leaks_sync_root(
-        _task: *mut c_void,
-        _executor: *mut c_void,
-        _frame: *mut c_void,
-    ) -> i32 {
-        let bitmap = [1_u64];
-        let descriptor = LoomGcRootDescriptor {
-            abi_version: SHADOW_STACK_ABI_VERSION,
-            flags: 0,
-            slot_count: 1,
-            state_count: 1,
-            live_bitmap_words: 1,
-            live_bitmaps: bitmap.as_ptr(),
-        };
-        let mut value = ValueSlot::default();
-        let slots = [(&raw mut value).cast::<c_void>()];
-        let mut root = LoomGcRootFrame {
-            abi_version: SHADOW_STACK_ABI_VERSION,
-            flags: 0,
-            state: 0,
-            descriptor: &raw const descriptor,
-            slots: slots.as_ptr(),
-            previous: ptr::null_mut(),
-        };
-        if unsafe { root_push_v1(&raw mut root) } == GC_OK {
-            TASK_CANCELLED
-        } else {
-            TASK_FAULTED
-        }
     }
 
     unsafe extern "C" fn cancellation_leaks_typed_root(
@@ -10023,8 +8841,6 @@ mod typed_task_tests {
             assert_eq!((*task).fault_code, "LOOM_RUNTIME_TYPED_CANCEL_ACTIVATION");
             assert!(active_runtime_pointer().is_null());
             assert_eq!((*runtime).active_depth.load(Ordering::Acquire), 0);
-            assert!((*runtime).sync_root_top.is_null());
-            assert_eq!((*runtime).sync_root_depth, 0);
             assert!((*runtime).typed_root_top.is_null());
             assert_eq!((*runtime).typed_root_depth, 0);
 
@@ -10048,13 +8864,6 @@ mod typed_task_tests {
             );
             assert_eq!(result, 42);
             destroy(runtime, executor);
-        }
-    }
-
-    #[test]
-    fn cleanup_sync_root_leak_faults_and_recovers_activation() {
-        unsafe {
-            assert_cleanup_activation_defect_is_recoverable(cancellation_leaks_sync_root);
         }
     }
 
@@ -10237,9 +9046,9 @@ mod typed_task_tests {
                 CleanupOutcome::Defect
             );
             assert_eq!(DISPOSE_CALLS.load(Ordering::SeqCst), 1);
-            assert!((*task).typed.as_ref().unwrap().result_disposed);
-            assert!(!(*task).typed.as_ref().unwrap().result_initialized);
-            assert_eq!((*task).typed.as_ref().unwrap().result_pointer().read(), 0);
+            assert!((*task).typed.result_disposed);
+            assert!(!(*task).typed.result_initialized);
+            assert_eq!((*task).typed.result_pointer().read(), 0);
             assert_eq!((*task).fault_code, "LOOM_RUNTIME_TYPED_DISPOSE_PENDING");
             assert_eq!(
                 dispose_typed_result(&mut *executor, task),
@@ -10429,8 +9238,8 @@ mod typed_task_tests {
             );
             leave_executor();
             let old_result = (*frame).result;
-            (*task).typed.as_mut().unwrap().result_initialized = true;
-            (*task).typed.as_mut().unwrap().root_state = 1;
+            (*task).typed.result_initialized = true;
+            (*task).typed.root_state = 1;
             (*task).status = TaskStatus::Completed;
             collect(&mut *executor);
             assert_ne!((*frame).result, old_result);
@@ -10592,19 +9401,19 @@ mod typed_task_tests {
             activate_test_task(executor, task);
 
             assert_eq!(task_join_step(task), TASK_CANCELLED);
-            assert!(!(*task).typed.as_ref().unwrap().join_completion_pending);
-            assert!((*task).typed.as_ref().unwrap().join_cancel_authorized);
+            assert!(!(*task).typed.join_completion_pending);
+            assert!((*task).typed.join_cancel_authorized);
             assert_eq!(
                 validate_typed_task_step(task, false, TASK_PENDING),
                 TASK_PENDING
             );
-            assert!(!(*task).typed.as_ref().unwrap().join_completion_pending);
-            assert!(!(*task).typed.as_ref().unwrap().join_cancel_authorized);
+            assert!(!(*task).typed.join_completion_pending);
+            assert!(!(*task).typed.join_cancel_authorized);
 
             // The public join step remains readable for diagnostics and
             // universal consumers, but it cannot mint another authorization.
             assert_eq!(task_join_step(task), TASK_CANCELLED);
-            assert!(!(*task).typed.as_ref().unwrap().join_cancel_authorized);
+            assert!(!(*task).typed.join_cancel_authorized);
             assert_eq!(
                 validate_typed_task_step(task, false, TASK_CANCELLED),
                 TASK_FAULTED
@@ -10729,7 +9538,7 @@ mod typed_task_tests {
                 );
                 assert_eq!((*parent).owned_children.as_slice(), [winner]);
                 assert_eq!((*parent).join_children.as_slice(), [winner]);
-                assert!((*completed).typed.as_ref().unwrap().result_disposed);
+                assert!((*completed).typed.result_disposed);
                 assert!((*executor).retired_tasks.contains(&completed));
                 assert!((*executor).retired_tasks.contains(&faulted));
                 assert!((*executor).retired_tasks.contains(&cancelled));
@@ -10807,7 +9616,7 @@ mod typed_task_tests {
             assert_eq!(ANY_LOSER_DISPOSE_CALLS.load(Ordering::SeqCst), 1);
             assert_eq!((*parent).owned_children.as_slice(), [winner]);
             assert_eq!((*parent).join_children.as_slice(), [winner]);
-            assert!((*completed_loser).typed.as_ref().unwrap().result_disposed);
+            assert!((*completed_loser).typed.result_disposed);
             assert!((*executor).retired_tasks.contains(&cancelled_loser));
             assert!((*executor).retired_tasks.contains(&completed_loser));
 
@@ -10880,8 +9689,8 @@ mod typed_task_tests {
             );
             assert_eq!((*parent).owned_children.as_slice(), [winner]);
             assert_eq!((*parent).join_children.as_slice(), [winner]);
-            assert!((*older_loser).typed.as_ref().unwrap().result_disposed);
-            assert!((*younger_loser).typed.as_ref().unwrap().result_disposed);
+            assert!((*older_loser).typed.result_disposed);
+            assert!((*younger_loser).typed.result_disposed);
             assert!((*executor).retired_tasks.contains(&older_loser));
             assert!((*executor).retired_tasks.contains(&younger_loser));
             destroy(runtime, executor);
@@ -10916,7 +9725,7 @@ mod typed_task_tests {
             assert_eq!((*parent).fault_code, "SuppressedDisposeCleanup");
             assert_eq!((*parent).owned_children.as_slice(), [winner]);
             assert_eq!((*parent).join_children.as_slice(), [winner]);
-            assert!((*loser).typed.as_ref().unwrap().result_disposed);
+            assert!((*loser).typed.result_disposed);
             destroy(runtime, executor);
         }
     }
@@ -10981,7 +9790,7 @@ mod typed_task_tests {
             assert_eq!((*parent).fault_code, "LOOM_RUNTIME_TYPED_WINNER_FINALIZE");
             assert_eq!((*parent).owned_children, owned);
             assert_eq!((*parent).join_children, joined);
-            assert!(!(*winner).typed.as_ref().unwrap().result_disposed);
+            assert!(!(*winner).typed.result_disposed);
             assert!((*executor).retired_tasks.is_empty());
             destroy(runtime, executor);
         }
@@ -11021,8 +9830,8 @@ mod typed_task_tests {
             );
             assert_eq!((*parent).owned_children.as_slice(), [winner]);
             assert_eq!((*parent).join_children.as_slice(), [winner]);
-            assert!((*first_fault).typed.as_ref().unwrap().result_disposed);
-            assert!((*later_defect).typed.as_ref().unwrap().result_disposed);
+            assert!((*first_fault).typed.result_disposed);
+            assert!((*later_defect).typed.result_disposed);
             destroy(runtime, executor);
         }
     }

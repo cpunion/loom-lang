@@ -1,5 +1,4 @@
-//! Managed immutable `Text` storage shared by universal `Value` envelopes and
-//! typed direct `Text` pointers.
+//! Managed immutable `Text` and `Bytes` storage for typed direct pointers.
 
 use std::ffi::c_void;
 use std::mem::{align_of, size_of};
@@ -13,12 +12,10 @@ use loom_runtime_abi::{
     LoomGcTypedRootDescriptor, LoomGcTypedRootFrame, LoomLayoutDescriptor,
     PATH_JOIN_TYPED_ABSOLUTE, TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8, TEXT_GET_TYPED_FOUND,
     TEXT_GET_TYPED_INVALID, TEXT_GET_TYPED_MISSING, TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION,
-    TYPED_SHADOW_STACK_ABI_VERSION, VALUE_SLOT_WORDS, VALUE_TAG_TEXT, VALUE_WORD_AUX,
-    VALUE_WORD_DATA, VALUE_WORD_NOMINAL, VALUE_WORD_SCALAR, VALUE_WORD_TAG, VALUE_WORD_WITNESS,
+    TYPED_SHADOW_STACK_ABI_VERSION,
 };
 
 use crate::gc::{allocate_typed_object, typed_root_pop_v1, typed_root_push_v1};
-use crate::scheduler::ValueSlot;
 
 /// The one process-wide descriptor referenced by dynamic and literal Text
 /// objects. Its address is compiler/runtime-private and is not language RTTI.
@@ -70,7 +67,45 @@ pub(crate) struct ByteObject {
 }
 
 const TEXT_OBJECT_HEADER_BYTES: usize = size_of::<TextObject>();
+#[cfg(test)]
 const TEXT_OBJECT_HEADER_WORDS: usize = TEXT_OBJECT_HEADER_BYTES / size_of::<u64>();
+
+const TEXT_CONTAINS_INVALID_ARGUMENT: i32 = -1;
+
+unsafe fn input_bytes<'value>(data: *const c_void, length: u64) -> Option<&'value [u8]> {
+    let length = usize::try_from(length).ok()?;
+    if length == 0 {
+        return Some(&[]);
+    }
+    if data.is_null() || length > isize::MAX as usize {
+        return None;
+    }
+    // SAFETY: generated code supplies a live immutable buffer and its exact
+    // length. The returned slice is used only during the current ABI call.
+    Some(unsafe { slice::from_raw_parts(data.cast::<u8>(), length) })
+}
+
+/// Byte-subsequence containment is equivalent to Text substring containment
+/// for valid UTF-8 and does not need allocation.
+#[unsafe(export_name = "loom_runtime_text_contains")]
+pub unsafe extern "C" fn text_contains(
+    value: *const c_void,
+    value_length: u64,
+    needle: *const c_void,
+    needle_length: u64,
+) -> i32 {
+    let Some(value) = (unsafe { input_bytes(value, value_length) }) else {
+        return TEXT_CONTAINS_INVALID_ARGUMENT;
+    };
+    let Some(needle) = (unsafe { input_bytes(needle, needle_length) }) else {
+        return TEXT_CONTAINS_INVALID_ARGUMENT;
+    };
+    if needle.is_empty() {
+        return 1;
+    }
+    i32::from(value.windows(needle.len()).any(|window| window == needle))
+}
+
 /// Concatenates two complete Text objects into one precisely described typed
 /// managed leaf. Both UTF-8 payloads are copied into non-GC staging storage
 /// before the allocation which may move either input. The fresh object remains
@@ -554,6 +589,7 @@ pub(crate) unsafe fn allocate_typed_text_pair(
 
 /// Allocates a managed Text object after validating UTF-8 and caching its
 /// Unicode scalar length.
+#[cfg(test)]
 pub(crate) fn allocate_text_storage(bytes: &[u8]) -> Option<(Box<[u64]>, *mut TextObject)> {
     let text = std::str::from_utf8(bytes).ok()?;
     let scalar_length = u64::try_from(text.chars().count()).ok()?;
@@ -573,6 +609,7 @@ pub(crate) fn allocate_text_storage(bytes: &[u8]) -> Option<(Box<[u64]>, *mut Te
     Some((allocation, object))
 }
 
+#[cfg(test)]
 pub(crate) fn allocate_byte_storage(bytes: &[u8]) -> Option<(Box<[u64]>, *mut ByteObject)> {
     let (allocation, object) = allocate_storage(bytes)?;
     let object = object.cast::<ByteObject>();
@@ -590,6 +627,7 @@ pub(crate) fn allocate_byte_storage(bytes: &[u8]) -> Option<(Box<[u64]>, *mut By
     Some((allocation, object))
 }
 
+#[cfg(test)]
 fn allocate_storage(bytes: &[u8]) -> Option<(Box<[u64]>, *mut u64)> {
     let allocation_size = TEXT_OBJECT_HEADER_BYTES.checked_add(bytes.len())?;
     let word_count = allocation_size.checked_add(size_of::<u64>() - 1)? / size_of::<u64>();
@@ -605,28 +643,6 @@ fn allocate_storage(bytes: &[u8]) -> Option<(Box<[u64]>, *mut u64)> {
         );
     }
     Some((allocation, object))
-}
-
-pub(crate) fn value(object: *mut c_void) -> ValueSlot {
-    let mut slot = ValueSlot {
-        words: [0; VALUE_SLOT_WORDS],
-    };
-    slot.words[VALUE_WORD_TAG] = VALUE_TAG_TEXT;
-    slot.words[VALUE_WORD_DATA] = object as u64;
-    slot
-}
-
-pub(crate) fn object(value: &ValueSlot) -> Option<*mut c_void> {
-    if value.words[VALUE_WORD_TAG] != VALUE_TAG_TEXT
-        || value.words[VALUE_WORD_NOMINAL] != 0
-        || value.words[VALUE_WORD_AUX] != 0
-        || value.words[VALUE_WORD_SCALAR] != 0
-        || value.words[VALUE_WORD_WITNESS] != 0
-        || value.words[VALUE_WORD_DATA] == 0
-    {
-        return None;
-    }
-    Some(value.words[VALUE_WORD_DATA] as *mut c_void)
 }
 
 pub(crate) unsafe fn bytes<'object>(object: *const c_void) -> Option<&'object [u8]> {
@@ -679,30 +695,6 @@ pub(crate) unsafe fn text_bytes<'object>(object: *const c_void) -> Option<&'obje
     Some(bytes)
 }
 
-#[cfg(test)]
-unsafe fn byte_sequence_bytes<'object>(object: *const c_void) -> Option<&'object [u8]> {
-    let bytes = unsafe { bytes(object) }?;
-    let header = unsafe { object.cast::<ByteObject>().as_ref() }?;
-    if header.layout != &raw const BYTES_LAYOUT_DESCRIPTOR {
-        return None;
-    }
-    Some(bytes)
-}
-
-#[cfg(test)]
-pub(crate) unsafe fn value_bytes(value: &ValueSlot) -> Option<&[u8]> {
-    unsafe { bytes(object(value)?) }
-}
-
-pub(crate) unsafe fn text_value_bytes(value: &ValueSlot) -> Option<&[u8]> {
-    unsafe { text_bytes(object(value)?) }
-}
-
-#[cfg(test)]
-pub(crate) unsafe fn byte_value_bytes(value: &ValueSlot) -> Option<&[u8]> {
-    unsafe { byte_sequence_bytes(object(value)?) }
-}
-
 pub(crate) unsafe fn scalar_length(object: *const TextObject) -> Option<u64> {
     unsafe { text_bytes(object.cast::<c_void>()) }?;
     let object = unsafe { object.as_ref() }?;
@@ -732,7 +724,7 @@ mod tests {
         LoomGcTypedRootDescriptor, LoomGcTypedRootFrame, LoomLayoutDescriptor,
         PATH_JOIN_TYPED_ABSOLUTE, TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8, TEXT_GET_TYPED_FOUND,
         TEXT_GET_TYPED_INVALID, TEXT_GET_TYPED_MISSING, TEXT_OBJECT_ALIGNMENT,
-        TEXT_OBJECT_HEADER_SIZE, TYPED_SHADOW_STACK_ABI_VERSION, VALUE_SLOT_WORDS, VALUE_TAG_TEXT,
+        TEXT_OBJECT_HEADER_SIZE, TYPED_SHADOW_STACK_ABI_VERSION,
     };
 
     use super::{
@@ -745,19 +737,14 @@ mod tests {
         activate_runtime_v1, deactivate_runtime_v1, typed_root_pop_v1, typed_root_push_v1,
     };
     use crate::runtime::{runtime_create_v1, runtime_destroy_v1};
-    use crate::scheduler::ValueSlot;
 
     #[test]
-    fn host_value_and_text_layout_match_the_versioned_abi() {
+    fn typed_text_layout_matches_the_versioned_abi() {
         assert_eq!(
             size_of::<usize>(),
             8,
             "native Value ABI requires 64-bit pointers"
         );
-        assert_eq!(size_of::<ValueSlot>(), VALUE_SLOT_WORDS * size_of::<u64>());
-        assert_eq!(align_of::<ValueSlot>(), align_of::<u64>());
-        assert_eq!(offset_of!(ValueSlot, words), 0);
-
         assert_eq!(size_of::<LoomLayoutDescriptor>(), 48);
         assert_eq!(align_of::<LoomLayoutDescriptor>(), 8);
         assert_eq!(size_of::<TextObject>() as u64, TEXT_OBJECT_HEADER_SIZE);
@@ -1366,27 +1353,9 @@ mod tests {
     }
 
     #[test]
-    fn malformed_envelopes_and_headers_fail_closed() {
+    fn malformed_headers_fail_closed() {
         let (allocation, object) = allocate_text_storage(b"safe").unwrap();
-        let value = super::value(object.cast());
-        assert_eq!(value.words, [VALUE_TAG_TEXT, 0, 0, 0, object as u64, 0]);
-        assert_eq!(
-            unsafe { super::text_value_bytes(&value) },
-            Some(&b"safe"[..])
-        );
-        for index in [
-            loom_runtime_abi::VALUE_WORD_NOMINAL,
-            loom_runtime_abi::VALUE_WORD_AUX,
-            loom_runtime_abi::VALUE_WORD_SCALAR,
-            loom_runtime_abi::VALUE_WORD_WITNESS,
-        ] {
-            let mut dirty = value;
-            dirty.words[index] = 1;
-            assert_eq!(unsafe { super::text_value_bytes(&dirty) }, None);
-        }
-        let mut missing = value;
-        missing.words[loom_runtime_abi::VALUE_WORD_DATA] = 0;
-        assert_eq!(unsafe { super::text_value_bytes(&missing) }, None);
+        assert_eq!(unsafe { text_bytes(object.cast()) }, Some(&b"safe"[..]));
         assert_eq!(unsafe { bytes(object.cast::<u8>().add(1).cast()) }, None);
         drop(allocation);
 
