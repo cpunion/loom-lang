@@ -483,7 +483,8 @@ normalized `Int` milliseconds inside any checked executor context, including a
 synchronous helper reached from the coroutine, returns a first-class typed
 `Task[Unit]` on its normal edge, and preserves
 canonical negative-duration or overflow faults on its fault edge. A source
-`Duration` is normalized through product extraction before this terminator.
+`Duration` is normalized through the general representation-preserving
+refined-to-base coercion before this terminator.
 
 A coroutine declaration has no functional inout parameters or writeback
 result. Checked MIR rejects mutable coroutine parameter slots and all coroutine

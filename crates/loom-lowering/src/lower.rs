@@ -32,11 +32,10 @@ const CONSTRAINT_ERROR_TYPE: TypeId = TypeId(2);
 const CONTRACT_FAULT_TYPE: TypeId = TypeId(3);
 const TASK_FAULT_TYPE: TypeId = TypeId(4);
 const TASK_OUTCOME_TYPE: TypeId = TypeId(5);
-const DURATION_TYPE: TypeId = TypeId(6);
-const BYTES_TYPE: TypeId = TypeId(7);
-const PATH_TYPE: TypeId = TypeId(8);
-const TEXT_MAP_TYPE: TypeId = TypeId(9);
-const SYNTHETIC_TYPE_COUNT: u32 = 10;
+const BYTES_TYPE: TypeId = TypeId(6);
+const PATH_TYPE: TypeId = TypeId(7);
+const TEXT_MAP_TYPE: TypeId = TypeId(8);
+const SYNTHETIC_TYPE_COUNT: u32 = 9;
 
 /// Failure at the trusted typed-HIR to MIR boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -418,7 +417,6 @@ impl<'a> Compiler<'a> {
                 constraint_error: Some(CONSTRAINT_ERROR_TYPE),
                 task_fault: Some(TASK_FAULT_TYPE),
                 task_outcome: Some(TASK_OUTCOME_TYPE),
-                duration: Some(DURATION_TYPE),
                 file: Some(self.file_type),
                 socket: Some(self.socket_type),
                 bytes: Some(BYTES_TYPE),
@@ -1029,7 +1027,6 @@ impl<'a> Compiler<'a> {
                     RequirementType::Nominal(CONTRACT_FAULT_TYPE, Vec::new())
                 }
                 BuiltinType::TaskFault => RequirementType::Nominal(TASK_FAULT_TYPE, Vec::new()),
-                BuiltinType::Duration => RequirementType::Nominal(DURATION_TYPE, Vec::new()),
             }),
             TyData::Tuple(elements) => Ok(RequirementType::Tuple(
                 elements
@@ -3094,6 +3091,9 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                             span,
                         )? {
                             ConstructionCheck::Proven => ConstructionMode::Proven,
+                            ConstructionCheck::Precondition { index } => {
+                                ConstructionMode::Precondition { index }
+                            }
                             ConstructionCheck::Runtime => ConstructionMode::Runtime,
                         },
                     },
@@ -3395,8 +3395,6 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             | BuiltinValue::ProcessEnvironment
             | BuiltinValue::TaskFaultCode
             | BuiltinValue::TaskFaultMessage
-            | BuiltinValue::DurationMilliseconds
-            | BuiltinValue::DurationAsMilliseconds
             | BuiltinValue::FileOpenRead
             | BuiltinValue::FileCreate
             | BuiltinValue::FileTryOpenRead
@@ -3693,6 +3691,12 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                     span,
                 )? {
                     ConstructionCheck::Proven => ConstructionMode::Proven,
+                    ConstructionCheck::Precondition { .. } => {
+                        return Err(defect(
+                            "record invariant construction cannot use a precondition certificate",
+                            span,
+                        ));
+                    }
                     ConstructionCheck::Runtime => ConstructionMode::Runtime,
                 }
             }
@@ -3869,8 +3873,6 @@ fn executable_builtin(builtin: BuiltinValue) -> Option<Builtin> {
         BuiltinValue::ProcessEnvironment => Builtin::ProcessEnvironment,
         BuiltinValue::TaskFaultCode => Builtin::TaskFaultCode,
         BuiltinValue::TaskFaultMessage => Builtin::TaskFaultMessage,
-        BuiltinValue::DurationMilliseconds => Builtin::DurationMilliseconds,
-        BuiltinValue::DurationAsMilliseconds => Builtin::DurationAsMilliseconds,
         BuiltinValue::FileOpenRead => Builtin::FileOpenRead,
         BuiltinValue::FileCreate => Builtin::FileCreate,
         BuiltinValue::FileTryOpenRead => Builtin::FileTryOpenRead,
@@ -4166,7 +4168,6 @@ fn synthetic_types() -> Vec<TypeDef> {
         },
         task_fault_type(span),
         task_outcome_type(span),
-        opaque_record_type(DURATION_TYPE, "Duration", Type::Int, span),
         opaque_record_type(BYTES_TYPE, "Bytes", Type::Text, span),
         opaque_record_type(PATH_TYPE, "Path", Type::Text, span),
         TypeDef {
@@ -4261,7 +4262,6 @@ fn lower_builtin_type(builtin: BuiltinType) -> Type {
         BuiltinType::ConstraintError => Type::Nominal(CONSTRAINT_ERROR_TYPE, Vec::new()),
         BuiltinType::ContractFault => Type::Nominal(CONTRACT_FAULT_TYPE, Vec::new()),
         BuiltinType::TaskFault => Type::Nominal(TASK_FAULT_TYPE, Vec::new()),
-        BuiltinType::Duration => Type::Nominal(DURATION_TYPE, Vec::new()),
     }
 }
 

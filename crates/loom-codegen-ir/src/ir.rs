@@ -70,7 +70,6 @@ pub struct CanonicalTypeCatalog {
     pub constraint_error: Option<TypeId>,
     pub task_fault: Option<TypeId>,
     pub task_outcome: Option<TypeId>,
-    pub duration: Option<TypeId>,
     pub file: Option<TypeId>,
     pub socket: Option<TypeId>,
     pub bytes: Option<TypeId>,
@@ -93,7 +92,6 @@ impl CanonicalTypeCatalog {
             constraint_error: prelude.constraint_error,
             task_fault: prelude.task_fault,
             task_outcome: prelude.task_outcome,
-            duration: prelude.duration,
             file: prelude.file,
             socket: prelude.socket,
             bytes: prelude.bytes,
@@ -1304,7 +1302,6 @@ pub enum FaultCode {
     IntegerDivisionByZero,
     IntegerDivisionOverflow,
     InvalidByte,
-    InvalidDuration,
     InvalidSleepDuration,
     SleepDurationOverflow,
     TaskAnyFailed,
@@ -1659,10 +1656,10 @@ pub enum TerminatorKind {
     },
     Return(ValueId),
     /// Constructs one typed `Task[Unit]` backed by the executor's monotonic
-    /// timer reactor. `milliseconds` is the normalized signed Int payload of
-    /// either a source Int or Duration. The task handle exists only on
-    /// `normal`; a negative duration or checked timer-range overflow activates
-    /// the corresponding source fault and enters `fault`.
+    /// timer reactor. `milliseconds` is the normalized signed Int payload
+    /// supplied by semantic analysis. The task handle exists only on `normal`;
+    /// a negative duration or checked timer-range overflow activates the
+    /// corresponding source fault and enters `fault`.
     TaskSleep {
         milliseconds: ValueId,
         normal: ResultTarget,

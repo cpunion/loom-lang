@@ -204,14 +204,17 @@ The standard Task API provides:
 
 ```text
 Task.sleep(milliseconds Int) Task[Unit]
-Task.sleep(duration Duration) Task[Unit]
 ```
 
 Sleep duration must be non-negative. A negative `Int` raises the
 `InvalidSleepDuration` RuntimeFault; overflow while converting or adding the
 monotonic deadline raises `SleepDurationOverflow`. The standard function
-`std.time.milliseconds` constructs a non-negative `Duration`, whose
-`.as_milliseconds()` method returns `Int`.
+`std.time.milliseconds` constructs the source-declared constrained type
+`Duration`, whose `.as_milliseconds()` method returns `Int`. Like every
+constrained `Int`, it converts implicitly to its broader `Int` base at the
+sleep boundary; there is no Duration-specific overload. Its non-negative input
+rule is an ordinary precondition and therefore faults as `PreconditionFault`
+when violated.
 
 File and socket operations expose typed tasks. There is no Loom source
 constructor that converts an `Int` into a raw readiness wait. See

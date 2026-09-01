@@ -699,9 +699,6 @@ impl SerializationClosure {
             Builtin::TaskFaultCode | Builtin::TaskFaultMessage => {
                 self.add_optional_type(prelude.task_fault);
             }
-            Builtin::DurationMilliseconds | Builtin::DurationAsMilliseconds => {
-                self.add_optional_type(prelude.duration);
-            }
             Builtin::FileOpenRead
             | Builtin::FileCreate
             | Builtin::FileReadText
@@ -1315,7 +1312,6 @@ impl IdMaps {
         prelude.constraint_error = self.optional_type(prelude.constraint_error);
         prelude.task_fault = self.optional_type(prelude.task_fault);
         prelude.task_outcome = self.optional_type(prelude.task_outcome);
-        prelude.duration = self.optional_type(prelude.duration);
         prelude.file = self.optional_type(prelude.file);
         prelude.socket = self.optional_type(prelude.socket);
         prelude.bytes = self.optional_type(prelude.bytes);

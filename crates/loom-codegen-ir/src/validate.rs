@@ -498,7 +498,6 @@ impl<'a> Validator<'a> {
             ("constraint_error", canonical.constraint_error),
             ("task_fault", canonical.task_fault),
             ("task_outcome", canonical.task_outcome),
-            ("duration", canonical.duration),
             ("file", canonical.file),
             ("socket", canonical.socket),
             ("bytes", canonical.bytes),

@@ -15,10 +15,9 @@ use loom_core::runtime_fault::{
     ARTIFACT_PROOF_REJECTED_FAULT_CODE, ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
     EMPTY_TASK_JOIN_FAULT_CODE, EMPTY_TASK_JOIN_FAULT_MESSAGE, INTEGER_OVERFLOW_FAULT_CODE,
     INTEGER_OVERFLOW_FAULT_MESSAGE, INVALID_BYTE_FAULT_CODE, INVALID_BYTE_FAULT_MESSAGE,
-    INVALID_DURATION_FAULT_CODE, INVALID_DURATION_FAULT_MESSAGE, INVALID_SLEEP_DURATION_FAULT_CODE,
-    INVALID_SLEEP_DURATION_FAULT_MESSAGE, LOG_WRITE_FAULT_CODE, LOG_WRITE_FAULT_MESSAGE,
-    SLEEP_DURATION_OVERFLOW_FAULT_CODE, SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE,
-    STDOUT_WRITE_FAULT_CODE, STDOUT_WRITE_FAULT_MESSAGE,
+    INVALID_SLEEP_DURATION_FAULT_CODE, INVALID_SLEEP_DURATION_FAULT_MESSAGE, LOG_WRITE_FAULT_CODE,
+    LOG_WRITE_FAULT_MESSAGE, SLEEP_DURATION_OVERFLOW_FAULT_CODE,
+    SLEEP_DURATION_OVERFLOW_FAULT_MESSAGE, STDOUT_WRITE_FAULT_CODE, STDOUT_WRITE_FAULT_MESSAGE,
 };
 use loom_mir::{
     BinaryOp, Block, Builtin, CallArgument, CallTarget, CheckedProgram, Constant, ConstructionMode,
@@ -3654,7 +3653,9 @@ impl<'program> Interpreter<'program> {
                     let value = match construction {
                         ConstructionMode::Runtime => interpreter.checked_record(ty, value, span),
                         ConstructionMode::Recheck => interpreter.rechecked_record(ty, value, span),
-                        ConstructionMode::Plain | ConstructionMode::Proven => Ok(value),
+                        ConstructionMode::Plain
+                        | ConstructionMode::Proven
+                        | ConstructionMode::Precondition { .. } => Ok(value),
                     };
                     match value {
                         Ok(value) => SyncStep::complete(value),
@@ -3692,7 +3693,9 @@ impl<'program> Interpreter<'program> {
                     let value = match construction {
                         ConstructionMode::Runtime => interpreter.checked_refine(ty, value, span),
                         ConstructionMode::Recheck => interpreter.rechecked_refine(ty, value, span),
-                        ConstructionMode::Plain | ConstructionMode::Proven => Ok(Value::Refined {
+                        ConstructionMode::Plain
+                        | ConstructionMode::Proven
+                        | ConstructionMode::Precondition { .. } => Ok(Value::Refined {
                             ty,
                             value: Box::new(value),
                         }),
@@ -3780,9 +3783,9 @@ impl<'program> Interpreter<'program> {
             },
             ExprKind::Sleep { milliseconds } => {
                 let span = expression.span;
-                let duration = self.sync_eval_expr(frame, milliseconds);
-                duration.and_then(self, move |interpreter, duration| {
-                    interpreter.sync_eval_sleep(duration, span)
+                let value = self.sync_eval_expr(frame, milliseconds);
+                value.and_then(self, move |interpreter, value| {
+                    interpreter.sync_eval_sleep(&value, span)
                 })
             }
             ExprKind::TaskJoin { mode, arguments } => {
@@ -3867,23 +3870,18 @@ impl<'program> Interpreter<'program> {
         ))
     }
 
-    fn sync_eval_sleep(&mut self, duration: Value, span: Span) -> SyncStep<'program, Value> {
-        let milliseconds = match duration {
-            Value::Int { value } => value,
-            Value::Record { ty, fields } if self.program.prelude.duration == Some(ty) => {
-                match record_descriptor(&fields, span) {
-                    Ok(value) => value,
-                    Err(failure) => return SyncStep::fail(failure),
-                }
-            }
-            _ => {
-                return SyncStep::fail(self.runtime_fault(
-                    "LOOM_RUNTIME_INVALID_MIR",
-                    "Task.sleep duration did not produce Int or Duration",
-                    span,
-                ));
-            }
+    fn sync_eval_sleep(&mut self, value: &Value, span: Span) -> SyncStep<'program, Value> {
+        let Value::Int {
+            value: milliseconds,
+        } = value
+        else {
+            return SyncStep::fail(self.runtime_fault(
+                "LOOM_RUNTIME_INVALID_MIR",
+                "Task.sleep milliseconds did not produce Int",
+                span,
+            ));
         };
+        let milliseconds = *milliseconds;
         if milliseconds < 0 {
             return SyncStep::fail(self.runtime_fault(
                 INVALID_SLEEP_DURATION_FAULT_CODE,
@@ -4522,7 +4520,9 @@ impl<'program> Interpreter<'program> {
                     ConstructionMode::Recheck => {
                         Ok(self.rechecked_record(*ty, value, expression.span)?)
                     }
-                    ConstructionMode::Plain | ConstructionMode::Proven => Ok(value),
+                    ConstructionMode::Plain
+                    | ConstructionMode::Proven
+                    | ConstructionMode::Precondition { .. } => Ok(value),
                 }
             }
             ExprKind::Variant {
@@ -4551,7 +4551,9 @@ impl<'program> Interpreter<'program> {
                     ConstructionMode::Recheck => {
                         Ok(self.rechecked_refine(*ty, value, expression.span)?)
                     }
-                    ConstructionMode::Plain | ConstructionMode::Proven => Ok(Value::Refined {
+                    ConstructionMode::Plain
+                    | ConstructionMode::Proven
+                    | ConstructionMode::Precondition { .. } => Ok(Value::Refined {
                         ty: *ty,
                         value: Box::new(value),
                     }),
@@ -4617,19 +4619,16 @@ impl<'program> Interpreter<'program> {
             }
             ExprKind::Await { .. } => self.eval_nested_await(frame, expression),
             ExprKind::Sleep { milliseconds } => {
-                let duration = self.eval_expr(frame, milliseconds)?;
-                let milliseconds = match duration {
-                    Value::Int { value } => value,
-                    Value::Record { ty, fields } if self.program.prelude.duration == Some(ty) => {
-                        record_descriptor(&fields, expression.span)?
-                    }
-                    _ => {
-                        return Err(EvalAbort::from(self.runtime_fault(
-                            "LOOM_RUNTIME_INVALID_MIR",
-                            "Task.sleep duration did not produce Int or Duration",
-                            expression.span,
-                        )));
-                    }
+                let value = self.eval_expr(frame, milliseconds)?;
+                let Value::Int {
+                    value: milliseconds,
+                } = value
+                else {
+                    return Err(EvalAbort::from(self.runtime_fault(
+                        "LOOM_RUNTIME_INVALID_MIR",
+                        "Task.sleep milliseconds did not produce Int",
+                        expression.span,
+                    )));
                 };
                 if milliseconds < 0 {
                     return Err(EvalAbort::from(self.runtime_fault(
@@ -5301,12 +5300,6 @@ impl<'program> Interpreter<'program> {
     ) -> Result<Value, ExecutionFailure> {
         if matches!(
             builtin,
-            Builtin::DurationMilliseconds | Builtin::DurationAsMilliseconds
-        ) {
-            return self.eval_duration_builtin(builtin, arguments, span);
-        }
-        if matches!(
-            builtin,
             Builtin::TextLength
                 | Builtin::TextGet
                 | Builtin::TextConcat
@@ -5788,41 +5781,6 @@ impl<'program> Interpreter<'program> {
             .get(variant.0 as usize)
             .copied()
             .ok_or_else(|| self.invalid_builtin_fault(span))
-    }
-
-    fn eval_duration_builtin(
-        &self,
-        builtin: Builtin,
-        arguments: &[Value],
-        span: Span,
-    ) -> Result<Value, ExecutionFailure> {
-        match (builtin, arguments) {
-            (Builtin::DurationMilliseconds, [Value::Int { value }]) => {
-                if *value < 0 {
-                    return Err(self
-                        .runtime_fault(
-                            INVALID_DURATION_FAULT_CODE,
-                            INVALID_DURATION_FAULT_MESSAGE,
-                            span,
-                        )
-                        .into());
-                }
-                self.opaque_record(self.program.prelude.duration, *value, "Duration", span)
-            }
-            (Builtin::DurationAsMilliseconds, [Value::Record { ty, fields }])
-                if self.program.prelude.duration == Some(*ty) =>
-            {
-                fields.first().cloned().ok_or_else(|| {
-                    self.runtime_fault(
-                        "LOOM_RUNTIME_INVALID_MIR",
-                        "Duration record is missing its value",
-                        span,
-                    )
-                    .into()
-                })
-            }
-            _ => Err(self.invalid_builtin_fault(span)),
-        }
     }
 
     #[allow(clippy::too_many_lines)]

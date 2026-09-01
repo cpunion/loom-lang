@@ -53,7 +53,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 54")?;
+    writeln!(output, "lcir 55")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -67,7 +67,6 @@ pub fn write_program_with_options(
         ("constraint_error", canonical.constraint_error),
         ("task_fault", canonical.task_fault),
         ("task_outcome", canonical.task_outcome),
-        ("duration", canonical.duration),
         ("file", canonical.file),
         ("socket", canonical.socket),
         ("bytes", canonical.bytes),
@@ -1109,7 +1108,6 @@ const fn fault_code_name(code: crate::FaultCode) -> &'static str {
         crate::FaultCode::IntegerDivisionByZero => "IntegerDivisionByZero",
         crate::FaultCode::IntegerDivisionOverflow => "IntegerDivisionOverflow",
         crate::FaultCode::InvalidByte => "InvalidByte",
-        crate::FaultCode::InvalidDuration => "InvalidDuration",
         crate::FaultCode::InvalidSleepDuration => "InvalidSleepDuration",
         crate::FaultCode::SleepDurationOverflow => "SleepDurationOverflow",
         crate::FaultCode::TaskAnyFailed => "TaskAnyFailed",

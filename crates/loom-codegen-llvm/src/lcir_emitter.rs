@@ -47,7 +47,6 @@ use loom_core::runtime_fault::{
     ARTIFACT_PROOF_REJECTED_FAULT_CODE, ARTIFACT_PROOF_REJECTED_FAULT_MESSAGE,
     EMPTY_TASK_JOIN_FAULT_CODE, EMPTY_TASK_JOIN_FAULT_MESSAGE, INTEGER_OVERFLOW_FAULT_CODE,
     INTEGER_OVERFLOW_FAULT_MESSAGE, INVALID_BYTE_FAULT_CODE, INVALID_BYTE_FAULT_MESSAGE,
-    INVALID_DURATION_FAULT_CODE, INVALID_DURATION_FAULT_MESSAGE,
 };
 use loom_core::runtime_fault::{
     INVALID_SLEEP_DURATION_FAULT_CODE, INVALID_SLEEP_DURATION_FAULT_MESSAGE, LOG_WRITE_FAULT_CODE,
@@ -18772,7 +18771,6 @@ impl<'ctx> Backend<'ctx, '_> {
             FaultCode::IntegerOverflow
                 | FaultCode::ArtifactProofRejected
                 | FaultCode::InvalidByte
-                | FaultCode::InvalidDuration
                 | FaultCode::InvalidSleepDuration
                 | FaultCode::SleepDurationOverflow
                 | FaultCode::TaskAnyFailed
@@ -19122,7 +19120,6 @@ fn fault_properties(code: FaultCode) -> (&'static str, &'static str) {
             ("IntegerDivisionOverflow", "integer division overflowed")
         }
         FaultCode::InvalidByte => (INVALID_BYTE_FAULT_CODE, INVALID_BYTE_FAULT_MESSAGE),
-        FaultCode::InvalidDuration => (INVALID_DURATION_FAULT_CODE, INVALID_DURATION_FAULT_MESSAGE),
         FaultCode::InvalidSleepDuration => (
             INVALID_SLEEP_DURATION_FAULT_CODE,
             INVALID_SLEEP_DURATION_FAULT_MESSAGE,

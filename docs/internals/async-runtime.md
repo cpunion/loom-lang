@@ -165,10 +165,12 @@ resource according to the scoped operation's ownership contract.
 Checked `Task.sleep` is admitted wherever LCIR has a proved current executor
 context. This includes an async callback and a synchronous helper reached from
 one. The LCIR terminator consumes canonical `Int` milliseconds; lowering
-extracts the single field from a source `Duration` before reaching that
-boundary. It has explicit normal and fault edges and contributes `MAY_FAULT`
-plus `NEEDS_EXECUTOR`, but it does not suspend or collect. A negative input
-raises `InvalidSleepDuration`.
+uses the general representation-preserving refined-to-base coercion for a
+source `Duration`, or any other constrained `Int`, before reaching that
+boundary. It has explicit normal and
+fault edges and contributes `MAY_FAULT` plus `NEEDS_EXECUTOR`, but it does not
+suspend or collect. A negative raw `Int` input raises `InvalidSleepDuration`;
+that case is unrepresentable for a source `Duration` value.
 Signed millisecond-to-nanosecond multiplication and unsigned monotonic-deadline
 addition are checked separately; either overflow raises
 `SleepDurationOverflow`.

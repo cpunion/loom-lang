@@ -145,12 +145,12 @@ definitions are ordinary Loom source, while only the exact compiler-owned
 primitive accepts Text bytes and returns no policy-bearing value; line-feed
 composition remains in `write_line` source.
 
-`std.time.milliseconds` is also an ordinary source function. Its body alone
-imports the exact-owner `__milliseconds` primitive that establishes the
-non-negative `Duration`; application imports resolve only the public source
-definition. The immutable `Duration` representation and
-`as_milliseconds` inspection remain irreducible core operations, while the
-public construction spelling has no builtin dispatch path.
+`std.time.Duration`, `milliseconds`, and `Duration.as_milliseconds` are
+ordinary source declarations. `Duration` is a constrained `Int`, and
+`milliseconds` establishes its non-negative predicate through an ordinary
+precondition. Refined-to-base coercion normalizes a duration before the
+scheduler boundary. There is no duration-specific compiler construction,
+prelude identity, representation, method dispatch, or runtime operation.
 
 `DecodeTextError` and `PathError` are likewise ordinary public enums declared
 by compiler-distributed `std.text` and `std.path` source. Checked MIR retains

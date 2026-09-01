@@ -1251,6 +1251,29 @@ mod tests {
     }
 
     #[test]
+    fn portable_precondition_construction_has_proven_liveness() {
+        let refined = TypeId(0);
+        for construction in [
+            ConstructionMode::Proven,
+            ConstructionMode::Precondition { index: 0 },
+        ] {
+            let direct_construction = expression(
+                ExprKind::Refine {
+                    ty: refined,
+                    value: Box::new(expression(ExprKind::Constant(Constant::Int(1)), Type::Int)),
+                    construction,
+                },
+                Type::Nominal(refined, Vec::new()),
+            );
+            let body = body_with_faulting_newer_cleanup(evaluate(direct_construction));
+            assert!(
+                !analyze_suspension_liveness(&body)[&1].contains(&LocalId(0)),
+                "direct construction {construction:?} must not add a fault unwind edge"
+            );
+        }
+    }
+
+    #[test]
     fn every_runtime_fault_family_has_a_cleanup_unwind_edge() {
         let int = || expression(ExprKind::Constant(Constant::Int(1)), Type::Int);
         let runtime_ty = TypeId(0);

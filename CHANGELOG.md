@@ -63,9 +63,16 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   frontend, including integer parsing, the public `Json` and `JsonError` enums,
   JSON parsing and formatting, logging wrappers, process wrappers, resource
   concepts, the public `DecodeTextError` and `PathError` enums, the public
-  `std.time.milliseconds` wrapper, and the complete public `std.log` graph.
-  Time construction now resolves through an ordinary source
-  `DefId`; only its exact-owner private primitive remains below source. Logging
+  `std.time.Duration`, its constructor and inspection method, and the complete
+  public `std.log` graph. `Duration` is an ordinary constrained `Int`; its
+  construction, precondition proof, equality, method dispatch, and
+  refined-to-base conversion all use general language mechanisms. There is no
+  Duration builtin, compiler prelude identity, fixed MIR/LCIR slot, or private
+  runtime primitive. The
+  general refined-construction `Precondition { index }` certificate is
+  independently matched against the direct immutable parameter and retained
+  runtime `requires` expression, preserving check elimination and persistent
+  cache hits without trusting process-local proof state. Logging
   resolves through ordinary source `DefId` values and has no universal-value
   native fallback;
   only its exact-owner private typed write primitive remains compiler-owned.
@@ -101,8 +108,8 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   public `std.file` and `std.net` functions resolve through ordinary source
   wrappers, and the Path forms reuse their Text counterparts. Only 16
   exact-owner resource/I/O/close leaves plus two protected error access leaves
-  remain below source. Interpreted MIR artifact 47 and persistent cache schema
-  20 reject removed compiler-synthesized JSON types and UTF-8-unit dispatch,
+  remain below source. Interpreted MIR artifact 48 and persistent cache schema
+  21 reject removed Duration and JSON compiler identities and UTF-8-unit dispatch,
   infinite value layouts,
   source-impossible mutable parameter slots and coroutine receivers,
   invariant-boundary bypasses, removed semantic types, fixed slots, and

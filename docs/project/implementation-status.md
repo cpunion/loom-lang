@@ -23,7 +23,7 @@ names still recognized by semantic builtin tables.
 | `std.float` | `ParseFloatError`, `FloatToIntError`, parsing, formatting, finiteness, and both explicit Int conversions | only exact-owner private scalar primitives and the runtime parse/format boundary | source-backed |
 | `std.process` | public `arguments` and `environment` wrappers | compiler-private process snapshot primitives and their runtime OS boundary | source-backed |
 | `std.text` / `std.path` | public `DecodeTextError` and `PathError` enums | Text, Bytes, Path, and their intrinsic construction and decoding operations remain core mechanisms | partial |
-| `std.time` | public `milliseconds` wrapper | `Duration`, its exact-owner private construction leaf, and intrinsic conversion method | partial |
+| `std.time` | `Duration`, `milliseconds`, and `Duration.as_milliseconds` | only the general constrained-type, contract, and refined-to-base mechanisms | source-backed |
 | `std.file` / `std.net` | `File`, `Socket`, all public acquisition and I/O methods, and their `Dispose`/`MustScope` conformances | only exact-owner private typed I/O and close leaves | source-backed |
 | `Task.sleep/all/settled/any/race` | none | temporary public-name resolution through `TaskIntrinsic` plus the private scheduler substrate | transitional |
 
@@ -138,7 +138,7 @@ reclamation, and cleanup even when a typed disposer reports a defect.
 | Portable `.loomlib` | Source/interface format v4 is implemented and release-gated; consumers recompile embedded module source, and the artifact is not a native library or stable ABI. |
 | Directory packages and dependencies | Manifest and lock schema 2 derive packages from directories, exclude dependency tests, and cover path, exact Git/fork, registry, and portable-artifact sources. |
 | Local and HTTPS registry | Implemented with authentication, digest verification, bounded downloads, offline validated cache, and hostile-cache tests. Registry-version immutability remains a server protocol requirement. |
-| Persistent compiler cache | Implemented for parse/interface/typed state/checked MIR/typed native objects/portable artifacts; proof-bearing typed/MIR layers intentionally rebuild from source to preserve cold/warm proof decisions, canonical `MustScope` identity is rederived from current module-qualified HIR rather than trusted from typed-state bytes, and native final link is intentionally uncached. |
+| Persistent compiler cache | Implemented for parse/interface/typed state/checked MIR/typed native objects/portable artifacts; process-local proof conclusions intentionally rebuild from source, while exact refined-construction precondition certificates are independently revalidated and cacheable; canonical `MustScope` identity is rederived from current module-qualified HIR rather than trusted from typed-state bytes, and native final link is intentionally uncached. |
 | Debug source info | Complete typed LCIR artifacts carry source functions, target-laid-out product and physical return types, stable `argN` parameter locations, artificial status/writeback/fault-context state, and instruction locations. Focused Linux DWARF, macOS dSYM/LLDB, and MSVC CodeView/PDB checks remain available, but debugger-container inspection is not part of the lean development gate. Unsupported reachable semantics fail before debug object emission. |
 | LSP | Built and tested as a workspace crate; this status does not claim editor-specific distribution. |
 | Formatter | Implemented with write/check modes and CLI tests. |

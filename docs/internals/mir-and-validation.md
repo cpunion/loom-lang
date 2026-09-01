@@ -189,11 +189,26 @@ construction as `Proven`. That mark is a process-local compiler conclusion,
 not a portable proof certificate. Fresh source keeps the direct nominal result
 and emits no predicate or invariant check.
 
-Portable `.loomi` serialization writes `Recheck`. Decoding also changes a
-forged `Proven` spelling to `Recheck` before MIR validation. A `.loomlib`
-carries no MIR or construction disposition: its source is analyzed again and
-the consuming frontend derives a fresh `Proven` or runtime-checked construction
-as appropriate.
+A narrow refined construction may instead carry
+`Precondition { index }`. The index names one retained runtime `requires`
+clause in the current function or method. Semantic analysis emits this form
+only when the constructed value is a direct immutable ordinary parameter and
+the refined predicate, after replacing `self` with that parameter, is exactly
+the retained precondition. The MIR validator independently checks the index,
+parameter origin and mutability, refined destination, and structural contract
+expression. It ignores diagnostic text and spans. Projected values, aliases,
+`self`, records, inherited contracts, eliminated preconditions, and unsupported
+contract-expression shapes cannot use this certificate. A validated
+certificate is representation-preserving like `Proven`, but is portable
+because its proof is reconstructed from checked MIR rather than trusted from a
+serialized disposition.
+
+Portable `.loomi` serialization writes process-local `Proven` as `Recheck`.
+Decoding also changes a forged `Proven` spelling to `Recheck` before MIR
+validation. A `Precondition` certificate retains its index and must pass the
+independent checks above. A `.loomlib` carries no MIR or construction
+disposition: its source is analyzed again and the consuming frontend derives a
+fresh construction disposition as appropriate.
 
 `Recheck` retains the direct nominal result type; it is not the source-facing
 `Result[T, ConstraintError]` produced by an ordinary runtime-checked
@@ -218,12 +233,14 @@ count, or invariant. Its value summary is type-only and cannot reveal a scalar,
 content, length, variant, collection count, or nested value.
 
 The persistent compiler cache does not turn a cache hit into a replay build.
-Proof-bearing checked MIR and typed semantic state are not published, and a
-forged cached proof disposition is rejected as a miss. A later process rebuilds
-those layers from the exact source, obtains the same process-local `Proven`
-conclusion, and therefore preserves cold/warm diagnostics, native identity, and
-check elimination. In-process semantic reuse remains available because it has
-not crossed a wire trust boundary.
+Checked MIR containing process-local `Proven` or `Recheck` dispositions and
+typed semantic state containing process-local conclusions are not published.
+A later process rebuilds those layers from the exact source and obtains the
+same local conclusion. Independently validated `Precondition` certificates are
+cacheable, so a source constructor guarded by its own retained precondition
+preserves cold/warm diagnostics, native identity, and check elimination.
+Malformed certificates are rejected by MIR validation. In-process semantic
+reuse remains available because it has not crossed a wire trust boundary.
 
 This rule prevents the construction disposition alone from bypassing the
 predicate or invariant embedded in the same artifact. It does not authenticate
@@ -232,10 +249,6 @@ checksums, authenticated distribution, and the user's trust policy establish
 that separate boundary. A local cache digest detects corruption; it is not a
 credential or a signature against an attacker with the same filesystem
 authority.
-
-A future serialized proof format may avoid replay only if it carries a
-structured certificate that the decoder can independently validate. A boolean
-or enum disposition is not such a certificate.
 
 Within one fresh compilation, validation still checks that `Proven` appears
 only at a matching refined predicate or record-invariant construction and that
@@ -260,7 +273,7 @@ root merely because storage still exists.
 The interpreted MIR envelope currently uses:
 
 - format `loom.interpreted-mir`;
-- artifact version `47`;
+- artifact version `48`;
 - Loom language version `0.4`.
 
 Generic compiler-cache envelopes carry an explicit null `entry`. Executable

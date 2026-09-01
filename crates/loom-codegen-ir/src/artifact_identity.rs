@@ -9,7 +9,7 @@ use crate::{
 /// This is an invalidation boundary, not a compatibility promise. A change to
 /// the encoded LCIR meaning must change this number before the identity is used
 /// by a persistent object cache.
-pub const ARTIFACT_IDENTITY_SCHEMA: u32 = 56;
+pub const ARTIFACT_IDENTITY_SCHEMA: u32 = 57;
 
 /// Returns the deterministic compiler-private identity of a checked artifact.
 ///

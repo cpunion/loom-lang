@@ -15,7 +15,7 @@ rather than assuming every build output is executable.
 | Runtime bundle | `runtime pack` or a release archive | target-specific | used by the linker |
 
 The interpreted artifact format is `loom.interpreted-mir`, currently version
-`47`. A build checks the complete source program, then writes the closed
+`48`. A build checks the complete source program, then writes the closed
 checked-MIR definitions for one selected export. The artifact is decoded and
 fully validated before execution. A matching version must also use the exact
 current MIR field set: missing fields are not synthesized and unknown fields
@@ -23,7 +23,9 @@ are rejected. There is no shape upgrade or compatibility decoder behind the
 version check. Process-local receiver-invariant restoration proofs are encoded
 one way: every `Proven` marker decodes as `Recheck`, and the executable check is
 rebuilt from the receiver's nominal type rather than from serialized contract
-text.
+text. A refined construction's `Precondition { index }` certificate retains its
+index only when validation proves that the indexed runtime precondition exactly
+establishes the direct immutable parameter used by the refined predicate.
 
 Portable libraries use source-and-interface format version `4`. They record the
 Loom language version, resolved module graph, exact non-standard-library Loom

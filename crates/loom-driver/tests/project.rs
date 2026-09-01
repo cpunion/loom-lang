@@ -13,7 +13,7 @@ use loom_driver::{
     format_source,
 };
 use loom_hir::{SourceUnit, lower_files};
-use loom_interpreter::{Interpreter, TestStatus, Value};
+use loom_interpreter::{ContractFaultKind, ExecutionFailure, Interpreter, TestStatus, Value};
 use loom_mir::ConceptIdentity;
 use loom_sema::{CallTarget, ConstantValue, TaskIntrinsic};
 use loom_syntax::parse_with_file;
@@ -2757,6 +2757,35 @@ test async fn real_io() {{
     assert_eq!(results[0].status, TestStatus::Passed, "{results:#?}");
     server.join().expect("join test server");
     assert_eq!(std::fs::read_to_string(file).unwrap(), "hello from loom");
+}
+
+#[test]
+fn negative_source_duration_uses_the_ordinary_precondition_fault() {
+    let project = TestProject::new();
+    project.write(
+        "duration_test.loom",
+        r"import std.time.milliseconds
+
+test fn rejects_negative_duration() {
+    discard milliseconds(-1)
+}
+",
+    );
+
+    let snapshot = AnalysisHost::new_with_options(&project.root, &test_project_options())
+        .expect("open Duration project")
+        .snapshot()
+        .expect("compile Duration project");
+    assert!(!snapshot.has_errors(), "{:#?}", snapshot.diagnostics());
+    let results = snapshot.run_tests().expect("execute Duration test");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].status, TestStatus::Failed, "{results:#?}");
+    assert!(matches!(
+        results[0].failure.as_ref(),
+        Some(ExecutionFailure::Contract { fault })
+            if fault.category == ContractFaultKind::Precondition
+                && fault.code == "PreconditionFault"
+    ));
 }
 
 #[test]

@@ -12,7 +12,6 @@ const FLOAT_MODULE: &str = "std.float";
 const FILE_MODULE: &str = "std.file";
 const LOG_MODULE: &str = "std.log";
 const NET_MODULE: &str = "std.net";
-const TIME_MODULE: &str = "std.time";
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum CompilerStdPrimitive {
@@ -21,7 +20,6 @@ pub(crate) enum CompilerStdPrimitive {
     FloatIsFinite,
     FloatParseStatus,
     FloatToInt,
-    DurationMilliseconds,
     FileOpenRead,
     FileCreate,
     FileTryOpenRead,
@@ -56,7 +54,6 @@ impl CompilerStdPrimitive {
             Self::FloatIsFinite => "__is_finite",
             Self::FloatParseStatus => "__parse",
             Self::FloatToInt => "__to_int",
-            Self::DurationMilliseconds => "__milliseconds",
             Self::FileOpenRead => "__open_read",
             Self::FileCreate => "__create",
             Self::FileTryOpenRead => "__try_open_read",
@@ -110,7 +107,6 @@ pub(crate) fn resolve_import(
         (FLOAT_MODULE, "float", "__is_finite") => Some(CompilerStdPrimitive::FloatIsFinite),
         (FLOAT_MODULE, "float", "__parse") => Some(CompilerStdPrimitive::FloatParseStatus),
         (FLOAT_MODULE, "float", "__to_int") => Some(CompilerStdPrimitive::FloatToInt),
-        (TIME_MODULE, "time", "__milliseconds") => Some(CompilerStdPrimitive::DurationMilliseconds),
         (FILE_MODULE, "file", "__open_read") => Some(CompilerStdPrimitive::FileOpenRead),
         (FILE_MODULE, "file", "__create") => Some(CompilerStdPrimitive::FileCreate),
         (FILE_MODULE, "file", "__try_open_read") => Some(CompilerStdPrimitive::FileTryOpenRead),
@@ -206,12 +202,10 @@ mod tests {
         let file_owner = module(&mut program, std_package.clone(), "std.file");
         let log_owner = module(&mut program, std_package.clone(), "std.log");
         let net_owner = module(&mut program, std_package.clone(), "std.net");
-        let time_owner = module(&mut program, std_package.clone(), "std.time");
         let wrong_owner = module(&mut program, std_package.clone(), "std.other");
         let wrong_package = module(&mut program, PackageId::standalone(), "std.process");
         let wrong_file_package = module(&mut program, PackageId::standalone(), "std.file");
         let wrong_net_package = module(&mut program, PackageId::standalone(), "std.net");
-        let wrong_time_package = module(&mut program, PackageId::standalone(), "std.time");
 
         assert_eq!(
             resolve_import(
@@ -252,14 +246,6 @@ mod tests {
         assert_eq!(
             resolve_import(&program, float_owner, &path(&["std", "float", "__to_int"]),),
             Some(CompilerStdPrimitive::FloatToInt)
-        );
-        assert_eq!(
-            resolve_import(
-                &program,
-                time_owner,
-                &path(&["std", "time", "__milliseconds"]),
-            ),
-            Some(CompilerStdPrimitive::DurationMilliseconds)
         );
         assert_eq!(
             resolve_import(&program, io_owner, &path(&["std", "io", "__error_kind"]),),
@@ -343,7 +329,6 @@ mod tests {
             (wrong_package, path(&["std", "process", "__argument_count"])),
             (wrong_file_package, path(&["std", "file", "__open_read"])),
             (wrong_net_package, path(&["std", "net", "__connect"])),
-            (wrong_time_package, path(&["std", "time", "__milliseconds"])),
             (owner, path(&["std.process", "__argument_count"])),
             (owner, path(&["std", "process", "arguments"])),
             (
@@ -387,13 +372,6 @@ mod tests {
             (float_owner, path(&["std", "float", "is_finite"])),
             (float_owner, path(&["std.float", "__from_int"])),
             (float_owner, path(&["std", "float", "__to_int", "extra"])),
-            (owner, path(&["std", "time", "__milliseconds"])),
-            (time_owner, path(&["std.time", "__milliseconds"])),
-            (time_owner, path(&["std", "time", "milliseconds"])),
-            (
-                time_owner,
-                path(&["std", "time", "__milliseconds", "extra"]),
-            ),
         ] {
             assert_eq!(
                 resolve_import(&program, candidate_owner, &candidate_path),

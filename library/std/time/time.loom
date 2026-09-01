@@ -1,6 +1,16 @@
-import std.time.__milliseconds
+/// A non-negative millisecond duration.
+pub type Duration = Int where self >= 0
+
+impl Duration {
+    /// Returns this duration's millisecond count.
+    pub method as_milliseconds(self) Int {
+        self
+    }
+}
 
 /// Constructs a non-negative millisecond duration.
-pub fn milliseconds(value Int) Duration {
-    __milliseconds(value)
+pub fn milliseconds(value Int) Duration
+requires value >= 0
+{
+    Duration(value)
 }
