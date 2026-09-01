@@ -6279,12 +6279,12 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
         let carrier_base = self
             .target_data
             .offset_of_element(&physical, 1)
-            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "JSON carrier offset is missing"))?;
+            .ok_or_else(|| CodegenError::new("LlvmAbiDefect", "sum carrier offset is missing"))?;
         let carrier_bytes = self
             .target_data
             .offset_of_element(&carrier, 1)
             .ok_or_else(|| {
-                CodegenError::new("LlvmAbiDefect", "JSON carrier byte offset is missing")
+                CodegenError::new("LlvmAbiDefect", "sum carrier byte offset is missing")
             })?;
         let payload_base = layout.payload_byte_offset(variant)?;
         let field_base = self
@@ -19209,7 +19209,7 @@ mod tests {
 
     #[test]
     fn sum_carrier_planner_compacts_equal_byte_classes_without_cross_class_aliases() {
-        let json = plan_sum_carrier(
+        let compact = plan_sum_carrier(
             &[
                 SumPayloadShape {
                     size: 0,
@@ -19246,10 +19246,10 @@ mod tests {
             8,
             super::SUM_CARRIER_MAX_PLACEMENT_WORK,
         )
-        .expect("plan compact Json carrier");
-        assert_eq!(json.payload_byte_offsets, [0, 0, 0, 8, 8, 8]);
-        assert_eq!(json.byte_len, 16);
-        assert_eq!(json.alignment, 8);
+        .expect("plan compact sum carrier");
+        assert_eq!(compact.payload_byte_offsets, [0, 0, 0, 8, 8, 8]);
+        assert_eq!(compact.byte_len, 16);
+        assert_eq!(compact.alignment, 8);
 
         let outer = plan_sum_carrier(
             &[

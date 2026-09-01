@@ -4926,7 +4926,7 @@ fn forged_proof_program() -> CheckedProgram {
 
 #[test]
 fn interpreted_artifact_bytes_are_deterministic_and_round_trip_float_bits() {
-    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 46);
+    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 47);
     let program = float_program(0x7ff8_0000_0000_0042);
     let first = encode_interpreted_artifact(&program).expect("encode");
     let second = encode_interpreted_artifact(&program).expect("encode again");
@@ -5126,6 +5126,22 @@ fn artifact_requires_explicit_witness_segmentation() {
 fn current_artifact_requires_the_exact_current_mir_shape() {
     let bytes = encode_interpreted_artifact(&float_program(1.0_f64.to_bits())).expect("encode");
     let original: serde_json::Value = serde_json::from_slice(&bytes).expect("artifact JSON");
+    let encoded_prelude = original["program"]["prelude"]
+        .as_object()
+        .expect("prelude object");
+    assert!(!encoded_prelude.contains_key("json"));
+    assert!(!encoded_prelude.contains_key("json_error"));
+
+    let mut legacy_json_identity = original.clone();
+    legacy_json_identity["program"]["prelude"]["json"] = serde_json::Value::Null;
+    let legacy_error = decode_interpreted_artifact(
+        &serde_json::to_vec(&legacy_json_identity).expect("legacy JSON identity field"),
+    )
+    .expect_err("matching-version artifacts cannot carry removed JSON identity fields");
+    assert!(
+        matches!(legacy_error, ArtifactError::Malformed(ref message) if message.contains("unknown field `json`")),
+        "{legacy_error:?}"
+    );
 
     let mut missing_prelude_field = original.clone();
     missing_prelude_field["program"]["prelude"]
@@ -10786,6 +10802,62 @@ fn indirect_carriers_break_recursive_nominal_storage() {
         ..Program::default()
     };
     validate_program(&program).expect("all four recursive edges cross explicit indirection");
+}
+
+#[test]
+fn source_json_shape_may_recurse_through_list_and_text_map() {
+    let text_map = TypeId(0);
+    let json = TypeId(1);
+    let program = Program {
+        types: vec![
+            TypeDef {
+                id: text_map,
+                name: "TextMap".to_owned(),
+                span: span(),
+                type_parameters: 1,
+                kind: TypeDefKind::Record {
+                    fields: vec![FieldDef {
+                        name: "raw".to_owned(),
+                        ty: Type::Int,
+                        span: span(),
+                    }],
+                    invariant: None,
+                },
+            },
+            TypeDef {
+                id: json,
+                name: "Json".to_owned(),
+                span: span(),
+                type_parameters: 0,
+                kind: TypeDefKind::Enum {
+                    variants: vec![
+                        VariantDef {
+                            id: VariantId(0),
+                            name: "Array".to_owned(),
+                            payload: vec![Type::List(Box::new(Type::Nominal(json, Vec::new())))],
+                            span: span(),
+                        },
+                        VariantDef {
+                            id: VariantId(1),
+                            name: "Object".to_owned(),
+                            payload: vec![Type::Nominal(
+                                text_map,
+                                vec![Type::Nominal(json, Vec::new())],
+                            )],
+                            span: span(),
+                        },
+                    ],
+                },
+            },
+        ],
+        prelude: PreludeIds {
+            text_map: Some(text_map),
+            ..PreludeIds::default()
+        },
+        ..Program::default()
+    };
+    validate_program(&program)
+        .expect("ordinary recursive enums may cross List and canonical TextMap indirection");
 }
 
 const NON_REGULAR_VALIDATION_CHILD_ENV: &str = "LOOM_MIR_NON_REGULAR_VALIDATION_CHILD";

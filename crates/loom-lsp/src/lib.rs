@@ -1057,18 +1057,6 @@ const STD_SYMBOLS: &[StdSymbol] = &[
         signature: "TextMap[V]",
     },
     StdSymbol {
-        name: "Json",
-        kind: "enum",
-        module: "std.prelude",
-        signature: "enum Json",
-    },
-    StdSymbol {
-        name: "JsonError",
-        kind: "enum",
-        module: "std.prelude",
-        signature: "enum JsonError",
-    },
-    StdSymbol {
         name: "length",
         kind: "method",
         module: "std.prelude.TextMap",

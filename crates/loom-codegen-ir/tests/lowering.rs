@@ -7471,10 +7471,14 @@ pub fn main() {
 
 #[test]
 fn recursive_json_sum_registers_through_list_and_text_map_cycle_breakers() {
-    let dump = complete_dump(concat!(
+    let outcome = lower_run_with_std_json(concat!(
         include_str!("../../../fixtures/lcir-typed-json/main.loom"),
         include_str!("../../../fixtures/lcir-typed-json/main_test.loom")
     ));
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("recursive source Json must lower as an ordinary sum: {outcome:?}")
+    };
+    let dump = dump_program(artifact.program());
     for required in [
         "managed_text_map",
         "sum.construct variant 0",
@@ -7496,6 +7500,54 @@ fn recursive_json_sum_registers_through_list_and_text_map_cycle_breakers() {
         dump.lines().count() < 10_000,
         "recursive Json lowering must remain finite"
     );
+}
+
+#[test]
+fn recursive_source_json_structural_equality_closes_an_ordinary_helper_cycle() {
+    let outcome = lower_run_with_std_json(
+        r#"pub fn main() {
+    let left = Json.Object(TextMap[Json]().insert("items", Json.Array([Json.Null])))
+    let right = Json.Object(TextMap[Json]().insert("items", Json.Array([Json.Null])))
+    discard left == right
+}
+"#,
+    );
+    let LoweringOutcome::Complete(artifact) = outcome else {
+        panic!("recursive source Json equality must lower through ordinary helpers: {outcome:?}")
+    };
+    let helper_ids = artifact
+        .functions()
+        .iter()
+        .filter_map(|function| {
+            artifact
+                .program()
+                .as_program()
+                .instance_key(function.id())
+                .is_some_and(|key| key.role() == InstanceRole::StructuralEquality)
+                .then_some(function.id())
+        })
+        .collect::<BTreeSet<_>>();
+    assert!(
+        !helper_ids.is_empty(),
+        "{}",
+        dump_program(artifact.program())
+    );
+    assert!(artifact.functions().iter().all(|function| {
+        !helper_ids.contains(&function.id()) || function.effects() == Effects::NONE
+    }));
+    assert!(artifact.functions().iter().any(|function| {
+        helper_ids.contains(&function.id())
+            && function.instructions().iter().any(|instruction| {
+                matches!(
+                    instruction.kind(),
+                    InstructionKind::DirectCall { callee, .. } if helper_ids.contains(callee)
+                )
+            })
+    }));
+    let dump = dump_program(artifact.program());
+    for required in ["sum.zip_switch", "list.get", "text_map.entry_get"] {
+        assert!(dump.contains(required), "missing `{required}`:\n{dump}");
+    }
 }
 
 #[test]

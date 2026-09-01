@@ -17,7 +17,7 @@ names still recognized by semantic builtin tables.
 | --- | --- | --- | --- |
 | `std.int` | `ParseIntError`, `minimum`, `maximum`, `parse_int`, and the complete parser helper graph | none for the current package API | source-backed |
 | `std.io` | public `IoError`, `IoErrorKind`, their accessors, `write`, and `write_line` | exact-owner error access/output primitives and runtime byte boundary | source-backed |
-| `std.json` | `parse_json`, `format_json`, and both helper graphs | `Json` and `JsonError` | partial |
+| `std.json` | `Json`, `JsonError`, `parse_json`, `format_json`, and both helper graphs | none for the current package API | source-backed |
 | `std.log` | `LogLevel`, `write`, `debug`, `info`, `warn`, `error`, and their helper graph | only the exact-owner private typed write primitive and runtime byte boundary | source-backed |
 | `std.resource` | `Dispose`, `MustScope`, and `NoSuspend` declarations | their fixed language-item meaning and static enforcement intentionally remain language core | source declarations complete |
 | `std.float` | `ParseFloatError`, `FloatToIntError`, parsing, formatting, finiteness, and both explicit Int conversions | only exact-owner private scalar primitives and the runtime parse/format boundary | source-backed |

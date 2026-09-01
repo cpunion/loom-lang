@@ -1915,6 +1915,113 @@ async fn network(host Text, port Int) Result[Unit, IoError] {
     let try_open_read = function_named(&program, "std.file.try_open_read");
     let try_create = function_named(&program, "std.file.try_create");
     let try_connect = function_named(&program, "std.net.try_connect");
+    let json = program
+        .types
+        .iter()
+        .find(|definition| definition.name == "Json")
+        .expect("ordinary source Json enum");
+    let json_error = program
+        .types
+        .iter()
+        .find(|definition| definition.name == "JsonError")
+        .expect("ordinary source JsonError enum");
+    assert!(json.id.0 >= 10, "Json must not occupy a synthetic type id");
+    assert!(
+        json_error.id.0 >= 10,
+        "JsonError must not occupy a synthetic type id"
+    );
+    let loom_mir::TypeDefKind::Enum {
+        variants: json_variants,
+    } = &json.kind
+    else {
+        panic!("Json must lower as an ordinary source enum: {json:#?}");
+    };
+    assert_eq!(
+        json_variants
+            .iter()
+            .map(|variant| variant.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Null", "Bool", "Number", "Text", "Array", "Object"]
+    );
+    let json_ty = loom_mir::Type::Nominal(json.id, Vec::new());
+    assert_eq!(
+        json_variants[4].payload,
+        [loom_mir::Type::List(Box::new(json_ty.clone()))]
+    );
+    assert_eq!(
+        json_variants[5].payload,
+        [loom_mir::Type::Nominal(
+            program.prelude.text_map.expect("canonical TextMap type"),
+            vec![json_ty]
+        )]
+    );
+    let loom_mir::TypeDefKind::Enum {
+        variants: json_error_variants,
+    } = &json_error.kind
+    else {
+        panic!("JsonError must lower as an ordinary source enum: {json_error:#?}");
+    };
+    assert_eq!(
+        json_error_variants
+            .iter()
+            .map(|variant| variant.name.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "InvalidSyntax",
+            "NumberOutOfRange",
+            "DepthLimit",
+            "NonFiniteNumber",
+        ]
+    );
+    let constructed_json_variants = values
+        .exprs_preorder()
+        .filter_map(|expression| match &expression.kind {
+            loom_mir::ExprKind::Variant { ty, variant, .. } if *ty == json.id => Some(variant.0),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for expected in 0..6 {
+        assert!(
+            constructed_json_variants.contains(&expected),
+            "source Json constructor #{expected} did not use the source enum id: {values:#?}"
+        );
+    }
+    let json_value = function_named(&program, "lowering_test.jsonValue");
+    let json_pattern_variants = json_value
+        .exprs_preorder()
+        .find_map(|expression| match &expression.kind {
+            loom_mir::ExprKind::Match { arms, .. } => Some(
+                arms.iter()
+                    .filter_map(|arm| match &arm.pattern {
+                        loom_mir::Pattern::Variant { ty, variant, .. } if *ty == json.id => {
+                            Some(variant.0)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+            _ => None,
+        })
+        .expect("Json source match");
+    assert_eq!(json_pattern_variants, [0, 1, 2, 3, 4, 5]);
+    let json_failure = function_named(&program, "lowering_test.jsonFailure");
+    let json_error_pattern_variants = json_failure
+        .exprs_preorder()
+        .find_map(|expression| match &expression.kind {
+            loom_mir::ExprKind::Match { arms, .. } => Some(
+                arms.iter()
+                    .filter_map(|arm| match &arm.pattern {
+                        loom_mir::Pattern::Variant { ty, variant, .. } if *ty == json_error.id => {
+                            Some(variant.0)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+            _ => None,
+        })
+        .expect("JsonError source match");
+    assert_eq!(json_error_pattern_variants, [0, 1, 2, 3]);
     assert_direct_call(files, try_open_read_path, &program);
     assert_direct_call(files, try_create_path, &program);
     assert_direct_call(network, try_connect, &program);

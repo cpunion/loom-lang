@@ -1,5 +1,5 @@
-use loom_core::FileId;
-use loom_hir::{SourceUnit, lower_files};
+use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId};
+use loom_hir::{PackageSourceUnit, SourceUnit, lower_files, lower_package_files};
 use loom_sema::analyze;
 use loom_syntax::parse_with_file;
 
@@ -27,6 +27,65 @@ fn recursive_diagnostics(source: &str) -> Vec<loom_core::Diagnostic> {
         .into_iter()
         .filter(|diagnostic| diagnostic.code == "RecursiveValueType")
         .collect()
+}
+
+fn analyze_source_with_canonical_json(source: &str) -> Vec<loom_core::Diagnostic> {
+    let application_file = FileId(0);
+    let json_file = FileId(1);
+    let parsed = parse_with_file(application_file, source);
+    let json = parse_with_file(
+        json_file,
+        r"
+pub enum Json {
+    Null
+    Bool(Bool)
+    Number(Float)
+    Text(Text)
+    Array(List[Json])
+    Object(TextMap[Json])
+}
+
+pub enum JsonError {
+    InvalidSyntax(Int)
+    NumberOutOfRange(Int)
+    DepthLimit
+    NonFiniteNumber
+}
+",
+    );
+    assert!(
+        parsed.diagnostics().is_empty() && json.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} json={:#?}",
+        parsed.diagnostics(),
+        json.diagnostics()
+    );
+
+    let application = PackageId::new("recursive-value-types", "0");
+    let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+    let mut lowered = lower_package_files([
+        PackageSourceUnit {
+            file: application_file,
+            package: application.clone(),
+            module: ModuleName::new("recursive_value_types"),
+            syntax: parsed.ast(),
+        },
+        PackageSourceUnit {
+            file: json_file,
+            package: std.clone(),
+            module: ModuleName::new("std.json"),
+            syntax: json.ast(),
+        },
+    ]);
+    assert!(
+        lowered.diagnostics.is_empty(),
+        "HIR diagnostics: {:#?}",
+        lowered.diagnostics
+    );
+    lowered.program.register_package(std.clone(), [], false);
+    lowered
+        .program
+        .register_package(application, [(Name::new("std"), std)], true);
+    analyze(&lowered.program).diagnostics
 }
 
 #[test]
@@ -126,7 +185,7 @@ record ThroughArgument {
 
 #[test]
 fn indirect_carriers_break_cycles_and_canonical_json_remains_valid() {
-    let diagnostics = analyze_source(
+    let diagnostics = analyze_source_with_canonical_json(
         r"
 dyn concept Link {
     associated type Target

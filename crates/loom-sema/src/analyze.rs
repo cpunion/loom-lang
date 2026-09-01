@@ -26,6 +26,7 @@ const RESOURCE_MODULE: &str = "std.resource";
 const FLOAT_MODULE: &str = "std.float";
 const FILE_MODULE: &str = "std.file";
 const IO_MODULE: &str = "std.io";
+const JSON_MODULE: &str = "std.json";
 const LOG_MODULE: &str = "std.log";
 const NET_MODULE: &str = "std.net";
 const PATH_MODULE: &str = "std.path";
@@ -78,6 +79,8 @@ pub struct CanonicalStdItems {
     pub file: Option<DefId>,
     pub io_error: Option<DefId>,
     pub io_error_kind: Option<DefId>,
+    pub json: Option<DefId>,
+    pub json_error: Option<DefId>,
     pub log_level: Option<DefId>,
     pub path_error: Option<DefId>,
     pub socket: Option<DefId>,
@@ -215,6 +218,8 @@ impl Analyzer<'_> {
             "File" => self.canonical_std_items.file,
             "IoError" => self.canonical_std_items.io_error,
             "IoErrorKind" => self.canonical_std_items.io_error_kind,
+            "Json" => self.canonical_std_items.json,
+            "JsonError" => self.canonical_std_items.json_error,
             "Socket" => self.canonical_std_items.socket,
             _ => None,
         }
@@ -300,6 +305,12 @@ impl Analyzer<'_> {
                 matches!(kind, DefinitionKind::Record(_))
             }),
             io_error_kind: self.resolve_compiler_std_definition(IO_MODULE, "IoErrorKind", |kind| {
+                matches!(kind, DefinitionKind::Enum(_))
+            }),
+            json: self.resolve_compiler_std_definition(JSON_MODULE, "Json", |kind| {
+                matches!(kind, DefinitionKind::Enum(_))
+            }),
+            json_error: self.resolve_compiler_std_definition(JSON_MODULE, "JsonError", |kind| {
                 matches!(kind, DefinitionKind::Enum(_))
             }),
             log_level: self.resolve_compiler_std_definition(LOG_MODULE, "LogLevel", |kind| {
@@ -4291,9 +4302,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 | BuiltinType::Unit
                 | BuiltinType::ConstraintError
                 | BuiltinType::TaskFault
-                | BuiltinType::Duration
-                | BuiltinType::Json
-                | BuiltinType::JsonError,
+                | BuiltinType::Duration,
             ) => true,
             TyData::Builtin(BuiltinType::ContractFault)
             | TyData::Param(_)
@@ -4511,30 +4520,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
     ) -> TyId {
         if let Expr::Path(type_path) = self.source().expressions[receiver].clone()
             && self.value_path_lookup(&type_path) == ValuePathLookup::Missing
+            && let Some((variant, owner)) = self.resolve_qualified_variant(&type_path, name)
         {
-            if let Some((variant, owner)) = self.resolve_qualified_variant(&type_path, name) {
-                return self.check_variant_constructor(
-                    expression,
-                    variant,
-                    owner,
-                    None,
-                    &[],
-                    expected,
-                );
-            }
-            if let Some((builtin, ty)) = Self::builtin_static_value(&type_path, name) {
-                self.semantics.calls.insert(
-                    expression,
-                    CallResolution {
-                        target: CallTarget::Builtin(builtin),
-                        substitution: Substitution::default(),
-                        dispatch_witness: None,
-                        witnesses: Vec::new(),
-                        receiver: None,
-                    },
-                );
-                return self.types().builtin(ty);
-            }
+            return self.check_variant_constructor(expression, variant, owner, None, &[], expected);
         }
         let previous = self.allow_dirty_self_projection;
         let previous_scoped = self.checking_scoped_receiver;
@@ -6472,16 +6460,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             }
             BuiltinValue::Unit
             | BuiltinValue::None
-            | BuiltinValue::JsonNull
-            | BuiltinValue::JsonBool
-            | BuiltinValue::JsonNumber
-            | BuiltinValue::JsonText
-            | BuiltinValue::JsonArray
-            | BuiltinValue::JsonObject
-            | BuiltinValue::JsonInvalidSyntax
-            | BuiltinValue::JsonNumberOutOfRange
-            | BuiltinValue::JsonDepthLimit
-            | BuiltinValue::JsonNonFiniteNumber
             | BuiltinValue::TaskCompleted
             | BuiltinValue::TaskFaulted
             | BuiltinValue::TaskCancelled => {
@@ -7697,56 +7675,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     self.types().intern(TyData::Result { ok: path, error }),
                 )
             }
-            ("Json", "Bool") => {
-                let parameter = self.types().builtin(BuiltinType::Bool);
-                (
-                    BuiltinValue::JsonBool,
-                    vec![parameter],
-                    self.types().builtin(BuiltinType::Json),
-                )
-            }
-            ("Json", "Number") => {
-                let parameter = self.types().builtin(BuiltinType::Float);
-                (
-                    BuiltinValue::JsonNumber,
-                    vec![parameter],
-                    self.types().builtin(BuiltinType::Json),
-                )
-            }
-            ("Json", "Text") => {
-                let parameter = self.types().builtin(BuiltinType::Text);
-                (
-                    BuiltinValue::JsonText,
-                    vec![parameter],
-                    self.types().builtin(BuiltinType::Json),
-                )
-            }
-            ("Json", "Array") => {
-                let json = self.types().builtin(BuiltinType::Json);
-                let parameter = self.types().intern(TyData::List(json));
-                (BuiltinValue::JsonArray, vec![parameter], json)
-            }
-            ("Json", "Object") => {
-                let json = self.types().builtin(BuiltinType::Json);
-                let parameter = self.types().intern(TyData::TextMap(json));
-                (BuiltinValue::JsonObject, vec![parameter], json)
-            }
-            ("JsonError", "InvalidSyntax") => {
-                let int = self.types().builtin(BuiltinType::Int);
-                (
-                    BuiltinValue::JsonInvalidSyntax,
-                    vec![int],
-                    self.types().builtin(BuiltinType::JsonError),
-                )
-            }
-            ("JsonError", "NumberOutOfRange") => {
-                let int = self.types().builtin(BuiltinType::Int);
-                (
-                    BuiltinValue::JsonNumberOutOfRange,
-                    vec![int],
-                    self.types().builtin(BuiltinType::JsonError),
-                )
-            }
             _ => return None,
         };
         if !type_arguments.is_empty() {
@@ -7769,20 +7697,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             },
         );
         Some(result)
-    }
-
-    fn builtin_static_value(type_path: &Path, name: &Name) -> Option<(BuiltinValue, BuiltinType)> {
-        let [segment] = type_path.segments.as_slice() else {
-            return None;
-        };
-        Some(match (segment.name.as_str(), name.as_str()) {
-            ("Json", "Null") => (BuiltinValue::JsonNull, BuiltinType::Json),
-            ("JsonError", "DepthLimit") => (BuiltinValue::JsonDepthLimit, BuiltinType::JsonError),
-            ("JsonError", "NonFiniteNumber") => {
-                (BuiltinValue::JsonNonFiniteNumber, BuiltinType::JsonError)
-            }
-            _ => return None,
-        })
     }
 
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -9528,20 +9442,12 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             TyData::Option(_) => Some("Option"),
             TyData::Result { .. } => Some("Result"),
             TyData::TaskOutcome(_) => Some("TaskOutcome"),
-            TyData::Builtin(BuiltinType::Json) => Some("Json"),
-            TyData::Builtin(BuiltinType::JsonError) => Some("JsonError"),
             TyData::Nominal { definition, .. } => {
-                if Some(*definition) == self.analyzer.canonical_std_items.io_error_kind
-                    && qualifier.len() == 1
-                    && qualifier[0].name.as_str() == "IoErrorKind"
-                {
-                    return true;
-                }
                 let module = self.analyzer.program.definitions[self.environment.owner].module;
-                let mut resolver =
+                let mut type_resolver =
                     crate::Resolver::new(self.analyzer.program, self.analyzer.def_maps, module);
                 for parameter in self.analyzer.generic_ids_for(self.environment.owner) {
-                    resolver.add_generic_param(
+                    type_resolver.add_generic_param(
                         self.analyzer.program.generic_params[parameter].name.clone(),
                         parameter,
                     );
@@ -9549,10 +9455,13 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 let type_path = Path {
                     segments: qualifier.to_vec(),
                 };
-                return matches!(
-                    resolver.resolve_type(&type_path),
-                    Ok(Resolution::Definition(owner)) if owner == *definition
+                let qualified_owner = self.analyzer.canonical_prelude_type(&type_path).or_else(
+                    || match type_resolver.resolve_type(&type_path) {
+                        Ok(Resolution::Definition(owner)) => Some(owner),
+                        Ok(_) | Err(_) => None,
+                    },
                 );
+                return qualified_owner == Some(*definition);
             }
             _ => None,
         };
@@ -9589,24 +9498,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 "Cancelled" if payload.is_empty() => Some(PatternVariant::TaskCancelled),
                 _ => None,
             },
-            TyData::Builtin(BuiltinType::Json) => match name.as_str() {
-                "Null" if payload.is_empty() => Some(PatternVariant::JsonNull),
-                "Bool" => Some(PatternVariant::JsonBool),
-                "Number" => Some(PatternVariant::JsonNumber),
-                "Text" => Some(PatternVariant::JsonText),
-                "Array" => Some(PatternVariant::JsonArray),
-                "Object" => Some(PatternVariant::JsonObject),
-                _ => None,
-            },
-            TyData::Builtin(BuiltinType::JsonError) => match name.as_str() {
-                "InvalidSyntax" => Some(PatternVariant::JsonInvalidSyntax),
-                "NumberOutOfRange" => Some(PatternVariant::JsonNumberOutOfRange),
-                "DepthLimit" if payload.is_empty() => Some(PatternVariant::JsonDepthLimit),
-                "NonFiniteNumber" if payload.is_empty() => {
-                    Some(PatternVariant::JsonNonFiniteNumber)
-                }
-                _ => None,
-            },
             TyData::Nominal { definition, .. } => {
                 let DefinitionKind::Enum(enumeration) =
                     &self.analyzer.program.definitions[*definition].kind
@@ -9635,27 +9526,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             (PatternVariant::TaskFaulted, TyData::TaskOutcome(_)) => {
                 vec![self.types().builtin(BuiltinType::TaskFault)]
             }
-            (PatternVariant::JsonBool, TyData::Builtin(BuiltinType::Json)) => {
-                vec![self.types().builtin(BuiltinType::Bool)]
-            }
-            (PatternVariant::JsonNumber, TyData::Builtin(BuiltinType::Json)) => {
-                vec![self.types().builtin(BuiltinType::Float)]
-            }
-            (PatternVariant::JsonText, TyData::Builtin(BuiltinType::Json)) => {
-                vec![self.types().builtin(BuiltinType::Text)]
-            }
-            (PatternVariant::JsonArray, TyData::Builtin(BuiltinType::Json)) => {
-                let json = self.types().builtin(BuiltinType::Json);
-                vec![self.types().intern(TyData::List(json))]
-            }
-            (PatternVariant::JsonObject, TyData::Builtin(BuiltinType::Json)) => {
-                let json = self.types().builtin(BuiltinType::Json);
-                vec![self.types().intern(TyData::TextMap(json))]
-            }
-            (
-                PatternVariant::JsonInvalidSyntax | PatternVariant::JsonNumberOutOfRange,
-                TyData::Builtin(BuiltinType::JsonError),
-            ) => vec![self.types().builtin(BuiltinType::Int)],
             (
                 PatternVariant::User(variant),
                 TyData::Nominal {
@@ -9822,36 +9692,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 PatternVariant::TaskCompleted,
                 PatternVariant::TaskFaulted,
                 PatternVariant::TaskCancelled,
-            ]
-            .into_iter()
-            .map(|variant| {
-                (
-                    CheckedPatternHead::Variant(variant),
-                    self.variant_payload(variant, expected),
-                )
-            })
-            .collect(),
-            TyData::Builtin(BuiltinType::Json) => [
-                PatternVariant::JsonNull,
-                PatternVariant::JsonBool,
-                PatternVariant::JsonNumber,
-                PatternVariant::JsonText,
-                PatternVariant::JsonArray,
-                PatternVariant::JsonObject,
-            ]
-            .into_iter()
-            .map(|variant| {
-                (
-                    CheckedPatternHead::Variant(variant),
-                    self.variant_payload(variant, expected),
-                )
-            })
-            .collect(),
-            TyData::Builtin(BuiltinType::JsonError) => [
-                PatternVariant::JsonInvalidSyntax,
-                PatternVariant::JsonNumberOutOfRange,
-                PatternVariant::JsonDepthLimit,
-                PatternVariant::JsonNonFiniteNumber,
             ]
             .into_iter()
             .map(|variant| {
@@ -10581,16 +10421,6 @@ enum PatternVariant {
     Some,
     Ok,
     Err,
-    JsonNull,
-    JsonBool,
-    JsonNumber,
-    JsonText,
-    JsonArray,
-    JsonObject,
-    JsonInvalidSyntax,
-    JsonNumberOutOfRange,
-    JsonDepthLimit,
-    JsonNonFiniteNumber,
     TaskCompleted,
     TaskFaulted,
     TaskCancelled,
@@ -10640,20 +10470,6 @@ fn pattern_variant_resolution(variant: PatternVariant) -> Resolution {
         PatternVariant::Some => Resolution::Builtin(BuiltinValue::Some),
         PatternVariant::Ok => Resolution::Builtin(BuiltinValue::Ok),
         PatternVariant::Err => Resolution::Builtin(BuiltinValue::Err),
-        PatternVariant::JsonNull => Resolution::Builtin(BuiltinValue::JsonNull),
-        PatternVariant::JsonBool => Resolution::Builtin(BuiltinValue::JsonBool),
-        PatternVariant::JsonNumber => Resolution::Builtin(BuiltinValue::JsonNumber),
-        PatternVariant::JsonText => Resolution::Builtin(BuiltinValue::JsonText),
-        PatternVariant::JsonArray => Resolution::Builtin(BuiltinValue::JsonArray),
-        PatternVariant::JsonObject => Resolution::Builtin(BuiltinValue::JsonObject),
-        PatternVariant::JsonInvalidSyntax => Resolution::Builtin(BuiltinValue::JsonInvalidSyntax),
-        PatternVariant::JsonNumberOutOfRange => {
-            Resolution::Builtin(BuiltinValue::JsonNumberOutOfRange)
-        }
-        PatternVariant::JsonDepthLimit => Resolution::Builtin(BuiltinValue::JsonDepthLimit),
-        PatternVariant::JsonNonFiniteNumber => {
-            Resolution::Builtin(BuiltinValue::JsonNonFiniteNumber)
-        }
         PatternVariant::TaskCompleted => Resolution::Builtin(BuiltinValue::TaskCompleted),
         PatternVariant::TaskFaulted => Resolution::Builtin(BuiltinValue::TaskFaulted),
         PatternVariant::TaskCancelled => Resolution::Builtin(BuiltinValue::TaskCancelled),
@@ -11116,8 +10932,6 @@ fn builtin_type(name: &str) -> Option<BuiltinType> {
         "ContractFault" => Some(BuiltinType::ContractFault),
         "TaskFault" => Some(BuiltinType::TaskFault),
         "Duration" => Some(BuiltinType::Duration),
-        "Json" => Some(BuiltinType::Json),
-        "JsonError" => Some(BuiltinType::JsonError),
         _ => None,
     }
 }

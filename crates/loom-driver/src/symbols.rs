@@ -1,7 +1,7 @@
 use loom_core::{FileId, ModuleName, Span};
 use loom_hir::{
-    BodyId, ConceptRef, DefId, DefinitionKind, DefinitionTag, Expr, GenericParamId, LocalId,
-    ModuleId, ParamId, Path, Pattern, TypeRef, Visibility,
+    Body, BodyId, ConceptRef, DefId, DefinitionKind, DefinitionTag, Expr, ExprId, GenericParamId,
+    LocalId, ModuleId, ParamId, Path, Pattern, TypeRef, Visibility,
 };
 use loom_sema::{CallTarget, Namespace, PlaceProjection, Resolution, TyData};
 use loom_syntax::TokenKind;
@@ -468,25 +468,39 @@ impl AnalysisSnapshot {
                         }
                     }
                     Expr::Call { callee, .. } => {
-                        let Some(target) = semantics
-                            .calls
-                            .get(expression)
-                            .and_then(|call| call_target_definition(&call.target))
-                        else {
+                        let Some(call) = semantics.calls.get(expression) else {
                             continue;
                         };
-                        if let Expr::Path(path) = &body.expressions[*callee] {
-                            push_path(occurrences, target, path);
+                        let Some(target) = call_target_definition(&call.target) else {
+                            continue;
+                        };
+                        match &body.expressions[*callee] {
+                            Expr::Path(path) => push_path(occurrences, target, path),
+                            Expr::Field { .. }
+                                if matches!(&call.target, CallTarget::EnumVariant(_)) =>
+                            {
+                                self.push_qualified_variant_reference(
+                                    occurrences,
+                                    body,
+                                    *callee,
+                                    target,
+                                );
+                            }
+                            _ => {}
                         }
                     }
-                    Expr::MethodCall { method, .. } => {
-                        let Some(target) = semantics
-                            .calls
-                            .get(expression)
-                            .and_then(|call| call_target_definition(&call.target))
-                        else {
+                    Expr::MethodCall {
+                        receiver, method, ..
+                    } => {
+                        let Some(call) = semantics.calls.get(expression) else {
                             continue;
                         };
+                        let Some(target) = call_target_definition(&call.target) else {
+                            continue;
+                        };
+                        if matches!(&call.target, CallTarget::EnumVariant(_)) {
+                            self.push_variant_qualifier(occurrences, body, *receiver, target);
+                        }
                         let Some(source_span) = body.source_map.expr(expression) else {
                             continue;
                         };
@@ -499,6 +513,20 @@ impl AnalysisSnapshot {
                         }
                     }
                     Expr::Field { name, .. } => {
+                        if let Some(target) = semantics.calls.get(expression).and_then(|call| {
+                            let CallTarget::EnumVariant(target) = &call.target else {
+                                return None;
+                            };
+                            Some(*target)
+                        }) {
+                            self.push_qualified_variant_reference(
+                                occurrences,
+                                body,
+                                expression,
+                                target,
+                            );
+                            continue;
+                        }
                         let Some(target) = semantics
                             .expression_places
                             .get(expression)
@@ -584,6 +612,44 @@ impl AnalysisSnapshot {
                     push_path(occurrences, *target, path);
                 }
             }
+        }
+    }
+
+    fn push_qualified_variant_reference(
+        &self,
+        occurrences: &mut Vec<Occurrence>,
+        body: &Body,
+        expression: ExprId,
+        target: DefId,
+    ) {
+        let Expr::Field { receiver, name } = &body.expressions[expression] else {
+            return;
+        };
+        self.push_variant_qualifier(occurrences, body, *receiver, target);
+        let Some(source_span) = body.source_map.expr(expression) else {
+            return;
+        };
+        if let Some(span) = self.ident_span(source_span, name.as_str(), true) {
+            occurrences.push(Occurrence {
+                target: target.into(),
+                span,
+                declaration: false,
+            });
+        }
+    }
+
+    fn push_variant_qualifier(
+        &self,
+        occurrences: &mut Vec<Occurrence>,
+        body: &Body,
+        receiver: ExprId,
+        target: DefId,
+    ) {
+        let DefinitionKind::Variant(variant) = &self.hir().definitions[target].kind else {
+            return;
+        };
+        if let Expr::Path(path) = &body.expressions[receiver] {
+            push_path(occurrences, variant.owner, path);
         }
     }
 

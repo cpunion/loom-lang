@@ -393,8 +393,6 @@ fn dead(text Text) {
     );
     let decoded = decode_interpreted_artifact(&artifact).expect("round trip structured artifact");
     assert!(decoded.prelude.text_map.is_some());
-    assert!(decoded.prelude.json.is_some());
-    assert!(decoded.prelude.json_error.is_some());
     assert!(decoded.prelude.io_error.is_some());
     assert!(decoded.prelude.io_error_kind.is_some());
     assert!(decoded.prelude.log_level.is_some());

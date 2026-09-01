@@ -506,8 +506,6 @@ impl<'a> Validator<'a> {
             ("decode_text_error", canonical.decode_text_error),
             ("path_error", canonical.path_error),
             ("text_map", canonical.text_map),
-            ("json", canonical.json),
-            ("json_error", canonical.json_error),
             ("io_error", canonical.io_error),
             ("io_error_kind", canonical.io_error_kind),
             ("log_level", canonical.log_level),

@@ -3,6 +3,24 @@ import std.float.format_float
 import std.float.is_finite
 import std.float.parse_float
 
+/// A JSON value.
+pub enum Json {
+    Null
+    Bool(Bool)
+    Number(Float)
+    Text(Text)
+    Array(List[Json])
+    Object(TextMap[Json])
+}
+
+/// Describes why JSON parsing or formatting failed.
+pub enum JsonError {
+    InvalidSyntax(Int)
+    NumberOutOfRange(Int)
+    DepthLimit
+    NonFiniteNumber
+}
+
 fn finish_utf8(units Bytes) Text {
     match units.decode_utf8() {
         Ok(text) => text
