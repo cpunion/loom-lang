@@ -3001,7 +3001,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 &arguments,
                 expected,
             ),
-            Expr::Field { receiver, name } => self.check_field(expression, receiver, &name),
+            Expr::Field { receiver, name } => {
+                self.check_field(expression, receiver, &name, expected)
+            }
             Expr::Unary { op, operand } => self.check_unary(expression, op, operand),
             Expr::Binary { op, left, right } => self.check_binary(expression, op, left, right),
             Expr::Assign { target, value } => self.check_assignment(expression, target, value),
@@ -4500,12 +4502,25 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         self.types().never()
     }
 
-    fn check_field(&mut self, expression: ExprId, receiver: ExprId, name: &Name) -> TyId {
+    fn check_field(
+        &mut self,
+        expression: ExprId,
+        receiver: ExprId,
+        name: &Name,
+        expected: Option<TyId>,
+    ) -> TyId {
         if let Expr::Path(type_path) = self.source().expressions[receiver].clone()
             && self.value_path_lookup(&type_path) == ValuePathLookup::Missing
         {
             if let Some((variant, owner)) = self.resolve_qualified_variant(&type_path, name) {
-                return self.check_variant_constructor(expression, variant, owner, &[], None);
+                return self.check_variant_constructor(
+                    expression,
+                    variant,
+                    owner,
+                    None,
+                    &[],
+                    expected,
+                );
             }
             if let Some((builtin, ty)) = Self::builtin_static_value(&type_path, name) {
                 self.semantics.calls.insert(
@@ -7032,8 +7047,14 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         {
             if let Some((variant, owner)) = self.resolve_qualified_variant(&type_path, method_name)
             {
-                return self
-                    .check_variant_constructor(expression, variant, owner, arguments, expected);
+                return self.check_variant_constructor(
+                    expression,
+                    variant,
+                    owner,
+                    Some(type_arguments),
+                    arguments,
+                    expected,
+                );
             }
             if let Some(result) = self.check_compiler_static_method_call(
                 expression,
@@ -8385,11 +8406,36 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         expression: ExprId,
         variant: DefId,
         owner: DefId,
+        call_type_arguments: Option<&[TypeRefId]>,
         arguments: &[ExprId],
         expected: Option<TyId>,
     ) -> TyId {
         let generic_params = self.analyzer.type_generic_params(owner);
+        let Some(Signature::Variant { payload, .. }) =
+            self.analyzer.typed.signatures.get(variant).cloned()
+        else {
+            return self.types().error();
+        };
+        let called_value_constructor = payload.is_empty() && call_type_arguments.is_some();
+        if called_value_constructor {
+            self.error_at(
+                "TypeMismatch",
+                "value constructor is not callable",
+                expression,
+            );
+        }
+        let explicit = self.resolve_call_type_arguments(call_type_arguments.unwrap_or_default());
+        if !called_value_constructor && explicit.len() > generic_params.len() {
+            self.error_at(
+                "TypeMismatch",
+                "too many explicit generic arguments",
+                expression,
+            );
+        }
         let mut substitution = Substitution::default();
+        for (parameter, ty) in generic_params.iter().zip(explicit) {
+            substitution.insert(*parameter, ty);
+        }
         if let Some(expected) = expected {
             let pattern = self.analyzer.nominal_self_type(owner);
             unify_type(
@@ -8399,12 +8445,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 &mut substitution,
             );
         }
-        let Some(Signature::Variant { payload, .. }) =
-            self.analyzer.typed.signatures.get(variant).cloned()
-        else {
-            return self.types().error();
-        };
-        if payload.len() != arguments.len() {
+        if !called_value_constructor && payload.len() != arguments.len() {
             self.call_arity(expression, payload.len(), arguments.len());
         }
         let mut actuals = Vec::new();
