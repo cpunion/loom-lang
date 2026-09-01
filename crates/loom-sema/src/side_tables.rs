@@ -34,7 +34,6 @@ pub enum BuiltinValue {
     Err,
     FloatParseStatus,
     FloatFormat,
-    FloatIsFinite,
     IntToFloat,
     FloatToIntStatus,
     TextLength,

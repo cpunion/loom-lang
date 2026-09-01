@@ -20,7 +20,7 @@ names still recognized by semantic builtin tables.
 | `std.json` | `Json`, `JsonError`, `parse_json`, `format_json`, and both helper graphs | none for the current package API | source-backed |
 | `std.log` | `LogLevel`, `write`, `debug`, `info`, `warn`, `error`, and their helper graph | only the exact-owner private typed write primitive and runtime byte boundary | source-backed |
 | `std.resource` | `Dispose`, `MustScope`, and `NoSuspend` declarations | their fixed language-item meaning and static enforcement intentionally remain language core | source declarations complete |
-| `std.float` | `ParseFloatError`, `FloatToIntError`, parsing, formatting, finiteness, and both explicit Int conversions | only exact-owner private scalar primitives and the runtime parse/format boundary | source-backed |
+| `std.float` | `ParseFloatError`, `FloatToIntError`, parsing, formatting, source bounds-based finiteness, and both explicit Int conversions | only exact-owner private parse/format/conversion primitives and the runtime parse/format boundary | source-backed |
 | `std.process` | public `arguments` and `environment` wrappers | compiler-private process snapshot primitives and their runtime OS boundary | source-backed |
 | `std.text` / `std.path` | public `DecodeTextError` and `PathError` enums | Text, Bytes, Path, and their intrinsic construction and decoding operations remain core mechanisms | partial |
 | `std.time` | `Duration`, `milliseconds`, and `Duration.as_milliseconds` | only the general constrained-type, contract, and refined-to-base mechanisms | source-backed |

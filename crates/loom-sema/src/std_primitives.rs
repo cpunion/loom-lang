@@ -17,7 +17,6 @@ const NET_MODULE: &str = "std.net";
 pub(crate) enum CompilerStdPrimitive {
     FloatFromInt,
     FloatFormat,
-    FloatIsFinite,
     FloatParseStatus,
     FloatToInt,
     FileOpenRead,
@@ -49,7 +48,6 @@ impl CompilerStdPrimitive {
         match self {
             Self::FloatFromInt => "__from_int",
             Self::FloatFormat => "__format",
-            Self::FloatIsFinite => "__is_finite",
             Self::FloatParseStatus => "__parse",
             Self::FloatToInt => "__to_int",
             Self::FileOpenRead => "__open_read",
@@ -100,7 +98,6 @@ pub(crate) fn resolve_import(
     ) {
         (FLOAT_MODULE, "float", "__from_int") => Some(CompilerStdPrimitive::FloatFromInt),
         (FLOAT_MODULE, "float", "__format") => Some(CompilerStdPrimitive::FloatFormat),
-        (FLOAT_MODULE, "float", "__is_finite") => Some(CompilerStdPrimitive::FloatIsFinite),
         (FLOAT_MODULE, "float", "__parse") => Some(CompilerStdPrimitive::FloatParseStatus),
         (FLOAT_MODULE, "float", "__to_int") => Some(CompilerStdPrimitive::FloatToInt),
         (FILE_MODULE, "file", "__open_read") => Some(CompilerStdPrimitive::FileOpenRead),
@@ -230,14 +227,6 @@ mod tests {
             Some(CompilerStdPrimitive::FloatFormat)
         );
         assert_eq!(
-            resolve_import(
-                &program,
-                float_owner,
-                &path(&["std", "float", "__is_finite"]),
-            ),
-            Some(CompilerStdPrimitive::FloatIsFinite)
-        );
-        assert_eq!(
             resolve_import(&program, float_owner, &path(&["std", "float", "__to_int"]),),
             Some(CompilerStdPrimitive::FloatToInt)
         );
@@ -358,6 +347,7 @@ mod tests {
             (float_owner, path(&["std", "float", "parse_float"])),
             (float_owner, path(&["std", "float", "format_float"])),
             (float_owner, path(&["std", "float", "is_finite"])),
+            (float_owner, path(&["std", "float", "__is_finite"])),
             (float_owner, path(&["std.float", "__from_int"])),
             (float_owner, path(&["std", "float", "__to_int", "extra"])),
         ] {

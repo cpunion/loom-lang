@@ -1,6 +1,5 @@
 import std.float.__from_int
 import std.float.__format
-import std.float.__is_finite
 import std.float.__parse
 import std.float.__to_int
 
@@ -52,5 +51,5 @@ pub fn format_float(value Float) Text {
 
 /// Reports whether a Float is neither infinite nor NaN.
 pub fn is_finite(value Float) Bool {
-    __is_finite(value)
+    value >= -1.7976931348623157e308 && value <= 1.7976931348623157e308
 }
