@@ -2912,7 +2912,7 @@ mod tests {
 
     #[test]
     fn checked_mir_cache_identity_pins_interpreted_artifact_version() {
-        assert_eq!(loom_mir::INTERPRETED_ARTIFACT_VERSION, 49);
+        assert_eq!(loom_mir::INTERPRETED_ARTIFACT_VERSION, 50);
         let context = super::cache_context(loom_mir::LOOM_LANGUAGE_VERSION);
         let artifact_identity = format!(
             "/{}-{}",

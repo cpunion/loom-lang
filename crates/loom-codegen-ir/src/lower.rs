@@ -4219,7 +4219,6 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         | mir::Builtin::TextMapGet
                         | mir::Builtin::TextMapEntryAt
                         | mir::Builtin::TextMapRemove
-                        | mir::Builtin::FloatIsFinite
                         | mir::Builtin::IntToFloat
                         | mir::Builtin::FloatToIntStatus
                         | mir::Builtin::FloatParseStatus
@@ -13418,9 +13417,6 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 arguments: Box::new([*socket, *text]),
             }
             .into(),
-            (mir::Builtin::FloatIsFinite, [value]) => {
-                return self.lower_float_is_finite(flow, *value, origin);
-            }
             (mir::Builtin::TaskFaultCode, [fault]) => InstructionKind::ProductExtract {
                 aggregate: *fault,
                 field: 0,

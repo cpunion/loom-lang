@@ -973,7 +973,7 @@ fn assigner_and_canonical_walker_agree_for_every_expression_shape() {
         ),
         expr(
             ExprKind::Call {
-                target: CallTarget::Builtin(loom_mir::Builtin::FloatIsFinite),
+                target: CallTarget::Builtin(loom_mir::Builtin::FloatFormat),
                 type_arguments: Vec::new(),
                 arguments: vec![
                     CallArgument::Value(constant(Constant::Float(1.0), Type::Float)),
@@ -982,7 +982,7 @@ fn assigner_and_canonical_walker_agree_for_every_expression_shape() {
                 ],
                 witnesses: Vec::new(),
             },
-            Type::Bool,
+            Type::Text,
         ),
         expr(
             ExprKind::MakeView {
@@ -5164,7 +5164,7 @@ fn forged_proof_program() -> CheckedProgram {
 
 #[test]
 fn interpreted_artifact_bytes_are_deterministic_and_round_trip_float_bits() {
-    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 49);
+    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 50);
     let program = float_program(0x7ff8_0000_0000_0042);
     let first = encode_interpreted_artifact(&program).expect("encode");
     let second = encode_interpreted_artifact(&program).expect("encode again");

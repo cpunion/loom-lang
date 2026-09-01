@@ -5373,9 +5373,6 @@ impl<'program> Interpreter<'program> {
             return self.eval_stdout_builtin(arguments, span);
         }
         match (builtin, arguments) {
-            (Builtin::FloatIsFinite, [value]) => Ok(Value::Bool {
-                value: as_float(value).is_some_and(f64::is_finite),
-            }),
             (Builtin::IntToFloat, [value]) => as_int(value).map_or_else(
                 || {
                     Err(self

@@ -48,7 +48,7 @@ larger graph.
 
 ## Persistent layers
 
-The persistent cache schema is `22`. Current layers include source parse,
+The persistent cache schema is `23`. Current layers include source parse,
 package-interface presence, typed package state, complete checked MIR, target
 objects, and deterministic final artifacts.
 
@@ -81,10 +81,10 @@ rederived before signature and body checking; cached semantic bytes never grant
 a same-named function, record, or enum canonical authority.
 
 Task policy and timer calls currently store a resolved `TaskIntrinsic` in typed
-body facts. Cache schema `22` and the `loom-compilation-cache-v22` domain cover
-that identity, the current compiler-private Float, logging, file, and network
-primitive sets, the exact mutable `Bytes.add` builtin, and exact source
-identities for standard types. They also
+body facts. Cache schema `23` and the `loom-compilation-cache-v23` domain cover
+that identity, the current compiler-private Float parse, format, and conversion
+operations, the logging, file, and network primitive sets, the exact mutable
+`Bytes.add` builtin, and exact source identities for standard types. They also
 exclude the removed public-name JSON formatter and Path-specific file builtin
 tags: ordinary source resolves JSON formatting, while the file wrappers convert
 Path to Text before the private primitive. The same schema excludes the
@@ -101,10 +101,13 @@ methods, resource methods, and disposal witnesses use exact ordinary source
 definitions. Schema 22 also excludes the retired IoError accessor builtin tags
 and protected-record assumptions; typed I/O retains only the exact canonical
 shape check.
+Schema 23 additionally excludes the retired Float finiteness primitive and MIR
+builtin. The canonical source identity and contract `IsFinite` proof form
+remain independently rederived and validated.
 The Task cache identity disappears when the temporary catalog is replaced by
 ordinary source definitions.
 
-Checked-MIR cache envelopes use artifact version `49` and its exact current
+Checked-MIR cache envelopes use artifact version `50` and its exact current
 MIR shape. The artifact profile requires the complete compiler-known resource
 identity trio, all matching prelude ids, the canonical six-field
 `ConstraintError`, the exact source-backed decoding/path error identities and

@@ -20,10 +20,10 @@ writers for unreleased formats. Development history belongs in
 | Manifest schema | `2` |
 | Lockfile schema | `2` |
 | Registry protocol and bundle | `1` |
-| Interpreted MIR artifact | `loom.interpreted-mir`, version `49` |
+| Interpreted MIR artifact | `loom.interpreted-mir`, version `50` |
 | Portable library artifact | `loom-library`, source-and-interface version `4` |
-| Persistent compiler cache | schema `22` |
-| Compilation-cache domain | `loom-compilation-cache-v22` |
+| Persistent compiler cache | schema `23` |
+| Compilation-cache domain | `loom-compilation-cache-v23` |
 | Interpreted final-cache layer | `final-artifact-v3` |
 | Interpreted artifact writer | `loom-interpreted-artifact-writer-v3` |
 | Portable-library final-cache layer | `portable-library-artifact-v4` |
@@ -77,6 +77,17 @@ join/fault operations (`loom_task_prepare_join`,
 resource, GC, and shadow-stack wires did not change. An older compiler or
 runtime bundle is therefore rejected instead of crossing a removed symbol
 boundary.
+
+Interpreted MIR 50 removes the retired ordinary-call `FloatIsFinite` builtin.
+`std.float.is_finite` now evaluates ordered source comparisons against the
+positive and negative maximum finite binary64 values. Persistent compiler-cache
+schema 23 and its matching domain invalidate typed state and MIR that retained
+the private primitive or builtin identity. The canonical pure-predicate
+identity, proof term, and contract expression remain language mechanisms for
+checking and eliminating contracts. LCIR and runtime versions are unchanged:
+both the contract expression and ordinary source body lower to general ordered
+Float comparisons, and the standard-library content digest invalidates
+dependent native objects.
 
 Interpreted MIR 49 removes the retired `IoErrorKind` and `IoErrorMessage`
 accessor builtins. The record's two declared source fields now flow through

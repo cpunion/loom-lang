@@ -748,7 +748,6 @@ impl SerializationClosure {
             }
             Builtin::StdoutWrite
             | Builtin::FloatParseStatus
-            | Builtin::FloatIsFinite
             | Builtin::IntToFloat
             | Builtin::FloatToIntStatus
             | Builtin::FloatFormat

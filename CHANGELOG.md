@@ -76,6 +76,11 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   resolves through ordinary source `DefId` values and has no universal-value
   native fallback;
   only its exact-owner private typed write primitive remains compiler-owned.
+  `std.float.is_finite` now uses ordinary ordered source comparisons against
+  the binary64 finite bounds. Its private primitive, semantic and MIR builtin,
+  interpreter arm, and ordinary-call LCIR lowering path are deleted; the
+  canonical contract proof expression remains so constraints retain exact
+  proof and check-elimination behavior.
   `std.json.format_json` traverses Json and builds canonical UTF-8 through
   ordinary Loom source. Its generic packed builder is `Bytes.add`: a mutable
   Bytes binding has copy-on-write value semantics, checked byte units, hidden
@@ -111,8 +116,9 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   public `std.file` and `std.net` functions resolve through ordinary source
   wrappers, and the Path forms reuse their Text counterparts. Only 16
   exact-owner resource/I/O/close leaves remain below source. Interpreted MIR
-  artifact 49 and persistent cache schema 22 reject removed IoError accessors,
-  Duration and JSON compiler identities, and UTF-8-unit dispatch,
+  artifact 50 and persistent cache schema 23 reject removed Float finiteness
+  and IoError accessor builtins, Duration and JSON compiler identities, and
+  UTF-8-unit dispatch,
   infinite value layouts,
   source-impossible mutable parameter slots and coroutine receivers,
   invariant-boundary bypasses, removed semantic types, fixed slots, and

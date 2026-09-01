@@ -150,10 +150,7 @@ pub fn finite(value Float) Bool {
         call_targets(&lowered.program, &analysis, format_float),
         vec![CallTarget::Builtin(BuiltinValue::FloatFormat)]
     );
-    assert_eq!(
-        call_targets(&lowered.program, &analysis, is_finite),
-        vec![CallTarget::Builtin(BuiltinValue::FloatIsFinite)]
-    );
+    assert!(call_targets(&lowered.program, &analysis, is_finite).is_empty());
     assert_eq!(
         call_targets(&lowered.program, &analysis, widen),
         vec![CallTarget::Function(from_int)]

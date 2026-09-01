@@ -3326,7 +3326,6 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             }
             BuiltinValue::FloatParseStatus
             | BuiltinValue::FloatFormat
-            | BuiltinValue::FloatIsFinite
             | BuiltinValue::IntToFloat
             | BuiltinValue::FloatToIntStatus
             | BuiltinValue::TextLength
@@ -3802,7 +3801,6 @@ fn executable_builtin(builtin: BuiltinValue) -> Option<Builtin> {
     Some(match builtin {
         BuiltinValue::FloatParseStatus => Builtin::FloatParseStatus,
         BuiltinValue::FloatFormat => Builtin::FloatFormat,
-        BuiltinValue::FloatIsFinite => Builtin::FloatIsFinite,
         BuiltinValue::IntToFloat => Builtin::IntToFloat,
         BuiltinValue::FloatToIntStatus => Builtin::FloatToIntStatus,
         BuiltinValue::TextLength => Builtin::TextLength,

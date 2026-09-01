@@ -6381,9 +6381,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     crate::std_primitives::CompilerStdPrimitive::FloatFormat => {
                         BuiltinValue::FloatFormat
                     }
-                    crate::std_primitives::CompilerStdPrimitive::FloatIsFinite => {
-                        BuiltinValue::FloatIsFinite
-                    }
                     crate::std_primitives::CompilerStdPrimitive::FloatParseStatus => {
                         BuiltinValue::FloatParseStatus
                     }
@@ -6615,7 +6612,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             }
             BuiltinValue::FloatParseStatus
             | BuiltinValue::FloatFormat
-            | BuiltinValue::FloatIsFinite
             | BuiltinValue::IntToFloat
             | BuiltinValue::FloatToIntStatus
             | BuiltinValue::ProcessArgumentCount
@@ -6780,11 +6776,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 let float = self.types().builtin(BuiltinType::Float);
                 self.check_fixed_arguments(expression, arguments, &[float]);
                 self.types().builtin(BuiltinType::Text)
-            }
-            BuiltinValue::FloatIsFinite => {
-                let float = self.types().builtin(BuiltinType::Float);
-                self.check_fixed_arguments(expression, arguments, &[float]);
-                self.types().builtin(BuiltinType::Bool)
             }
             BuiltinValue::IntToFloat => {
                 let int = self.types().builtin(BuiltinType::Int);

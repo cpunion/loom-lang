@@ -111,11 +111,12 @@ point or exponent. The special spellings are `NaN`, `Infinity`, and
 `-Infinity`; negative zero formats as `-0.0`.
 
 `is_finite` is a pure contract predicate and returns false for NaN and either
-infinity.
+infinity. Its ordinary source body uses ordered comparisons against the
+positive and negative maximum finite binary64 values.
 
-All three functions are ordinary source definitions. Their exact-owner private
-scalar calls expose only `(Float, Int)` parse status, managed Text formatting,
-and one finite Boolean; the compiler never constructs `ParseFloatError`.
+All three functions are ordinary source definitions. Exact-owner private
+scalar calls remain only for parsing and formatting; the compiler never
+constructs `ParseFloatError`.
 
 `from_int` rounds the exact signed 64-bit integer to the nearest IEEE-754
 binary64 value, with ties rounded to even. It always succeeds, but integers
@@ -131,7 +132,7 @@ source enum with those two closed variants.
 
 Both conversions are explicit: there is no implicit numeric conversion,
 general cast syntax, or platform-sized numeric result. Their public functions
-and error policy are ordinary `std.float` Loom source. The private scalar
+and error policy are ordinary `std.float` Loom source. The conversion
 primitives have exact compiler-owned module authority, allocate nothing, and
 require no runtime ABI.
 

@@ -6664,7 +6664,6 @@ impl<'program> Validator<'program> {
                 };
                 Some(Type::Nominal(option, vec![Type::Text]))
             }
-            Builtin::FloatIsFinite if self.is_float_like(types[0].as_ref()?) => Some(Type::Bool),
             Builtin::IntToFloat if types_compatible(&Type::Int, types[0].as_ref()?) => {
                 Some(Type::Float)
             }
@@ -6829,8 +6828,7 @@ impl<'program> Validator<'program> {
             | Builtin::SocketTryWriteText => 2,
             Builtin::TextMapInsert | Builtin::LogWrite => 3,
             Builtin::ProcessArgumentCount | Builtin::TextMapNew => 0,
-            Builtin::FloatIsFinite
-            | Builtin::IntToFloat
+            Builtin::IntToFloat
             | Builtin::FloatToIntStatus
             | Builtin::FloatParseStatus
             | Builtin::FloatFormat
@@ -9212,8 +9210,7 @@ impl<'program> Validator<'program> {
             | Builtin::SocketTryConnect
             | Builtin::SocketTryReadText
             | Builtin::SocketTryWriteText => false,
-            Builtin::FloatIsFinite
-            | Builtin::IntToFloat
+            Builtin::IntToFloat
             | Builtin::FloatToIntStatus
             | Builtin::FloatParseStatus
             | Builtin::FloatFormat

@@ -1,6 +1,27 @@
 import std.float.FloatToIntError
 import std.float.from_int
+import std.float.is_finite
 import std.float.to_int
+
+test fn float_finiteness_uses_ieee_bounds() {
+    let maximum = 1.7976931348623157e308
+    let positiveMaximum = is_finite(maximum)
+    let negativeMaximum = is_finite(-maximum)
+    let zero = is_finite(0.0)
+    let negativeZero = is_finite(-0.0)
+    let subnormal = is_finite(4.9406564584124654e-324)
+    let infinity = is_finite(1.0 / 0.0)
+    let negativeInfinity = is_finite(-1.0 / 0.0)
+    let notANumber = is_finite(0.0 / 0.0)
+    assert positiveMaximum
+    assert negativeMaximum
+    assert zero
+    assert negativeZero
+    assert subnormal
+    assert !infinity
+    assert !negativeInfinity
+    assert !notANumber
+}
 
 test fn int_to_float_is_explicit_and_uses_binary64_rounding() {
     let zero = from_int(0)
