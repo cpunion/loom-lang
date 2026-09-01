@@ -77,11 +77,16 @@ fn empty_int() ParseOutcome[Int] {
 }
 
 let value = ParseOutcome.Value(42)
+let explicit = ParseOutcome.Value[Int](42)
 let partial = ParseOutcome.Partial(42, 3)
 ```
 
-A zero-payload variant of a generic enum needs an expected enum type because
-its expression contains no payload from which to infer the type arguments.
+A zero-payload variant expression is a value and must not be followed by `()`.
+A payload-bearing variant may supply a prefix of the enum type arguments after
+the variant name. Any remaining arguments are inferred from payload expressions
+and the expected enum type. A zero-payload variant of a generic enum therefore
+needs an expected enum type because its expression contains no payload from
+which to infer those arguments.
 
 Payload expressions are evaluated left to right. Variant order has no source
 level integer value or priority. Loom has no open enums, implicit discriminants,
