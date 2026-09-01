@@ -486,6 +486,24 @@ fn path(text Text) Result[Path, PathError] {
 }
 
 #[test]
+fn removed_text_from_utf8_units_static_surface_is_rejected() {
+    let diagnostics = analyze_source(
+        r"
+fn removed() {
+    let text = Text.from_utf8_units([65])
+}
+",
+    );
+    assert!(
+        diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "UnknownName"
+                && diagnostic.message.contains("no method `from_utf8_units`")
+        }),
+        "the retired Text static builtin must not re-enter the frontend: {diagnostics:#?}"
+    );
+}
+
+#[test]
 fn builtin_value_calls_reject_wrong_shapes_and_incomplete_error_matches() {
     let diagnostics = analyze_source(
         r#"

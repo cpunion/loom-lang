@@ -64,9 +64,9 @@ bytes.decode_utf8() Result[Text, DecodeTextError]
 Source that constructs Text from integer units builds a mutable Bytes value,
 checks each unit when its input is not already byte-ranged, appends with `add`,
 and finishes with `decode_utf8`. An invalid UTF-8 sequence returns
-`DecodeTextError.InvalidUtf8`; `add` requires every unit to be in `0..255` and
-raises `InvalidByte` before mutation when that precondition is violated. There
-is no parallel `List[Int]` conversion builtin.
+`DecodeTextError.InvalidUtf8`; `add` requires every unit to be from 0 through
+255 and raises `InvalidByte` before mutation when that precondition is
+violated. There is no parallel `List[Int]` conversion builtin.
 
 `get` returns an Int in the range 0 through 255. A negative or out-of-range
 index returns `None`. `append` returns the receiver bytes followed by the
