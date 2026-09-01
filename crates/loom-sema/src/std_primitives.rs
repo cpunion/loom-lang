@@ -12,6 +12,7 @@ const FLOAT_MODULE: &str = "std.float";
 const FILE_MODULE: &str = "std.file";
 const LOG_MODULE: &str = "std.log";
 const NET_MODULE: &str = "std.net";
+const TASK_MODULE: &str = "std.task";
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum CompilerStdPrimitive {
@@ -40,6 +41,7 @@ pub(crate) enum CompilerStdPrimitive {
     ProcessArgumentCount,
     ProcessArgumentAt,
     ProcessEnvironment,
+    TaskSleep,
 }
 
 impl CompilerStdPrimitive {
@@ -66,6 +68,7 @@ impl CompilerStdPrimitive {
             Self::ProcessArgumentCount => "__argument_count",
             Self::ProcessArgumentAt => "__argument_at",
             Self::ProcessEnvironment => "__environment",
+            Self::TaskSleep => "__sleep",
         }
     }
 }
@@ -127,6 +130,7 @@ pub(crate) fn resolve_import(
         (PROCESS_MODULE, "process", "__environment") => {
             Some(CompilerStdPrimitive::ProcessEnvironment)
         }
+        (TASK_MODULE, "task", "__sleep") => Some(CompilerStdPrimitive::TaskSleep),
         _ => None,
     }
 }
@@ -193,10 +197,12 @@ mod tests {
         let file_owner = module(&mut program, std_package.clone(), "std.file");
         let log_owner = module(&mut program, std_package.clone(), "std.log");
         let net_owner = module(&mut program, std_package.clone(), "std.net");
+        let task_owner = module(&mut program, std_package.clone(), "std.task");
         let wrong_owner = module(&mut program, std_package.clone(), "std.other");
         let wrong_package = module(&mut program, PackageId::standalone(), "std.process");
         let wrong_file_package = module(&mut program, PackageId::standalone(), "std.file");
         let wrong_net_package = module(&mut program, PackageId::standalone(), "std.net");
+        let wrong_task_package = module(&mut program, PackageId::standalone(), "std.task");
 
         assert_eq!(
             resolve_import(
@@ -298,12 +304,17 @@ mod tests {
             resolve_import(&program, owner, &path(&["std", "process", "__environment"]),),
             Some(CompilerStdPrimitive::ProcessEnvironment)
         );
+        assert_eq!(
+            resolve_import(&program, task_owner, &path(&["std", "task", "__sleep"])),
+            Some(CompilerStdPrimitive::TaskSleep)
+        );
 
         for (candidate_owner, candidate_path) in [
             (wrong_owner, path(&["std", "process", "__argument_count"])),
             (wrong_package, path(&["std", "process", "__argument_count"])),
             (wrong_file_package, path(&["std", "file", "__open_read"])),
             (wrong_net_package, path(&["std", "net", "__connect"])),
+            (wrong_task_package, path(&["std", "task", "__sleep"])),
             (owner, path(&["std.process", "__argument_count"])),
             (owner, path(&["std", "process", "arguments"])),
             (
@@ -350,6 +361,10 @@ mod tests {
             (float_owner, path(&["std", "float", "__is_finite"])),
             (float_owner, path(&["std.float", "__from_int"])),
             (float_owner, path(&["std", "float", "__to_int", "extra"])),
+            (owner, path(&["std", "task", "__sleep"])),
+            (task_owner, path(&["std.task", "__sleep"])),
+            (task_owner, path(&["std", "task", "sleep"])),
+            (task_owner, path(&["std", "task", "__sleep", "extra"])),
         ] {
             assert_eq!(
                 resolve_import(&program, candidate_owner, &candidate_path),

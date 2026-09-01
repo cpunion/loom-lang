@@ -1,19 +1,40 @@
-use loom_core::{FileId, ModuleName, Name, PackageId};
+use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId};
 use loom_hir::{PackageSourceUnit, Program, SourceUnit, lower_files, lower_package_files};
-use loom_sema::{Analysis, CallTarget, TaskIntrinsic, analyze};
+use loom_sema::{Analysis, BuiltinValue, CallTarget, TaskIntrinsic, analyze};
 use loom_syntax::parse_with_file;
 
 fn analyze_source(source: &str) -> (Program, Analysis) {
     let parsed = parse_with_file(FileId(0), source);
-    assert!(
-        parsed.diagnostics().is_empty(),
-        "syntax diagnostics: {:#?}",
-        parsed.diagnostics()
+    let task = parse_with_file(
+        FileId(1),
+        include_str!("../../../library/std/task/task.loom"),
     );
-    let lowered = lower_files([SourceUnit {
-        file: FileId(0),
-        syntax: parsed.ast(),
-    }]);
+    assert!(
+        parsed.diagnostics().is_empty() && task.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} task={:#?}",
+        parsed.diagnostics(),
+        task.diagnostics()
+    );
+    let root = PackageId::standalone();
+    let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+    let mut lowered = lower_package_files([
+        PackageSourceUnit {
+            file: FileId(0),
+            package: root.clone(),
+            module: ModuleName::new("standalone"),
+            syntax: parsed.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(1),
+            package: std.clone(),
+            module: ModuleName::new("std.task"),
+            syntax: task.ast(),
+        },
+    ]);
+    lowered.program.register_package(std.clone(), [], false);
+    lowered
+        .program
+        .register_package(root, [(Name::new("std"), std)], true);
     assert!(
         lowered.diagnostics.is_empty(),
         "HIR diagnostics: {:#?}",
@@ -39,8 +60,8 @@ fn task_intrinsics(analysis: &Analysis) -> Vec<TaskIntrinsic> {
 }
 
 #[test]
-fn canonical_task_members_resolve_to_task_intrinsics() {
-    let (_, analysis) = analyze_source(
+fn sleep_resolves_to_source_while_joins_remain_task_intrinsics() {
+    let (program, analysis) = analyze_source(
         r"
 async fn child() Int { 1 }
 
@@ -61,13 +82,35 @@ pub async fn main() {
     assert_eq!(
         task_intrinsics(&analysis),
         [
-            TaskIntrinsic::Sleep,
             TaskIntrinsic::All,
             TaskIntrinsic::Settled,
             TaskIntrinsic::Any,
             TaskIntrinsic::Race,
         ]
     );
+    let source_sleep = analysis
+        .typed
+        .bodies
+        .values()
+        .flat_map(|body| body.calls.values())
+        .filter(|call| {
+            matches!(
+                call.target,
+                CallTarget::InherentMethod(definition)
+                if program.definitions[definition]
+                    .name
+                    .as_ref()
+                    .is_some_and(|name| name.as_str() == "sleep")
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(source_sleep.len(), 1);
+    assert!(source_sleep[0].receiver.is_none());
+    assert!(analysis.typed.bodies.values().any(|body| {
+        body.calls
+            .values()
+            .any(|call| call.target == CallTarget::Builtin(BuiltinValue::TaskSleep))
+    }));
 }
 
 #[test]
@@ -311,4 +354,120 @@ async fn useTask[Task]() {
         "{:#?}",
         analysis.diagnostics
     );
+}
+
+#[test]
+fn application_cannot_extend_builtin_task_or_replace_source_sleep() {
+    let (_, analysis) = analyze_source(
+        r"
+impl Task[Unit] {
+    pub static method sleep(milliseconds Int) Task[Unit] {
+        Task.sleep(milliseconds)
+    }
+}
+
+fn misuse(task Task[Unit]) {
+    discard task.sleep(1)
+}
+",
+    );
+    assert!(
+        analysis
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "ForeignInherentImpl")
+    );
+    assert!(
+        analysis
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "AmbiguousInherentMethod")
+    );
+    assert!(
+        analysis
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "UnknownName")
+    );
+    assert!(task_intrinsics(&analysis).is_empty());
+}
+
+#[test]
+fn task_sleep_leaf_is_private_to_the_unique_source_wrapper() {
+    let task = parse_with_file(
+        FileId(0),
+        include_str!("../../../library/std/task/task.loom"),
+    );
+    let sibling = parse_with_file(
+        FileId(1),
+        r"
+import std.task.__sleep
+
+pub fn steal(milliseconds Int) Task[Unit] {
+    __sleep(milliseconds)
+}
+",
+    );
+    assert!(task.diagnostics().is_empty());
+    assert!(sibling.diagnostics().is_empty());
+    let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+    let mut lowered = lower_package_files([
+        PackageSourceUnit {
+            file: FileId(0),
+            package: std.clone(),
+            module: ModuleName::new("std.task"),
+            syntax: task.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(1),
+            package: std.clone(),
+            module: ModuleName::new("std.task"),
+            syntax: sibling.ast(),
+        },
+    ]);
+    lowered.program.register_package(std, [], true);
+    assert!(lowered.diagnostics.is_empty(), "{:#?}", lowered.diagnostics);
+    let analysis = analyze(&lowered.program);
+    assert!(analysis.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == "UnknownName" && diagnostic.primary.file == FileId(1)
+    }));
+    let private_leaf_calls = analysis
+        .typed
+        .bodies
+        .values()
+        .flat_map(|body| body.calls.values())
+        .filter(|call| call.target == CallTarget::Builtin(BuiltinValue::TaskSleep))
+        .count();
+    assert_eq!(private_leaf_calls, 1);
+}
+
+#[test]
+fn missing_task_source_has_no_sleep_fallback() {
+    let parsed = parse_with_file(
+        FileId(0),
+        r"
+async fn main() {
+    Task.sleep(0).await
+}
+",
+    );
+    assert!(parsed.diagnostics().is_empty());
+    let lowered = lower_files([SourceUnit {
+        file: FileId(0),
+        syntax: parsed.ast(),
+    }]);
+    assert!(lowered.diagnostics.is_empty(), "{:#?}", lowered.diagnostics);
+    let analysis = analyze(&lowered.program);
+    assert!(
+        analysis
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "UnknownName")
+    );
+    assert!(task_intrinsics(&analysis).is_empty());
+    assert!(analysis.typed.bodies.values().all(|body| {
+        body.calls
+            .values()
+            .all(|call| call.target != CallTarget::Builtin(BuiltinValue::TaskSleep))
+    }));
 }

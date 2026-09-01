@@ -22,18 +22,24 @@ fn compile_with_std_resource(source: &str) -> CheckedProgram {
     let io = parse_with_file(FileId(2), include_str!("../../../library/std/io/io.loom"));
     let file = parse_with_file(FileId(3), "pub record File {}\n");
     let net = parse_with_file(FileId(4), "pub record Socket {}\n");
+    let task = parse_with_file(
+        FileId(5),
+        include_str!("../../../library/std/task/task.loom"),
+    );
     assert!(
         application.diagnostics().is_empty()
             && resource.diagnostics().is_empty()
             && io.diagnostics().is_empty()
             && file.diagnostics().is_empty()
-            && net.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} resource={:#?} io={:#?} file={:#?} net={:#?}",
+            && net.diagnostics().is_empty()
+            && task.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} resource={:#?} io={:#?} file={:#?} net={:#?} task={:#?}",
         application.diagnostics(),
         resource.diagnostics(),
         io.diagnostics(),
         file.diagnostics(),
-        net.diagnostics()
+        net.diagnostics(),
+        task.diagnostics()
     );
 
     let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
@@ -68,6 +74,12 @@ fn compile_with_std_resource(source: &str) -> CheckedProgram {
             package: std_package.clone(),
             module: ModuleName::new("std.net"),
             syntax: net.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(5),
+            package: std_package.clone(),
+            module: ModuleName::new("std.task"),
+            syntax: task.ast(),
         },
     ]);
     lowered
@@ -430,7 +442,7 @@ pub async fn main() {
     assert_dense_global_ids(&closed);
     assert_eq!(
         function_names(&closed),
-        BTreeSet::from(["child", "dispose", "main"])
+        BTreeSet::from(["child", "dispose", "main", "sleep"])
     );
     assert!(!closed.types.iter().any(|ty| leaf(&ty.name) == "DeadRecord"));
     assert!(closed.types.iter().any(|ty| leaf(&ty.name) == "Resource"));

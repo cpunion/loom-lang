@@ -66,6 +66,7 @@ pub enum BuiltinValue {
     ProcessArgumentCount,
     ProcessArgumentAt,
     ProcessEnvironment,
+    TaskSleep,
     TaskCompleted,
     TaskFaulted,
     TaskCancelled,
@@ -95,7 +96,6 @@ pub enum BuiltinValue {
 /// implemented by ordinary source definitions.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum TaskIntrinsic {
-    Sleep,
     All,
     Settled,
     Any,

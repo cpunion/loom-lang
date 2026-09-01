@@ -81,6 +81,10 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   interpreter arm, and ordinary-call LCIR lowering path are deleted; the
   canonical contract proof expression remains so constraints retain exact
   proof and check-elimination behavior.
+  `Task.sleep` is now an ordinary public static method in `std.task`; only its
+  exact source body may call the private timer leaf. The public-name
+  `TaskIntrinsic::Sleep` path is deleted, while `TaskIntrinsic` temporarily
+  retains only the four variadic join policies.
   `std.json.format_json` traverses Json and builds canonical UTF-8 through
   ordinary Loom source. Its generic packed builder is `Bytes.add`: a mutable
   Bytes binding has copy-on-write value semantics, checked byte units, hidden
@@ -116,7 +120,7 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   public `std.file` and `std.net` functions resolve through ordinary source
   wrappers, and the Path forms reuse their Text counterparts. Only 16
   exact-owner resource/I/O/close leaves remain below source. Interpreted MIR
-  artifact 50 and persistent cache schema 23 reject removed Float finiteness
+  artifact 50 and persistent cache schema 24 reject removed Float finiteness
   and IoError accessor builtins, Duration and JSON compiler identities, and
   UTF-8-unit dispatch,
   infinite value layouts,

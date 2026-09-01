@@ -572,14 +572,16 @@ An invalid call is transactional, so it cannot remove the winner before loser
 disposal or reinterpret terminal fault/cancellation as an ordinary result.
 
 The frontend keeps an ordinary method call through HIR. The current
-implementation temporarily maps a canonical, unshadowed Task API member to a
-compiler-private `TaskIntrinsic` before constructing specialized MIR. That
-identity is an implementation bridge only: it is not a standard-library ABI,
-must not be serialized as public policy identity, and is removed rather than
-preserved when the source library can declare these functions.
+implementation temporarily maps each of the four canonical, unshadowed Task
+join members to a compiler-private `TaskIntrinsic` before constructing
+specialized MIR. That identity is an implementation bridge only: it is not a
+standard-library ABI, must not be serialized as public policy identity, and is
+removed rather than preserved when the source library can declare these
+functions. `Task.sleep` has already crossed that boundary: it resolves to a
+source wrapper whose exact-owner private leaf emits the timer operation.
 
-In the accepted end state, each public Task policy resolves to an ordinary
-source `DefId` in the compiler-owned `std` module. Instance closure follows
+In the accepted end state, each remaining public Task join policy resolves to
+an ordinary source `DefId` in the compiler-owned `std` module. Instance closure follows
 the source body, and any specialized path begins at compiler-private
 join/select, result-or-outcome extraction, or cancellation-and-drain primitives
 called by that body. No compiler stage reconstructs a policy from the public
