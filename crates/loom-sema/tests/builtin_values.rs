@@ -1,6 +1,7 @@
 use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId};
 use loom_hir::{
-    DefId, DefinitionKind, PackageSourceUnit, Program, Visibility, lower_package_files,
+    DefId, DefinitionKind, PackageSourceUnit, Program, SourceUnit, Visibility, lower_files,
+    lower_package_files,
 };
 use loom_sema::{Analysis, BuiltinValue, CallTarget, Resolution, Signature, TyData, analyze};
 use loom_syntax::parse_with_file;
@@ -180,52 +181,89 @@ fn definition_named(program: &Program, package: &PackageId, module: &str, name: 
         .unwrap_or_else(|| panic!("missing {package:?} {module}.{name}"))
 }
 
-fn assert_builtin_error_result_types(
+fn call_targets(program: &Program, analysis: &Analysis, definition: DefId) -> Vec<CallTarget> {
+    let body = match &program.definitions[definition].kind {
+        DefinitionKind::Function(function) => function.body,
+        DefinitionKind::Method(method) => method.body.expect("source method body"),
+        _ => panic!("definition is not callable"),
+    };
+    analysis
+        .typed
+        .body(body)
+        .expect("checked callable body")
+        .calls
+        .values()
+        .map(|call| call.target.clone())
+        .collect()
+}
+
+fn assert_builtin_error_result_type(
     program: &Program,
     analysis: &Analysis,
     owner: DefId,
-    decode_error: DefId,
-    path_error: DefId,
+    builtin: BuiltinValue,
+    expected_error: DefId,
 ) {
-    let DefinitionKind::Function(function) = &program.definitions[owner].kind else {
-        panic!("builtin result owner must be a function");
+    let body = match &program.definitions[owner].kind {
+        DefinitionKind::Function(function) => function.body,
+        DefinitionKind::Method(method) => method.body.expect("source method body"),
+        _ => panic!("builtin result owner is not callable"),
     };
-    let body = analysis
-        .typed
-        .body(function.body)
-        .expect("builtin result owner must have checked semantics");
-    let mut decode_results = 0_usize;
-    let mut path_results = 0_usize;
-    for (expression, call) in body.calls.iter() {
-        let expected = match call.target {
-            CallTarget::Builtin(BuiltinValue::BytesDecodeUtf8) => {
-                decode_results = decode_results.saturating_add(1);
-                decode_error
-            }
-            CallTarget::Builtin(BuiltinValue::PathFromText | BuiltinValue::PathJoin) => {
-                path_results = path_results.saturating_add(1);
-                path_error
-            }
-            _ => continue,
-        };
-        let result = *body
-            .expression_types
-            .get(expression)
-            .expect("builtin call result type");
-        let TyData::Result { error, .. } = analysis.typed.types.data(result) else {
-            panic!("builtin error operation must return Result");
-        };
-        assert_eq!(
-            analysis.typed.types.data(*error),
-            &TyData::Nominal {
-                definition: expected,
-                arguments: Vec::new(),
-            },
-            "builtin result must use the exact compiler-owned source enum"
+    let body = analysis.typed.body(body).expect("checked builtin owner");
+    let matches = body
+        .calls
+        .iter()
+        .filter(|(_, call)| call.target == CallTarget::Builtin(builtin))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        matches.len(),
+        1,
+        "private builtin must have one exact owner"
+    );
+    let result = *body
+        .expression_types
+        .get(matches[0].0)
+        .expect("builtin call result type");
+    let TyData::Result { error, .. } = analysis.typed.types.data(result) else {
+        panic!("builtin error operation must return Result");
+    };
+    assert_eq!(
+        analysis.typed.types.data(*error),
+        &TyData::Nominal {
+            definition: expected_error,
+            arguments: Vec::new(),
+        },
+        "builtin result must use the exact compiler-owned source enum"
+    );
+}
+
+fn assert_path_source_call_ownership(
+    program: &Program,
+    analysis: &Analysis,
+    application: DefId,
+    from_text: DefId,
+    as_text: DefId,
+    join: DefId,
+) {
+    let application_calls = call_targets(program, analysis, application);
+    for method in [from_text, join] {
+        assert!(
+            application_calls.contains(&CallTarget::InherentMethod(method)),
+            "Path application call must resolve to its ordinary source method: {application_calls:#?}"
         );
     }
-    assert_eq!(decode_results, 1);
-    assert_eq!(path_results, 2);
+    assert_eq!(
+        call_targets(program, analysis, from_text),
+        [CallTarget::Builtin(BuiltinValue::PathFromText)]
+    );
+    assert_eq!(
+        call_targets(program, analysis, as_text),
+        [CallTarget::Builtin(BuiltinValue::PathAsText)]
+    );
+    assert_eq!(
+        call_targets(program, analysis, join),
+        [CallTarget::Builtin(BuiltinValue::PathJoin)]
+    );
 }
 
 #[test]
@@ -372,6 +410,9 @@ fn pathOutcome(value Result[Path, PathError]) {
     let application = PackageId::new("sema-test", "0");
     let decode_error = definition_named(&program, &std, "std.text", "DecodeTextError");
     let path_error = definition_named(&program, &std, "std.path", "PathError");
+    let from_text = definition_named(&program, &std, "std.path", "from_text");
+    let as_text = definition_named(&program, &std, "std.path", "as_text");
+    let join = definition_named(&program, &std, "std.path", "join");
     let values = definition_named(&program, &application, "sema_test", "values");
     assert_eq!(
         analysis.canonical_std_items.decode_text_error,
@@ -410,7 +451,29 @@ fn pathOutcome(value Result[Path, PathError]) {
         );
     }
 
-    assert_builtin_error_result_types(&program, &analysis, values, decode_error, path_error);
+    assert_path_source_call_ownership(&program, &analysis, values, from_text, as_text, join);
+
+    assert_builtin_error_result_type(
+        &program,
+        &analysis,
+        values,
+        BuiltinValue::BytesDecodeUtf8,
+        decode_error,
+    );
+    assert_builtin_error_result_type(
+        &program,
+        &analysis,
+        from_text,
+        BuiltinValue::PathFromText,
+        path_error,
+    );
+    assert_builtin_error_result_type(
+        &program,
+        &analysis,
+        join,
+        BuiltinValue::PathJoin,
+        path_error,
+    );
 }
 
 #[test]
@@ -534,6 +597,159 @@ fn incomplete(error PathError) {
         "{diagnostics:#?}"
     );
     assert!(codes.contains(&"NonExhaustiveMatch"), "{diagnostics:#?}");
+}
+
+#[test]
+fn path_leafs_are_private_to_the_three_unique_source_methods() {
+    let path_file = FileId(0);
+    let sibling_file = FileId(1);
+    let path = parse_with_file(
+        path_file,
+        include_str!("../../../library/std/path/path.loom"),
+    );
+    let sibling = parse_with_file(
+        sibling_file,
+        r"
+import std.path.__as_text
+import std.path.__from_text
+import std.path.__join
+
+fn stealFromText(text Text) Result[Path, PathError] { __from_text(text) }
+fn stealAsText(path Path) Text { __as_text(path) }
+fn stealJoin(base Path, child Path) Result[Path, PathError] { __join(base, child) }
+",
+    );
+    assert!(path.diagnostics().is_empty(), "{:#?}", path.diagnostics());
+    assert!(
+        sibling.diagnostics().is_empty(),
+        "{:#?}",
+        sibling.diagnostics()
+    );
+    let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+    let mut lowered = lower_package_files([
+        PackageSourceUnit {
+            file: path_file,
+            package: std.clone(),
+            module: ModuleName::new("std.path"),
+            syntax: path.ast(),
+        },
+        PackageSourceUnit {
+            file: sibling_file,
+            package: std.clone(),
+            module: ModuleName::new("std.path"),
+            syntax: sibling.ast(),
+        },
+    ]);
+    lowered.program.register_package(std, [], true);
+    assert!(lowered.diagnostics.is_empty(), "{:#?}", lowered.diagnostics);
+    let analysis = analyze(&lowered.program);
+    assert!(analysis.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == "UnknownName" && diagnostic.primary.file == sibling_file
+    }));
+    let path_leaf_calls = analysis
+        .typed
+        .bodies
+        .values()
+        .flat_map(|body| body.calls.values())
+        .filter(|call| {
+            matches!(
+                call.target,
+                CallTarget::Builtin(
+                    BuiltinValue::PathFromText | BuiltinValue::PathAsText | BuiltinValue::PathJoin
+                )
+            )
+        })
+        .count();
+    assert_eq!(path_leaf_calls, 3);
+}
+
+#[test]
+fn missing_path_source_has_no_public_method_fallback() {
+    let parsed = parse_with_file(
+        FileId(0),
+        r"
+fn parse(text Text) { discard Path.from_text(text) }
+fn render(path Path) { discard path.as_text() }
+fn combine(base Path, child Path) { discard base.join(child) }
+",
+    );
+    assert!(
+        parsed.diagnostics().is_empty(),
+        "{:#?}",
+        parsed.diagnostics()
+    );
+    let lowered = lower_files([SourceUnit {
+        file: FileId(0),
+        syntax: parsed.ast(),
+    }]);
+    assert!(lowered.diagnostics.is_empty(), "{:#?}", lowered.diagnostics);
+    let analysis = analyze(&lowered.program);
+    assert!(
+        analysis
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.code == "UnknownName" })
+    );
+    assert!(analysis.typed.bodies.values().all(|body| {
+        body.calls.values().all(|call| {
+            !matches!(
+                call.target,
+                CallTarget::Builtin(
+                    BuiltinValue::PathFromText | BuiltinValue::PathAsText | BuiltinValue::PathJoin
+                )
+            )
+        })
+    }));
+}
+
+#[test]
+fn application_cannot_extend_builtin_path_or_replace_source_methods() {
+    let (program, analysis) = analyze_source_program(
+        r"
+impl Path {
+    pub static method from_text(text Text) { discard text }
+    pub method as_text(self) {}
+    pub method join(self, child Path) { discard child }
+}
+
+fn misuse(text Text, path Path, child Path) {
+    discard Path.from_text(text)
+    discard path.as_text()
+    discard path.join(child)
+}
+",
+    );
+    assert!(
+        analysis
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "ForeignInherentImpl"),
+        "{:#?}",
+        analysis.diagnostics
+    );
+    assert!(
+        analysis
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "AmbiguousInherentMethod"),
+        "{:#?}",
+        analysis.diagnostics
+    );
+    let leaf_calls = analysis
+        .typed
+        .bodies
+        .values()
+        .flat_map(|body| body.calls.values())
+        .filter(|call| {
+            matches!(
+                call.target,
+                CallTarget::Builtin(
+                    BuiltinValue::PathFromText | BuiltinValue::PathAsText | BuiltinValue::PathJoin
+                )
+            )
+        })
+        .count();
+    assert_eq!(leaf_calls, 3, "{program:#?}");
 }
 
 #[test]

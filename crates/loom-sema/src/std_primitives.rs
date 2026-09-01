@@ -12,6 +12,7 @@ const FLOAT_MODULE: &str = "std.float";
 const FILE_MODULE: &str = "std.file";
 const LOG_MODULE: &str = "std.log";
 const NET_MODULE: &str = "std.net";
+const PATH_MODULE: &str = "std.path";
 const TASK_MODULE: &str = "std.task";
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -41,6 +42,9 @@ pub(crate) enum CompilerStdPrimitive {
     ProcessArgumentCount,
     ProcessArgumentAt,
     ProcessEnvironment,
+    PathFromText,
+    PathAsText,
+    PathJoin,
     TaskSleep,
 }
 
@@ -68,6 +72,9 @@ impl CompilerStdPrimitive {
             Self::ProcessArgumentCount => "__argument_count",
             Self::ProcessArgumentAt => "__argument_at",
             Self::ProcessEnvironment => "__environment",
+            Self::PathFromText => "__from_text",
+            Self::PathAsText => "__as_text",
+            Self::PathJoin => "__join",
             Self::TaskSleep => "__sleep",
         }
     }
@@ -130,6 +137,9 @@ pub(crate) fn resolve_import(
         (PROCESS_MODULE, "process", "__environment") => {
             Some(CompilerStdPrimitive::ProcessEnvironment)
         }
+        (PATH_MODULE, "path", "__from_text") => Some(CompilerStdPrimitive::PathFromText),
+        (PATH_MODULE, "path", "__as_text") => Some(CompilerStdPrimitive::PathAsText),
+        (PATH_MODULE, "path", "__join") => Some(CompilerStdPrimitive::PathJoin),
         (TASK_MODULE, "task", "__sleep") => Some(CompilerStdPrimitive::TaskSleep),
         _ => None,
     }
@@ -197,11 +207,13 @@ mod tests {
         let file_owner = module(&mut program, std_package.clone(), "std.file");
         let log_owner = module(&mut program, std_package.clone(), "std.log");
         let net_owner = module(&mut program, std_package.clone(), "std.net");
+        let path_owner = module(&mut program, std_package.clone(), "std.path");
         let task_owner = module(&mut program, std_package.clone(), "std.task");
         let wrong_owner = module(&mut program, std_package.clone(), "std.other");
         let wrong_package = module(&mut program, PackageId::standalone(), "std.process");
         let wrong_file_package = module(&mut program, PackageId::standalone(), "std.file");
         let wrong_net_package = module(&mut program, PackageId::standalone(), "std.net");
+        let wrong_path_package = module(&mut program, PackageId::standalone(), "std.path");
         let wrong_task_package = module(&mut program, PackageId::standalone(), "std.task");
 
         assert_eq!(
@@ -308,12 +320,25 @@ mod tests {
             resolve_import(&program, task_owner, &path(&["std", "task", "__sleep"])),
             Some(CompilerStdPrimitive::TaskSleep)
         );
+        assert_eq!(
+            resolve_import(&program, path_owner, &path(&["std", "path", "__from_text"]),),
+            Some(CompilerStdPrimitive::PathFromText)
+        );
+        assert_eq!(
+            resolve_import(&program, path_owner, &path(&["std", "path", "__as_text"]),),
+            Some(CompilerStdPrimitive::PathAsText)
+        );
+        assert_eq!(
+            resolve_import(&program, path_owner, &path(&["std", "path", "__join"])),
+            Some(CompilerStdPrimitive::PathJoin)
+        );
 
         for (candidate_owner, candidate_path) in [
             (wrong_owner, path(&["std", "process", "__argument_count"])),
             (wrong_package, path(&["std", "process", "__argument_count"])),
             (wrong_file_package, path(&["std", "file", "__open_read"])),
             (wrong_net_package, path(&["std", "net", "__connect"])),
+            (wrong_path_package, path(&["std", "path", "__from_text"])),
             (wrong_task_package, path(&["std", "task", "__sleep"])),
             (owner, path(&["std.process", "__argument_count"])),
             (owner, path(&["std", "process", "arguments"])),
@@ -362,6 +387,11 @@ mod tests {
             (float_owner, path(&["std.float", "__from_int"])),
             (float_owner, path(&["std", "float", "__to_int", "extra"])),
             (owner, path(&["std", "task", "__sleep"])),
+            (owner, path(&["std", "path", "__from_text"])),
+            (path_owner, path(&["std.path", "__from_text"])),
+            (path_owner, path(&["std", "path", "from_text"])),
+            (path_owner, path(&["std", "path", "__from_text", "extra"])),
+            (path_owner, path(&["std", "path", "__sleep"])),
             (task_owner, path(&["std.task", "__sleep"])),
             (task_owner, path(&["std", "task", "sleep"])),
             (task_owner, path(&["std", "task", "__sleep", "extra"])),

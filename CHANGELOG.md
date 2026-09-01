@@ -85,6 +85,10 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   exact source body may call the private timer leaf. The public-name
   `TaskIntrinsic::Sleep` path is deleted, while `TaskIntrinsic` temporarily
   retains only the four variadic join policies.
+  `Path.from_text`, `Path.as_text`, and `Path.join` are now ordinary public
+  methods in `std.path`; only those three exact source bodies may call their
+  private typed leaves. The public-name semantic builtin paths are deleted,
+  with no fallback when the source definitions are absent.
   `std.json.format_json` traverses Json and builds canonical UTF-8 through
   ordinary Loom source. Its generic packed builder is `Bytes.add`: a mutable
   Bytes binding has copy-on-write value semantics, checked byte units, hidden

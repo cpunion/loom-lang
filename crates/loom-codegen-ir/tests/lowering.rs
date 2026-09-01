@@ -243,6 +243,10 @@ fn compile_with_std_resource_file_net(source: &str) -> loom_mir::CheckedProgram 
                 include_str!("../../../library/std/file/file.loom"),
             ),
             ("std.net", include_str!("../../../library/std/net/net.loom")),
+            (
+                "std.path",
+                include_str!("../../../library/std/path/path.loom"),
+            ),
         ],
     )
 }
@@ -731,8 +735,8 @@ pub fn main() {
                     assert!(
                         roots
                             .state(ManagedSafepoint::Instruction(instruction.id()))
-                            .is_some(),
-                        "live base Path requires an exact join root state"
+                            .is_none(),
+                        "the source leaf consumes both staged Path inputs before collection"
                     );
                     saw_join = true;
                 }
@@ -740,7 +744,7 @@ pub fn main() {
             }
         }
     }
-    assert_eq!(from_count, 2);
+    assert_eq!(from_count, 1, "the shared source method owns one Path leaf");
     assert!(saw_as_text && saw_join);
     let dump = dump_program(artifact.program());
     for opcode in ["path.from_text", "path.as_text", "path.join"] {

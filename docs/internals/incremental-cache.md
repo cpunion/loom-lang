@@ -48,7 +48,7 @@ larger graph.
 
 ## Persistent layers
 
-The persistent cache schema is `24`. Current layers include source parse,
+The persistent cache schema is `25`. Current layers include source parse,
 package-interface presence, typed package state, complete checked MIR, target
 objects, and deterministic final artifacts.
 
@@ -83,8 +83,11 @@ a same-named function, record, or enum canonical authority.
 The four Task join policies currently store a resolved `TaskIntrinsic` in typed
 body facts. `Task.sleep` instead stores the ordinary source
 `InherentMethod(DefId)` call, while only its authenticated `std.task` body
-stores the private `TaskSleep` leaf. Cache schema `24` and the
-`loom-compilation-cache-v24` domain cover those identities, the current
+stores the private `TaskSleep` leaf. Public Path construction, extraction, and
+join calls likewise store ordinary `std.path` `InherentMethod(DefId)` values;
+only the three authenticated source bodies store their private Path leaves.
+Cache schema `25` and the `loom-compilation-cache-v25` domain cover those
+identities, the current
 compiler-private Float parse, format, and conversion
 operations, the logging, file, and network primitive sets, the exact mutable
 `Bytes.add` builtin, and exact source identities for standard types. They also
@@ -110,6 +113,8 @@ remain independently rederived and validated.
 Schema 24 removes the retired `TaskIntrinsic::Sleep` identity. The remaining
 Task cache identity disappears when the four join policies are replaced by
 ordinary source definitions.
+Schema 25 removes the public-name Path builtin call identities; the same
+private leaf values remain valid only in their exact source method bodies.
 
 Checked-MIR cache envelopes use artifact version `50` and its exact current
 MIR shape. The artifact profile requires the complete compiler-known resource

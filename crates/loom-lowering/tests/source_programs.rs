@@ -378,6 +378,10 @@ fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
         FileId(8),
         include_str!("../../../library/std/resource/resource.loom"),
     );
+    let path = parse_with_file(
+        FileId(9),
+        include_str!("../../../library/std/path/path.loom"),
+    );
     assert!(
         application.diagnostics().is_empty()
             && log.diagnostics().is_empty()
@@ -387,8 +391,9 @@ fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
             && file.diagnostics().is_empty()
             && net.diagnostics().is_empty()
             && io.diagnostics().is_empty()
-            && resource.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} log={:#?} json={:#?} float={:#?} text={:#?} file={:#?} net={:#?} io={:#?} resource={:#?}",
+            && resource.diagnostics().is_empty()
+            && path.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} log={:#?} json={:#?} float={:#?} text={:#?} file={:#?} net={:#?} io={:#?} resource={:#?} path={:#?}",
         application.diagnostics(),
         log.diagnostics(),
         json.diagnostics(),
@@ -397,7 +402,8 @@ fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
         file.diagnostics(),
         net.diagnostics(),
         io.diagnostics(),
-        resource.diagnostics()
+        resource.diagnostics(),
+        path.diagnostics()
     );
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("lowering-test", "0");
@@ -455,6 +461,12 @@ fn compile_with_std_log(source: &str) -> loom_mir::CheckedProgram {
             package: std.clone(),
             module: ModuleName::new("std.resource"),
             syntax: resource.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(9),
+            package: std.clone(),
+            module: ModuleName::new("std.path"),
+            syntax: path.ast(),
         },
     ]);
     compile_lowered_package(lowered, std, root)
@@ -703,6 +715,27 @@ fn assert_direct_call(
             )
         }),
         "{} must call the ordinary source definition {}: {program:#?}",
+        owner.name,
+        target_function.name
+    );
+}
+
+fn assert_inherent_call(
+    owner: &loom_mir::Function,
+    target_function: &loom_mir::Function,
+    program: &loom_mir::CheckedProgram,
+) {
+    assert!(
+        owner.exprs_preorder().any(|expression| {
+            matches!(
+                &expression.kind,
+                loom_mir::ExprKind::Call {
+                    target: loom_mir::CallTarget::Inherent(target),
+                    ..
+                } if target == &target_function.id
+            )
+        }),
+        "{} must call the inherent source definition {}: {program:#?}",
         owner.name,
         target_function.name
     );
@@ -1967,12 +2000,15 @@ async fn pathFiles(path Path) {
 "#,
     );
     let path_files = function_named(&program, "lowering_test.pathFiles");
+    let path_as_text = function_named(&program, "std.path.as_text");
     let open_read_path = function_named(&program, "std.file.open_read_path");
     let create_path = function_named(&program, "std.file.create_path");
     let open_read = function_named(&program, "std.file.open_read");
     let create = function_named(&program, "std.file.create");
     assert_direct_call(path_files, open_read_path, &program);
     assert_direct_call(path_files, create_path, &program);
+    assert_inherent_call(open_read_path, path_as_text, &program);
+    assert_inherent_call(create_path, path_as_text, &program);
     assert_direct_call(open_read_path, open_read, &program);
     assert_direct_call(create_path, create, &program);
     for (builtin, expected_owner) in [
@@ -1984,6 +2020,9 @@ async fn pathFiles(path Path) {
         (loom_mir::Builtin::SocketConnect, "std.net.connect"),
         (loom_mir::Builtin::SocketTryConnect, "std.net.try_connect"),
         (loom_mir::Builtin::SocketClose, "std.net.dispose"),
+        (loom_mir::Builtin::PathFromText, "std.path.from_text"),
+        (loom_mir::Builtin::PathAsText, "std.path.as_text"),
+        (loom_mir::Builtin::PathJoin, "std.path.join"),
     ] {
         assert_eq!(
             builtin_call_owners(&program, builtin),

@@ -22,7 +22,8 @@ names still recognized by semantic builtin tables.
 | `std.resource` | `Dispose`, `MustScope`, and `NoSuspend` declarations | their fixed language-item meaning and static enforcement intentionally remain language core | source declarations complete |
 | `std.float` | `ParseFloatError`, `FloatToIntError`, parsing, formatting, source bounds-based finiteness, and both explicit Int conversions | only exact-owner private parse/format/conversion primitives and the runtime parse/format boundary | source-backed |
 | `std.process` | public `arguments` and `environment` wrappers | compiler-private process snapshot primitives and their runtime OS boundary | source-backed |
-| `std.text` / `std.path` | public `DecodeTextError` and `PathError` enums | Text, Bytes, Path, and their intrinsic construction and decoding operations remain core mechanisms | partial |
+| `std.text` | public `DecodeTextError` | Text and Bytes value methods and decoding remain compiler mechanisms | partial |
+| `std.path` | public `PathError`, `Path.from_text`, `Path.as_text`, and `Path.join` | only exact-owner private typed Path leaves and the core Path representation | source-backed |
 | `std.time` | `Duration`, `milliseconds`, and `Duration.as_milliseconds` | only the general constrained-type, contract, and refined-to-base mechanisms | source-backed |
 | `std.file` / `std.net` | `File`, `Socket`, all public acquisition and I/O methods, and their `Dispose`/`MustScope` conformances | only exact-owner private typed I/O and close leaves | source-backed |
 | `Task.sleep` | public `static method sleep` on `Task[Unit]` | only the exact-owner private timer leaf and scheduler substrate | source-backed |
@@ -36,7 +37,9 @@ construction operations remain compiler-private, and only compiler-owned
 implementation remains. `Task.sleep` already follows this rule: calls resolve
 to its source `DefId`, and only that source body can reach the private timer
 leaf. A missing or ambiguous source declaration cannot fall back to a public-
-name intrinsic.
+name intrinsic. The same rule now covers all three Path methods: applications
+resolve ordinary `std.path` source definitions, while only those exact method
+bodies can reach the private typed Path leaves.
 
 ## Platform support matrix
 
