@@ -39,24 +39,31 @@ fn compile_source_files(sources: &[&str]) -> loom_mir::CheckedProgram {
     let io_file = FileId(u32::try_from(sources.len()).expect("test source count fits FileId"));
     let file_file = FileId(io_file.0 + 1);
     let net_file = FileId(io_file.0 + 2);
+    let task_file = FileId(io_file.0 + 3);
     let io = parse_with_file(io_file, include_str!("../../../library/std/io/io.loom"));
     let file = parse_with_file(file_file, "pub record File {}\n");
     let net = parse_with_file(net_file, "pub record Socket {}\n");
+    let task = parse_with_file(
+        task_file,
+        include_str!("../../../library/std/task/task.loom"),
+    );
     assert!(
         applications
             .iter()
             .all(|parsed| parsed.diagnostics().is_empty())
             && io.diagnostics().is_empty()
             && file.diagnostics().is_empty()
-            && net.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} io={:#?} file={:#?} net={:#?}",
+            && net.diagnostics().is_empty()
+            && task.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} io={:#?} file={:#?} net={:#?} task={:#?}",
         applications
             .iter()
             .flat_map(loom_syntax::Parse::diagnostics)
             .collect::<Vec<_>>(),
         io.diagnostics(),
         file.diagnostics(),
-        net.diagnostics()
+        net.diagnostics(),
+        task.diagnostics()
     );
     let std_package = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::standalone();
@@ -88,6 +95,12 @@ fn compile_source_files(sources: &[&str]) -> loom_mir::CheckedProgram {
                     package: std_package.clone(),
                     module: ModuleName::new("std.net"),
                     syntax: net.ast(),
+                },
+                PackageSourceUnit {
+                    file: task_file,
+                    package: std_package.clone(),
+                    module: ModuleName::new("std.task"),
+                    syntax: task.ast(),
                 },
             ]),
     );
@@ -126,8 +139,10 @@ fn compile_with_std_modules(
 ) -> loom_mir::CheckedProgram {
     let application = parse_with_file(FileId(0), source);
     assert!(
-        std_modules.iter().all(|(name, _)| *name != "std.io"),
-        "std.io is always loaded from the real standard-library source"
+        std_modules
+            .iter()
+            .all(|(name, _)| !matches!(*name, "std.io" | "std.task")),
+        "std.io and std.task are always loaded from real standard-library sources"
     );
     let std_modules = std_modules
         .iter()
@@ -140,6 +155,10 @@ fn compile_with_std_modules(
             (!std_modules.iter().any(|(name, _)| *name == "std.net"))
                 .then_some(("std.net", "pub record Socket {}\n")),
         )
+        .chain(std::iter::once((
+            "std.task",
+            include_str!("../../../library/std/task/task.loom"),
+        )))
         .chain(std::iter::once((
             "std.io",
             include_str!("../../../library/std/io/io.loom"),
@@ -1654,6 +1673,84 @@ fn assert_milliseconds_uses_first_precondition(mir: &loom_mir::CheckedProgram) {
     ));
 }
 
+fn assert_typed_sleep_artifact(artifact: &loom_codegen_ir::CheckedArtifact) {
+    let milliseconds = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("std.time.milliseconds"))
+        .expect("the public time API must enter LCIR through its ordinary source definition");
+    assert!(
+        milliseconds
+            .instructions()
+            .iter()
+            .any(|instruction| matches!(instruction.kind(), InstructionKind::RefineProven { .. }))
+    );
+    let main = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("main"))
+        .expect("main instance");
+    assert!(main.effects().contains(loom_codegen_ir::Effects::MAY_FAULT));
+    assert!(
+        main.effects()
+            .contains(loom_codegen_ir::Effects::NEEDS_EXECUTOR)
+    );
+    assert_eq!(
+        main.coroutine()
+            .expect("main coroutine")
+            .suspensions()
+            .len(),
+        1
+    );
+    assert!(
+        main.instructions().iter().all(|instruction| !matches!(
+            instruction.kind(),
+            InstructionKind::ProductExtract { .. }
+        ))
+    );
+    let sleep_wrapper = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("std.task.sleep"))
+        .expect("source Task.sleep wrapper instance");
+    assert!(main.blocks().iter().any(|block| matches!(
+        block.terminator().map(loom_codegen_ir::Terminator::kind),
+        Some(TerminatorKind::Invoke { callee, .. }) if *callee == sleep_wrapper.id()
+    )));
+    assert!(main.blocks().iter().all(|block| !matches!(
+        block.terminator().map(loom_codegen_ir::Terminator::kind),
+        Some(TerminatorKind::TaskSleep { .. })
+    )));
+    assert!(sleep_wrapper.blocks().iter().any(|block| matches!(
+        block.terminator().map(loom_codegen_ir::Terminator::kind),
+        Some(TerminatorKind::TaskSleep { .. })
+    )));
+    assert!(
+        sleep_wrapper
+            .effects()
+            .contains(loom_codegen_ir::Effects::NEEDS_EXECUTOR)
+    );
+    let dump = dump_program(artifact.program());
+    assert!(dump.contains("refine.proven"), "{dump}");
+    assert_eq!(
+        dump.matches("int.compare.greater_equal").count(),
+        1,
+        "the source requires check must be the only predicate evaluation; the refinement must not replay it:\n{dump}"
+    );
+    assert!(
+        !dump.contains("runtime ArtifactProofRejected"),
+        "a validator-authenticated precondition proof must not emit an artifact proof fault:\n{dump}"
+    );
+    assert!(dump.contains("task.sleep"), "{dump}");
+    assert!(dump.contains("await_tasks"), "{dump}");
+    let identity = artifact_identity(artifact);
+    assert!(identity.contains("task.sleep"), "{identity}");
+    assert!(
+        dump.contains("effects=may_fault+needs_runtime+needs_executor+may_suspend"),
+        "{dump}"
+    );
+}
+
 #[test]
 fn task_sleep_accepts_sema_normalized_int_and_preserves_first_class_task_flow() {
     let LoweringOutcome::Complete(unused) = lower_run_with_std_time("pub fn main() {}\n") else {
@@ -1690,64 +1787,7 @@ pub async fn main() {
     let LoweringOutcome::Complete(artifact) = outcome else {
         panic!("first-class typed timer Task must lower completely")
     };
-    let milliseconds = artifact
-        .functions()
-        .iter()
-        .find(|function| function.name().ends_with("std.time.milliseconds"))
-        .expect("the public time API must enter LCIR through its ordinary source definition");
-    assert!(
-        milliseconds
-            .instructions()
-            .iter()
-            .any(|instruction| matches!(instruction.kind(), InstructionKind::RefineProven { .. }))
-    );
-    let main = artifact
-        .functions()
-        .iter()
-        .find(|function| function.name().ends_with("main"))
-        .expect("main instance");
-    assert!(main.effects().contains(loom_codegen_ir::Effects::MAY_FAULT));
-    assert!(
-        main.effects()
-            .contains(loom_codegen_ir::Effects::NEEDS_EXECUTOR)
-    );
-    assert_eq!(
-        main.coroutine()
-            .expect("main coroutine")
-            .suspensions()
-            .len(),
-        1
-    );
-    assert!(
-        main.instructions().iter().all(|instruction| !matches!(
-            instruction.kind(),
-            InstructionKind::ProductExtract { .. }
-        ))
-    );
-    assert!(main.blocks().iter().any(|block| matches!(
-        block.terminator().map(loom_codegen_ir::Terminator::kind),
-        Some(TerminatorKind::TaskSleep { .. })
-    )));
-    let dump = dump_program(artifact.program());
-    assert!(dump.contains("refine.proven"), "{dump}");
-    assert_eq!(
-        dump.matches("int.compare.greater_equal").count(),
-        1,
-        "the source requires check must be the only predicate evaluation; the refinement must not replay it:\n{dump}"
-    );
-    assert!(
-        !dump.contains("runtime ArtifactProofRejected"),
-        "a validator-authenticated precondition proof must not emit an artifact proof fault:\n{dump}"
-    );
-    let sleep = dump.find("task.sleep").expect("typed timer terminator");
-    let await_task = dump.find("await_tasks").expect("later first-class await");
-    assert!(sleep < await_task, "{dump}");
-    let identity = artifact_identity(&artifact);
-    assert!(identity.contains("task.sleep"), "{identity}");
-    assert!(
-        dump.contains("effects=may_fault+needs_runtime+needs_executor+may_suspend"),
-        "{dump}"
-    );
+    assert_typed_sleep_artifact(&artifact);
 }
 
 #[test]
@@ -2548,7 +2588,7 @@ pub async fn main() {
 
 #[test]
 fn task_creation_in_sync_functions_propagates_the_executor_capability() {
-    for (source, expected_task_create, expected_sleep) in [
+    for (source, expected_task_create, expected_sleep_wrapper_call) in [
         (
             r"async fn child() Int { 1 }
 
@@ -2611,17 +2651,26 @@ pub async fn main() {
             }),
             expected_task_create
         );
-        assert_eq!(
-            synchronous_helpers.iter().any(|function| {
+        let sleep_wrapper = artifact
+            .functions()
+            .iter()
+            .find(|function| function.name().ends_with("std.task.sleep"));
+        assert_eq!(sleep_wrapper.is_some(), expected_sleep_wrapper_call);
+        if let Some(sleep_wrapper) = sleep_wrapper {
+            assert!(sleep_wrapper.blocks().iter().any(|block| matches!(
+                block.terminator().map(loom_codegen_ir::Terminator::kind),
+                Some(TerminatorKind::TaskSleep { .. })
+            )));
+            assert!(synchronous_helpers.iter().any(|function| {
                 function.blocks().iter().any(|block| {
                     matches!(
                         block.terminator().map(loom_codegen_ir::Terminator::kind),
-                        Some(TerminatorKind::TaskSleep { .. })
+                        Some(TerminatorKind::Invoke { callee, .. })
+                            if *callee == sleep_wrapper.id()
                     )
                 })
-            }),
-            expected_sleep
-        );
+            }));
+        }
     }
 }
 

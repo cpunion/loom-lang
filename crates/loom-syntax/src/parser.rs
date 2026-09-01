@@ -699,17 +699,18 @@ impl<'a> Parser<'a> {
             } else {
                 Visibility::Private
             };
+            let is_static = self.eat(TokenKind::StaticKw).is_some();
             if self.eat(TokenKind::MethodKw).is_some() {
                 let context = if visibility.is_public() {
                     CallableContext::PublicMethod
                 } else {
                     CallableContext::PrivateMethod
                 };
-                methods.push(self.parse_method_after_keyword(visibility, false, context));
+                methods.push(self.parse_method_after_keyword(visibility, is_static, context));
             } else {
                 self.error_here(
                     "UnexpectedToken",
-                    "an inherent impl may contain only `(pub)? method` declarations",
+                    "an inherent impl may contain only `(pub)? (static)? method` declarations",
                 );
                 self.recover_to_impl_member();
             }
@@ -2271,7 +2272,11 @@ impl<'a> Parser<'a> {
 
     fn is_inherent_member_start(&self) -> bool {
         self.at(TokenKind::MethodKw)
+            || (self.at(TokenKind::StaticKw) && self.nth_kind(1) == TokenKind::MethodKw)
             || (self.at(TokenKind::PubKw) && self.nth_kind(1) == TokenKind::MethodKw)
+            || (self.at(TokenKind::PubKw)
+                && self.nth_kind(1) == TokenKind::StaticKw
+                && self.nth_kind(2) == TokenKind::MethodKw)
     }
 
     fn is_conformance_member_start(&self) -> bool {

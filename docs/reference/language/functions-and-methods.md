@@ -99,6 +99,36 @@ or writes that would conflict with an active mutable receiver call.
 Only the target type's owning package may declare inherent methods. Methods are
 private by default and may be prefixed with `pub`.
 
+### Inherent static methods
+
+An inherent implementation may also declare a method on the type constructor
+rather than on a value:
+
+```loom
+impl Counter {
+    pub static method zero() Counter {
+        Counter { current = 0 }
+    }
+}
+
+let counter = Counter.zero()
+```
+
+A static method has no `self` parameter, no value receiver, and cannot refer to
+the value name `self` in its body or contracts. The type name `Self` remains
+available in its signature. Selection uses the resolved type-constructor head
+and member name; Loom does not overload static methods by argument type or
+arity. Every generic parameter of an enclosing implementation must be inferred
+from call arguments or the expected result type.
+
+Static and instance selection use distinct forms, so one inherent
+implementation may give them the same name. An enum variant and a static method
+cannot share a name because both would use the same `Type.member(...)` form.
+
+The ordinary owning-package rule applies to static methods as well. Inherent
+implementations for compiler-defined core types are reserved for the
+compiler-owned standard library.
+
 ## Concept requirements and conformance methods
 
 A concept requirement uses the same signature form but has no body:

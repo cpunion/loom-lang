@@ -30,6 +30,7 @@ const JSON_MODULE: &str = "std.json";
 const LOG_MODULE: &str = "std.log";
 const NET_MODULE: &str = "std.net";
 const PATH_MODULE: &str = "std.path";
+const TASK_MODULE: &str = "std.task";
 const TEXT_MODULE: &str = "std.text";
 const DISPOSE_CONCEPT: &str = "Dispose";
 const MUST_SCOPE_CONCEPT: &str = "MustScope";
@@ -496,9 +497,17 @@ impl Analyzer<'_> {
                 DefinitionKind::InherentImpl(implementation) => {
                     self.validate_generic_params(&implementation.generic_params);
                     let target = self.resolve_type_ref(implementation.target, &context);
+                    self.validate_unique_inherent_members(implementation.methods.iter());
+                    self.validate_static_variant_names(target, &implementation.methods);
                     let owned = match self.typed.types.data(target) {
                         TyData::Nominal { definition, .. } => {
                             self.program.definitions[*definition].module == item.module
+                        }
+                        TyData::Task(_) => {
+                            let module = &self.program.modules[item.module];
+                            module.package == PackageId::compiler_std(LOOM_LANGUAGE_VERSION)
+                                && module.name.as_str() == TASK_MODULE
+                                && self.program.is_production_module(item.module)
                         }
                         _ => false,
                     };
@@ -1410,6 +1419,74 @@ impl Analyzer<'_> {
                     .with_label(self.definition_span(previous), "first declaration"),
                 );
             }
+        }
+    }
+
+    fn validate_unique_inherent_members<'a>(&mut self, members: impl Iterator<Item = &'a DefId>) {
+        let mut names = BTreeMap::new();
+        for member in members {
+            let item = &self.program.definitions[*member];
+            let Some(name) = item.name.clone() else {
+                continue;
+            };
+            let is_static = matches!(
+                &item.kind,
+                DefinitionKind::Method(method)
+                    if method.signature.receiver == Some(ReceiverKind::Static)
+            );
+            if let Some(previous) = names.insert((name.clone(), is_static), *member) {
+                let kind = if is_static { "static method" } else { "method" };
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        "DuplicateDeclaration",
+                        format!("{kind} `{name}` is declared more than once"),
+                        self.definition_span(*member),
+                    )
+                    .with_label(self.definition_span(previous), "first declaration"),
+                );
+            }
+        }
+    }
+
+    fn validate_static_variant_names(&mut self, target: TyId, methods: &[DefId]) {
+        let TyData::Nominal { definition, .. } = self.typed.types.data(target) else {
+            return;
+        };
+        let DefinitionKind::Enum(enumeration) = &self.program.definitions[*definition].kind else {
+            return;
+        };
+        let variants = enumeration
+            .variants
+            .iter()
+            .filter_map(|variant| {
+                self.program.definitions[*variant]
+                    .name
+                    .clone()
+                    .map(|name| (name, *variant))
+            })
+            .collect::<BTreeMap<_, _>>();
+        for method in methods {
+            let item = &self.program.definitions[*method];
+            let DefinitionKind::Method(source) = &item.kind else {
+                continue;
+            };
+            if source.signature.receiver != Some(ReceiverKind::Static) {
+                continue;
+            }
+            let Some(name) = item.name.as_ref() else {
+                continue;
+            };
+            let Some(variant) = variants.get(name) else {
+                continue;
+            };
+            self.diagnostics.push(
+                Diagnostic::error(
+                    "DuplicateDeclaration",
+                    format!("static method `{name}` conflicts with an enum variant"),
+                    self.definition_span(*method),
+                )
+                .with_label(self.definition_span(*variant), "variant declared here"),
+            );
         }
     }
 
@@ -2590,6 +2667,10 @@ impl Analyzer<'_> {
             _ => None,
         };
         let context = self.type_context(owner);
+        let callable_receiver = signature.as_ref().and_then(|signature| signature.receiver);
+        let callable_self_ty = (callable_receiver != Some(ReceiverKind::Static))
+            .then_some(context.self_ty)
+            .flatten();
         let (expected_root, return_ty, self_ty, receiver, result_ty, contract) = match source.kind {
             BodyKind::Constant => {
                 let ty = match self.typed.signatures.get(owner) {
@@ -2605,8 +2686,8 @@ impl Analyzer<'_> {
                 (
                     return_ty,
                     return_ty,
-                    context.self_ty,
-                    signature.as_ref().and_then(|signature| signature.receiver),
+                    callable_self_ty,
+                    callable_receiver,
                     None,
                     ContractMode::None,
                 )
@@ -2644,8 +2725,8 @@ impl Analyzer<'_> {
             BodyKind::Requires => (
                 bool_ty,
                 bool_ty,
-                context.self_ty,
-                signature.as_ref().and_then(|signature| signature.receiver),
+                callable_self_ty,
+                callable_receiver,
                 None,
                 ContractMode::Predicate { old: false },
             ),
@@ -2654,8 +2735,8 @@ impl Analyzer<'_> {
                 (
                     bool_ty,
                     bool_ty,
-                    context.self_ty,
-                    signature.as_ref().and_then(|signature| signature.receiver),
+                    callable_self_ty,
+                    callable_receiver,
                     result,
                     ContractMode::Predicate { old: true },
                 )
@@ -2852,6 +2933,13 @@ enum ValuePathLookup {
     Missing,
     Bound,
     Invalid,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StaticTypeHead {
+    Nominal(DefId),
+    Task,
+    Generic,
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -3121,19 +3209,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 self.types().error()
             }
         }
-    }
-
-    fn check_sleep(&mut self, expression: ExprId, arguments: &[ExprId]) -> TyId {
-        if arguments.len() != 1 {
-            self.call_arity(expression, 1, arguments.len());
-        }
-        if let Some(argument) = arguments.first() {
-            let int = self.types().builtin(BuiltinType::Int);
-            self.check_expr(*argument, Some(int), ExpressionContext::Value);
-        }
-        self.finish_call_arguments(arguments);
-        let unit = self.types().builtin(BuiltinType::Unit);
-        self.types().intern(TyData::Task(unit))
     }
 
     fn check_task_join(
@@ -6427,6 +6502,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     crate::std_primitives::CompilerStdPrimitive::ProcessEnvironment => {
                         BuiltinValue::ProcessEnvironment
                     }
+                    crate::std_primitives::CompilerStdPrimitive::TaskSleep => {
+                        BuiltinValue::TaskSleep
+                    }
                     crate::std_primitives::CompilerStdPrimitive::SocketConnect => {
                         BuiltinValue::SocketConnect
                     }
@@ -6617,6 +6695,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::ProcessArgumentCount
             | BuiltinValue::ProcessArgumentAt
             | BuiltinValue::ProcessEnvironment
+            | BuiltinValue::TaskSleep
             | BuiltinValue::FileOpenRead
             | BuiltinValue::FileCreate
             | BuiltinValue::FileTryOpenRead
@@ -6801,6 +6880,17 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 let text = self.types().builtin(BuiltinType::Text);
                 self.check_fixed_arguments(expression, arguments, &[text]);
                 self.types().intern(TyData::Option(text))
+            }
+            BuiltinValue::TaskSleep => {
+                if arguments.len() != 1 {
+                    self.call_arity(expression, 1, arguments.len());
+                }
+                if let Some(argument) = arguments.first() {
+                    let int = self.types().builtin(BuiltinType::Int);
+                    self.check_expr(*argument, Some(int), ExpressionContext::Value);
+                }
+                let unit = self.types().builtin(BuiltinType::Unit);
+                self.types().intern(TyData::Task(unit))
             }
             BuiltinValue::FileOpenRead | BuiltinValue::FileCreate => {
                 let text = self.types().builtin(BuiltinType::Text);
@@ -7175,17 +7265,17 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         }
     }
 
-    fn resolves_task_intrinsic_namespace(&self, path: &Path) -> bool {
-        if !crate::task_intrinsics::is_task_namespace(path) {
+    fn resolves_builtin_task_head(&self, path: &Path) -> bool {
+        let [segment] = path.segments.as_slice() else {
+            return false;
+        };
+        if segment.name.as_str() != "Task" {
             return false;
         }
         let module = self.analyzer.program.definitions[self.environment.owner].module;
         if self.value_path_lookup(path) != ValuePathLookup::Missing {
             return false;
         }
-        let [segment] = path.segments.as_slice() else {
-            return false;
-        };
         if self.analyzer.program.modules[module]
             .imports
             .iter()
@@ -7205,6 +7295,184 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             );
         }
         matches!(resolver.resolve_type(path), Err(ResolveError::Missing))
+    }
+
+    fn static_type_head(&self, path: &Path) -> Option<StaticTypeHead> {
+        let module = self.analyzer.program.definitions[self.environment.owner].module;
+        let mut resolver =
+            crate::Resolver::new(self.analyzer.program, self.analyzer.def_maps, module);
+        for parameter in self.analyzer.generic_ids_for(self.environment.owner) {
+            resolver.add_generic_param(
+                self.analyzer.program.generic_params[parameter].name.clone(),
+                parameter,
+            );
+        }
+        match resolver.resolve_type(path) {
+            Ok(Resolution::Definition(definition))
+                if matches!(
+                    self.analyzer.program.definitions[definition].kind,
+                    DefinitionKind::Record(_)
+                        | DefinitionKind::Enum(_)
+                        | DefinitionKind::RefinedType(_)
+                ) =>
+            {
+                Some(StaticTypeHead::Nominal(definition))
+            }
+            Ok(Resolution::GenericParam(_)) => Some(StaticTypeHead::Generic),
+            Ok(_)
+            | Err(
+                ResolveError::Duplicate(_)
+                | ResolveError::Private(_)
+                | ResolveError::UnknownModule(_),
+            ) => None,
+            Err(ResolveError::Missing) => self
+                .analyzer
+                .canonical_prelude_type(path)
+                .map(StaticTypeHead::Nominal)
+                .or_else(|| {
+                    self.resolves_builtin_task_head(path)
+                        .then_some(StaticTypeHead::Task)
+                }),
+        }
+    }
+
+    fn source_static_method_candidates(
+        &self,
+        head: StaticTypeHead,
+        method_name: &Name,
+    ) -> Vec<DefId> {
+        let current_module = self.analyzer.program.definitions[self.environment.owner].module;
+        let mut candidates = Vec::new();
+        for (_, definition) in self.analyzer.program.definitions.iter() {
+            let DefinitionKind::InherentImpl(inherent) = &definition.kind else {
+                continue;
+            };
+            if self.analyzer.program.is_test_companion(definition.module)
+                && definition.module != current_module
+            {
+                continue;
+            }
+            let Some(target) = self
+                .analyzer
+                .typed
+                .resolved_type_refs
+                .get(inherent.target)
+                .copied()
+            else {
+                continue;
+            };
+            let target_matches = match (head, self.analyzer.typed.types.data(target)) {
+                (StaticTypeHead::Nominal(expected), TyData::Nominal { definition, .. }) => {
+                    *definition == expected
+                }
+                (StaticTypeHead::Task, TyData::Task(_)) => true,
+                _ => false,
+            };
+            if !target_matches {
+                continue;
+            }
+            for method in &inherent.methods {
+                let method_definition = &self.analyzer.program.definitions[*method];
+                let is_static = matches!(
+                    self.analyzer.typed.signatures.get(*method),
+                    Some(Signature::Callable(signature))
+                        if signature.receiver == Some(ReceiverKind::Static)
+                );
+                if method_definition.name.as_ref() == Some(method_name)
+                    && is_static
+                    && (method_definition.visibility == Visibility::Public
+                        || self
+                            .analyzer
+                            .program
+                            .can_access_private(current_module, method_definition.module))
+                {
+                    candidates.push(*method);
+                }
+            }
+        }
+        candidates
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn check_source_static_method_call(
+        &mut self,
+        expression: ExprId,
+        type_path: &Path,
+        method_name: &Name,
+        type_arguments: &[TypeRefId],
+        arguments: &[ExprId],
+        expected: Option<TyId>,
+    ) -> Option<TyId> {
+        let head = self.static_type_head(type_path)?;
+        let candidates = self.source_static_method_candidates(head, method_name);
+        if candidates.is_empty() {
+            if head == StaticTypeHead::Task {
+                return None;
+            }
+            self.error_at(
+                "UnknownName",
+                format!(
+                    "no static method `{method_name}` for `{}`",
+                    type_path.as_string()
+                ),
+                expression,
+            );
+            return Some(self.types().error());
+        }
+        if candidates.len() != 1 {
+            self.error_at(
+                "AmbiguousInherentMethod",
+                format!(
+                    "multiple static methods named `{method_name}` apply to `{}`",
+                    type_path.as_string()
+                ),
+                expression,
+            );
+            return Some(self.types().error());
+        }
+        let method = candidates[0];
+        let Some(Signature::Callable(signature)) =
+            self.analyzer.typed.signatures.get(method).cloned()
+        else {
+            return Some(self.types().error());
+        };
+        let explicit = self.resolve_call_type_arguments(type_arguments);
+        let (return_ty, substitution) = self.check_callable_arguments(
+            expression,
+            &signature,
+            arguments,
+            &explicit,
+            expected,
+            Substitution::default(),
+        );
+        self.finish_call_arguments(arguments);
+        for parameter in &signature.generic_params {
+            if !signature.call_generic_params.contains(parameter)
+                && substitution.get(*parameter).is_none()
+            {
+                self.error_at(
+                    "CannotInferType",
+                    format!(
+                        "cannot infer generic parameter `{}`",
+                        self.analyzer.program.generic_params[*parameter].name
+                    ),
+                    expression,
+                );
+            }
+        }
+        let witnesses = self.resolve_bound_witnesses(&signature, &substitution, expression);
+        let return_ty = self.normalize_call_type(return_ty, &signature, &substitution, &witnesses);
+        self.semantics.calls.insert(
+            expression,
+            CallResolution {
+                target: CallTarget::InherentMethod(method),
+                substitution,
+                dispatch_witness: None,
+                witnesses,
+                receiver: None,
+            },
+        );
+        Some(return_ty)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -7230,6 +7498,16 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     arguments,
                     expected,
                 );
+            }
+            if let Some(result) = self.check_source_static_method_call(
+                expression,
+                &type_path,
+                method_name,
+                type_arguments,
+                arguments,
+                expected,
+            ) {
+                return result;
             }
             if let Some(result) = self.check_compiler_static_method_call(
                 expression,
@@ -7374,7 +7652,16 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             }
             for method in &inherent.methods {
                 let method_definition = &self.analyzer.program.definitions[*method];
+                let is_instance = matches!(
+                    self.analyzer.typed.signatures.get(*method),
+                    Some(Signature::Callable(signature))
+                        if matches!(
+                            signature.receiver,
+                            Some(ReceiverKind::ReadOnly | ReceiverKind::Mutable)
+                        )
+                );
                 if method_definition.name.as_ref() == Some(method_name)
+                    && is_instance
                     && (method_definition.visibility == Visibility::Public
                         || self
                             .analyzer
@@ -7799,7 +8086,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         arguments: &[ExprId],
     ) -> Option<TyId> {
         let intrinsic = self
-            .resolves_task_intrinsic_namespace(type_path)
+            .resolves_builtin_task_head(type_path)
             .then(|| crate::task_intrinsics::resolve(method_name))
             .flatten();
         if let Some(intrinsic) = intrinsic {
@@ -7811,7 +8098,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 );
             }
             let result = match intrinsic {
-                TaskIntrinsic::Sleep => self.check_sleep(expression, arguments),
                 TaskIntrinsic::All => {
                     self.check_task_join(expression, TaskJoinPolicy::All, arguments)
                 }
@@ -10012,7 +10298,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
     }
 
     fn compiler_std_primitive_call(
-        &self,
+        &mut self,
         path: &Path,
     ) -> Option<crate::std_primitives::CompilerStdPrimitive> {
         if self.value_path_lookup(path) != ValuePathLookup::Missing {
@@ -10026,7 +10312,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
     }
 
     fn compiler_std_primitive_owner_is_authorized(
-        &self,
+        &mut self,
         primitive: crate::std_primitives::CompilerStdPrimitive,
     ) -> bool {
         use crate::std_primitives::CompilerStdPrimitive as Primitive;
@@ -10080,8 +10366,63 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             Primitive::SocketClose => {
                 self.is_canonical_dispose_method(self.analyzer.canonical_std_items.socket)
             }
+            Primitive::TaskSleep => self.is_unique_compiler_std_task_sleep_method(),
             _ => true,
         }
+    }
+
+    fn is_unique_compiler_std_task_sleep_method(&mut self) -> bool {
+        let int = self.analyzer.typed.types.builtin(BuiltinType::Int);
+        let unit = self.analyzer.typed.types.builtin(BuiltinType::Unit);
+        let mut candidates = self.analyzer.program.definitions.iter().filter_map(
+            |(definition, item)| {
+                let module = &self.analyzer.program.modules[item.module];
+                if module.package != PackageId::compiler_std(LOOM_LANGUAGE_VERSION)
+                    || module.name.as_str() != TASK_MODULE
+                    || !self.analyzer.program.is_production_module(item.module)
+                    || item
+                        .name
+                        .as_ref()
+                        .is_none_or(|candidate| candidate.as_str() != "sleep")
+                    || item.visibility != Visibility::Public
+                {
+                    return None;
+                }
+                let DefinitionKind::Method(method) = &item.kind else {
+                    return None;
+                };
+                let DefinitionKind::InherentImpl(implementation) =
+                    &self.analyzer.program.definitions[method.owner].kind
+                else {
+                    return None;
+                };
+                let target_is_task_unit = matches!(
+                    self.analyzer
+                        .typed
+                        .resolved_type_refs
+                        .get(implementation.target)
+                        .map(|ty| self.analyzer.typed.types.data(*ty)),
+                    Some(TyData::Task(output)) if *output == unit
+                );
+                let signature_is_exact = matches!(
+                    self.analyzer.typed.signatures.get(definition),
+                    Some(Signature::Callable(signature))
+                        if !signature.is_async
+                            && signature.generic_params.is_empty()
+                            && signature.receiver == Some(ReceiverKind::Static)
+                            && matches!(signature.params.as_slice(), [(_, parameter)] if *parameter == int)
+                            && matches!(
+                                self.analyzer.typed.types.data(signature.return_ty),
+                                TyData::Task(output) if *output == unit
+                            )
+                );
+                (target_is_task_unit && signature_is_exact).then_some(definition)
+            },
+        );
+        matches!(
+            (candidates.next(), candidates.next()),
+            (Some(definition), None) if definition == self.environment.owner
+        )
     }
 
     fn is_unique_compiler_std_function(&self, module_name: &str, name: &str) -> bool {
@@ -13064,6 +13405,206 @@ fn copied_before_mutation(raw Float) {
                 .iter()
                 .all(|check| *check == ConstructionCheck::Runtime),
             "{checks:?}"
+        );
+    }
+
+    #[test]
+    fn inherent_static_methods_resolve_as_receiverless_source_calls() {
+        let (program, analysis) = analyze_source(
+            r"
+record Boxed[T] { value T }
+
+impl[T] Boxed[T] {
+    static method new(value T) Self {
+        Boxed { value = value }
+    }
+
+    static method empty() Option[T] { None }
+}
+
+fn make() Boxed[Int] {
+    Boxed.new(3)
+}
+
+fn empty() Option[Int] {
+    Boxed.empty()
+}
+",
+        );
+        assert!(
+            analysis.diagnostics.is_empty(),
+            "{:#?}",
+            analysis.diagnostics
+        );
+        let calls = analysis
+            .typed
+            .bodies
+            .values()
+            .flat_map(|body| body.calls.values())
+            .filter(|call| {
+                matches!(
+                    call.target,
+                    CallTarget::InherentMethod(definition)
+                        if program.definitions[definition]
+                            .name
+                            .as_ref()
+                            .is_some_and(|name| matches!(name.as_str(), "new" | "empty"))
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(calls.len(), 2);
+        assert!(calls.iter().all(|call| call.receiver.is_none()));
+        assert!(
+            calls
+                .iter()
+                .all(|call| call.substitution.iter().count() == 1)
+        );
+    }
+
+    #[test]
+    fn static_and_instance_inherent_calls_do_not_cross_receiver_kinds() {
+        let (_, analysis) = analyze_source(
+            r"
+record Counter { value Int }
+
+impl Counter {
+    static method zero() Counter { Counter { value = 0 } }
+    method value(self) Int { self.value }
+}
+
+fn invalid(counter Counter) {
+    discard counter.zero()
+    discard Counter.value()
+}
+",
+        );
+        assert!(analysis.has_errors());
+        assert_eq!(
+            analysis
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.code == "UnknownName")
+                .count(),
+            2,
+            "{:#?}",
+            analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn static_and_instance_methods_may_share_a_name() {
+        let (_, analysis) = analyze_source(
+            r"
+record Counter { value Int }
+
+impl Counter {
+    static method reset() Counter { Counter { value = 0 } }
+    method reset(self) Int { self.value }
+}
+
+fn valid(counter Counter) Int {
+    let reset = Counter.reset()
+    reset.value + counter.reset()
+}
+",
+        );
+        assert!(
+            analysis.diagnostics.is_empty(),
+            "{:#?}",
+            analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn static_methods_cannot_hide_enum_variants() {
+        let (_, analysis) = analyze_source(
+            r"
+enum Choice { Default }
+
+impl Choice {
+    static method Default() Choice { Choice.Default }
+}
+",
+        );
+        assert!(analysis.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "DuplicateDeclaration"
+                && diagnostic
+                    .message
+                    .contains("conflicts with an enum variant")
+        }));
+    }
+
+    #[test]
+    fn static_inherent_methods_have_no_self_value() {
+        let (_, analysis) = analyze_source(
+            r"
+record Counter { value Int }
+
+impl Counter {
+    static method invalid() Counter
+        requires self.value == 0
+        ensures self.value == 0
+    {
+        self
+    }
+}
+",
+        );
+        assert_eq!(
+            analysis
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.code == "UnknownName")
+                .count(),
+            3,
+            "{:#?}",
+            analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn static_calls_reject_uninferred_impl_generics_and_duplicate_members() {
+        let (_, uninferred) = analyze_source(
+            r"
+record Boxed[T] { value T }
+
+impl[Unused] Boxed[Int] {
+    static method zero() Boxed[Int] { Boxed { value = 0 } }
+}
+
+fn make() Boxed[Int] { Boxed.zero() }
+",
+        );
+        assert!(
+            uninferred
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "CannotInferType")
+        );
+
+        let (_, duplicate) = analyze_source(
+            r"
+record Boxed[T] { value T }
+
+impl Boxed[Int] {
+    static method zero() Boxed[Int] { Boxed { value = 0 } }
+    static method zero() Boxed[Int] { Boxed { value = 0 } }
+}
+
+fn make() Boxed[Int] { Boxed.zero() }
+",
+        );
+        assert!(
+            duplicate
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "DuplicateDeclaration")
+        );
+        assert!(
+            duplicate
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "AmbiguousInherentMethod")
         );
     }
 }

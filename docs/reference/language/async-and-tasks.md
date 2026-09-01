@@ -76,11 +76,12 @@ source API. They are not reserved syntax and user code cannot invoke the
 compiler/runtime join protocol directly. The semantic boundary is a
 standard-library API item, which implementations may specialize without
 changing the source types, evaluation order, or fault semantics below. Version
-0.4 resolves the canonical, unshadowed Task namespace and member through an
-embedded compiler-owned catalog before applying its variadic type rule. Future
-source-library declarations will map their trusted definition identities to the
-same stable items. Same-spelled methods on ordinary values do not acquire Task
-policy behavior.
+0.4 resolves these four canonical, unshadowed join members through an embedded
+compiler-owned catalog before applying their variadic type rules. Once the
+source type system can declare those rules, calls resolve to ordinary source
+definitions whose bodies use private typed join primitives; the catalog is
+deleted rather than reconstructed from their source identities. Same-spelled
+methods on ordinary values do not acquire Task policy behavior.
 
 A tuple of tasks can be awaited as one all-success operation:
 

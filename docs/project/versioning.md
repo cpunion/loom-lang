@@ -22,8 +22,8 @@ writers for unreleased formats. Development history belongs in
 | Registry protocol and bundle | `1` |
 | Interpreted MIR artifact | `loom.interpreted-mir`, version `50` |
 | Portable library artifact | `loom-library`, source-and-interface version `4` |
-| Persistent compiler cache | schema `23` |
-| Compilation-cache domain | `loom-compilation-cache-v23` |
+| Persistent compiler cache | schema `24` |
+| Compilation-cache domain | `loom-compilation-cache-v24` |
 | Interpreted final-cache layer | `final-artifact-v3` |
 | Interpreted artifact writer | `loom-interpreted-artifact-writer-v3` |
 | Portable-library final-cache layer | `portable-library-artifact-v4` |
@@ -77,6 +77,15 @@ join/fault operations (`loom_task_prepare_join`,
 resource, GC, and shadow-stack wires did not change. An older compiler or
 runtime bundle is therefore rejected instead of crossing a removed symbol
 boundary.
+
+Persistent compiler-cache schema 24 and its matching domain remove `Sleep`
+from the serialized `TaskIntrinsic` policy identity. Public `Task.sleep` now
+resolves to the ordinary `std.task` source method, whose body alone may call the
+exact-owner private `__sleep` leaf. That leaf lowers away to the existing MIR
+`Sleep` expression, so interpreted MIR remains version 50 and the LCIR,
+runtime, Task ABI, and standard-library ABI components do not change. The
+standard-library content identity invalidates objects containing the previous
+public-name path.
 
 Interpreted MIR 50 removes the retired ordinary-call `FloatIsFinite` builtin.
 `std.float.is_finite` now evaluates ordered source comparisons against the

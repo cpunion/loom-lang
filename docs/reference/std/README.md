@@ -43,6 +43,9 @@ or runtime hooks.
 ordinary source declarations. `Duration` is a constrained `Int`; the compiler
 does not provide a duration prelude identity, constructor, layout, or
 inspection intrinsic.
+`Task.sleep` is an ordinary public static method in `std.task`. Its source body
+alone may call the exact-owner private `__sleep` timer leaf; callers have no
+public-name intrinsic or compatibility fallback.
 The public logging graph is ordinary Loom source over one compiler-private
 typed output primitive. Resource declarations are source-backed, but
 their fixed shapes and irreducible static rules remain part of the language

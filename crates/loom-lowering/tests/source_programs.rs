@@ -45,16 +45,22 @@ fn lower_with_std_io(source: &str) -> loom_hir::Program {
     let io = parse_with_file(FileId(1), include_str!("../../../library/std/io/io.loom"));
     let file = parse_with_file(FileId(2), "pub record File {}\n");
     let socket = parse_with_file(FileId(3), "pub record Socket {}\n");
+    let task = parse_with_file(
+        FileId(4),
+        include_str!("../../../library/std/task/task.loom"),
+    );
     assert!(
         application.diagnostics().is_empty()
             && io.diagnostics().is_empty()
             && file.diagnostics().is_empty()
-            && socket.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} io={:#?} file={:#?} socket={:#?}",
+            && socket.diagnostics().is_empty()
+            && task.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} io={:#?} file={:#?} socket={:#?} task={:#?}",
         application.diagnostics(),
         io.diagnostics(),
         file.diagnostics(),
-        socket.diagnostics()
+        socket.diagnostics(),
+        task.diagnostics()
     );
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("lowering-test", "0");
@@ -82,6 +88,12 @@ fn lower_with_std_io(source: &str) -> loom_hir::Program {
             package: std.clone(),
             module: ModuleName::new("std.net"),
             syntax: socket.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(4),
+            package: std.clone(),
+            module: ModuleName::new("std.task"),
+            syntax: task.ast(),
         },
     ]);
     lowered.program.register_package(std.clone(), [], false);
@@ -195,18 +207,24 @@ fn lower_with_std_resource(source: &str) -> loom_hir::Program {
     let io = parse_with_file(FileId(2), include_str!("../../../library/std/io/io.loom"));
     let file = parse_with_file(FileId(3), "pub record File {}\n");
     let socket = parse_with_file(FileId(4), "pub record Socket {}\n");
+    let task = parse_with_file(
+        FileId(5),
+        include_str!("../../../library/std/task/task.loom"),
+    );
     assert!(
         application.diagnostics().is_empty()
             && resource.diagnostics().is_empty()
             && io.diagnostics().is_empty()
             && file.diagnostics().is_empty()
-            && socket.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} resource={:#?} io={:#?} file={:#?} socket={:#?}",
+            && socket.diagnostics().is_empty()
+            && task.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} resource={:#?} io={:#?} file={:#?} socket={:#?} task={:#?}",
         application.diagnostics(),
         resource.diagnostics(),
         io.diagnostics(),
         file.diagnostics(),
-        socket.diagnostics()
+        socket.diagnostics(),
+        task.diagnostics()
     );
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("lowering-test", "0");
@@ -240,6 +258,12 @@ fn lower_with_std_resource(source: &str) -> loom_hir::Program {
             package: std.clone(),
             module: ModuleName::new("std.net"),
             syntax: socket.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(5),
+            package: std.clone(),
+            module: ModuleName::new("std.task"),
+            syntax: task.ast(),
         },
     ]);
     lowered.program.register_package(std.clone(), [], false);
@@ -501,18 +525,24 @@ fn compile_with_std_time(source: &str) -> loom_mir::CheckedProgram {
     let io = parse_with_file(FileId(2), include_str!("../../../library/std/io/io.loom"));
     let file = parse_with_file(FileId(3), "pub record File {}\n");
     let socket = parse_with_file(FileId(4), "pub record Socket {}\n");
+    let task = parse_with_file(
+        FileId(5),
+        include_str!("../../../library/std/task/task.loom"),
+    );
     assert!(
         application.diagnostics().is_empty()
             && time.diagnostics().is_empty()
             && io.diagnostics().is_empty()
             && file.diagnostics().is_empty()
-            && socket.diagnostics().is_empty(),
-        "syntax diagnostics: application={:#?} time={:#?} io={:#?} file={:#?} socket={:#?}",
+            && socket.diagnostics().is_empty()
+            && task.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} time={:#?} io={:#?} file={:#?} socket={:#?} task={:#?}",
         application.diagnostics(),
         time.diagnostics(),
         io.diagnostics(),
         file.diagnostics(),
-        socket.diagnostics()
+        socket.diagnostics(),
+        task.diagnostics()
     );
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let root = PackageId::new("lowering-test", "0");
@@ -546,6 +576,12 @@ fn compile_with_std_time(source: &str) -> loom_mir::CheckedProgram {
             package: std.clone(),
             module: ModuleName::new("std.net"),
             syntax: socket.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(5),
+            package: std.clone(),
+            module: ModuleName::new("std.task"),
+            syntax: task.ast(),
         },
     ]);
     compile_lowered_package(lowered, std, root)
@@ -1595,7 +1631,7 @@ test async fn generic_async_contracts() {
 }
 
 #[test]
-fn only_resolved_task_intrinsics_specialize_to_task_mir() {
+fn source_sleep_calls_its_private_mir_leaf_while_joins_remain_intrinsics() {
     let canonical = compile_and_validate(
         r"
 async fn child() Int { 1 }
@@ -1609,12 +1645,40 @@ pub async fn main() {
 }
 ",
     );
-    let canonical_dump = format!("{canonical:#?}");
-    assert!(canonical_dump.contains("Sleep"));
-    assert!(canonical_dump.contains("TaskJoin"));
-    assert!(canonical_dump.contains("Settled"));
-    assert!(canonical_dump.contains("Any"));
-    assert!(canonical_dump.contains("Race"));
+    let sleep = canonical
+        .functions
+        .iter()
+        .find(|function| {
+            function_has_name(function, "sleep")
+                && function
+                    .exprs_preorder()
+                    .any(|expression| matches!(&expression.kind, loom_mir::ExprKind::Sleep { .. }))
+        })
+        .expect("source Task.sleep wrapper");
+    let main = canonical
+        .functions
+        .iter()
+        .find(|function| function_has_name(function, "main"))
+        .expect("canonical main");
+    assert!(main.exprs_preorder().any(|expression| {
+        matches!(
+            &expression.kind,
+            loom_mir::ExprKind::Call {
+                target: loom_mir::CallTarget::Direct(target),
+                ..
+            } if *target == sleep.id
+        )
+    }));
+    assert!(
+        !main
+            .exprs_preorder()
+            .any(|expression| matches!(&expression.kind, loom_mir::ExprKind::Sleep { .. }))
+    );
+    let main_dump = format!("{main:#?}");
+    assert!(main_dump.contains("TaskJoin"));
+    assert!(main_dump.contains("Settled"));
+    assert!(main_dump.contains("Any"));
+    assert!(main_dump.contains("Race"));
 
     let shadowed = compile_and_validate(
         r"
@@ -1638,7 +1702,12 @@ pub fn main() {
 }
 ",
     );
-    let shadowed_dump = format!("{shadowed:#?}");
+    let shadowed_main = shadowed
+        .functions
+        .iter()
+        .find(|function| function_has_name(function, "main"))
+        .expect("shadowed main");
+    let shadowed_dump = format!("{shadowed_main:#?}");
     assert!(!shadowed_dump.contains("TaskJoin"));
     assert!(!shadowed_dump.contains("Sleep {"));
     assert!(shadowed_dump.contains("Inherent"));
@@ -1672,13 +1741,30 @@ pub async fn wait() Int {
         .iter()
         .find(|function| function_has_name(function, "wait"))
         .expect("wait function");
+    let sleep = program
+        .functions
+        .iter()
+        .find(|function| {
+            function_has_name(function, "sleep")
+                && function
+                    .exprs_preorder()
+                    .any(|expression| matches!(&expression.kind, loom_mir::ExprKind::Sleep { .. }))
+        })
+        .expect("source Task.sleep wrapper");
     let milliseconds = wait
         .exprs_preorder()
         .find_map(|expression| match &expression.kind {
-            loom_mir::ExprKind::Sleep { milliseconds } => Some(milliseconds.as_ref()),
+            loom_mir::ExprKind::Call {
+                target: loom_mir::CallTarget::Direct(target),
+                arguments,
+                ..
+            } if *target == sleep.id => match arguments.as_slice() {
+                [loom_mir::CallArgument::Value(milliseconds)] => Some(milliseconds),
+                _ => None,
+            },
             _ => None,
         })
-        .expect("Task.sleep expression");
+        .expect("source Task.sleep call");
     assert_eq!(milliseconds.ty, loom_mir::Type::Int);
     assert!(
         matches!(&milliseconds.kind, loom_mir::ExprKind::Unrefine(_)),

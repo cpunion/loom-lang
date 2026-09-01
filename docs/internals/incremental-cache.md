@@ -48,7 +48,7 @@ larger graph.
 
 ## Persistent layers
 
-The persistent cache schema is `23`. Current layers include source parse,
+The persistent cache schema is `24`. Current layers include source parse,
 package-interface presence, typed package state, complete checked MIR, target
 objects, and deterministic final artifacts.
 
@@ -80,9 +80,12 @@ The canonical source identities for `std.float.is_finite`,
 rederived before signature and body checking; cached semantic bytes never grant
 a same-named function, record, or enum canonical authority.
 
-Task policy and timer calls currently store a resolved `TaskIntrinsic` in typed
-body facts. Cache schema `23` and the `loom-compilation-cache-v23` domain cover
-that identity, the current compiler-private Float parse, format, and conversion
+The four Task join policies currently store a resolved `TaskIntrinsic` in typed
+body facts. `Task.sleep` instead stores the ordinary source
+`InherentMethod(DefId)` call, while only its authenticated `std.task` body
+stores the private `TaskSleep` leaf. Cache schema `24` and the
+`loom-compilation-cache-v24` domain cover those identities, the current
+compiler-private Float parse, format, and conversion
 operations, the logging, file, and network primitive sets, the exact mutable
 `Bytes.add` builtin, and exact source identities for standard types. They also
 exclude the removed public-name JSON formatter and Path-specific file builtin
@@ -104,7 +107,8 @@ shape check.
 Schema 23 additionally excludes the retired Float finiteness primitive and MIR
 builtin. The canonical source identity and contract `IsFinite` proof form
 remain independently rederived and validated.
-The Task cache identity disappears when the temporary catalog is replaced by
+Schema 24 removes the retired `TaskIntrinsic::Sleep` identity. The remaining
+Task cache identity disappears when the four join policies are replaced by
 ordinary source definitions.
 
 Checked-MIR cache envelopes use artifact version `50` and its exact current

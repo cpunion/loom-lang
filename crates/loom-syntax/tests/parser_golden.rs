@@ -160,6 +160,31 @@ impl[T] Pair[T] {
 }
 
 #[test]
+fn parses_private_and_public_static_inherent_methods() {
+    let parsed = assert_clean(
+        r"record Counter { value Int }
+impl Counter {
+    static method privateZero() Counter { Counter { value = 0 } }
+    pub static method zero() Counter { Counter { value = 0 } }
+    method value(self) Int { self.value }
+}
+",
+    );
+    let DeclKind::Impl(implementation) = &parsed.ast().declarations[1].kind else {
+        panic!("expected impl");
+    };
+    let ImplKind::Inherent { methods, .. } = &implementation.kind else {
+        panic!("expected inherent impl");
+    };
+    assert_eq!(methods.len(), 3);
+    assert!(methods[0].is_static);
+    assert!(methods[1].is_static);
+    assert!(!methods[2].is_static);
+    assert!(!methods[0].visibility.is_public());
+    assert!(methods[1].visibility.is_public());
+}
+
+#[test]
 fn parses_static_concepts_conformance_and_simple_dyn() {
     let parsed = assert_clean(
         r"pub concept Zero {

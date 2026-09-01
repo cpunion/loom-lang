@@ -162,12 +162,19 @@ resource according to the scoped operation's ownership contract.
 
 ## Typed timer tasks
 
-Checked `Task.sleep` is admitted wherever LCIR has a proved current executor
-context. This includes an async callback and a synchronous helper reached from
-one. The LCIR terminator consumes canonical `Int` milliseconds; lowering
-uses the general representation-preserving refined-to-base coercion for a
-source `Duration`, or any other constrained `Int`, before reaching that
-boundary. It has explicit normal and
+Public `Task.sleep` is an ordinary compiler-owned `std.task` source static
+method. The caller reaches that source `DefId` through the normal call graph;
+only the authenticated wrapper body may call its private `__sleep` leaf. That
+leaf lowers to the existing MIR sleep expression and LCIR `TaskSleep`
+terminator. The wrapper's executor and fault effects propagate through ordinary
+call analysis rather than a public-name special case.
+
+Checked sleep is admitted wherever LCIR has a proved current executor context.
+This includes an async callback and a synchronous helper reached from one. The
+LCIR terminator consumes canonical `Int` milliseconds; lowering uses the
+general representation-preserving refined-to-base coercion for a source
+`Duration`, or any other constrained `Int`, before reaching that boundary. It
+has explicit normal and
 fault edges and contributes `MAY_FAULT` plus `NEEDS_EXECUTOR`, but it does not
 suspend or collect. A negative raw `Int` input raises `InvalidSleepDuration`;
 that case is unrepresentable for a source `Duration` value.

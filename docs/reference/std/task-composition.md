@@ -12,23 +12,23 @@ or a public coroutine protocol:
 - `Task.race` observes the first terminal state.
 
 The semantic boundary is a standard-library API declaration. HIR retains an
-ordinary method call. The current version 0.4 implementation temporarily
-resolves a canonical, unshadowed receiver namespace and member through an
-embedded compiler-owned catalog to `TaskIntrinsic`, and only that private
-identity may select a specialized fixed heterogeneous row. A local, parameter,
-generic, imported or user-defined type, or third-party method with the same
-spelling cannot be mistaken for it. Source spelling is never inspected by MIR
-or code generation.
+ordinary method call. For these four join members, the current version 0.4
+implementation temporarily resolves a canonical, unshadowed receiver namespace
+and member through an embedded compiler-owned catalog to `TaskIntrinsic`, and
+only that private identity may select a specialized fixed heterogeneous row. A
+local, parameter, generic, imported or user-defined type, or third-party method
+with the same spelling cannot be mistaken for it. Source spelling is never
+inspected by MIR or code generation.
 
 `TaskIntrinsic` is an implementation bridge, not part of the Task API or a
 standard-library ABI. The completed library boundary declares these public
 members in compiler-owned Loom source, resolves calls to their ordinary source
 `DefId` values, and follows their bodies through normal reachability. Those
-bodies may use inaccessible typed join/select, outcome extraction, timer, and
+bodies may use inaccessible typed join/select, outcome extraction, and
 structured cancellation primitives. They are never mapped back to
 `TaskIntrinsic`; the temporary catalog and enum are deleted when the general
-source-level associated-function and tuple/List mechanisms can express this
-surface. Evaluation order, types, cancellation, cleanup, and fault behavior
+source-level inherent-static and variadic tuple/List mechanisms can express
+this surface. Evaluation order, types, cancellation, cleanup, and fault behavior
 remain the API contract described here, and programs cannot name or depend on
 the private substrate.
 
@@ -121,6 +121,12 @@ The Task API also provides:
 ```text
 Task.sleep(milliseconds Int)  Task[Unit]
 ```
+
+This timer member is already an ordinary compiler-owned `std.task` source
+`static method`. A call resolves to that method's source `DefId`; only its exact
+source body may call the private timer leaf. There is no public-name intrinsic
+or compatibility fallback when the declaration is missing, shadowed, or
+ambiguous.
 
 The `Int` duration must be nonnegative. `Duration`, and any other constrained
 `Int`, reaches this boundary through the general implicit refined-to-base

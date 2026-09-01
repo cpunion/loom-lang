@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256};
 use crate::incremental::ModuleQueryKey;
 use crate::{DiagnosticRecord, ModuleInterface, ProjectGraph, SourceMap};
 
-pub const CACHE_SCHEMA_VERSION: u32 = 23;
+pub const CACHE_SCHEMA_VERSION: u32 = 24;
 const MAX_REF_BYTES: u64 = 64 * 1024;
 const MAX_BLOB_BYTES: u64 = 1024 * 1024 * 1024;
 const CHECKED_MIR_NAMESPACE: &str = "checked-mir";
@@ -34,7 +34,7 @@ const MODULE_INTERFACE_NAMESPACE: &str = "module-interface";
 const TYPED_MODULE_STATE_NAMESPACE: &str = "typed-module-state";
 const TARGET_OBJECT_NAMESPACE: &str = "target-object";
 const ARTIFACT_NAMESPACE: &str = "artifact";
-const COMPILATION_CACHE_DOMAIN: &str = "loom-compilation-cache-v23";
+const COMPILATION_CACHE_DOMAIN: &str = "loom-compilation-cache-v24";
 
 /// Frontend facts which can change validated checked MIR.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -47,12 +47,11 @@ pub struct CacheContext {
 
 #[cfg(test)]
 mod tests {
-    use loom_sema::{CallResolution, CallTarget, Substitution, TaskIntrinsic};
+    use loom_sema::{BuiltinValue, CallResolution, CallTarget, Substitution, TaskIntrinsic};
 
     #[test]
     fn compiler_std_call_resolution_round_trips_stable_identity() {
         for item in [
-            TaskIntrinsic::Sleep,
             TaskIntrinsic::All,
             TaskIntrinsic::Settled,
             TaskIntrinsic::Any,
@@ -73,6 +72,18 @@ mod tests {
             assert_eq!(decoded, resolution);
             assert_eq!(decoded.target, CallTarget::TaskIntrinsic(item));
         }
+
+        let sleep = CallResolution {
+            target: CallTarget::Builtin(BuiltinValue::TaskSleep),
+            substitution: Substitution::default(),
+            dispatch_witness: None,
+            witnesses: Vec::new(),
+            receiver: None,
+        };
+        let bytes = serde_json::to_vec(&sleep).expect("serialize private sleep leaf");
+        let decoded: CallResolution =
+            serde_json::from_slice(&bytes).expect("deserialize private sleep leaf");
+        assert_eq!(decoded, sleep);
     }
 }
 

@@ -1,0 +1,8 @@
+import std.task.__sleep
+
+impl Task[Unit] {
+    /// Creates a task that becomes ready after at least the requested milliseconds.
+    pub static method sleep(milliseconds Int) Task[Unit] {
+        __sleep(milliseconds)
+    }
+}

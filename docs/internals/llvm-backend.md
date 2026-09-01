@@ -637,18 +637,21 @@ The fixed-row slice remains static and nonempty: a sole nonempty List literal
 is flattened into it without an input List allocation, and `all` or `settled`
 build their List result after resume. Stored, computed, empty, and
 runtime-sized homogeneous Lists use `TaskJoinList` instead of selecting the
-fixed-row operation. The frontend currently maps canonical, unshadowed Task API
-members through its temporary catalog to a compiler-private `TaskIntrinsic`
-before MIR construction; LLVM never inspects their source spelling. This enum
-is a transitional frontend bridge, not a standard-library identity or ABI.
+fixed-row operation. The frontend currently maps the four canonical,
+unshadowed Task join members through its temporary catalog to a compiler-
+private `TaskIntrinsic` before MIR construction; LLVM never inspects their
+source spelling. This enum is a transitional frontend bridge, not a standard-
+library identity or ABI. Public `Task.sleep` already resolves to its ordinary
+source wrapper, whose private leaf produces the typed timer operation.
 
-The completed source boundary resolves every public Task member to an ordinary
-source `DefId` in `std`, and ordinary reachability retains its body and only the
-private primitives that body calls. LLVM continues to implement typed
+The completed source boundary resolves the four remaining public Task join
+members to ordinary source `DefId` values in `std`, and ordinary reachability
+retains each body and only the private primitives it calls. LLVM continues to
+implement typed
 join/select readiness, exact result-or-outcome extraction, and structured
 cancellation-and-drain, but it never maps a public source definition back to a
-policy enum. Moving the policies to source therefore deletes both the temporary
-catalog and `TaskIntrinsic`; public policy names do not become language
+policy enum. Moving those join policies to source therefore deletes both the
+temporary catalog and `TaskIntrinsic`; public policy names do not become language
 operators.
 
 ## Direct lexical cleanup

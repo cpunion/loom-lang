@@ -25,14 +25,18 @@ names still recognized by semantic builtin tables.
 | `std.text` / `std.path` | public `DecodeTextError` and `PathError` enums | Text, Bytes, Path, and their intrinsic construction and decoding operations remain core mechanisms | partial |
 | `std.time` | `Duration`, `milliseconds`, and `Duration.as_milliseconds` | only the general constrained-type, contract, and refined-to-base mechanisms | source-backed |
 | `std.file` / `std.net` | `File`, `Socket`, all public acquisition and I/O methods, and their `Dispose`/`MustScope` conformances | only exact-owner private typed I/O and close leaves | source-backed |
-| `Task.sleep/all/settled/any/race` | none | temporary public-name resolution through `TaskIntrinsic` plus the private scheduler substrate | transitional |
+| `Task.sleep` | public `static method sleep` on `Task[Unit]` | only the exact-owner private timer leaf and scheduler substrate | source-backed |
+| `Task.all/settled/any/race` | none | temporary public-name resolution through the four-case `TaskIntrinsic` bridge plus the private scheduler substrate | transitional |
 
 The target boundary gives every public library declaration an ordinary source
 `DefId`. Only irreducible GC, scheduler, scalar, platform, output, and bulk
 construction operations remain compiler-private, and only compiler-owned
 `std` source may call them. Each migration removes its public builtin or
 `TaskIntrinsic` path in the same change; no compatibility alias or parallel
-implementation remains.
+implementation remains. `Task.sleep` already follows this rule: calls resolve
+to its source `DefId`, and only that source body can reach the private timer
+leaf. A missing or ambiguous source declaration cannot fall back to a public-
+name intrinsic.
 
 ## Platform support matrix
 
@@ -184,13 +188,15 @@ Async `requires` checks run in child state zero. A created Task carries its
 creation-site blame, an async root carries its declaration span, and
 `TaskCreate` does not inherit child fault effects. Core gains no `all`, `any`,
 `settled`, or `race` syntax. HIR keeps these as ordinary method calls; semantic
-resolution currently maps only canonical, unshadowed Task API members through
-the temporary catalog to `TaskIntrinsic`, and MIR consumes that identity
-without re-reading source names. This is implementation debt, not the target
-library boundary. The source migration resolves each public member to an
-ordinary `std` source `DefId`, lets reachability follow its body into private
-scheduler primitives, and deletes the catalog and `TaskIntrinsic` rather than
-mapping source definitions back to them.
+resolution currently maps only the four canonical, unshadowed Task join
+members through the temporary catalog to `TaskIntrinsic`, and MIR consumes
+that identity without re-reading source names. `Task.sleep` already resolves
+to an ordinary `std.task` source `DefId`; its body alone reaches the private
+timer leaf. The remaining implementation debt is the join catalog. Their
+source migration resolves each public join member to an ordinary `std` source
+`DefId`, lets reachability follow its body into private scheduler primitives,
+and deletes the catalog and `TaskIntrinsic` rather than mapping source
+definitions back to them.
 
 Typed native decoded proof replay supports exact by-value Task leaves inside
 bounded tuples, records, closed sums, and transparent wrappers. It borrows

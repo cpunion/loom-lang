@@ -1,7 +1,7 @@
 use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId};
 use loom_hir::{DefId, DefinitionKind, PackageSourceUnit, Program, lower_package_files};
 use loom_sema::{
-    Analysis, BuiltinType, CallTarget, Coercion, ConstructionCheck, TaskIntrinsic, TyData, analyze,
+    Analysis, BuiltinType, BuiltinValue, CallTarget, Coercion, ConstructionCheck, TyData, analyze,
 };
 use loom_syntax::parse_with_file;
 
@@ -31,10 +31,16 @@ fn analyze_with_time(
     let time_file = FileId(0);
     let library_file = FileId(1);
     let application_file = FileId(2);
+    let task_file = FileId(3);
     let time = parse_with_file(time_file, TIME_SOURCE);
+    let task = parse_with_file(
+        task_file,
+        include_str!("../../../library/std/task/task.loom"),
+    );
     let library = parse_with_file(library_file, library_source);
     let application = parse_with_file(application_file, application_source);
     assert!(time.diagnostics().is_empty(), "{:#?}", time.diagnostics());
+    assert!(task.diagnostics().is_empty(), "{:#?}", task.diagnostics());
     assert!(
         library.diagnostics().is_empty(),
         "{:#?}",
@@ -55,6 +61,12 @@ fn analyze_with_time(
             package: std_package.clone(),
             module: ModuleName::new("std.time"),
             syntax: time.ast(),
+        },
+        PackageSourceUnit {
+            file: task_file,
+            package: std_package.clone(),
+            module: ModuleName::new("std.task"),
+            syntax: task.ast(),
         },
         PackageSourceUnit {
             file: library_file,
@@ -133,6 +145,7 @@ pub async fn wait() Int {
     let duration = definition_named(&program, &std_package, "std.time", "Duration");
     let milliseconds = definition_named(&program, &std_package, "std.time", "milliseconds");
     let as_milliseconds = definition_named(&program, &std_package, "std.time", "as_milliseconds");
+    let sleep = definition_named(&program, &std_package, "std.task", "sleep");
     let wait = definition_named(&program, &application_package, "application", "wait");
     let DefinitionKind::RefinedType(refined) = &program.definitions[duration].kind else {
         panic!("Duration must be an ordinary source constrained type")
@@ -171,7 +184,11 @@ pub async fn wait() Int {
     let method_calls = body_calls(&program, &analysis, wait);
     assert!(method_calls.contains(&CallTarget::Function(milliseconds)));
     assert!(method_calls.contains(&CallTarget::InherentMethod(as_milliseconds)));
-    assert!(method_calls.contains(&CallTarget::TaskIntrinsic(TaskIntrinsic::Sleep)));
+    assert!(method_calls.contains(&CallTarget::InherentMethod(sleep)));
+    assert!(
+        body_calls(&program, &analysis, sleep)
+            .contains(&CallTarget::Builtin(BuiltinValue::TaskSleep))
+    );
 
     let DefinitionKind::Function(wait_source) = &program.definitions[wait].kind else {
         panic!("wait must be a function")

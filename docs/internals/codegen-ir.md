@@ -424,8 +424,10 @@ constants, locals and assignment, tuple construction and immutable `let`
 destructuring, blocks and conditionals, short-circuit Boolean operations,
 integer ranges, pure scalar operations,
 checked integer arithmetic, and direct/readonly-inherent calls including
-recursion. Finite checks, integer/float parsing, float formatting, Duration
-source construction/unrefinement, and async `Task.sleep` also lower directly. Plain
+recursion. Finite checks, integer/float parsing, float formatting, and Duration
+source construction/unrefinement also lower directly. Public `Task.sleep`
+reaches its ordinary source wrapper; the private timer leaf in that wrapper
+lowers directly to `TaskSleep`. Plain
 record construction, whole-value copy and move, nested field read/write,
 tuple/record nesting, product block parameters, parameters, returns, and
 loop-carried products lower directly to SSA. Compile-time-proven
@@ -766,10 +768,12 @@ A sole nonempty List literal is flattened to the same static child row without
 constructing the input List. `all` and `settled` build a fresh result List from
 the ordered resumed values; `any` and `race` retain their scalar result. The
 frontend currently reaches this path only after semantic resolution has
-selected the temporary compiler-private `TaskIntrinsic`; LCIR lowering never
-checks the source name. `TaskIntrinsic` is an implementation bridge for API
-shapes that the current source type system cannot yet declare. It is not a
-standard-library identity, source ABI, or persistent extension point.
+selected one of the four temporary compiler-private join `TaskIntrinsic`
+values; LCIR lowering never checks the source name. `TaskIntrinsic` is an
+implementation bridge for join API shapes that the current source type system
+cannot yet declare. It is not a standard-library identity, source ABI, or
+persistent extension point. `Task.sleep` is already a normal source call whose
+wrapper alone reaches the private `TaskSleep` leaf.
 
 Every other exact homogeneous `List[Task[T]]` policy becomes `TaskJoinList`.
 The opcode consumes one affine top-level carrier and returns the precise Task
@@ -781,14 +785,15 @@ the existing contiguous child row directly, without a temporary pointer copy.
 Empty `all` and `settled` publish an already-complete empty result; empty `any`
 and `race` publish canonical `EmptyTaskJoin`.
 
-The completed source boundary instead resolves each public Task policy to its
-ordinary definition `DefId` in the compiler-owned `std` module. Normal
+The completed source boundary instead resolves each of the four remaining
+public Task join policies to its ordinary definition `DefId` in the compiler-
+owned `std` module. Normal
 reachability follows that function body, which may call private typed
 join/select readiness, exact value-or-outcome extraction, and structured
 cancellation-and-drain primitives. Neither semantic analysis nor LCIR maps the
 public `DefId` back to a policy enum. The temporary Task catalog and
-`TaskIntrinsic` are deleted when the general source-level associated-function
-and tuple/List mechanisms can express the API. Runtime-width Lists remain a
+`TaskIntrinsic` are deleted when the general source-level variadic tuple/List
+mechanisms can express the join API. Runtime-width Lists remain a
 distinct typed instruction because their child row is dynamic rather than a
 fixed LCIR suspension row.
 

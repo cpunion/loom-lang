@@ -3099,6 +3099,21 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             _ => {}
         }
 
+        let receiver = if resolution.receiver.is_none()
+            && matches!(
+                resolution.target,
+                SemaCallTarget::InherentMethod(definition)
+                    if matches!(
+                        self.compiler.signature(definition)?,
+                        Signature::Callable(signature)
+                            if signature.receiver == Some(ReceiverKind::Static)
+                    )
+            ) {
+            None
+        } else {
+            receiver
+        };
+
         let mut arguments =
             Vec::with_capacity(source_arguments.len() + usize::from(receiver.is_some()));
         if let Some(receiver) = receiver {
@@ -3259,14 +3274,6 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
         let span = self.expr_span(id);
         let ty = self.uncoerced_expression_ty(id)?;
         let kind = match intrinsic {
-            TaskIntrinsic::Sleep => {
-                let [milliseconds] = arguments else {
-                    return Err(defect("checked Task.sleep call has invalid arity", span));
-                };
-                ExprKind::Sleep {
-                    milliseconds: Box::new(self.lower_expr(*milliseconds)?),
-                }
-            }
             TaskIntrinsic::All
             | TaskIntrinsic::Settled
             | TaskIntrinsic::Any
@@ -3276,7 +3283,6 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                     TaskIntrinsic::Settled => loom_mir::TaskJoinMode::Settled,
                     TaskIntrinsic::Any => loom_mir::TaskJoinMode::Any,
                     TaskIntrinsic::Race => loom_mir::TaskJoinMode::Race,
-                    TaskIntrinsic::Sleep => unreachable!(),
                 },
                 arguments: arguments
                     .iter()
@@ -3299,6 +3305,23 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
         let ty = self.uncoerced_expression_ty(id)?;
         let kind = match builtin {
             BuiltinValue::ListNew => ExprKind::List(Vec::new()),
+            BuiltinValue::TaskSleep => {
+                let [milliseconds] = arguments else {
+                    return Err(defect(
+                        "checked std.task.__sleep call has invalid arity",
+                        span,
+                    ));
+                };
+                if receiver.is_some() {
+                    return Err(defect(
+                        "checked std.task.__sleep call unexpectedly has a receiver",
+                        span,
+                    ));
+                }
+                ExprKind::Sleep {
+                    milliseconds: Box::new(self.lower_expr(*milliseconds)?),
+                }
+            }
             BuiltinValue::Some
             | BuiltinValue::Ok
             | BuiltinValue::Err
