@@ -4321,7 +4321,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             } => {
                 if [
                     self.analyzer.canonical_std_items.file,
-                    self.analyzer.canonical_std_items.io_error,
                     self.analyzer.canonical_std_items.socket,
                 ]
                 .contains(&Some(definition))
@@ -6418,12 +6417,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     crate::std_primitives::CompilerStdPrimitive::FileClose => {
                         BuiltinValue::FileClose
                     }
-                    crate::std_primitives::CompilerStdPrimitive::IoErrorKind => {
-                        BuiltinValue::IoErrorKind
-                    }
-                    crate::std_primitives::CompilerStdPrimitive::IoErrorMessage => {
-                        BuiltinValue::IoErrorMessage
-                    }
                     crate::std_primitives::CompilerStdPrimitive::IoWriteStdout => {
                         BuiltinValue::StdoutWrite
                     }
@@ -6632,8 +6625,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::FileCreate
             | BuiltinValue::FileTryOpenRead
             | BuiltinValue::FileTryCreate
-            | BuiltinValue::IoErrorKind
-            | BuiltinValue::IoErrorMessage
             | BuiltinValue::SocketConnect
             | BuiltinValue::SocketTryConnect
             | BuiltinValue::LogWrite
@@ -6831,17 +6822,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 self.check_fixed_arguments(expression, arguments, &[text]);
                 let file = self.canonical_file_type(expression);
                 self.try_resource_task(file, expression)
-            }
-            BuiltinValue::IoErrorKind => {
-                let error = self.canonical_io_error_type(expression);
-                self.check_fixed_arguments(expression, arguments, &[error]);
-                let definition = self.analyzer.canonical_std_items.io_error_kind;
-                self.canonical_std_type(definition, "std.io.IoErrorKind", expression)
-            }
-            BuiltinValue::IoErrorMessage => {
-                let error = self.canonical_io_error_type(expression);
-                self.check_fixed_arguments(expression, arguments, &[error]);
-                self.types().builtin(BuiltinType::Text)
             }
             BuiltinValue::SocketConnect => {
                 let text = self.types().builtin(BuiltinType::Text);
@@ -8660,7 +8640,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         };
         let protected = [
             (self.analyzer.canonical_std_items.file, "std.file.File"),
-            (self.analyzer.canonical_std_items.io_error, "std.io.IoError"),
             (self.analyzer.canonical_std_items.socket, "std.net.Socket"),
         ]
         .into_iter()
@@ -10110,12 +10089,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             Primitive::SocketClose => {
                 self.is_canonical_dispose_method(self.analyzer.canonical_std_items.socket)
             }
-            Primitive::IoErrorKind => self
-                .is_canonical_inherent_method(self.analyzer.canonical_std_items.io_error, "kind"),
-            Primitive::IoErrorMessage => self.is_canonical_inherent_method(
-                self.analyzer.canonical_std_items.io_error,
-                "message",
-            ),
             _ => true,
         }
     }

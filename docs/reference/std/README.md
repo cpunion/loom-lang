@@ -28,7 +28,8 @@ ordinary package, type, MIR, reachability, and native pipelines. Current source
 declarations include the `std.int`, `std.float`, and `std.json` parsers and
 their public errors; the complete `std.float` public API and conversion error;
 `std.text.DecodeTextError`; `std.path.PathError`; `std.io.IoError`,
-`IoErrorKind`, their accessors, `write`, and `write_line`; the complete public
+`IoErrorKind`, the record's fields and convenience methods, `write`, and
+`write_line`; the complete public
 `std.log` API, including `LogLevel` and `write`; all public `std.file`
 open/create APIs, `File`, its I/O methods and resource conformances; all public
 `std.net` connect APIs, `Socket`, its I/O methods and resource conformances; and

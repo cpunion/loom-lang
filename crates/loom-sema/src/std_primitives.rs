@@ -29,8 +29,6 @@ pub(crate) enum CompilerStdPrimitive {
     FileTryReadText,
     FileTryWriteText,
     FileClose,
-    IoErrorKind,
-    IoErrorMessage,
     IoWriteStdout,
     LogWrite,
     SocketConnect,
@@ -63,8 +61,6 @@ impl CompilerStdPrimitive {
             Self::FileTryReadText | Self::SocketTryReadText => "__try_read_text",
             Self::FileTryWriteText | Self::SocketTryWriteText => "__try_write_text",
             Self::FileClose | Self::SocketClose => "__close",
-            Self::IoErrorKind => "__error_kind",
-            Self::IoErrorMessage => "__error_message",
             Self::IoWriteStdout => "__write_stdout",
             Self::LogWrite => "__write",
             Self::SocketConnect => "__connect",
@@ -116,8 +112,6 @@ pub(crate) fn resolve_import(
         (FILE_MODULE, "file", "__try_read_text") => Some(CompilerStdPrimitive::FileTryReadText),
         (FILE_MODULE, "file", "__try_write_text") => Some(CompilerStdPrimitive::FileTryWriteText),
         (FILE_MODULE, "file", "__close") => Some(CompilerStdPrimitive::FileClose),
-        (IO_MODULE, "io", "__error_kind") => Some(CompilerStdPrimitive::IoErrorKind),
-        (IO_MODULE, "io", "__error_message") => Some(CompilerStdPrimitive::IoErrorMessage),
         (IO_MODULE, "io", "__write_stdout") => Some(CompilerStdPrimitive::IoWriteStdout),
         (LOG_MODULE, "log", "__write") => Some(CompilerStdPrimitive::LogWrite),
         (NET_MODULE, "net", "__connect") => Some(CompilerStdPrimitive::SocketConnect),
@@ -248,14 +242,6 @@ mod tests {
             Some(CompilerStdPrimitive::FloatToInt)
         );
         assert_eq!(
-            resolve_import(&program, io_owner, &path(&["std", "io", "__error_kind"]),),
-            Some(CompilerStdPrimitive::IoErrorKind)
-        );
-        assert_eq!(
-            resolve_import(&program, io_owner, &path(&["std", "io", "__error_message"]),),
-            Some(CompilerStdPrimitive::IoErrorMessage)
-        );
-        assert_eq!(
             resolve_import(&program, io_owner, &path(&["std", "io", "__write_stdout"]),),
             Some(CompilerStdPrimitive::IoWriteStdout)
         );
@@ -341,10 +327,12 @@ mod tests {
             (io_owner, path(&["std.io", "__write_stdout"])),
             (io_owner, path(&["std", "io", "write"])),
             (owner, path(&["std", "io", "__error_kind"])),
+            (io_owner, path(&["std", "io", "__error_kind"])),
             (io_owner, path(&["std.io", "__error_kind"])),
             (io_owner, path(&["std", "io", "error_kind"])),
             (io_owner, path(&["std", "io", "__error_kind", "extra"])),
             (owner, path(&["std", "io", "__error_message"])),
+            (io_owner, path(&["std", "io", "__error_message"])),
             (io_owner, path(&["std.io", "__error_message"])),
             (io_owner, path(&["std", "io", "error_message"])),
             (io_owner, path(&["std", "io", "__error_message", "extra"])),

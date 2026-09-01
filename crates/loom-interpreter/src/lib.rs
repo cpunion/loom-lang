@@ -5366,9 +5366,6 @@ impl<'program> Interpreter<'program> {
         ) {
             return self.eval_text_map_builtin(builtin, arguments, span);
         }
-        if matches!(builtin, Builtin::IoErrorKind | Builtin::IoErrorMessage) {
-            return self.eval_io_error_builtin(builtin, arguments, span);
-        }
         if builtin == Builtin::LogWrite {
             return self.eval_log_builtin(builtin, arguments, span);
         }
@@ -5689,25 +5686,6 @@ impl<'program> Interpreter<'program> {
             ty,
             fields: Arc::new(RecordFields::new(fields)),
         })
-    }
-
-    fn eval_io_error_builtin(
-        &self,
-        builtin: Builtin,
-        arguments: &[Value],
-        span: Span,
-    ) -> Result<Value, ExecutionFailure> {
-        match (builtin, arguments) {
-            (Builtin::IoErrorKind | Builtin::IoErrorMessage, [Value::Record { ty, fields }])
-                if self.program.prelude.io_error == Some(*ty) =>
-            {
-                fields
-                    .get(usize::from(builtin == Builtin::IoErrorMessage))
-                    .cloned()
-                    .ok_or_else(|| self.invalid_builtin_fault(span))
-            }
-            _ => Err(self.invalid_builtin_fault(span)),
-        }
     }
 
     fn eval_log_builtin(

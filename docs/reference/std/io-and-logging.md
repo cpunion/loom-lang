@@ -156,19 +156,28 @@ through the selected source witness.
 
 ## `IoError`
 
-`IoError` is an ordinary protected record declaration in `std.io` with two
-ordinary source methods:
+`IoError` is an ordinary source record whose complete declaration is:
+
+```loom
+pub record IoError {
+    kind IoErrorKind
+    message Text
+}
+```
+
+Its fields can be projected directly. The source library also provides two
+equivalent convenience methods:
 
 ```text
 error.kind() IoErrorKind
 error.message() Text
 ```
 
-Its physical `{ kind IoErrorKind, message Text }` representation is available
-only to the typed-I/O boundary. Source cannot construct it with a record
-literal, project its fields, or compare it for equality. This keeps host detail
-encapsulated without adding an `opaque` or ownership syntax; applications use
-the two methods and may match the returned kind.
+Source can construct, project, copy, and compare `IoError` like any other
+record whose fields support those operations. The typed-I/O boundary still
+requires the exact canonical `std.io.IoError` identity and field shape when it
+publishes a host error; a same-named application record cannot impersonate
+that ABI type.
 
 `IoErrorKind` is a closed value:
 
@@ -189,8 +198,9 @@ It is declared as an ordinary enum in `std.io` and is available without an
 import as a prelude type. Its variants have normal source identities; the
 compiler only records the exact standard definition needed by typed I/O.
 
-The kind is stable for matching. `message` is human-readable detail and is not
-a stable comparison key. Host error integers are not exposed. Runtime defects,
+The kind is stable for matching. `message` is human-readable detail and should
+not be used as a portable decision key, even though ordinary value equality
+includes it. Host error integers are not exposed. Runtime defects,
 allocation failure, and compiler/runtime incompatibility are not represented as
 IoError.
 

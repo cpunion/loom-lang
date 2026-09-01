@@ -4224,8 +4224,6 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         | mir::Builtin::FloatToIntStatus
                         | mir::Builtin::FloatParseStatus
                         | mir::Builtin::FloatFormat
-                        | mir::Builtin::IoErrorKind
-                        | mir::Builtin::IoErrorMessage
                         | mir::Builtin::FileOpenRead
                         | mir::Builtin::FileCreate
                         | mir::Builtin::FileTryOpenRead
@@ -13360,16 +13358,6 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
             (mir::Builtin::FloatToIntStatus, [value]) => {
                 InstructionKind::FloatToIntStatus { value: *value }.into()
             }
-            (mir::Builtin::IoErrorKind, [error]) => InstructionKind::ProductExtract {
-                aggregate: *error,
-                field: 0,
-            }
-            .into(),
-            (mir::Builtin::IoErrorMessage, [error]) => InstructionKind::ProductExtract {
-                aggregate: *error,
-                field: 1,
-            }
-            .into(),
             (builtin @ (mir::Builtin::FileOpenRead | mir::Builtin::FileTryOpenRead), [path]) => {
                 InstructionKind::IoTaskCreate {
                     operation: IoTaskOperation::FileOpenRead,

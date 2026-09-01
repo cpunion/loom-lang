@@ -183,7 +183,7 @@ pub fn app_try_connect(host Text, port Int) Task[Result[Socket, IoError]] {
     let DefinitionKind::Record(record) = &lowered.program.definitions[io_error].kind else {
         panic!("canonical IoError must be an ordinary source record")
     };
-    assert!(record.fields.is_empty(), "IoError must remain protected");
+    assert_eq!(record.fields.len(), 2, "IoError fields are source-declared");
 
     let public_functions = [
         ("std.file", "open_read", "app_open_read"),

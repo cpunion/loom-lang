@@ -137,7 +137,6 @@ struct Compiler<'a> {
     indices: Indices,
     file_definition: DefId,
     file_type: TypeId,
-    io_error_definition: DefId,
     io_error_type: TypeId,
     io_error_kind_type: TypeId,
     socket_definition: DefId,
@@ -273,23 +272,6 @@ impl<'a> Compiler<'a> {
             Span::default(),
         )?;
         let io_error_span = definition_span(hir, io_error_definition);
-        let io_error_source = &hir.definitions[io_error_definition];
-        let DefinitionKind::Record(io_error) = &io_error_source.kind else {
-            return Err(defect(
-                "canonical std.io.IoError must be an empty source record",
-                io_error_span,
-            ));
-        };
-        if io_error_source.visibility != Visibility::Public
-            || !io_error.generic_params.is_empty()
-            || !io_error.fields.is_empty()
-            || io_error.invariant.is_some()
-        {
-            return Err(defect(
-                "canonical std.io.IoError must be a public empty non-generic record without an invariant",
-                io_error_span,
-            ));
-        }
         let io_error_type = required(
             indices.types.get(&io_error_definition).copied(),
             "canonical IoError has no MIR type id",
@@ -318,7 +300,6 @@ impl<'a> Compiler<'a> {
             indices,
             file_definition,
             file_type,
-            io_error_definition,
             io_error_type,
             io_error_kind_type,
             socket_definition,
@@ -457,20 +438,6 @@ impl<'a> Compiler<'a> {
                     id,
                     "File",
                     Type::Int,
-                    definition_span(self.hir, definition),
-                ));
-                continue;
-            }
-            if definition == self.io_error_definition {
-                if id.0 as usize != types.len() {
-                    return Err(defect(
-                        "MIR type id allocation is not dense",
-                        definition_span(self.hir, definition),
-                    ));
-                }
-                types.push(io_error_type(
-                    id,
-                    self.io_error_kind_type,
                     definition_span(self.hir, definition),
                 ));
                 continue;
@@ -3383,8 +3350,6 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             | BuiltinValue::TextMapInsert
             | BuiltinValue::ListToTextMap
             | BuiltinValue::TextMapRemove
-            | BuiltinValue::IoErrorKind
-            | BuiltinValue::IoErrorMessage
             | BuiltinValue::LogWrite
             | BuiltinValue::StdoutWrite
             | BuiltinValue::ListAdd
@@ -3861,8 +3826,6 @@ fn executable_builtin(builtin: BuiltinValue) -> Option<Builtin> {
         BuiltinValue::TextMapInsert => Builtin::TextMapInsert,
         BuiltinValue::ListToTextMap => Builtin::ListToTextMap,
         BuiltinValue::TextMapRemove => Builtin::TextMapRemove,
-        BuiltinValue::IoErrorKind => Builtin::IoErrorKind,
-        BuiltinValue::IoErrorMessage => Builtin::IoErrorMessage,
         BuiltinValue::LogWrite => Builtin::LogWrite,
         BuiltinValue::StdoutWrite => Builtin::StdoutWrite,
         BuiltinValue::ListAdd => Builtin::ListAdd,
@@ -4224,30 +4187,6 @@ fn canonical_resource_type(
         span,
     )?;
     Ok((definition, ty))
-}
-
-fn io_error_type(id: TypeId, kind: TypeId, span: Span) -> TypeDef {
-    TypeDef {
-        id,
-        name: "IoError".into(),
-        span,
-        type_parameters: 0,
-        kind: TypeDefKind::Record {
-            fields: vec![
-                FieldDef {
-                    name: "kind".into(),
-                    ty: Type::Nominal(kind, Vec::new()),
-                    span,
-                },
-                FieldDef {
-                    name: "message".into(),
-                    ty: Type::Text,
-                    span,
-                },
-            ],
-            invariant: None,
-        },
-    }
 }
 
 fn lower_builtin_type(builtin: BuiltinType) -> Type {

@@ -194,5 +194,6 @@ maps, options, results, records, enums, and constrained values when all nested
 types support equality.
 
 Equality is not available for files, sockets, tasks, dynamic interface values,
-`IoError`, or an unconstrained type parameter. There is no reference-identity
-operator.
+or an unconstrained type parameter. `IoError` is an ordinary record and is
+comparable because both of its fields are comparable. There is no
+reference-identity operator.

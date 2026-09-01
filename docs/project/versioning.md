@@ -20,10 +20,10 @@ writers for unreleased formats. Development history belongs in
 | Manifest schema | `2` |
 | Lockfile schema | `2` |
 | Registry protocol and bundle | `1` |
-| Interpreted MIR artifact | `loom.interpreted-mir`, version `48` |
+| Interpreted MIR artifact | `loom.interpreted-mir`, version `49` |
 | Portable library artifact | `loom-library`, source-and-interface version `4` |
-| Persistent compiler cache | schema `21` |
-| Compilation-cache domain | `loom-compilation-cache-v21` |
+| Persistent compiler cache | schema `22` |
+| Compilation-cache domain | `loom-compilation-cache-v22` |
 | Interpreted final-cache layer | `final-artifact-v3` |
 | Interpreted artifact writer | `loom-interpreted-artifact-writer-v3` |
 | Portable-library final-cache layer | `portable-library-artifact-v4` |
@@ -77,6 +77,17 @@ join/fault operations (`loom_task_prepare_join`,
 resource, GC, and shadow-stack wires did not change. An older compiler or
 runtime bundle is therefore rejected instead of crossing a removed symbol
 boundary.
+
+Interpreted MIR 49 removes the retired `IoErrorKind` and `IoErrorMessage`
+accessor builtins. The record's two declared source fields now flow through
+ordinary record construction, projection, equality, MIR, and LCIR lowering;
+the compiler no longer injects hidden storage or protected-value rules.
+Persistent compiler-cache schema 22 and its matching domain invalidate typed
+state and MIR that retained the accessor builtin identities or protected-record
+semantics.
+The LCIR and runtime ABI versions are unchanged because the exact canonical
+`{ kind IoErrorKind, message Text }` product layout and typed-I/O wire did not
+change.
 
 Interpreted MIR 48 removes the fixed Duration prelude slot and its construction
 and inspection builtins; the same compiler slice removes the frontend's

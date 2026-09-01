@@ -50,7 +50,26 @@ pub async fn socketMain() {
     }
 }
 
+fn sourceRecordMain() {
+    let first = IoError {
+        kind = IoErrorKind.Other
+        message = "synthetic"
+    }
+    let second = IoError {
+        kind = IoErrorKind.Other
+        message = "synthetic"
+    }
+    assert first == second
+    assert first.kind == IoErrorKind.Other
+    assert first.message == "synthetic"
+    let methodKind = first.kind()
+    let methodMessage = first.message()
+    assert methodKind == first.kind
+    assert methodMessage == first.message
+}
+
 pub async fn main() {
+    sourceRecordMain()
     roundTripMain().await
     missingMain().await
     socketMain().await

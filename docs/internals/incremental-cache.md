@@ -48,7 +48,7 @@ larger graph.
 
 ## Persistent layers
 
-The persistent cache schema is `21`. Current layers include source parse,
+The persistent cache schema is `22`. Current layers include source parse,
 package-interface presence, typed package state, complete checked MIR, target
 objects, and deterministic final artifacts.
 
@@ -81,7 +81,7 @@ rederived before signature and body checking; cached semantic bytes never grant
 a same-named function, record, or enum canonical authority.
 
 Task policy and timer calls currently store a resolved `TaskIntrinsic` in typed
-body facts. Cache schema `21` and the `loom-compilation-cache-v21` domain cover
+body facts. Cache schema `22` and the `loom-compilation-cache-v22` domain cover
 that identity, the current compiler-private Float, logging, file, and network
 primitive sets, the exact mutable `Bytes.add` builtin, and exact source
 identities for standard types. They also
@@ -96,12 +96,15 @@ Whether a body is reused or conservatively reanalyzed, MIR lowering consumes
 only the resolved identity; it never reconstructs a policy or canonical
 standard-library item from source spelling. The same schema removes the
 compiler-private semantic types and public builtin method paths for
-`IoErrorKind`, `IoError`, `File`, and `Socket`. Checked types, accessors,
-resource methods, and disposal witnesses use exact ordinary source definitions.
+`IoErrorKind`, `IoError`, `File`, and `Socket`. Checked types, record fields and
+methods, resource methods, and disposal witnesses use exact ordinary source
+definitions. Schema 22 also excludes the retired IoError accessor builtin tags
+and protected-record assumptions; typed I/O retains only the exact canonical
+shape check.
 The Task cache identity disappears when the temporary catalog is replaced by
 ordinary source definitions.
 
-Checked-MIR cache envelopes use artifact version `48` and its exact current
+Checked-MIR cache envelopes use artifact version `49` and its exact current
 MIR shape. The artifact profile requires the complete compiler-known resource
 identity trio, all matching prelude ids, the canonical six-field
 `ConstraintError`, the exact source-backed decoding/path error identities and

@@ -95,10 +95,13 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   component have been deleted.
   `IoErrorKind` is now an ordinary `std.io` source enum whose exact definition
   is made available through the prelude; its ten compiler builtin constructors
-  and fixed MIR type slot are gone. `IoError` is likewise an ordinary protected
-  source record with source-owned `kind` and `message` methods. Its exact
-  standard-library identity receives the private typed-I/O representation;
-  application source cannot construct, project, or compare it. `File` and
+  and fixed MIR type slot are gone. `IoError` is likewise an ordinary source
+  record with declared `kind` and `message` fields plus source convenience
+  methods. Applications can construct, project, copy, and compare it through
+  general record mechanisms; typed I/O retains only its exact canonical
+  identity and field-shape requirement. Its two private accessor primitives,
+  builtin identities, hidden-field injection, and protected-value rules are
+  gone. `File` and
   `Socket` are likewise protected empty source records. Their public methods,
   `Dispose` implementations, and `MustScope` conformances have ordinary source
   identities; their exact canonical definitions alone receive hidden one-Int
@@ -107,9 +110,9 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   LCIR `ResourceClose`; MIR has no File/Socket-specific scoped action. All
   public `std.file` and `std.net` functions resolve through ordinary source
   wrappers, and the Path forms reuse their Text counterparts. Only 16
-  exact-owner resource/I/O/close leaves plus two protected error access leaves
-  remain below source. Interpreted MIR artifact 48 and persistent cache schema
-  21 reject removed Duration and JSON compiler identities and UTF-8-unit dispatch,
+  exact-owner resource/I/O/close leaves remain below source. Interpreted MIR
+  artifact 49 and persistent cache schema 22 reject removed IoError accessors,
+  Duration and JSON compiler identities, and UTF-8-unit dispatch,
   infinite value layouts,
   source-impossible mutable parameter slots and coroutine receivers,
   invariant-boundary bypasses, removed semantic types, fixed slots, and
