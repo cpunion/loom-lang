@@ -20,17 +20,17 @@ writers for unreleased formats. Development history belongs in
 | Manifest schema | `2` |
 | Lockfile schema | `2` |
 | Registry protocol and bundle | `1` |
-| Interpreted MIR artifact | `loom.interpreted-mir`, version `47` |
+| Interpreted MIR artifact | `loom.interpreted-mir`, version `48` |
 | Portable library artifact | `loom-library`, source-and-interface version `4` |
-| Persistent compiler cache | schema `20` |
-| Compilation-cache domain | `loom-compilation-cache-v20` |
+| Persistent compiler cache | schema `21` |
+| Compilation-cache domain | `loom-compilation-cache-v21` |
 | Interpreted final-cache layer | `final-artifact-v3` |
 | Interpreted artifact writer | `loom-interpreted-artifact-writer-v3` |
 | Portable-library final-cache layer | `portable-library-artifact-v4` |
-| LCIR textual dump | `lcir 54` |
-| LCIR artifact identity | schema `56` |
-| LCIR native-object domain | `loom-lcir-native-object-v49` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v52` |
+| LCIR textual dump | `lcir 55` |
+| LCIR artifact identity | schema `57` |
+| LCIR native-object domain | `loom-lcir-native-object-v50` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v53` |
 | Controlled quality evidence | schema `5` |
 | Runtime bundle manifest | schema `2` |
 | Native runtime ABI component | `40` |
@@ -77,6 +77,28 @@ join/fault operations (`loom_task_prepare_join`,
 resource, GC, and shadow-stack wires did not change. An older compiler or
 runtime bundle is therefore rejected instead of crossing a removed symbol
 boundary.
+
+Interpreted MIR 48 removes the fixed Duration prelude slot and its construction
+and inspection builtins; the same compiler slice removes the frontend's
+Duration prelude identity. `std.time.Duration` is now an ordinary imported
+source refined type over `Int`; its public function, method, constraint, and
+refined-to-base conversion use general language mechanisms, and `Task.sleep`
+accepts `Int` without a Duration-specific overload. MIR and LCIR therefore see
+canonical `Int` milliseconds. MIR 48 also adds the independently
+validated `Precondition { index }` refined-construction certificate: a direct
+immutable parameter established by the exact retained `requires` expression
+can remain check-free across artifact and cache boundaries without trusting a
+process-local `Proven` marker. Persistent compiler-cache schema 21 and its
+matching domain invalidate semantic and MIR entries that retained the builtin
+identity or lacked that certificate. LCIR dump 55 and artifact identity schema
+57 remove the Duration canonical-catalog field and its obsolete construction
+fault; native-object domain 50 and LLVM object-cache domain 53 reject objects
+prepared from the old catalog and lowering. The runtime ABI is unchanged
+because the timer boundary already consumed only `Int` milliseconds.
+The source language remains `0.4` because the project has no published
+compatibility baseline and supports only this current definition; portable
+library version 4 is unchanged because its source-and-interface envelope and
+validation contract did not change, and consumer compilers recheck its source.
 
 Interpreted MIR 47 removes the fixed Json/JsonError prelude slots and all
 compiler-synthesized constructors and patterns; both enums are ordinary exact
@@ -189,6 +211,12 @@ that the others changed.
 Version the narrowest boundary that makes stale data or code unsafe or
 semantically incorrect. A single implementation change may affect several
 boundaries, and every affected boundary must advance together.
+
+Until the first published compatibility baseline, the sole current language
+version may evolve in place: the compiler does not retain or concurrently
+accept an older meaning under that version. After a baseline is published, an
+incompatible source-language change advances the language boundary described
+below.
 
 | Boundary | Advance it when |
 | --- | --- |

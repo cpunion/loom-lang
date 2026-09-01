@@ -38,9 +38,10 @@ the public `Dispose`, `MustScope`, and `NoSuspend` declarations in
 their parser, traversal, escaping, and result construction use general Loom
 control flow and collection/Text operations rather than JSON-specific compiler
 or runtime hooks.
-`std.time.milliseconds` is likewise an ordinary source wrapper over one
-exact-owner primitive; `Duration` and its intrinsic inspection method remain
-core values.
+`std.time.Duration`, `milliseconds`, and `Duration.as_milliseconds` are
+ordinary source declarations. `Duration` is a constrained `Int`; the compiler
+does not provide a duration prelude identity, constructor, layout, or
+inspection intrinsic.
 The public logging graph is ordinary Loom source over one compiler-private
 typed output primitive. Resource declarations are source-backed, but
 their fixed shapes and irreducible static rules remain part of the language
@@ -190,14 +191,17 @@ milliseconds(Int) Duration
 duration.as_milliseconds() Int
 ```
 
-The input must be non-negative. A negative input produces RuntimeFault code
-`InvalidDuration`. `Duration` is an immutable millisecond duration and supports
-value equality. It can be passed to `Task.sleep`.
+The input must be non-negative. `milliseconds` expresses that rule as a
+`requires` clause, so a negative input produces the ordinary
+`PreconditionFault`. `Duration` is declared in source as
+`Int where self >= 0`; it is immutable, supports value equality, and can be
+passed to `Task.sleep`. A proven direct `Duration(42)` construction has type
+`Duration`, while a construction whose predicate is not proved has the normal
+`Result[Duration, ConstraintError]` constrained-type form.
 
-`milliseconds` is an ordinary `std.time` source definition. Only its body may
-call the compiler-private construction primitive, so importing the public API
-uses normal source resolution, reachability, and dead-code elimination rather
-than a public-name builtin rule.
+All three declarations use ordinary source resolution, reachability, contract
+proof elimination, and dead-code elimination. There is no duration-specific
+compiler primitive or runtime ABI.
 
 ## Error and fault boundary
 

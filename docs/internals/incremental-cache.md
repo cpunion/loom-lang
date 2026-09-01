@@ -48,7 +48,7 @@ larger graph.
 
 ## Persistent layers
 
-The persistent cache schema is `20`. Current layers include source parse,
+The persistent cache schema is `21`. Current layers include source parse,
 package-interface presence, typed package state, complete checked MIR, target
 objects, and deterministic final artifacts.
 
@@ -81,7 +81,7 @@ rederived before signature and body checking; cached semantic bytes never grant
 a same-named function, record, or enum canonical authority.
 
 Task policy and timer calls currently store a resolved `TaskIntrinsic` in typed
-body facts. Cache schema `20` and the `loom-compilation-cache-v20` domain cover
+body facts. Cache schema `21` and the `loom-compilation-cache-v21` domain cover
 that identity, the current compiler-private Float, logging, file, and network
 primitive sets, the exact mutable `Bytes.add` builtin, and exact source
 identities for standard types. They also
@@ -101,7 +101,7 @@ resource methods, and disposal witnesses use exact ordinary source definitions.
 The Task cache identity disappears when the temporary catalog is replaced by
 ordinary source definitions.
 
-Checked-MIR cache envelopes use artifact version `47` and its exact current
+Checked-MIR cache envelopes use artifact version `48` and its exact current
 MIR shape. The artifact profile requires the complete compiler-known resource
 identity trio, all matching prelude ids, the canonical six-field
 `ConstraintError`, the exact source-backed decoding/path error identities and
@@ -118,12 +118,14 @@ the artifact carries no fixed prelude slots for them.
 The complete compilation key includes the normalized project graph, exact
 sources, language and frontend build identities, embedded standard library,
 and contract mode. A checked-MIR cache hit still runs the artifact decoder and
-MIR validator before execution or code generation. Proof-bearing checked MIR is
-not published; a forged or malformed proof-bearing payload loads as a miss.
-Source reanalysis reconstructs the same fresh `Proven` MIR as a cold build
-instead of permanently replacing its process-local proof with serialized
-`.loomi` `Recheck`. Supported nongeneric replay is typed LCIR; generic or
-unsupported replay remains checked-MIR.
+MIR validator before execution or code generation. Process-local `Proven` and
+`Recheck` checked MIR is not published; source reanalysis reconstructs the same
+fresh result instead of changing a warm build into artifact replay. A refined
+construction may retain a `Precondition { index }` certificate because the MIR
+validator independently matches its direct immutable parameter, destination
+predicate, and indexed retained `requires` expression. A forged or malformed
+certificate loads as a miss. Supported nongeneric replay is typed LCIR;
+generic or unsupported replay remains checked-MIR.
 
 A `.loomlib` version `4` final artifact is a separate source/interface blob, not
 a checked-MIR cache entry. Its `portable-library-artifact-v4` derived cache

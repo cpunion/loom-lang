@@ -1639,8 +1639,23 @@ pub async fn main() {
     );
 }
 
+fn assert_milliseconds_uses_first_precondition(mir: &loom_mir::CheckedProgram) {
+    let milliseconds = mir
+        .functions
+        .iter()
+        .find(|function| function.name.ends_with("std.time.milliseconds"))
+        .expect("milliseconds MIR function");
+    assert!(matches!(
+        milliseconds.body.tail.as_deref().map(|tail| &tail.kind),
+        Some(ExprKind::Refine {
+            construction: loom_mir::ConstructionMode::Precondition { index: 0 },
+            ..
+        })
+    ));
+}
+
 #[test]
-fn task_sleep_normalizes_duration_and_preserves_first_class_task_flow() {
+fn task_sleep_accepts_sema_normalized_int_and_preserves_first_class_task_flow() {
     let LoweringOutcome::Complete(unused) = lower_run_with_std_time("pub fn main() {}\n") else {
         panic!("an unused source time package must still lower completely")
     };
@@ -1662,15 +1677,29 @@ pub async fn main() {
     assert marker == 42
 }
 ";
-    let LoweringOutcome::Complete(artifact) = lower_run_with_std_time(source) else {
+    let mir = compile_with_std_time(source);
+    assert_milliseconds_uses_first_precondition(&mir);
+    let outcome = lower_typed_artifact(
+        &mir,
+        &SourceArtifactRequest::Run {
+            entry: "main".into(),
+        },
+        TargetLayout::new(64).expect("test target"),
+    )
+    .expect("lower typed time artifact");
+    let LoweringOutcome::Complete(artifact) = outcome else {
         panic!("first-class typed timer Task must lower completely")
     };
+    let milliseconds = artifact
+        .functions()
+        .iter()
+        .find(|function| function.name().ends_with("std.time.milliseconds"))
+        .expect("the public time API must enter LCIR through its ordinary source definition");
     assert!(
-        artifact
-            .functions()
+        milliseconds
+            .instructions()
             .iter()
-            .any(|function| function.name().ends_with("std.time.milliseconds")),
-        "the public time API must enter LCIR through its ordinary source definition"
+            .any(|instruction| matches!(instruction.kind(), InstructionKind::RefineProven { .. }))
     );
     let main = artifact
         .functions()
@@ -1689,19 +1718,30 @@ pub async fn main() {
             .len(),
         1
     );
-    assert!(main.instructions().iter().any(|instruction| matches!(
-        instruction.kind(),
-        InstructionKind::ProductExtract { field: 0, .. }
-    )));
+    assert!(
+        main.instructions().iter().all(|instruction| !matches!(
+            instruction.kind(),
+            InstructionKind::ProductExtract { .. }
+        ))
+    );
     assert!(main.blocks().iter().any(|block| matches!(
         block.terminator().map(loom_codegen_ir::Terminator::kind),
         Some(TerminatorKind::TaskSleep { .. })
     )));
     let dump = dump_program(artifact.program());
-    let extract = dump.find("product.extract").expect("Duration extraction");
+    assert!(dump.contains("refine.proven"), "{dump}");
+    assert_eq!(
+        dump.matches("int.compare.greater_equal").count(),
+        1,
+        "the source requires check must be the only predicate evaluation; the refinement must not replay it:\n{dump}"
+    );
+    assert!(
+        !dump.contains("runtime ArtifactProofRejected"),
+        "a validator-authenticated precondition proof must not emit an artifact proof fault:\n{dump}"
+    );
     let sleep = dump.find("task.sleep").expect("typed timer terminator");
     let await_task = dump.find("await_tasks").expect("later first-class await");
-    assert!(extract < sleep && sleep < await_task, "{dump}");
+    assert!(sleep < await_task, "{dump}");
     let identity = artifact_identity(&artifact);
     assert!(identity.contains("task.sleep"), "{identity}");
     assert!(

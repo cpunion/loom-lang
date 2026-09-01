@@ -83,8 +83,6 @@ pub struct PreludeIds {
     #[serde(deserialize_with = "deserialize_required_option")]
     pub task_outcome: Option<TypeId>,
     #[serde(deserialize_with = "deserialize_required_option")]
-    pub duration: Option<TypeId>,
-    #[serde(deserialize_with = "deserialize_required_option")]
     pub file: Option<TypeId>,
     #[serde(deserialize_with = "deserialize_required_option")]
     pub socket: Option<TypeId>,
@@ -663,6 +661,9 @@ pub enum ScopedDisposal {
 /// artifact decoding never trusts this wire spelling. `Recheck` preserves the
 /// direct nominal shape while replaying a serialized construction's predicate
 /// or invariant and raising `ArtifactProofRejected` if it no longer holds.
+/// `Precondition` names a portable caller obligation by its zero-based index
+/// in the retained [`CallPlan::requires`] list. Checked MIR independently
+/// certifies that obligation against the refined construction.
 /// `Runtime` evaluates the predicate/invariant and returns `Result`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -670,6 +671,7 @@ pub enum ConstructionMode {
     Plain,
     Proven,
     Recheck,
+    Precondition { index: u32 },
     Runtime,
 }
 
@@ -1155,8 +1157,6 @@ pub enum Builtin {
     ProcessEnvironment,
     TaskFaultCode,
     TaskFaultMessage,
-    DurationMilliseconds,
-    DurationAsMilliseconds,
     FileOpenRead,
     FileCreate,
     FileReadText,

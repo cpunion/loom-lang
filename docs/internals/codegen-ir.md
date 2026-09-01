@@ -425,7 +425,7 @@ destructuring, blocks and conditionals, short-circuit Boolean operations,
 integer ranges, pure scalar operations,
 checked integer arithmetic, and direct/readonly-inherent calls including
 recursion. Finite checks, integer/float parsing, float formatting, Duration
-construction/extraction, and async `Task.sleep` also lower directly. Plain
+source construction/unrefinement, and async `Task.sleep` also lower directly. Plain
 record construction, whole-value copy and move, nested field read/write,
 tuple/record nesting, product block parameters, parameters, returns, and
 loop-carried products lower directly to SSA. Compile-time-proven
@@ -434,7 +434,10 @@ invariants are representation-preserving typed operations. Unknown fully
 instantiated task-free refined predicates and record invariants remain normal
 typed `Result[..., ConstraintError]`
 constructions. Open or unsupported-shape runtime construction rejects native
-preparation. A
+preparation. A MIR-validator-authenticated `Precondition { index }` refined
+construction is representation-preserving and takes the same direct LCIR route
+as a fresh `Proven` construction; LCIR does not replay the already-executed
+caller guard. A
 decoded `.loomi` MIR
 proof replay (`ConstructionMode::Recheck`) for a supported refined type or
 concrete invariant-record instantiation re-evaluates the embedded predicate in
@@ -701,7 +704,8 @@ borrow the executor already driving their async caller.
 
 `TaskSleep` is a separate explicit fallible terminator admitted in any checked
 executor context. Its input is canonical `Int` milliseconds; a source
-`Duration` is normalized first with `ProductExtract`. The normal edge receives
+`Duration` is normalized earlier by the general representation-preserving
+refined-to-base coercion. The normal edge receives
 the canonical `Task[Unit]` handle, while the fault edge preserves the source
 origin. LLVM rejects a negative duration, checks the signed conversion from
 milliseconds to nanoseconds, reads the monotonic clock, checks the unsigned
@@ -1073,9 +1077,8 @@ The current instruction set is deliberately small:
   direct-Text results and canonical `Option[Text]` construction;
 - typed Bytes operations and exact Path construction, Text extraction, and
   lexical join;
-- closed integer/float parsing, managed float formatting, and Duration
-  construction/extraction through existing scalar, sum, product, and fault
-  shapes;
+- closed integer/float parsing and managed float formatting, while source
+  `Duration` uses the existing refinement, contract, and unrefinement shapes;
 - whole Task-bearing carrier borrowing, ordinary and invariant-proven product
   construction, task-free borrowed field extraction, Task-bearing
   `ProductBorrow`, atomic `TaskCarrierProject`/`TaskCarrierUpdate` leaf access,
@@ -1138,16 +1141,22 @@ provenance model yet.
 
 Fresh checked MIR carries the frontend's process-local
 `ConstructionMode::Proven` conclusion for a predicate or record invariant
-already established during semantic analysis.
+already established during semantic analysis. It may also carry a portable
+`ConstructionMode::Precondition { index }` refined-construction certificate;
+the MIR validator independently authenticates its retained guard and direct
+immutable parameter before LCIR lowering treats it as established. Record
+construction cannot use this certificate.
 The public raw LCIR builder rejects `RefineProven` and
 `InvariantRecordProven`; only the crate-private checked-MIR lowerer can append
 them. LCIR deliberately does not encode or re-evaluate the arbitrary source
 predicate. Its independent validator checks the certificate's structural
 boundary: exact base/result types, protected construction kind, protection on
 every representation alternative, representation identity, and the usual SSA
-rules. Thus `CheckedProgram` certifies valid LCIR structure while trusting that
-fresh frontend conclusion for predicate truth. `.loomi` MIR decoding replaces
-it with `Recheck`. For supported task-free concrete shapes the lowerer reconstructs the
+rules. Thus `CheckedProgram` certifies valid LCIR structure while trusting the
+fresh frontend conclusion, or the preceding checked-MIR certificate boundary,
+for predicate truth. `.loomi` MIR decoding replaces process-local `Proven` with
+`Recheck` while retaining only validated precondition certificates. For
+supported task-free concrete shapes the lowerer reconstructs the
 typed predicate CFG and emits an explicit runtime-fault guard before the
 crate-private established-value instruction. The raw builder still cannot mint
 that instruction, and a rejected path has no nominal SSA value. Unsupported
@@ -1268,8 +1277,8 @@ typed coroutine plans, optional carried caller-span metadata, dynamic
 precondition blame, and Task control flow, including fallible `task.sleep`,
 explicit await modes and normal/fault/cancel targets, `task.outcome_take`, and
 `task.cancelled`,
-typed runtime/contract fault identity including proof-replay and Duration
-guards, the closed Float parse operation, ordinary source-lowered integer
+typed runtime/contract fault identity including proof replay and sleep guards,
+the closed Float parse operation, ordinary source-lowered integer
 parsing, and managed Float formatting,
 managed-pointer representations, finite dynamic candidate catalogs,
 `dyn.construct`, `dyn.switch`, mode-qualified `io.task_create.*.result` and

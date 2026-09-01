@@ -148,6 +148,76 @@ fn sleep_await(state: u32) -> Expr {
     )
 }
 
+#[test]
+fn sleep_requires_an_int_after_refined_value_coercion() {
+    let task_type = Type::Task(Box::new(Type::Unit));
+    let valid = Program {
+        functions: vec![function(
+            0,
+            Vec::new(),
+            Vec::new(),
+            task_type.clone(),
+            Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(expr(
+                    ExprKind::Sleep {
+                        milliseconds: Box::new(constant(Constant::Int(1), Type::Int)),
+                    },
+                    task_type.clone(),
+                ))),
+                span: span(),
+            },
+        )],
+        ..Program::default()
+    };
+    validate_program(&valid).expect("Sleep accepts an erased Int duration");
+
+    let duration = TypeId(0);
+    let duration_type = Type::Nominal(duration, Vec::new());
+    let invalid = Program {
+        types: vec![TypeDef {
+            id: duration,
+            name: "Duration".to_owned(),
+            span: span(),
+            type_parameters: 0,
+            kind: TypeDefKind::Refined {
+                base: Type::Int,
+                predicate: Contract {
+                    code: "self >= 0".to_owned(),
+                    span: span(),
+                    expression: ContractExpr {
+                        kind: ContractExprKind::Constant(Constant::Bool(true)),
+                        span: span(),
+                    },
+                },
+            },
+        }],
+        functions: vec![function(
+            0,
+            vec![local(0, duration_type.clone(), false)],
+            Vec::new(),
+            task_type.clone(),
+            Block {
+                statements: Vec::new(),
+                tail: Some(Box::new(expr(
+                    ExprKind::Sleep {
+                        milliseconds: Box::new(copy(0, duration_type)),
+                    },
+                    task_type,
+                ))),
+                span: span(),
+            },
+        )],
+        ..Program::default()
+    };
+    let errors = validation_errors(&invalid);
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code == MirValidationCode::TypeMismatch
+            && error.path.ends_with(".milliseconds")
+            && error.message.contains("Int")
+    }));
+}
+
 fn raw_handle_type(id: u32, name: &str) -> TypeDef {
     TypeDef {
         id: TypeId(id),
@@ -1599,6 +1669,248 @@ fn record_and_variant_shapes_are_validated() {
     assert!(errors.contains(MirValidationCode::InvalidVariantReference));
 }
 
+fn comparison_contract(code: &str, value: ContractValue) -> Contract {
+    Contract {
+        code: code.to_owned(),
+        span: span(),
+        expression: ContractExpr {
+            kind: ContractExprKind::Binary(
+                BinaryOp::GreaterEqual,
+                Box::new(ContractExpr {
+                    kind: ContractExprKind::Value(value),
+                    span: span(),
+                }),
+                Box::new(ContractExpr {
+                    kind: ContractExprKind::Constant(Constant::Int(0)),
+                    span: span(),
+                }),
+            ),
+            span: span(),
+        },
+    }
+}
+
+fn match_contract(code: &str, value: ContractValue) -> Contract {
+    Contract {
+        code: code.to_owned(),
+        span: span(),
+        expression: ContractExpr {
+            kind: ContractExprKind::Match {
+                scrutinee: Box::new(ContractExpr {
+                    kind: ContractExprKind::Value(value),
+                    span: span(),
+                }),
+                arms: vec![ContractArm {
+                    pattern: Pattern::Wildcard,
+                    bindings: Vec::new(),
+                    value: ContractExpr {
+                        kind: ContractExprKind::Constant(Constant::Bool(true)),
+                        span: span(),
+                    },
+                }],
+            },
+            span: span(),
+        },
+    }
+}
+
+fn precondition_certificate_program() -> Program {
+    let positive = TypeId(0);
+    let positive_type = Type::Nominal(positive, Vec::new());
+    let mut constructor = function(
+        0,
+        vec![local(0, Type::Int, false)],
+        Vec::new(),
+        positive_type.clone(),
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(expr(
+                ExprKind::Refine {
+                    ty: positive,
+                    value: Box::new(copy(0, Type::Int)),
+                    construction: ConstructionMode::Precondition { index: 0 },
+                },
+                positive_type,
+            ))),
+            span: span(),
+        },
+    );
+    constructor.call_plan.requires = vec![comparison_contract(
+        "constructor requires spelling is ignored",
+        ContractValue::Argument(0),
+    )];
+    Program {
+        types: vec![TypeDef {
+            id: positive,
+            name: "Positive".to_owned(),
+            span: span(),
+            type_parameters: 0,
+            kind: TypeDefKind::Refined {
+                base: Type::Int,
+                predicate: comparison_contract(
+                    "refined predicate spelling is ignored",
+                    ContractValue::SelfValue,
+                ),
+            },
+        }],
+        functions: vec![constructor],
+        ..Program::default()
+    }
+}
+
+fn precondition_refine_mut(program: &mut Program) -> (&mut Expr, &mut ConstructionMode) {
+    let expression = program.functions[0]
+        .body
+        .tail
+        .as_deref_mut()
+        .expect("certificate expression");
+    let ExprKind::Refine {
+        value,
+        construction,
+        ..
+    } = &mut expression.kind
+    else {
+        panic!("certificate fixture must contain Refine")
+    };
+    (value, construction)
+}
+
+fn assert_precondition_certificate_error(program: &Program, message: &str) {
+    let errors = validation_errors(program);
+    assert!(
+        errors.as_slice().iter().any(|error| {
+            error.code == MirValidationCode::ExpressionShape && error.message.contains(message)
+        }),
+        "missing certificate rejection containing {message:?}: {errors:#?}"
+    );
+}
+
+#[test]
+fn refined_precondition_construction_is_independently_certified() {
+    validate_program(&precondition_certificate_program())
+        .expect("matching immutable parameter precondition certificate");
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn forged_precondition_construction_certificates_fail_closed() {
+    let mut missing_index = precondition_certificate_program();
+    let (_, construction) = precondition_refine_mut(&mut missing_index);
+    *construction = ConstructionMode::Precondition { index: 1 };
+    assert_precondition_certificate_error(&missing_index, "missing requires clause #1");
+
+    let mut mismatched_predicate = precondition_certificate_program();
+    let ContractExprKind::Binary(operator, _, _) =
+        &mut mismatched_predicate.functions[0].call_plan.requires[0]
+            .expression
+            .kind
+    else {
+        unreachable!()
+    };
+    *operator = BinaryOp::Greater;
+    assert_precondition_certificate_error(&mismatched_predicate, "does not match");
+
+    let mut mutable_parameter = precondition_certificate_program();
+    mutable_parameter.functions[0].params[0].mutable = true;
+    assert_precondition_certificate_error(&mutable_parameter, "immutable parameter");
+
+    let mut receiver_value = precondition_certificate_program();
+    receiver_value.functions[0].receiver = Some(Receiver::Readonly);
+    assert_precondition_certificate_error(&receiver_value, "ordinary parameter, not self");
+
+    let mut projected_parameter = precondition_certificate_program();
+    let (value, _) = precondition_refine_mut(&mut projected_parameter);
+    let ExprKind::Copy(place) = &mut value.kind else {
+        unreachable!()
+    };
+    place.projection.push(0);
+    assert_precondition_certificate_error(&projected_parameter, "projected parameter");
+
+    let mut local_value = precondition_certificate_program();
+    local_value.functions[0]
+        .locals
+        .push(local(1, Type::Int, false));
+    let (value, _) = precondition_refine_mut(&mut local_value);
+    let ExprKind::Copy(place) = &mut value.kind else {
+        unreachable!()
+    };
+    place.local = LocalId(1);
+    assert_precondition_certificate_error(&local_value, "copy a function parameter");
+
+    let mut computed_value = precondition_certificate_program();
+    let (value, _) = precondition_refine_mut(&mut computed_value);
+    value.kind = ExprKind::Constant(Constant::Int(1));
+    assert_precondition_certificate_error(&computed_value, "direct parameter Copy");
+
+    let mut match_predicate = precondition_certificate_program();
+    let TypeDefKind::Refined { predicate, .. } = &mut match_predicate.types[0].kind else {
+        unreachable!()
+    };
+    *predicate = match_contract("refined match", ContractValue::SelfValue);
+    match_predicate.functions[0].call_plan.requires[0] =
+        match_contract("requires match", ContractValue::Argument(0));
+    assert_precondition_certificate_error(&match_predicate, "does not match");
+
+    let guarded = TypeId(0);
+    let mut record_constructor = function(
+        0,
+        vec![local(0, Type::Int, false)],
+        Vec::new(),
+        Type::Nominal(guarded, Vec::new()),
+        Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(expr(
+                ExprKind::Record {
+                    ty: guarded,
+                    type_arguments: Vec::new(),
+                    fields: vec![copy(0, Type::Int)],
+                    construction: ConstructionMode::Precondition { index: 0 },
+                },
+                Type::Nominal(guarded, Vec::new()),
+            ))),
+            span: span(),
+        },
+    );
+    record_constructor.call_plan.requires = vec![Contract {
+        code: "true".to_owned(),
+        span: span(),
+        expression: ContractExpr {
+            kind: ContractExprKind::Constant(Constant::Bool(true)),
+            span: span(),
+        },
+    }];
+    let record_program = Program {
+        types: vec![TypeDef {
+            id: guarded,
+            name: "Guarded".to_owned(),
+            span: span(),
+            type_parameters: 0,
+            kind: TypeDefKind::Record {
+                fields: vec![FieldDef {
+                    name: "value".to_owned(),
+                    ty: Type::Int,
+                    span: span(),
+                }],
+                invariant: Some(Contract {
+                    code: "true".to_owned(),
+                    span: span(),
+                    expression: ContractExpr {
+                        kind: ContractExprKind::Constant(Constant::Bool(true)),
+                        span: span(),
+                    },
+                }),
+            },
+        }],
+        functions: vec![record_constructor],
+        ..Program::default()
+    };
+    let errors = validation_errors(&record_program);
+    assert!(errors.as_slice().iter().any(|error| {
+        error.code == MirValidationCode::RecordShape
+            && error.message.contains("refined precondition certificate")
+    }));
+}
+
 #[test]
 #[allow(clippy::too_many_lines)]
 fn checked_construction_modes_are_a_validated_trust_boundary() {
@@ -2027,7 +2339,6 @@ fn prelude_ids_are_explicit_and_shape_checked() {
             constraint_error: Some(TypeId(1)),
             task_fault: None,
             task_outcome: None,
-            duration: None,
             file: None,
             socket: None,
             bytes: None,
@@ -2543,7 +2854,6 @@ fn canonical_prelude_type_roles_must_have_distinct_identities() {
             },
         ],
         prelude: PreludeIds {
-            duration: Some(int_backed),
             file: Some(int_backed),
             socket: Some(int_backed),
             bytes: Some(text_backed),
@@ -2554,11 +2864,7 @@ fn canonical_prelude_type_roles_must_have_distinct_identities() {
     };
 
     let errors = validation_errors(&program);
-    for (path, first) in [
-        ("prelude.file", "duration"),
-        ("prelude.socket", "duration"),
-        ("prelude.path", "bytes"),
-    ] {
+    for (path, first) in [("prelude.socket", "file"), ("prelude.path", "bytes")] {
         assert!(
             errors.as_slice().iter().any(|error| {
                 error.code == MirValidationCode::InvalidTypeReference
@@ -4926,7 +5232,7 @@ fn forged_proof_program() -> CheckedProgram {
 
 #[test]
 fn interpreted_artifact_bytes_are_deterministic_and_round_trip_float_bits() {
-    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 47);
+    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 48);
     let program = float_program(0x7ff8_0000_0000_0042);
     let first = encode_interpreted_artifact(&program).expect("encode");
     let second = encode_interpreted_artifact(&program).expect("encode again");
@@ -4980,6 +5286,39 @@ fn artifact_wire_proofs_are_one_way_normalized_to_runtime_rechecks() {
     let debug = format!("{decoded:#?}");
     assert_eq!(debug.matches("construction: Recheck").count(), 2, "{debug}");
     assert!(!debug.contains("construction: Proven"), "{debug}");
+}
+
+#[test]
+fn portable_precondition_certificate_round_trips_without_distrust_or_replay() {
+    let program = artifact_program_with_resource_identities(precondition_certificate_program());
+    assert!(!program.requires_serialized_construction_replay());
+    assert!(!program.serialized_construction_proofs_were_distrusted());
+
+    let encoded = encode_interpreted_artifact(&program).expect("encode portable certificate");
+    let encoded_text = String::from_utf8(encoded.clone()).expect("artifact JSON is UTF-8");
+    assert!(encoded_text.contains("\"precondition\""), "{encoded_text}");
+    assert!(!encoded_text.contains("\"construction\":\"recheck\""));
+
+    let decoded =
+        decode_interpreted_artifact(&encoded).expect("decode portable precondition certificate");
+    assert!(!decoded.requires_serialized_construction_replay());
+    assert!(!decoded.serialized_construction_proofs_were_distrusted());
+    let expression = decoded.functions[0]
+        .body
+        .tail
+        .as_deref()
+        .expect("certificate expression");
+    assert!(matches!(
+        &expression.kind,
+        ExprKind::Refine {
+            construction: ConstructionMode::Precondition { index: 0 },
+            ..
+        }
+    ));
+    assert_eq!(
+        encode_interpreted_artifact(&decoded).expect("re-encode portable certificate"),
+        encoded
+    );
 }
 
 #[test]
@@ -5129,8 +5468,20 @@ fn current_artifact_requires_the_exact_current_mir_shape() {
     let encoded_prelude = original["program"]["prelude"]
         .as_object()
         .expect("prelude object");
+    assert!(!encoded_prelude.contains_key("duration"));
     assert!(!encoded_prelude.contains_key("json"));
     assert!(!encoded_prelude.contains_key("json_error"));
+
+    let mut legacy_duration_identity = original.clone();
+    legacy_duration_identity["program"]["prelude"]["duration"] = serde_json::Value::Null;
+    let legacy_error = decode_interpreted_artifact(
+        &serde_json::to_vec(&legacy_duration_identity).expect("legacy Duration identity field"),
+    )
+    .expect_err("matching-version artifacts cannot carry removed Duration identity fields");
+    assert!(
+        matches!(legacy_error, ArtifactError::Malformed(ref message) if message.contains("unknown field `duration`")),
+        "{legacy_error:?}"
+    );
 
     let mut legacy_json_identity = original.clone();
     legacy_json_identity["program"]["prelude"]["json"] = serde_json::Value::Null;

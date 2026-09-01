@@ -3128,17 +3128,8 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             self.call_arity(expression, 1, arguments.len());
         }
         if let Some(argument) = arguments.first() {
-            let actual = self.check_expr(*argument, None, ExpressionContext::Value);
-            if !matches!(
-                self.types().data(actual),
-                TyData::Builtin(BuiltinType::Int | BuiltinType::Duration)
-            ) {
-                self.error_at(
-                    "TypeMismatch",
-                    "Task.sleep expects Int milliseconds or Duration",
-                    *argument,
-                );
-            }
+            let int = self.types().builtin(BuiltinType::Int);
+            self.check_expr(*argument, Some(int), ExpressionContext::Value);
         }
         self.finish_call_arguments(arguments);
         let unit = self.types().builtin(BuiltinType::Unit);
@@ -4301,8 +4292,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 | BuiltinType::Path
                 | BuiltinType::Unit
                 | BuiltinType::ConstraintError
-                | BuiltinType::TaskFault
-                | BuiltinType::Duration,
+                | BuiltinType::TaskFault,
             ) => true,
             TyData::Builtin(BuiltinType::ContractFault)
             | TyData::Param(_)
@@ -5622,16 +5612,256 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         value
     }
 
-    fn refinement_proof(&self, definition: DefId, expression: ExprId) -> ProofResult {
+    fn refinement_proof(&self, definition: DefId, expression: ExprId) -> (ProofResult, ProofTerm) {
         let DefinitionKind::RefinedType(refined) =
             &self.analyzer.program.definitions[definition].kind
         else {
-            return ProofResult::Unknown;
+            return (ProofResult::Unknown, ProofTerm::Unknown);
         };
         let mut facts = self.proof_facts.clone();
         let value = self.checked_value_proof(expression, &mut facts);
         let predicate = self.contract_proof_term(refined.predicate, Some(&value), &BTreeMap::new());
-        facts.prove(&predicate)
+        (facts.prove(&predicate), predicate)
+    }
+
+    /// Returns the retained runtime-precondition index which can carry this
+    /// construction proof across lowering. This deliberately recognizes only
+    /// a direct, immutable parameter of the exact current callable: aliases,
+    /// flow facts, inherited requirement contracts, and statically removed
+    /// preconditions remain ordinary local proofs.
+    fn refinement_precondition_index(
+        &self,
+        definition: DefId,
+        expression: ExprId,
+        predicate: &ProofTerm,
+    ) -> Option<u32> {
+        if !predicate.is_known()
+            || !matches!(self.source().kind, BodyKind::Function | BodyKind::Method)
+            || self.effective_contract_owner() != self.environment.owner
+        {
+            return None;
+        }
+
+        let owner = self.environment.owner;
+        let requires = match &self.analyzer.program.definitions[owner].kind {
+            DefinitionKind::Function(function) => &function.signature.contracts.requires,
+            DefinitionKind::Method(method) => &method.signature.contracts.requires,
+            _ => return None,
+        };
+        let Some(Resolution::Param(parameter)) = self
+            .semantics
+            .expression_resolutions
+            .get(expression)
+            .copied()
+        else {
+            return None;
+        };
+        let place = self.semantics.expression_places.get(expression)?;
+        if place.root != PlaceRoot::Param(parameter)
+            || !place.projections.is_empty()
+            || place.mutability != Mutability::ReadOnly
+            || self.semantics.view_moves.get(expression).is_some()
+            || self.analyzer.program.params[parameter].owner != owner
+        {
+            return None;
+        }
+
+        let DefinitionKind::RefinedType(refined) =
+            &self.analyzer.program.definitions[definition].kind
+        else {
+            return None;
+        };
+        let base = self
+            .analyzer
+            .typed
+            .resolved_type_refs
+            .get(refined.base)
+            .copied()?;
+        let parameter_ty = self
+            .environment
+            .params
+            .values()
+            .find_map(|(candidate, ty)| (*candidate == parameter).then_some(*ty))?;
+        if parameter_ty != base {
+            return None;
+        }
+
+        let Some(Signature::Callable(signature)) = self.analyzer.typed.signatures.get(owner) else {
+            return None;
+        };
+        let arguments = signature
+            .params
+            .iter()
+            .map(|(parameter, _)| {
+                (
+                    *parameter,
+                    ProofTerm::Place(ProofPlace {
+                        root: ProofRoot::Param(parameter.raw()),
+                        fields: Vec::new(),
+                    }),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let self_value = self.environment.self_ty.map(|_| {
+            ProofTerm::Place(ProofPlace {
+                root: ProofRoot::SelfValue,
+                fields: Vec::new(),
+            })
+        });
+        let mut retained_index = 0_u32;
+        for contract in requires {
+            let check = self
+                .analyzer
+                .typed
+                .bodies
+                .get(*contract)
+                .and_then(|semantics| semantics.contract_check)?;
+            if check == RuntimeCheck::Proven {
+                continue;
+            }
+            let requires_term =
+                self.contract_proof_term(*contract, self_value.as_ref(), &arguments);
+            if requires_term.is_known()
+                && requires_term == *predicate
+                && self.refinement_precondition_shapes_match(
+                    refined.predicate,
+                    *contract,
+                    parameter,
+                )
+            {
+                return Some(retained_index);
+            }
+            retained_index = retained_index.checked_add(1)?;
+        }
+        None
+    }
+
+    /// Mirrors the deliberately narrow, independently checked MIR
+    /// certificate grammar before lowering. Proof terms canonicalize ordered
+    /// comparisons, equality, constants, and boolean operators, so their
+    /// equality alone is not evidence that the lowered contract trees will be
+    /// structurally identical.
+    #[allow(clippy::too_many_lines)]
+    fn refinement_precondition_shapes_match(
+        &self,
+        predicate_body: BodyId,
+        requires_body: BodyId,
+        parameter: ParamId,
+    ) -> bool {
+        let Some(predicate_semantics) = self.analyzer.typed.bodies.get(predicate_body) else {
+            return false;
+        };
+        let Some(requires_semantics) = self.analyzer.typed.bodies.get(requires_body) else {
+            return false;
+        };
+        let predicate_source = &self.analyzer.program.bodies[predicate_body];
+        let requires_source = &self.analyzer.program.bodies[requires_body];
+        let mut pending = vec![(predicate_source.root, requires_source.root)];
+        let mut remaining = 256_u16;
+
+        while let Some((predicate, required)) = pending.pop() {
+            let Some(next) = remaining.checked_sub(1) else {
+                return false;
+            };
+            remaining = next;
+            match (
+                &predicate_source.expressions[predicate],
+                &requires_source.expressions[required],
+            ) {
+                (Expr::Literal(left), Expr::Literal(right))
+                    if !matches!(left, Literal::Unit) && left == right =>
+                {
+                    // Scalar literals lower to structurally comparable MIR
+                    // constants. Raw spelling equality is intentionally
+                    // narrower than MIR numeric-value equality.
+                }
+                (Expr::SelfValue, Expr::Path(_))
+                    if requires_semantics
+                        .expression_resolutions
+                        .get(required)
+                        .copied()
+                        == Some(Resolution::Param(parameter)) =>
+                {
+                    // The only permitted substitution is the refined
+                    // predicate's self value for the directly copied ordinary
+                    // parameter certified above.
+                }
+                (
+                    Expr::Field {
+                        receiver: left_receiver,
+                        ..
+                    },
+                    Expr::Field {
+                        receiver: right_receiver,
+                        ..
+                    },
+                ) => {
+                    let predicate_field = resolved_contract_field(predicate_semantics, predicate);
+                    if predicate_field.is_none()
+                        || predicate_field != resolved_contract_field(requires_semantics, required)
+                    {
+                        return false;
+                    }
+                    pending.push((*left_receiver, *right_receiver));
+                }
+                (
+                    Expr::Unary {
+                        op: left_operator,
+                        operand: left_operand,
+                    },
+                    Expr::Unary {
+                        op: right_operator,
+                        operand: right_operand,
+                    },
+                ) if left_operator == right_operator => {
+                    pending.push((*left_operand, *right_operand));
+                }
+                (
+                    Expr::Binary {
+                        op: left_operator,
+                        left: left_left,
+                        right: left_right,
+                    },
+                    Expr::Binary {
+                        op: right_operator,
+                        left: right_left,
+                        right: right_right,
+                    },
+                ) if left_operator == right_operator => {
+                    pending.push((*left_left, *right_left));
+                    pending.push((*left_right, *right_right));
+                }
+                (
+                    Expr::Call {
+                        arguments: left_arguments,
+                        ..
+                    },
+                    Expr::Call {
+                        arguments: right_arguments,
+                        ..
+                    },
+                ) if left_arguments.len() == 1
+                    && right_arguments.len() == 1
+                    && is_canonical_is_finite_call(
+                        predicate_semantics,
+                        predicate,
+                        self.analyzer.canonical_std_items.is_finite,
+                    )
+                    && is_canonical_is_finite_call(
+                        requires_semantics,
+                        required,
+                        self.analyzer.canonical_std_items.is_finite,
+                    ) =>
+                {
+                    pending.push((left_arguments[0], right_arguments[0]));
+                }
+                // Blocks, named constants, old/result values, pattern
+                // bindings, matches, and every executable expression remain
+                // outside the first portable certificate grammar.
+                _ => return false,
+            }
+        }
+        true
     }
 
     fn invariant_proof(&self, definition: DefId, fields: &[(DefId, ExprId)]) -> ProofResult {
@@ -5734,9 +5964,12 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                         }
                     }
                     Some(CallTarget::RefinedConstructor(definition))
-                        if self.semantics.construction_checks.get(expression)
-                            == Some(&ConstructionCheck::Proven)
-                            && arguments.len() == 1 =>
+                        if matches!(
+                            self.semantics.construction_checks.get(expression),
+                            Some(
+                                ConstructionCheck::Proven | ConstructionCheck::Precondition { .. }
+                            )
+                        ) && arguments.len() == 1 =>
                     {
                         ProofTerm::Refined {
                             definition: *definition,
@@ -6158,9 +6391,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     crate::std_primitives::CompilerStdPrimitive::FloatToInt => {
                         BuiltinValue::FloatToIntStatus
                     }
-                    crate::std_primitives::CompilerStdPrimitive::DurationMilliseconds => {
-                        BuiltinValue::DurationMilliseconds
-                    }
                     crate::std_primitives::CompilerStdPrimitive::FileOpenRead => {
                         BuiltinValue::FileOpenRead
                     }
@@ -6294,14 +6524,17 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 .copied()
                 .unwrap_or_else(|| self.types().error());
             self.check_expr(arguments[0], Some(base), ExpressionContext::Value);
-            let proof = self.refinement_proof(definition, arguments[0]);
+            let (proof, predicate) = self.refinement_proof(definition, arguments[0]);
             let carries_task = self.has_task_obligation(base, &mut BTreeSet::new(), 0);
             let nominal = self.types().intern(TyData::Nominal {
                 definition,
                 arguments: Vec::new(),
             });
             let check = if proof == ProofResult::Proven {
-                ConstructionCheck::Proven
+                self.refinement_precondition_index(definition, arguments[0], &predicate)
+                    .map_or(ConstructionCheck::Proven, |index| {
+                        ConstructionCheck::Precondition { index }
+                    })
             } else {
                 ConstructionCheck::Runtime
             };
@@ -6395,7 +6628,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::ProcessArgumentCount
             | BuiltinValue::ProcessArgumentAt
             | BuiltinValue::ProcessEnvironment
-            | BuiltinValue::DurationMilliseconds
             | BuiltinValue::FileOpenRead
             | BuiltinValue::FileCreate
             | BuiltinValue::FileTryOpenRead
@@ -6437,7 +6669,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::TextMapRemove
             | BuiltinValue::TaskFaultCode
             | BuiltinValue::TaskFaultMessage
-            | BuiltinValue::DurationAsMilliseconds
             | BuiltinValue::TextLength
             | BuiltinValue::TextGet
             | BuiltinValue::TextConcat
@@ -6588,11 +6819,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 let text = self.types().builtin(BuiltinType::Text);
                 self.check_fixed_arguments(expression, arguments, &[text]);
                 self.types().intern(TyData::Option(text))
-            }
-            BuiltinValue::DurationMilliseconds => {
-                let int = self.types().builtin(BuiltinType::Int);
-                self.check_fixed_arguments(expression, arguments, &[int]);
-                self.types().builtin(BuiltinType::Duration)
             }
             BuiltinValue::FileOpenRead | BuiltinValue::FileCreate => {
                 let text = self.types().builtin(BuiltinType::Text);
@@ -7800,12 +8026,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                         self.types().intern(TyData::Result { ok: path, error }),
                     )
                 }
-                (BuiltinType::Duration, "as_milliseconds") => (
-                    BuiltinValue::DurationAsMilliseconds,
-                    ReceiverPassing::Value,
-                    Vec::new(),
-                    self.types().builtin(BuiltinType::Int),
-                ),
                 _ => return None,
             };
         if !type_arguments.is_empty() {
@@ -10532,6 +10752,29 @@ fn proof_place(place: &Place) -> ProofPlace {
     ProofPlace { root, fields }
 }
 
+fn resolved_contract_field(semantics: &BodySemantics, expression: ExprId) -> Option<DefId> {
+    semantics
+        .expression_places
+        .get(expression)
+        .and_then(|place| place.projections.last())
+        .map(|projection| match projection {
+            PlaceProjection::Field(field) => *field,
+        })
+}
+
+fn is_canonical_is_finite_call(
+    semantics: &BodySemantics,
+    expression: ExprId,
+    canonical: Option<DefId>,
+) -> bool {
+    semantics.calls.get(expression).is_some_and(|resolution| {
+        matches!(
+            &resolution.target,
+            CallTarget::Function(definition) if Some(*definition) == canonical
+        )
+    })
+}
+
 fn contains_unbound_param(
     types: &crate::TyInterner,
     ty: TyId,
@@ -10931,7 +11174,6 @@ fn builtin_type(name: &str) -> Option<BuiltinType> {
         "ConstraintError" => Some(BuiltinType::ConstraintError),
         "ContractFault" => Some(BuiltinType::ContractFault),
         "TaskFault" => Some(BuiltinType::TaskFault),
-        "Duration" => Some(BuiltinType::Duration),
         _ => None,
     }
 }
@@ -11032,7 +11274,8 @@ mod tests {
 
     use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, PackageId};
     use loom_hir::{
-        Expr, PackageSourceUnit, Program, SourceUnit, lower_files, lower_package_files,
+        DefinitionKind, Expr, PackageSourceUnit, Program, SourceUnit, lower_files,
+        lower_package_files,
     };
     use loom_syntax::parse_with_file;
 
@@ -11084,6 +11327,37 @@ fn consume(source Source[Item = Int]) {
         );
         let analysis = analyze(&lowered.program);
         (lowered.program, analysis)
+    }
+
+    fn construction_checks_named(
+        program: &Program,
+        analysis: &Analysis,
+        name: &str,
+    ) -> Vec<ConstructionCheck> {
+        let definition = program
+            .definitions
+            .iter()
+            .find_map(|(definition, source)| {
+                source
+                    .name
+                    .as_ref()
+                    .is_some_and(|candidate| candidate.as_str() == name)
+                    .then_some(definition)
+            })
+            .unwrap_or_else(|| panic!("missing definition `{name}`"));
+        let body = match &program.definitions[definition].kind {
+            DefinitionKind::Function(function) | DefinitionKind::Test(function) => function.body,
+            DefinitionKind::Method(method) => method.body.expect("source method body"),
+            _ => panic!("`{name}` is not callable"),
+        };
+        analysis
+            .typed
+            .body(body)
+            .expect("checked callable body")
+            .construction_checks
+            .values()
+            .copied()
+            .collect()
     }
 
     fn analyze_source_with_std_float(source: &str) -> (Program, Analysis) {
@@ -12368,7 +12642,15 @@ fn branched(raw Float) Result[Money, ConstraintError] {
                 .iter()
                 .filter(|check| **check == ConstructionCheck::Proven)
                 .count(),
-            5,
+            4,
+            "{checks:?}"
+        );
+        assert_eq!(
+            checks
+                .iter()
+                .filter(|check| matches!(**check, ConstructionCheck::Precondition { index: 0 }))
+                .count(),
+            1,
             "{checks:?}"
         );
         assert_eq!(
@@ -12378,6 +12660,90 @@ fn branched(raw Float) Result[Money, ConstraintError] {
                 .count(),
             1,
             "{checks:?}"
+        );
+    }
+
+    #[test]
+    fn constrained_construction_precondition_provenance_is_exact_and_retained() {
+        let (program, analysis) = analyze_source(
+            r"
+type Nonnegative = Int where self >= 0
+
+fn retainedIndex(raw Int) Nonnegative
+    requires true
+    requires raw >= 0
+{
+    Nonnegative(raw)
+}
+
+fn filteredExact(raw Int) Nonnegative
+    requires raw > 0
+    requires raw >= 0
+{
+    Nonnegative(raw)
+}
+
+fn equivalentSpelling(raw Int) Nonnegative
+    requires 0 <= raw
+{
+    Nonnegative(raw)
+}
+
+fn alias(raw Int) Nonnegative
+    requires raw >= 0
+{
+    let copy = raw
+    Nonnegative(copy)
+}
+
+fn asserted(raw Int) Nonnegative {
+    assert raw >= 0
+    Nonnegative(raw)
+}
+
+record Factory {}
+
+impl Factory {
+    method exact(self, raw Int) Nonnegative
+        requires raw >= 0
+    {
+        Nonnegative(raw)
+    }
+}
+",
+        );
+        assert!(
+            analysis.diagnostics.is_empty(),
+            "{:#?}",
+            analysis.diagnostics
+        );
+        assert_eq!(
+            construction_checks_named(&program, &analysis, "retainedIndex"),
+            [ConstructionCheck::Precondition { index: 0 }]
+        );
+        assert_eq!(
+            construction_checks_named(&program, &analysis, "filteredExact"),
+            [ConstructionCheck::Proven],
+            "an exact but statically removed requires cannot issue a portable certificate"
+        );
+        assert_eq!(
+            construction_checks_named(&program, &analysis, "equivalentSpelling"),
+            [ConstructionCheck::Proven],
+            "proof-equivalent source spellings do not necessarily lower to the same contract tree"
+        );
+        assert_eq!(
+            construction_checks_named(&program, &analysis, "alias"),
+            [ConstructionCheck::Proven],
+            "only a direct immutable parameter is currently portable"
+        );
+        assert_eq!(
+            construction_checks_named(&program, &analysis, "asserted"),
+            [ConstructionCheck::Proven],
+            "an assertion is a local proof, not an entry-precondition certificate"
+        );
+        assert_eq!(
+            construction_checks_named(&program, &analysis, "exact"),
+            [ConstructionCheck::Precondition { index: 0 }]
         );
     }
 

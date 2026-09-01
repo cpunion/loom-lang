@@ -3931,8 +3931,10 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     }
                     return expression.ty != Type::Never;
                 }
-                let proven = *construction == mir::ConstructionMode::Proven
-                    && matches!(expression_ty.as_ref(), Some(Type::Nominal(id, _)) if id == ty)
+                let proven = matches!(
+                    construction,
+                    mir::ConstructionMode::Proven | mir::ConstructionMode::Precondition { .. }
+                ) && matches!(expression_ty.as_ref(), Some(Type::Nominal(id, _)) if id == ty)
                     && expression_ty
                         .as_ref()
                         .is_some_and(|ty| self.supported_value_type(ty))
@@ -4241,9 +4243,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                         | mir::Builtin::SocketTryWriteText
                         | mir::Builtin::SocketClose
                         | mir::Builtin::TaskFaultCode
-                        | mir::Builtin::TaskFaultMessage
-                        | mir::Builtin::DurationMilliseconds
-                        | mir::Builtin::DurationAsMilliseconds,
+                        | mir::Builtin::TaskFaultMessage,
                     ) => {
                         if matches!(
                             target,
@@ -4496,7 +4496,7 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                 if !self.visit_expr(function, key, milliseconds, &format!("{path}.milliseconds")) {
                     return false;
                 }
-                let duration = self.instantiated_type(
+                let milliseconds = self.instantiated_type(
                     function,
                     key,
                     Some(milliseconds),
@@ -4512,20 +4512,12 @@ impl<'program, 'plan> Classifier<'program, 'plan> {
                     expression.span,
                     &format!("{path}.ty"),
                 );
-                let valid_duration = duration.as_ref().is_some_and(|ty| {
-                    ty == &Type::Int
-                        || matches!(
-                            ty,
-                            Type::Nominal(id, arguments)
-                                if Some(*id) == self.program.prelude.duration
-                                    && arguments.is_empty()
-                        )
-                });
+                let valid_milliseconds = milliseconds.as_ref() == Some(&Type::Int);
                 let valid_result = matches!(
                     result,
                     Some(Type::Task(output)) if output.as_ref() == &Type::Unit
                 );
-                if !valid_duration || !valid_result {
+                if !valid_milliseconds || !valid_result {
                     self.expression_item(
                         UnsupportedFeature::TaskOperation,
                         function,
@@ -5125,11 +5117,7 @@ fn scan_effect_expr(
                 }
             } else if matches!(
                 target,
-                CallTarget::Builtin(
-                    mir::Builtin::DurationMilliseconds
-                        | mir::Builtin::LogWrite
-                        | mir::Builtin::StdoutWrite,
-                )
+                CallTarget::Builtin(mir::Builtin::LogWrite | mir::Builtin::StdoutWrite)
             ) {
                 summary.include(Effects::MAY_FAULT);
             }
@@ -9174,6 +9162,11 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                             expression,
                         );
                     }
+                    mir::ConstructionMode::Precondition { .. } => {
+                        return Err(
+                            self.unsupported_reached("precondition-backed record construction")
+                        );
+                    }
                 };
                 self.lower_product_values(flow, fields, expression, instruction)
             }
@@ -9187,7 +9180,7 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 ..
             } => {
                 match construction {
-                    mir::ConstructionMode::Proven => {}
+                    mir::ConstructionMode::Proven | mir::ConstructionMode::Precondition { .. } => {}
                     mir::ConstructionMode::Runtime => {
                         return self.lower_runtime_checked_refinement(flow, *ty, value, expression);
                     }
@@ -9534,35 +9527,6 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 } = self.lower_expr(flow, milliseconds)?
                 else {
                     return Ok(EvalFlow::Terminated);
-                };
-                let milliseconds_ty = InstanceSubstitution::new(self.program, self.key)
-                    .instantiate_type(&milliseconds.ty)
-                    .map_err(|error| {
-                        instantiation_defect(self.source.id, Some(milliseconds.id), error)
-                    })?;
-                let (flow, milliseconds_value) = if matches!(
-                    milliseconds_ty,
-                    Type::Nominal(id, ref arguments)
-                        if Some(id) == self.program.prelude.duration && arguments.is_empty()
-                ) {
-                    let EvalFlow::Continue { flow, value } = self.one_instruction(
-                        flow,
-                        InstructionKind::ProductExtract {
-                            aggregate: milliseconds_value,
-                            field: 0,
-                        },
-                        self.type_id(&Type::Int)?,
-                        origin,
-                    )?
-                    else {
-                        return Err(LoweringError::defect(
-                            LoweringDefectCode::Builder,
-                            "Duration normalization unexpectedly terminated",
-                        ));
-                    };
-                    (flow, value)
-                } else {
-                    (flow, milliseconds_value)
                 };
                 let normal = self.create_block()?;
                 let task = self
@@ -13479,63 +13443,6 @@ impl<'function, 'builder, 'plan> FunctionLowerer<'function, 'builder, 'plan> {
                 field: 1,
             }
             .into(),
-            (mir::Builtin::DurationMilliseconds, [milliseconds]) => {
-                let EvalFlow::Continue { flow, value: zero } =
-                    self.constant(flow, Constant::Int(0), &Type::Int, origin)?
-                else {
-                    return Err(self.unsupported_reached("Duration zero constant"));
-                };
-                let EvalFlow::Continue {
-                    flow,
-                    value: nonnegative,
-                } = self.one_instruction(
-                    flow,
-                    InstructionKind::IntCompare {
-                        predicate: IntPredicate::GreaterEqual,
-                        left: *milliseconds,
-                        right: zero,
-                    },
-                    self.type_id(&Type::Bool)?,
-                    origin,
-                )?
-                else {
-                    return Err(self.unsupported_reached("Duration nonnegative comparison"));
-                };
-                let success = self.create_block()?;
-                let fault = self.fault_target(flow)?;
-                self.terminate(
-                    flow.block,
-                    TerminatorKind::Assert {
-                        condition: nonnegative,
-                        metadata: FaultMetadata::runtime(FaultCode::InvalidDuration),
-                        success: BlockTarget::new(success, []),
-                        fault,
-                    },
-                    origin,
-                )?;
-                return self.one_instruction(
-                    Flow {
-                        block: success,
-                        env: flow.env,
-                    },
-                    InstructionKind::ProductConstruct {
-                        fields: [*milliseconds].into(),
-                    },
-                    self.type_id(&expression.ty)?,
-                    origin,
-                );
-            }
-            (mir::Builtin::DurationAsMilliseconds, [duration]) => {
-                return self.one_instruction(
-                    flow,
-                    InstructionKind::ProductExtract {
-                        aggregate: *duration,
-                        field: 0,
-                    },
-                    self.type_id(&expression.ty)?,
-                    origin,
-                );
-            }
             _ => return Err(self.unsupported_reached("unsupported builtin")),
         };
         self.one_instruction(

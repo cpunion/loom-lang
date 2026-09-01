@@ -492,6 +492,65 @@ fn compile_with_std_int(source: &str) -> loom_mir::CheckedProgram {
     compile_lowered_package(lowered, std, root)
 }
 
+fn compile_with_std_time(source: &str) -> loom_mir::CheckedProgram {
+    let application = parse_with_file(FileId(0), source);
+    let time = parse_with_file(
+        FileId(1),
+        include_str!("../../../library/std/time/time.loom"),
+    );
+    let io = parse_with_file(FileId(2), include_str!("../../../library/std/io/io.loom"));
+    let file = parse_with_file(FileId(3), "pub record File {}\n");
+    let socket = parse_with_file(FileId(4), "pub record Socket {}\n");
+    assert!(
+        application.diagnostics().is_empty()
+            && time.diagnostics().is_empty()
+            && io.diagnostics().is_empty()
+            && file.diagnostics().is_empty()
+            && socket.diagnostics().is_empty(),
+        "syntax diagnostics: application={:#?} time={:#?} io={:#?} file={:#?} socket={:#?}",
+        application.diagnostics(),
+        time.diagnostics(),
+        io.diagnostics(),
+        file.diagnostics(),
+        socket.diagnostics()
+    );
+    let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+    let root = PackageId::new("lowering-test", "0");
+    let lowered = lower_package_files([
+        PackageSourceUnit {
+            file: FileId(0),
+            package: root.clone(),
+            module: ModuleName::new("lowering_test"),
+            syntax: application.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(1),
+            package: std.clone(),
+            module: ModuleName::new("std.time"),
+            syntax: time.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(2),
+            package: std.clone(),
+            module: ModuleName::new("std.io"),
+            syntax: io.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(3),
+            package: std.clone(),
+            module: ModuleName::new("std.file"),
+            syntax: file.ast(),
+        },
+        PackageSourceUnit {
+            file: FileId(4),
+            package: std.clone(),
+            module: ModuleName::new("std.net"),
+            syntax: socket.ast(),
+        },
+    ]);
+    compile_lowered_package(lowered, std, root)
+}
+
 fn compile_with_std_json(source: &str) -> loom_mir::CheckedProgram {
     let application = parse_with_file(FileId(0), source);
     let json = parse_with_file(
@@ -902,6 +961,71 @@ fn proof_dispositions_survive_lowering_as_checked_mir_modes() {
     let debug = format!("{program:#?}");
     assert_eq!(debug.matches("construction: Proven").count(), 4, "{debug}");
     assert_eq!(debug.matches("construction: Runtime").count(), 2, "{debug}");
+}
+
+#[test]
+fn retained_precondition_proofs_lower_to_portable_construction_certificates() {
+    let program = compile_and_validate(
+        r"
+type Nonnegative = Int where self >= 0
+
+fn certified(raw Int) Nonnegative
+    requires true
+    requires raw >= 0
+{
+    Nonnegative(raw)
+}
+
+fn normalizedButNotStructural(raw Int) Nonnegative
+    requires 0 <= raw
+{
+    Nonnegative(raw)
+}
+
+record Factory {}
+
+impl Factory {
+    method certified(self, raw Int) Nonnegative
+        requires raw >= 0
+    {
+        Nonnegative(raw)
+    }
+}
+",
+    );
+    let certified = program
+        .functions
+        .iter()
+        .filter(|function| function_has_name(function, "certified"))
+        .collect::<Vec<_>>();
+    assert_eq!(certified.len(), 2);
+    for function in certified {
+        assert_eq!(function.call_plan.requires.len(), 1);
+        let construction = function
+            .exprs_preorder()
+            .find_map(|expression| match &expression.kind {
+                loom_mir::ExprKind::Refine { construction, .. } => Some(*construction),
+                _ => None,
+            })
+            .expect("refined construction");
+        assert_eq!(
+            construction,
+            loom_mir::ConstructionMode::Precondition { index: 0 }
+        );
+    }
+    let normalized = program
+        .functions
+        .iter()
+        .find(|function| function_has_name(function, "normalizedButNotStructural"))
+        .expect("normalized proof function");
+    let construction = normalized
+        .exprs_preorder()
+        .find_map(|expression| match &expression.kind {
+            loom_mir::ExprKind::Refine { construction, .. } => Some(*construction),
+            _ => None,
+        })
+        .expect("normalized refined construction");
+    assert_eq!(construction, loom_mir::ConstructionMode::Proven);
 }
 
 #[test]
@@ -1543,6 +1667,48 @@ pub fn main() {
     assert!(!shadowed_dump.contains("TaskJoin"));
     assert!(!shadowed_dump.contains("Sleep {"));
     assert!(shadowed_dump.contains("Inherent"));
+}
+
+#[test]
+fn source_duration_lowers_as_refined_int_and_sleep_erases_it() {
+    let program = compile_with_std_time(
+        r"
+import std.time.milliseconds
+
+pub async fn wait() Int {
+    let duration = milliseconds(1)
+    discard Task.sleep(duration).await
+    duration.as_milliseconds()
+}
+",
+    );
+    let duration = program
+        .types
+        .iter()
+        .find(|definition| definition.name == "Duration")
+        .expect("source Duration type");
+    let loom_mir::TypeDefKind::Refined { base, .. } = &duration.kind else {
+        panic!("Duration must lower as an ordinary refined type: {duration:#?}");
+    };
+    assert_eq!(base, &loom_mir::Type::Int);
+
+    let wait = program
+        .functions
+        .iter()
+        .find(|function| function_has_name(function, "wait"))
+        .expect("wait function");
+    let milliseconds = wait
+        .exprs_preorder()
+        .find_map(|expression| match &expression.kind {
+            loom_mir::ExprKind::Sleep { milliseconds } => Some(milliseconds.as_ref()),
+            _ => None,
+        })
+        .expect("Task.sleep expression");
+    assert_eq!(milliseconds.ty, loom_mir::Type::Int);
+    assert!(
+        matches!(&milliseconds.kind, loom_mir::ExprKind::Unrefine(_)),
+        "Task.sleep must receive the refined value's erased Int: {milliseconds:#?}"
+    );
 }
 
 #[test]

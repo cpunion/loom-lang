@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256};
 use crate::incremental::ModuleQueryKey;
 use crate::{DiagnosticRecord, ModuleInterface, ProjectGraph, SourceMap};
 
-pub const CACHE_SCHEMA_VERSION: u32 = 20;
+pub const CACHE_SCHEMA_VERSION: u32 = 21;
 const MAX_REF_BYTES: u64 = 64 * 1024;
 const MAX_BLOB_BYTES: u64 = 1024 * 1024 * 1024;
 const CHECKED_MIR_NAMESPACE: &str = "checked-mir";
@@ -34,7 +34,7 @@ const MODULE_INTERFACE_NAMESPACE: &str = "module-interface";
 const TYPED_MODULE_STATE_NAMESPACE: &str = "typed-module-state";
 const TARGET_OBJECT_NAMESPACE: &str = "target-object";
 const ARTIFACT_NAMESPACE: &str = "artifact";
-const COMPILATION_CACHE_DOMAIN: &str = "loom-compilation-cache-v20";
+const COMPILATION_CACHE_DOMAIN: &str = "loom-compilation-cache-v21";
 
 /// Frontend facts which can change validated checked MIR.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -521,9 +521,10 @@ impl PersistentCache {
         }
         if typed_program_contains_process_local_proofs(&analysis.typed) {
             // A digest checks bytes against their reference; it does not prove
-            // the compiler conclusion inside those bytes. Proof-bearing bodies
-            // are deliberately rebuilt from source instead of publishing a
-            // semantic entry which a later process must reject.
+            // a process-local compiler conclusion inside those bytes. Such
+            // bodies are rebuilt from source. Narrow Precondition certificates
+            // are retained because checked-MIR validation independently
+            // authenticates them before execution or code generation.
             return Ok(());
         }
         let bytes = serde_json::to_vec(&TypedModuleStateEnvelope {
@@ -576,8 +577,9 @@ impl PersistentCache {
         if program.requires_serialized_construction_replay() {
             // The ordinary artifact codec correctly turns `Proven` into
             // `Recheck`, but a compiler-cache hit must retain the same route
-            // and check elimination as a fresh source build. Rebuild this
-            // compilation from the exact keyed sources instead.
+            // and check elimination as a fresh source build. Independently
+            // validated Precondition certificates do not enter this branch.
+            // Rebuild process-local proofs from the exact keyed sources.
             return Ok(());
         }
         let mir = encode_interpreted_artifact(program)

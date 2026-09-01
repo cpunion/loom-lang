@@ -782,6 +782,76 @@ fn refined_construction_returns_language_result() {
 }
 
 #[test]
+fn portable_precondition_construction_executes_as_direct_refinement() {
+    let price = TypeId(0);
+    let mut requires = non_negative_contract();
+    requires.code = "make_price.requires".into();
+    let ContractExprKind::Binary(_, left, _) = &mut requires.expression.kind else {
+        unreachable!()
+    };
+    left.kind = ContractExprKind::Value(ContractValue::Argument(0));
+    let function = Function {
+        id: FunctionId(0),
+        name: "make_price".into(),
+        span: span(),
+        type_parameters: 0,
+        is_async: false,
+        suspension_points: Vec::new(),
+        params: vec![local(0, "raw", Type::Float, false)],
+        witness_params: Vec::new(),
+        witness_prefix_count: 0,
+        locals: Vec::new(),
+        return_ty: Type::Nominal(price, Vec::new()),
+        receiver: None,
+        body: Block {
+            statements: Vec::new(),
+            tail: Some(Box::new(Expr {
+                id: ExprId::UNASSIGNED,
+                kind: ExprKind::Refine {
+                    ty: price,
+                    value: Box::new(copy(Place::local(LocalId(0)), Type::Float)),
+                    construction: ConstructionMode::Precondition { index: 0 },
+                },
+                ty: Type::Nominal(price, Vec::new()),
+                span: span(),
+            })),
+            span: span(),
+        },
+        call_plan: CallPlan {
+            receiver_invariant: None,
+            requires: vec![requires],
+            ensures: Vec::new(),
+        },
+    };
+    let program = checked(Program {
+        types: vec![TypeDef {
+            id: price,
+            name: "Price".into(),
+            span: span(),
+            type_parameters: 0,
+            kind: TypeDefKind::Refined {
+                base: Type::Float,
+                predicate: non_negative_contract(),
+            },
+        }],
+        functions: vec![function],
+        ..Program::default()
+    });
+
+    let mut interpreter = Interpreter::new(&program);
+    let value = interpreter
+        .invoke(FunctionId(0), vec![Value::Float { value: 12.5 }], span())
+        .expect("certified construction");
+    assert!(matches!(
+        value,
+        Value::Refined {
+            ty,
+            value
+        } if ty == price && matches!(*value, Value::Float { value: 12.5 })
+    ));
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn mutable_receiver_is_an_inout_place_and_exit_invariant_wins() {
     let order = TypeDef {

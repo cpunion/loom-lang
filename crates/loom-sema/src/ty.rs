@@ -43,7 +43,6 @@ pub enum BuiltinType {
     ConstraintError,
     ContractFault,
     TaskFault,
-    Duration,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]

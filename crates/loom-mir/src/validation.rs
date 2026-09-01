@@ -1236,7 +1236,6 @@ impl<'program> Validator<'program> {
             ),
             ("task_fault", self.program.prelude.task_fault, "record"),
             ("task_outcome", self.program.prelude.task_outcome, "enum"),
-            ("duration", self.program.prelude.duration, "record"),
             ("file", self.program.prelude.file, "record"),
             ("socket", self.program.prelude.socket, "record"),
             ("bytes", self.program.prelude.bytes, "record"),
@@ -1374,7 +1373,6 @@ impl<'program> Validator<'program> {
             }
         }
         for (name, id) in [
-            ("Duration", self.program.prelude.duration),
             ("File", self.program.prelude.file),
             ("Socket", self.program.prelude.socket),
         ] {
@@ -4492,18 +4490,9 @@ impl<'program> Validator<'program> {
                     &format!("{path}.milliseconds"),
                     depth + 1,
                 );
-                let duration = self
-                    .program
-                    .prelude
-                    .duration
-                    .is_some_and(|duration| nominal_is(&actual, duration));
-                if !types_compatible(&Type::Int, &actual) && !duration {
+                if !types_compatible(&Type::Int, &actual) {
                     self.type_mismatch(
-                        &self
-                            .program
-                            .prelude
-                            .duration
-                            .map_or(Type::Int, |id| Type::Nominal(id, Vec::new())),
+                        &Type::Int,
                         &actual,
                         milliseconds.span,
                         &format!("{path}.milliseconds"),
@@ -5488,7 +5477,14 @@ impl<'program> Validator<'program> {
                         | ConstructionMode::Runtime
                 )
         );
-        if !valid_construction {
+        if matches!(construction, ConstructionMode::Precondition { .. }) {
+            self.push(
+                MirValidationCode::RecordShape,
+                "record construction cannot use a refined precondition certificate",
+                expression.span,
+                path,
+            );
+        } else if !valid_construction {
             self.push(
                 MirValidationCode::RecordShape,
                 "record construction mode does not match its invariant boundary",
@@ -5625,7 +5621,7 @@ impl<'program> Validator<'program> {
             self.invalid_type(type_id, expression.span, format!("{path}.refined_type"));
             return None;
         };
-        let TypeDefKind::Refined { base, .. } = &definition.kind else {
+        let TypeDefKind::Refined { base, predicate } = &definition.kind else {
             self.push(
                 MirValidationCode::ExpressionShape,
                 "refinement construction references a non-refined type",
@@ -5637,6 +5633,11 @@ impl<'program> Validator<'program> {
         if !types_compatible(base, &actual) {
             self.type_mismatch(base, &actual, value.span, &format!("{path}.value"));
         }
+        let certified_predicate = if matches!(construction, ConstructionMode::Precondition { .. }) {
+            Some(predicate.expression.clone())
+        } else {
+            None
+        };
         match construction {
             ConstructionMode::Plain => {
                 self.push(
@@ -5650,6 +5651,18 @@ impl<'program> Validator<'program> {
             ConstructionMode::Proven | ConstructionMode::Recheck => {
                 Some(Type::Nominal(type_id, Vec::new()))
             }
+            ConstructionMode::Precondition { index } => self
+                .validate_precondition_construction(
+                    function,
+                    certified_predicate
+                        .as_ref()
+                        .expect("precondition predicate captured above"),
+                    value,
+                    index,
+                    expression.span,
+                    path,
+                )
+                .then(|| Type::Nominal(type_id, Vec::new())),
             ConstructionMode::Runtime => self.expected_result_type(
                 Type::Nominal(type_id, Vec::new()),
                 self.program.prelude.constraint_error,
@@ -5658,6 +5671,102 @@ impl<'program> Validator<'program> {
                 path,
             ),
         }
+    }
+
+    fn validate_precondition_construction(
+        &mut self,
+        function: &Function,
+        predicate: &ContractExpr,
+        value: &Expr,
+        certificate_index: u32,
+        span: Span,
+        path: &str,
+    ) -> bool {
+        let Some(required) = usize::try_from(certificate_index)
+            .ok()
+            .and_then(|index| function.call_plan.requires.get(index))
+        else {
+            self.push(
+                MirValidationCode::ExpressionShape,
+                format!(
+                    "precondition construction certificate references missing requires clause #{certificate_index}"
+                ),
+                span,
+                format!("{path}.construction"),
+            );
+            return false;
+        };
+        let ExprKind::Copy(place) = &value.kind else {
+            self.push(
+                MirValidationCode::ExpressionShape,
+                "precondition construction value must be a direct parameter Copy",
+                value.span,
+                format!("{path}.value"),
+            );
+            return false;
+        };
+        if !place.projection.is_empty() {
+            self.push(
+                MirValidationCode::ExpressionShape,
+                "precondition construction value cannot use a projected parameter",
+                value.span,
+                format!("{path}.value"),
+            );
+            return false;
+        }
+        let Some((parameter_position, parameter)) = function
+            .params
+            .iter()
+            .enumerate()
+            .find(|(_, parameter)| parameter.id == place.local)
+        else {
+            self.push(
+                MirValidationCode::ExpressionShape,
+                "precondition construction value must copy a function parameter",
+                value.span,
+                format!("{path}.value"),
+            );
+            return false;
+        };
+        let Some(argument_position) =
+            parameter_position.checked_sub(usize::from(function.receiver.is_some()))
+        else {
+            self.push(
+                MirValidationCode::ExpressionShape,
+                "precondition construction value must copy an ordinary parameter, not self",
+                value.span,
+                format!("{path}.value"),
+            );
+            return false;
+        };
+        if parameter.mutable {
+            self.push(
+                MirValidationCode::ExpressionShape,
+                "precondition construction value must copy an immutable parameter",
+                value.span,
+                format!("{path}.value"),
+            );
+            return false;
+        }
+        let Ok(argument_index) = u32::try_from(argument_position) else {
+            self.push(
+                MirValidationCode::ExpressionShape,
+                "precondition construction parameter index exceeds the portable MIR limit",
+                value.span,
+                format!("{path}.value"),
+            );
+            return false;
+        };
+        if !contract_expr_matches_precondition(predicate, &required.expression, argument_index) {
+            self.push(
+                MirValidationCode::ExpressionShape,
+                "precondition construction certificate does not match the refined predicate for its parameter",
+                span,
+                format!("{path}.construction"),
+            );
+            return false;
+        }
+        true
     }
 
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -6430,16 +6539,6 @@ impl<'program> Validator<'program> {
         }
         if matches!(
             builtin,
-            Builtin::DurationMilliseconds | Builtin::DurationAsMilliseconds
-        ) {
-            let result = self.validate_duration_builtin(builtin, &types);
-            if result.is_none() {
-                self.invalid_builtin_shape(builtin, &types, expression.span, path);
-            }
-            return result;
-        }
-        if matches!(
-            builtin,
             Builtin::FileOpenRead
                 | Builtin::FileCreate
                 | Builtin::FileTryOpenRead
@@ -6765,8 +6864,6 @@ impl<'program> Validator<'program> {
             | Builtin::ProcessEnvironment
             | Builtin::TaskFaultCode
             | Builtin::TaskFaultMessage
-            | Builtin::DurationMilliseconds
-            | Builtin::DurationAsMilliseconds
             | Builtin::FileOpenRead
             | Builtin::FileCreate
             | Builtin::FileReadText
@@ -6846,23 +6943,6 @@ impl<'program> Validator<'program> {
             self.type_mismatch(&Type::Int, types[1].as_ref()?, span, path);
         }
         Some(Type::Unit)
-    }
-
-    fn validate_duration_builtin(&self, builtin: Builtin, types: &[Option<Type>]) -> Option<Type> {
-        match builtin {
-            Builtin::DurationMilliseconds if types_compatible(&Type::Int, types[0].as_ref()?) => {
-                self.program
-                    .prelude
-                    .duration
-                    .map(|id| Type::Nominal(id, Vec::new()))
-            }
-            Builtin::DurationAsMilliseconds
-                if Self::nominal_builtin_argument(types, 0, self.program.prelude.duration) =>
-            {
-                Some(Type::Int)
-            }
-            _ => None,
-        }
     }
 
     fn validate_io_builtin(
@@ -9188,8 +9268,6 @@ impl<'program> Validator<'program> {
             | Builtin::ProcessEnvironment
             | Builtin::TaskFaultCode
             | Builtin::TaskFaultMessage
-            | Builtin::DurationMilliseconds
-            | Builtin::DurationAsMilliseconds
             | Builtin::FileClose
             | Builtin::SocketClose
             | Builtin::TextMapNew
@@ -11785,6 +11863,87 @@ fn constant_type(constant: &Constant) -> Type {
     }
 }
 
+fn contract_expr_matches_precondition(
+    predicate: &ContractExpr,
+    required: &ContractExpr,
+    argument_index: u32,
+) -> bool {
+    let mut pending = vec![(predicate, required)];
+    while let Some((predicate, required)) = pending.pop() {
+        match (&predicate.kind, &required.kind) {
+            (ContractExprKind::Constant(left), ContractExprKind::Constant(right)) => {
+                if !constants_structurally_equal(left, right) {
+                    return false;
+                }
+            }
+            (
+                ContractExprKind::Value(ContractValue::SelfValue),
+                ContractExprKind::Value(ContractValue::Argument(found)),
+            ) if *found == argument_index => {}
+            (ContractExprKind::Value(ContractValue::SelfValue), _) => return false,
+            (ContractExprKind::Value(left), ContractExprKind::Value(right)) => {
+                if left != right {
+                    return false;
+                }
+            }
+            (ContractExprKind::Binding(left), ContractExprKind::Binding(right)) => {
+                if left != right {
+                    return false;
+                }
+            }
+            (
+                ContractExprKind::Field(left_owner, left_field),
+                ContractExprKind::Field(right_owner, right_field),
+            ) => {
+                if left_field != right_field {
+                    return false;
+                }
+                pending.push((left_owner, right_owner));
+            }
+            (
+                ContractExprKind::Unary(left_operator, left_operand),
+                ContractExprKind::Unary(right_operator, right_operand),
+            ) => {
+                if left_operator != right_operator {
+                    return false;
+                }
+                pending.push((left_operand, right_operand));
+            }
+            (
+                ContractExprKind::Binary(left_operator, left_left, left_right),
+                ContractExprKind::Binary(right_operator, right_left, right_right),
+            ) => {
+                if left_operator != right_operator {
+                    return false;
+                }
+                pending.push((left_left, right_left));
+                pending.push((left_right, right_right));
+            }
+            (ContractExprKind::IsFinite(left), ContractExprKind::IsFinite(right)) => {
+                pending.push((left, right));
+            }
+            // Pattern/binding alpha-equivalence is intentionally not part of
+            // the first portable certificate grammar. Any Match fails closed.
+            (ContractExprKind::Match { .. }, _) | (_, ContractExprKind::Match { .. }) => {
+                return false;
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
+fn constants_structurally_equal(left: &Constant, right: &Constant) -> bool {
+    match (left, right) {
+        (Constant::Unit, Constant::Unit) => true,
+        (Constant::Bool(left), Constant::Bool(right)) => left == right,
+        (Constant::Int(left), Constant::Int(right)) => left == right,
+        (Constant::Float(left), Constant::Float(right)) => left.to_bits() == right.to_bits(),
+        (Constant::Text(left), Constant::Text(right)) => left == right,
+        _ => false,
+    }
+}
+
 fn infer_conformance_head(
     schema: &Type,
     target: &Type,
@@ -12550,6 +12709,60 @@ fn substitute_type(ty: &Type, arguments: &[Type]) -> Type {
 mod tests {
     use super::*;
     use crate::{ExprId, FieldDef, PreludeIds, TypeId, VariantDef};
+
+    #[test]
+    fn precondition_contract_comparison_supports_the_portable_grammar_and_rejects_match() {
+        let expression = |kind| ContractExpr {
+            kind,
+            span: Span::default(),
+        };
+        let portable = |value| {
+            expression(ContractExprKind::Binary(
+                BinaryOp::And,
+                Box::new(expression(ContractExprKind::IsFinite(Box::new(
+                    expression(ContractExprKind::Unary(
+                        UnaryOp::Negate,
+                        Box::new(expression(ContractExprKind::Field(
+                            Box::new(expression(ContractExprKind::Value(value))),
+                            2,
+                        ))),
+                    )),
+                )))),
+                Box::new(expression(ContractExprKind::Binary(
+                    BinaryOp::Equal,
+                    Box::new(expression(ContractExprKind::Binding(7))),
+                    Box::new(expression(ContractExprKind::Constant(Constant::Int(1)))),
+                ))),
+            ))
+        };
+        assert!(contract_expr_matches_precondition(
+            &portable(ContractValue::SelfValue),
+            &portable(ContractValue::Argument(3)),
+            3,
+        ));
+        assert!(!contract_expr_matches_precondition(
+            &portable(ContractValue::SelfValue),
+            &portable(ContractValue::Argument(2)),
+            3,
+        ));
+
+        let match_expression = expression(ContractExprKind::Match {
+            scrutinee: Box::new(expression(ContractExprKind::Value(
+                ContractValue::SelfValue,
+            ))),
+            arms: Vec::new(),
+        });
+        assert!(!contract_expr_matches_precondition(
+            &match_expression,
+            &match_expression,
+            0,
+        ));
+        assert!(!contract_expr_matches_precondition(
+            &expression(ContractExprKind::Constant(Constant::Float(-0.0))),
+            &expression(ContractExprKind::Constant(Constant::Float(0.0))),
+            0,
+        ));
+    }
 
     #[test]
     fn non_regular_nominal_analysis_uses_finite_abstract_argument_states() {

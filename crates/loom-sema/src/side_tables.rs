@@ -74,8 +74,6 @@ pub enum BuiltinValue {
     TaskCancelled,
     TaskFaultCode,
     TaskFaultMessage,
-    DurationMilliseconds,
-    DurationAsMilliseconds,
     FileOpenRead,
     FileCreate,
     FileTryOpenRead,
@@ -198,12 +196,15 @@ pub enum Coercion {
 }
 
 /// Whether a constrained value or invariant-bearing record still needs its
-/// runtime validation boundary.  `Proven` is emitted only by the closed,
+/// runtime validation boundary. `Proven` is emitted only by the closed,
 /// deterministic proof engine; it changes the construction expression from a
-/// `Result` into the established nominal value itself.
+/// `Result` into the established nominal value itself. `Precondition` carries
+/// the zero-based index of the retained runtime precondition that establishes
+/// an otherwise-proven constrained construction.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ConstructionCheck {
     Proven,
+    Precondition { index: u32 },
     Runtime,
 }
 

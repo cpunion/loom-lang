@@ -16,12 +16,6 @@ pub const INVALID_BYTE_FAULT_CODE: &str = "InvalidByte";
 /// Stable user-facing message for a Bytes value outside `0...255`.
 pub const INVALID_BYTE_FAULT_MESSAGE: &str = "Bytes.add value is outside 0...255";
 
-/// Stable runtime-fault code for a negative Duration construction.
-pub const INVALID_DURATION_FAULT_CODE: &str = "InvalidDuration";
-
-/// Stable user-facing message for a negative Duration construction.
-pub const INVALID_DURATION_FAULT_MESSAGE: &str = "Duration milliseconds cannot be negative";
-
 /// Stable runtime-fault code for a negative Task.sleep duration.
 pub const INVALID_SLEEP_DURATION_FAULT_CODE: &str = "InvalidSleepDuration";
 

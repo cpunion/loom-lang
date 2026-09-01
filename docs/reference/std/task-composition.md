@@ -120,9 +120,11 @@ The Task API also provides:
 
 ```text
 Task.sleep(milliseconds Int)  Task[Unit]
-Task.sleep(duration Duration) Task[Unit]
 ```
 
-The duration must be nonnegative. Invalid duration or deadline overflow faults
-as specified by the language's
+The `Int` duration must be nonnegative. `Duration`, and any other constrained
+`Int`, reaches this boundary through the general implicit refined-to-base
+conversion. A `Duration` has already established the constraint in ordinary
+source code; `milliseconds` enforces it with a precondition. Raw sleep rejection
+and deadline overflow fault as specified by the language's
 [async and task rules](../language/async-and-tasks.md#timers-and-io-tasks).

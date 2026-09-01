@@ -572,7 +572,7 @@ fn runtime_fault_assert_rejects_a_forged_non_boolean_condition() {
                     109,
                     TerminatorKind::Assert {
                         condition: forged,
-                        metadata: FaultMetadata::runtime(FaultCode::InvalidDuration),
+                        metadata: FaultMetadata::runtime(FaultCode::InvalidByte),
                         success: BlockTarget::new(success, Vec::new()),
                         fault: UnwindTarget::new(fault, Vec::new()),
                     },

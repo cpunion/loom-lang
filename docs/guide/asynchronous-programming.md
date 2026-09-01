@@ -164,7 +164,9 @@ The compiler-known timer constructor returns a storable `Task[Unit]` value:
 Task.sleep(10).await
 ```
 
-`Task.sleep` accepts a non-negative millisecond `Int` or a `Duration`.
+`Task.sleep` accepts millisecond `Int`. A `Duration` is a constrained `Int` and
+therefore uses the language's general implicit conversion to its broader base
+type at this boundary.
 Constructing the timer returns immediately with a first-class task; the suffix
 `.await` is the suspension point.
 Loom source has no raw-handle readiness constructor. File and socket operations
