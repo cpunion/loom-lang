@@ -1143,7 +1143,6 @@ pub enum Builtin {
     TextConcat,
     TextContains,
     TextEncodeUtf8,
-    TextFromUtf8Units,
     BytesLength,
     BytesGet,
     BytesAdd,

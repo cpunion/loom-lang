@@ -203,16 +203,6 @@ safepoint. These source APIs introduce no
 JSON-specific operation or runtime type registry, and require no ownership or
 borrow syntax.
 
-`TextFromUtf8Units` accepts only the canonical direct `List[Int]` managed
-representation and returns the exact closed
-`Result[Text, DecodeTextError]`. It is an explicit `MAY_COLLECT` safepoint.
-Generated code branches around the null empty-List representation, passes a
-borrowed contiguous `i64` view to the format-neutral typed runtime helper, and
-constructs the exact Result after the helper returns. Runtime status `0`
-selects `Ok`; `-1` selects `InvalidUtf8`; every positive or unknown status
-traps as a compiler/runtime defect. The input needs a root only when it is live
-after the safepoint because the helper stages all units before allocation.
-
 Canonical Path is one exact invariant-protected product containing the
 canonical Text value. Its physical ABI remains the same unboxed product, while
 checked MIR rejects raw construction/projection and LCIR rejects ordinary
@@ -513,7 +503,7 @@ scalar faults use only the local fault context. A synchronous caller gains
 synchronous body does not gain that effect merely because it declares
 `requires`. An async precondition instead contributes `MAY_FAULT` to the child
 coroutine's state-zero path. `TaskCreate` does not inherit any child effect.
-`TextConcat`, `TextGet`, `TextFromUtf8Units`, process argument selection,
+`TextConcat`, `TextGet`, process argument selection,
 process environment lookup, `BytesAppend`, both Bytes push forms, `PathJoin`,
 and `FloatFormat` are collecting opcodes and contribute `MAY_COLLECT`.
 `BytesDecodeUtf8`, process argument count, Path construction, and Path
@@ -1284,7 +1274,7 @@ parsing, and managed Float formatting,
 managed-pointer representations, finite dynamic candidate catalogs,
 `dyn.construct`, `dyn.switch`, mode-qualified `io.task_create.*.result` and
 `io.task_create.*.fault`, and
-`text.concat`, `text.get`, `text.encode_utf8`, `text.from_utf8_units`, the
+`text.concat`, `text.get`, `text.encode_utf8`, the
 typed Bytes operations, `path.from_text`, `path.as_text`, and `path.join`,
 typed resource close, structured-log edges, transient
 protected-receiver updates, typed TextMap containment/removal/indexed-entry

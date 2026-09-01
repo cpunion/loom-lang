@@ -58,8 +58,7 @@ pub use scheduler::{
 };
 pub use text::{
     bytes_append_typed_v1, bytes_decode_utf8_typed_v1, bytes_push_typed_v1,
-    bytes_push_unique_typed_v1, concat_typed_v1, from_utf8_units_typed_v1, get_typed_v1,
-    path_join_typed_v1, text_contains,
+    bytes_push_unique_typed_v1, concat_typed_v1, get_typed_v1, path_join_typed_v1, text_contains,
 };
 
 pub const WAIT_INFINITE: u64 = u64::MAX;

@@ -53,7 +53,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 52")?;
+    writeln!(output, "lcir 53")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -294,15 +294,6 @@ fn write_instruction(
         InstructionKind::TextEncodeUtf8 { text } => {
             write!(output, "text.encode_utf8 %{text}")
         }
-        InstructionKind::TextFromUtf8Units {
-            units,
-            ok_variant,
-            error_variant,
-            invalid_utf8_variant,
-        } => write!(
-            output,
-            "text.from_utf8_units %{units}, ok {ok_variant}, error {error_variant}, invalid_utf8 {invalid_utf8_variant}"
-        ),
         InstructionKind::ProcessArgumentCount => output.write_str("process.argument_count"),
         InstructionKind::ProcessArgumentAt { index } => {
             write!(output, "process.argument_at %{index}")

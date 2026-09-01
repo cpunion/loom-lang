@@ -4926,7 +4926,7 @@ fn forged_proof_program() -> CheckedProgram {
 
 #[test]
 fn interpreted_artifact_bytes_are_deterministic_and_round_trip_float_bits() {
-    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 45);
+    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 46);
     let program = float_program(0x7ff8_0000_0000_0042);
     let first = encode_interpreted_artifact(&program).expect("encode");
     let second = encode_interpreted_artifact(&program).expect("encode again");

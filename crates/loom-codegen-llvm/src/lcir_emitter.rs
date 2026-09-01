@@ -69,8 +69,7 @@ use loom_runtime_abi::{
     PROCESS_ENVIRONMENT_TYPED_MISSING, PROCESS_ENVIRONMENT_TYPED_SYMBOL, STDOUT_WRITE_FAILED,
     STDOUT_WRITE_OK, STDOUT_WRITE_SYMBOL, TASK_CANCELLED, TASK_COMPLETED, TASK_FAULTED,
     TASK_JOIN_ALL, TASK_JOIN_ANY, TASK_JOIN_RACE, TASK_JOIN_SETTLED, TASK_PENDING,
-    TEXT_CONCAT_TYPED_SYMBOL, TEXT_CONTAINS_SYMBOL, TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8,
-    TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_MISSING,
+    TEXT_CONCAT_TYPED_SYMBOL, TEXT_CONTAINS_SYMBOL, TEXT_GET_TYPED_FOUND, TEXT_GET_TYPED_MISSING,
     TEXT_GET_TYPED_SYMBOL, TEXT_LAYOUT_SYMBOL, TEXT_OBJECT_ALIGNMENT,
     TEXT_OBJECT_FIELD_BYTE_LENGTH, TEXT_OBJECT_FIELD_BYTES, TEXT_OBJECT_FIELD_SCALAR_LENGTH,
     TEXT_OBJECT_HEADER_SIZE, TYPED_GC_ABI_VERSION, TYPED_GC_ALLOC_SYMBOL,
@@ -6858,23 +6857,6 @@ impl<'ctx, 'artifact> Backend<'ctx, 'artifact> {
             })
     }
 
-    fn runtime_text_from_utf8_units_typed(&self) -> FunctionValue<'ctx> {
-        self.module
-            .get_function(TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL)
-            .unwrap_or_else(|| {
-                let function_type = self.context.i32_type().fn_type(
-                    &[
-                        self.ptr_type.into(),
-                        self.context.i64_type().into(),
-                        self.ptr_type.into(),
-                    ],
-                    false,
-                );
-                self.module
-                    .add_function(TEXT_FROM_UTF8_UNITS_TYPED_SYMBOL, function_type, None)
-            })
-    }
-
     fn runtime_path_join_typed(&self) -> FunctionValue<'ctx> {
         self.module
             .get_function(PATH_JOIN_TYPED_SYMBOL)
@@ -8710,7 +8692,6 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 instruction.kind(),
                 InstructionKind::TextConcat { .. }
                     | InstructionKind::TextGet { .. }
-                    | InstructionKind::TextFromUtf8Units { .. }
                     | InstructionKind::ProcessArgumentAt { .. }
                     | InstructionKind::ProcessEnvironment { .. }
                     | InstructionKind::PathJoin { .. }
@@ -10844,18 +10825,6 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
                 one(self.backend.emit_text_literal(utf8)?.into())
             }
             InstructionKind::TextEncodeUtf8 { text } => one(self.value(*text)?),
-            InstructionKind::TextFromUtf8Units {
-                units,
-                ok_variant,
-                error_variant,
-                invalid_utf8_variant,
-            } => one(self.emit_text_from_utf8_units(
-                instruction,
-                *units,
-                *ok_variant,
-                *error_variant,
-                *invalid_utf8_variant,
-            )?),
             InstructionKind::ProcessArgumentCount => {
                 let count = call_int(
                     &self.backend.builder,
@@ -12113,69 +12082,6 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
         Ok(phi.as_basic_value())
     }
 
-    fn emit_text_from_utf8_units(
-        &self,
-        instruction: &Instruction,
-        units: ValueId,
-        ok_variant: u32,
-        error_variant: u32,
-        invalid_utf8_variant: u32,
-    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
-        let result = instruction.results().first().copied().ok_or_else(|| {
-            CodegenError::new("LlvmAbiDefect", "Text.from_utf8_units has no result")
-        })?;
-        let result_ty = self
-            .source
-            .value(result)
-            .ok_or_else(|| {
-                CodegenError::new("LlvmAbiDefect", "Text.from_utf8_units result is missing")
-            })?
-            .ty();
-        let error_ty = self.sum_variant_field_type(result_ty, error_variant, 0)?;
-        let units_ty = self.list_type_of_value(units)?;
-        let layout = self.backend.list_layout(units_ty)?;
-        if layout.element_stride != 8
-            || !matches!(layout.element, BasicTypeEnum::IntType(element) if element.get_bit_width() == 64)
-        {
-            return Err(CodegenError::new(
-                "LlvmAbiDefect",
-                "Text.from_utf8_units requires the canonical contiguous i64 List[Int] layout",
-            ));
-        }
-        let object = self.value(units)?.into_pointer_value();
-        let (data, length) = self.load_int_list_view(&layout, object)?;
-        let output = self.managed_output_cell(instruction.id())?;
-        self.backend
-            .builder
-            .build_store(output, self.backend.ptr_type.const_null())
-            .map_err(builder_error)?;
-        self.publish_root_state(ManagedSafepoint::Instruction(instruction.id()))?;
-        let status = call_int(
-            &self.backend.builder,
-            self.backend.runtime_text_from_utf8_units_typed(),
-            &[data.into(), length.into(), output.into()],
-            "text.from_utf8_units.status",
-        )?;
-        let valid = self.backend.require_decode_text_status(
-            status,
-            "text.from_utf8_units",
-            TEXT_FROM_UTF8_UNITS_TYPED_INVALID_UTF8,
-        )?;
-        let text = self
-            .backend
-            .builder
-            .build_load(self.backend.ptr_type, output, "text.from_utf8_units.text")
-            .map_err(builder_error)?;
-        let ok_value = self.emit_sum_construct_values(result_ty, ok_variant, &[text])?;
-        let invalid_error = self.emit_sum_construct_values(error_ty, invalid_utf8_variant, &[])?;
-        let error_value =
-            self.emit_sum_construct_values(result_ty, error_variant, &[invalid_error])?;
-        self.backend
-            .builder
-            .build_select(valid, ok_value, error_value, "text.from_utf8_units.result")
-            .map_err(builder_error)
-    }
-
     fn emit_bytes_decode_utf8(
         &self,
         instruction: &Instruction,
@@ -12643,65 +12549,6 @@ impl<'backend, 'ctx, 'artifact> FunctionEmitter<'backend, 'ctx, 'artifact> {
             .builder
             .build_int_to_ptr(address, self.backend.ptr_type, name)
             .map_err(builder_error)
-    }
-
-    fn load_int_list_view(
-        &self,
-        layout: &ListLayout<'ctx>,
-        object: PointerValue<'ctx>,
-    ) -> Result<(PointerValue<'ctx>, IntValue<'ctx>), CodegenError> {
-        let (length, _) = self.load_list_header(layout, object, "text.from_utf8_units.list")?;
-        let source = self.current_block()?;
-        let function = source.get_parent().ok_or_else(|| {
-            CodegenError::new(
-                "LlvmBuilderFailed",
-                "Text.from_utf8_units List view has no function",
-            )
-        })?;
-        let empty = self
-            .backend
-            .context
-            .append_basic_block(function, "text.from_utf8_units.data.empty");
-        let present = self
-            .backend
-            .context
-            .append_basic_block(function, "text.from_utf8_units.data.present");
-        let merge = self
-            .backend
-            .context
-            .append_basic_block(function, "text.from_utf8_units.data.merge");
-        let is_null = self
-            .backend
-            .builder
-            .build_is_null(object, "text.from_utf8_units.list.is_null")
-            .map_err(builder_error)?;
-        self.backend
-            .builder
-            .build_conditional_branch(is_null, empty, present)
-            .map_err(builder_error)?;
-
-        self.backend.builder.position_at_end(empty);
-        let null = self.backend.ptr_type.const_null();
-        self.backend
-            .builder
-            .build_unconditional_branch(merge)
-            .map_err(builder_error)?;
-
-        self.backend.builder.position_at_end(present);
-        let data = self.list_field_pointer(layout, object, 2, "text.from_utf8_units.list.data")?;
-        self.backend
-            .builder
-            .build_unconditional_branch(merge)
-            .map_err(builder_error)?;
-
-        self.backend.builder.position_at_end(merge);
-        let data_phi = self
-            .backend
-            .builder
-            .build_phi(self.backend.ptr_type, "text.from_utf8_units.data")
-            .map_err(builder_error)?;
-        data_phi.add_incoming(&[(&null, empty), (&data, present)]);
-        Ok((data_phi.as_basic_value().into_pointer_value(), length))
     }
 
     fn load_list_header(

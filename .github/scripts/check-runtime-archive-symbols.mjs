@@ -18,6 +18,7 @@ export const removedRuntimeSymbols = Object.freeze([
   "loom_runtime_list_get",
   "loom_runtime_text_get",
   "loom_runtime_text_concat",
+  "loom_runtime_text_from_utf8_units_typed_v1",
   "loom_runtime_bytes_append",
   "loom_runtime_bytes_get",
   "loom_runtime_bytes_decode_utf8",

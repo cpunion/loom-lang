@@ -103,15 +103,9 @@ implementation details rather than code-generation dependencies. The current
 boundary is identified by the versioned `typed-bytes` identity. Bytes adds
 neither a JSON policy nor ownership or borrow syntax.
 
-`Text.from_utf8_units` borrows a direct `List[Int]` as a contiguous `i64`
-range only for one synchronous call. The runtime narrows and stages every unit
-before entering the moving allocator, validates the complete UTF-8 sequence,
-and publishes one canonical Text pointer last. An empty List crosses as
-`null + 0`; generated code never forms an interior pointer from the null empty
-representation. Out-of-range units and malformed UTF-8 return the sole
-negative language status. The format-neutral boundary is identified by
-`typed-text-units-v1`. It does not expose List layout as a public ABI and does
-not add a JSON runtime.
+Packed Bytes growth followed by `Bytes.decode_utf8` is the only source text
+construction route from integer units. Generated code does not expose a
+`List[Int]` view or a parallel typed-text-units runtime boundary.
 
 ## Typed Path
 
@@ -175,7 +169,7 @@ File/Socket nominal IDs.
 The current exact runtime identity is defined in
 [Versioning and compatibility](../project/versioning.md). Typed-task ABI v1,
 typed-I/O v1, typed-resource v1, typed-process ABI v1, coroutine v2, wait v1,
-standard-library ABI v9, Text v4, `typed-bytes-v2`, and GC v9 identify the
+standard-library ABI v10, Text v4, `typed-bytes-v2`, and GC v9 identify the
 corresponding current components.
 
 ## Typed LCIR representations

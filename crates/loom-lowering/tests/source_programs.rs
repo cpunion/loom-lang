@@ -1700,7 +1700,6 @@ fn values(text Text, bytes Bytes, base Path, child Path, index Int) {
     let concatenated = text.concat("!")
     let contained = text.contains("loom")
     let encoded = text.encode_utf8()
-    let rebuilt = Text.from_utf8_units([65, 231, 149, 140])
     let byte_count = bytes.length()
     let byte = bytes.get(index)
     let appended = bytes.append(encoded)
@@ -1772,7 +1771,6 @@ async fn pathFiles(path Path) {
         "TextConcat",
         "TextContains",
         "TextEncodeUtf8",
-        "TextFromUtf8Units",
         "BytesLength",
         "BytesGet",
         "BytesAdd",

@@ -46,7 +46,7 @@ fn structured_values_match_in_interpreter_and_native_runtime() {
     );
     assert!(NATIVE_RUNTIME_ABI.contains("/gc-v9/"));
     assert!(NATIVE_RUNTIME_ABI.contains("/typed-repeated-v1/"));
-    assert!(NATIVE_RUNTIME_ABI.ends_with("/stdlib-v9"));
+    assert!(NATIVE_RUNTIME_ABI.ends_with("/stdlib-v10"));
     assert!(runtime_bundle_identity().starts_with("runtime-bundle-v2;"));
     let project = tempfile::tempdir().expect("create standard-library project");
     let round_trip = project.path().join("round-trip.txt");

@@ -247,12 +247,12 @@ symbols and the absence of every former universal I/O symbol. The integrated
 standard-library native test prepares one checked LCIR artifact and runs real file round trips and
 loopback Socket reads and writes. These are host test results, not a new
 cross-platform release claim.
-The format-neutral `Text.from_utf8_units(List[Int])` source API and the packed
-`Bytes.add(Int)` builder have interpreter semantics, typed LCIR instructions,
-direct LLVM lowering, and typed runtime ABI support for efficient
-source-defined text construction. Byte push performs its language range check
-before mutation; LCIR separately proves when a unique ByteObject may reuse
-hidden capacity.
+The packed `Bytes.add(Int)` builder and `Bytes.decode_utf8()` have interpreter
+semantics, typed LCIR instructions, direct LLVM lowering, and typed runtime ABI
+support for efficient source-defined text construction. Byte push performs its
+language range check before mutation; LCIR separately proves when a unique
+ByteObject may reuse hidden capacity. The retired parallel `List[Int]`-to-Text
+builtin and runtime entry point have been deleted.
 The typed Path slice likewise closes `Path.from_text`, `Path.as_text`, and
 `Path.join` without a runtime Path object: construction and extraction are
 non-collecting, join stages both Text inputs before moving-GC allocation, and
