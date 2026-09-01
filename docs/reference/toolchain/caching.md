@@ -20,7 +20,7 @@ reuse one in a more privileged build context.
 The default compiler cache is:
 
 ```text
-PROJECT/target/loom/cache/v18
+PROJECT/target/loom/cache/v19
 ```
 
 Use `--cache-dir DIR` to choose another root or `--no-cache` to disable

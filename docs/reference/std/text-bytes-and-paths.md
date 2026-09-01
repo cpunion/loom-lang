@@ -25,20 +25,12 @@ valid Text. Text is not implicitly normalized and has no locale, case-folding,
 grapheme-cluster, or mutable-buffer semantics.
 
 ```text
-Text.from_utf8_units(units List[Int]) Result[Text, DecodeTextError]
 text.length() Int
 text.get(index Int) Option[Text]
 text.concat(other Text) Text
 text.contains(needle Text) Bool
 text.encode_utf8() Bytes
 ```
-
-`from_utf8_units` is the explicit low-level construction boundary used by
-source libraries that decode external formats. Every Int must be in the range
-0 through 255 and the complete sequence must be valid UTF-8. Success produces
-Text; an out-of-range unit or malformed sequence produces
-`DecodeTextError.InvalidUtf8`. The conversion is never implicit, and it does
-not define JSON or any other data-format policy.
 
 `DecodeTextError` is the closed public enum declared by `std.text`; its only
 current variant is `InvalidUtf8`.
@@ -68,6 +60,13 @@ bytes.append(other Bytes) Bytes
 bytes.add(unit Int)
 bytes.decode_utf8() Result[Text, DecodeTextError]
 ```
+
+Source that constructs Text from integer units builds a mutable Bytes value,
+checks each unit when its input is not already byte-ranged, appends with `add`,
+and finishes with `decode_utf8`. An invalid UTF-8 sequence returns
+`DecodeTextError.InvalidUtf8`; `add` requires every unit to be from 0 through
+255 and raises `InvalidByte` before mutation when that precondition is
+violated. There is no parallel `List[Int]` conversion builtin.
 
 `get` returns an Int in the range 0 through 255. A negative or out-of-range
 index returns `None`. `append` returns the receiver bytes followed by the

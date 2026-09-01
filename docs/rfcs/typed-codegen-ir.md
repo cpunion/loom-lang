@@ -408,7 +408,7 @@ Lowering and independent validation separately compute the least transitive
 closure over direct and invoke edges. A synchronous caller inherits the effect
 of a precondition it evaluates. An async precondition belongs to the child
 coroutine's state-zero path, so `TaskCreate` does not inherit child effects.
-`TextConcat`, `TextGet`, `TextFromUtf8Units`, `BytesAppend`, both Bytes push
+`TextConcat`, `TextGet`, `BytesAppend`, both Bytes push
 forms, `PathJoin`, and `FloatFormat` are collecting opcodes.
 `BytesDecodeUtf8`, `PathFromText`, and `PathAsText` are non-collecting. `TaskCreate` and
 `TaskJoin` require an
@@ -705,10 +705,10 @@ copies lower to representation-identical `CollectionShare`, making the COW
 alias explicit without emitting target code or adding source ownership syntax.
 Each push also carries exact lower- and upper-range comparison proofs whose
 unique success edges must dominate it. The runtime still refuses to mutate
-Text-backed storage. The format-neutral `TextFromUtf8Units` boundary borrows the
-direct contiguous `i64` List payload, validates byte range and complete UTF-8,
-stages the bytes before allocation, and publishes canonical Text last. Neither
-boundary introduces JSON policy or a source ownership model.
+Text-backed storage. Packed Bytes growth followed by `BytesDecodeUtf8` is the
+single integer-unit-to-Text route; LCIR has no parallel `List[Int]` conversion
+instruction. The boundary introduces neither JSON policy nor a source
+ownership model.
 
 Typed Path uses `PathFromText`, `PathAsText`, and `PathJoin` plus
 `loom_runtime_path_join_typed_v1`. Construction and extraction are

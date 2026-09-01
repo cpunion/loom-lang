@@ -683,18 +683,6 @@ pub enum InstructionKind {
     TextEncodeUtf8 {
         text: ValueId,
     },
-    /// Validates every signed `Int` unit as one byte, validates the complete
-    /// sequence as UTF-8, and constructs exact
-    /// `Result[Text, DecodeTextError]`. Successful construction allocates one
-    /// managed Text object, so this instruction is a moving-GC safepoint;
-    /// an out-of-byte-range unit and malformed UTF-8 select the same closed
-    /// `InvalidUtf8` language error.
-    TextFromUtf8Units {
-        units: ValueId,
-        ok_variant: u32,
-        error_variant: u32,
-        invalid_utf8_variant: u32,
-    },
     /// Reads the immutable process argument snapshot length captured by the
     /// generated entry point. The executable name is not part of the snapshot.
     ProcessArgumentCount,
@@ -1135,7 +1123,6 @@ impl InstructionKind {
             | Self::PathFromText { text: value, .. }
             | Self::FloatParseStatus { text: value }
             | Self::CollectionShare { value }
-            | Self::TextFromUtf8Units { units: value, .. }
             | Self::ProcessArgumentAt { index: value }
             | Self::ProcessEnvironment { name: value, .. }
             | Self::PathAsText { path: value }

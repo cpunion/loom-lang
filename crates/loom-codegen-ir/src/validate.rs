@@ -2989,20 +2989,6 @@ impl<'a> Validator<'a> {
                 );
                 self.require_results(function, instruction, &[bytes], &path);
             }
-            InstructionKind::TextFromUtf8Units {
-                units,
-                ok_variant,
-                error_variant,
-                invalid_utf8_variant,
-            } => self.validate_text_from_utf8_units_instruction(
-                function,
-                instruction,
-                *units,
-                *ok_variant,
-                *error_variant,
-                *invalid_utf8_variant,
-                &path,
-            ),
             InstructionKind::ProcessArgumentCount => {
                 self.require_results(function, instruction, &[integer], &path);
             }
@@ -7376,49 +7362,6 @@ impl<'a> Validator<'a> {
 
     #[expect(
         clippy::too_many_arguments,
-        reason = "the UTF-8 unit opcode carries its complete closed-result identity"
-    )]
-    fn validate_text_from_utf8_units_instruction(
-        &mut self,
-        function: &Function,
-        instruction: &Instruction,
-        units: ValueId,
-        ok_variant: u32,
-        error_variant: u32,
-        invalid_utf8_variant: u32,
-        path: &str,
-    ) {
-        let units_ty = function.value(units).map(Value::ty);
-        let integer = self.scalar_type(&Type::Int);
-        let canonical_list = self
-            .program
-            .representations
-            .type_id(&Type::List(Box::new(Type::Int)));
-        let exact_list = match (units_ty, canonical_list, integer) {
-            (Some(units), Some(list), Some(integer)) => {
-                units == list && self.list_element(units) == Some(integer)
-            }
-            _ => false,
-        };
-        if !exact_list {
-            self.error(
-                ValidationCode::TypeMismatch,
-                format!("{path}.units"),
-                "Text UTF-8 construction requires canonical List[Int]",
-            );
-        }
-        self.validate_decode_text_result(
-            function,
-            instruction,
-            ok_variant,
-            error_variant,
-            invalid_utf8_variant,
-            path,
-        );
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
         reason = "the Path opcode carries its complete closed-result identity"
     )]
     #[expect(
@@ -7869,7 +7812,6 @@ fn instruction_direct_effects(kind: &InstructionKind) -> Effects {
         kind,
         InstructionKind::TextConcat { .. }
             | InstructionKind::TextGet { .. }
-            | InstructionKind::TextFromUtf8Units { .. }
             | InstructionKind::ProcessArgumentAt { .. }
             | InstructionKind::ProcessEnvironment { .. }
             | InstructionKind::PathJoin { .. }

@@ -210,8 +210,8 @@ Int-list compatibility surface.
 Some source-library algorithms need efficient construction that immutable
 public values cannot provide directly. Such primitives remain format-neutral:
 
-- build one `Text` from validated UTF-8 units through the format-neutral
-  `Text.from_utf8_units(List[Int])` boundary;
+- grow one packed `Bytes` value through checked append and convert valid UTF-8
+  with `Bytes.decode_utf8`;
 - build one `List[T]` from uniquely owned append state;
 - build one canonical `TextMap[V]` from a `List[(Text, V)]` in one bulk
   operation, sorting UTF-8 keys once and rejecting duplicates;

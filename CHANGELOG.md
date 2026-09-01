@@ -76,6 +76,10 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   `CollectionShare` SSA boundaries so COW aliases cannot inherit uniqueness.
   The compiler, LLVM backend, runtime ABI, and runtime contain no
   JSON-formatting opcode, layout descriptor, or entry point.
+  Packed Bytes growth followed by `Bytes.decode_utf8` is also the sole
+  integer-unit-to-Text route; the former `Text.from_utf8_units(List[Int])`
+  builtin, LCIR instruction, LLVM lowering, runtime symbol, and ABI identity
+  component have been deleted.
   `IoErrorKind` is now an ordinary `std.io` source enum whose exact definition
   is made available through the prelude; its ten compiler builtin constructors
   and fixed MIR type slot are gone. `IoError` is likewise an ordinary protected
@@ -91,18 +95,19 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   public `std.file` and `std.net` functions resolve through ordinary source
   wrappers, and the Path forms reuse their Text counterparts. Only 16
   exact-owner resource/I/O/close leaves plus two protected error access leaves
-  remain below source. Interpreted MIR artifact 45 and persistent cache schema
-  18 reject infinite value layouts, source-impossible mutable parameter slots
-  and coroutine receivers, invariant-boundary bypasses, removed semantic types,
-  fixed slots, and special cleanup tags instead of decoding them through
-  compatibility paths.
-  Native runtime ABI 39 (`runtime-v33`, `stdlib-v9`, `text-v4`, and
-  `typed-bytes-v2`) adds checked packed Bytes growth and non-collecting
-  ByteObject-to-Text decode. ABI 38 removed the former typed JSON-formatting
-  boundary. ABI 37 deleted the unreachable universal `ValueSlot` heap and root
-  chain, runtime witness arena, legacy Task/value operations, and Int-list
-  implementation, following the earlier removal of universal File, Socket,
-  close, logging, and process boundaries.
+  remain below source. Interpreted MIR artifact 46 and persistent cache schema
+  19 reject removed UTF-8-unit dispatch, infinite value layouts,
+  source-impossible mutable parameter slots and coroutine receivers,
+  invariant-boundary bypasses, removed semantic types, fixed slots, and
+  special cleanup tags instead of decoding them through compatibility paths.
+  Native runtime ABI 40 (`runtime-v34`, `stdlib-v10`, `text-v4`, and
+  `typed-bytes-v2`) removes the redundant typed-text-units boundary. ABI 39
+  added checked packed Bytes growth and non-collecting ByteObject-to-Text
+  decode; ABI 38 removed the former typed JSON-formatting boundary. ABI 37
+  deleted the unreachable universal `ValueSlot` heap and root chain, runtime
+  witness arena, legacy Task/value operations, and Int-list implementation,
+  following the earlier removal of universal File, Socket, close, logging, and
+  process boundaries.
   The live shared join/fault scheduler operations retain `task-v2`.
   The 16-byte `typed-io-v1` outcome uses its primitive
   payload for either a resource token or a closed fault class, preserving

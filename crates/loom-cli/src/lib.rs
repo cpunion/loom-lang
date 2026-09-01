@@ -34,7 +34,7 @@ const NATIVE_FAULT_FORMAT_ENV: &str = "LOOM_FAULT_FORMAT";
 const NATIVE_FAULT_JSON_PREFIX: &str = "LOOM_FAULT_JSON_V1:";
 const RUNTIME_BUNDLE_ENV: &str = "LOOM_RUNTIME_BUNDLE";
 const LINKER_ENV: &str = "LOOM_CC";
-const LLVM_OBJECT_CACHE_DOMAIN: &str = "loom-llvm-object-cache-v50";
+const LLVM_OBJECT_CACHE_DOMAIN: &str = "loom-llvm-object-cache-v51";
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const DEFAULT_DEBUGGER: &str = "lldb";
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -2874,7 +2874,7 @@ mod tests {
     fn llvm_object_cache_domain_is_pinned() {
         assert_eq!(
             super::LLVM_OBJECT_CACHE_DOMAIN,
-            "loom-llvm-object-cache-v50"
+            "loom-llvm-object-cache-v51"
         );
     }
 
@@ -2912,7 +2912,7 @@ mod tests {
 
     #[test]
     fn checked_mir_cache_identity_pins_interpreted_artifact_version() {
-        assert_eq!(loom_mir::INTERPRETED_ARTIFACT_VERSION, 45);
+        assert_eq!(loom_mir::INTERPRETED_ARTIFACT_VERSION, 46);
         let context = super::cache_context(loom_mir::LOOM_LANGUAGE_VERSION);
         let artifact_identity = format!(
             "/{}-{}",

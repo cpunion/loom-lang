@@ -3393,7 +3393,6 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             | BuiltinValue::TextConcat
             | BuiltinValue::TextContains
             | BuiltinValue::TextEncodeUtf8
-            | BuiltinValue::TextFromUtf8Units
             | BuiltinValue::BytesLength
             | BuiltinValue::BytesGet
             | BuiltinValue::BytesAdd
@@ -3868,7 +3867,6 @@ fn executable_builtin(builtin: BuiltinValue) -> Option<Builtin> {
         BuiltinValue::TextConcat => Builtin::TextConcat,
         BuiltinValue::TextContains => Builtin::TextContains,
         BuiltinValue::TextEncodeUtf8 => Builtin::TextEncodeUtf8,
-        BuiltinValue::TextFromUtf8Units => Builtin::TextFromUtf8Units,
         BuiltinValue::BytesLength => Builtin::BytesLength,
         BuiltinValue::BytesGet => Builtin::BytesGet,
         BuiltinValue::BytesAdd => Builtin::BytesAdd,
