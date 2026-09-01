@@ -44,10 +44,11 @@ fn ready() Status[Int] {
 fn invalid() {
     discard Status.Ready()
     discard Status.Ready(1)
+    discard Status.Ready[Int]()
 }
 ",
     );
-    assert_eq!(invalid.len(), 2, "{invalid:#?}");
+    assert_eq!(invalid.len(), 3, "{invalid:#?}");
     for diagnostic in invalid {
         assert_eq!(diagnostic.code, "TypeMismatch");
         assert_eq!(diagnostic.message, "value constructor is not callable");

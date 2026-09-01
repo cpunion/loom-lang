@@ -8425,7 +8425,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             );
         }
         let explicit = self.resolve_call_type_arguments(call_type_arguments.unwrap_or_default());
-        if explicit.len() > generic_params.len() {
+        if !called_value_constructor && explicit.len() > generic_params.len() {
             self.error_at(
                 "TypeMismatch",
                 "too many explicit generic arguments",
