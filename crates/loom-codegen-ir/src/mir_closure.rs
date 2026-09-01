@@ -1323,8 +1323,6 @@ impl IdMaps {
         prelude.decode_text_error = self.optional_type(prelude.decode_text_error);
         prelude.path_error = self.optional_type(prelude.path_error);
         prelude.text_map = self.optional_type(prelude.text_map);
-        prelude.json = self.optional_type(prelude.json);
-        prelude.json_error = self.optional_type(prelude.json_error);
         prelude.io_error = self.optional_type(prelude.io_error);
         prelude.io_error_kind = self.optional_type(prelude.io_error_kind);
         prelude.log_level = self.optional_type(prelude.log_level);

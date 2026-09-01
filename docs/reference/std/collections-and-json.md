@@ -94,6 +94,10 @@ Json.Array(List[Json])
 Json.Object(TextMap[Json])
 ```
 
+This enum and `JsonError` are ordinary public declarations in the embedded
+`std.json` source package. They use the same construction, matching,
+exhaustiveness, equality, and reachability rules as other source enums.
+
 Construction examples:
 
 ```loom

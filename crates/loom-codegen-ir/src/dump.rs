@@ -53,7 +53,7 @@ pub fn write_program_with_options(
 ) -> fmt::Result {
     let program = program.as_program();
     let representations = program.representations();
-    writeln!(output, "lcir 53")?;
+    writeln!(output, "lcir 54")?;
     writeln!(
         output,
         "target pointer_bits={}",
@@ -75,8 +75,6 @@ pub fn write_program_with_options(
         ("decode_text_error", canonical.decode_text_error),
         ("path_error", canonical.path_error),
         ("text_map", canonical.text_map),
-        ("json", canonical.json),
-        ("json_error", canonical.json_error),
         ("io_error", canonical.io_error),
         ("io_error_kind", canonical.io_error_kind),
         ("log_level", canonical.log_level),

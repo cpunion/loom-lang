@@ -1248,8 +1248,6 @@ impl<'program> Validator<'program> {
             ),
             ("path_error", self.program.prelude.path_error, "enum"),
             ("text_map", self.program.prelude.text_map, "record"),
-            ("json", self.program.prelude.json, "enum"),
-            ("json_error", self.program.prelude.json_error, "enum"),
             ("io_error", self.program.prelude.io_error, "record"),
             ("io_error_kind", self.program.prelude.io_error_kind, "enum"),
             ("log_level", self.program.prelude.log_level, "enum"),
@@ -1495,81 +1493,6 @@ impl<'program> Validator<'program> {
                     "prelude TextMap must be a unary generic { raw Int } record",
                     definition.span,
                     "prelude.text_map",
-                );
-            }
-        }
-        if let (Some(text_map), Some(definition)) = (
-            self.program.prelude.text_map,
-            self.program
-                .prelude
-                .json
-                .and_then(|id| self.program.type_def(id)),
-        ) {
-            let self_ty = Type::Nominal(definition.id, Vec::new());
-            let valid = matches!(
-                &definition.kind,
-                TypeDefKind::Enum { variants }
-                    if definition.type_parameters == 0
-                        && variants.len() == 6
-                        && variants[0].id == VariantId(0)
-                        && variants[0].name == "Null"
-                        && variants[0].payload.is_empty()
-                        && variants[1].id == VariantId(1)
-                        && variants[1].name == "Bool"
-                        && variants[1].payload == [Type::Bool]
-                        && variants[2].id == VariantId(2)
-                        && variants[2].name == "Number"
-                        && variants[2].payload == [Type::Float]
-                        && variants[3].id == VariantId(3)
-                        && variants[3].name == "Text"
-                        && variants[3].payload == [Type::Text]
-                        && variants[4].id == VariantId(4)
-                        && variants[4].name == "Array"
-                        && variants[4].payload == [Type::List(Box::new(self_ty.clone()))]
-                        && variants[5].id == VariantId(5)
-                        && variants[5].name == "Object"
-                        && variants[5].payload
-                            == [Type::Nominal(text_map, vec![self_ty])]
-            );
-            if !valid {
-                self.push(
-                    MirValidationCode::VariantShape,
-                    "prelude Json must use canonical Null/Bool/Number/Text/Array/Object variants",
-                    definition.span,
-                    "prelude.json",
-                );
-            }
-        }
-        if let Some(definition) = self
-            .program
-            .prelude
-            .json_error
-            .and_then(|id| self.program.type_def(id))
-        {
-            let valid = matches!(
-                &definition.kind,
-                TypeDefKind::Enum { variants }
-                    if definition.type_parameters == 0
-                        && variants.len() == 4
-                        && variants[0].id == VariantId(0)
-                        && variants[0].name == "InvalidSyntax"
-                        && variants[0].payload == [Type::Int]
-                        && variants[1].id == VariantId(1)
-                        && variants[1].name == "NumberOutOfRange"
-                        && variants[1].payload == [Type::Int]
-                        && variants[2].id == VariantId(2)
-                        && variants[2].name == "DepthLimit"
-                        && variants[2].payload.is_empty()
-                        && variants[3].id == VariantId(3)
-                        && variants[3].name == "NonFiniteNumber"
-                        && variants[3].payload.is_empty()
-            );
-            if !valid {
-                self.push(
-                    MirValidationCode::VariantShape,
-                    "prelude JsonError must use canonical offset/depth/non-finite variants",
-                    definition.span,
-                    "prelude.json_error",
                 );
             }
         }

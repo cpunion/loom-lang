@@ -95,8 +95,18 @@ fn exercise_structured_builtin_values(input: &[u8]) {
         panic!("generated structured standard-value program must compile: {error}")
     });
     assert!(program.prelude.text_map.is_some());
-    assert!(program.prelude.json.is_some());
-    assert!(program.prelude.json_error.is_some());
+    assert!(
+        program
+            .types
+            .iter()
+            .any(|definition| definition.name == "Json")
+    );
+    assert!(
+        program
+            .types
+            .iter()
+            .any(|definition| definition.name == "JsonError")
+    );
     assert!(program.prelude.io_error.is_some());
     assert!(program.prelude.io_error_kind.is_some());
     assert!(program.prelude.log_level.is_some());

@@ -1,6 +1,8 @@
 use loom_core::{FileId, LOOM_LANGUAGE_VERSION, ModuleName, Name, PackageId};
-use loom_hir::{DefId, DefinitionKind, PackageSourceUnit, Program, lower_package_files};
-use loom_sema::{Analysis, BuiltinValue, CallTarget, Resolution, TyData, analyze};
+use loom_hir::{
+    DefId, DefinitionKind, PackageSourceUnit, Program, Visibility, lower_package_files,
+};
+use loom_sema::{Analysis, BuiltinValue, CallTarget, Resolution, Signature, TyData, analyze};
 use loom_syntax::parse_with_file;
 
 #[expect(
@@ -573,7 +575,9 @@ fn values(text Text) {
     let parsed = parse_json("{\"answer\":42}")
     let formatted = format_json(object)
     let syntax = JsonError.InvalidSyntax(2)
+    let range = JsonError.NumberOutOfRange(3)
     let depth = JsonError.DepthLimit
+    let nonFinite = JsonError.NonFiniteNumber
     let level = LogLevel.Info
     debug("debug")
     info("info")
@@ -657,8 +661,58 @@ async fn network(host Text, port Int) Result[Unit, IoError] {
 
     let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
     let application = PackageId::new("sema-test", "0");
+    let json = definition_named(&program, &std, "std.json", "Json");
+    let json_error = definition_named(&program, &std, "std.json", "JsonError");
     let format_json = definition_named(&program, &std, "std.json", "format_json");
     let values = definition_named(&program, &application, "sema_test", "values");
+    assert_eq!(analysis.canonical_std_items.json, Some(json));
+    assert_eq!(analysis.canonical_std_items.json_error, Some(json_error));
+    assert_eq!(program.definitions[json].visibility, Visibility::Public);
+    assert_eq!(
+        program.definitions[json_error].visibility,
+        Visibility::Public
+    );
+    let DefinitionKind::Enum(json_enum) = &program.definitions[json].kind else {
+        panic!("Json must be an ordinary source enum");
+    };
+    let DefinitionKind::Enum(json_error_enum) = &program.definitions[json_error].kind else {
+        panic!("JsonError must be an ordinary source enum");
+    };
+    assert_eq!(
+        json_enum
+            .variants
+            .iter()
+            .map(|variant| program.definitions[*variant]
+                .name
+                .as_ref()
+                .expect("named Json variant")
+                .as_str())
+            .collect::<Vec<_>>(),
+        ["Null", "Bool", "Number", "Text", "Array", "Object"]
+    );
+    assert_eq!(
+        json_error_enum
+            .variants
+            .iter()
+            .map(|variant| program.definitions[*variant]
+                .name
+                .as_ref()
+                .expect("named JsonError variant")
+                .as_str())
+            .collect::<Vec<_>>(),
+        [
+            "InvalidSyntax",
+            "NumberOutOfRange",
+            "DepthLimit",
+            "NonFiniteNumber"
+        ]
+    );
+    let source_variants = json_enum
+        .variants
+        .iter()
+        .chain(&json_error_enum.variants)
+        .copied()
+        .collect::<Vec<_>>();
     let DefinitionKind::Function(values) = &program.definitions[values].kind else {
         panic!("values must be a function")
     };
@@ -673,6 +727,96 @@ async fn network(host Text, port Int) Result[Unit, IoError] {
         "format_json must resolve to its ordinary std source definition: {:#?}",
         values_body.calls
     );
+    for variant in &source_variants {
+        assert!(
+            values_body
+                .calls
+                .values()
+                .any(|call| call.target == CallTarget::EnumVariant(*variant)),
+            "Json source constructor {variant:?} must use CallTarget::EnumVariant: {:#?}",
+            values_body.calls
+        );
+        assert!(
+            analysis.typed.bodies.values().any(|body| {
+                body.pattern_resolutions
+                    .values()
+                    .any(|resolution| resolution == &Resolution::Definition(*variant))
+            }),
+            "Json source pattern {variant:?} must use Resolution::Definition"
+        );
+    }
+}
+
+#[test]
+fn same_named_application_json_types_cannot_replace_the_canonical_prelude() {
+    let (program, analysis) = analyze_source_program(
+        r"
+enum Json {
+    Fake
+}
+
+enum JsonError {
+    Fake
+}
+
+fn jsonIdentity(value Json) Json {
+    let null = Json.Null
+    value
+}
+
+fn errorIdentity(value JsonError) JsonError {
+    let depth = JsonError.DepthLimit
+    value
+}
+",
+    );
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "{:#?}",
+        analysis.diagnostics
+    );
+
+    let std = PackageId::compiler_std(LOOM_LANGUAGE_VERSION);
+    let application = PackageId::new("sema-test", "0");
+    let canonical_json = definition_named(&program, &std, "std.json", "Json");
+    let canonical_error = definition_named(&program, &std, "std.json", "JsonError");
+    let application_json = definition_named(&program, &application, "sema_test", "Json");
+    let application_error = definition_named(&program, &application, "sema_test", "JsonError");
+    assert_ne!(canonical_json, application_json);
+    assert_ne!(canonical_error, application_error);
+
+    for (function_name, canonical) in [
+        ("jsonIdentity", canonical_json),
+        ("errorIdentity", canonical_error),
+    ] {
+        let function = definition_named(&program, &application, "sema_test", function_name);
+        let Some(Signature::Callable(signature)) = analysis.typed.signatures.get(function) else {
+            panic!("{function_name} must have a callable signature");
+        };
+        let expected = TyData::Nominal {
+            definition: canonical,
+            arguments: Vec::new(),
+        };
+        assert_eq!(analysis.typed.types.data(signature.params[0].1), &expected);
+        assert_eq!(analysis.typed.types.data(signature.return_ty), &expected);
+
+        let DefinitionKind::Function(source) = &program.definitions[function].kind else {
+            panic!("{function_name} must be a function");
+        };
+        let body = analysis
+            .typed
+            .body(source.body)
+            .expect("checked identity body");
+        assert!(body.calls.values().any(|call| {
+            let CallTarget::EnumVariant(variant) = call.target else {
+                return false;
+            };
+            let DefinitionKind::Variant(source) = &program.definitions[variant].kind else {
+                return false;
+            };
+            source.owner == canonical
+        }));
+    }
 }
 
 #[test]
@@ -721,6 +865,8 @@ fn wrong(text Text) {
     let map = TextMap[Int]().insert(1, text)
     let entry = map.entry_at("zero")
     let missing = Json.Null()
+    let missingDepth = JsonError.DepthLimit()
+    let explicitTypeArgument = Json.Bool[Bool](true)
     let badJson = Json.Bool(text)
     let formatted = format_json(text)
     write(LogLevel.Info, "event", TextMap[Int]())
@@ -751,6 +897,22 @@ fn incompleteIo(kind IoErrorKind) {
     assert!(
         codes.iter().filter(|code| **code == "TypeMismatch").count() >= 4,
         "{diagnostics:#?}"
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.message == "value constructor is not callable")
+            .count(),
+        2,
+        "Json.Null() and JsonError.DepthLimit() must use strict nullary enum syntax: {diagnostics:#?}"
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.message == "too many explicit generic arguments")
+            .count(),
+        1,
+        "non-generic Json constructors must reject explicit type arguments: {diagnostics:#?}"
     );
     assert!(
         codes

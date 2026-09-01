@@ -60,10 +60,11 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   package's private declarations; production builds and portable libraries
   exclude the companion completely.
 - Compiler-distributed `std` source modules compiled through the ordinary
-  frontend, including integer parsing, JSON parsing and formatting, logging wrappers, process
-  wrappers, resource concepts, the public `DecodeTextError` and `PathError`
-  enums, the public `std.time.milliseconds` wrapper, and the complete public
-  `std.log` graph. Time construction now resolves through an ordinary source
+  frontend, including integer parsing, the public `Json` and `JsonError` enums,
+  JSON parsing and formatting, logging wrappers, process wrappers, resource
+  concepts, the public `DecodeTextError` and `PathError` enums, the public
+  `std.time.milliseconds` wrapper, and the complete public `std.log` graph.
+  Time construction now resolves through an ordinary source
   `DefId`; only its exact-owner private primitive remains below source. Logging
   resolves through ordinary source `DefId` values and has no universal-value
   native fallback;
@@ -76,6 +77,11 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   `CollectionShare` SSA boundaries so COW aliases cannot inherit uniqueness.
   The compiler, LLVM backend, runtime ABI, and runtime contain no
   JSON-formatting opcode, layout descriptor, or entry point.
+  `Json` and `JsonError` now have ordinary exact `std.json` source identities,
+  constructors, patterns, exhaustiveness, and structural equality. The
+  compiler no longer synthesizes their semantic types, fixed MIR slots, LCIR
+  catalog fields, or static LSP catalog entries; qualified source enum
+  constructors now index both their enum owner and variant for navigation.
   Packed Bytes growth followed by `Bytes.decode_utf8` is also the sole
   integer-unit-to-Text route; the former `Text.from_utf8_units(List[Int])`
   builtin, LCIR instruction, LLVM lowering, runtime symbol, and ABI identity
@@ -95,8 +101,9 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
   public `std.file` and `std.net` functions resolve through ordinary source
   wrappers, and the Path forms reuse their Text counterparts. Only 16
   exact-owner resource/I/O/close leaves plus two protected error access leaves
-  remain below source. Interpreted MIR artifact 46 and persistent cache schema
-  19 reject removed UTF-8-unit dispatch, infinite value layouts,
+  remain below source. Interpreted MIR artifact 47 and persistent cache schema
+  20 reject removed compiler-synthesized JSON types and UTF-8-unit dispatch,
+  infinite value layouts,
   source-impossible mutable parameter slots and coroutine receivers,
   invariant-boundary bypasses, removed semantic types, fixed slots, and
   special cleanup tags instead of decoding them through compatibility paths.

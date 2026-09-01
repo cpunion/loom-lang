@@ -44,8 +44,6 @@ pub enum BuiltinType {
     ContractFault,
     TaskFault,
     Duration,
-    Json,
-    JsonError,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]

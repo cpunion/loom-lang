@@ -48,7 +48,7 @@ larger graph.
 
 ## Persistent layers
 
-The persistent cache schema is `19`. Current layers include source parse,
+The persistent cache schema is `20`. Current layers include source parse,
 package-interface presence, typed package state, complete checked MIR, target
 objects, and deterministic final artifacts.
 
@@ -73,14 +73,15 @@ profile, and cache reads cross both ordinary MIR validation and that profile;
 inconsistent or incomplete identity metadata is a cache miss.
 
 The canonical source identities for `std.float.is_finite`,
-`std.text.DecodeTextError`, `std.path.PathError`, `std.io.IoError`,
+`std.text.DecodeTextError`, `std.path.PathError`, `std.json.Json`,
+`std.json.JsonError`, `std.io.IoError`,
 `std.io.IoErrorKind`, `std.file.File`, `std.net.Socket`, and
 `std.log.LogLevel` follow the same rule. Their exact `DefId` values are
 rederived before signature and body checking; cached semantic bytes never grant
 a same-named function, record, or enum canonical authority.
 
 Task policy and timer calls currently store a resolved `TaskIntrinsic` in typed
-body facts. Cache schema `19` and the `loom-compilation-cache-v19` domain cover
+body facts. Cache schema `20` and the `loom-compilation-cache-v20` domain cover
 that identity, the current compiler-private Float, logging, file, and network
 primitive sets, the exact mutable `Bytes.add` builtin, and exact source
 identities for standard types. They also
@@ -88,7 +89,9 @@ exclude the removed public-name JSON formatter and Path-specific file builtin
 tags: ordinary source resolves JSON formatting, while the file wrappers convert
 Path to Text before the private primitive. The same schema excludes the
 removed `Text.from_utf8_units` semantic and MIR dispatch; integer-unit text
-construction now closes through Bytes operations.
+construction now closes through Bytes operations. It also excludes the retired
+compiler-synthesized Json/JsonError types, constructors, and patterns; their
+exact `std.json` definitions now enter typed state as ordinary source items.
 Whether a body is reused or conservatively reanalyzed, MIR lowering consumes
 only the resolved identity; it never reconstructs a policy or canonical
 standard-library item from source spelling. The same schema removes the
@@ -98,7 +101,7 @@ resource methods, and disposal witnesses use exact ordinary source definitions.
 The Task cache identity disappears when the temporary catalog is replaced by
 ordinary source definitions.
 
-Checked-MIR cache envelopes use artifact version `46` and its exact current
+Checked-MIR cache envelopes use artifact version `47` and its exact current
 MIR shape. The artifact profile requires the complete compiler-known resource
 identity trio, all matching prelude ids, the canonical six-field
 `ConstraintError`, the exact source-backed decoding/path error identities and
@@ -109,7 +112,8 @@ trusting a serialized copy. Generic cache envelopes have a null
 `entry`; executable `.loomi` envelopes have one fixed exported entry. Each
 decoder rejects the opposite kind before MIR body validation. Integer parsing
 is ordinary `std.int` source and enters MIR as ordinary definitions and direct
-calls.
+calls. Json and JsonError likewise travel as ordinary source enum definitions;
+the artifact carries no fixed prelude slots for them.
 
 The complete compilation key includes the normalized project graph, exact
 sources, language and frontend build identities, embedded standard library,

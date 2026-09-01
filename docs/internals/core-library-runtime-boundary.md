@@ -161,6 +161,13 @@ enum cannot substitute for either compiler-owned source declaration; there is
 no builtin type, builtin variant, or compatibility alias behind the public
 names.
 
+`Json` and `JsonError` are ordinary public enums declared by the exact
+compiler-distributed `std.json` package. Their constructors, patterns,
+exhaustiveness, and recursive equality use the same source nominal machinery
+as application enums; checked MIR and LCIR carry no fixed JSON type slots or
+constructor catalog. A same-named application declaration cannot replace the
+compiler-owned source identity.
+
 `std.json.parse_json` and `std.json.format_json` are ordinary source functions.
 The iterative formatter walks the closed `Json` value with an indexed
 continuation/work stack. Each container retains only its next sibling index and

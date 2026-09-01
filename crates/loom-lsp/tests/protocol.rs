@@ -199,9 +199,12 @@ import std.log.write
 import std.net.Socket
 import std.net.try_connect
 
-fn inspect(problem IoError, value Json) {
+fn inspect(problem IoError, jsonProblem JsonError, value Json) {
     let fields = TextMap[Text]().insert("key", "value")
     let parsed = parse_json("null")
+    let null = Json.Null
+    let boolean = Json.Bool(true)
+    let depth = JsonError.DepthLimit
     debug("indexed from source")
     write(LogLevel.Info, problem.message(), fields)
 }
@@ -239,7 +242,14 @@ async fn inspect_resources(path Text) {
         json!({"jsonrpc":"2.0","id":8,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "Socket\nimport std.net.try_connect")}}),
         json!({"jsonrpc":"2.0","id":9,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "try_read_text().await")}}),
         json!({"jsonrpc":"2.0","id":10,"method":"textDocument/completion","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "\n}")}}),
-        json!({"jsonrpc":"2.0","id":11,"method":"shutdown","params":null}),
+        json!({"jsonrpc":"2.0","id":11,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "JsonError")}}),
+        json!({"jsonrpc":"2.0","id":12,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "Json) {")}}),
+        json!({"jsonrpc":"2.0","id":13,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "Json.Null")}}),
+        json!({"jsonrpc":"2.0","id":14,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "Null\n")}}),
+        json!({"jsonrpc":"2.0","id":15,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "Bool(true)")}}),
+        json!({"jsonrpc":"2.0","id":16,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "DepthLimit")}}),
+        json!({"jsonrpc":"2.0","id":17,"method":"textDocument/hover","params":{"textDocument":{"uri":file_uri},"position":source_position(source, "Json.Bool")}}),
+        json!({"jsonrpc":"2.0","id":18,"method":"shutdown","params":null}),
         json!({"jsonrpc":"2.0","method":"exit","params":null}),
     ];
     let responses = run_framed_session(&messages);
@@ -255,6 +265,13 @@ async fn inspect_resources(path Text) {
         (7, "record File"),
         (8, "record Socket"),
         (9, "method try_read_text"),
+        (11, "`enum JsonError`"),
+        (12, "`enum Json`"),
+        (13, "`enum Json`"),
+        (14, "`enum variant Null`"),
+        (15, "`enum variant Bool`"),
+        (16, "`enum variant DepthLimit`"),
+        (17, "`enum Json`"),
     ] {
         let hover = responses
             .iter()
@@ -310,6 +327,16 @@ async fn inspect_resources(path Text) {
         logging_hover.contains("`function debug`") && logging_hover.contains("module `std.log`"),
         "{logging_hover}"
     );
+    for id in [11, 12, 13, 14, 15, 16, 17] {
+        let hover = responses
+            .iter()
+            .find(|message| message.get("id") == Some(&json!(id)))
+            .unwrap_or_else(|| panic!("missing source-backed JSON hover {id}"))
+            .pointer("/result/contents/value")
+            .and_then(Value::as_str)
+            .expect("source-backed JSON hover markdown");
+        assert!(hover.contains("module `std.json`"), "{hover}");
+    }
 
     let completion_items = responses
         .iter()
@@ -367,6 +394,8 @@ async fn inspect_resources(path Text) {
         );
     }
     for (name, kind, module) in [
+        ("Json", "enum", "std.json"),
+        ("JsonError", "enum", "std.json"),
         ("IoError", "record", "std.io"),
         ("IoErrorKind", "enum", "std.io"),
         ("kind", "method", "std.io"),

@@ -20,17 +20,17 @@ writers for unreleased formats. Development history belongs in
 | Manifest schema | `2` |
 | Lockfile schema | `2` |
 | Registry protocol and bundle | `1` |
-| Interpreted MIR artifact | `loom.interpreted-mir`, version `46` |
+| Interpreted MIR artifact | `loom.interpreted-mir`, version `47` |
 | Portable library artifact | `loom-library`, source-and-interface version `4` |
-| Persistent compiler cache | schema `19` |
-| Compilation-cache domain | `loom-compilation-cache-v19` |
+| Persistent compiler cache | schema `20` |
+| Compilation-cache domain | `loom-compilation-cache-v20` |
 | Interpreted final-cache layer | `final-artifact-v3` |
 | Interpreted artifact writer | `loom-interpreted-artifact-writer-v3` |
 | Portable-library final-cache layer | `portable-library-artifact-v4` |
-| LCIR textual dump | `lcir 53` |
-| LCIR artifact identity | schema `55` |
-| LCIR native-object domain | `loom-lcir-native-object-v48` |
-| LLVM object-cache domain | `loom-llvm-object-cache-v51` |
+| LCIR textual dump | `lcir 54` |
+| LCIR artifact identity | schema `56` |
+| LCIR native-object domain | `loom-lcir-native-object-v49` |
+| LLVM object-cache domain | `loom-llvm-object-cache-v52` |
 | Controlled quality evidence | schema `5` |
 | Runtime bundle manifest | schema `2` |
 | Native runtime ABI component | `40` |
@@ -77,6 +77,15 @@ join/fault operations (`loom_task_prepare_join`,
 resource, GC, and shadow-stack wires did not change. An older compiler or
 runtime bundle is therefore rejected instead of crossing a removed symbol
 boundary.
+
+Interpreted MIR 47 removes the fixed Json/JsonError prelude slots and all
+compiler-synthesized constructors and patterns; both enums are ordinary exact
+`std.json` source definitions. Persistent compiler-cache schema 20 and its
+matching domain invalidate typed state and MIR that retained the builtin
+identities. LCIR dump 54 and artifact identity schema 56 remove their canonical
+catalog fields; native-object domain 49 and LLVM object-cache domain 52 prevent
+reuse of objects prepared from the old fixed catalog. The native runtime ABI is
+unchanged because it never receives a Json value or source type identity.
 
 Interpreted MIR 46 removes the `TextFromUtf8Units` builtin and rejects older
 serialized enum sets. Persistent compiler-cache schema 19 and its matching

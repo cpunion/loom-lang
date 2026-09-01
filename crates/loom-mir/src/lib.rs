@@ -99,10 +99,6 @@ pub struct PreludeIds {
     #[serde(deserialize_with = "deserialize_required_option")]
     pub text_map: Option<TypeId>,
     #[serde(deserialize_with = "deserialize_required_option")]
-    pub json: Option<TypeId>,
-    #[serde(deserialize_with = "deserialize_required_option")]
-    pub json_error: Option<TypeId>,
-    #[serde(deserialize_with = "deserialize_required_option")]
     pub io_error: Option<TypeId>,
     #[serde(deserialize_with = "deserialize_required_option")]
     pub io_error_kind: Option<TypeId>,

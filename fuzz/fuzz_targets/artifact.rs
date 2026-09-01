@@ -35,7 +35,10 @@ fn valid_seed() -> &'static Vec<u8> {
         let program = compile(STRUCTURED_BUILTIN_SOURCE)
             .unwrap_or_else(|error| panic!("structured fuzz seed must compile: {error}"));
         assert!(program.prelude.text_map.is_some());
-        assert!(program.prelude.json.is_some());
+        assert!(program
+            .types
+            .iter()
+            .any(|definition| definition.name == "Json"));
         assert!(program.prelude.io_error.is_some());
         assert!(program.prelude.log_level.is_some());
         encode_interpreted_executable_artifact(&program, "main").expect("valid fuzz seed")

@@ -36,9 +36,7 @@ const DURATION_TYPE: TypeId = TypeId(6);
 const BYTES_TYPE: TypeId = TypeId(7);
 const PATH_TYPE: TypeId = TypeId(8);
 const TEXT_MAP_TYPE: TypeId = TypeId(9);
-const JSON_TYPE: TypeId = TypeId(10);
-const JSON_ERROR_TYPE: TypeId = TypeId(11);
-const SYNTHETIC_TYPE_COUNT: u32 = 12;
+const SYNTHETIC_TYPE_COUNT: u32 = 10;
 
 /// Failure at the trusted typed-HIR to MIR boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -428,8 +426,6 @@ impl<'a> Compiler<'a> {
                 decode_text_error,
                 path_error,
                 text_map: Some(TEXT_MAP_TYPE),
-                json: Some(JSON_TYPE),
-                json_error: Some(JSON_ERROR_TYPE),
                 io_error: Some(self.io_error_type),
                 io_error_kind: Some(self.io_error_kind_type),
                 log_level,
@@ -1034,8 +1030,6 @@ impl<'a> Compiler<'a> {
                 }
                 BuiltinType::TaskFault => RequirementType::Nominal(TASK_FAULT_TYPE, Vec::new()),
                 BuiltinType::Duration => RequirementType::Nominal(DURATION_TYPE, Vec::new()),
-                BuiltinType::Json => RequirementType::Nominal(JSON_TYPE, Vec::new()),
-                BuiltinType::JsonError => RequirementType::Nominal(JSON_ERROR_TYPE, Vec::new()),
             }),
             TyData::Tuple(elements) => Ok(RequirementType::Tuple(
                 elements
@@ -3341,16 +3335,6 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
             BuiltinValue::Some
             | BuiltinValue::Ok
             | BuiltinValue::Err
-            | BuiltinValue::JsonNull
-            | BuiltinValue::JsonBool
-            | BuiltinValue::JsonNumber
-            | BuiltinValue::JsonText
-            | BuiltinValue::JsonArray
-            | BuiltinValue::JsonObject
-            | BuiltinValue::JsonInvalidSyntax
-            | BuiltinValue::JsonNumberOutOfRange
-            | BuiltinValue::JsonDepthLimit
-            | BuiltinValue::JsonNonFiniteNumber
             | BuiltinValue::TaskCompleted
             | BuiltinValue::TaskFaulted
             | BuiltinValue::TaskCancelled => {
@@ -3358,16 +3342,6 @@ impl<'compiler, 'program> FunctionLowerer<'compiler, 'program> {
                     BuiltinValue::Some => (OPTION_TYPE, VariantId(1)),
                     BuiltinValue::Ok => (RESULT_TYPE, VariantId(0)),
                     BuiltinValue::Err => (RESULT_TYPE, VariantId(1)),
-                    BuiltinValue::JsonNull => (JSON_TYPE, VariantId(0)),
-                    BuiltinValue::JsonBool => (JSON_TYPE, VariantId(1)),
-                    BuiltinValue::JsonNumber => (JSON_TYPE, VariantId(2)),
-                    BuiltinValue::JsonText => (JSON_TYPE, VariantId(3)),
-                    BuiltinValue::JsonArray => (JSON_TYPE, VariantId(4)),
-                    BuiltinValue::JsonObject => (JSON_TYPE, VariantId(5)),
-                    BuiltinValue::JsonInvalidSyntax => (JSON_ERROR_TYPE, VariantId(0)),
-                    BuiltinValue::JsonNumberOutOfRange => (JSON_ERROR_TYPE, VariantId(1)),
-                    BuiltinValue::JsonDepthLimit => (JSON_ERROR_TYPE, VariantId(2)),
-                    BuiltinValue::JsonNonFiniteNumber => (JSON_ERROR_TYPE, VariantId(3)),
                     BuiltinValue::TaskCompleted => (TASK_OUTCOME_TYPE, VariantId(0)),
                     BuiltinValue::TaskFaulted => (TASK_OUTCOME_TYPE, VariantId(1)),
                     BuiltinValue::TaskCancelled => (TASK_OUTCOME_TYPE, VariantId(2)),
@@ -3923,16 +3897,6 @@ fn builtin_variant_id(builtin: BuiltinValue) -> Option<(TypeId, VariantId)> {
         BuiltinValue::Some => (OPTION_TYPE, VariantId(1)),
         BuiltinValue::Ok => (RESULT_TYPE, VariantId(0)),
         BuiltinValue::Err => (RESULT_TYPE, VariantId(1)),
-        BuiltinValue::JsonNull => (JSON_TYPE, VariantId(0)),
-        BuiltinValue::JsonBool => (JSON_TYPE, VariantId(1)),
-        BuiltinValue::JsonNumber => (JSON_TYPE, VariantId(2)),
-        BuiltinValue::JsonText => (JSON_TYPE, VariantId(3)),
-        BuiltinValue::JsonArray => (JSON_TYPE, VariantId(4)),
-        BuiltinValue::JsonObject => (JSON_TYPE, VariantId(5)),
-        BuiltinValue::JsonInvalidSyntax => (JSON_ERROR_TYPE, VariantId(0)),
-        BuiltinValue::JsonNumberOutOfRange => (JSON_ERROR_TYPE, VariantId(1)),
-        BuiltinValue::JsonDepthLimit => (JSON_ERROR_TYPE, VariantId(2)),
-        BuiltinValue::JsonNonFiniteNumber => (JSON_ERROR_TYPE, VariantId(3)),
         BuiltinValue::TaskCompleted => (TASK_OUTCOME_TYPE, VariantId(0)),
         BuiltinValue::TaskFaulted => (TASK_OUTCOME_TYPE, VariantId(1)),
         BuiltinValue::TaskCancelled => (TASK_OUTCOME_TYPE, VariantId(2)),
@@ -4219,87 +4183,7 @@ fn synthetic_types() -> Vec<TypeDef> {
                 invariant: None,
             },
         },
-        json_type(span),
-        json_error_type(span),
     ]
-}
-
-fn json_type(span: Span) -> TypeDef {
-    TypeDef {
-        id: JSON_TYPE,
-        name: "Json".into(),
-        span,
-        type_parameters: 0,
-        kind: TypeDefKind::Enum {
-            variants: vec![
-                VariantDef {
-                    id: VariantId(0),
-                    name: "Null".into(),
-                    payload: Vec::new(),
-                    span,
-                },
-                VariantDef {
-                    id: VariantId(1),
-                    name: "Bool".into(),
-                    payload: vec![Type::Bool],
-                    span,
-                },
-                VariantDef {
-                    id: VariantId(2),
-                    name: "Number".into(),
-                    payload: vec![Type::Float],
-                    span,
-                },
-                VariantDef {
-                    id: VariantId(3),
-                    name: "Text".into(),
-                    payload: vec![Type::Text],
-                    span,
-                },
-                VariantDef {
-                    id: VariantId(4),
-                    name: "Array".into(),
-                    payload: vec![Type::List(Box::new(Type::Nominal(JSON_TYPE, Vec::new())))],
-                    span,
-                },
-                VariantDef {
-                    id: VariantId(5),
-                    name: "Object".into(),
-                    payload: vec![Type::Nominal(
-                        TEXT_MAP_TYPE,
-                        vec![Type::Nominal(JSON_TYPE, Vec::new())],
-                    )],
-                    span,
-                },
-            ],
-        },
-    }
-}
-
-fn json_error_type(span: Span) -> TypeDef {
-    TypeDef {
-        id: JSON_ERROR_TYPE,
-        name: "JsonError".into(),
-        span,
-        type_parameters: 0,
-        kind: TypeDefKind::Enum {
-            variants: [
-                ("InvalidSyntax", vec![Type::Int]),
-                ("NumberOutOfRange", vec![Type::Int]),
-                ("DepthLimit", Vec::new()),
-                ("NonFiniteNumber", Vec::new()),
-            ]
-            .into_iter()
-            .enumerate()
-            .map(|(index, (name, payload))| VariantDef {
-                id: VariantId(u32::try_from(index).expect("json error variant index")),
-                name: name.into(),
-                payload,
-                span,
-            })
-            .collect(),
-        },
-    }
 }
 
 fn canonical_resource_type(
@@ -4378,8 +4262,6 @@ fn lower_builtin_type(builtin: BuiltinType) -> Type {
         BuiltinType::ContractFault => Type::Nominal(CONTRACT_FAULT_TYPE, Vec::new()),
         BuiltinType::TaskFault => Type::Nominal(TASK_FAULT_TYPE, Vec::new()),
         BuiltinType::Duration => Type::Nominal(DURATION_TYPE, Vec::new()),
-        BuiltinType::Json => Type::Nominal(JSON_TYPE, Vec::new()),
-        BuiltinType::JsonError => Type::Nominal(JSON_ERROR_TYPE, Vec::new()),
     }
 }
 
