@@ -152,8 +152,10 @@ scheduler boundary. There is no duration-specific compiler construction,
 prelude identity, representation, method dispatch, or runtime operation.
 
 `DecodeTextError` and `PathError` are likewise ordinary public enums declared
-by compiler-distributed `std.text` and `std.path` source. Checked MIR retains
-their exact source `TypeId` values in its prelude catalog, and typed LCIR
+by compiler-distributed `std.text` and `std.path` source. `Path.from_text`,
+`Path.as_text`, and `Path.join` are ordinary source methods; only their exact
+bodies can invoke the corresponding compiler-private typed leaves. Checked MIR
+retains the exact source `TypeId` values in its prelude catalog, and typed LCIR
 revalidates those identities and variant shapes before decode or path
 instructions may construct a result. A same-named application or dependency
 enum cannot substitute for either compiler-owned source declaration; there is
@@ -234,8 +236,10 @@ result is the lexicographically smallest duplicated key in canonical UTF-8
 order. It is a general collection operation, not a JSON-specific runtime
 entry point.
 
-Portable Path operations follow the same narrow-boundary rule. `Path` is one
-Text field, so `Path.from_text` validates U+0000 and `Path.as_text` extracts the
+Portable Path operations follow the same narrow-boundary rule. Public calls
+first resolve to ordinary source methods, whose authenticated private leaves
+enter the existing typed MIR operations. `Path` is one Text field, so
+`Path.from_text` validates U+0000 and `Path.as_text` extracts the
 field directly without allocating. Only lexical join needs a bulk construction
 helper: `loom_runtime_path_join_typed_v1` stages the two complete Text payloads,
 rejects a leading `/` in the child, and publishes one Text after a possible

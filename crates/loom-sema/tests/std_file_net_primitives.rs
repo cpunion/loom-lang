@@ -8,6 +8,7 @@ use loom_syntax::parse_with_file;
 const FILE_SOURCE: &str = include_str!("../../../library/std/file/file.loom");
 const NET_SOURCE: &str = include_str!("../../../library/std/net/net.loom");
 const IO_SOURCE: &str = include_str!("../../../library/std/io/io.loom");
+const PATH_SOURCE: &str = include_str!("../../../library/std/path/path.loom");
 const RESOURCE_SOURCE: &str = include_str!("../../../library/std/resource/resource.loom");
 
 const PRIVATE_BUILTINS: [BuiltinValue; 6] = [
@@ -37,13 +38,15 @@ fn definition_named(program: &Program, package: &PackageId, module: &str, name: 
 }
 
 fn call_targets(program: &Program, analysis: &Analysis, definition: DefId) -> Vec<CallTarget> {
-    let DefinitionKind::Function(function) = &program.definitions[definition].kind else {
-        panic!("definition is not a function")
+    let body = match &program.definitions[definition].kind {
+        DefinitionKind::Function(function) => function.body,
+        DefinitionKind::Method(method) => method.body.expect("source method body"),
+        _ => panic!("definition is not callable"),
     };
     analysis
         .typed
-        .body(function.body)
-        .expect("checked function body")
+        .body(body)
+        .expect("checked callable body")
         .calls
         .values()
         .map(|call| call.target.clone())
@@ -90,11 +93,13 @@ fn public_file_and_net_calls_are_source_functions_with_exact_private_owners() {
     let file_file = FileId(1);
     let net_file = FileId(2);
     let resource_file = FileId(3);
-    let application_file = FileId(4);
+    let path_file = FileId(4);
+    let application_file = FileId(5);
     let io = parse(io_file, IO_SOURCE);
     let file = parse(file_file, FILE_SOURCE);
     let net = parse(net_file, NET_SOURCE);
     let resource = parse(resource_file, RESOURCE_SOURCE);
+    let path = parse(path_file, PATH_SOURCE);
     let application = parse(
         application_file,
         r"
@@ -154,6 +159,12 @@ pub fn app_try_connect(host Text, port Int) Task[Result[Socket, IoError]] {
             package: std_package.clone(),
             module: ModuleName::new("std.resource"),
             syntax: resource.ast(),
+        },
+        PackageSourceUnit {
+            file: path_file,
+            package: std_package.clone(),
+            module: ModuleName::new("std.path"),
+            syntax: path.ast(),
         },
         PackageSourceUnit {
             file: application_file,
@@ -226,6 +237,7 @@ pub fn app_try_connect(host Text, port Int) Task[Result[Socket, IoError]] {
     let try_create = definitions[&("std.file", "try_create")];
     let connect = definitions[&("std.net", "connect")];
     let try_connect = definitions[&("std.net", "try_connect")];
+    let path_as_text = definition_named(&lowered.program, &std_package, "std.path", "as_text");
     for (definition, builtin) in [
         (open_read, BuiltinValue::FileOpenRead),
         (create, BuiltinValue::FileCreate),
@@ -250,7 +262,7 @@ pub fn app_try_connect(host Text, port Int) Task[Result[Socket, IoError]] {
         let definition = definitions[&("std.file", path_wrapper)];
         let targets = call_targets(&lowered.program, &analysis, definition);
         assert!(
-            targets.contains(&CallTarget::Builtin(BuiltinValue::PathAsText)),
+            targets.contains(&CallTarget::InherentMethod(path_as_text)),
             "{path_wrapper} must lower Path through its public Text spelling: {targets:#?}"
         );
         assert!(
@@ -265,6 +277,11 @@ pub fn app_try_connect(host Text, port Int) Task[Result[Socket, IoError]] {
             "Path wrappers must not own a private acquisition primitive: {targets:#?}"
         );
     }
+    assert_eq!(
+        call_targets(&lowered.program, &analysis, path_as_text),
+        [CallTarget::Builtin(BuiltinValue::PathAsText)],
+        "only the exact Path.as_text source method may own its private leaf"
+    );
 
     let expected_owners = [
         (BuiltinValue::FileOpenRead, open_read),
@@ -327,13 +344,15 @@ fn private_file_and_net_primitives_reject_wrong_owner_package_and_application() 
     let file_file = FileId(1);
     let net_file = FileId(2);
     let resource_file = FileId(3);
-    let wrong_owner_file = FileId(4);
-    let wrong_package_file = FileId(5);
-    let application_file = FileId(6);
+    let path_file = FileId(4);
+    let wrong_owner_file = FileId(5);
+    let wrong_package_file = FileId(6);
+    let application_file = FileId(7);
     let io = parse(io_file, IO_SOURCE);
     let file = parse(file_file, FILE_SOURCE);
     let net = parse(net_file, NET_SOURCE);
     let resource = parse(resource_file, RESOURCE_SOURCE);
+    let path = parse(path_file, PATH_SOURCE);
     let wrong_owner = parse(wrong_owner_file, HOSTILE_SOURCE);
     let wrong_package = parse(wrong_package_file, HOSTILE_SOURCE);
     let application = parse(application_file, HOSTILE_SOURCE);
@@ -365,6 +384,12 @@ fn private_file_and_net_primitives_reject_wrong_owner_package_and_application() 
             package: std_package.clone(),
             module: ModuleName::new("std.resource"),
             syntax: resource.ast(),
+        },
+        PackageSourceUnit {
+            file: path_file,
+            package: std_package.clone(),
+            module: ModuleName::new("std.path"),
+            syntax: path.ast(),
         },
         PackageSourceUnit {
             file: wrong_owner_file,

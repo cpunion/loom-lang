@@ -1,5 +1,26 @@
+import std.path.__as_text
+import std.path.__from_text
+import std.path.__join
+
 /// Describes why a portable lexical Path operation cannot succeed.
 pub enum PathError {
     ContainsNul
     AbsoluteJoin
+}
+
+impl Path {
+    /// Constructs a portable lexical path from its exact Text spelling.
+    pub static method from_text(text Text) Result[Path, PathError] {
+        __from_text(text)
+    }
+
+    /// Returns the exact Text spelling retained by this path.
+    pub method as_text(self) Text {
+        __as_text(self)
+    }
+
+    /// Appends one relative lexical child path.
+    pub method join(self, child Path) Result[Path, PathError] {
+        __join(self, child)
+    }
 }

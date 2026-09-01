@@ -509,6 +509,12 @@ impl Analyzer<'_> {
                                 && module.name.as_str() == TASK_MODULE
                                 && self.program.is_production_module(item.module)
                         }
+                        TyData::Builtin(BuiltinType::Path) => {
+                            let module = &self.program.modules[item.module];
+                            module.package == PackageId::compiler_std(LOOM_LANGUAGE_VERSION)
+                                && module.name.as_str() == PATH_MODULE
+                                && self.program.is_production_module(item.module)
+                        }
                         _ => false,
                     };
                     if !owned {
@@ -2938,6 +2944,7 @@ enum ValuePathLookup {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StaticTypeHead {
     Nominal(DefId),
+    Path,
     Task,
     Generic,
 }
@@ -6502,6 +6509,13 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                     crate::std_primitives::CompilerStdPrimitive::ProcessEnvironment => {
                         BuiltinValue::ProcessEnvironment
                     }
+                    crate::std_primitives::CompilerStdPrimitive::PathFromText => {
+                        BuiltinValue::PathFromText
+                    }
+                    crate::std_primitives::CompilerStdPrimitive::PathAsText => {
+                        BuiltinValue::PathAsText
+                    }
+                    crate::std_primitives::CompilerStdPrimitive::PathJoin => BuiltinValue::PathJoin,
                     crate::std_primitives::CompilerStdPrimitive::TaskSleep => {
                         BuiltinValue::TaskSleep
                     }
@@ -6695,6 +6709,9 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::ProcessArgumentCount
             | BuiltinValue::ProcessArgumentAt
             | BuiltinValue::ProcessEnvironment
+            | BuiltinValue::PathFromText
+            | BuiltinValue::PathAsText
+            | BuiltinValue::PathJoin
             | BuiltinValue::TaskSleep
             | BuiltinValue::FileOpenRead
             | BuiltinValue::FileCreate
@@ -6744,10 +6761,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             | BuiltinValue::BytesGet
             | BuiltinValue::BytesAdd
             | BuiltinValue::BytesAppend
-            | BuiltinValue::BytesDecodeUtf8
-            | BuiltinValue::PathFromText
-            | BuiltinValue::PathAsText
-            | BuiltinValue::PathJoin => {
+            | BuiltinValue::BytesDecodeUtf8 => {
                 self.error_at(
                     "TypeMismatch",
                     "List builtin is only available through List construction or methods",
@@ -6880,6 +6894,26 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 let text = self.types().builtin(BuiltinType::Text);
                 self.check_fixed_arguments(expression, arguments, &[text]);
                 self.types().intern(TyData::Option(text))
+            }
+            BuiltinValue::PathFromText => {
+                let text = self.types().builtin(BuiltinType::Text);
+                self.check_fixed_arguments(expression, arguments, &[text]);
+                let path = self.types().builtin(BuiltinType::Path);
+                let definition = self.analyzer.canonical_std_items.path_error;
+                let error = self.canonical_std_type(definition, "std.path.PathError", expression);
+                self.types().intern(TyData::Result { ok: path, error })
+            }
+            BuiltinValue::PathAsText => {
+                let path = self.types().builtin(BuiltinType::Path);
+                self.check_fixed_arguments(expression, arguments, &[path]);
+                self.types().builtin(BuiltinType::Text)
+            }
+            BuiltinValue::PathJoin => {
+                let path = self.types().builtin(BuiltinType::Path);
+                self.check_fixed_arguments(expression, arguments, &[path, path]);
+                let definition = self.analyzer.canonical_std_items.path_error;
+                let error = self.canonical_std_type(definition, "std.path.PathError", expression);
+                self.types().intern(TyData::Result { ok: path, error })
             }
             BuiltinValue::TaskSleep => {
                 if arguments.len() != 1 {
@@ -7332,6 +7366,13 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 .or_else(|| {
                     self.resolves_builtin_task_head(path)
                         .then_some(StaticTypeHead::Task)
+                })
+                .or_else(|| {
+                    let [segment] = path.segments.as_slice() else {
+                        return None;
+                    };
+                    (builtin_type(segment.name.as_str()) == Some(BuiltinType::Path))
+                        .then_some(StaticTypeHead::Path)
                 }),
         }
     }
@@ -7365,7 +7406,8 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                 (StaticTypeHead::Nominal(expected), TyData::Nominal { definition, .. }) => {
                     *definition == expected
                 }
-                (StaticTypeHead::Task, TyData::Task(_)) => true,
+                (StaticTypeHead::Task, TyData::Task(_))
+                | (StaticTypeHead::Path, TyData::Builtin(BuiltinType::Path)) => true,
                 _ => false,
             };
             if !target_matches {
@@ -7406,7 +7448,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         let head = self.static_type_head(type_path)?;
         let candidates = self.source_static_method_candidates(head, method_name);
         if candidates.is_empty() {
-            if head == StaticTypeHead::Task {
+            if matches!(head, StaticTypeHead::Task | StaticTypeHead::Path) {
                 return None;
             }
             self.error_at(
@@ -7509,7 +7551,7 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             ) {
                 return result;
             }
-            if let Some(result) = self.check_compiler_static_method_call(
+            if let Some(result) = self.check_task_intrinsic_call(
                 expression,
                 &type_path,
                 method_name,
@@ -8126,62 +8168,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
         None
     }
 
-    fn check_compiler_static_method_call(
-        &mut self,
-        expression: ExprId,
-        type_path: &Path,
-        method_name: &Name,
-        type_arguments: &[TypeRefId],
-        arguments: &[ExprId],
-    ) -> Option<TyId> {
-        if let Some(result) = self.check_task_intrinsic_call(
-            expression,
-            type_path,
-            method_name,
-            type_arguments,
-            arguments,
-        ) {
-            return Some(result);
-        }
-        let [segment] = type_path.segments.as_slice() else {
-            return None;
-        };
-        let (builtin, parameters, result) = match (segment.name.as_str(), method_name.as_str()) {
-            ("Path", "from_text") => {
-                let text = self.types().builtin(BuiltinType::Text);
-                let path = self.types().builtin(BuiltinType::Path);
-                let definition = self.analyzer.canonical_std_items.path_error;
-                let error = self.canonical_std_type(definition, "std.path.PathError", expression);
-                (
-                    BuiltinValue::PathFromText,
-                    vec![text],
-                    self.types().intern(TyData::Result { ok: path, error }),
-                )
-            }
-            _ => return None,
-        };
-        if !type_arguments.is_empty() {
-            self.error_at(
-                "TypeMismatch",
-                "standard static methods do not accept explicit type arguments",
-                expression,
-            );
-        }
-        self.check_fixed_arguments(expression, arguments, &parameters);
-        self.finish_call_arguments(arguments);
-        self.semantics.calls.insert(
-            expression,
-            CallResolution {
-                target: CallTarget::Builtin(builtin),
-                substitution: Substitution::default(),
-                dispatch_witness: None,
-                witnesses: Vec::new(),
-                receiver: None,
-            },
-        );
-        Some(result)
-    }
-
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn check_builtin_value_method_call(
         &mut self,
@@ -8263,24 +8249,6 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
                         ReceiverPassing::Value,
                         Vec::new(),
                         self.types().intern(TyData::Result { ok: text, error }),
-                    )
-                }
-                (BuiltinType::Path, "as_text") => (
-                    BuiltinValue::PathAsText,
-                    ReceiverPassing::Value,
-                    Vec::new(),
-                    text,
-                ),
-                (BuiltinType::Path, "join") => {
-                    let path = self.types().builtin(BuiltinType::Path);
-                    let definition = self.analyzer.canonical_std_items.path_error;
-                    let error =
-                        self.canonical_std_type(definition, "std.path.PathError", expression);
-                    (
-                        BuiltinValue::PathJoin,
-                        ReceiverPassing::Value,
-                        vec![path],
-                        self.types().intern(TyData::Result { ok: path, error }),
                     )
                 }
                 _ => return None,
@@ -10366,9 +10334,84 @@ impl<'a, 'program> BodyChecker<'a, 'program> {
             Primitive::SocketClose => {
                 self.is_canonical_dispose_method(self.analyzer.canonical_std_items.socket)
             }
+            Primitive::PathFromText | Primitive::PathAsText | Primitive::PathJoin => {
+                self.is_unique_compiler_std_path_method(primitive)
+            }
             Primitive::TaskSleep => self.is_unique_compiler_std_task_sleep_method(),
             _ => true,
         }
+    }
+
+    fn is_unique_compiler_std_path_method(
+        &mut self,
+        primitive: crate::std_primitives::CompilerStdPrimitive,
+    ) -> bool {
+        use crate::std_primitives::CompilerStdPrimitive as Primitive;
+
+        let path = self.analyzer.typed.types.builtin(BuiltinType::Path);
+        let text = self.analyzer.typed.types.builtin(BuiltinType::Text);
+        let Some(path_error) = self.analyzer.canonical_std_items.path_error else {
+            return false;
+        };
+        let error = self.analyzer.typed.types.intern(TyData::Nominal {
+            definition: path_error,
+            arguments: Vec::new(),
+        });
+        let result = self
+            .analyzer
+            .typed
+            .types
+            .intern(TyData::Result { ok: path, error });
+        let (name, receiver, parameters, return_ty) = match primitive {
+            Primitive::PathFromText => ("from_text", ReceiverKind::Static, vec![text], result),
+            Primitive::PathAsText => ("as_text", ReceiverKind::ReadOnly, Vec::new(), text),
+            Primitive::PathJoin => ("join", ReceiverKind::ReadOnly, vec![path], result),
+            _ => return false,
+        };
+        let mut candidates = self.analyzer.program.definitions.iter().filter_map(
+            |(definition, item)| {
+                let module = &self.analyzer.program.modules[item.module];
+                if module.package != PackageId::compiler_std(LOOM_LANGUAGE_VERSION)
+                    || module.name.as_str() != PATH_MODULE
+                    || !self.analyzer.program.is_production_module(item.module)
+                    || item.visibility != Visibility::Public
+                    || item
+                        .name
+                        .as_ref()
+                        .is_none_or(|candidate| candidate.as_str() != name)
+                {
+                    return None;
+                }
+                let DefinitionKind::Method(method) = &item.kind else {
+                    return None;
+                };
+                let DefinitionKind::InherentImpl(implementation) =
+                    &self.analyzer.program.definitions[method.owner].kind
+                else {
+                    return None;
+                };
+                let target_is_path = self
+                    .analyzer
+                    .typed
+                    .resolved_type_refs
+                    .get(implementation.target)
+                    .is_some_and(|ty| *ty == path);
+                let signature_is_exact = matches!(
+                    self.analyzer.typed.signatures.get(definition),
+                    Some(Signature::Callable(signature))
+                        if !signature.is_async
+                            && signature.generic_params.is_empty()
+                            && signature.receiver == Some(receiver)
+                            && signature.params.iter().map(|(_, ty)| *ty).eq(parameters.iter().copied())
+                            && signature.return_ty == return_ty
+                );
+                (target_is_path && signature_is_exact).then_some(definition)
+            },
+        );
+        matches!(
+            (candidates.next(), candidates.next()),
+            (Some(definition), None) if definition == self.environment.owner
+        )
     }
 
     fn is_unique_compiler_std_task_sleep_method(&mut self) -> bool {

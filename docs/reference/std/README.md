@@ -46,6 +46,9 @@ inspection intrinsic.
 `Task.sleep` is an ordinary public static method in `std.task`. Its source body
 alone may call the exact-owner private `__sleep` timer leaf; callers have no
 public-name intrinsic or compatibility fallback.
+`Path.from_text`, `Path.as_text`, and `Path.join` are ordinary public methods in
+`std.path`. Their three exact source bodies alone may call the corresponding
+private typed leaves; callers likewise have no public-name fallback.
 The public logging graph is ordinary Loom source over one compiler-private
 typed output primitive. Resource declarations are source-backed, but
 their fixed shapes and irreducible static rules remain part of the language
