@@ -2934,62 +2934,12 @@ fn io_error_types() -> Vec<TypeDef> {
 }
 
 #[test]
-fn prelude_io_error_allows_only_its_checked_accessors() {
-    let kind = TypeId(0);
-    let error = TypeId(1);
-    let error_ty = Type::Nominal(error, Vec::new());
-    let kind_ty = Type::Nominal(kind, Vec::new());
-    let accessor = |builtin, ty| {
-        expr(
-            ExprKind::Call {
-                target: CallTarget::Builtin(builtin),
-                type_arguments: Vec::new(),
-                arguments: vec![CallArgument::Value(copy(0, error_ty.clone()))],
-                witnesses: Vec::new(),
-            },
-            ty,
-        )
-    };
-    let program = Program {
-        types: io_error_types(),
-        functions: vec![function(
-            0,
-            vec![local(0, error_ty.clone(), false)],
-            Vec::new(),
-            Type::Text,
-            Block {
-                statements: vec![Statement {
-                    kind: StatementKind::Evaluate(accessor(
-                        loom_mir::Builtin::IoErrorKind,
-                        kind_ty,
-                    )),
-                    span: span(),
-                }],
-                tail: Some(Box::new(accessor(
-                    loom_mir::Builtin::IoErrorMessage,
-                    Type::Text,
-                ))),
-                span: span(),
-            },
-        )],
-        prelude: PreludeIds {
-            io_error: Some(error),
-            io_error_kind: Some(kind),
-            ..PreludeIds::default()
-        },
-        ..Program::default()
-    };
-
-    validate_program(&program).expect("IoError accessors are valid checked MIR observers");
-}
-
-#[test]
-fn prelude_io_error_cannot_be_forged_or_projected_in_checked_mir() {
+fn prelude_io_error_is_an_ordinary_constructible_and_projectable_record() {
     let kind = TypeId(0);
     let error = TypeId(1);
     let kind_ty = Type::Nominal(kind, Vec::new());
     let error_ty = Type::Nominal(error, Vec::new());
-    let forged = expr(
+    let constructed = expr(
         ExprKind::Record {
             ty: error,
             type_arguments: Vec::new(),
@@ -3022,7 +2972,7 @@ fn prelude_io_error_cannot_be_forged_or_projected_in_checked_mir() {
             kind_ty.clone(),
             Block {
                 statements: vec![Statement {
-                    kind: StatementKind::Evaluate(forged),
+                    kind: StatementKind::Evaluate(constructed),
                     span: span(),
                 }],
                 tail: Some(Box::new(copy_place(kind_projection, kind_ty))),
@@ -3037,25 +2987,7 @@ fn prelude_io_error_cannot_be_forged_or_projected_in_checked_mir() {
         ..Program::default()
     };
 
-    let errors = validation_errors(&program);
-    for (code, message) in [
-        (
-            MirValidationCode::RecordShape,
-            "IoError values may only be established",
-        ),
-        (
-            MirValidationCode::InvalidPlace,
-            "IoError storage is protected",
-        ),
-    ] {
-        assert!(
-            errors
-                .as_slice()
-                .iter()
-                .any(|error| error.code == code && error.message.contains(message)),
-            "missing {code:?} `{message}`: {errors:#?}"
-        );
-    }
+    validate_program(&program).expect("IoError uses ordinary record construction and projection");
 }
 
 #[test]
@@ -5232,7 +5164,7 @@ fn forged_proof_program() -> CheckedProgram {
 
 #[test]
 fn interpreted_artifact_bytes_are_deterministic_and_round_trip_float_bits() {
-    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 48);
+    assert_eq!(INTERPRETED_ARTIFACT_VERSION, 49);
     let program = float_program(0x7ff8_0000_0000_0042);
     let first = encode_interpreted_artifact(&program).expect("encode");
     let second = encode_interpreted_artifact(&program).expect("encode again");

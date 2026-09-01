@@ -1379,7 +1379,7 @@ fn canonical_source_resources_receive_dynamic_hidden_mir_storage() {
 }
 
 #[test]
-fn canonical_source_io_error_receives_dynamic_hidden_mir_storage() {
+fn canonical_source_io_error_lowers_its_declared_fields_without_injection() {
     let source = lower_with_std_io("fn message(error IoError) Text { error.message() }\n");
     let analysis = analyze(&source);
     assert!(
@@ -1396,7 +1396,21 @@ fn canonical_source_io_error_receives_dynamic_hidden_mir_storage() {
         panic!("canonical IoError must be a source record");
     };
     assert!(source_record.generic_params.is_empty());
-    assert!(source_record.fields.is_empty());
+    assert_eq!(source_record.fields.len(), 2);
+    assert_eq!(
+        source_record
+            .fields
+            .iter()
+            .map(|field| {
+                source.definitions[*field]
+                    .name
+                    .as_ref()
+                    .expect("named IoError field")
+                    .as_str()
+            })
+            .collect::<Vec<_>>(),
+        ["kind", "message"]
+    );
     assert!(source_record.invariant.is_none());
 
     let program = lower_to_mir(&source, &analysis)
@@ -1408,7 +1422,7 @@ fn canonical_source_io_error_receives_dynamic_hidden_mir_storage() {
         .expect("MIR IoErrorKind identity");
     let error = program.type_def(error_id).expect("MIR IoError definition");
     let loom_mir::TypeDefKind::Record { fields, invariant } = &error.kind else {
-        panic!("MIR IoError must use protected record storage: {error:#?}");
+        panic!("MIR IoError must use ordinary source record storage: {error:#?}");
     };
     assert!(invariant.is_none());
     assert_eq!(
@@ -1432,7 +1446,7 @@ fn canonical_source_io_error_receives_dynamic_hidden_mir_storage() {
 }
 
 #[test]
-fn io_error_lowering_fails_closed_without_the_exact_canonical_source_record() {
+fn io_error_lowering_requires_the_canonical_source_identity() {
     let source = lower_with_std_io("fn idle() {}\n");
     let mut missing = analyze(&source);
     assert!(missing.diagnostics.is_empty());
@@ -1442,45 +1456,6 @@ fn io_error_lowering_fails_closed_without_the_exact_canonical_source_record() {
         failure.diagnostics()[0]
             .message
             .contains("embedded std.io.IoError is required"),
-        "{:#?}",
-        failure.diagnostics()
-    );
-
-    let mut private = lower_with_std_io("fn idle() {}\n");
-    let analysis = analyze(&private);
-    assert!(analysis.diagnostics.is_empty());
-    let error = analysis
-        .canonical_std_items
-        .io_error
-        .expect("canonical source IoError");
-    private.definitions[error].visibility = loom_hir::Visibility::Private;
-    let failure =
-        lower_to_mir(&private, &analysis).expect_err("private IoError must fail lowering");
-    assert!(
-        failure.diagnostics()[0]
-            .message
-            .contains("public empty non-generic record"),
-        "{:#?}",
-        failure.diagnostics()
-    );
-
-    let mut malformed = source;
-    let analysis = analyze(&malformed);
-    assert!(analysis.diagnostics.is_empty());
-    let error = analysis
-        .canonical_std_items
-        .io_error
-        .expect("canonical source IoError");
-    let loom_hir::DefinitionKind::Record(record) = &mut malformed.definitions[error].kind else {
-        panic!("canonical IoError must start as a record");
-    };
-    record.fields.push(error);
-    let failure =
-        lower_to_mir(&malformed, &analysis).expect_err("non-empty IoError must fail lowering");
-    assert!(
-        failure.diagnostics()[0]
-            .message
-            .contains("empty non-generic record without an invariant"),
         "{:#?}",
         failure.diagnostics()
     );
@@ -2315,8 +2290,6 @@ async fn network(host Text, port Int) Result[Unit, IoError] {
         "TextMapEntryAt",
         "TextMapInsert",
         "TextMapRemove",
-        "IoErrorKind",
-        "IoErrorMessage",
         "FileTryOpenRead",
         "FileTryCreate",
         "FileTryReadText",

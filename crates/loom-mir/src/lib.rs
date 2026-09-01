@@ -1174,8 +1174,6 @@ pub enum Builtin {
     TextMapInsert,
     ListToTextMap,
     TextMapRemove,
-    IoErrorKind,
-    IoErrorMessage,
     FileTryOpenRead,
     FileTryCreate,
     FileTryReadText,

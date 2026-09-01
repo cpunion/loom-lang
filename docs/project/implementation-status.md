@@ -16,7 +16,7 @@ names still recognized by semantic builtin tables.
 | Surface | Ordinary `library/std` source today | Remaining compiler-owned public surface | Status |
 | --- | --- | --- | --- |
 | `std.int` | `ParseIntError`, `minimum`, `maximum`, `parse_int`, and the complete parser helper graph | none for the current package API | source-backed |
-| `std.io` | public `IoError`, `IoErrorKind`, their accessors, `write`, and `write_line` | exact-owner error access/output primitives and runtime byte boundary | source-backed |
+| `std.io` | public `IoError`, `IoErrorKind`, record access, `write`, and `write_line` | only the exact-owner private output primitive and runtime byte boundary | source-backed |
 | `std.json` | `Json`, `JsonError`, `parse_json`, `format_json`, and both helper graphs | none for the current package API | source-backed |
 | `std.log` | `LogLevel`, `write`, `debug`, `info`, `warn`, `error`, and their helper graph | only the exact-owner private typed write primitive and runtime byte boundary | source-backed |
 | `std.resource` | `Dispose`, `MustScope`, and `NoSuspend` declarations | their fixed language-item meaning and static enforcement intentionally remain language core | source declarations complete |

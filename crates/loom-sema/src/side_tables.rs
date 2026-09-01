@@ -58,8 +58,6 @@ pub enum BuiltinValue {
     TextMapInsert,
     ListToTextMap,
     TextMapRemove,
-    IoErrorKind,
-    IoErrorMessage,
     LogWrite,
     StdoutWrite,
     ListNew,

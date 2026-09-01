@@ -5202,7 +5202,6 @@ impl<'program> Validator<'program> {
             Type::Nominal(type_id, arguments) => {
                 if self.program.prelude.file == Some(*type_id)
                     || self.program.prelude.socket == Some(*type_id)
-                    || self.program.prelude.io_error == Some(*type_id)
                 {
                     return false;
                 }
@@ -5386,8 +5385,6 @@ impl<'program> Validator<'program> {
             Some("prelude File values may only be established by trusted I/O primitives")
         } else if self.program.prelude.socket == Some(type_id) {
             Some("prelude Socket values may only be established by trusted I/O primitives")
-        } else if self.program.prelude.io_error == Some(type_id) {
-            Some("prelude IoError values may only be established by trusted I/O primitives")
         } else {
             None
         };
@@ -6634,21 +6631,6 @@ impl<'program> Validator<'program> {
             {
                 Some(types[0].clone()?)
             }
-            Builtin::IoErrorKind
-                if Self::nominal_builtin_argument(&types, 0, self.program.prelude.io_error) =>
-            {
-                self.expected_prelude_nominal(
-                    self.program.prelude.io_error_kind,
-                    "io_error_kind",
-                    expression.span,
-                    path,
-                )
-            }
-            Builtin::IoErrorMessage
-                if Self::nominal_builtin_argument(&types, 0, self.program.prelude.io_error) =>
-            {
-                Some(Type::Text)
-            }
             Builtin::LogWrite
                 if Self::nominal_builtin_argument(&types, 0, self.program.prelude.log_level)
                     && types_compatible(&Type::Text, types[1].as_ref()?)
@@ -6871,8 +6853,6 @@ impl<'program> Validator<'program> {
             | Builtin::SocketReadText
             | Builtin::SocketClose
             | Builtin::TextMapLength
-            | Builtin::IoErrorKind
-            | Builtin::IoErrorMessage
             | Builtin::StdoutWrite
             | Builtin::FileTryOpenRead
             | Builtin::FileTryCreate
@@ -8507,15 +8487,6 @@ impl<'program> Validator<'program> {
                 );
                 return None;
             }
-            if self.program.prelude.io_error == Some(type_id) {
-                self.push(
-                    MirValidationCode::InvalidPlace,
-                    "prelude IoError storage is protected; use the IoError accessors",
-                    span,
-                    path,
-                );
-                return None;
-            }
             let Some(definition) = self.program.type_def(type_id) else {
                 self.invalid_type(type_id, span, path);
                 return None;
@@ -9277,8 +9248,6 @@ impl<'program> Validator<'program> {
             | Builtin::TextMapEntryAt
             | Builtin::TextMapInsert
             | Builtin::TextMapRemove
-            | Builtin::IoErrorKind
-            | Builtin::IoErrorMessage
             | Builtin::LogWrite
             | Builtin::StdoutWrite => true,
         }

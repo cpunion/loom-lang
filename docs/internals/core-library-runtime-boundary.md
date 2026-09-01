@@ -97,14 +97,13 @@ available as a prelude type. The compiler records its exact source identity
 because typed I/O constructs that enum directly, but its variants use ordinary
 source definitions rather than builtin constructors.
 
-`IoError` is an ordinary empty record declaration in `std.io`; its public
-`kind` and `message` methods are ordinary source definitions over two
-exact-owner private access primitives. The exact canonical record identity is
-representation-backed during MIR lowering with `kind IoErrorKind` and `message
-Text` fields. This hidden layout is unavailable to ordinary record
-construction, field projection, or equality, and an application declaration
-with the same name receives no authority. No opaque, ownership, or address
-syntax is added.
+`IoError` is an ordinary source record declared with `kind IoErrorKind` and
+`message Text` fields. Its public `kind` and `message` methods are ordinary
+source field projections. Construction, projection, copying, and structural
+equality use the general record mechanisms; MIR lowering does not inject
+storage or dispatch access primitives. Typed I/O still authenticates the exact
+canonical record identity and exact field shape before constructing an error,
+so an application declaration with the same name receives no ABI authority.
 
 `File` and `Socket` are protected empty source records whose exact canonical
 identities receive hidden one-Int capability-token storage during MIR lowering.

@@ -742,11 +742,6 @@ impl SerializationClosure {
                 self.add_optional_type(prelude.text_map);
                 self.add_optional_type(prelude.option);
             }
-            Builtin::IoErrorKind => {
-                self.add_optional_type(prelude.io_error);
-                self.add_optional_type(prelude.io_error_kind);
-            }
-            Builtin::IoErrorMessage => self.add_optional_type(prelude.io_error),
             Builtin::LogWrite => {
                 self.add_optional_type(prelude.log_level);
                 self.add_optional_type(prelude.text_map);
