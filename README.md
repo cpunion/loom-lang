@@ -132,6 +132,13 @@ linker.
 
 ## Documentation
 
+The [project charter](docs/project/charter.md) and
+[roadmap](ROADMAP.md) distinguish the accepted long-term design and early
+self-hosting route from the existing implementation described above. The
+[language foundation](docs/rfcs/language-foundation.md) and
+[change/deployment design](docs/rfcs/change-and-deployment.md) are target
+decisions, not current feature claims.
+
 The [documentation index](docs/README.md) separates getting-started material
 from language guides. Useful entry points include:
 

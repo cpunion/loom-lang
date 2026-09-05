@@ -1,9 +1,20 @@
 # Loom documentation
 
-Loom is an experimental language and toolchain. These pages describe behavior
-that is implemented and exercised by the repository's tests. They are not a
-stability or compatibility promise: language syntax, artifacts, diagnostics,
-and runtime interfaces may change while the project is under active research.
+Loom is an experimental language and toolchain. Guides and versioned reference
+pages describe the current implementation. The project charter, accepted design
+records, and roadmap describe the target; they are not evidence that a feature
+already works. Neither is a pre-release compatibility promise.
+
+## Goals and implementation route
+
+- [Project charter](project/charter.md): user goals and responsibility boundaries.
+- [Accepted language foundation](rfcs/language-foundation.md): language decisions,
+  contracts, shared data, and compile-time programming.
+- [Accepted change and deployment design](rfcs/change-and-deployment.md): semantic
+  changes, dependencies, migration, and recovery.
+- [Roadmap](../ROADMAP.md): the native prototype and early self-hosting gates.
+- [Implementation status](project/implementation-status.md): existing evidence,
+  which must not be confused with those goals.
 
 ## Start here
 

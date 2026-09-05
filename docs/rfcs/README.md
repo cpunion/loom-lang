@@ -1,7 +1,8 @@
 # Design records
 
-This directory contains design proposals that are not part of the Loom language
-reference.
+This directory contains accepted directions and proposals that are not yet
+part of the implemented Loom language reference. Acceptance fixes a target;
+it does not certify current compiler support.
 
 An accepted language feature is documented in the
 [language reference](../reference/language/README.md) only after its parser,
@@ -20,8 +21,16 @@ record must never be used as evidence that a feature is available.
 
 ## Active records
 
+- [Language foundation](language-foundation.md) — **Accepted direction;
+  replacement implementation planned**
+- [Change and deployment](change-and-deployment.md) — **Accepted direction;
+  implementation planned**
 - [Typed code generation IR](typed-codegen-ir.md) — **Accepted;
   implementation in progress**
+
+The first two records and the [roadmap](../../ROADMAP.md) govern the renewed
+project direction. The typed-codegen record explains work in the existing
+compiler; its architecture is not a requirement for the replacement.
 
 New proposals should begin with a tracking issue and state their user problem,
 scope, alternatives, observable semantics, diagnostics, migration impact, test

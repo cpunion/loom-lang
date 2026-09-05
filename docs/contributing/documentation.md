@@ -16,7 +16,7 @@ Write each fact once at the right layer:
 | `docs/internals` | current compiler/runtime architecture and private representations |
 | `docs/contributing` | repository setup, tests, benchmarks, fuzzing, releases, and writing policy |
 | `docs/project` | charter, status, quality, terminology, and versioning |
-| `docs/rfcs` | active proposals that may change the current design |
+| `docs/rfcs` | accepted target designs and active proposals, separate from implementation evidence |
 
 Do not copy an internal layout into the language reference. Do not put an
 unimplemented roadmap item into a command or standard-library reference.
@@ -47,8 +47,11 @@ not in a distant disclaimer.
 Internals can document an optimization or private ABI, but must label it as an
 implementation choice and avoid implying source code can observe it.
 
-Unimplemented designs belong in an RFC. An RFC should have an explicit status,
-motivation, semantics, rejected alternatives, compiler/runtime/artifact impact,
+Unimplemented designs belong in an RFC. Accepted goals are not inferred from
+the current compiler's limitations: the [charter](../project/charter.md) and
+[roadmap](../../ROADMAP.md) identify the direction and implementation route.
+An RFC should have an explicit status, motivation, semantics, rejected
+alternatives, compiler/runtime/artifact impact,
 and test plan. Once a pre-release proposal is abandoned, remove it after moving
 any still-relevant constraint into the current reference or an active RFC. The
 repository is not a compatibility archive for unpublished designs.

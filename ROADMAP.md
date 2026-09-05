@@ -1,91 +1,120 @@
-# Loom Roadmap
+# Loom roadmap
 
-Loom is an experimental language implementation. This roadmap records current
-engineering priorities, not release promises or delivery dates. Completed work
-belongs in the [changelog](CHANGELOG.md) and
-[implementation status](docs/project/implementation-status.md) rather than in
-an ever-growing checklist here.
+This is the implementation route for the accepted
+[project goals](docs/project/charter.md),
+[language foundation](docs/rfcs/language-foundation.md), and
+[change/deployment design](docs/rfcs/change-and-deployment.md). It is not a
+release schedule or an assertion that these capabilities already work.
+Current evidence stays in the
+[implementation status](docs/project/implementation-status.md).
 
-The current baseline already connects ordinary source files to name and type
-checking, checked MIR, LLVM objects, native executables, an explicit interpreter
-oracle, package graphs, a moving collector, lexical cleanup, structured tasks,
-the CLI, formatter, and LSP.
+## Implementation approach
 
-## Now
+Start a small replacement compiler with a Rust seed and an existing Rust LLVM
+binding. Keep one checked semantic model for native compilation and compile-time
+evaluation. An AST, a checked typed program, and LLVM lowering are the initial
+boundaries; add another representation only for a demonstrated consumer.
 
-### Make `std` an ordinary source library
+Compile ordinary scalar operations and calls directly. Carry GC, fault, or
+scheduler context only where required by effects; do not make ordinary functions
+participate in a runtime dependency executor. Library policies resolve to Loom
+definitions, not public-name compiler dispatch tables.
 
-Move every public library policy and algorithm out of compiler name tables and
-into compiler-distributed Loom source. The compiler may retain only private,
-format-neutral primitives that ordinary source cannot implement, such as task
-suspension, timer and I/O task creation, GC allocation, and target-specific
-system boundaries.
+Reuse audited LLVM/platform code when it fits. Do not port the current layer
+structure or maintain an interpreter/native feature matrix as a goal. A bounded
+compile-time evaluator uses the same checked rules; it is not a second public
+runtime backend. Remove replaced paths instead of adding compatibility adapters.
 
-Acceptance requires:
+No replacement compiler has been implemented by accepting this roadmap.
+Milestones below are exit criteria, not claims of completion.
 
-- public `std` calls resolve to ordinary source definitions and participate in
-  normal reachability, monomorphization, contracts, and diagnostics;
-- compiler primitives are unavailable to application and dependency source;
-- public function names are absent from compiler builtin dispatch tables;
-- unused library definitions, helpers, and data are absent from native objects;
-- each migrated API deletes its former builtin/catalog path in the same change,
-  without aliases, compatibility readers, or parallel implementations.
+## N0 — A native vertical slice
 
-### Strengthen reproducible evidence
+Build the smallest useful source-to-native path on macOS first:
 
-Keep the macOS development gate, cross-platform release closure, explicit fuzz
-campaigns, package integrity tests, and opt-in base-versus-candidate benchmarks
-reproducible. Expand performance evidence with fixed-host trends, warm and
-incremental builds, peak memory, and profiler data before making broader claims.
+- directory packages, explicit imports, `pub`, and isolated test roots;
+- functions, scalar values, records/enums, basic generics and overloads,
+  control flow, and the shared-data semantics needed by the slice;
+- a small source `std`, including the text/collection and real file-I/O
+  facilities needed to write a compiler;
+- constrained construction and a small sound postcondition prover: unsupported
+  required proofs are explicit errors, never unchecked assumptions or runtime
+  postcondition fallbacks;
+- ordinary `loom check`, `build`, `test`, and `run` on the same native program.
 
-## Next
+Keep one representative application with a same-directory `*_test.loom` file
+and an embedded `test fn`. Show that library builds exclude both forms of test
+code. Include one boundary failure and one required-proof rejection. Inspect
+one scalar/record hot path for unnecessary allocation or scheduler machinery.
+Use real I/O and the necessary memory/resource substrate, not a mock executor
+or a host-language implementation masquerading as source `std`.
 
-### Grow the source library
+## N1 — Move the compiler into Loom
 
-Build collections, text, encoding, time, process, file, network, logging, and
-data-format modules in Loom after their narrow primitives are established.
-Task composition should use a general source-level associated-function and
-tuple/list abstraction; it must not become a permanent compiler catalog keyed
-by the public `Task.*` spelling.
+Use the N0 subset to implement compiler components in Loom, starting with source
+handling, lexer/parser, and diagnostics, then binding, typing, and checked
+program construction. Keep mutable drafts separate from validated program
+revisions; share unchanged storage only where the promised facts remain valid.
 
-### Improve incremental compilation
+The first self-hosting gate is concrete:
 
-Move persistent reuse below whole-graph checked MIR where stable identities and
-validation make module- and instance-granular reuse trustworthy. Cache hits and
-cold builds must produce identical diagnostics, reachability, and behavior.
+1. The Rust seed builds a native Loom-written compiler, stage 1.
+2. Stage 1 builds the same compiler source, producing stage 2.
+3. Stage 2 builds the source again and runs compiler and `std` package tests.
+4. The stages agree on selected interfaces, diagnostics, and executable results;
+   compare reproducible artifacts where their representation is controlled.
 
-### Expand host parity
+A small documented LLVM/platform bridge may remain in Rust. A Loom lexer
+called by an otherwise Rust compiler is a useful intermediate step, not the
+self-hosting gate. Do not wait for the entire metaprogramming, deployment, or
+editor surface before making this transition. Bootstrap agreement is evidence,
+not a proof of compiler correctness.
 
-Bring the full LLVM backend, linker, runtime I/O, debugger integration, and
-native closure tests to Windows before advertising Windows native support or
-publishing a Windows binary archive.
+## N2 — Complete the language and source library
 
-### Refine developer experience
+Extend the self-hosted path with the remaining accepted capabilities:
 
-Improve diagnostics, source debugging, formatter stability, LSP behavior, and
-package workflows while keeping the CLI and LSP on one analysis pipeline.
+- concept/dynamic dispatch, associated types, and precise reachability;
+- compile-time value/type/function parameters, variadics, selected-branch
+  instantiation, typed macro generation, and structured reflection;
+- tracked build inputs and reusable proof/effect summaries;
+- broader contract reasoning and fine-grained, alias-safe constrained mutation;
+- moving GC, complete lexical resource cleanup, stackless Tasks, real timer/I/O
+  registration, and source-level tuple/list task composition;
+- module resolution, multiversion normalization, scoped fork policies, lockfiles,
+  and incremental reuse tied to actual inputs.
 
-## Later, with evidence
+Each addition must work through the native CLI and its `std` tests. Required
+proofs remain mandatory even while the supported prover fragment grows. Exact
+overload ranking, macro spelling, solver choice, artifact encoding, and runtime
+layout belong to focused implementation designs, not new feature checklists.
 
-The following directions require a concrete use case and an independently
-testable design before implementation:
+## N3 — Deliver semantic change and deployment workflows
 
-- a Cranelift fast-development backend;
-- WebAssembly/WASI artifacts and a defined host ABI;
-- exact-width integer types for binary formats, SIMD, or FFI;
-- a narrow FFI and explicit pin boundary;
-- a multithreaded executor that preserves structured cancellation and cleanup;
-- generators, streams, or task groups built on the existing coroutine runtime.
+Build the accepted tools on the compiler's identities, bindings, contracts,
+effects, and immutable build basis. Reuse an existing version engine; do not
+create a second authoritative source store.
 
-## Not planned for the current language core
+Close the three stories in the change/deployment record: library evolution,
+ordinary-source semantic changes and feedback, and deployed-state recovery.
+Test move-plus-edit merging, changed overload bindings, incompatible tightening,
+unknown deployment outcomes, and preservation/restoration of downgrade data.
+Affected pure feedback updates must mark retained old results as stale and must
+not replay external effects.
+Reconciliation remains a library/system workflow with explicit effect safety,
+not a replacement execution model for every function or Task.
 
-- Rust-style ownership, borrow, lifetime, or `Pin` syntax;
-- implicit runtime discovery from `any` to `dyn C`;
-- GC finalizers, destructors triggered by collection, or observable addresses;
-- open-world implementation registries or a stable plugin witness ABI;
-- live programming, AST editing, AOP-style weaving, or an operator/reconciliation
-  runtime;
-- operator overloading or a custom machine-code backend.
+## Delivery discipline
 
-These exclusions keep the current work focused on an ordinary compiled
-language with explicit static semantics and conventional source-control tools.
+Use focused PRs and tests proportional to the changed boundary. Start with the
+native macOS gate; expand Linux/Windows runtime and release evidence before
+claiming support. Do not recreate a large dual-backend differential suite.
+
+Measure compiler time/memory and representative native scalar, record, and
+collection workloads. Investigate generated code before introducing another
+optimization layer; no performance target permits weaker contracts or cleanup.
+
+Alternate backends, a stable FFI/plugin ABI, and cross-cutting/AOP composition
+are separate future work. They do not block self-hosting. During replacement,
+the existing compiler remains usable as an implementation reference, not a
+permanent compatibility target.
