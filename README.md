@@ -139,6 +139,10 @@ self-hosting route from the existing implementation described above. The
 [change/deployment design](docs/rfcs/change-and-deployment.md) are target
 decisions, not current feature claims.
 
+The [native compiler seed](compiler/README.md) now exercises the first scalar
+slice of that route in an independent, small Rust/LLVM package. It does not yet
+replace the workspace compiler described above.
+
 The [documentation index](docs/README.md) separates getting-started material
 from language guides. Useful entry points include:
 

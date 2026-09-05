@@ -5,6 +5,14 @@ pre-1.0 language and toolchain. “Implemented” below means there is executabl
 repository evidence, not that the feature has broad production adoption or a
 long-term compatibility guarantee.
 
+## Replacement compiler seed
+
+The independent [native seed](../../compiler/README.md) has a tested scalar
+source-to-LLVM CLI closure, package/test isolation, a small source `std.int`, and
+mandatory proofs in a bounded postcondition fragment. It does not yet implement
+records, generics, managed data, file I/O, or self-hosting. The tables below
+describe the existing workspace compiler, not the seed's feature coverage.
+
 ## Source `std` completion
 
 The compiler deterministically embeds every non-test Loom source below

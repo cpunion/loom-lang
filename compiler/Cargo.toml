@@ -1,0 +1,25 @@
+[package]
+name = "loom-seed"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+publish = false
+
+# A replacement compiler, not another layer in the existing compiler workspace.
+[workspace]
+
+[[bin]]
+name = "loom"
+path = "src/main.rs"
+
+[dependencies]
+inkwell = { version = "=0.10.0", default-features = false, features = ["llvm19-1-prefer-dynamic", "target-aarch64", "target-x86"] }
+tempfile = "3.20"
+toml = "0.9"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"

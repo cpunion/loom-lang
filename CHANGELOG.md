@@ -8,6 +8,14 @@ coverage lives in [Implementation status](docs/project/implementation-status.md)
 
 ## [Unreleased]
 
+### Native replacement seed
+
+- Start an independent, small Rust/Inkwell compiler with real native
+  `check/build/test/run`, checked scalar arithmetic, control flow, local package
+  imports, isolated tests, source `std.int`, and required static postconditions
+  in a bounded proof fragment. This is the first N0 slice, not a replacement for
+  the full workspace compiler. See the [seed guide](compiler/README.md).
+
 ### Initial implementation
 
 - A conventional statically typed source language with Go-style `name Type`

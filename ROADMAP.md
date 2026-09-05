@@ -25,8 +25,9 @@ structure or maintain an interpreter/native feature matrix as a goal. A bounded
 compile-time evaluator uses the same checked rules; it is not a second public
 runtime backend. Remove replaced paths instead of adding compatibility adapters.
 
-No replacement compiler has been implemented by accepting this roadmap.
-Milestones below are exit criteria, not claims of completion.
+The [native seed](compiler/README.md) now implements a first scalar slice with
+real native check/build/test/run and a bounded required-postcondition prover.
+N0 remains incomplete. Milestones below are exit criteria, not completion claims.
 
 ## N0 — A native vertical slice
 
