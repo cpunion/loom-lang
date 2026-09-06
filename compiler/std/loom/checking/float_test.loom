@@ -19,12 +19,9 @@ test fn float_has_no_implicit_integer_conversion_or_integer_proof_rules() {
     rejects("fn main() { discard !1.0 }")
     rejects("fn main() { discard 1.0 && 2.0 }")
     rejects("fn invalid(value Float[Int]) {}")
-    rejects("type Positive = Float where self > 0.0\n")
     rejects("fn identity(value Float) Float ensures result == value { value }")
     rejects("fn reflexive(value Float) Bool ensures result { value == value }")
     rejects("fn arithmetic() Bool ensures result { 0.0 / 0.0 == 0.0 / 0.0 }")
-    rejects("fn main() { discard comptime { 1.0 + 2.0 } }")
-    rejects("fn main() { comptime if 1.0 == 1.0 { assert true } }")
     discard accepted("fn positive(value Float) Float requires value > 0.0 { value }")
 }
 

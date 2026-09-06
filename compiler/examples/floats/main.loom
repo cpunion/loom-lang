@@ -11,6 +11,8 @@ enum Sample { Value(Float, Text) Empty }
 fn identity[T](value T) T { value }
 
 fn exercise() {
+    compile_time_values()
+    money_boundaries()
     let point = Point { x = 1.25 y = 2.5 }
     assert point.x * point.y == 3.125
     assert 5.5 % 2.0 == 1.5 && -5.5 % 2.0 == -1.5

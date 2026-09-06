@@ -27,7 +27,7 @@ runtime parsing helpers; the same function can execute at compile time. The
 [arguments example](../../compiler/examples/arguments/main.loom) combines it
 with constrained construction, command-line input, and ordinary source tests.
 
-`Int` constraints may call pure helpers with loops, recursion, and fresh data.
+`Int` and `Float` constraints may call pure helpers with loops, recursion, and fresh data.
 Their supported operation/call closure is validated even for unused constrained
 declarations. Known true/false predicates remove the check or reject; unknown
 inputs or unsuccessful optional evaluation retain normal runtime construction
@@ -38,9 +38,11 @@ layouts, without implicit Int conversion. Source `std.float` owns decimal
 grammar, parsing errors and checked integer conversion; tiny runtime codecs
 provide correctly rounded decimal conversion. The
 [Float example](../../compiler/examples/floats/main.loom) covers generic and
-managed aggregates. This bootstrap checkpoint still rejects Float compile-time
-values, Float refinements and unsupported required Float proofs; the next
-evaluator stage must use the newly available native Float capability.
+managed aggregates. The same bounded evaluator now executes Float operations and
+reconstructs Float/refined results, retaining IEEE edge cases. Constant Money
+construction folds its predicate; dynamic inputs check once and return Result.
+Money weakens only to its declared Float base. Unsupported required Float proofs
+still reject rather than applying integer algebra.
 
 The native toolchain uses Rust 1.88 and LLVM 22. macOS, Linux, and Windows pass
 the [full bootstrap and native gate](https://github.com/cpunion/loom-lang/actions/runs/34022948294).
@@ -74,7 +76,8 @@ transfer is neither a committed IR snapshot nor a second language frontend;
 The source frontend sends a checked artifact to one retained Rust LLVM/platform
 tool; that tool does not parse or type-check Loom source again. The Rust seed
 frontend is no longer active source. A pinned historical commit can build a
-cached stage 0 when no existing Loom compiler is supplied; this fallback is
+cached stage 0, followed by immutable Loom source checkpoints, when no existing
+Loom compiler is supplied; this fallback is
 not a compatibility commitment or a second frontend to extend. Rust remains
 for the LLVM/platform boundary and runtime, not a permanent basic language.
 The compiler and independent user packages now share the public

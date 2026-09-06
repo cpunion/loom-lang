@@ -1,0 +1,64 @@
+test fn float_refinements_fold_pure_predicates_at_construction() {
+    let definition = "type Money = Float where valid(self)\nfn valid(value Float) Bool { var count = 0\nwhile count < 2 { count = count + 1 }\nvalue - value == 0.0 && value >= 0.0 }\n"
+    let program = accepted_result(concat(definition, "fn main() { let amount = Money(10.0)\ndiscard amount }"))
+    assert length(program.functions) == 1
+    let initializer = get(get(get(program.functions, program.entry).body.children, 0).children, 0)
+    assert initializer.kind == ExprKind.Coerce
+    let refined = get(program.types, initializer.ty)
+    assert refined.kind == TypeKind.Refined
+    assert get(refined.fields, 0).ty == 5
+    assert get(initializer.children, 0).kind == ExprKind.Float
+    assert get(refined.constraint, 0).kind == ExprKind.Call
+    assert get(refined.constraint, 0).index == -1
+    rejects_result(concat(definition, "fn main() { discard Money(-1.0) }"))
+    rejects_result(concat(definition, "fn main() { discard Money(1e99999) }"))
+    rejects_result(concat(definition, "fn main() { discard Money(0.0 / 0.0) }"))
+    // Finiteness is a user's predicate, not an implicit Float restriction.
+    discard accepted("type NonNegative = Float where self >= 0.0\nfn main() { discard NonNegative(1e99999) }")
+    discard accepted_result(concat(definition, "fn main() { let amount = comptime { Money(4.0 + 6.0) }\nassert amount == 10.0 }"))
+}
+
+test fn dynamic_float_refinements_save_the_input_once() {
+    let program = accepted_result("import std.result.Result\nimport std.result.ConstraintError\ntype Money = Float where self >= 0.0\nfn source(value Float) Float { value }\npub fn make(value Float) Result[Money, ConstraintError] { Money(source(value)) }")
+    let make = get(program.functions, 0)
+    let boundary = get(make.body.children, 0)
+    assert boundary.kind == ExprKind.Block
+    assert length(boundary.children) == 2
+    let saved = get(boundary.children, 0)
+    assert saved.kind == ExprKind.Let
+    assert get(make.locals, saved.index).ty == 5
+    let input = get(saved.children, 0)
+    assert input.kind == ExprKind.Call && input.ty == 5
+    let selection = get(boundary.children, 1)
+    assert selection.kind == ExprKind.If
+    let predicate = get(selection.children, 0)
+    assert predicate.kind == ExprKind.Binary
+    let self_value = get(predicate.children, 0)
+    assert self_value.kind == ExprKind.Local && self_value.index == saved.index && self_value.ty == 5
+    let accepted = get(get(selection.children, 1).children, 0)
+    assert accepted.kind == ExprKind.Variant
+    assert get(accepted.children, 0).kind == ExprKind.Coerce
+    let reference = get(get(accepted.children, 0).children, 0)
+    assert reference.kind == ExprKind.Local && reference.index == saved.index && reference.ty == 5
+}
+
+test fn float_refinement_weakening_preserves_numeric_and_nominal_boundaries() {
+    let definition = "type Money = Float where self >= 0.0\n"
+    let program = accepted(concat(definition, "fn pick(value Float) Int { 1 }\nfn pick(value Money) Int { 2 }\nfn plain(value Float) Float { value }\nfn main() { let amount = Money(10.0)\nlet wide Float = amount\nassert pick(amount) == 2\nassert plain(amount) == wide\nlet opposite = -amount\nassert opposite + amount == 0.0\nassert amount + amount == 20.0\nassert 20.0 - amount == 10.0 }"))
+    let main = get(program.functions, program.entry)
+    let widened = get(get(main.body.children, 1).children, 0)
+    assert widened.kind == ExprKind.Coerce && widened.ty == 5
+    let selected = get(get(get(main.body.children, 2).children, 0).children, 0)
+    assert selected.kind == ExprKind.Call
+    let target = get(program.functions, selected.index)
+    assert get(program.types, get(target.params, 0)).kind == TypeKind.Refined
+    let opposite = get(get(main.body.children, 4).children, 0)
+    assert opposite.kind == ExprKind.Unary && opposite.ty == 5
+    rejects(concat(definition, "fn invalid(value Money) Int { value }"))
+    rejects(concat(definition, "fn integer(value Int) {}\nfn invalid(value Money) { integer(value) }"))
+    rejects(concat(definition, "fn invalid(value Money) Float { value + 1 }"))
+    rejects(concat(definition, "type Other = Float where self > 0.0\nfn invalid(value Money) Other { value }"))
+    rejects(concat(definition, "fn invalid(value (Money, Bool)) (Float, Bool) { value }"))
+    rejects("type Count = Int where self > 0\nfn invalid(value Count) Float { value }")
+    rejects(concat(definition, "fn identity(value Money) Money ensures result == value { value }"))
+}

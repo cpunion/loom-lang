@@ -339,8 +339,8 @@ fn layout(program: &c::Program, ty: Type, state: &mut [u8]) -> Result<()> {
             }
         }
         c::DataKind::Refined(base) => {
-            if *base != Type::Int {
-                return Err("native refined layout must have an Int base".into());
+            if *base != Type::Int && *base != Type::Float {
+                return Err("native refined layout must have an Int or Float base".into());
             }
         }
     }

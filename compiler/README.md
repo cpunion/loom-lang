@@ -53,11 +53,15 @@ target/arguments +0010
 
 The [bootstrap script](../scripts/bootstrap.sh) builds the current Rust tool
 and runtime, then Loom stages 1, 2, and 3. It compares stages 2/3 byte-for-byte
-and publishes `target/loom`. On macOS/Linux, a cold build recovers stage 0 from the commit in
-`compiler/bootstrap/seed`, using only that historical source and Rust seed in
-`target/bootstrap/<commit>/`. The pinned commit must be available in Git history;
-the script reports the exact fetch command when it is missing. The cache is
-disposable and is not a second source tree to maintain.
+and publishes `target/loom`. On macOS/Linux, a cold build starts with the frozen
+Rust seed in `compiler/bootstrap/seed`, then builds the ordered Loom source
+commits in `compiler/bootstrap/checkpoints`. Each checkpoint implements a
+capability before the next compiler uses it: the first enables native Float
+before the current evaluator stores Float values. These immutable inputs are
+cached in `target/bootstrap/<commit>/`; no preinstalled Loom compiler is required.
+Pinned commits must be available in Git history; the script reports an exact
+fetch command when one is missing. The cache is disposable, not another
+maintained frontend.
 
 The frozen source seed also uses LLVM 22. Its toolchain-only update changes the
 Inkwell feature and lockfile, not the historical compiler source. A cold build
@@ -281,14 +285,18 @@ while preserving internal sharing.
 
 ## Contract boundary
 
-Scalar constrained types use `type Positive = Int where self > 0`.
+Scalar constrained types use `type Positive = Int where self > 0` or
+`type Money = Float where self >= 0.0 && self <= 1000000.0`.
 `Positive(3)` yields `Positive` directly; a false constant is a diagnostic.
 An unproved input evaluates once and returns source
 `Result[Positive, ConstraintError]`. Widening `Positive` to `Int` emits no check;
 arithmetic returns `Int`, while generic inference retains nominal identity.
-`List[Positive]` never widens to `List[Int]`.
+`List[Positive]` never widens to `List[Int]`. The same boundary applies to Money:
+`Money(10.0)` is Money, dynamic construction returns `Result`, and weakening to
+Float needs no check. Money never implicitly converts to Int. Finiteness is a
+predicate choice, not an extra hidden restriction on Float constraints.
 
-Predicates over `Int` may call ordinary pure helpers, including helpers with
+Predicates over `Int` or `Float` may call ordinary pure helpers, including helpers with
 loops, recursion, and freshly allocated data:
 
 ```loom
@@ -380,9 +388,10 @@ constraint folding and pure-predicate validation use this engine too.
 Evaluation is not proof: function `requires`/`ensures` remain call-free and
 declared postconditions still require the existing prover. Variadics, typed
 macros, and broader compile-time reflection remain later work.
-This Float-capable bootstrap checkpoint still rejects Float compile-time values
-and Float proofs; its evaluator must first be rebuilt using the new capability.
-Constrained base types currently remain Int-only.
+Float compile-time operations and numeric codecs use the same IEEE behavior as
+native code, including NaN, infinity, signed zero and subnormals. Float/refined
+results may appear inside shared aggregates. Required Float proofs remain
+unsupported and reject; successful evaluation is not an algebraic proof.
 
 ## Next boundary
 

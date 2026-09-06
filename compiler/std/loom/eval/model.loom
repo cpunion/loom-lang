@@ -13,19 +13,20 @@ import std.result.Result
 
 // Mutable containers use a positive evaluation-local allocation ID in number;
 // records use zero and enums keep their variant tag. These are not addresses.
-pub record Value { ty Int number Int text Text items List[Value] }
+pub record Value { ty Int number Int floating Float text Text items List[Value] }
 pub record Failure { span Span message Text }
 record Step { value Value returned Bool }
 record Frame { locals List[Value] calls Int }
 // Shared work/allocation counters and next container ID cover all calls.
 record State { program Program budget List[Int] partial Bool }
 
-pub fn unknown() Value { Value { ty = -1 number = 0 text = "" items = new[Value]() } }
-pub fn number(value Int) Value { Value { ty = 1 number = value text = "" items = new[Value]() } }
-pub fn flag(value Bool) Value { Value { ty = 2 number = if value { 1 } else { 0 } text = "" items = new[Value]() } }
-fn unit() Value { Value { ty = 0 number = 0 text = "" items = new[Value]() } }
-fn string(value Text) Value { Value { ty = 3 number = 0 text = value items = new[Value]() } }
-fn aggregate(ty Int, tag Int, items List[Value]) Value { Value { ty = ty number = tag text = "" items = items } }
+pub fn unknown() Value { Value { ty = -1 number = 0 floating = 0.0 text = "" items = new[Value]() } }
+pub fn number(value Int) Value { Value { ty = 1 number = value floating = 0.0 text = "" items = new[Value]() } }
+pub fn floating(value Float) Value { Value { ty = 5 number = 0 floating = value text = "" items = new[Value]() } }
+pub fn flag(value Bool) Value { Value { ty = 2 number = if value { 1 } else { 0 } floating = 0.0 text = "" items = new[Value]() } }
+fn unit() Value { Value { ty = 0 number = 0 floating = 0.0 text = "" items = new[Value]() } }
+fn string(value Text) Value { Value { ty = 3 number = 0 floating = 0.0 text = value items = new[Value]() } }
+fn aggregate(ty Int, tag Int, items List[Value]) Value { Value { ty = ty number = tag floating = 0.0 text = "" items = items } }
 fn step(value Value) Step { Step { value = value returned = false } }
 fn failure(expr Expr, message Text) Failure { Failure { span = expr.span message = message } }
 fn state(program Program, partial Bool) State {

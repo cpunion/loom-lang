@@ -1,0 +1,63 @@
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.list.new
+import std.list.push
+import std.list.set
+import std.result.Result
+
+fn float_literal(text Text) Expr { node(ExprKind.Float, 5, text, -1, new[Expr]()) }
+fn numeric_intrinsic(name Text, ty Int, value Expr) Expr { node(ExprKind.Intrinsic, ty, name, -1, one(value)) }
+
+test fn checked_float_execution_matches_ieee_and_total_conversions() {
+    let program = empty()
+    let a = float_literal("1.5")
+    let b = float_literal("2.25")
+    assert accepted(program, binary("+", 5, a, b), 0).floating == 3.75
+    assert accepted(program, binary("-", 5, a, b), 0).floating == -0.75
+    assert accepted(program, binary("*", 5, a, b), 0).floating == 3.375
+    assert accepted(program, binary("/", 5, a, b), 0).floating == 1.5 / 2.25
+    assert accepted(program, binary("%", 5, a, b), 0).floating == 1.5
+    let zero = float_literal("0.0")
+    let nan = binary("/", 5, zero, zero)
+    assert accepted(program, binary("==", 2, nan, nan), 0).number == 0
+    assert accepted(program, binary("!=", 2, nan, nan), 0).number == 1
+    assert accepted(program, binary("<=", 2, nan, a), 0).number == 0
+    assert accepted(program, binary("==", 2, zero, float_literal("-0.0")), 0).number == 1
+    let negated = node(ExprKind.Unary, 5, "-", -1, one(zero))
+    assert accepted(program, binary("/", 5, float_literal("1.0"), negated), 0).floating == -1.0 / 0.0
+    let constrained = node(ExprKind.Coerce, 7, "", -1, one(float_literal("-0.0")))
+    let weakened = node(ExprKind.Coerce, 5, "", -1, one(constrained))
+    assert accepted(program, binary("/", 5, float_literal("1.0"), weakened), 0).floating == -1.0 / 0.0
+    assert accepted(program, numeric_intrinsic("float_from_int", 5, literal(9223372036854775807)), 0).floating == 9223372036854775808.0
+    assert accepted(program, numeric_intrinsic("float_to_int", 1, nan), 0).number == 0
+    assert accepted(program, numeric_intrinsic("float_to_int", 1, float_literal("inf")), 0).number == 9223372036854775807
+    assert accepted(program, numeric_intrinsic("float_to_int", 1, float_literal("-inf")), 0).number == -9223372036854775808
+    assert accepted(program, numeric_intrinsic("float_to_int", 1, float_literal("-1.75")), 0).number == -1
+    assert match scalar(binary(">", 2, local(0, 5), zero), floating(0.5)) { Result.Ok(value) => value.number == 1, _ => false }
+}
+
+test fn checked_float_codecs_keep_budgets_and_purity() {
+    let program = empty()
+    let formatted = numeric_intrinsic("float_format", 3, float_literal("-0.0"))
+    assert accepted(program, formatted, 0).text == "-0"
+    let parsed = numeric_intrinsic("float_parse", 5, formatted)
+    assert accepted(program, binary("/", 5, float_literal("1.0"), parsed), 0).floating == -1.0 / 0.0
+    let tiny = numeric_intrinsic("float_parse", 5, numeric_intrinsic("float_format", 3, float_literal("5e-324")))
+    assert accepted(program, tiny, 0).floating == 5e-324
+    let invalid = node(ExprKind.Text, 3, "invalid", -1, new[Expr]())
+    assert rejected(program, numeric_intrinsic("float_parse", 5, invalid), 0).message == "invalid compile-time Float text"
+    let branches = two(truth(false), node(ExprKind.Intrinsic, 0, "write", -1, new[Expr]()))
+    push(branches, float_literal("1.0"))
+    assert rejected(program, node(ExprKind.If, 5, "", -1, branches), 0).message == "compile-time evaluation forbids intrinsic write"
+    let loop = node(ExprKind.While, 0, "", -1, two(binary("==", 2, float_literal("0.0"), float_literal("0.0")),
+        node(ExprKind.Block, 0, "", -1, new[Expr]())))
+    assert rejected(program, loop, 0).message == "compile-time work budget exhausted"
+    let state = state(program, false)
+    set(state.budget, 1, 0)
+    let values = new[Value]()
+    push(values, floating(1.0))
+    assert match primitive(state, formatted, values) {
+        Result.Err(error) => error.message == "compile-time allocation budget exhausted"
+        _ => false
+    }
+}

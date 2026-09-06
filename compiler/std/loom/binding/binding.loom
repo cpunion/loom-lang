@@ -31,7 +31,7 @@ fn failure(file Int, node Node, message Text) Failure {
     Failure { source = file diagnostic = Diagnostic { span = node.span message = message } }
 }
 fn builtin(name Text) Bool {
-    name == "Int" || name == "Bool" || name == "Text" || name == "Bytes" || name == "List" || name == "Unit"
+    name == "Int" || name == "Float" || name == "Bool" || name == "Text" || name == "Bytes" || name == "List" || name == "Unit"
 }
 fn contains(values List[Text], value Text) Bool {
     var index = 0

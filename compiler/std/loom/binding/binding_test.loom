@@ -128,6 +128,8 @@ test fn tests_cannot_extend_production_scope_or_select_dependency_tests() {
 
 test fn declaration_names_and_intrinsic_trust_are_checked() {
     assert rejected(one_source("record Int {}" )).diagnostic.message == "duplicate or reserved data declaration"
+    assert rejected(one_source("record Float {}" )).diagnostic.message == "duplicate or reserved data declaration"
+    assert rejected(one_source("fn f[Float](x Float) {}" )).diagnostic.message == "duplicate or reserved type parameter"
     assert rejected(one_source("record A {}\nenum A { Empty }" )).diagnostic.message == "duplicate or reserved data declaration"
     assert rejected(one_source("record A[T, T] {}" )).diagnostic.message == "duplicate or reserved type parameter"
     assert rejected(one_source("fn f[Text](x Text) {}" )).diagnostic.message == "duplicate or reserved type parameter"

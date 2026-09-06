@@ -85,13 +85,13 @@ fn expr_mode(context Context, node Node, expected Int, enforce Bool) Result[Expr
     if kind == NodeKind.Select { member(context, node, expr(context, child(node, 0), -1)?, node.value)? } else {
     if kind == NodeKind.Unary {
         let operand = expr(context, child(node, 0), -1)?
-        let ty = if node.value == "!" { 2 } else { if operand.ty == 5 { 5 } else { 1 } }
+        let ty = if node.value == "!" { 2 } else { if base_type(context.env, operand.ty) == 5 { 5 } else { 1 } }
         let value = typed(context, node, operand, ty)?
         expression(ExprKind.Unary, ty, node, node.value, -1, expressions(value), value.falls)
     } else {
     if kind == NodeKind.Binary {
         var left = expr(context, child(node, 0), -1)?
-        if get(context.env.types, left.ty).kind == TypeKind.Refined { left = typed(context, node, left, 1)? }
+        if get(context.env.types, left.ty).kind == TypeKind.Refined { left = typed(context, node, left, base_type(context.env, left.ty))? }
         let logical = node.value == "&&" || node.value == "||"
         let equality = node.value == "==" || node.value == "!="
         if equality && get(context.env.types, left.ty).kind == TypeKind.Tuple {

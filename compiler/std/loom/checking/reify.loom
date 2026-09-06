@@ -11,6 +11,7 @@ import std.list.push
 import std.list.length
 import std.text.length
 import std.int.to_text
+import std.float.to_text
 import std.result.Result
 
 record ReifyObject { value Value local Int }
@@ -72,10 +73,13 @@ fn reify_value(state Reification, value Value, depth Int) Result[Expr, Failure] 
         return Result.Ok(atom(ExprKind.Local, value.ty, node, object.local))
     }
     if kind == TypeKind.Unit { return Result.Ok(expression(ExprKind.Block, 0, node, "", -1, new[Expr](), true)) }
-    if kind == TypeKind.Int || kind == TypeKind.Refined {
-        let integer = expression(ExprKind.Integer, 1, node, to_text(value.number), -1, new[Expr](), true)
-        return Result.Ok(if kind == TypeKind.Int { integer } else {
-            expression(ExprKind.Coerce, value.ty, node, "", -1, expressions(integer), true)
+    if kind == TypeKind.Int || kind == TypeKind.Float || kind == TypeKind.Refined {
+        let base = base_type(state.context.env, value.ty)
+        let text = if base == 5 { std.float.to_text(value.floating) } else { std.int.to_text(value.number) }
+        discard reify_spend(state, 1, length(text))?
+        let numeric = expression(if base == 5 { ExprKind.Float } else { ExprKind.Integer }, base, node, text, -1, new[Expr](), true)
+        return Result.Ok(if kind != TypeKind.Refined { numeric } else {
+            expression(ExprKind.Coerce, value.ty, node, "", -1, expressions(numeric), true)
         })
     }
     if kind == TypeKind.Bool {

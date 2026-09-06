@@ -17,6 +17,10 @@ import std.int.to_text
 fn simple_type(kind TypeKind, symbol Int, arguments List[Int]) Type {
     Type { kind = kind symbol = symbol arguments = arguments fields = new[Field]() variants = new[Variant]() constraint = new[Expr]() }
 }
+fn base_type(env Environment, ty Int) Int {
+    let shape = get(env.types, ty)
+    if shape.kind == TypeKind.Refined { get(shape.fields, 0).ty } else { ty }
+}
 fn initialize_types(env Environment) {
     push(env.types, simple_type(TypeKind.Unit, -1, new[Int]()))
     push(env.types, simple_type(TypeKind.Int, -1, new[Int]()))
@@ -172,11 +176,11 @@ fn data_type(env Environment, declaration Int, arguments List[Int], depth Int) R
         index = index + 1
     }
     if kind == TypeKind.Refined {
-        let base = type_part(item.node)
-        if length(arguments) != 0 || resolve(env, declaration, child(item.node, base), arguments, depth + 1)? != 1 {
-            return Result.Err(failure(env, declaration, item.node, "this checker constrains Int directly"))
+        let base = resolve(env, declaration, child(item.node, type_part(item.node)), arguments, depth + 1)?
+        if length(arguments) != 0 || (base != 1 && base != 5) {
+            return Result.Err(failure(env, declaration, item.node, "this checker constrains Int or Float directly"))
         }
-        push(fields, Field { name = "self" ty = 1 })
+        push(fields, Field { name = "self" ty = base })
         // Predicates are validated after every function signature is available.
     }
     set(env.types, id, Type { kind = kind symbol = declaration arguments = arguments fields = fields variants = variants constraint = constraints })

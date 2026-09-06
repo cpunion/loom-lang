@@ -66,7 +66,8 @@ Stages are generations of a bootstrap run, not language versions or permanent
 compiler tiers:
 
 1. Stage 0 is an existing, validated Loom compiler. Without one, build it from
-   a pinned historical commit and its frozen Rust seed in a bootstrap cache.
+   a frozen Rust seed followed by pinned Loom source checkpoints in a bootstrap
+   cache. Each checkpoint implements capabilities before its successor uses them.
 2. Stage 0 compiles the current Loom compiler source into stage 1.
 3. Stage 1 compiles the same source into stage 2; stage 2 produces stage 3.
 4. Compare stage 2/3 artifacts and selected diagnostics; run compiler, `std`,
@@ -119,10 +120,11 @@ proofs remain mandatory even while the supported prover fragment grows. Exact
 overload ranking, macro spelling, solver choice, artifact encoding, and runtime
 layout belong to focused implementation designs, not new feature checklists.
 
-Native binary64 `Float` and source numeric parsing/conversion now have a
-bootstrap-capable implementation. Float compile-time execution and constrained
-bases remain the immediate next boundary; integer algebra must not stand in for
-IEEE floating-point proofs.
+Native binary64 `Float`, source numeric parsing/conversion, compile-time execution
+and Float-based constrained types now share the checked/native path. The compiler
+adopts Float through a pinned source checkpoint without extending the frozen Rust
+frontend. Required Float proofs still reject; integer algebra must not stand in
+for IEEE floating-point proofs.
 
 Structural tuples, numeric projection, and plain-name destructuring now use the
 native aggregate path, including generics, shared containers, and compile-time
