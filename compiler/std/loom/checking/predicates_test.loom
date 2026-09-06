@@ -1,0 +1,66 @@
+import std.loom.typed.ExprKind
+import std.loom.typed.TypeKind
+import std.list.get
+import std.list.push
+import std.list.length
+import std.text.concat
+import std.result.Result
+
+test fn pure_helper_predicates_fold_constants_without_runtime_roots() {
+    let definition = "type Positive = Int where positive(self)\nfn positive(value Int) Bool { var remaining = value\nwhile remaining > 0 { remaining = remaining - 1 }\nvalue > 0 }\n"
+    let program = accepted_result(concat(definition, "fn main() { let value = Positive(3)\ndiscard value }"))
+    assert length(program.functions) == 1
+    let initializer = get(get(get(program.functions, program.entry).body.children, 0).children, 0)
+    assert initializer.kind == ExprKind.Coerce
+    let refined = get(program.types, initializer.ty)
+    assert refined.kind == TypeKind.Refined
+    assert get(refined.constraint, 0).kind == ExprKind.Call
+    assert get(refined.constraint, 0).index == -1
+    rejects_result(concat(definition, "fn main() { discard Positive(0) }"))
+}
+
+test fn dynamic_predicates_use_declaration_scope_and_real_self_slot() {
+    let files = source_files("import guards.Positive\nimport std.result.Result\nimport std.result.ConstraintError\npub fn make(value Int) Result[Positive, ConstraintError] { let valid = false\nlet self = 99\ndiscard valid\ndiscard self\nPositive(value) }")
+    push(files, source_file("std.result", "pub enum Result[T, E] { Ok(T) Err(E) }\npub enum ConstraintError { Rejected }", true))
+    push(files, source_file("guards", "pub type Positive = Int where valid(self)\nfn valid(value Int) Bool { value > 0 }", false))
+    match checked(files) {
+        Result.Ok(program) => {
+            assert length(program.functions) == 2
+            let make = get(program.functions, 0)
+            let boundary = get(make.body.children, 4)
+            let saved = get(boundary.children, 0)
+            let predicate = get(get(boundary.children, 1).children, 0)
+            assert predicate.kind == ExprKind.Call && predicate.index == 1
+            assert predicate.span.start == boundary.span.start && predicate.span.end == boundary.span.end
+            assert get(predicate.children, 0).kind == ExprKind.Local
+            assert get(predicate.children, 0).span.start == boundary.span.start
+            assert get(predicate.children, 0).span.end == boundary.span.end
+            assert get(predicate.children, 0).index == saved.index
+            assert saved.index != 2
+            assert get(get(program.functions, predicate.index).params, 0) == 1
+        }
+        Result.Err(_) => { assert false }
+    }
+}
+
+test fn unused_predicates_reject_effects_and_unproved_helper_contracts() {
+    let files = source_files("import std.io.emit\ntype Guard = Int where allowed(self)\nfn allowed(value Int) Bool { if false { discard emit() }\nvalue > 0 }\nfn main() {}")
+    push(files, source_file("std.io", "intrinsic fn write(handle Int, value Text, offset Int) Int\npub fn emit() Bool { discard write(1, \"forbidden\", 0)\ntrue }", true))
+    match checked(files) {
+        Result.Err(failure) => {
+            assert failure.source == 0
+            assert failure.diagnostic.message == "type constraint: compile-time evaluation forbids intrinsic write"
+        }
+        Result.Ok(_) => { assert false }
+    }
+    rejects("type Guard = Int where invalid(self)\nfn invalid(value Int) Bool ensures result { false }\nfn main() {}")
+}
+
+test fn recursive_constraint_expansion_is_bounded() {
+    match with_result("import std.result.Result\nimport std.result.ConstraintError\ntype Loop = Int where accepts(Loop(self))\nfn accepts[T](value Result[T, ConstraintError]) Bool { true }\nfn main() {}") {
+        Result.Err(failure) => {
+            assert failure.diagnostic.message == "type constraint expansion depth exceeded; check for a dependency cycle"
+        }
+        Result.Ok(_) => { assert false }
+    }
+}

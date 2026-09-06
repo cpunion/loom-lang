@@ -158,6 +158,10 @@ locals. Uninstantiated generic templates and signature-only positions have no
 typed result. The evolving checked model is not a stable public schema or a
 typed macro API.
 
+`Type.constraint` is predicate-template metadata, not executable IR: `self`
+uses local 0 and call indices are `-1` until rebound at a construction boundary.
+Do not interpret those indices as references into `program.functions`.
+
 ## Compiler packages
 
 Shared `std.loom.typed`, `checking`, and `proof` packages implement the checked
@@ -165,6 +169,9 @@ model, concrete specialization, and bounded required proofs. `std.loom.eval`
 evaluates pure checked expressions for
 [compile-time execution](../README.md#compile-time-execution), not as a second
 runtime backend. Unsupported required proofs still reject the build.
+Its `validate` checks the supported operation/call closure in already checked
+IR; callers must establish input isolation. It is not a general effect proof
+for functions receiving externally shared mutable data.
 
 The remaining `frontend` packages are:
 

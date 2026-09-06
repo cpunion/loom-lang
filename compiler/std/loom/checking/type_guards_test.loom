@@ -1,0 +1,18 @@
+import std.result.Result
+
+test fn composite_type_guards_select_only_concrete_branches() {
+    discard accepted("record Box[T] { value T }\nfn first[T](value T) Int { comptime if T == Box[Int] { value.value } else { unavailable() } }\nfn choice[T]() Int { comptime if List[T] != List[Text] { 1 } else { 2 } }\nfn same[T]() Int { comptime if List[Box[T]] == List[Box[T]] { 3 } else { unavailable() } }\nfn main() { assert first(Box { value = 7 }) == 7\nassert choice[Int]() == 1\nassert choice[Text]() == 2\nassert same[Bool]() == 3 }")
+    rejects("fn main() { discard List[Int] }")
+    rejects("fn choose[T]() Int { comptime if T == List[Int] { 1 } else { unavailable() } }\nfn main() { discard choose[Text]() }")
+}
+
+test fn composite_type_guards_reject_shadowed_type_arguments() {
+    let files = source_files("fn choose[T](T Int) Int { comptime if List[T] == List[Int] { 1 } else { 2 } }")
+    match checked(files) {
+        Result.Err(failure) => {
+            assert failure.diagnostic.message == "comptime type comparison requires two unshadowed types"
+        }
+        Result.Ok(_) => { assert false }
+    }
+    rejects("fn main() { let Int = 0\ncomptime if List[Int] == List[Int] { discard Int } }")
+}

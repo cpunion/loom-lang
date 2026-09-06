@@ -1,15 +1,29 @@
 import std.result.Result
 import std.result.ConstraintError
 
-type Positive = Int where self > 0
+type Positive = Int where is_positive(self)
+type Even = Int where is_even(self)
+
+fn is_positive(value Int) Bool { value > 0 }
+fn is_even(value Int) Bool {
+    if value < 0 { return false }
+    var rest = value
+    while rest > 1 { rest = rest - 2 }
+    rest == 0
+}
 
 // Constants construct the constrained value directly, then widen without a check.
 fn fixed_size() Int { Positive(8192) }
 
 fn positive(value Int) Result[Positive, ConstraintError] { Positive(value) }
+fn even(value Int) Result[Even, ConstraintError] { Even(value) }
 
 test fn constrained_boundary() {
     assert fixed_size() == 8192
+    let pair Even = Even(4)
+    assert pair == 4
+    assert match even(3) { Result.Err(_) => true, _ => false }
+    assert match even(8) { Result.Ok(value) => value == 8, _ => false }
     assert match positive(3) {
         Result.Ok(value) => value == 3
         Result.Err(_) => false

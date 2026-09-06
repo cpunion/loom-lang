@@ -76,6 +76,13 @@ fn boolean(expr Expr, value Value) Result[Bool, Failure] {
     Result.Ok(value.number != 0)
 }
 
+// Check the supported operation/call closure without executing it. The caller
+// supplies checked IR and establishes input isolation; this is not a general
+// effect proof for functions that receive externally shared mutable objects.
+pub fn validate(program Program, expression Expr) Result[Bool, Failure] {
+    scan(state(program, false), expression, new[Int](), 0)
+}
+
 pub fn evaluate(program Program, expression Expr, locals Int) Result[Value, Failure] {
     let state = state(program, false)
     discard scan(state, expression, new[Int](), 0)?

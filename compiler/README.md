@@ -166,10 +166,24 @@ An unproved input evaluates once and returns source
 arithmetic returns `Int`, while generic inference retains nominal identity.
 `List[Positive]` never widens to `List[Int]`.
 
-This construction fragment constrains `Int` directly, with predicates over
-`self` and call-free scalar expressions. Constant arithmetic must be defined
-before it can justify check removal. Propagating local/branch facts into
-construction, pure function calls in predicates, shared-container constraints,
+Predicates over `Int` may call ordinary pure helpers, including helpers with
+loops, recursion, and freshly allocated data:
+
+```loom
+fn positive(value Int) Bool { value > 0 }
+type Positive = Int where positive(self)
+```
+
+The supported transitive operation/call closure is checked even for unused
+constrained declarations; I/O and external mutable inputs are forbidden.
+The [bounds example](examples/data/bounds.loom) exercises direct constant
+construction and runtime `Result` checks with pure helpers. A known true
+predicate removes the check; known false rejects. Unknown inputs or unsuccessful
+optional evaluation retain the single runtime construction boundary. A fault
+during optional folding is not proof of validity or rejection; ordinary runtime
+fault behavior remains. Explicit `comptime` faults still reject compilation.
+
+Propagating local/branch facts into construction, shared-container constraints,
 and invariant-aware proofs over refined parameters are not implemented yet.
 
 `requires` is checked before the callee body. Every declared `ensures` must be
@@ -231,14 +245,18 @@ within one check after type/capture validation, but each use still reconstructs
 fresh runtime containers. This is not a persistent or incremental build cache.
 
 Every branch must parse, but unselected `comptime if` branches impose no type or
-call requirements. Type guards currently compare unshadowed type names with
-`==` or `!=`. An unresolved generic choice requires a contextual result type and
+call requirements. Type guards compare unshadowed types with `==` or `!=`,
+including generic/nested forms such as `T == List[Int]` and
+`List[Box[T]] == List[Box[Int]]`; see the
+[composite-guard example](examples/comptime/composite.loom). These guards do not
+provide general type-valued expressions or Boolean combinations of type
+comparisons. An unresolved generic choice requires a contextual result type and
 waits for concrete instantiation; code outside that choice is still checked.
 
 The Loom-written evaluator consumes the same checked model as native lowering;
-scalar constraint folding uses this engine too. Evaluation is not proof:
-declared postconditions still require the existing prover, and pure function
-calls in type predicates or contracts remain unsupported. Variadics, typed
+constraint folding and pure-predicate validation use this engine too.
+Evaluation is not proof: function `requires`/`ensures` remain call-free and
+declared postconditions still require the existing prover. Variadics, typed
 macros, and broader compile-time reflection remain later work.
 
 ## Next boundary

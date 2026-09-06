@@ -131,6 +131,18 @@ test fn malformed_syntax_has_exact_location() {
     assert rejected("// 🧵\nfn föö() { 1 2 }").span.start == 23
     discard rejected("fn f() { ( }")
     discard rejected("fn f[]() {}")
-    discard rejected("fn f() { a[Int] }")
+    discard rejected("fn f() { a[Int,] == List[ } }")
     discard rejected("import a fn f() {}")
+}
+
+test fn composite_type_guards_preserve_type_arguments() {
+    let tree = parsed("fn f[T]() Int { comptime if List[Box[T]] != List[Box[Text]] { 1 } else { unavailable() } }")
+    let condition = child(child(child(body(child(tree, 0)), 0), 0), 0)
+    assert condition.kind == NodeKind.Binary && condition.value == "!="
+    let left = child(condition, 0)
+    assert left.kind == NodeKind.Type && left.value == "List"
+    assert child(left, 0).kind == NodeKind.Type && child(left, 0).value == "Box"
+    assert child(child(left, 0), 0).value == "T"
+    assert child(child(child(condition, 1), 0), 0).value == "Text"
+    assert rejected("fn f[T]() Int { comptime if T == List[Int] { 1 } else { let = 2 } }").message == "expected a name"
 }

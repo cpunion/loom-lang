@@ -144,7 +144,7 @@ fn data_type(env Environment, declaration Int, arguments List[Int], depth Int) R
             return Result.Err(failure(env, declaration, item.node, "this checker constrains Int directly"))
         }
         push(fields, Field { name = "self" ty = 1 })
-        push(constraints, refinement(env, declaration, child(item.node, base + 1))?)
+        // Predicates are validated after every function signature is available.
     }
     set(env.types, id, Type { kind = kind symbol = declaration arguments = arguments fields = fields variants = variants constraint = constraints })
     Result.Ok(id)

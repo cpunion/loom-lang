@@ -10,6 +10,8 @@ pub record Type {
     arguments List[Int]
     fields List[Field]
     variants List[Variant]
+    // Predicate template: self is local 0; calls have index -1 until rebound
+    // for a particular queue. These are not executable function references.
     constraint List[Expr]
 }
 pub record Local { name Text ty Int mutable Bool }

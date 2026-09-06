@@ -185,6 +185,7 @@ pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Fai
         }
         index = index + 1
     }
+    discard refinements(env)?
     discard layouts(env)?
     index = 0
     while index < length(env.signatures) {

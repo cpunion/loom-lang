@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Allow pure helper calls in `Int` type predicates, validating their operation
+  closure even for unused declarations. Fold known predicates without weakening
+  runtime construction or required proofs. Extend `comptime if` type guards to
+  generic and nested types.
 - Reconstruct shared `comptime` List/Bytes results as fresh runtime graphs,
   preserving internal aliases and cycles. Reuse successful pure evaluations
   within one check without adding a persistent cache or mutable globals.
