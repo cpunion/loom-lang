@@ -97,7 +97,7 @@ The Windows implementation targets 64-bit MSVC; its CI gate is added but not yet
 verified. Use Rust 1.88, a Visual Studio developer environment, Git Bash, and an
 LLVM 22 development package with `llvm-config.exe`, LLVM libraries, and
 `clang-cl.exe`. The [CI recipe](../.github/workflows/ci.yml) provisions the 22.1.8
-archive and supplies its missing `libxml2s.lib` from a real static libxml2 build
+archive and supplies its missing `xml2s.lib` from a real static libxml2 build
 using the dynamic MSVC CRT, not a placeholder library.
 
 Windows cannot use the frozen historical Unix seed directly. Use an existing

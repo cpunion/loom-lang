@@ -153,10 +153,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $systemLibraries
           # Complete an advertised but missing dependency with a real library.
-          if ($systemLibraries -match 'libxml2s' -and !(Test-Path "$env:LLVM_PATH/lib/libxml2s.lib")) {
+          if ($systemLibraries -match '\bxml2s\.lib\b' -and !(Test-Path "$env:LLVM_PATH/lib/xml2s.lib")) {
             & "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe" install 'libxml2[core]:x64-windows-static-md'
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Copy-Item "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows-static-md/lib/libxml2.lib" "$env:LLVM_PATH/lib/libxml2s.lib"
+            Copy-Item "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows-static-md/lib/libxml2.lib" "$env:LLVM_PATH/lib/xml2s.lib"
           }
           "LLVM_SYS_221_PREFIX=$env:LLVM_PATH" >> $env:GITHUB_ENV
           "LOOM_CC=$env:LLVM_PATH/bin/clang-cl.exe" >> $env:GITHUB_ENV

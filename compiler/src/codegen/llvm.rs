@@ -33,6 +33,7 @@ impl Backend for Llvm {
         program: &checked::Program,
         options: EmitOptions<'_>,
     ) -> Result<EmissionResult, String> {
+        trace_phase("configure");
         configure_codegen();
         let optimization = match options.optimization {
             Optimization::O0 => OptimizationLevel::None,
@@ -52,6 +53,12 @@ impl Backend for Llvm {
             library: !options.test_mode && program.entry.is_none(),
             uses_runtime,
         })
+    }
+}
+
+fn trace_phase(phase: &str) {
+    if std::env::var_os("LOOM_NATIVE_TIMINGS").is_some() {
+        eprintln!("llvm phase: {phase}");
     }
 }
 
@@ -94,8 +101,10 @@ fn emit_checked(
         program.exports.clone()
     };
     let library = !test_mode && program.entry.is_none();
+    trace_phase("reachability");
     let reachable = reachable_functions(program, &roots)?;
     let allocating = gc::allocating_functions(program, &reachable);
+    trace_phase("target");
     Target::initialize_native(&InitializationConfig::default())?;
     let triple = TargetMachine::get_default_triple();
     let machine = Target::from_triple(&triple)
@@ -120,6 +129,7 @@ fn emit_checked(
     let builder = context.create_builder();
     let mut tracers = HashMap::new();
     let mut functions = vec![None; program.functions.len()];
+    trace_phase("declarations");
     for &id in &reachable {
         let source = &program.functions[id];
         let params = source
@@ -138,6 +148,7 @@ fn emit_checked(
         };
         functions[id] = Some(module.add_function(&format!("loom.fn.{id}"), ty, Some(linkage)));
     }
+    trace_phase("lower");
     for &id in &reachable {
         let function = functions[id].ok_or("missing checked function")?;
         let entry = context.append_basic_block(function, "entry");
@@ -244,6 +255,7 @@ fn emit_checked(
         }
         builder.build_return(Some(&context.i32_type().const_zero()))?;
     }
+    trace_phase("optimize");
     module.verify().map_err(|error| error.to_string())?;
     let pipeline = match optimization {
         OptimizationLevel::None => "default<O0>",
@@ -260,6 +272,7 @@ fn emit_checked(
             .print_to_file(path)
             .map_err(|error| format!("{}: {error}", path.display()))?;
     }
+    trace_phase("object");
     machine
         .write_to_file(&module, FileType::Object, object)
         .map_err(|error| format!("{}: {error}", object.display()))?;
