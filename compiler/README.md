@@ -679,6 +679,10 @@ remain requirements, not guarantees supplied by this initial lowering.
 
 ## Next boundary
 
+The [native basic benchmark](../benchmarks/basic/README.md) compares the current
+compiled path with C, Go, Rust and Zig, including separate integer-checking modes.
+It is distinct from the compiler-latency measurements above.
+
 The `compiler/examples/data` package exercises records, enums, generic functions,
 and both test forms through the same CLI. Scalar-only records stay native values;
 enum storage uses its largest variant payload, not the sum of all variants.
