@@ -17,7 +17,10 @@ directly; LLVM's O2 pipeline promotes local storage and removes unused code.
 ## Build and try it
 
 Use Rust 1.88, LLVM 19 development libraries, and Clang. macOS is the initial
-validation host. From the repository root:
+validation host. On Ubuntu 24.04 install `llvm-19-dev`, `clang-19`, and
+`libpolly-19-dev`; set `LLVM_SYS_191_PREFIX=/usr/lib/llvm-19` and
+`LOOM_CC=/usr/bin/clang-19`. Linux CI runs the same full native/bootstrap gate.
+From the repository root on macOS:
 
 ```sh
 export LLVM_SYS_191_PREFIX="$(brew --prefix llvm@19)"

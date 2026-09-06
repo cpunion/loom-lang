@@ -111,6 +111,9 @@ pub fn prepare_parent(path: &Path) -> Result<(), String> {
 }
 
 pub fn output_identity(path: &Path) -> Result<PathBuf, String> {
+    if let Ok(existing) = path.canonicalize() {
+        return Ok(existing);
+    }
     let absolute = std::path::absolute(path).map_err(|error| error.to_string())?;
     let parent = absolute.parent().ok_or("output needs a parent directory")?;
     Ok(parent
@@ -137,7 +140,12 @@ pub fn reject_source_output(path: &Path, sources: &[PathBuf]) -> Result<(), Stri
     }
     if path
         .extension()
-        .is_some_and(|extension| extension == "loom" || extension == "toml" || extension == "lock")
+        .and_then(OsStr::to_str)
+        .is_some_and(|extension| {
+            ["loom", "toml", "lock"]
+                .iter()
+                .any(|source| extension.eq_ignore_ascii_case(source))
+        })
     {
         return Err("native outputs cannot overwrite source, manifests, or lockfiles".into());
     }
@@ -155,6 +163,14 @@ pub fn reject_source_output(path: &Path, sources: &[PathBuf]) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_extensions_are_protected_on_case_insensitive_filesystems() {
+        for name in ["MAIN.LOOM", "loom.ToMl", "Cargo.LOCK"] {
+            assert!(reject_source_output(Path::new(name), &[]).is_err());
+        }
+        assert!(reject_source_output(Path::new("program.exe"), &[]).is_ok());
+    }
 
     #[test]
     fn windows_links_objects_with_explicit_crt_and_reproducible_output() {

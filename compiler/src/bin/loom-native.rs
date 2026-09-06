@@ -120,6 +120,11 @@ fn execute() -> Result<(), String> {
     let link_time = link_started.elapsed();
     publish(if library { &object } else { &executable }, &output)?;
     if let (Some(from), Some(to)) = (&emitted_ir, &ir) {
+        // Once the native file exists, canonicalization also resolves casing
+        // aliases on Windows and case-insensitive macOS volumes.
+        if output_identity(to)? == output_identity(&output)? {
+            return Err("LLVM IR aliases the native output; native artifact retained".into());
+        }
         publish(from, to)?;
     }
     if std::env::var_os("LOOM_NATIVE_TIMINGS").is_some() {

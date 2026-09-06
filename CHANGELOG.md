@@ -5,6 +5,9 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add an independent Linux LLVM 19 / Rust 1.88 full bootstrap and native CI gate.
+- Protect source extensions and native/IR outputs against case aliases on
+  case-insensitive filesystems.
 - Implement the Windows MSVC native/runtime path, Unicode/binary I/O, canonical
   package paths, and executable suffixes. Add checked compiler export and
   same-workflow bootstrap transfer into a Windows CI gate; native Windows

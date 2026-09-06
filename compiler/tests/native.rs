@@ -511,3 +511,37 @@ fn output_aliases_cannot_overwrite_inputs_or_each_other() {
         "pub fn value() Int { 42 }"
     );
 }
+
+#[test]
+fn case_alias_outputs_preserve_source_and_native_artifacts() {
+    let text = "pub fn value() Int { 42 }";
+    let dir = source(text);
+    let output = loom(&[
+        "build",
+        path(dir.path()),
+        "--output",
+        path(&dir.path().join("MAIN.LOOM")),
+    ]);
+    assert!(!output.status.success());
+    assert_eq!(
+        fs::read_to_string(dir.path().join("main.loom")).unwrap(),
+        text
+    );
+    // Only exercise aliases where this filesystem actually aliases case.
+    if !dir.path().join("MAIN.LOOM").exists() {
+        return;
+    }
+    let object = dir.path().join("artifact");
+    let ir = dir.path().join("ARTIFACT");
+    let output = loom(&[
+        "build",
+        path(dir.path()),
+        "--output",
+        path(&object),
+        "--emit-ir",
+        path(&ir),
+    ]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("aliases the native output"));
+    assert!(!fs::read(&object).unwrap().starts_with(b"; ModuleID"));
+}
