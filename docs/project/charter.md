@@ -26,7 +26,9 @@ deployment have separate responsibilities.
    and account for it on a later upgrade.
 5. **A small implementation that can self-host early.** Produce straightforward
    typed native code, implement policy in Loom libraries, and move compiler
-   components into Loom as soon as the native subset can support them.
+   components into Loom as soon as the native subset can support them. Fast
+   startup and check/build/test feedback, with controlled memory growth, are
+   part of the programming experience, not only compiler benchmarks.
 
 ## Responsibility boundaries
 

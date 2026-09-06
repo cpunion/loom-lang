@@ -18,11 +18,15 @@ Run the relevant local gate:
 ```sh
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
-bash scripts/bootstrap.sh
+bash scripts/bootstrap.sh --dev
 cargo test --locked --workspace
 node .github/scripts/check-docs.mjs
 node --test .github/scripts/check-docs.test.mjs
 ```
+
+The development rebuild uses one installed Loom compiler. CI retains
+`bash scripts/bootstrap.sh` without flags for the full stage comparison; also
+use it when changing bootstrap boundaries or advancing the seed.
 
 Start with the narrowest test that exercises a change. A language change needs
 source-to-native evidence and the important rejection case, not another public
