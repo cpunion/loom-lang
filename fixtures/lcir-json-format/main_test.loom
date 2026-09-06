@@ -1,3 +1,0 @@
-import std.json.format_json
-
-test fn sourceJsonFormat() Result[Unit, Problem] { verify() }

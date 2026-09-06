@@ -1,4 +1,0 @@
-test fn typedBytes() {
-    verifyBytes()
-    verifyMovingBytes()
-}

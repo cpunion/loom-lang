@@ -1,6 +1,0 @@
-import utility.math.increment
-
-pub fn start() {
-    let answer = increment(41)
-    assert answer == 42
-}

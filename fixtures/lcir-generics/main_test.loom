@@ -1,3 +1,0 @@
-test fn identityInstance() {
-    discard identity(9)
-}

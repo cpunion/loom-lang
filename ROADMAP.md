@@ -116,6 +116,6 @@ collection workloads. Investigate generated code before introducing another
 optimization layer; no performance target permits weaker contracts or cleanup.
 
 Alternate backends, a stable FFI/plugin ABI, and cross-cutting/AOP composition
-are separate future work. They do not block self-hosting. During replacement,
-the existing compiler remains usable as an implementation reference, not a
-permanent compatibility target.
+are separate future work. They do not block self-hosting. The superseded
+compiler remains in Git history as reference material, not in the active tree
+as a compatibility target.

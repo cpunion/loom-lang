@@ -1,7 +1,0 @@
-test async fn fallibleTaskAndResult() Result[Unit, Problem] {
-    if verify().await {
-        Ok(Unit)
-    } else {
-        Err(Problem.Wrong)
-    }
-}

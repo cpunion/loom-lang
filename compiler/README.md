@@ -2,10 +2,10 @@
 
 This is the first executable slice of the replacement compiler described in the
 [roadmap](../ROADMAP.md). It is not the complete N0 milestone or a replacement
-for every program supported by the existing workspace compiler.
+for every program supported by the superseded compiler in Git history.
 
-One Rust package connects source syntax, checked scalar functions, and LLVM 19
-through Inkwell. It does not depend on the existing compiler crates, interpreter,
+One Rust package connects source syntax, checked functions, and LLVM 19
+through Inkwell. It does not depend on the removed compiler crates, interpreter,
 universal values, runtime bundle, or executor. The generated program links only
 the host C library for fault reporting. Ordinary arithmetic and calls lower
 directly; LLVM's O2 pipeline promotes local storage and removes unused code.
@@ -18,19 +18,19 @@ validation host. From the repository root:
 ```sh
 export LLVM_SYS_191_PREFIX="$(brew --prefix llvm@19)"
 export LOOM_CC="$LLVM_SYS_191_PREFIX/bin/clang"
-rustup run 1.88.0 cargo build --locked --manifest-path compiler/Cargo.toml
+cargo build --locked
 
-compiler/target/debug/loom check compiler/examples/scalar
-compiler/target/debug/loom build compiler/examples/scalar \
-  --output compiler/target/scalar --emit-ir compiler/target/scalar.ll
-compiler/target/scalar
-compiler/target/debug/loom test compiler/examples/scalar
-compiler/target/debug/loom run compiler/examples/scalar
-compiler/target/debug/loom test compiler/std/int
+target/debug/loom check compiler/examples/scalar
+target/debug/loom build compiler/examples/scalar \
+  --output target/scalar --emit-ir target/scalar.ll
+target/scalar
+target/debug/loom test compiler/examples/scalar
+target/debug/loom run compiler/examples/scalar
+target/debug/loom test compiler/std/int
 ```
 
-This seed has its own Cargo workspace and lockfile, and its binary is still named
-`loom`. No new permanent CLI spelling or compatibility backend is introduced.
+The root Cargo workspace and lockfile build the maintained compiler. Its binary
+is named `loom`; there is no compatibility backend.
 Development builds find their source `std` beside this manifest; `LOOM_STD` can
 select another standard-library directory. This is not yet a relocatable release
 package. `--help` lists the small command surface.
@@ -94,8 +94,7 @@ these temporary limits do not redefine it.
 For this compiler's local gate:
 
 ```sh
-rustup run 1.88.0 cargo fmt --manifest-path compiler/Cargo.toml -- --check
-rustup run 1.88.0 cargo clippy --locked --manifest-path compiler/Cargo.toml \
-  --all-targets -- -D warnings
-rustup run 1.88.0 cargo test --locked --manifest-path compiler/Cargo.toml
+cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
 ```

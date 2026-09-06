@@ -1,4 +1,0 @@
-test fn typedPath() {
-    verifyPathRules()
-    verifyMovingJoin()
-}

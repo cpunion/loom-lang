@@ -1,1 +1,0 @@
-test fn staticConcepts() Result[Unit, Problem] { verify() }

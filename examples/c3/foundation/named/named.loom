@@ -1,7 +1,0 @@
-pub dyn concept Named {
-    method name(self) Text
-}
-
-pub fn display_name(value Named) Text {
-    value.name()
-}
