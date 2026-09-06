@@ -5,6 +5,9 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add source Text search, prefix/suffix matching, Unicode trimming, split and
+  byte-builder-backed join, including compile-time execution and GC stress tests.
+
 - Execute Float in the shared compile-time evaluator and support Float-based
   constrained types, with direct constant construction and once-only dynamic
   checks. Bootstrap through a pinned Loom source checkpoint, leaving the frozen

@@ -44,3 +44,49 @@ test fn imports_are_unique_and_deterministic() {
     assert get(values, 0) == "app.parser"
     assert get(values, 1) == "std.list" && get(values, 2) == "std.text"
 }
+
+test fn test_dependencies_can_import_the_completed_production_package() {
+    // std.list tests import std.text, whose production code imports std.list.
+    let project = match load("compiler/std/list", "compiler/std", true) {
+        Result.Ok(value) => value
+        Result.Err(_) => { assert false
+            Project { files = new[SourceFile]() root = "" } }
+    }
+    assert project.root == "std.list"
+    var root_tests = false
+    var text_loaded = false
+    var index = 0
+    while index < length(project.files) {
+        let file = get(project.files, index)
+        if file.package == project.root {
+            if file.test_only { root_tests = true }
+        } else {
+            assert !file.test_only
+            var item = 0
+            while item < length(file.tree.children) {
+                assert !has(get(file.tree.children, item), NodeKind.Test)
+                item = item + 1
+            }
+        }
+        if file.package == "std.text" { text_loaded = true }
+        index = index + 1
+    }
+    assert root_tests && text_loaded
+}
+
+test fn production_cycles_still_reject_before_loading_files() {
+    let loader = Loader {
+        files = new[SourceFile]() module = ModuleRoot { name = "app" base = "" }
+        std_root = "" active = new[Text]() complete = new[Text]()
+    }
+    push(loader.active, "app")
+    assert match visit(loader, "app", "not-read", false, 1) {
+        Result.Err(message) => message == "package import cycle through app"
+        Result.Ok(_) => false
+    }
+    push(loader.complete, "app")
+    assert match visit(loader, "app", "not-read", false, 0) {
+        Result.Ok(_) => true
+        Result.Err(_) => false
+    }
+}

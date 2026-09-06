@@ -131,6 +131,7 @@ fn visit(loader Loader, package Text, directory Text, tests Bool, depth Int) Res
         Result.Err(_) => { return Result.Err(concat(directory, ": cannot read directory")) }
     }
     let imports = new[Text]()
+    let test_imports = new[Text]()
     var count = 0
     var index = 0
     while index < length(names) {
@@ -143,16 +144,17 @@ fn visit(loader Loader, package Text, directory Text, tests Bool, depth Int) Res
                 Result.Ok(value) => production(value, tests)
                 Result.Err(error) => { return Result.Err(render(path, text, error)) }
             }
+            let selected_imports = if test_only { test_imports } else { imports }
             var item = 0
             while item < length(tree.children) {
                 let node = get(tree.children, item)
-                if node.kind == NodeKind.Refined && package != "std.result" { include(imports, "std.result") }
+                if node.kind == NodeKind.Refined && package != "std.result" { include(selected_imports, "std.result") }
                 if node.kind == NodeKind.Import {
                     let target = std.loom.project.package(node.value)
                     if target == "" {
                         return Result.Err(concat(path, ": imports name a module/package and declaration"))
                     }
-                    if target != package { include(imports, target) }
+                    if target != package { include(selected_imports, target) }
                 }
                 item = item + 1
             }
@@ -173,6 +175,14 @@ fn visit(loader Loader, package Text, directory Text, tests Bool, depth Int) Res
         index = index + 1
     }
     push(loader.complete, package)
+    // Tests extend a completed production package, not its import graph. Their
+    // dependencies may import that package, but still cannot cycle themselves.
+    index = 0
+    while index < length(test_imports) {
+        let target = get(test_imports, index)
+        discard visit(loader, target, import_directory(loader, target)?, false, 0)?
+        index = index + 1
+    }
     Result.Ok(true)
 }
 
