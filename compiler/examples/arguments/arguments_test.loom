@@ -1,0 +1,17 @@
+test fn external_input_crosses_parse_and_constraint_boundaries() {
+    assert match total("+0010") { Result.Ok(value) => value == 55, _ => false }
+    assert match total("0") { Result.Ok(value) => value == 0, _ => false }
+    assert match total("10000") { Result.Ok(value) => value == 50005000, _ => false }
+    assert match total("10001") {
+        Result.Err(error) => error == "count must be between 0 and 10000"
+        _ => false
+    }
+    assert match total("bad") {
+        Result.Err(error) => error == "expected a decimal integer"
+        _ => false
+    }
+    assert match total("9223372036854775808") {
+        Result.Err(error) => error == "integer is out of range"
+        _ => false
+    }
+}

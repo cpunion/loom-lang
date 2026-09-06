@@ -5,18 +5,22 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add pure Loom decimal integer parsing with explicit syntax/range errors and
+  compile-time execution. Exercise command-line parsing and constrained input
+  in an ordinary application with colocated tests.
 - Upgrade the native bridge and frozen source seed to LLVM 22 through the existing
   Inkwell 0.10 binding. Keep Rust 1.88 and avoid a second LLVM install for bootstrap.
 - Separate the backend-neutral codegen interface from the LLVM implementation;
   bound LLVM scheduling search to avoid its large-block compile-time regression.
-- Pass the independent Linux / Rust 1.88 full bootstrap and native CI gate,
-  alongside macOS. Windows verification remains pending.
+- Pass the macOS, Linux, and Windows LLVM 22 bootstrap and full native CI gates.
+  Linux recovers its source seed independently; Windows builds native stages
+  from the same workflow's checked export. Align the Windows CRT and SDK library
+  paths and reduce recursive evaluator stack frames without lowering budgets.
 - Protect source extensions and native/IR outputs against case aliases on
   case-insensitive filesystems.
 - Implement the Windows MSVC native/runtime path, Unicode/binary I/O, canonical
   package paths, and executable suffixes. Add checked compiler export and
-  same-workflow bootstrap transfer into a Windows CI gate; native Windows
-  verification is still pending.
+  same-workflow bootstrap transfer into the Windows CI gate.
 - Allow pure helper calls in `Int` type predicates, validating their operation
   closure even for unused declarations. Fold known predicates without weakening
   runtime construction or required proofs. Extend `comptime if` type guards to

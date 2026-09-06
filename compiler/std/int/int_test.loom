@@ -5,3 +5,54 @@ test fn decimal_bounds() {
     assert to_text(9223372036854775807) == "9223372036854775807"
     assert to_text(-9223372036854775808) == "-9223372036854775808"
 }
+
+fn expect_value(input Text, expected Int) {
+    match parse(input) {
+        Result.Ok(value) => { assert value == expected }
+        Result.Err(_) => { assert false }
+    }
+}
+
+fn expect_error(input Text, expected ParseError) {
+    match parse(input) {
+        Result.Ok(_) => { assert false }
+        Result.Err(error) => { assert error == expected }
+    }
+}
+
+test fn parse_values() {
+    expect_value("0", 0)
+    expect_value("-0", 0)
+    expect_value("+0007", 7)
+    expect_value("-0123", -123)
+    expect_value(to_text(1234567890), 1234567890)
+    expect_value(to_text(-42), -42)
+    let staged = comptime { parse("+42") }
+    match staged {
+        Result.Ok(value) => { assert value == 42 }
+        Result.Err(_) => { assert false }
+    }
+}
+
+test fn parse_boundaries() {
+    expect_value(to_text(9223372036854775807), 9223372036854775807)
+    expect_value(to_text(-9223372036854775808), -9223372036854775808)
+    expect_value("+0009223372036854775807", 9223372036854775807)
+    expect_value("-0009223372036854775808", -9223372036854775808)
+    expect_error("9223372036854775808", ParseError.OutOfRange)
+    expect_error("-9223372036854775809", ParseError.OutOfRange)
+    expect_error("999999999999999999999999999999", ParseError.OutOfRange)
+}
+
+test fn parse_invalid() {
+    expect_error("", ParseError.Invalid)
+    expect_error("+", ParseError.Invalid)
+    expect_error("-", ParseError.Invalid)
+    expect_error(" 1", ParseError.Invalid)
+    expect_error("1 ", ParseError.Invalid)
+    expect_error("1.0", ParseError.Invalid)
+    expect_error("0xff", ParseError.Invalid)
+    expect_error("1_000", ParseError.Invalid)
+    expect_error("+-1", ParseError.Invalid)
+    expect_error("１２", ParseError.Invalid)
+}

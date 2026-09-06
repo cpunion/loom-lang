@@ -16,14 +16,19 @@ Postfix `?` propagates errors with ordinary enum control flow. Recursive data
 through `List` is supported; infinite inline layouts and growing generic
 specializations reject.
 
+Source `std.int.parse` handles signed decimal input and range errors without
+runtime parsing helpers; the same function can execute at compile time. The
+[arguments example](../../compiler/examples/arguments/main.loom) combines it
+with constrained construction, command-line input, and ordinary source tests.
+
 `Int` constraints may call pure helpers with loops, recursion, and fresh data.
 Their supported operation/call closure is validated even for unused constrained
 declarations. Known true/false predicates remove the check or reject; unknown
 inputs or unsuccessful optional evaluation retain normal runtime construction
 and fault behavior. Function contracts remain call-free and proofs mandatory.
 
-The native toolchain uses Rust 1.88 and LLVM 22. macOS and Linux pass the full
-bootstrap and native gate.
+The native toolchain uses Rust 1.88 and LLVM 22. macOS, Linux, and Windows pass
+the [full bootstrap and native gate](https://github.com/cpunion/loom-lang/actions/runs/34022948294).
 Compiler, native integration,
 and runtime tests cover real check/build/test/run, required-proof rejection,
 input-boundary failures, and allocation-free scalar/record paths.
@@ -43,8 +48,9 @@ test gate; it does not rely on a compiler exported from the macOS job.
 
 The Windows x64/MSVC implementation now includes native linking, binary file
 I/O with Unicode paths/arguments, drive/UNC/verbatim package paths, and native
-artifact suffixes. Its [CI job](../../.github/workflows/ci.yml) is wired but has
-not yet established Windows support. Cold bootstrap consumes a trusted checked
+artifact suffixes. Its [CI job](../../.github/workflows/ci.yml) passes native
+bootstrap and all workspace tests, including compile-time recursion budget
+errors, GC, and redirected I/O. Cold bootstrap consumes a trusted checked
 compiler export from the same workflow's validated macOS checkout, builds a
 native Windows stage 0, then runs the regular stage 1/2/3 gate. This temporary
 transfer is neither a committed IR snapshot nor a second language frontend;
@@ -98,4 +104,5 @@ implement incremental reuse or establish a performance target as achieved.
 
 Accepted language and deployment decisions remain targets, not claims that the
 whole design is implemented. Bootstrap agreement is not a correctness proof.
-No release, full platform matrix, or complete standard library is claimed.
+No release or complete standard library is claimed; additional host/architecture
+combinations remain unvalidated.
