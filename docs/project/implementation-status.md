@@ -27,8 +27,13 @@ ordinary direct-call specialization. Conditional `T implements C` tests select
 only that instance's branch; they do not add a public generic requirement.
 Method overloads require determined selection, with concept qualification for
 ambiguity. Source `std.display` provides the first shared capability. Unused
-implementations stay outside native reachability. Dynamic dispatch, associated
-types and generic conformances are not yet implemented.
+implementations stay outside native reachability. Native `dyn C` boxes only with
+statically established evidence and supports generic bounds and managed aggregate
+storage. Its sparse method tables retain only reachable slots for closed builds;
+library exports retain their callable tables. Receiver snapshots remain alive
+across allocating arguments under forced collection. Associated types and generic
+conformances remain open; compile-time dynamic execution and cross-dyn conversions
+are not supported by this slice.
 
 Source `std.int.parse` handles signed decimal input and range errors without
 runtime parsing helpers; the same function can execute at compile time. The

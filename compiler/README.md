@@ -291,7 +291,7 @@ parallel reassignment are not implemented. Copying a tuple shares its managed
 fields just as copying a record does; compile-time results construct fresh graphs
 while preserving internal sharing.
 
-## Static concepts
+## Concepts
 
 Concept conformance is nominal and explicit. `std.display` supplies `Display`,
 implementations for Int, Float, Bool and Text, and generic `to_text`:
@@ -325,9 +325,34 @@ their explicit evidence to bounded generic functions.
 
 This slice supports nongeneric concepts and concrete implementation targets.
 Associated types, generic/default implementations, concept-typed parameter
-shorthand, bounded generic data declarations and `dyn C` remain later work.
+shorthand and bounded generic data declarations remain later work.
 Concept method contracts and extra implementation preconditions currently reject;
 implementation postconditions still require proof.
+
+### Dynamic values
+
+An expected `dyn C` type implicitly packages a concrete value with its explicit
+implementation evidence. The same methods work on static and dynamic receivers:
+
+```loom
+fn display_later(value dyn Display) Text { value.display() }
+let value dyn Display = Item { label = "item" }
+assert display_later(value) == "item"
+assert render(value) == "item"
+```
+
+The representation is a GC-owned concrete snapshot plus a read-only witness
+table; copying a dyn value does not allocate another box. Contained lists retain
+their ordinary sharing, while record value fields are copied. Static calls still
+need no boxes. The [dynamic example](examples/dynamic/main.loom) covers escaping
+receivers, heterogeneous lists, records/enums/tuples and allocating call arguments.
+
+Closed native builds retain reachable witnesses and used method slots. Library
+exports retain complete callable tables. No runtime type lookup or `any`
+conversion supplies evidence. Cross-dyn conversion, concrete recovery, and
+compile-time dynamic execution currently reject. A dyn-compatible method can use
+`Self` only as its first receiver parameter; static-only concepts may also use it
+elsewhere. Future associated-type support must preserve explicit evidence and DCE.
 
 ## Contract boundary
 

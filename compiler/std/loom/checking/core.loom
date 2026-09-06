@@ -18,6 +18,9 @@ import std.loom.typed.ExprKind
 import std.loom.typed.Arm
 import std.loom.typed.Function
 import std.loom.typed.Program
+import std.loom.typed.Interface
+import std.loom.typed.Method
+import std.loom.typed.Witness
 import std.list.new
 import std.list.push
 import std.list.get
@@ -37,6 +40,9 @@ record Environment {
     computations List[Computation]
     concepts List[Concept]
     implementations List[Implementation]
+    interfaces List[Interface]
+    witnesses List[Witness]
+    uses List[SlotUse]
 }
 record Binding { local Int previous Int }
 record Context {
@@ -67,7 +73,7 @@ fn type_part(node Node) Int {
     var index = 0
     while index < length(node.children) {
         let kind = child(node, index).kind
-        if kind == NodeKind.Type || kind == NodeKind.TupleType { return index }
+        if kind == NodeKind.Type || kind == NodeKind.TupleType || kind == NodeKind.DynType { return index }
         index = index + 1
     }
     -1
@@ -115,6 +121,9 @@ fn all_fall(values List[Expr]) Bool {
     true
 }
 fn typed(context Context, node Node, value Expr, expected Int) Result[Expr, Failure] {
+    if expected >= 0 && value.ty != expected && value.falls && get(context.env.types, expected).kind == TypeKind.Dyn {
+        return boxed(context, node, value, expected)
+    }
     if get(context.env.types, value.ty).kind == TypeKind.Refined && expected == base_type(context.env, value.ty) {
         return Result.Ok(expression(ExprKind.Coerce, expected, node, "", -1, expressions(value), value.falls))
     }
@@ -155,7 +164,8 @@ fn bind_local(context Context, node Node, value Text, ty Int, mutable Bool, boun
 
 pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Failure] {
     let env = Environment { source = source types = new[Type]() signatures = new[Signature]() pending = new[Instance]()
-        stage_depth = 0 computations = new[Computation]() concepts = new[Concept]() implementations = new[Implementation]() }
+        stage_depth = 0 computations = new[Computation]() concepts = new[Concept]() implementations = new[Implementation]()
+        interfaces = new[Interface]() witnesses = new[Witness]() uses = new[SlotUse]() }
     initialize_types(env)
     var index = 0
     while index < length(source.symbols) {
@@ -205,6 +215,7 @@ pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Fai
         index = index + 1
     }
     discard conformances(env)?
+    discard fill_interfaces(env)?
     discard refinements(env)?
     discard layouts(env)?
     index = 0
@@ -228,13 +239,8 @@ pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Fai
         }
         index = index + 1
     }
-    let functions = new[Function]()
-    index = 0
-    while index < length(env.pending) {
-        let instance = get(env.pending, index)
-        push(functions, function(env, instance.signature, instance.arguments, true)?)
-        index = index + 1
-    }
+    let functions = emit_functions(env, entry < 0 || length(exports) != 0)?
     discard layouts(env)?
-    Result.Ok(std.loom.typed.Program { types = env.types functions = functions entry = entry tests = tests exports = exports })
+    Result.Ok(std.loom.typed.Program { types = env.types functions = functions entry = entry tests = tests exports = exports
+        interfaces = env.interfaces witnesses = env.witnesses })
 }

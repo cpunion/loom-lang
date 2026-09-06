@@ -1,0 +1,99 @@
+fn dynamic_count(value Expr, kind ExprKind) Int {
+    var count = if value.kind == kind { 1 } else { 0 }
+    var index = 0
+    while index < length(value.children) {
+        count = count + dynamic_count(get(value.children, index), kind)
+        index = index + 1
+    }
+    index = 0
+    while index < length(value.arms) {
+        let body = get(value.arms, index).body
+        var item = 0
+        while item < length(body) {
+            count = count + dynamic_count(get(body, item), kind)
+            item = item + 1
+        }
+        index = index + 1
+    }
+    count
+}
+
+test fn dynamic_boundaries_reuse_nominal_evidence_and_existing_aggregate_types() {
+    let definitions = "concept C { fn value(self Self) Int }\nimpl C for Int { fn value(self Int) Int { self } }\nrecord Holder[T] { value T }\nenum Maybe[T] { Some(T) None }\nfn erase[T C](value T) dyn C { value }\nfn use[T C](value T) Int { value.value() }\nfn pick(value Int) Int { value }\nfn pick(value dyn C) Int { value.value() }\n"
+    let program = accepted(concat(definitions, "fn main() { let value dyn C = 7\nlet copy = value\nlet pair (dyn C, Int) = (8, 1)\nlet holder = Holder[dyn C] { value = 9 }\nlet wrapped = Maybe.Some[dyn C](10)\nassert use(copy) == 7\nassert use(erase(11)) == 11\nassert pair.0.value() == 8 && holder.value.value() == 9\nassert match wrapped { Maybe.Some(inner) => inner.value() == 10, _ => false }\nassert pick(12) == 12\nassert C.value(value) == 7 }"))
+    assert length(program.interfaces) == 1
+    assert length(program.witnesses) == 1
+    let shape = get(program.interfaces, 0)
+    assert length(shape.methods) == 1
+    assert length(get(shape.methods, 0).params) == 0
+    assert get(shape.methods, 0).result == 1
+    assert get(program.witnesses, 0).concrete == 1
+    var calls = 0
+    var boxes = 0
+    var index = 0
+    while index < length(program.functions) {
+        let body = get(program.functions, index).body
+        calls = calls + dynamic_count(body, ExprKind.DynCall)
+        boxes = boxes + dynamic_count(body, ExprKind.DynBox)
+        index = index + 1
+    }
+    assert calls >= 5 && boxes == 5
+    discard accepted("concept C { fn value(self Self, extra Int) Int\nfn value(self Self, extra Bool) Bool }\nimpl C for Int { fn value(self Int, extra Bool) Bool { extra }\nfn value(self Int, extra Int) Int { self + extra } }\nfn main() { let value dyn C = 1\nassert value.value(2) == 3\nassert value.value(true) }")
+    discard accepted("concept C { fn value(self Self) Int\nfn other(self Self, value dyn C) dyn C }\nimpl C for Int { fn value(self Int) Int { self }\nfn other(self Int, value dyn C) dyn C { value } }\nfn main() { let value dyn C = 1\nassert value.other(2).value() == 2 }")
+}
+
+test fn dynamic_reachability_joins_constructed_witnesses_with_called_slots() {
+    let definitions = "concept C { fn first(self Self) Int\nfn unused(self Self) Int }\nconcept D { fn second(self Self) Int\nfn unused(self Self) Int }\nimpl C for Int { fn first(self Int) Int { let value dyn D = true\nvalue.second() }\nfn unused(self Int) Int { 90 } }\nimpl C for Bool { fn first(self Bool) Int { 80 }\nfn unused(self Bool) Int { 81 } }\nimpl D for Bool { fn second(self Bool) Int { 7 }\nfn unused(self Bool) Int { 91 } }\n"
+    let program = accepted(concat(definitions, "fn main() { let value dyn C = 1\nassert value.first() == 7 }"))
+    assert length(program.functions) == 3
+    assert length(program.witnesses) == 2
+    var index = 0
+    while index < length(program.witnesses) {
+        let witness = get(program.witnesses, index)
+        assert length(witness.methods) == 2
+        assert get(witness.methods, 0) >= 0 && get(witness.methods, 1) == -1
+        index = index + 1
+    }
+    let library = accepted(concat(definitions, "pub fn exported() dyn C { 1 }"))
+    assert length(library.witnesses) == 2
+    index = 0
+    while index < length(library.witnesses) {
+        let witness = get(library.witnesses, index)
+        assert get(witness.methods, 0) >= 0 && get(witness.methods, 1) >= 0
+        index = index + 1
+    }
+}
+
+test fn dynamic_object_safety_and_compile_time_boundaries_fail_closed() {
+    rejects("concept C { fn value(self Self) Int }\nfn main() { let value dyn C = 1\ndiscard value }")
+    rejects("concept C {}\nconcept D {}\nimpl C for Int {}\nimpl D for Int {}\nfn main() { let first dyn C = 1\nlet second dyn D = first\ndiscard second }")
+    rejects("concept C {}\nimpl C for Int {}\nfn main() { let value dyn C = 1\nlet concrete Int = value\ndiscard concrete }")
+    rejects("concept Copy { fn copy(self Self) Self }\nfn invalid(value dyn Copy) {}")
+    rejects("concept Same { fn same(self Self, other List[Self]) Bool }\nfn invalid(value dyn Same) {}")
+    rejects("concept C {}\nconcept D {}\nimpl D for dyn C {}")
+    let definitions = "concept C { fn value(self Self) Int }\nimpl C for Int { fn value(self Int) Int { self } }\n"
+    rejects(concat(definitions, "fn invalid() Int { comptime { let value dyn C = 1\nvalue.value() } }"))
+    rejects(concat(definitions, "fn invalid(value dyn C) Int ensures result >= 0 { value.value() }"))
+    discard accepted(concat(definitions, "fn selected[T](value T) Int { comptime if T implements C { value.value() } else { 0 } }\nfn main() { let value dyn C = 7\nassert selected(value) == 7 }"))
+}
+
+test fn test_only_dynamic_evidence_is_explicit_and_does_not_change_production() {
+    let files = source_files("concept C { fn value(self Self) Int }\nrecord Item {}\nfn erase[T C](value T) dyn C { value }\nfn production() Int { comptime if Item implements C { 1 } else { 0 } }")
+    let testing = source_file("app", "impl C for Item { fn value(self Item) Int { 7 } }\ntest fn checked() { assert erase(Item {}).value() == 7\nassert production() == 0 }", false)
+    push(files, SourceFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false })
+    let program = match bind(files, "app", true) {
+        Result.Ok(bound) => match check(bound) { Result.Ok(program) => program
+            Result.Err(_) => { assert false
+                accepted("") } }
+        Result.Err(_) => { assert false
+            accepted("") }
+    }
+    assert length(program.witnesses) == 1
+    let direct = source_files("concept C { fn value(self Self) Int }\nrecord Item {}\nfn production() dyn C { Item {} }")
+    push(direct, SourceFile { package = testing.package path = "app_test.loom" text = testing.text tree = testing.tree test_only = true trusted_std = false })
+    match bind(direct, "app", true) {
+        Result.Ok(bound) => match check(bound) { Result.Err(_) => {}
+            Result.Ok(_) => { assert false } }
+        Result.Err(_) => { assert false }
+    }
+}

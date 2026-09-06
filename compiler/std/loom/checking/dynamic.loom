@@ -1,0 +1,157 @@
+import std.loom.ast.Node
+import std.loom.typed.TypeKind
+import std.loom.typed.ExprKind
+import std.loom.typed.Interface
+import std.loom.typed.Method
+import std.loom.typed.Witness
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.set
+import std.list.length
+import std.result.Result
+
+record SlotUse { interface Int slot Int }
+
+fn fill_interface(env Environment, index Int) Result[Bool, Failure] {
+    let declaration = get(env.interfaces, index)
+    let capability = get(env.concepts, concept_index(env, declaration.symbol))
+    let methods = new[Method]()
+    var method = 0
+    while method < length(capability.methods) {
+        let current = get(env.signatures, get(capability.methods, method))
+        let params = new[Int]()
+        var parameter = 1
+        while parameter < length(current.params) {
+            let ty = get(current.params, parameter)
+            if !concrete(env, ty) {
+                return Result.Err(failure(env, current.symbol, symbol(env, current.symbol).node, "dyn concept methods may use Self only as the receiver"))
+            }
+            push(params, ty)
+            parameter = parameter + 1
+        }
+        if !concrete(env, current.result) {
+            return Result.Err(failure(env, current.symbol, symbol(env, current.symbol).node, "dyn concept methods cannot return Self or a type containing Self"))
+        }
+        push(methods, Method { name = symbol(env, current.symbol).name params = params result = current.result })
+        method = method + 1
+    }
+    set(env.interfaces, index, Interface { symbol = declaration.symbol methods = methods })
+    Result.Ok(true)
+}
+fn fill_interfaces(env Environment) Result[Bool, Failure] {
+    var index = 0
+    while index < length(env.interfaces) { discard fill_interface(env, index)?
+        index = index + 1 }
+    Result.Ok(true)
+}
+fn dynamic_type(env Environment, owner Int, node Node) Result[Int, Failure] {
+    let capability = required_concept(env, owner, node)?
+    var index = 0
+    while index < length(env.interfaces) && get(env.interfaces, index).symbol != capability { index = index + 1 }
+    if index == length(env.interfaces) {
+        push(env.interfaces, Interface { symbol = capability methods = new[Method]() })
+        if concept_index(env, capability) >= 0 { discard fill_interface(env, index)? }
+    }
+    Result.Ok(intern(env, TypeKind.Dyn, index, new[Int]()))
+}
+fn can_widen(context Context, source Int, target Int) Bool {
+    if target < 0 { return false }
+    let original = get(context.env.types, source)
+    let desired = get(context.env.types, target)
+    if original.kind == TypeKind.Refined && target == base_type(context.env, source) { return true }
+    desired.kind == TypeKind.Dyn && original.kind != TypeKind.Dyn &&
+        satisfies(context, source, get(context.env.interfaces, desired.symbol).symbol)
+}
+fn boxed(context Context, node Node, value Expr, target Int) Result[Expr, Failure] {
+    if !can_widen(context, value.ty, target) {
+        return Result.Err(error(context, node, "dyn conversion needs an explicit conformance; conversions between different dyn concepts are not supported"))
+    }
+    var witness = -1
+    if context.emit {
+        let interface = get(context.env.types, target).symbol
+        let capability = get(context.env.interfaces, interface)
+        if implementation(context, value.ty, capability.symbol) < 0 {
+            return Result.Err(error(context, node, "dynamic construction has no concrete implementation"))
+        }
+        witness = 0
+        while witness < length(context.env.witnesses) &&
+            (get(context.env.witnesses, witness).interface != interface || get(context.env.witnesses, witness).concrete != value.ty) {
+            witness = witness + 1
+        }
+        if witness == length(context.env.witnesses) {
+            let methods = new[Int]()
+            var slot = 0
+            while slot < length(capability.methods) { push(methods, -1)
+                slot = slot + 1 }
+            push(context.env.witnesses, Witness { interface = interface concrete = value.ty methods = methods })
+        }
+    }
+    Result.Ok(expression(ExprKind.DynBox, target, node, "", witness, expressions(value), value.falls))
+}
+fn dynamic_call(context Context, node Node, signature Int, output Int, values List[Expr]) Result[Expr, Failure] {
+    let receiver = get(values, 0)
+    let interface = get(context.env.types, receiver.ty).symbol
+    let capability = get(context.env.interfaces, interface).symbol
+    let methods = get(context.env.concepts, concept_index(context.env, capability)).methods
+    var slot = 0
+    while slot < length(methods) && get(methods, slot) != signature { slot = slot + 1 }
+    if slot == length(methods) { return Result.Err(error(context, node, "dynamic method does not belong to the receiver's concept")) }
+    if context.emit {
+        var index = 0
+        while index < length(context.env.uses) &&
+            (get(context.env.uses, index).interface != interface || get(context.env.uses, index).slot != slot) { index = index + 1 }
+        if index == length(context.env.uses) { push(context.env.uses, SlotUse { interface = interface slot = slot }) }
+    }
+    Result.Ok(expression(ExprKind.DynCall, output, node, "", slot, values, all_fall(values)))
+}
+fn slot_used(env Environment, interface Int, slot Int) Bool {
+    var index = 0
+    while index < length(env.uses) {
+        let use = get(env.uses, index)
+        if use.interface == interface && use.slot == slot { return true }
+        index = index + 1
+    }
+    false
+}
+fn activate_witnesses(env Environment, retain Bool) Result[Bool, Failure] {
+    var changed = false
+    var index = 0
+    while index < length(env.witnesses) {
+        let witness = get(env.witnesses, index)
+        let capability = get(env.interfaces, witness.interface).symbol
+        // Witness creation already admitted this exact conformance in its scope.
+        var provided = 0
+        while provided < length(env.implementations) &&
+            (get(env.implementations, provided).ty != witness.concrete || get(env.implementations, provided).capability != capability) {
+            provided = provided + 1
+        }
+        let implementation = get(env.implementations, provided)
+        var slot = 0
+        while slot < length(witness.methods) {
+            if get(witness.methods, slot) < 0 && (retain || slot_used(env, witness.interface, slot)) {
+                let method = get(implementation.methods, slot)
+                let declaration = symbol(env, get(env.signatures, method).symbol)
+                set(witness.methods, slot, schedule(env, method, new[Int](), declaration.node)?)
+                changed = true
+            }
+            slot = slot + 1
+        }
+        index = index + 1
+    }
+    Result.Ok(changed)
+}
+fn emit_functions(env Environment, retain Bool) Result[List[Function], Failure] {
+    let functions = new[Function]()
+    var index = 0
+    var more = true
+    while more {
+        while index < length(env.pending) {
+            let instance = get(env.pending, index)
+            push(functions, function(env, instance.signature, instance.arguments, true)?)
+            index = index + 1
+        }
+        more = activate_witnesses(env, retain)?
+    }
+    Result.Ok(functions)
+}

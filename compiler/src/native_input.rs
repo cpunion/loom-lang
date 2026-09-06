@@ -193,6 +193,24 @@ pub fn decode(text: &str) -> Result<c::Program> {
     let entry = optional(reader.integer()?)?;
     let tests = reader.sequence(Reader::index)?;
     let exports = reader.sequence(Reader::index)?;
+    let (interfaces, witnesses) = if reader.offset == text.len() {
+        (vec![], vec![])
+    } else {
+        if reader.integer()? != 1 {
+            return Err("unknown checked-IR feature tag".into());
+        }
+        let interfaces = reader.sequence(|reader| {
+            reader.sequence(|reader| Ok((reader.sequence(Reader::index)?, reader.index()?)))
+        })?;
+        let witnesses = reader.sequence(|reader| {
+            Ok((
+                reader.index()?,
+                reader.index()?,
+                reader.sequence(|reader| optional(reader.integer()?))?,
+            ))
+        })?;
+        (interfaces, witnesses)
+    };
     if reader.offset != text.len() {
         return Err("trailing checked-IR input".into());
     }
@@ -200,6 +218,8 @@ pub fn decode(text: &str) -> Result<c::Program> {
         types: vec![],
         lists: vec![],
         functions: vec![],
+        interfaces: vec![],
+        witnesses: vec![],
         entry,
         tests,
         exports,
@@ -213,6 +233,11 @@ pub fn decode(text: &str) -> Result<c::Program> {
             3 => Type::Text,
             4 => Type::Bytes,
             10 => Type::Float,
+            11 => {
+                let interface = index(data.symbol)?;
+                at(&interfaces, interface)?;
+                Type::Dyn(interface)
+            }
             5 => Type::Parameter(index(data.symbol)?),
             6 => {
                 let id = program.lists.len();
@@ -231,6 +256,50 @@ pub fn decode(text: &str) -> Result<c::Program> {
         });
     }
     let map = |id| at(&types, id).copied();
+    for methods in interfaces {
+        program.interfaces.push(c::Interface {
+            methods: methods
+                .into_iter()
+                .map(|(params, result)| {
+                    Ok(c::Method {
+                        params: params.into_iter().map(map).collect::<Result<_>>()?,
+                        result: map(result)?,
+                    })
+                })
+                .collect::<Result<_>>()?,
+        });
+    }
+    for (interface, concrete, methods) in witnesses {
+        let shape = at(&program.interfaces, interface)?;
+        let concrete = map(concrete)?;
+        if matches!(concrete, Type::Dyn(_) | Type::Parameter(_) | Type::Unit) {
+            return Err("checked witness requires a concrete value type".into());
+        }
+        if methods.len() != shape.methods.len() {
+            return Err("checked witness method count mismatch".into());
+        }
+        for (target, method) in methods.iter().zip(&shape.methods) {
+            if let Some(target) = target {
+                let target = at(&functions, *target)?;
+                let params = target
+                    .params
+                    .iter()
+                    .map(|ty| map(*ty))
+                    .collect::<Result<Vec<_>>>()?;
+                if params.first() != Some(&concrete)
+                    || params[1..] != method.params
+                    || map(target.result)? != method.result
+                {
+                    return Err("checked witness method signature mismatch".into());
+                }
+            }
+        }
+        program.witnesses.push(c::Witness {
+            interface,
+            concrete,
+            methods,
+        });
+    }
     for (data, mapped) in data.iter().zip(&types) {
         match *mapped {
             Type::List(id) => program.lists[id] = map(data.element)?,
@@ -599,6 +668,45 @@ impl Converter<'_> {
                 }
             }
             20 => E::Coerce(Box::new(self.expr(self.child(node, 0, 1)?)?)),
+            22 => {
+                let witness = index(node.index)?;
+                let table = at(&self.program.witnesses, witness)?;
+                let value = self.expr(self.child(node, 0, 1)?)?;
+                if ty != Type::Dyn(table.interface) || value.ty != table.concrete {
+                    return Err("checked dyn construction type mismatch".into());
+                }
+                E::DynBox {
+                    witness,
+                    value: Box::new(value),
+                }
+            }
+            23 => {
+                let receiver = self.expr(at(&node.children, 0)?)?;
+                let Type::Dyn(interface) = receiver.ty else {
+                    return Err("checked dyn call requires an erased receiver".into());
+                };
+                let slot = index(node.index)?;
+                let method = at(&at(&self.program.interfaces, interface)?.methods, slot)?;
+                if method.params.len() + 1 != node.children.len() || ty != method.result {
+                    return Err("checked dyn call signature mismatch".into());
+                }
+                let arguments = node.children[1..]
+                    .iter()
+                    .map(|value| self.expr(value))
+                    .collect::<Result<Vec<_>>>()?;
+                if arguments
+                    .iter()
+                    .map(|value| value.ty)
+                    .ne(method.params.iter().copied())
+                {
+                    return Err("checked dyn call argument type mismatch".into());
+                }
+                E::DynCall {
+                    receiver: Box::new(receiver),
+                    slot,
+                    arguments,
+                }
+            }
             _ => return Err("unknown or misplaced checked expression tag".into()),
         };
         Ok(c::Expr {
@@ -766,5 +874,54 @@ mod tests {
         ] {
             assert_eq!(primitive_arity(primitive(name).unwrap()), 1);
         }
+    }
+
+    #[test]
+    fn dynamic_tail_decodes_nominal_tables_and_checks_signatures() {
+        fn node(tag: usize, ty: usize, text: &str, index: i64, children: &[String]) -> String {
+            format!(
+                "{tag}\n{ty}\n0\n0\n{}\n{text}{index}\n1\n{}\n{}0\n",
+                text.len(),
+                children.len(),
+                children.concat()
+            )
+        }
+        let identity = node(11, 1, "", -1, &[node(3, 1, "", 0, &[])]);
+        let boxed = node(22, 2, "", 0, &[node(0, 1, "7", -1, &[])]);
+        let call = node(23, 1, "", 0, &[boxed]);
+        let main = node(11, 0, "", -1, &[node(16, 0, "", -1, &[call])]);
+        let prefix = format!(
+            "loom-checked-1\n3\n0\n-1\n1\n-1\n11\n0\n2\n0\n0\n0\n1\n1\n1\n1\n1\n0\n{identity}1\n0\n0\n0\n0\n0\n0\n{main}1\n0\n0\n"
+        );
+        let tail = "1\n1\n1\n0\n1\n1\n0\n1\n1\n0\n";
+        let program = decode(&format!("{prefix}{tail}")).unwrap();
+        assert_eq!(program.interfaces[0].methods[0].result, Type::Int);
+        assert_eq!(program.witnesses[0].concrete, Type::Int);
+        assert_eq!(program.witnesses[0].methods, [Some(0)]);
+        let c::StmtKind::Discard(value) = &program.functions[1].body.statements[0].kind else {
+            panic!("expected discard")
+        };
+        let c::ExprKind::DynCall {
+            receiver, slot: 0, ..
+        } = &value.kind
+        else {
+            panic!("expected dyn call")
+        };
+        assert_eq!(receiver.ty, Type::Dyn(0));
+        assert!(matches!(
+            receiver.kind,
+            c::ExprKind::DynBox { witness: 0, .. }
+        ));
+        assert!(
+            decode(&format!("{prefix}1\n1\n1\n0\n0\n1\n0\n1\n1\n0\n"))
+                .unwrap_err()
+                .contains("signature mismatch")
+        );
+        assert!(
+            decode(&format!("{prefix}{tail}1\n0\n0\n"))
+                .unwrap_err()
+                .contains("trailing")
+        );
+        assert!(decode(&prefix).is_err());
     }
 }

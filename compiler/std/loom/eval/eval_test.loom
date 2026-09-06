@@ -30,7 +30,8 @@ fn literal(value Int) Expr { node(ExprKind.Integer, 1, to_text(value), -1, new[E
 fn truth(value Bool) Expr { node(ExprKind.Bool, 2, if value { "true" } else { "false" }, -1, new[Expr]()) }
 fn local(index Int, ty Int) Expr { node(ExprKind.Local, ty, "", index, new[Expr]()) }
 fn binary(operator Text, ty Int, a Expr, b Expr) Expr { node(ExprKind.Binary, ty, operator, -1, two(a, b)) }
-fn empty() Program { Program { types = new[Type]() functions = new[Function]() entry = -1 tests = new[Int]() exports = new[Int]() } }
+fn empty() Program { Program { types = new[Type]() functions = new[Function]() entry = -1 tests = new[Int]() exports = new[Int]()
+    interfaces = new[Interface]() witnesses = new[Witness]() } }
 fn accepted(program Program, expression Expr, locals Int) Value {
     match evaluate(program, expression, locals) {
         Result.Ok(value) => value

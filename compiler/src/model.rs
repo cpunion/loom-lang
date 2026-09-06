@@ -6,7 +6,7 @@ pub struct Span {
     pub end: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Type {
     Int,
     Float,
@@ -15,6 +15,8 @@ pub enum Type {
     Bytes,
     /// Interned element type in Program::lists.
     List(usize),
+    /// Nominal erased interface in Program::interfaces.
+    Dyn(usize),
     Unit,
     Data(usize),
     /// Describes an unused generic type template; invalid in emitted instances.
@@ -92,10 +94,32 @@ pub mod checked {
         pub types: Vec<Data>,
         pub lists: Vec<Type>,
         pub functions: Vec<Function>,
+        pub interfaces: Vec<Interface>,
+        pub witnesses: Vec<Witness>,
         pub entry: Option<usize>,
         pub tests: Vec<usize>,
         /// Public functions of the selected package, for a library object.
         pub exports: Vec<usize>,
+    }
+
+    #[derive(Debug)]
+    pub struct Method {
+        /// Excludes the erased receiver.
+        pub params: Vec<Type>,
+        pub result: Type,
+    }
+
+    #[derive(Debug)]
+    pub struct Interface {
+        pub methods: Vec<Method>,
+    }
+
+    #[derive(Debug)]
+    pub struct Witness {
+        pub interface: usize,
+        pub concrete: Type,
+        /// Absent slots are unreferenced by the selected closed-world program.
+        pub methods: Vec<Option<usize>>,
     }
 
     #[derive(Clone, Debug)]
@@ -168,6 +192,15 @@ pub mod checked {
         Unary(Unary, Box<Expr>),
         Binary(Binary, Box<Expr>, Box<Expr>),
         Call(usize, Vec<Expr>),
+        DynBox {
+            witness: usize,
+            value: Box<Expr>,
+        },
+        DynCall {
+            receiver: Box<Expr>,
+            slot: usize,
+            arguments: Vec<Expr>,
+        },
         Record(Vec<(usize, Expr)>),
         Field(Box<Expr>, usize),
         Variant {

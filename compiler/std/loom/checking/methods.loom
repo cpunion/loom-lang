@@ -42,6 +42,24 @@ fn method_call(context Context, node Node, source Node, member Text, types List[
     let bound = bound_method(context, receiver.ty, member, length(inputs) + 1)
     let options = new[Int]()
     var index = 0
+    let receiver_type = get(context.env.types, receiver.ty)
+    if receiver_type.kind == TypeKind.Dyn {
+        let capability = get(context.env.interfaces, receiver_type.symbol).symbol
+        let declaration = symbol(context.env, capability)
+        let here = symbol(context.env, context.signature.symbol)
+        if (selected >= 0 && selected != capability) ||
+            (!declaration.public && get(context.env.source.files, declaration.file).package != get(context.env.source.files, here.file).package) {
+            return Result.Err(error(context, node, "the receiver does not expose that concept"))
+        }
+        let methods = get(context.env.concepts, concept_index(context.env, capability)).methods
+        while index < length(methods) {
+            let id = get(methods, index)
+            let current = get(context.env.signatures, id)
+            if symbol(context.env, current.symbol).name == member && length(current.params) == length(inputs) + 1 { push(options, id) }
+            index = index + 1
+        }
+    } else {
+    index = 0
     while index < length(context.env.concepts) {
         let capability = get(context.env.concepts, index)
         if (selected < 0 && visible_concept(context, capability.symbol) &&
@@ -63,6 +81,7 @@ fn method_call(context Context, node Node, source Node, member Text, types List[
             }
         }
         index = index + 1
+    }
     }
     if length(options) == 0 {
         return Result.Err(error(context, node, "method needs an accessible concept and explicit conformance; generic requirements must be declared"))

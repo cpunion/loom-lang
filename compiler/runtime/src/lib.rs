@@ -111,6 +111,13 @@ fn allocate(size: usize, trace: Option<Trace>) -> *mut u8 {
     pointer.as_ptr()
 }
 
+// Generated code roots the input, then initializes this zeroed payload before
+// the next allocation. The supplied tracer describes the stored concrete value.
+#[unsafe(no_mangle)]
+extern "C" fn loom_rt_box_new(size: usize, trace: Option<Trace>) -> *mut u8 {
+    allocate(size, trace)
+}
+
 #[unsafe(no_mangle)]
 unsafe extern "C" fn loom_rt_roots_enter(roots: *const Root, count: usize) -> usize {
     HEAP.with(|heap| {

@@ -15,13 +15,19 @@ import std.list.length
 // Private source-compiler -> LLVM bridge format, not a package/cache format.
 // Header: loom-checked-1\n. Integers are decimal lines; strings are byte length
 // then raw UTF-8, without a trailing separator. Lists start with their count.
-// Program: types, functions, entry (-1 absent), tests, exports.
+// Program: types, functions, entry (-1 absent), tests, exports, optional dyn tail.
 // Type: tag, symbol, then List/refined element ID, record fields(name,type), or
 // enum variants(name,payload IDs). Tuples use record layout, with symbol -1 and
-// positional field names. Tags 0..10 follow type_tag below.
+// positional field names. Dyn stores its interface index in symbol, no payload.
+// Tags 0..11 follow type_tag below.
 // Function: symbol, span(start,end), params, result, locals, preconditions, body.
 // Expr: tag,type,span,text,index,falls,children,arms. Arm: variant,bindings,whole,
-// body; absent bindings/variants use -1. Tags 0..21 follow expression_tag below.
+// body; absent bindings/variants use -1. Tags 0..23 follow expression_tag below.
+// DynBox.index is a witness ID, children=[value]; DynCall.index is a method slot,
+// children=[receiver,args...]. The optional tail exists only with dynamic data:
+// feature tag 1, interfaces(methods(params excluding receiver,result)), witnesses
+// (interface ID,concrete type ID,method function IDs with -1 for unused slots).
+// No tail means no dynamic metadata; non-dynamic programs keep their byte stream.
 // Constraints, proof results, generic metadata and local names are not emitted.
 
 fn raw(buffer Bytes, value Text) {
@@ -51,7 +57,7 @@ fn type_tag(kind TypeKind) Int {
         TypeKind.Unit => 0, TypeKind.Int => 1, TypeKind.Bool => 2
         TypeKind.Text => 3, TypeKind.Bytes => 4, TypeKind.Parameter => 5
         TypeKind.List => 6, TypeKind.Record => 7, TypeKind.Tuple => 7
-        TypeKind.Enum => 8, TypeKind.Refined => 9, TypeKind.Float => 10
+        TypeKind.Enum => 8, TypeKind.Refined => 9, TypeKind.Float => 10, TypeKind.Dyn => 11
     }
 }
 fn data(buffer Bytes, value Type) {
@@ -87,7 +93,7 @@ fn expression_tag(kind ExprKind) Int {
         ExprKind.Record => 8, ExprKind.Field => 9, ExprKind.Variant => 10, ExprKind.Block => 11
         ExprKind.Let => 12, ExprKind.Assign => 13, ExprKind.Return => 14, ExprKind.Assert => 15
         ExprKind.Discard => 16, ExprKind.While => 17, ExprKind.If => 18, ExprKind.Match => 19
-        ExprKind.Coerce => 20, ExprKind.Float => 21
+        ExprKind.Coerce => 20, ExprKind.Float => 21, ExprKind.DynBox => 22, ExprKind.DynCall => 23
         // A deferred generic branch is check-only and must be instantiated.
         ExprKind.Deferred => { assert false
             -1 }
@@ -151,5 +157,31 @@ pub fn encode(program Program) Text {
     integer(buffer, program.entry)
     integers(buffer, program.tests)
     integers(buffer, program.exports)
+    if length(program.interfaces) > 0 || length(program.witnesses) > 0 {
+        integer(buffer, 1)
+        integer(buffer, length(program.interfaces))
+        index = 0
+        while index < length(program.interfaces) {
+            let interface = get(program.interfaces, index)
+            integer(buffer, length(interface.methods))
+            var slot = 0
+            while slot < length(interface.methods) {
+                let method = get(interface.methods, slot)
+                integers(buffer, method.params)
+                integer(buffer, method.result)
+                slot = slot + 1
+            }
+            index = index + 1
+        }
+        integer(buffer, length(program.witnesses))
+        index = 0
+        while index < length(program.witnesses) {
+            let witness = get(program.witnesses, index)
+            integer(buffer, witness.interface)
+            integer(buffer, witness.concrete)
+            integers(buffer, witness.methods)
+            index = index + 1
+        }
+    }
     std.bytes.to_text(buffer)
 }
