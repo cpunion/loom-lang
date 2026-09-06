@@ -109,7 +109,7 @@ fn call(state State, expr Expr, values List[Value], parent Frame, depth Int) Res
 fn record_value(state State, expr Expr, frame Frame, depth Int) Result[Step, Failure] {
     if expr.ty < 0 || expr.ty >= length(state.program.types) { return Result.Err(failure(expr, "invalid checked record type")) }
     let shape = get(state.program.types, expr.ty)
-    if shape.kind != TypeKind.Record { return Result.Err(failure(expr, "invalid checked record construction")) }
+    if shape.kind != TypeKind.Record && shape.kind != TypeKind.Tuple { return Result.Err(failure(expr, "invalid checked aggregate construction")) }
     let fields = slots(state, expr, length(shape.fields))?
     var index = 0
     while index < length(expr.children) {

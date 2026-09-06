@@ -103,7 +103,7 @@ compiler correctness.
 
 Extend the self-hosted path with the remaining accepted capabilities:
 
-- tuples and destructuring, `Float` and explicit numeric conversion, and
+- `Float` and explicit numeric conversion, and
   application-grade source collections, text, error, and I/O libraries;
 - concept/dynamic dispatch, associated types, and precise reachability;
 - compile-time value/type/function parameters, variadics, selected-branch
@@ -119,6 +119,11 @@ Each addition must work through the native CLI and its `std` tests. Required
 proofs remain mandatory even while the supported prover fragment grows. Exact
 overload ranking, macro spelling, solver choice, artifact encoding, and runtime
 layout belong to focused implementation designs, not new feature checklists.
+
+Structural tuples, numeric projection, and plain-name destructuring now use the
+native aggregate path, including generics, shared containers, and compile-time
+results. More general patterns and runtime-sized task composition remain later
+work; a tuple does not substitute for a dynamically sized List.
 
 The early syntax portion of the
 [compiler-library gate](docs/rfcs/language-foundation.md#compiler-libraries-and-tooling)

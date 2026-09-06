@@ -12,6 +12,7 @@ import std.list.push
 import std.list.set
 import std.list.length
 import std.result.Result
+import std.int.to_text
 
 fn simple_type(kind TypeKind, symbol Int, arguments List[Int]) Type {
     Type { kind = kind symbol = symbol arguments = arguments fields = new[Field]() variants = new[Variant]() constraint = new[Expr]() }
@@ -30,8 +31,29 @@ fn intern(env Environment, kind TypeKind, symbol Int, arguments List[Int]) Int {
         if existing.kind == kind && existing.symbol == symbol && same(existing.arguments, arguments) { return index }
         index = index + 1
     }
-    push(env.types, simple_type(kind, symbol, arguments))
+    let fields = new[Field]()
+    if kind == TypeKind.Tuple {
+        index = 0
+        while index < length(arguments) {
+            push(fields, Field { name = to_text(index) ty = get(arguments, index) })
+            index = index + 1
+        }
+    }
+    push(env.types, Type { kind = kind symbol = symbol arguments = arguments fields = fields variants = new[Variant]() constraint = new[Expr]() })
     length(env.types) - 1
+}
+fn tuple_type(env Environment, owner Int, node Node, elements List[Int]) Result[Int, Failure] {
+    if length(elements) == 0 { return Result.Err(failure(env, owner, node, "a tuple needs at least one value element")) }
+    var index = 0
+    while index < length(elements) {
+        let element = get(elements, index)
+        if element == 0 { return Result.Err(failure(env, owner, node, "tuple elements must produce a value")) }
+        if type_depth(env, element) >= 64 {
+            return Result.Err(failure(env, owner, node, "type specialization depth exceeded; expansion must be finite"))
+        }
+        index = index + 1
+    }
+    Result.Ok(intern(env, TypeKind.Tuple, -1, elements))
 }
 fn abstract_arguments(env Environment, count Int) List[Int] {
     let arguments = new[Int]()
@@ -59,6 +81,15 @@ fn find_data(env Environment, owner Int, node Node, path Text) Result[Int, Failu
 }
 fn resolve(env Environment, owner Int, node Node, arguments List[Int], depth Int) Result[Int, Failure] {
     if depth > 64 { return Result.Err(failure(env, owner, node, "type specialization depth exceeded")) }
+    if node.kind == NodeKind.TupleType || node.kind == NodeKind.Tuple {
+        let elements = new[Int]()
+        var index = 0
+        while index < length(node.children) {
+            push(elements, resolve(env, owner, child(node, index), arguments, depth + 1)?)
+            index = index + 1
+        }
+        return tuple_type(env, owner, node, elements)
+    }
     var builtin = -1
     if node.value == "Int" { builtin = 1 }
     if node.value == "Bool" { builtin = 2 }
@@ -139,7 +170,7 @@ fn data_type(env Environment, declaration Int, arguments List[Int], depth Int) R
         index = index + 1
     }
     if kind == TypeKind.Refined {
-        let base = part(item.node, NodeKind.Type)
+        let base = type_part(item.node)
         if length(arguments) != 0 || resolve(env, declaration, child(item.node, base), arguments, depth + 1)? != 1 {
             return Result.Err(failure(env, declaration, item.node, "this checker constrains Int directly"))
         }
@@ -159,6 +190,7 @@ fn substitute(env Environment, owner Int, ty Int, arguments List[Int], node Node
         index = index + 1
     }
     if source.kind == TypeKind.List { return Result.Ok(intern(env, TypeKind.List, -1, args)) }
+    if source.kind == TypeKind.Tuple { return tuple_type(env, owner, node, args) }
     if source.kind == TypeKind.Record || source.kind == TypeKind.Enum || source.kind == TypeKind.Refined {
         return data_type(env, source.symbol, args, 0)
     }
@@ -205,17 +237,18 @@ fn type_depth(env Environment, ty Int) Int {
     }
     deepest + 1
 }
-fn layout(env Environment, id Int, states List[Int]) Result[Bool, Failure] {
+fn layout(env Environment, id Int, states List[Int], owner Int) Result[Bool, Failure] {
     let ty = get(env.types, id)
-    if ty.kind != TypeKind.Record && ty.kind != TypeKind.Enum { return Result.Ok(true) }
+    if ty.kind != TypeKind.Record && ty.kind != TypeKind.Enum && ty.kind != TypeKind.Tuple { return Result.Ok(true) }
+    let declaration = if ty.symbol >= 0 { ty.symbol } else { owner }
     if get(states, id) == 2 { return Result.Ok(true) }
     if get(states, id) == 1 {
-        return Result.Err(failure(env, ty.symbol, symbol(env, ty.symbol).node, "recursive by-value data layout needs a List boundary"))
+        return Result.Err(failure(env, declaration, symbol(env, declaration).node, "recursive by-value data layout needs a List boundary"))
     }
     set(states, id, 1)
     var index = 0
     while index < length(ty.fields) {
-        discard layout(env, get(ty.fields, index).ty, states)?
+        discard layout(env, get(ty.fields, index).ty, states, declaration)?
         index = index + 1
     }
     index = 0
@@ -223,7 +256,7 @@ fn layout(env Environment, id Int, states List[Int]) Result[Bool, Failure] {
         let fields = get(ty.variants, index).fields
         var field = 0
         while field < length(fields) {
-            discard layout(env, get(fields, field), states)?
+            discard layout(env, get(fields, field), states, declaration)?
             field = field + 1
         }
         index = index + 1
@@ -238,7 +271,13 @@ fn layouts(env Environment) Result[Bool, Failure] {
         index = index + 1
     }
     index = 0
-    while index < length(env.types) { discard layout(env, index, states)?
+    // Every inline cycle crosses a nominal declaration. Anonymous tuples have
+    // no source symbol, so enter through a declaration and retain its location.
+    while index < length(env.types) {
+        let ty = get(env.types, index)
+        if ty.kind == TypeKind.Record || ty.kind == TypeKind.Enum {
+            discard layout(env, index, states, ty.symbol)?
+        }
         index = index + 1
     }
     Result.Ok(true)

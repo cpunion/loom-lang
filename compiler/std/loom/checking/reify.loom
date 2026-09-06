@@ -52,8 +52,8 @@ fn reify_visit(state Reification, value Value, depth Int) Result[Bool, Failure] 
         push(state.objects, ReifyObject { value = value local = local })
     }
     // Register containers before walking their contents: aliases and cycles
-    // revisit an ID, while record/enum fields retain ordinary value semantics.
-    if shared || kind == TypeKind.Record || kind == TypeKind.Enum {
+    // revisit an ID, while aggregate fields retain ordinary value semantics.
+    if shared || kind == TypeKind.Record || kind == TypeKind.Tuple || kind == TypeKind.Enum {
         var index = 0
         while index < length(value.items) {
             discard reify_visit(state, get(value.items, index), depth + 1)?
@@ -87,19 +87,20 @@ fn reify_value(state Reification, value Value, depth Int) Result[Expr, Failure] 
         discard reify_spend(state, 1, length(value.text))?
         return Result.Ok(expression(ExprKind.Text, 3, node, value.text, -1, new[Expr](), true))
     }
-    if kind == TypeKind.Record || kind == TypeKind.Enum {
+    let positional = kind == TypeKind.Record || kind == TypeKind.Tuple
+    if positional || kind == TypeKind.Enum {
         let fields = new[Expr]()
         var index = 0
         while index < length(value.items) {
             let field = reify_value(state, get(value.items, index), depth + 1)?
-            if kind == TypeKind.Record { discard reify_spend(state, 0, 1)? }
-            push(fields, if kind == TypeKind.Record {
+            if positional { discard reify_spend(state, 0, 1)? }
+            push(fields, if positional {
                 expression(ExprKind.Field, field.ty, node, "", index, expressions(field), true)
             } else { field })
             index = index + 1
         }
-        return Result.Ok(expression(if kind == TypeKind.Record { ExprKind.Record } else { ExprKind.Variant },
-            value.ty, node, "", if kind == TypeKind.Record { -1 } else { value.number }, fields, true))
+        return Result.Ok(expression(if positional { ExprKind.Record } else { ExprKind.Variant },
+            value.ty, node, "", if positional { -1 } else { value.number }, fields, true))
     }
     Result.Err(error(state.context, node, "comptime result has no concrete representation"))
 }

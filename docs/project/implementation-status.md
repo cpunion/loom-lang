@@ -16,6 +16,12 @@ Postfix `?` propagates errors with ordinary enum control flow. Recursive data
 through `List` is supported; infinite inline layouts and growing generic
 specializations reject.
 
+Structural tuples support positional access and plain-name `let`/`var`
+destructuring, including nested types and `List`/`Result` elements. Native layout,
+compile-time evaluation, reification, and public typed analysis use the same
+aggregate semantics. The [tuple example](../../compiler/examples/tuples/main.loom)
+checks evaluation order and shared-container results under GC stress.
+
 Source `std.int.parse` handles signed decimal input and range errors without
 runtime parsing helpers; the same function can execute at compile time. The
 [arguments example](../../compiler/examples/arguments/main.loom) combines it

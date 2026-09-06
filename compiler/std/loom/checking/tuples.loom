@@ -1,0 +1,87 @@
+import std.loom.ast.Node
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.loom.typed.TypeKind
+import std.loom.typed.Local
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+import std.text.byte
+import std.text.length
+import std.result.Result
+
+fn tuple_literal(context Context, node Node, expected Int) Result[Expr, Failure] {
+    let hints = new[Int]()
+    if expected >= 0 {
+        let shape = get(context.env.types, expected)
+        if shape.kind == TypeKind.Tuple {
+            if length(shape.arguments) != length(node.children) {
+                return Result.Err(error(context, node, "tuple element count does not match"))
+            }
+            var index = 0
+            while index < length(shape.arguments) {
+                push(hints, get(shape.arguments, index))
+                index = index + 1
+            }
+        }
+    }
+    let elements = new[Int]()
+    let fields = new[Expr]()
+    var index = 0
+    while index < length(node.children) {
+        let source = child(node, index)
+        let hint = if length(hints) == 0 { -1 } else { get(hints, index) }
+        let value = expr(context, source, hint)?
+        if value.ty == 0 { return Result.Err(error(context, source, "tuple elements must produce a value")) }
+        push(elements, value.ty)
+        push(fields, expression(ExprKind.Field, value.ty, source, "", index, expressions(value), value.falls))
+        index = index + 1
+    }
+    let ty = tuple_type(context.env, context.signature.symbol, node, elements)?
+    Result.Ok(expression(ExprKind.Record, ty, node, "", -1, fields, all_fall(fields)))
+}
+
+fn tuple_member(context Context, node Node, value Expr, field Text) Result[Expr, Failure] {
+    let shape = get(context.env.types, value.ty)
+    let maximum = length(shape.arguments) - 1
+    var selected = 0
+    var index = 0
+    while index < length(field) {
+        let digit = byte(field, index) - 48
+        if digit < 0 || digit > 9 { return Result.Err(error(context, node, "tuple fields use a numeric index")) }
+        if selected > maximum / 10 || (selected == maximum / 10 && digit > maximum % 10) {
+            return Result.Err(error(context, node, "tuple index is out of bounds"))
+        }
+        selected = selected * 10 + digit
+        index = index + 1
+    }
+    Result.Ok(expression(ExprKind.Field, get(shape.arguments, selected), node, "", selected, expressions(value), value.falls))
+}
+
+fn destructure(context Context, node Node, boundary Int) Result[Step, Failure] {
+    let names = child(node, 0).children
+    let value = expr(context, child(node, 1), -1)?
+    let shape = get(context.env.types, value.ty)
+    if shape.kind != TypeKind.Tuple { return Result.Err(error(context, node, "destructuring requires a tuple")) }
+    if length(names) < 2 || length(names) != length(shape.arguments) {
+        return Result.Err(error(context, node, "destructuring name count must match the tuple"))
+    }
+    // Keep the RHS outside the new bindings and evaluate it exactly once.
+    let hidden = length(context.locals)
+    push(context.locals, Local { name = "" ty = value.ty mutable = false })
+    let values = expressions(expression(ExprKind.Let, 0, node, "", hidden, expressions(value), value.falls))
+    var current = context
+    var index = 0
+    while index < length(names) {
+        let name = get(names, index)
+        let ty = get(shape.arguments, index)
+        let projection = expression(ExprKind.Field, ty, name, "", index,
+            expressions(atom(ExprKind.Local, value.ty, node, hidden)), true)
+        let local = length(current.locals)
+        current = bind_local(current, name, name.value, ty, node.value == "var", boundary)?
+        push(values, expression(ExprKind.Let, 0, name, "", local, expressions(projection), true))
+        index = index + 1
+    }
+    Result.Ok(Step { context = current expression = expression(ExprKind.Block, 0, node, "", -1, values, value.falls) })
+}

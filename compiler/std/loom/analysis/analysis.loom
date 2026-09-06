@@ -79,6 +79,17 @@ pub fn type_name(analysis Analysis, ty Int) Text {
     if value.kind == TypeKind.Text { return "Text" }
     if value.kind == TypeKind.Bytes { return "Bytes" }
     if value.kind == TypeKind.Parameter { return concat("T", to_text(value.symbol)) }
+    if value.kind == TypeKind.Tuple {
+        var label = "("
+        var index = 0
+        while index < length(value.arguments) {
+            if index > 0 { label = concat(label, ", ") }
+            label = concat(label, type_name(analysis, get(value.arguments, index)))
+            index = index + 1
+        }
+        if length(value.arguments) == 1 { label = concat(label, ",") }
+        return concat(label, ")")
+    }
     var label = "List"
     if value.kind != TypeKind.List {
         let symbol = get(analysis.bindings.symbols, value.symbol)

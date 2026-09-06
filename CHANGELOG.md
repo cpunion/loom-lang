@@ -8,6 +8,9 @@ implementation, not a compatibility ledger for previous prototypes.
 - Reuse same-type GC temporary slots across completed statements and exclusive
   branches. Preserve live argument snapshots, local roots, and deterministic
   bootstrap without changing the runtime ABI or adding a liveness IR.
+- Add structural tuples, positional access, and exactly-once `let`/`var`
+  destructuring to the Loom-written frontend. Reuse aggregate native layout and
+  compile-time graph reconstruction, including generic and shared fields.
 - Add pure Loom decimal integer parsing with explicit syntax/range errors and
   compile-time execution. Exercise command-line parsing and constrained input
   in an ordinary application with colocated tests.

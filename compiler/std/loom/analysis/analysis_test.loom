@@ -126,3 +126,13 @@ test fn semantic_failures_keep_source_diagnostics() {
         Result.Ok(_) => { assert false }
     }
 }
+
+test fn structural_tuple_types_and_projections() {
+    let text = "fn pair[T](value T) (T, (Bool,)) { (value, (true,)) }\nfn main() { let values = pair(3)\nassert values.0 == 3\nassert values.1.0\ndiscard values }"
+    let analysis = accepted(input(text))
+    let tuple = get(expressions_at(analysis, 0, offset(text, "discard values") + 8), 0).expression
+    assert type_name(analysis, tuple.ty) == "(Int, (Bool,))"
+    let field = get(expressions_at(analysis, 0, offset(text, "values.0") + 7), 0).expression
+    assert field.kind == ExprKind.Field
+    assert type_name(analysis, field.ty) == "Int"
+}

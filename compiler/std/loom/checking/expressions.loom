@@ -24,6 +24,7 @@ fn first_dot(value Text) Int {
 }
 fn member(context Context, node Node, value Expr, field Text) Result[Expr, Failure] {
     let ty = get(context.env.types, value.ty)
+    if ty.kind == TypeKind.Tuple { return tuple_member(context, node, value, field) }
     if ty.kind != TypeKind.Record { return Result.Err(error(context, node, "field access requires a known record type")) }
     let declaration = symbol(context.env, ty.symbol)
     let here = symbol(context.env, context.signature.symbol)
@@ -79,6 +80,7 @@ fn expr_mode(context Context, node Node, expected Int, enforce Bool) Result[Expr
     if kind == NodeKind.Name { named(context, node, expected)? } else {
     if kind == NodeKind.Call { call(context, node, expected)? } else {
     if kind == NodeKind.Construct { construct(context, node, expected)? } else {
+    if kind == NodeKind.Tuple { tuple_literal(context, node, expected)? } else {
     if kind == NodeKind.Select { member(context, node, expr(context, child(node, 0), -1)?, node.value)? } else {
     if kind == NodeKind.Unary {
         let ty = if node.value == "!" { 2 } else { 1 }
@@ -90,6 +92,9 @@ fn expr_mode(context Context, node Node, expected Int, enforce Bool) Result[Expr
         if get(context.env.types, left.ty).kind == TypeKind.Refined { left = typed(context, node, left, 1)? }
         let logical = node.value == "&&" || node.value == "||"
         let equality = node.value == "==" || node.value == "!="
+        if equality && get(context.env.types, left.ty).kind == TypeKind.Tuple {
+            return Result.Err(error(context, node, "tuple equality is not supported"))
+        }
         let argument = if logical { 2 } else { if equality { left.ty } else { 1 } }
         if left.ty != argument || (left.ty != 1 && left.ty != 2 && !(equality && (left.ty == 3 || enum_equality(context, left.ty)))) {
             return Result.Err(error(context, node, "invalid operator operand; generic operations need an explicit capability"))
@@ -104,6 +109,6 @@ fn expr_mode(context Context, node Node, expected Int, enforce Bool) Result[Expr
     if kind == NodeKind.Try { propagated(context, node, expected)? } else {
     if kind == NodeKind.Comptime { compile_time(context, node, expected, enforce)? } else {
         return Result.Err(error(context, node, "unsupported expression in source checker"))
-    } } } } } } } } } } } } } }
+    } } } } } } } } } } } } } } }
     if enforce { typed(context, node, value, expected) } else { Result.Ok(value) }
 }

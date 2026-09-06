@@ -202,6 +202,9 @@ timings; local variables remain conservatively rooted for the function.
   Payload-free enums support equality within the same nominal type.
   Recursive data through `List` has a finite native layout; direct or mutual
   inline layout cycles reject.
+- Structural tuples, positional projection, and `let`/`var` destructuring.
+  Tuples work in generic types/functions, shared containers, `Result`, and
+  compile-time results; they lower to ordinary native aggregate values.
 - Postfix `?` unwraps source `std.result.Result`, or returns its error from the
   current function. Error types must match; the success value can then widen
   normally. Chained `??` and field selection work without a runtime protocol.
@@ -243,6 +246,27 @@ The [arguments example](examples/arguments/main.loom) parses external input,
 validates it through a constrained `Count`, and sums the integers from one to
 that count. `+0010` prints `55`; malformed or out-of-bound input reports an error
 and exits unsuccessfully. Its colocated tests also exercise both boundaries.
+
+The [tuples example](examples/tuples/main.loom) covers heterogeneous results,
+exactly-once evaluation, and shared fields:
+
+```loom
+fn pair[T](value T) (T, Text) { (value, "item") }
+let number, label = pair(3)
+let single = (true,)
+assert single.0
+```
+
+Tuple elements and the destructuring initializer evaluate once, left to right.
+Tuple types are structural: element types and arity determine identity.
+Existing tuple values require matching element types; aggregate widening is not
+implicit. Contextual tuple literals can use the existing scalar weakening rules.
+`(value)` is grouping, `(value,)` a singleton tuple; `()` remains unavailable.
+Numeric projections are checked at compilation. Destructuring currently binds
+two or more plain names with exact arity; nested patterns, wildcards, and
+parallel reassignment are not implemented. Copying a tuple shares its managed
+fields just as copying a record does; compile-time results construct fresh graphs
+while preserving internal sharing.
 
 ## Contract boundary
 
