@@ -61,6 +61,8 @@ pub(super) fn allocating_functions(
 fn allocates(operation: Primitive) -> bool {
     match operation {
         Primitive::TextConcat
+        | Primitive::TextSlice
+        | Primitive::ArgText
         | Primitive::BytesNew
         | Primitive::BytesPush
         | Primitive::BytesTextCopy
@@ -68,6 +70,11 @@ fn allocates(operation: Primitive) -> bool {
         | Primitive::ListPush
         | Primitive::Read => true,
         Primitive::TextLen
+        | Primitive::UnicodeAlphabetic
+        | Primitive::UnicodeAlphanumeric
+        | Primitive::UnicodeWhitespace
+        | Primitive::ArgCount
+        | Primitive::Exit
         | Primitive::TextByte
         | Primitive::TextEqual
         | Primitive::BytesLen

@@ -1,0 +1,12 @@
+test fn shared_growth_and_isolated_text() {
+    let buffer = new()
+    let alias = buffer
+    push(buffer, 195)
+    push(alias, 169)
+    assert length(buffer) == 2
+    let text = to_text(buffer)
+    push(alias, 33)
+    assert text == "é"
+    assert to_text(buffer) == "é!"
+    assert to_text(new()) == ""
+}

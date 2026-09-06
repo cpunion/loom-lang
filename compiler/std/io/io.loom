@@ -9,10 +9,18 @@ intrinsic fn write(handle Int, value Text, offset Int) Int
 
 // Write UTF-8 to standard output without taking ownership of the stream.
 pub fn write_text(value Text) Result[Int, WriteError] {
+    write_all(1, value)
+}
+
+pub fn write_error(value Text) Result[Int, WriteError] {
+    write_all(2, value)
+}
+
+fn write_all(handle Int, value Text) Result[Int, WriteError] {
     let size = length(value)
     var offset = 0
     while offset < size {
-        let count = write(1, value, offset)
+        let count = write(handle, value, offset)
         if count <= 0 { return Result.Err(WriteError.Failed) }
         offset = offset + count
     }

@@ -1,0 +1,12 @@
+test fn properties_are_not_identifier_policy() {
+    assert is_alphabetic(233)
+    assert is_alphabetic(20013)
+    assert !is_alphabetic(95)
+    assert is_alphanumeric(57)
+    assert is_alphanumeric(178)
+    assert !is_alphanumeric(128512)
+    assert is_whitespace(32)
+    assert is_whitespace(160)
+    assert is_whitespace(8232)
+    assert !is_whitespace(8203)
+}

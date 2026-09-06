@@ -718,6 +718,13 @@ impl Environment<'_> {
             "text_byte" => (P::TextByte, 0, vec![T::Text, T::Int], T::Int),
             "text_concat" => (P::TextConcat, 0, vec![T::Text, T::Text], T::Text),
             "text_equal" => (P::TextEqual, 0, vec![T::Text, T::Text], T::Bool),
+            "text_slice" => (P::TextSlice, 0, vec![T::Text, T::Int, T::Int], T::Text),
+            "unicode_alphabetic" => (P::UnicodeAlphabetic, 0, vec![T::Int], T::Bool),
+            "unicode_alphanumeric" => (P::UnicodeAlphanumeric, 0, vec![T::Int], T::Bool),
+            "unicode_whitespace" => (P::UnicodeWhitespace, 0, vec![T::Int], T::Bool),
+            "arg_count" => (P::ArgCount, 0, vec![], T::Int),
+            "arg_text" => (P::ArgText, 0, vec![T::Int], T::Text),
+            "exit" => (P::Exit, 0, vec![T::Int], T::Unit),
             "bytes_new" => (P::BytesNew, 0, vec![], T::Bytes),
             "bytes_len" => (P::BytesLen, 0, vec![T::Bytes], T::Int),
             "bytes_push" => (P::BytesPush, 0, vec![T::Bytes, T::Int], T::Unit),
@@ -1183,7 +1190,12 @@ impl Checker<'_, '_> {
                     Binary::Eq | Binary::Ne => left.ty,
                     _ => Type::Int,
                 };
-                if left.ty != argument || !matches!(left.ty, Type::Int | Type::Bool) {
+                let tag_equality = matches!(op, Binary::Eq | Binary::Ne)
+                    && matches!(left.ty, Type::Data(id) if matches!(&self.env.types[id].kind,
+                        c::DataKind::Enum(variants) if variants.iter().all(|(_, fields)| fields.is_empty())));
+                if left.ty != argument
+                    || (!matches!(left.ty, Type::Int | Type::Bool) && !tag_equality)
+                {
                     return Err(Diagnostic::new(
                         left.span,
                         "invalid operator operand type; generic operations need an explicit capability",
@@ -2114,6 +2126,13 @@ fn main() {
         );
         library.trusted_std = true;
         check(&[library, file("app", source, false)], "app", false)
+    }
+
+    #[test]
+    fn payload_free_enum_equality_preserves_nominal_types() {
+        check(&[file("", "enum Flag { On Off } fn same(a Flag, b Flag) Bool { a == b } fn main() { assert same(Flag.On, Flag.On)\nassert Flag.On != Flag.Off }", false)], "", false).unwrap();
+        rejects("enum A { Value } enum B { Value } fn f(a A, b B) Bool { a == b }");
+        rejects("enum Value { Item(Int) } fn f(a Value, b Value) Bool { a == b }");
     }
 
     #[test]

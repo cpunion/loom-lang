@@ -1,0 +1,18 @@
+intrinsic fn bytes_new() Bytes
+intrinsic fn bytes_len(value Bytes) Int
+intrinsic fn bytes_push(value Bytes, byte Int)
+intrinsic fn bytes_text_copy(value Bytes) Text
+
+// Bytes is a shared mutable buffer; Text construction takes an isolated copy.
+pub fn new() Bytes { bytes_new() }
+
+pub fn length(value Bytes) Int { bytes_len(value) }
+
+pub fn push(value Bytes, byte Int)
+requires byte >= 0 && byte <= 255
+{
+    bytes_push(value, byte)
+}
+
+// Invalid UTF-8 is a runtime fault; this never creates an invalid Text.
+pub fn to_text(value Bytes) Text { bytes_text_copy(value) }

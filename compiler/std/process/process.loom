@@ -1,0 +1,21 @@
+import std.list.new
+import std.list.push
+
+intrinsic fn arg_count() Int
+intrinsic fn arg_text(index Int) Text
+intrinsic fn exit(code Int)
+
+// Includes the executable at index 0; values are immutable UTF-8 copies.
+pub fn arguments() List[Text] {
+    let result = new[Text]()
+    var index = 0
+    while index < arg_count() {
+        push(result, arg_text(index))
+        index = index + 1
+    }
+    result
+}
+
+pub fn exit_code(code Int) requires code >= 0 && code <= 255 {
+    exit(code)
+}
