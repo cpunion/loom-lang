@@ -187,7 +187,7 @@ fn block(cursor Cursor) Result[Step, Diagnostic] {
         push(statements, parsed.node)
         rest = parsed.rest
         let kind = parsed.node.kind
-        let braced = kind == NodeKind.While || kind == NodeKind.If || kind == NodeKind.Match || kind == NodeKind.Block || kind == NodeKind.Comptime
+        let braced = kind == NodeKind.While || kind == NodeKind.If || kind == NodeKind.Match || kind == NodeKind.Block || kind == NodeKind.Comptime || kind == NodeKind.Defer
         if !braced && !at(rest, Kind.Newline) && !at(rest, Kind.RBrace) {
             return Result.Err(error(rest, "expected a newline or '}' after the statement"))
         }
@@ -197,6 +197,10 @@ fn block(cursor Cursor) Result[Step, Diagnostic] {
 }
 fn statement(cursor Cursor) Result[Step, Diagnostic] {
     var rest = cursor
+    if word(rest, "defer") {
+        let body = block(next(rest))?
+        return Result.Ok(done(cursor, body.rest, NodeKind.Defer, "", one(body.node)))
+    }
     if word(rest, "let") || word(rest, "var") {
         let kind = if word(rest, "let") { NodeKind.Let } else { NodeKind.Var }
         let named = name(next(rest))?

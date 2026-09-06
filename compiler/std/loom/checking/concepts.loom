@@ -157,7 +157,8 @@ fn with_evidence(context Context, ty Int, capability Int) Context {
     if !evidence(context, ty, capability) { push(obligations, Requirement { ty = ty capability = capability }) }
     let updated = Signature { symbol = current.symbol parameters = current.parameters params = current.params compile_time = current.compile_time result = current.result requirements = obligations }
     Context { env = context.env signature = updated arguments = context.arguments locals = context.locals
-        constants = context.constants bindings = context.bindings head = context.head emit = context.emit }
+        constants = context.constants bindings = context.bindings head = context.head
+        cleanups = context.cleanups cleanup_head = context.cleanup_head emit = context.emit }
 }
 fn implementation(context Context, ty Int, capability Int) Int {
     var index = 0

@@ -1,0 +1,20 @@
+test fn lexical_cleanup_preserves_lifo_bindings_snapshots_and_compile_time_execution() {
+    discard accepted("fn order() Int { var trace = 0\n{ defer { trace = trace * 10 + 1 }\ndefer { trace = trace * 10 + 2 } }\ntrace }\nfn late() Int { var value = 1\n{ defer { value = value + 2 }\n{ let value = 40\ndiscard value }\nvalue = 5 }\nvalue }\nfn saved(early Bool) Int { var value = 3\ndefer { value = 99 }\nif early { return value }\nvalue }\nfn branch(yes Bool) Int { var value = 0\nif yes { defer { value = 1 } } else { defer { value = 2 } }\nvalue }\nfn loops() Int { var value = 0\nvar index = 0\nwhile index < 3 { defer { value = value * 10 + index }\nindex = index + 1 }\nvalue }\nfn main() { assert comptime { order() == 21 && late() == 7 && saved(true) == 3 && saved(false) == 3 && branch(true) == 1 && branch(false) == 2 && loops() == 123 } }")
+    discard accepted_result("import std.result.Result\nfn failed() Result[Int, Text] { Result.Err(\"saved\") }\nfn propagated() Result[Int, Text] { var count = 0\ndefer { assert count == 1\ncount = 2 }\nreturn { defer { count = 1 }\ndiscard failed()?\nResult.Ok(0) } }\nfn main() { assert comptime { match propagated() { Result.Err(message) => message == \"saved\", Result.Ok(_) => false } } }")
+    discard accepted("record Box { text Text }\nfn saved() Box { var box = Box { text = \"saved\" }\ndefer { box = Box { text = \"changed\" } }\nbox }\nfn main() { assert comptime { saved().text == \"saved\" } }")
+    let files = source_files("import std.io.effect\nfn main() { defer { effect() }\nassert comptime { 2 + 3 } == 5 }")
+    push(files, source_file("std.io", "intrinsic fn write(fd Int, value Text, offset Int) Int\npub fn effect() { discard write(1, \"runtime cleanup\", 0) }", true))
+    match checked(files) { Result.Ok(_) => {}, Result.Err(_) => { assert false } }
+}
+
+test fn cleanup_control_is_explicit_and_contracts_still_require_proof() {
+    rejects("fn invalid() { defer { return } }")
+    rejects("fn invalid() { defer { if false { return } } }")
+    rejects("fn invalid() { defer { discard missing()? } }")
+    rejects("fn invalid() { defer { defer {} } }")
+    rejects("fn invalid() { defer { 42 } }")
+    rejects("fn invalid() { defer { discard later }\nlet later = 1 }")
+    discard accepted("fn cleanup() { defer { assert true }\nreturn }\nfn answer() Int ensures result == 3 { defer { assert true }\n3 }\nfn main() { defer { cleanup() }\nassert answer() == 3 }")
+    rejects("fn wrong() Int ensures result == 4 { defer { assert true }\n3 }")
+    rejects("fn opaque(value Int) Int { value }\nfn unproved(value Int) Int ensures result == value { defer { discard opaque(value) }\nvalue }")
+}

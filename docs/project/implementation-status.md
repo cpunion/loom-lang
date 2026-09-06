@@ -167,6 +167,11 @@ also exercises ordinary callbacks returned by specialized selectors. References
 to static-parameter declarations, static function/closure parameters and variadics
 are not included in this slice.
 
+The [lexical cleanup example](../../compiler/examples/cleanup/main.loom) runs
+late-bound `defer` blocks on normal, tail, return and `Result?` exits, with LIFO
+order and managed result snapshots. Pure cleanup shares compile-time execution.
+Fault unwinding, task cancellation and `scoped`/`MustScope` remain unimplemented.
+
 Normal compiler iteration can use a [single development rebuild](../../compiler/README.md#build-and-try-it);
 CI retains full bootstrap generation checks. The initial
 [latency harness](../../compiler/README.md#compiler-latency) measures fresh-process

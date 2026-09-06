@@ -642,6 +642,35 @@ native code, including NaN, infinity, signed zero and subnormals. Float/refined
 results may appear inside shared aggregates. Required Float proofs remain
 unsupported and reject; successful evaluation is not an algebraic proof.
 
+## Lexical cleanup
+
+`defer { ... }` registers a synchronous block in its containing lexical scope,
+including `if`/`else`, match arms and each loop iteration. Registered blocks run
+once in reverse order on normal completion, `return`, or `Result?` propagation.
+Bindings are resolved at registration, but their values are read at cleanup:
+
+```loom
+var value = 1
+{
+    defer { value = value + 1 }
+    value = 4
+}
+assert value == 5
+```
+
+A tail or returned value is saved before cleanup, including managed aggregates.
+Cleanup must have no value result; ordinary `discard` remains explicit. Its
+body cannot contain `return`, `?`, or another `defer`, even in an unselected
+compile-time branch. Called functions have their own ordinary return scopes.
+Pure cleanup also executes during compile-time evaluation. Lowering uses
+ordinary checked blocks, locals and calls, without a runtime cleanup executor.
+Required proofs still inspect the lowered function; unsupported proofs reject.
+
+The [cleanup example](examples/cleanup/main.loom) exercises these exits and GC
+snapshots. This synchronous slice does **not** unwind `RuntimeFault`/process abort
+or task cancellation, and does not yet implement `scoped`/`MustScope`. Those
+remain requirements, not guarantees supplied by this initial lowering.
+
 ## Next boundary
 
 The `compiler/examples/data` package exercises records, enums, generic functions,

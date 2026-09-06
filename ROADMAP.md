@@ -157,6 +157,11 @@ retain explicit generic requirements and mandatory abstract proofs. Function
 references to partially specialized static declarations, static callback/closure
 parameters and heterogeneous packs remain open.
 
+Lexical `defer` now lowers block completion, return and `Result?` cleanup into
+ordinary checked code, preserving LIFO order and saved result values. Fault
+unwinding, `scoped`/`MustScope` and async cancellation still require implementation;
+this is not the complete resource-cleanup gate.
+
 The early syntax portion of the
 [compiler-library gate](docs/rfcs/language-foundation.md#compiler-libraries-and-tooling)
 now has native evidence: an independent [user package](compiler/examples/syntax/main.loom)

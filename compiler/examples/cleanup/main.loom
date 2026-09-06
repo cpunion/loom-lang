@@ -1,0 +1,97 @@
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.length
+import std.result.Result
+import std.text.concat
+import std.int.to_text
+
+fn ordered(trace List[Int]) Int {
+    var value = 3
+    defer { push(trace, value)
+        value = 99 }
+    {
+        defer { push(trace, 2) }
+        defer { push(trace, 1) }
+    }
+    value = 4
+    value
+}
+fn early(trace List[Int]) Int {
+    defer { push(trace, 6) }
+    if true {
+        defer { push(trace, 5) }
+        return 7
+    }
+    0
+}
+fn stopped(trace List[Int]) {
+    defer { push(trace, 9) }
+    return
+    defer { push(trace, 0) }
+}
+fn failure() Result[Int, Text] { Result.Err("expected") }
+fn propagated(trace List[Int]) Result[Int, Text] {
+    defer { push(trace, 8) }
+    return {
+        defer { push(trace, 7) }
+        discard failure()?
+        Result.Ok(0)
+    }
+}
+fn iterations(trace List[Int]) {
+    var index = 0
+    while index < 3 {
+        if index == 1 {
+            defer { push(trace, 10) }
+        } else {
+            defer { push(trace, 20) }
+        }
+        defer { push(trace, index) }
+        index = index + 1
+    }
+}
+
+record Payload { text Text values List[Text] }
+fn snapshot(early Bool) Payload {
+    let values = new[Text]()
+    push(values, "saved")
+    var payload = Payload { text = concat("live", " value") values = values }
+    defer {
+        payload = Payload { text = "replacement" values = new[Text]() }
+        var index = 0
+        while index < 20 {
+            push(payload.values, concat("allocated ", to_text(index)))
+            index = index + 1
+        }
+    }
+    if early { return payload }
+    payload
+}
+
+fn exercise() {
+    let trace = new[Int]()
+    assert ordered(trace) == 4
+    assert length(trace) == 3 && get(trace, 0) == 1 && get(trace, 1) == 2 && get(trace, 2) == 4
+    assert early(trace) == 7
+    assert get(trace, 3) == 5 && get(trace, 4) == 6
+    match propagated(trace) {
+        Result.Err(message) => { assert message == "expected" }
+        Result.Ok(_) => { assert false }
+    }
+    assert length(trace) == 7 && get(trace, 5) == 7 && get(trace, 6) == 8
+    stopped(trace)
+    assert length(trace) == 8 && get(trace, 7) == 9
+    let loops = new[Int]()
+    iterations(loops)
+    assert length(loops) == 6
+    assert get(loops, 0) == 20 && get(loops, 1) == 1 && get(loops, 2) == 10
+    assert get(loops, 3) == 2 && get(loops, 4) == 20 && get(loops, 5) == 3
+    let tail = snapshot(false)
+    let returned = snapshot(true)
+    assert tail.text == "live value" && get(tail.values, 0) == "saved"
+    assert returned.text == "live value" && get(returned.values, 0) == "saved"
+    assert comptime { let events = new[Int]()
+        ordered(events) + get(events, 2) } == 8
+}
+fn main() { exercise() }
