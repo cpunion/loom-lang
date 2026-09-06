@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add `loom test --no-run` and optional compiler-latency measurements for startup,
+  isolated test compilation and generated package growth, retaining input hashes
+  and separate native phase timings.
+
 - Add native `dyn C` with statically established evidence, GC-owned receiver
   snapshots and sparse method tables. Reuse ordinary generic checking and call
   reachability; unused implementations and method slots are not emitted.

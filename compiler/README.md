@@ -47,6 +47,7 @@ target/loom test compiler/std/loom/checking
 target/loom test compiler/std/result
 target/loom test compiler/std/list
 LOOM_GC_STRESS=1 compiler/std/list/target/tests
+target/loom test compiler/std/list --no-run --output target/list-tests
 target/loom build compiler/examples/arguments --output target/arguments
 target/arguments +0010
 ```
@@ -96,6 +97,11 @@ public `loom` compiler. The source compiler defaults to `compiler/std` and
 `--native-tool` select explicit paths. These are development commands, not a
 relocatable release package or a stable compiler-artifact ABI. `--help` lists
 each tool's command surface.
+
+`loom test --no-run` produces the native test executable without running it;
+`--output` optionally selects its path. Both forms of source tests and normal
+test-only imports remain included. A package with no tests reports `0 tests`
+without creating a binary. Ordinary `loom test` still compiles and runs its tests.
 
 ## Windows bootstrap
 
@@ -149,6 +155,7 @@ After rebuilding, measure the current macOS check/build path:
 
 ```sh
 node scripts/benchmark-compiler.mjs
+node scripts/benchmark-compiler.mjs --extended --sizes 10,50,200
 ```
 
 The [harness](../scripts/benchmark-compiler.mjs) reports median wall time and
@@ -161,8 +168,12 @@ There is no incremental compiler cache yet. Native decode, codegen, and linker
 timings separate backend costs; remaining build wall time also includes
 serialization and process/pipe overhead, not just frontend analysis. Peak RSS
 is the operating system's reported maximum, not summed concurrent process
-memory. Startup and isolated test-compilation measurements remain follow-up
-coverage, as does tracking growth on larger packages.
+memory. `--extended` adds fresh-process startup (`--version`), actual
+`test --no-run` compilation, and configurable generated package sizes. Growth
+cases exercise multiple files, an imported package, records, generics and Lists;
+the reported size is the helper count, not lines of code. Reports record input,
+compiler, backend, runtime and harness hashes. Startup includes process-launch
+overhead, and these synthetic packages do not substitute for large applications.
 
 Development snapshot on Apple M4 Max/macOS 25.2, medians of three warmed runs
 on the same compiler source (not a portable performance guarantee):

@@ -121,6 +121,7 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         "std/loom/analysis",
         "std/loom/eval",
         "loom/artifact",
+        "loom",
         "std/int",
         "std/float",
         "std/display",

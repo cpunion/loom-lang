@@ -23,6 +23,7 @@ import std.text.length
 
 record Options {
     command Text path Text std_root Text output Text ir Text native_tool Text
+    no_run Bool
 }
 
 fn options(args List[Text]) Result[Options, Text] {
@@ -33,38 +34,47 @@ fn options(args List[Text]) Result[Options, Text] {
     var output = ""
     var ir = ""
     var tool = "target/debug/loom-native"
+    var no_run = false
     var index = 2
     while index < length(args) {
         let arg = get(args, index)
-        if arg == "--std" || arg == "--output" || arg == "-o" || arg == "--emit-ir" || arg == "--native-tool" {
-            index = index + 1
-            if index == length(args) { return Result.Err(concat(arg, " needs a value")) }
-            let value = get(args, index)
-            if arg == "--std" { standard = value }
-            if arg == "--native-tool" { tool = value }
-            if arg == "--output" || arg == "-o" {
-                if output != "" { return Result.Err("duplicate --output") }
-                output = value
-            }
-            if arg == "--emit-ir" {
-                if ir != "" { return Result.Err("duplicate --emit-ir") }
-                ir = value
-            }
+        if arg == "--no-run" {
+            if no_run { return Result.Err("duplicate --no-run") }
+            no_run = true
         } else {
-            if length(arg) > 0 && byte(arg, 0) == 45 { return Result.Err(concat("unknown option ", arg)) }
-            if selected { return Result.Err("select one package directory") }
-            selected = true
-            path = arg
+            if arg == "--std" || arg == "--output" || arg == "-o" || arg == "--emit-ir" || arg == "--native-tool" {
+                index = index + 1
+                if index == length(args) { return Result.Err(concat(arg, " needs a value")) }
+                let value = get(args, index)
+                if arg == "--std" { standard = value }
+                if arg == "--native-tool" { tool = value }
+                if arg == "--output" || arg == "-o" {
+                    if output != "" { return Result.Err("duplicate --output") }
+                    output = value
+                }
+                if arg == "--emit-ir" {
+                    if ir != "" { return Result.Err("duplicate --emit-ir") }
+                    ir = value
+                }
+            } else {
+                if length(arg) > 0 && byte(arg, 0) == 45 { return Result.Err(concat("unknown option ", arg)) }
+                if selected { return Result.Err("select one package directory") }
+                selected = true
+                path = arg
+            }
         }
         index = index + 1
     }
-    if command != "build" && output != "" { return Result.Err("--output is only available with build") }
+    if no_run && command != "test" { return Result.Err("--no-run is only available with test") }
+    if command != "build" && !(command == "test" && no_run) && output != "" {
+        return Result.Err("--output requires build or test --no-run")
+    }
     if (command == "check" || command == "emit-checked") && ir != "" { return Result.Err("this command does not emit LLVM IR") }
     path = match canonicalize(path) {
         Result.Ok(value) => value
         Result.Err(_) => { return Result.Err(concat("cannot resolve package path ", path)) }
     }
-    Result.Ok(Options { command = command path = path std_root = standard output = output ir = ir native_tool = tool })
+    Result.Ok(Options { command = command path = path std_root = standard output = output ir = ir native_tool = tool no_run = no_run })
 }
 fn diagnostic(files List[SourceFile], failure Failure) Text {
     let source = get(files, failure.source)
@@ -119,6 +129,7 @@ fn execute(args List[Text]) Result[Text, Text] {
     let output = if selected.output != "" { selected.output } else { join_path(join_path(selected.path, "target"), filename) }
     discard compile(selected, program, output)?
     if selected.command == "build" { return Result.Ok(concat("built ", concat(output, "\n"))) }
+    if selected.no_run { return Result.Ok(concat("compiled ", concat(to_text(length(program.tests)), concat(" tests to ", concat(output, "\n"))))) }
     let arguments = new[Text]()
     push(arguments, output)
     if child_status(arguments)? != 0 { return Result.Err("native program failed") }
