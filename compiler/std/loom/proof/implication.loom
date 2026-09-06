@@ -1,0 +1,44 @@
+import std.loom.typed.Expr
+import std.loom.typed.ExprKind
+import std.list.new
+import std.list.get
+import std.list.push
+import std.list.set
+import std.list.length
+import std.result.Result
+
+fn implication_form(expr Expr, budget List[Int], depth Int) Bool {
+    if depth >= 64 || get(budget, 0) == 0 || (expr.ty != 1 && expr.ty != 2) { return false }
+    set(budget, 0, get(budget, 0) - 1)
+    if expr.kind == ExprKind.Integer || expr.kind == ExprKind.Bool { return true }
+    if expr.kind == ExprKind.Local { return expr.index == 0 }
+    let unary = expr.kind == ExprKind.Unary || expr.kind == ExprKind.Coerce
+    if !unary && expr.kind != ExprKind.Binary { return false }
+    if length(expr.children) != (if unary { 1 } else { 2 }) { return false }
+    var index = 0
+    while index < length(expr.children) {
+        if !implication_form(get(expr.children, index), budget, depth + 1) { return false }
+        index = index + 1
+    }
+    true
+}
+
+fn implication(premise Expr, conclusion Expr) Result[Bool, Text] {
+    let locals = new[Value]()
+    push(locals, Value.Number(variable(0)))
+    let initial = bounded(get(locals, 0), State { locals = locals facts = new[Predicate]() })
+    let state = assume(initial, boolean(pure(premise, initial)?)?)
+    // The goal has not executed: never assume its overflow guards passed.
+    discard defined(conclusion, state)?
+    Result.Ok(holds(boolean(pure(conclusion, state)?)?, state.facts))
+}
+
+// Checked Int predicates share self local 0. The caller establishes that the
+// premise already holds. True proves the goal both defined and true; false also
+// covers unsupported forms or exhausted limits, and never authorizes removal.
+pub fn implies(premise Expr, conclusion Expr) Bool {
+    let budget = new[Int]()
+    push(budget, 256)
+    if !implication_form(premise, budget, 0) || !implication_form(conclusion, budget, 0) { return false }
+    match implication(premise, conclusion) { Result.Ok(value) => value, Result.Err(_) => false }
+}

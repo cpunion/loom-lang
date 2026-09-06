@@ -16,6 +16,12 @@ Postfix `?` propagates errors with ordinary enum control flow. Recursive data
 through `List` is supported; infinite inline layouts and growing generic
 specializations reject.
 
+Explicit Int refinement conversions also remove a destination check when the
+source predicate proves its truth and arithmetic definedness. The bounded,
+call-free implication proof preserves one evaluation of the input; unknown
+cases retain `Result` construction. It does not yet propagate local branch facts
+or prove implications involving Float or helper calls.
+
 Structural tuples support positional access and plain-name `let`/`var`
 destructuring, including nested types and `List`/`Result` elements. Native layout,
 compile-time evaluation, reification, and public typed analysis use the same
