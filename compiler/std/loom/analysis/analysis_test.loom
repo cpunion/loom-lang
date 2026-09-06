@@ -136,3 +136,17 @@ test fn structural_tuple_types_and_projections() {
     assert field.kind == ExprKind.Field
     assert type_name(analysis, field.ty) == "Int"
 }
+
+test fn float_type_queries_preserve_overload_and_container_information() {
+    let text = "record Box[T] { value T }\nfn pick(value Int) Int { value }\nfn pick(value Float) Float { value }\nfn main() { let boxed = Box { value = pick(1.5) }\nlet pair = (boxed.value, true)\ndiscard boxed\ndiscard pair }"
+    let analysis = accepted(input(text))
+    let literal = get(expressions_at(analysis, 0, offset(text, "1.5")), 0).expression
+    assert literal.kind == ExprKind.Float
+    assert type_name(analysis, literal.ty) == "Float"
+    let call = get(expressions_at(analysis, 0, offset(text, "pick(1.5)")), 0).expression
+    assert type_name(analysis, get(analysis.program.functions, call.index).result) == "Float"
+    let boxed = get(expressions_at(analysis, 0, offset(text, "discard boxed") + 8), 0).expression
+    assert type_name(analysis, boxed.ty) == "app.Box[Float]"
+    let pair = get(expressions_at(analysis, 0, offset(text, "discard pair") + 8), 0).expression
+    assert type_name(analysis, pair.ty) == "(Float, Bool)"
+}

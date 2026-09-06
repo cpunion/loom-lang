@@ -90,16 +90,40 @@ test fn punctuation_and_longest_operators() {
 }
 
 test fn numbers_are_lexemes_not_host_integers() {
-    let tokens = lexed("-12 34.56 999999999999999999999999999999 0x10")
-    assert std.list.length(tokens) == 9
+    let tokens = lexed("-12 34.56 999999999999999999999999999999")
+    assert std.list.length(tokens) == 5
     token_is(tokens, 0, Kind.Minus, "", 0, 1)
     token_is(tokens, 1, Kind.Number, "12", 1, 3)
-    token_is(tokens, 2, Kind.Number, "34", 4, 6)
-    token_is(tokens, 3, Kind.Dot, "", 6, 7)
-    token_is(tokens, 4, Kind.Number, "56", 7, 9)
-    token_is(tokens, 5, Kind.Number, "999999999999999999999999999999", 10, 40)
-    token_is(tokens, 6, Kind.Number, "0", 41, 42)
-    token_is(tokens, 7, Kind.Name, "x10", 42, 45)
+    token_is(tokens, 2, Kind.Float, "34.56", 4, 9)
+    token_is(tokens, 3, Kind.Number, "999999999999999999999999999999", 10, 40)
+}
+
+test fn float_spelling_and_tuple_selectors_are_distinct() {
+    let tokens = lexed("1e3 1.2e-3 2E+4 -0.0 pair.0.1 (1.0,).0")
+    token_is(tokens, 0, Kind.Float, "1e3", 0, 3)
+    token_is(tokens, 1, Kind.Float, "1.2e-3", 4, 10)
+    token_is(tokens, 2, Kind.Float, "2E+4", 11, 15)
+    token_is(tokens, 3, Kind.Minus, "", 16, 17)
+    token_is(tokens, 4, Kind.Float, "0.0", 17, 20)
+    token_is(tokens, 7, Kind.Number, "0", 26, 27)
+    token_is(tokens, 9, Kind.Number, "1", 28, 29)
+    token_is(tokens, 11, Kind.Float, "1.0", 31, 34)
+    token_is(tokens, 15, Kind.Number, "0", 37, 38)
+    assert get(lexed("pair. 0.1"), 2).kind == Kind.Number
+    assert get(lexed("1e99999"), 0).kind == Kind.Float
+    assert get(lexed("1e-99999"), 0).kind == Kind.Float
+}
+
+test fn malformed_floats_and_numeric_suffixes_report_source_spans() {
+    error_is("1.", "expected digits after the decimal point", 0, 2)
+    error_is("1.e2", "expected digits after the decimal point", 0, 2)
+    error_is("1e", "expected digits in the exponent", 0, 2)
+    error_is("1.0e-", "expected digits in the exponent", 0, 5)
+    error_is("1e+word", "expected digits in the exponent", 0, 3)
+    error_is("1.0f64", "invalid numeric literal suffix", 0, 6)
+    error_is("1e2_3", "invalid numeric literal suffix", 0, 5)
+    error_is("0x10", "invalid numeric literal suffix", 0, 4)
+    error_is("pair.0e2", "invalid numeric literal suffix", 5, 8)
 }
 
 test fn decoded_strings() {

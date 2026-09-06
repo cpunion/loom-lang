@@ -9,6 +9,7 @@ pub struct Span {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Type {
     Int,
+    Float,
     Bool,
     Text,
     Bytes,
@@ -46,6 +47,10 @@ pub enum Binary {
 /// Irreducible private standard-library operations, not public API dispatch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Primitive {
+    FloatFromInt,
+    FloatToInt,
+    FloatParse,
+    FloatFormat,
     TextLen,
     TextByte,
     TextConcat,
@@ -153,6 +158,7 @@ pub mod checked {
     #[derive(Clone, Debug)]
     pub enum ExprKind {
         Int(i64),
+        Float(f64),
         Bool(bool),
         Text(String),
         Primitive(Primitive, Vec<Expr>),

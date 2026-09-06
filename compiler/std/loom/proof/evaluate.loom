@@ -67,6 +67,7 @@ fn binary(operator Text, a Value, b Value) Result[Value, Text] {
     }
 }
 fn pure(expr Expr, state State) Result[Value, Text] {
+    if expr.ty == 5 { return Result.Err("Float expressions are not supported in required proofs") }
     if expr.kind == ExprKind.Integer { return Result.Ok(Value.Number(constant(decimal(expr.text)))) }
     if expr.kind == ExprKind.Bool { return Result.Ok(Value.Boolean(Predicate.Constant(expr.text == "true"))) }
     if expr.kind == ExprKind.Local { return Result.Ok(get(state.locals, expr.index)) }

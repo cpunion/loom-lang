@@ -80,6 +80,9 @@ fn prefix(cursor Cursor, multiline Bool, records Bool) Result[Step, Diagnostic] 
         }
         return fields(cursor, done(cursor, next(cursor), NodeKind.Integer, current.value, new[Node]()))
     }
+    if at(cursor, Kind.Float) {
+        return fields(cursor, done(cursor, next(cursor), NodeKind.Float, current.value, new[Node]()))
+    }
     if at(cursor, Kind.Text) {
         return fields(cursor, done(cursor, next(cursor), NodeKind.Text, current.value, new[Node]()))
     }

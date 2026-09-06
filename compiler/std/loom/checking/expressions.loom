@@ -75,6 +75,7 @@ fn expr(context Context, node Node, expected Int) Result[Expr, Failure] {
 fn expr_mode(context Context, node Node, expected Int, enforce Bool) Result[Expr, Failure] {
     let kind = node.kind
     let value = if kind == NodeKind.Integer { atom(ExprKind.Integer, 1, node, -1) } else {
+    if kind == NodeKind.Float { atom(ExprKind.Float, 5, node, -1) } else {
     if kind == NodeKind.Bool { atom(ExprKind.Bool, 2, node, -1) } else {
     if kind == NodeKind.Text { atom(ExprKind.Text, 3, node, -1) } else {
     if kind == NodeKind.Name { named(context, node, expected)? } else {
@@ -83,8 +84,9 @@ fn expr_mode(context Context, node Node, expected Int, enforce Bool) Result[Expr
     if kind == NodeKind.Tuple { tuple_literal(context, node, expected)? } else {
     if kind == NodeKind.Select { member(context, node, expr(context, child(node, 0), -1)?, node.value)? } else {
     if kind == NodeKind.Unary {
-        let ty = if node.value == "!" { 2 } else { 1 }
-        let value = expr(context, child(node, 0), ty)?
+        let operand = expr(context, child(node, 0), -1)?
+        let ty = if node.value == "!" { 2 } else { if operand.ty == 5 { 5 } else { 1 } }
+        let value = typed(context, node, operand, ty)?
         expression(ExprKind.Unary, ty, node, node.value, -1, expressions(value), value.falls)
     } else {
     if kind == NodeKind.Binary {
@@ -95,13 +97,13 @@ fn expr_mode(context Context, node Node, expected Int, enforce Bool) Result[Expr
         if equality && get(context.env.types, left.ty).kind == TypeKind.Tuple {
             return Result.Err(error(context, node, "tuple equality is not supported"))
         }
-        let argument = if logical { 2 } else { if equality { left.ty } else { 1 } }
-        if left.ty != argument || (left.ty != 1 && left.ty != 2 && !(equality && (left.ty == 3 || enum_equality(context, left.ty)))) {
+        let argument = if logical { 2 } else { if equality || left.ty == 5 { left.ty } else { 1 } }
+        if left.ty != argument || (left.ty != 1 && left.ty != 2 && left.ty != 5 && !(equality && (left.ty == 3 || enum_equality(context, left.ty)))) {
             return Result.Err(error(context, node, "invalid operator operand; generic operations need an explicit capability"))
         }
         let right = expr(context, child(node, 1), argument)?
         let arithmetic = node.value == "+" || node.value == "-" || node.value == "*" || node.value == "/" || node.value == "%"
-        expression(ExprKind.Binary, if arithmetic { 1 } else { 2 }, node, node.value, -1, pair(left, right), left.falls && (logical || right.falls))
+        expression(ExprKind.Binary, if arithmetic { argument } else { 2 }, node, node.value, -1, pair(left, right), left.falls && (logical || right.falls))
     } else {
     if kind == NodeKind.Block { block(context, node, expected, enforce)? } else {
     if kind == NodeKind.If { conditional(context, node, expected, enforce)? } else {
@@ -109,6 +111,6 @@ fn expr_mode(context Context, node Node, expected Int, enforce Bool) Result[Expr
     if kind == NodeKind.Try { propagated(context, node, expected)? } else {
     if kind == NodeKind.Comptime { compile_time(context, node, expected, enforce)? } else {
         return Result.Err(error(context, node, "unsupported expression in source checker"))
-    } } } } } } } } } } } } } } }
+    } } } } } } } } } } } } } } } }
     if enforce { typed(context, node, value, expected) } else { Result.Ok(value) }
 }

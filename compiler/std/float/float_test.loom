@@ -1,0 +1,95 @@
+test fn explicit_integer_conversions_and_bounds() {
+    assert from_int(7) == 7.0
+    assert from_int(9007199254740993) == 9007199254740992.0
+    assert match to_int(1.75) { Result.Ok(value) => value == 1, _ => false }
+    assert match to_int(-1.75) { Result.Ok(value) => value == -1, _ => false }
+    assert match to_int(from_int(-9223372036854775808)) {
+        Result.Ok(value) => value == -9223372036854775808, _ => false
+    }
+    assert match to_int(from_int(9223372036854775807)) {
+        Result.Err(error) => error == FloatToIntError.OutOfRange, _ => false
+    }
+    assert match to_int(-9223372036854777856.0) {
+        Result.Err(error) => error == FloatToIntError.OutOfRange, _ => false
+    }
+}
+
+test fn ieee_special_values_do_not_use_integer_fault_rules() {
+    let infinity = 1.0 / 0.0
+    let nan = 0.0 / 0.0
+    assert !is_finite(infinity) && !is_finite(nan)
+    assert is_nan(nan) && !is_nan(infinity)
+    assert is_finite(1.7976931348623157e308)
+    assert nan != nan && !(nan == nan) && !(nan < 1.0) && !(nan >= 1.0)
+    assert 0.0 == -0.0 && 1.0 / -0.0 == -infinity
+    assert 1e999 == infinity && 1e-999 == 0.0
+    assert match to_int(nan) { Result.Err(error) => error == FloatToIntError.NonFinite, _ => false }
+    assert match to_int(infinity) { Result.Err(error) => error == FloatToIntError.NonFinite, _ => false }
+}
+
+fn parsed(value Text) Float {
+    match parse(value) {
+        Result.Ok(number) => number
+        Result.Err(_) => { assert false
+            0.0 }
+    }
+}
+fn invalid(value Text) {
+    assert match parse(value) { Result.Err(error) => error == ParseError.Invalid, _ => false }
+}
+fn round_trip(value Float) {
+    let text = to_text(value)
+    let decoded = parsed(text)
+    if is_nan(value) { assert is_nan(decoded) } else {
+        assert decoded == value
+        if value == 0.0 { assert 1.0 / decoded == 1.0 / value }
+    }
+    assert to_text(decoded) == text
+}
+
+test fn decimal_parsing_has_source_defined_boundaries() {
+    assert parsed("+12") == 12.0 && parsed("-7") == -7.0
+    assert parsed("01.25") == 1.25 && parsed("1.25e+2") == 125.0
+    assert parsed("1E-2") == 0.01
+    invalid("")
+    invalid("+")
+    invalid(".5")
+    invalid("1.")
+    invalid("1e")
+    invalid("1.0e-")
+    invalid(" 1")
+    invalid("1 ")
+    invalid("1_0")
+    invalid("1.0f64")
+    invalid("0x10")
+    invalid("١.0")
+    invalid("nan")
+    invalid("+NaN")
+    invalid("Infinity")
+}
+
+test fn formatting_round_trips_finite_and_special_values() {
+    round_trip(0.0)
+    round_trip(-0.0)
+    round_trip(0.1)
+    round_trip(1.7976931348623157e308)
+    round_trip(2.2250738585072014e-308)
+    round_trip(5e-324)
+    round_trip(1.0 / 0.0)
+    round_trip(-1.0 / 0.0)
+    round_trip(0.0 / 0.0)
+    assert to_text(-0.0) == "-0"
+    assert to_text(1.0 / 0.0) == "inf"
+    assert to_text(-1.0 / 0.0) == "-inf"
+    assert to_text(0.0 / 0.0) == "NaN"
+}
+
+test fn decimal_extremes_round_to_infinity_and_signed_zero() {
+    let infinity = 1.0 / 0.0
+    assert parsed("inf") == infinity && parsed("+inf") == infinity
+    assert parsed("-inf") == -infinity && is_nan(parsed("NaN"))
+    assert parsed("1e9999") == infinity && parsed("-1e9999") == -infinity
+    assert parsed("1e-9999") == 0.0
+    assert 1.0 / parsed("-1e-9999") == -infinity
+    assert parsed("9007199254740993") == 9007199254740992.0
+}

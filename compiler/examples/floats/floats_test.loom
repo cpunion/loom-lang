@@ -1,0 +1,1 @@
+test fn float_aggregates_and_explicit_conversion() { exercise() }

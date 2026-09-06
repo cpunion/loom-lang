@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add native IEEE binary64 Float and explicit numeric conversions. Keep decimal
+  syntax/error policy in Loom std over narrow numeric codecs; scalar arithmetic
+  needs no Loom runtime. Establish the Float-capable bootstrap checkpoint before
+  adopting Float in the compiler's evaluator.
 - Reuse same-type GC temporary slots across completed statements and exclusive
   branches. Preserve live argument snapshots, local roots, and deterministic
   bootstrap without changing the runtime ABI or adding a liveness IR.

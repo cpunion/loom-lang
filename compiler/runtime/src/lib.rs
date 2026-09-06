@@ -230,6 +230,20 @@ unsafe extern "C" fn loom_rt_text_new(bytes: *const u8, len: usize) -> *mut u8 {
 }
 
 #[unsafe(no_mangle)]
+unsafe extern "C" fn loom_rt_float_parse(text: *const u8) -> f64 {
+    // SAFETY: The caller supplies live UTF-8 Text; parsing never collects.
+    let text = unsafe { std::str::from_utf8_unchecked(text_bytes(text)) };
+    text.parse().unwrap_or_else(|_| fault("invalid Float text"))
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn loom_rt_float_format(value: f64) -> *mut u8 {
+    let text = value.to_string();
+    // SAFETY: Rust owns these UTF-8 bytes across the managed allocation/copy.
+    unsafe { loom_rt_text_new(text.as_ptr(), text.len()) }
+}
+
+#[unsafe(no_mangle)]
 unsafe extern "C" fn loom_rt_text_len(text: *const u8) -> i64 {
     // SAFETY: text denotes a live Text object or static literal.
     unsafe { (*text.cast::<Text>()).len as i64 }
@@ -766,6 +780,43 @@ mod tests {
     fn text(value: &str) -> *mut u8 {
         // SAFETY: The source bytes live throughout the non-retaining copy call.
         unsafe { loom_rt_text_new(value.as_ptr(), value.len()) }
+    }
+
+    #[test]
+    fn float_codecs_roundtrip_ieee_values_across_collection() {
+        let mut formatted = ptr::null_mut();
+        let checkpoint = root(&mut formatted);
+        for value in [
+            0.1,
+            0.0,
+            -0.0,
+            f64::MIN,
+            f64::MAX,
+            f64::MIN_POSITIVE,
+            f64::from_bits(1),
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ] {
+            HEAP.with(|heap| heap.borrow_mut().threshold = 0);
+            formatted = loom_rt_float_format(value);
+            HEAP.with(|heap| heap.borrow_mut().threshold = 0);
+            let _garbage = loom_rt_float_format(42.5);
+            // SAFETY: formatted stays rooted across the second formatting call.
+            let parsed = unsafe { loom_rt_float_parse(formatted) };
+            if value.is_nan() {
+                assert!(parsed.is_nan());
+            } else {
+                assert_eq!(parsed.to_bits(), value.to_bits());
+            }
+            if value.to_bits() == (-0.0_f64).to_bits() {
+                // SAFETY: The same root keeps the formatted Text readable.
+                assert_eq!(unsafe { text_bytes(formatted) }, b"-0");
+            }
+        }
+        loom_rt_roots_leave(checkpoint);
+        loom_rt_collect();
+        assert_eq!(live(), 0);
     }
 
     #[test]

@@ -1,0 +1,69 @@
+import std.result.Result
+import std.text.byte
+import std.text.length
+
+pub enum FloatToIntError { NonFinite OutOfRange }
+pub enum ParseError { Invalid }
+
+intrinsic fn float_from_int(value Int) Float
+// Total machine conversion; the public wrapper reports invalid input explicitly.
+intrinsic fn float_to_int(value Float) Int
+intrinsic fn float_parse(value Text) Float
+intrinsic fn float_format(value Float) Text
+
+// Binary64 rounding is nearest, ties to even; large Int values can lose precision.
+pub fn from_int(value Int) Float { float_from_int(value) }
+pub fn is_nan(value Float) Bool { value != value }
+pub fn is_finite(value Float) Bool { value - value == 0.0 }
+
+// Truncate toward zero. The upper bound is exclusive: from_int(Int's maximum)
+// rounds to 2^63, which is not a representable Int.
+pub fn to_int(value Float) Result[Int, FloatToIntError] {
+    if !is_finite(value) { return Result.Err(FloatToIntError.NonFinite) }
+    if value < -9223372036854775808.0 || value >= 9223372036854775808.0 {
+        return Result.Err(FloatToIntError.OutOfRange)
+    }
+    Result.Ok(float_to_int(value))
+}
+
+fn digits(value Text, start Int) Int {
+    var index = start
+    while index < length(value) && byte(value, index) >= 48 && byte(value, index) <= 57 {
+        index = index + 1
+    }
+    index
+}
+
+// Complete ASCII decimal input, with optional sign and exponent. A decimal
+// point requires digits on both sides. Overflow/underflow follow binary64
+// rounding; the exact special spellings also accept to_text's output.
+pub fn parse(value Text) Result[Float, ParseError] {
+    if value == "NaN" || value == "inf" || value == "+inf" || value == "-inf" {
+        return Result.Ok(float_parse(value))
+    }
+    let size = length(value)
+    if size == 0 { return Result.Err(ParseError.Invalid) }
+    var index = if byte(value, 0) == 43 || byte(value, 0) == 45 { 1 } else { 0 }
+    let integer_start = index
+    index = digits(value, index)
+    if index == integer_start { return Result.Err(ParseError.Invalid) }
+    if index < size && byte(value, index) == 46 {
+        index = index + 1
+        let fraction_start = index
+        index = digits(value, index)
+        if index == fraction_start { return Result.Err(ParseError.Invalid) }
+    }
+    if index < size && (byte(value, index) == 101 || byte(value, index) == 69) {
+        index = index + 1
+        if index < size && (byte(value, index) == 43 || byte(value, index) == 45) { index = index + 1 }
+        let exponent_start = index
+        index = digits(value, index)
+        if index == exponent_start { return Result.Err(ParseError.Invalid) }
+    }
+    if index != size { return Result.Err(ParseError.Invalid) }
+    Result.Ok(float_parse(value))
+}
+
+// Locale-independent round-tripping decimal; special values are
+// "NaN", "inf" and "-inf". Negative zero retains its sign as "-0".
+pub fn to_text(value Float) Text { float_format(value) }

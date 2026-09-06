@@ -60,7 +60,8 @@ pub(super) fn allocating_functions(
 
 fn allocates(operation: Primitive) -> bool {
     match operation {
-        Primitive::TextConcat
+        Primitive::FloatFormat
+        | Primitive::TextConcat
         | Primitive::TextSlice
         | Primitive::ArgText
         | Primitive::BytesNew
@@ -71,7 +72,10 @@ fn allocates(operation: Primitive) -> bool {
         | Primitive::Read
         | Primitive::DirectoryRead
         | Primitive::PathCanonical => true,
-        Primitive::TextLen
+        Primitive::FloatFromInt
+        | Primitive::FloatToInt
+        | Primitive::FloatParse
+        | Primitive::TextLen
         | Primitive::UnicodeAlphabetic
         | Primitive::UnicodeAlphanumeric
         | Primitive::UnicodeWhitespace
@@ -104,7 +108,7 @@ pub(super) fn managed(program: &checked::Program, ty: Type) -> bool {
                 .iter()
                 .any(|(_, fields)| fields.iter().any(|ty| managed(program, *ty))),
         },
-        Type::Int | Type::Bool | Type::Unit | Type::Parameter(_) => false,
+        Type::Int | Type::Float | Type::Bool | Type::Unit | Type::Parameter(_) => false,
     }
 }
 
