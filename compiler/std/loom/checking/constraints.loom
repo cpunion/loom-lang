@@ -8,32 +8,77 @@ import std.loom.typed.Arm
 import std.list.new
 import std.list.get
 import std.list.push
+import std.list.set
 import std.list.length
+import std.text.concat
 import std.result.Result
 import std.loom.eval.Value
 import std.loom.eval.scalar
 import std.loom.eval.unknown
+import std.loom.eval.validate
+import std.loom.eval.evaluate
 
-fn scalar_predicate(node Node, self_only Bool) Bool {
-    if node.kind == NodeKind.Integer || node.kind == NodeKind.Bool { return true }
-    if node.kind == NodeKind.Name { return package(node.value) == "" && (!self_only || node.value == "self") }
+fn predicate_form(node Node) Bool {
+    if node.kind == NodeKind.Integer || node.kind == NodeKind.Bool || node.kind == NodeKind.Text { return true }
+    if node.kind == NodeKind.Name { return node.value == "self" }
+    if node.kind == NodeKind.Call {
+        let arguments = child(node, 1).children
+        var index = 0
+        while index < length(arguments) {
+            if !predicate_form(get(arguments, index)) { return false }
+            index = index + 1
+        }
+        return true
+    }
     if node.kind != NodeKind.Unary && node.kind != NodeKind.Binary { return false }
     var index = 0
     while index < length(node.children) {
-        if !scalar_predicate(child(node, index), self_only) { return false }
+        if !predicate_form(child(node, index)) { return false }
         index = index + 1
     }
     true
 }
-fn refinement(env Environment, owner Int, predicate Node) Result[Expr, Failure] {
-    if !scalar_predicate(predicate, true) { return Result.Err(failure(env, owner, predicate, "constraints require scalar expressions over self, without calls or external state")) }
+fn predicate_node(env Environment, owner Int) Node {
+    let declaration = symbol(env, owner).node
+    child(declaration, part(declaration, NodeKind.Type) + 1)
+}
+fn predicate_context(env Environment, owner Int, locals List[Local], self_local Int, emit Bool) Context {
+    let bindings = new[Binding]()
+    push(bindings, Binding { local = self_local previous = -1 })
+    Context { env = env signature = Signature { symbol = owner parameters = 0 params = ints(1) result = 2 }
+        arguments = new[Int]() locals = locals bindings = bindings head = 0 emit = emit }
+}
+fn predicate_scope(env Environment, owner Int) Context {
     let locals = new[Local]()
     push(locals, Local { name = "self" ty = 1 mutable = false })
-    let bindings = new[Binding]()
-    push(bindings, Binding { local = 0 previous = -1 })
-    let context = Context { env = env signature = Signature { symbol = owner parameters = 0 params = ints(1) result = 1 }
-        arguments = new[Int]() locals = locals bindings = bindings head = 0 emit = false }
+    predicate_context(env, owner, locals, 0, false)
+}
+fn refinement(env Environment, owner Int) Result[Expr, Failure] {
+    let predicate = predicate_node(env, owner)
+    if !predicate_form(predicate) { return Result.Err(failure(env, owner, predicate, "constraints require expressions over self and pure function calls")) }
+    let context = predicate_scope(env, owner)
+    let stage = staging(context, predicate)?
+    let value = expr(stage, predicate, 2)?
+    match std.loom.eval.validate(prepared(stage)?, value) {
+        Result.Ok(_) => {}
+        Result.Err(failed) => { return Result.Err(failure(env, owner, predicate, concat("type constraint: ", failed.message))) }
+    }
+    // The stored template has no executable call indices. Each construction
+    // binds the source again into its own staging/runtime queue and self slot.
     expr(context, predicate, 2)
+}
+fn refinements(env Environment) Result[Bool, Failure] {
+    var index = 0
+    while index < length(env.types) {
+        let ty = get(env.types, index)
+        if ty.kind == TypeKind.Refined {
+            let predicate = refinement(env, ty.symbol)?
+            set(env.types, index, Type { kind = ty.kind symbol = ty.symbol arguments = ty.arguments
+                fields = ty.fields variants = ty.variants constraint = expressions(predicate) })
+        }
+        index = index + 1
+    }
+    Result.Ok(true)
 }
 // Optional folding and explicit comptime execution share checked arithmetic.
 // Unknown values retain their normal runtime construction boundary.
@@ -43,15 +88,40 @@ fn folded(value Expr, self_value Value) Value {
         Result.Err(_) => unknown()
     }
 }
-fn relocate_self(value Expr, local Int) Expr {
+fn folded_predicate(env Environment, owner Int, known Value) Result[Value, Failure] {
+    let predicate = predicate_node(env, owner)
+    let stage = staging(predicate_scope(env, owner), predicate)?
+    let value = expr(stage, predicate, 2)?
+    let literal = expression(ExprKind.Integer, 1, predicate, to_text(known.number), -1, new[Expr](), true)
+    let bind = expression(ExprKind.Let, 0, predicate, "", 0, expressions(literal), true)
+    let initialized = expression(ExprKind.Block, 2, predicate, "", -1, pair(bind, value), true)
+    match std.loom.eval.evaluate(prepared(stage)?, initialized, length(stage.locals)) {
+        Result.Ok(value) => Result.Ok(value)
+        Result.Err(_) => Result.Ok(unknown())
+    }
+}
+fn predicate_at(value Expr, node Node) Expr {
     let children = new[Expr]()
     var index = 0
     while index < length(value.children) {
-        push(children, relocate_self(get(value.children, index), local))
+        push(children, predicate_at(get(value.children, index), node))
         index = index + 1
     }
-    Expr { kind = value.kind ty = value.ty span = value.span text = value.text index = if value.kind == ExprKind.Local { local } else { value.index }
-        children = children arms = value.arms falls = value.falls }
+    let arms = new[Arm]()
+    index = 0
+    while index < length(value.arms) {
+        let arm = get(value.arms, index)
+        let body = new[Expr]()
+        var item = 0
+        while item < length(arm.body) {
+            push(body, predicate_at(get(arm.body, item), node))
+            item = item + 1
+        }
+        push(arms, Arm { variant = arm.variant bindings = arm.bindings whole = arm.whole body = body })
+        index = index + 1
+    }
+    Expr { kind = value.kind ty = value.ty span = node.span text = value.text index = value.index
+        children = children arms = arms falls = value.falls }
 }
 fn constraint_error(context Context, node Node) Result[Int, Failure] {
     var declaration = -1
@@ -76,10 +146,9 @@ fn constrained(context Context, node Node, declaration Int, types List[Node], in
     let input = expr(context, get(inputs, 0), -1)?
     if input.ty == target { return Result.Ok(input) }
     let value = typed(context, node, input, 1)?
-    let predicate = get(get(context.env.types, target).constraint, 0)
     let known = folded(value, unknown())
     if known.ty == 1 {
-        let checked = folded(predicate, known)
+        let checked = folded_predicate(context.env, declaration, known)?
         if checked.ty == 2 {
             if checked.number == 0 { return Result.Err(error(context, node, "this constant does not satisfy the type constraint")) }
             return Result.Ok(expression(ExprKind.Coerce, target, node, "", -1, expressions(value), value.falls))
@@ -89,14 +158,22 @@ fn constrained(context Context, node Node, declaration Int, types List[Node], in
     let error_type = constraint_error(context, node)?
     let output = result_type(context, node, shape, target, error_type)?
     let local = length(context.locals)
-    push(context.locals, Local { name = "" ty = 1 mutable = false })
+    push(context.locals, Local { name = "self" ty = 1 mutable = false })
     let saved = expression(ExprKind.Let, 0, node, "", local, expressions(value), value.falls)
     let reference = atom(ExprKind.Local, 1, node, local)
     let refined = expression(ExprKind.Coerce, target, node, "", -1, expressions(reference), true)
     let accepted = expression(ExprKind.Variant, output, node, "", shape.ok, expressions(refined), true)
     let reason = expression(ExprKind.Variant, error_type, node, "", 0, new[Expr](), true)
     let rejected = expression(ExprKind.Variant, output, node, "", shape.err, expressions(reason), true)
-    let branches = expressions(relocate_self(predicate, local))
+    if context.env.stage_depth >= 32 {
+        return Result.Err(error(context, node, "type constraint expansion depth exceeded; check for a dependency cycle"))
+    }
+    // Guard expansion shares this function queue, unlike compile-time staging.
+    let env = Environment { source = context.env.source types = context.env.types signatures = context.env.signatures
+        pending = context.env.pending stage_depth = context.env.stage_depth + 1 computations = context.env.computations }
+    let predicate = expr(predicate_context(env, declaration, context.locals, local, context.emit),
+        predicate_node(context.env, declaration), 2)?
+    let branches = expressions(predicate_at(predicate, node))
     push(branches, expression(ExprKind.Block, output, node, "", -1, expressions(accepted), true))
     push(branches, expression(ExprKind.Block, output, node, "", -1, expressions(rejected), true))
     let condition = expression(ExprKind.If, output, node, "", -1, branches, true)

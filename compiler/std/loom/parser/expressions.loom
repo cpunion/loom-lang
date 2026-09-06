@@ -139,7 +139,7 @@ fn named_expr(cursor Cursor, records Bool) Result[Step, Diagnostic] {
         return Result.Ok(done(cursor, next(rest), NodeKind.Construct, named.node.value, children))
     }
     if length(types.node.children) != 0 {
-        return Result.Err(error(rest, "expected a call or record literal after type arguments"))
+        return Result.Ok(done(cursor, rest, NodeKind.Type, named.node.value, types.node.children))
     }
     Result.Ok(named)
 }

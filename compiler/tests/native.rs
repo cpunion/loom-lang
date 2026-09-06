@@ -233,19 +233,28 @@ fn main() {
 
 #[test]
 fn constrained_values_keep_native_scalar_boundaries() {
-    let library =
-        source("type Positive = Int where self > 0\npub fn fixed() Int { Positive(21 * 2) }");
+    let library = source(
+        "type Positive = Int where positive(self)\n\
+         fn positive(n Int) Bool { var rest = n\nwhile rest > 1 { rest = rest - 1 }\nrest == 1 }\n\
+         pub fn fixed() Int { Positive(42) }",
+    );
     let ir = library.path().join("fixed.ll");
-    success(&loom(&[
-        "build",
-        path(library.path()),
-        "--emit-ir",
-        path(&ir),
-    ]));
+    success(
+        &common::command(&["build", path(library.path()), "--emit-ir", path(&ir)])
+            .env("LOOM_OPT_LEVEL", "0")
+            .output()
+            .unwrap(),
+    );
     let llvm = fs::read_to_string(ir).unwrap();
     assert!(llvm.contains("ret i64 42"));
     assert!(!llvm.contains("loom_rt_"));
     assert!(!llvm.contains("with.overflow"));
+    assert_eq!(
+        llvm.lines()
+            .filter(|line| line.starts_with("define "))
+            .count(),
+        1
+    );
 
     let application = source(
         r#"
@@ -255,7 +264,12 @@ import std.list.set
 import std.list.push
 import std.result.Result
 import std.result.ConstraintError
-type Positive = Int where self > 0
+type Positive = Int where valid(self)
+fn valid(value Int) Bool {
+    let checks = new[Int]()
+    push(checks, value)
+    get(checks, 0) > 0
+}
 fn next(counter List[Int]) Int {
     set(counter, 0, get(counter, 0) + 1)
     get(counter, 0)
@@ -280,7 +294,9 @@ fn main() {
         &["run", path(application.path())],
         application.path(),
     ));
-    let invalid = source("type Positive = Int where self > 0\nfn main() { discard Positive(0) }");
+    let invalid = source(
+        "type Positive = Int where valid(self)\nfn valid(n Int) Bool { n > 0 }\nfn main() { discard Positive(0) }",
+    );
     assert!(!loom(&["check", path(invalid.path())]).status.success());
     let overflow = source(
         "type Guard = Int where self + 1 > self\nfn main() { discard Guard(9223372036854775807) }",
@@ -288,6 +304,36 @@ fn main() {
     let output = loom(&["run", path(overflow.path())]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("overflow"));
+}
+
+#[test]
+fn type_predicates_cannot_hide_external_effects_or_skip_helper_contracts() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("must-not-exist");
+    // The type need not be constructed. A dead runtime branch is still part
+    // of its predicate's effect closure, and checking must never execute I/O.
+    fs::write(
+        dir.path().join("main.loom"),
+        format!(
+            "import std.file.write_text\n\
+         type Unused = Int where valid(self)\n\
+         fn valid(n Int) Bool {{ if n > 0 {{ true }} else {{\n\
+         discard write_text({:?}, \"bad\")\nfalse }} }}\nfn main() {{}}",
+            marker.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    let output = loom(&["check", path(dir.path())]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(!marker.exists());
+
+    let fault = source(
+        "type Guard = Int where valid(self)\nfn valid(n Int) Bool requires n > 0 { true }\nfn main() { discard Guard(0) }",
+    );
+    success(&loom(&["check", path(fault.path())]));
+    let output = loom(&["run", path(fault.path())]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("precondition"));
 }
 
 #[test]

@@ -16,6 +16,12 @@ Postfix `?` propagates errors with ordinary enum control flow. Recursive data
 through `List` is supported; infinite inline layouts and growing generic
 specializations reject.
 
+`Int` constraints may call pure helpers with loops, recursion, and fresh data.
+Their supported operation/call closure is validated even for unused constrained
+declarations. Known true/false predicates remove the check or reject; unknown
+inputs or unsuccessful optional evaluation retain normal runtime construction
+and fault behavior. Function contracts remain call-free and proofs mandatory.
+
 The native gate uses macOS, Rust 1.88, and LLVM 19. Compiler, native integration,
 and runtime tests cover real check/build/test/run, required-proof rejection,
 input-boundary failures, and allocation-free scalar/record paths.
@@ -60,8 +66,10 @@ blocks support pure calls, local mutation, loops/recursion, and scalar or
 record/enum results, including shared lists/bytes. Every runtime evaluation
 constructs a fresh graph with its internal aliases and cycles preserved; no
 hidden mutable global is introduced. Successful pure results can be reused
-within one check, not across builds. `comptime if` selects code using a computed Boolean or type
-equality/inequality. Runtime captures, external effects, faults, and exhausted
+within one check, not across builds. `comptime if` selects code using a computed
+Boolean or type equality/inequality, including nested generic types. This is not
+general type-valued computation or Boolean composition of type comparisons.
+Runtime captures, external effects, faults, and exhausted
 budgets reject. Scalar constraint folding shares this evaluator; required
 postconditions still use the prover, with no evaluation-as-proof fallback.
 

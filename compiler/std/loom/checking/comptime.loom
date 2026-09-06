@@ -36,7 +36,7 @@ fn depends_on_type(context Context, node Node) Bool {
     if node.kind == NodeKind.Type && parameter_name(context, node.value) { return true }
     if node.kind == NodeKind.Binary && (node.value == "==" || node.value == "!=") &&
         type_operand(context, child(node, 0)) && type_operand(context, child(node, 1)) &&
-        (parameter_name(context, child(node, 0).value) || parameter_name(context, child(node, 1).value)) { return true }
+        (type_parameter_operand(context, child(node, 0)) || type_parameter_operand(context, child(node, 1))) { return true }
     var index = 0
     while index < length(node.children) {
         if depends_on_type(context, child(node, index)) { return true }
@@ -97,13 +97,7 @@ fn isolated(context Context, node Node, value Expr, boundary Int) Result[Bool, F
     }
     Result.Ok(true)
 }
-fn computed(context Context, node Node, input Node, expected Int) Result[Value, Failure] {
-    let stage = staging(context, node)?
-    let value = expr(stage, input, expected)?
-    discard isolated(context, node, value, length(context.locals))?
-    // Type/capture validation always runs before reuse, including shadowed names.
-    let saved = computation(context, input, expected, value.ty)
-    if saved >= 0 { return Result.Ok(get(context.env.computations, saved).value) }
+fn prepared(stage Context) Result[std.loom.typed.Program, Failure] {
     let functions = new[Function]()
     var index = 0
     while index < length(stage.env.pending) {
@@ -111,7 +105,16 @@ fn computed(context Context, node Node, input Node, expected Int) Result[Value, 
         push(functions, function(stage.env, instance.signature, instance.arguments, true)?)
         index = index + 1
     }
-    let program = std.loom.typed.Program { types = stage.env.types functions = functions entry = -1 tests = new[Int]() exports = new[Int]() }
+    Result.Ok(std.loom.typed.Program { types = stage.env.types functions = functions entry = -1 tests = new[Int]() exports = new[Int]() })
+}
+fn computed(context Context, node Node, input Node, expected Int) Result[Value, Failure] {
+    let stage = staging(context, node)?
+    let value = expr(stage, input, expected)?
+    discard isolated(context, node, value, length(context.locals))?
+    // Type/capture validation always runs before reuse, including shadowed names.
+    let saved = computation(context, input, expected, value.ty)
+    if saved >= 0 { return Result.Ok(get(context.env.computations, saved).value) }
+    let program = prepared(stage)?
     match std.loom.eval.evaluate(program, value, length(stage.locals)) {
         Result.Ok(value) => {
             push(context.env.computations, Computation { owner = context.signature.symbol arguments = context.arguments
@@ -123,15 +126,32 @@ fn computed(context Context, node Node, input Node, expected Int) Result[Value, 
 }
 
 fn type_operand(context Context, node Node) Bool {
-    node.kind == NodeKind.Name && lookup(context, slice(node.value, 0, first_dot(node.value))) < 0
+    if (node.kind != NodeKind.Name && node.kind != NodeKind.Type) ||
+        lookup(context, slice(node.value, 0, first_dot(node.value))) >= 0 { return false }
+    var index = 0
+    while index < length(node.children) {
+        if !type_operand(context, child(node, index)) { return false }
+        index = index + 1
+    }
+    true
+}
+fn type_parameter_operand(context Context, node Node) Bool {
+    if parameter_name(context, node.value) { return true }
+    var index = 0
+    while index < length(node.children) {
+        if type_parameter_operand(context, child(node, index)) { return true }
+        index = index + 1
+    }
+    false
 }
 fn selected(context Context, node Node, source Node, expected Int, enforce Bool) Result[Expr, Failure] {
     let condition = child(source, 0)
     var yes = false
     if condition.kind == NodeKind.Binary && (condition.value == "==" || condition.value == "!=") &&
-        (type_operand(context, child(condition, 0)) || type_operand(context, child(condition, 1))) {
+        (type_operand(context, child(condition, 0)) || type_operand(context, child(condition, 1)) ||
+            child(condition, 0).kind == NodeKind.Type || child(condition, 1).kind == NodeKind.Type) {
         if !type_operand(context, child(condition, 0)) || !type_operand(context, child(condition, 1)) {
-            return Result.Err(error(context, condition, "comptime type comparison requires two unshadowed type names"))
+            return Result.Err(error(context, condition, "comptime type comparison requires two unshadowed types"))
         }
         let left = resolve(context.env, context.signature.symbol, child(condition, 0), context.arguments, 0)?
         let right = resolve(context.env, context.signature.symbol, child(condition, 1), context.arguments, 0)?
