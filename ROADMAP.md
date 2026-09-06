@@ -124,9 +124,11 @@ Static nominal concepts now lower explicit implementations and bounded generic
 method calls into the existing direct-call path. Conditional conformance queries,
 method qualification and source `std.display` use the same model. Native `dyn C`
 uses explicit conformance evidence, GC-owned receiver snapshots and sparse method
-tables, including generic calls and managed aggregate storage. Associated types,
-generic implementations and bounded generic data remain open; there is no runtime
-conformance registry or erased-value type discovery.
+tables, including generic calls and managed aggregate storage. Static associated
+types and bounded generic records/enums normalize under explicit declaration or
+branch evidence. Generic implementations and binding-aware dynamic associated
+types remain open; there is no runtime conformance registry or erased-value
+type discovery.
 
 Native binary64 `Float`, source numeric parsing/conversion, compile-time execution
 and Float-based constrained types now share the checked/native path. The compiler

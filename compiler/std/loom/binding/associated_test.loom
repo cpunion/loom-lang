@@ -1,0 +1,23 @@
+test fn associated_symbols_stay_owned_and_preserve_method_overloads() {
+    let files = one_source("pub concept Source {\ntype Item\nfn read(self Self) Self.Item\nfn read(self Self, index Int) Self.Item\n}\nrecord Counter { value Int }\nimpl Source for Counter {\ntype Item = Int\nfn read(self Counter) Int { self.value }\nfn read(self Counter, index Int) Int { self.value + index }\n}")
+    let program = bound(files, false)
+    assert length(program.symbols) == 9
+    let declaration = get(program.symbols, 1)
+    let binding = get(program.symbols, 6)
+    assert declaration.owner == 0 && declaration.node.kind == NodeKind.AssociatedType
+    assert declaration.node.span.end - declaration.node.span.start == 9
+    assert binding.owner == 5 && binding.node.kind == NodeKind.AssociatedType
+    assert get(program.symbols, 2).owner == 0 && get(program.symbols, 3).owner == 0
+    assert length(candidates(program, 0, false, "Source")) == 1
+    assert length(candidates(program, 0, false, "Item")) == 0
+    assert length(candidates(program, 0, false, "app.Source.Item")) == 0
+    push(files, source("app", "app/bool_test.loom", "impl Source for Bool {\ntype Item = Bool\nfn read(self Bool) Bool { self }\nfn read(self Bool, index Int) Bool { self }\n}", true, false))
+    assert length(bound(files, false).symbols) == 9
+    let testing = bound(files, true)
+    assert length(testing.symbols) == 13
+    assert get(testing.symbols, 10).owner == 9 && get(testing.symbols, 10).test_only
+    push(files, source("other", "other/main.loom", "import app.Source.Item\n", false, false))
+    assert rejected(files).diagnostic.message == "import does not name an accessible declaration"
+    assert rejected(one_source("concept C { type Item\ntype Item }")).diagnostic.message == "duplicate declaration member"
+    assert rejected(one_source("impl C for Int { type Item = Int\ntype Item = Bool }")).diagnostic.message == "duplicate declaration member"
+}

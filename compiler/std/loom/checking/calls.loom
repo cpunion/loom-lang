@@ -18,7 +18,7 @@ fn supplied(context Context, node Node, values List[Node], count Int) Result[Lis
     let output = new[Int]()
     var index = 0
     while index < count {
-        push(output, if length(values) == 0 { -1 } else { resolve(context.env, context.signature.symbol, get(values, index), context.arguments, 0)? })
+        push(output, if length(values) == 0 { -1 } else { context_type(context, get(values, index))? })
         index = index + 1
     }
     Result.Ok(output)
@@ -79,13 +79,22 @@ fn construct(context Context, node Node, expected Int) Result[Expr, Failure] {
         set(seen, field, true)
         let pattern = get(shape.fields, field).ty
         let value = expr(context, child(member, 0), hint(context, pattern, arguments, member)?)?
-        if !infer(context.env, pattern, value.ty, arguments) { return Result.Err(error(context, member, "record field type does not match")) }
+        discard infer(context.env, pattern, value.ty, arguments)
         push(fields, expression(ExprKind.Field, value.ty, member, "", field, expressions(value), value.falls))
         index = index + 1
     }
     if length(fields) != length(shape.fields) { return Result.Err(error(context, node, "initialize every record field")) }
     if !complete(arguments) { return Result.Err(error(context, node, "cannot infer record type arguments")) }
-    Result.Ok(expression(ExprKind.Record, data_type(context.env, declaration, arguments, 0)?, node, "", -1, fields, all_fall(fields)))
+    index = 0
+    while index < length(fields) {
+        let field = get(fields, index)
+        let member = child(node, index + 1)
+        let target = substitute(context.env, declaration, get(shape.fields, field.index).ty, arguments, node)?
+        let value = typed(context, member, get(field.children, 0), target)?
+        set(fields, index, expression(ExprKind.Field, target, member, "", field.index, expressions(value), value.falls))
+        index = index + 1
+    }
+    Result.Ok(expression(ExprKind.Record, constructed_type(context, declaration, arguments, node)?, node, "", -1, fields, all_fall(fields)))
 }
 fn variant(context Context, node Node, types List[Node], inputs List[Node], expected Int) Result[Expr, Failure] {
     let declaration = find_data(context.env, context.signature.symbol, node, package(node.value))?
@@ -108,12 +117,18 @@ fn variant(context Context, node Node, types List[Node], inputs List[Node], expe
         let pattern = get(patterns, index)
         let input = get(inputs, index)
         let value = expr(context, input, hint(context, pattern, arguments, input)?)?
-        if !infer(context.env, pattern, value.ty, arguments) { return Result.Err(error(context, input, "enum payload type does not match")) }
+        discard infer(context.env, pattern, value.ty, arguments)
         push(values, value)
         index = index + 1
     }
     if !complete(arguments) { return Result.Err(error(context, node, "cannot infer enum type arguments")) }
-    Result.Ok(expression(ExprKind.Variant, data_type(context.env, declaration, arguments, 0)?, node, "", selected, values, all_fall(values)))
+    index = 0
+    while index < length(values) {
+        let target = substitute(context.env, declaration, get(patterns, index), arguments, node)?
+        set(values, index, typed(context, get(inputs, index), get(values, index), target)?)
+        index = index + 1
+    }
+    Result.Ok(expression(ExprKind.Variant, constructed_type(context, declaration, arguments, node)?, node, "", selected, values, all_fall(values)))
 }
 fn call(context Context, node Node, expected Int) Result[Expr, Failure] {
     let types = child(node, 0).children
@@ -206,22 +221,26 @@ fn invoke(context Context, node Node, options List[Int], types List[Node], input
         var widened = false
         var argument = 0
         while argument < length(values) {
-            let pattern = get(candidate_signature.params, argument)
-            let value = get(values, argument)
-            if !infer(context.env, pattern, value.ty, args) {
-                let target = hint(context, pattern, args, node)?
-                if can_widen(context, value.ty, target) {
-                    widened = true
-                } else { matched = false }
-            }
+            discard infer(context.env, get(candidate_signature.params, argument), get(values, argument).ty, args)
             argument = argument + 1
         }
         if matched && !complete(args) && expected >= 0 { discard infer(context.env, candidate_signature.result, expected, args) }
         if matched && complete(args) {
             if satisfies_arguments(context, candidate_signature, args, node)? {
-                push(matches, Instance { signature = id arguments = args })
-                push(widening, widened)
-                exact = exact || !widened
+                argument = 0
+                while argument < length(values) {
+                    let target = substitute(context.env, candidate_signature.symbol, get(candidate_signature.params, argument), args, node)?
+                    let value = get(values, argument)
+                    if value.ty != target {
+                        if can_widen(context, value.ty, target) { widened = true } else { matched = false }
+                    }
+                    argument = argument + 1
+                }
+                if matched {
+                    push(matches, Instance { signature = id arguments = args })
+                    push(widening, widened)
+                    exact = exact || !widened
+                }
             } else { missing_requirement = true }
         }
         index = index + 1

@@ -34,6 +34,8 @@ record Instance { signature Int arguments List[Int] }
 record Environment {
     source std.loom.binding.Program
     types List[Type]
+    type_states List[Int]
+    expand_data Bool
     signatures List[Signature]
     pending List[Instance]
     stage_depth Int
@@ -163,10 +165,11 @@ fn bind_local(context Context, node Node, value Text, ty Int, mutable Bool, boun
 }
 
 pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Failure] {
-    let env = Environment { source = source types = new[Type]() signatures = new[Signature]() pending = new[Instance]()
+    let env = Environment { source = source types = new[Type]() type_states = new[Int]() expand_data = true signatures = new[Signature]() pending = new[Instance]()
         stage_depth = 0 computations = new[Computation]() concepts = new[Concept]() implementations = new[Implementation]()
         interfaces = new[Interface]() witnesses = new[Witness]() uses = new[SlotUse]() }
     initialize_types(env)
+    discard conformance_headers(env)?
     var index = 0
     while index < length(source.symbols) {
         let item = symbol(env, index)
@@ -187,15 +190,16 @@ pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Fai
                 return Result.Err(failure(env, index, item.node, "an implementation cannot add an undeclared precondition"))
             }
             let arguments = abstract_arguments(env, count)
+            let obligations = requirements(env, index, arguments)?
             let params = new[Int]()
             let declarations = group(item.node, NodeKind.Parameters)
             var parameter = 0
             while parameter < length(declarations) {
-                push(params, resolve(env, index, child(get(declarations, parameter), 0), arguments, 0)?)
+                push(params, resolve_bound(env, index, child(get(declarations, parameter), 0), arguments, obligations, 0)?)
                 parameter = parameter + 1
             }
             let returns = group(item.node, NodeKind.ReturnType)
-            let output = if length(returns) == 0 { 0 } else { resolve(env, index, get(returns, 0), arguments, 0)? }
+            let output = if length(returns) == 0 { 0 } else { resolve_bound(env, index, get(returns, 0), arguments, obligations, 0)? }
             let entry = item.owner < 0 && get(source.files, item.file).package == source.root && item.name == "main" && !item.test_only
             if (entry || has(item.node, NodeKind.Test)) && (length(params) != 0 || output != 0 || count != 0) {
                 return Result.Err(failure(env, index, item.node, "main and tests take no parameters and omit the return type"))
@@ -210,11 +214,12 @@ pub fn check(source std.loom.binding.Program) Result[std.loom.typed.Program, Fai
                 previous = previous + 1
             }
             push(env.signatures, Signature { symbol = index parameters = count params = params result = output
-                requirements = requirements(env, index, arguments)? })
+                requirements = obligations })
         }
         index = index + 1
     }
     discard conformances(env)?
+    discard declaration_types(env)?
     discard fill_interfaces(env)?
     discard refinements(env)?
     discard layouts(env)?

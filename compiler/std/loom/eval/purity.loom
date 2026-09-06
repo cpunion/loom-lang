@@ -18,6 +18,9 @@ fn scan(state State, expr Expr, seen List[Int], depth Int) Result[Bool, Failure]
     if depth >= 256 { return Result.Err(failure(expr, "compile-time expression depth exhausted")) }
     discard spend(state, expr, 0, 1)?
     if expr.kind == ExprKind.Deferred { return Result.Err(failure(expr, "compile-time expression still has unresolved types")) }
+    if expr.ty >= 0 && expr.ty < length(state.program.types) && get(state.program.types, expr.ty).kind == TypeKind.Associated {
+        return Result.Err(failure(expr, "compile-time expression still has an unresolved associated type"))
+    }
     if expr.kind == ExprKind.DynBox || expr.kind == ExprKind.DynCall ||
         (expr.ty >= 0 && expr.ty < length(state.program.types) && get(state.program.types, expr.ty).kind == TypeKind.Dyn) {
         return Result.Err(failure(expr, "dynamic concept values and calls are not supported at compile time"))

@@ -12,7 +12,7 @@ pub enum NodeKind {
     Integer Text Bool Name Call Construct Unary Binary Select Try
     Match Arm Pattern Bindings Wildcard If Comptime
     TupleType Tuple Destructure Float
-    Concept Impl Implements MethodCall DynType
+    Concept Impl Implements MethodCall DynType AssociatedType
 }
 
 // TupleType/Tuple children are ordered elements. Destructure stores "let" or
@@ -23,6 +23,8 @@ pub enum NodeKind {
 // children whose Type children are explicit bounds. Implements has [type,
 // concept Type]; MethodCall has [receiver, TypeArguments, Arguments].
 // DynType stores the concept path in value and ordered type arguments as children.
+// AssociatedType stores its member name and has no children in a concept, or
+// one type child for an impl binding. Projections retain ordinary dotted Types.
 
 pub record Node {
     kind NodeKind

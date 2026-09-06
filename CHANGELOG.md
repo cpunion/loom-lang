@@ -5,6 +5,10 @@ implementation, not a compatibility ledger for previous prototypes.
 
 ## Unreleased
 
+- Add static associated types and bounded generic records/enums. Normalize
+  projections through explicit evidence, preserve generic declaration choices,
+  and infer independent parameters before checking associated arguments.
+
 - Add `loom test --no-run` and optional compiler-latency measurements for startup,
   isolated test compilation and generated package growth, retaining input hashes
   and separate native phase timings.

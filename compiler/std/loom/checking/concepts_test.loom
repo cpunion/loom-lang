@@ -31,7 +31,7 @@ test fn implements_guards_keep_requirements_local_to_selected_branches() {
     rejects(concat(definition, "fn outside[T](value T) Text { comptime if T implements Display { discard value.display() }\nvalue.display() }"))
     rejects(concat(definition, "fn ordinary[T](value T) { if T implements Display { discard value } }"))
     rejects(concat(definition, "fn value_guard(value Int) { comptime if value implements Display {} }"))
-    rejects("concept C {}\nrecord Bounded[T C] { value T }")
+    rejects("concept C {}\nrecord Bounded[T C] { value T }\nfn missing[T](value Bounded[T]) {}")
     rejects("concept C {}\nfn invalid(value C) {}")
 }
 

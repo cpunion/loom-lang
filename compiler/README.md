@@ -335,10 +335,48 @@ Test-only implementations cannot change unbounded production code; tests may pas
 their explicit evidence to bounded generic functions.
 
 This slice supports nongeneric concepts and concrete implementation targets.
-Associated types, generic/default implementations, concept-typed parameter
-shorthand and bounded generic data declarations remain later work.
+Generic/default implementations and concept-typed parameter shorthand remain
+later work.
 Concept method contracts and extra implementation preconditions currently reject;
 implementation postconditions still require proof.
+
+### Associated types and bounded data
+
+A concept can name a type supplied by each implementation. Static instances
+normalize projections into the existing concrete type and direct-call model:
+
+```loom
+concept Source {
+    type Item
+    fn item(self Self) Self.Item
+}
+impl Source for Int {
+    type Item = Int
+    fn item(self Int) Int { self }
+}
+record Cache[S Source] { source S value S.Item }
+fn cached[S Source](source S) Cache[S] {
+    Cache { value = source.item() source = source }
+}
+```
+
+`T.Item` uses the declared or branch-local concept evidence. If two active bounds
+declare `Item`, qualify it as `T.Source.Item`. Incidental conformances on a concrete
+argument do not change a generic declaration's choice. `Self.Item` refers to the
+enclosing concept's member; implementation bindings may refer to other associated
+members, with cycles rejected.
+
+Record/enum parameters can carry bounds, including `[T C + D]`. Every use must
+supply that evidence: `fn hidden[T](value Cache[T])` is invalid without `T Source`.
+Interning a type in one scope does not authorize it elsewhere. Inference obtains
+`T` from independent parameter/field positions, then checks `T.Item`; it cannot
+infer a receiver from its associated result alone. Inputs still evaluate once in
+source order. The [associated example](examples/associated/main.loom) covers
+managed sharing, qualified projections and compile-time materialization.
+
+Generic associated types, defaults and associated-member bounds remain future
+work. Bare `dyn C` rejects concepts declaring associated types until explicit
+associated bindings can become part of its type identity.
 
 ### Dynamic values
 
@@ -363,7 +401,7 @@ exports retain complete callable tables. No runtime type lookup or `any`
 conversion supplies evidence. Cross-dyn conversion, concrete recovery, and
 compile-time dynamic execution currently reject. A dyn-compatible method can use
 `Self` only as its first receiver parameter; static-only concepts may also use it
-elsewhere. Future associated-type support must preserve explicit evidence and DCE.
+elsewhere. Dynamic associated bindings remain future work.
 
 ## Contract boundary
 

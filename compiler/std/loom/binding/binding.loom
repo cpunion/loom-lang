@@ -155,7 +155,7 @@ fn declaration_names(file Int, node Node) Result[Bool, Failure] {
         if child.kind == NodeKind.TypeParameters { discard names(file, child.children, true)? }
         if child.kind == NodeKind.Parameters { discard names(file, child.children, false)? }
         if child.kind == NodeKind.Function { discard declaration_names(file, child)? }
-        if child.kind == NodeKind.Field || child.kind == NodeKind.Variant { push(members, child) }
+        if child.kind == NodeKind.Field || child.kind == NodeKind.Variant || child.kind == NodeKind.AssociatedType { push(members, child) }
         index = index + 1
     }
     discard names(file, members, false)?
@@ -244,7 +244,7 @@ pub fn bind(files List[SourceFile], root Text, tests Bool) Result[Program, Failu
                         var member = 0
                         while member < length(node.children) {
                             let method = get(node.children, member)
-                            if method.kind == NodeKind.Function {
+                            if method.kind == NodeKind.Function || method.kind == NodeKind.AssociatedType {
                                 if has(method, NodeKind.Intrinsic) || has(method, NodeKind.Test) || has(method, NodeKind.Public) {
                                     return Result.Err(failure(file, method, "concept and impl methods inherit their owner's visibility and cannot be tests or intrinsics"))
                                 }

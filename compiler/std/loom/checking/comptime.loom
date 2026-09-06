@@ -33,7 +33,7 @@ fn parameter_name(context Context, name Text) Bool {
     false
 }
 fn depends_on_type(context Context, node Node) Bool {
-    if node.kind == NodeKind.Type && parameter_name(context, node.value) { return true }
+    if node.kind == NodeKind.Type && parameter_name(context, slice(node.value, 0, first_dot(node.value))) { return true }
     if node.kind == NodeKind.Implements && type_parameter_operand(context, child(node, 0)) { return true }
     if node.kind == NodeKind.Binary && (node.value == "==" || node.value == "!=") &&
         type_operand(context, child(node, 0)) && type_operand(context, child(node, 1)) &&
@@ -58,7 +58,7 @@ fn staging(context Context, node Node) Result[Context, Failure] {
         return Result.Err(error(context, node, "compile-time staging depth exceeded; check for a dependency cycle"))
     }
     // Compile-time call targets never enter the runtime reachability queue.
-    let env = Environment { source = context.env.source types = context.env.types signatures = context.env.signatures
+    let env = Environment { source = context.env.source types = context.env.types type_states = context.env.type_states expand_data = true signatures = context.env.signatures
         pending = new[Instance]() stage_depth = context.env.stage_depth + 1 computations = context.env.computations
         concepts = context.env.concepts implementations = context.env.implementations interfaces = context.env.interfaces
         witnesses = new[Witness]() uses = new[SlotUse]() }
@@ -134,7 +134,7 @@ fn type_operand(context Context, node Node) Bool {
     true
 }
 fn type_parameter_operand(context Context, node Node) Bool {
-    if parameter_name(context, node.value) { return true }
+    if parameter_name(context, slice(node.value, 0, first_dot(node.value))) { return true }
     var index = 0
     while index < length(node.children) {
         if type_parameter_operand(context, child(node, index)) { return true }
@@ -150,7 +150,7 @@ fn selected(context Context, node Node, source Node, expected Int, enforce Bool)
         if !type_operand(context, child(condition, 0)) {
             return Result.Err(error(context, condition, "implements requires an unshadowed type operand"))
         }
-        let ty = resolve(context.env, context.signature.symbol, child(condition, 0), context.arguments, 0)?
+        let ty = context_type(context, child(condition, 0))?
         let capability = required_concept(context.env, context.signature.symbol, child(condition, 1))?
         yes = satisfies(context, ty, capability)
         if !yes && !concrete(context.env, ty) { return deferred(context, node, expected) }
@@ -162,8 +162,8 @@ fn selected(context Context, node Node, source Node, expected Int, enforce Bool)
         if !type_operand(context, child(condition, 0)) || !type_operand(context, child(condition, 1)) {
             return Result.Err(error(context, condition, "comptime type comparison requires two unshadowed types"))
         }
-        let left = resolve(context.env, context.signature.symbol, child(condition, 0), context.arguments, 0)?
-        let right = resolve(context.env, context.signature.symbol, child(condition, 1), context.arguments, 0)?
+        let left = context_type(context, child(condition, 0))?
+        let right = context_type(context, child(condition, 1))?
         if left != right && (!concrete(context.env, left) || !concrete(context.env, right)) {
             return deferred(context, node, expected)
         }

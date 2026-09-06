@@ -144,6 +144,7 @@ fn loom_compiler_checks_its_packages_and_reports_real_diagnostics() {
         "examples/floats",
         "examples/concepts",
         "examples/dynamic",
+        "examples/associated",
     ] {
         let output = source_compiler(stage3, &["test", compiler.join(package).to_str().unwrap()]);
         assert!(output.status.success(), "{package}: {output:?}");

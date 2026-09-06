@@ -22,7 +22,7 @@ fn statement(context Context, node Node, boundary Int) Result[Step, Failure] {
     let kind = node.kind
     if kind == NodeKind.Destructure { return destructure(context, node, boundary) }
     if kind == NodeKind.Let || kind == NodeKind.Var {
-        let annotation = if length(node.children) == 2 { resolve(context.env, context.signature.symbol, child(node, 0), context.arguments, 0)? } else { -1 }
+        let annotation = if length(node.children) == 2 { context_type(context, child(node, 0))? } else { -1 }
         let value = expr(context, child(node, length(node.children) - 1), annotation)?
         let local = length(context.locals)
         let next = bind_local(context, node, node.value, value.ty, kind == NodeKind.Var, boundary)?

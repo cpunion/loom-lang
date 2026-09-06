@@ -20,6 +20,8 @@ import std.list.length
 // enum variants(name,payload IDs). Tuples use record layout, with symbol -1 and
 // positional field names. Dyn stores its interface index in symbol, no payload.
 // Tags 0..11 follow type_tag below.
+// Unused abstract associated projections use the existing parameter placeholder;
+// concrete executable projections must already have normalized to their type.
 // Function: symbol, span(start,end), params, result, locals, preconditions, body.
 // Expr: tag,type,span,text,index,falls,children,arms. Arm: variant,bindings,whole,
 // body; absent bindings/variants use -1. Tags 0..23 follow expression_tag below.
@@ -55,7 +57,7 @@ fn integers(buffer Bytes, values List[Int]) {
 fn type_tag(kind TypeKind) Int {
     match kind {
         TypeKind.Unit => 0, TypeKind.Int => 1, TypeKind.Bool => 2
-        TypeKind.Text => 3, TypeKind.Bytes => 4, TypeKind.Parameter => 5
+        TypeKind.Text => 3, TypeKind.Bytes => 4, TypeKind.Parameter => 5, TypeKind.Associated => 5
         TypeKind.List => 6, TypeKind.Record => 7, TypeKind.Tuple => 7
         TypeKind.Enum => 8, TypeKind.Refined => 9, TypeKind.Float => 10, TypeKind.Dyn => 11
     }
